@@ -17,8 +17,13 @@
 [M1-A 离线契约基线](../../eval/summaries/m1-offline-baseline-2026-07-15.md)与生产工具目录测量已完成；
 [M1-B 官方 DeepSeek live canary](../../eval/summaries/m1-b-deepseek-live-2026-07-15.md)
 通过 5/5 个受限请求。它们证明离线契约和 Standard、Thinking tool/exact replay、
-Beta Strict、Beta FIM 的线上协议兼容，不证明编码能力提升。M1-C 真实编码任务 A/B
-仍待完成，因此 M1 仍在进行中。
+Beta Strict、Beta FIM 的线上协议兼容，不证明编码能力提升。M1-C 正在先建立覆盖真实
+HTTP 发送次数的共享硬预算，再执行真实编码任务 A/B，因此 M1 仍在进行中。
+
+M2-A 已把官方 DeepSeek `RequestPlan` 接入现有生产 Client 代码并完成单元回归，但
+Engine 到真实发送器/FIM 的 production-path 门禁和切换后的官方 live canary 尚未通过。
+这表示请求决策代码已经接线，不表示 M2-A 已验收，也不表示独立 `DeepSeekBackend`
+已经完成。
 
 ## 1. 产品结论
 
@@ -78,6 +83,8 @@ Claude Code、Aider 或其他项目拼接进来。外部项目只提供能力参
 10. 完成状态由最新工作区 revision 对应的证据决定，不由模型自报决定。
 11. 新路径接管能力后必须删除旧路径。
 12. 不引入 TypeScript sidecar、Cline runtime 或永久兼容桥。
+13. 面向人的产品界面默认使用简体中文；机器协议和技术标识保持稳定。
+14. UI locale 与模型提示词包是两个独立层次，不能用界面翻译替代 Agent 提示词调优。
 
 ## 4. 第一性原理运行链
 
@@ -188,6 +195,30 @@ Agent loop，不创建第二个 Runtime。待真实调用路径完成迁移并�
 当前 5/5 live canary 是上述 wire 契约的外部事实基线，且记录明确标记为
 `product_metric_eligible=false`、`verified_success=null`。M2-A 切换生产请求路径后必须
 重跑它，但无论通过多少次都不能替代 M1-C 的真实编码任务验收。
+
+截至 2026-07-15，M2-A 已完成上述 `RequestPlan` 的生产 Client 代码接入和单元回归；
+production-path 的 sender/FIM 垂直测试及切换后的 live canary 仍是未完成门禁。验收前
+不得把“代码已接入”写成“Backend 已完成”或“真实链路已验证”。
+
+### 6.1 中文原生交互与 Agent 提示词
+
+中文原生产品分为两个解耦层次：
+
+1. **人类界面 locale**：默认 `zh-Hans`，覆盖 CLI/TUI、帮助、配置向导、Doctor、错误与
+   恢复提示、上下文状态、多 Agent 进度以及产品文档。使用一套本地化资源和同一 locale
+   传播规则，根 Agent、子 Agent、恢复会话和 Headless 文本输出不得各自维护翻译。
+2. **模型提示词包**：面向 DeepSeek 的规划、工具策略、失败恢复、上下文压缩和子 Agent
+   协作提示必须用简洁中文按语义重新设计，而不是把英文模板机械逐字翻译。提示词包独立
+   版本化并可回滚，不能与 UI locale 或 Runtime 分叉绑定。
+
+以下内容保持原样，不因汉化而改变契约：命令和 flags、工具名、JSON Schema 与 API 字段、
+模型 ID、文件路径、代码、diff、stdout/stderr 以及上游原始日志。面向用户的错误应提供
+中文摘要和可执行建议，同时保留可展开的原始技术细节。
+
+中文提示词包默认启用前，必须在相同任务、仓库 revision、模型、工具面和预算下与当前
+提示词做 A/B，至少记录 verified success、工具错误率、模型轮次、Token、时延和成本。
+只有能力不回归且至少一个关键效率或结果指标有明确净提升时，才能成为默认；否则继续
+缩小、重做或保持可回滚的候选版本。
 
 ## 7. 工具与完成语义
 
@@ -349,6 +380,8 @@ V1 必须同时满足：
 - 完成状态依赖最新 EvidenceReceipt；
 - 其他 Provider、旧 updater、重复状态和重复运行路径已清除；
 - 真实评测证明产品优于导入时的 CodeWhale 基线；
+- 保留的人类交互链路默认 `zh-Hans`，没有未列入技术白名单的英文泄漏；
+- 中文原生 Agent 提示词通过同任务 A/B，版本可追溯、可回滚且没有能力回归；
 - 使用步骤没有因为架构重构而变复杂。
 
 ## 15. 来源与许可

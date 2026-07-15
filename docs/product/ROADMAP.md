@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
 - 状态：执行中
-- 当前阶段：M1 评测基线（M1-A/M1-B 已完成，M1-C 待完成）；下一工程切片为 M2-A production request planner
+- 当前阶段：M1-C 共享 API 请求硬预算进行中；M2-A RequestPlan 已完成代码接入，production-path/live 验收未完成
 - 上次更新：2026-07-15
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -19,7 +19,11 @@
 - 根 Agent 与子 Agent 仍有不同运行循环。
 - M1-A 离线契约证据与生产工具目录测量已经完成。
 - M1-B 官方 DeepSeek live canary 已通过 5/5，但仅属于协议兼容证据。
+- M1-C 正在加入跨根 Agent、重试、流恢复、压缩和子 Agent 共用的真实 HTTP 请求硬预算；
+  预算实现和 production exec 证据尚未完成验收。
 - 尚无导入基线与当前候选之间的真实编码任务 A/B，不能声称 Agent 能力提升。
+- M2-A 已让官方 DeepSeek `RequestPlan` 接入现有 production Client 并通过单元回归；
+  Engine 到真实 sender/FIM 的垂直门禁和切换后的 live canary 尚未完成，不能标记为验收通过。
 - 当前已有一组 DeepSeek 协议、Agent 可靠性和独立 verify 实验 WIP。
 - WIP 保存提交：`2ccccdd4`。
 - 本地归档分支：`archive/pre-product-plan-20260715`。
@@ -42,13 +46,35 @@
 旧事件翻译或旧状态写入。临时兼容层最多跨一个里程碑；任何时刻都不能长期保留两套
 生产 Agent loop 或两个可写状态真相。
 
+### 2.1 中文原生交付顺序
+
+中文原生是产品要求，但不能成为翻译即将删除界面的返工。每个垂直切片按以下顺序执行：
+
+1. 先确认该入口是否属于 DeepSeek 专用产品的保留链路；
+2. 替代并删除无关 Provider 的选择、配置、帮助和错误分支；
+3. 再用现有统一 locale 资源汉化保留的人类界面，不建立第二套 i18n；
+4. 独立开发并评测中文原生模型提示词包，不把 UI 翻译混入 Runtime 语义。
+
+人类界面默认 `zh-Hans`；命令和 flags、工具名、Schema/API 字段、模型 ID、路径、代码、
+diff、stdout/stderr 和原始日志保持稳定。最终门禁至少覆盖：
+
+- 隔离 HOME 下的首次启动、`--help`、Setup/Doctor、认证失败、限流、超时、SSE、上下文和
+  请求预算耗尽都提供中文摘要与可执行建议；
+- `exec` 文本输出默认中文，NDJSON/机器事件的字段与 golden fixture 不因 locale 改变；
+- 单 Agent 和多 Agent 的成功、失败、取消、恢复链路均无非白名单英文，子 Agent 与恢复
+  会话继承 locale；
+- 80/120 列终端下 CJK 宽度、截断和换行正确；
+- 英文泄漏门禁只扫描保留的用户渲染路径，并维护技术字面量白名单，不做全仓 ASCII 扫描；
+- 中文提示词包与当前版本做同任务 A/B，记录 verified success、工具错误率、轮次、Token、
+  时延和成本；无能力回归且关键指标有净提升后才默认启用，版本必须可追溯和回滚。
+
 ## 3. 里程碑总览
 
 | 里程碑 | 目标 | 状态 | 主要退出门槛 |
 |---|---|---|---|
 | M0 | 保护基线、整理仓库、建立唯一文档真相 | 已完成 | 工作区可追溯，产品方案落库，现有 WIP 被隔离说明 |
-| M1 | 建立原始 DeepSeek 能力基准 | 进行中（M1-A/M1-B 已完成） | 真实编码 A/B 可重复测量成功率、假成功、Token、时间和成本 |
-| M2 | 独立 DeepSeekBackend 与领域协议 | 待开始（M2-A 下一工程切片） | Production RequestPlan 接管真实请求，旧 DeepSeek 决策分支删除 |
+| M1 | 建立原始 DeepSeek 能力基准 | 进行中（M1-C 硬预算与编码 A/B 待完成） | 真实编码 A/B 在硬请求预算下可重复测量成功率、假成功、Token、时间和成本 |
+| M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（M2-A 代码接入，验收未完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 待开始 | 可完成 read/edit/shell/verify/complete 真实任务 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 待开始 | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
 | M5 | RepoGraph、ContextBroker 和证据化完成 | 待开始 | 成功率或 Token 明显优于基线，假成功下降 |
@@ -117,11 +143,22 @@ M1-A 完成不等于 M1 完成：离线用例没有真实 DeepSeek Token、cache
   `verified_success=null`；它只证明当时官方 API 的 wire 契约兼容，不是编码任务成绩，
   也不证明当前生产 Client 已统一通过一个 RequestPlan 生成这些请求。
 
-### 待完成
+### 进行中：M1-C 固定真实编码任务基线
 
-1. **M1-C 固定真实编码任务基线**：同任务、同仓库 revision、同预算、同确定性验收器，
-   对比导入提交和候选提交的 verified success、false-success、Token、时间、费用和 diff。
-2. **M1-D WIP 处置**：根据离线、live 协议和真实任务三层证据，对 DeepSeek 协议、
+M1-C 先建立可执行的真实请求边界，再做 A/B：
+
+1. **共享 API 请求硬预算**：在每次实际 HTTP `.send()` 前原子占用额度，覆盖根 Agent、
+   transport retry、stream 恢复、compaction、验证/FIM 和子 Agent，不把 Engine step
+   或模型 turn 冒充请求数。达到上限后必须返回类型化终态，并在最终元数据中记录 limit、
+   已发送数和是否耗尽；预算封存后不得再产生后台请求。该实现当前进行中，尚未通过
+   production `exec` 验收。
+2. **固定真实编码 A/B**：同任务、同仓库 revision、同模型、同工具面、同请求/Token/时间
+   预算和同确定性验收器，对比导入提交和候选提交的 verified success、false-success、
+   Token、时间、费用和 diff。
+
+### 后续待完成
+
+1. **M1-D WIP 处置**：根据离线、live 协议和真实任务三层证据，对 DeepSeek 协议、
    Agent 可靠性、`verify` 和本地配置逐项给出保留、
    重做、缩小或删除结论。
 
@@ -131,25 +168,35 @@ M1-A 完成不等于 M1 完成：离线用例没有真实 DeepSeek Token、cache
 ### 退出门槛
 
 - 离线契约与 live 协议基线已经可重复；真实任务 A/B 仍须可重复。
+- 硬预算统计所有真实 HTTP 发送且并发不超限；耗尽、封存和终态元数据有离线回归与
+  production `exec` 证据。
 - 真实任务能测量 verified success、false-success、输入/输出/cache Token、时间和成本。
 - 每项 WIP 有保留、重做、缩小或删除结论。
 - `verify` 未经评测不得默认成为完成门禁。
 
 ## 6. M2：领域协议与 DeepSeekBackend
 
-### M2-A 下一切片：production DeepSeek request planner
+### M2-A：production DeepSeek request planner（代码接入完成，验收未完成）
 
-- 不新建 crate；在现有生产 `crates/tui/src/client/` 内建立最小
-  `ApiSurface::{StandardChat, StrictChat, Fim}` 与 `RequestPlan`。
-- `RequestPlan` 一次性决定 surface、endpoint、wire model、streaming、reasoning replay、
-  工具/strict 状态和请求 body，发送层不得再次改写。
-- 首先接管 `codewhale exec`、TUI 和子 Agent 共用的真实 DeepSeek streaming Client 路径；
-  Standard/Strict 使用现有 Chat 响应与 SSE parser，FIM 保留独立 Beta Completions 语义。
-- Strict 只有在整组函数 schema 兼容时启用；任一不兼容即原子退回 `StandardChat`，
-  保留全部普通工具调用。
-- 复用现有 HTTP transport、retry、usage parser、SSE decoder 和 Agent loop；本切片禁止
-  新 Runtime、第二套 Client 主循环或大范围目录搬迁。
-- 用纯 planner 单测、WireMock 生产路径测试和现有 5/5 live canary 复核切换结果。
+已完成的代码事实：
+
+- 未新建 crate；最小 `ApiSurface::{StandardChat, StrictChat, Fim}` 与 `RequestPlan` 位于现有
+  `crates/tui/src/client/`。
+- 官方 DeepSeek streaming/non-streaming Client 已消费同一 planner；`RequestPlan` 一次性决定
+  surface、endpoint、wire model、streaming、reasoning replay、工具/strict 状态和 body。
+- Strict 在整组 schema 兼容时走 Beta；任一不兼容时整组原子回退 Standard，并保留全部工具。
+- FIM 保持独立 Beta Completions 语义；现有 transport、retry、parser 和 Agent loop 被复用。
+- planner 与相关 Client 单元回归已经通过，未增加第二个 Runtime 或第二套 Client 主循环。
+
+尚未完成的验收事实：
+
+- 缺少覆盖 Engine 到官方 production sender 的 Standard/Strict/FIM surface 矩阵；
+- 多轮 exact reasoning replay、transport retry、畸形/不完整响应和 FIM 事务性写入仍需在
+  production path 形成垂直证据；
+- 切换后的官方 DeepSeek live canary 尚未重跑。
+
+因此 M2-A 当前只能标记为“代码接入完成、production-path/live gate pending”，不能标记
+为验收完成。下一步先补齐上述门禁，再删除已被 planner 替代的旧决策分支。
 
 ### 同切片删除/替代
 
@@ -306,6 +353,8 @@ Headless Task
 - stable prefix/cache；
 - 并行只读工具；
 - Agent 数量和预算；
+- 开发中文原生 Agent 提示词包，分别调优规划、工具策略、失败恢复、压缩和子 Agent 协作；
+  保留英文/当前提示词为同任务 A/B 基线，按版本发布并可回滚；
 - 只有基准证明需要时才加入 embedding。
 
 ### 剩余清理
@@ -318,17 +367,25 @@ Headless Task
 - 遗留 evidence 和最终不再需要的导入资产；
 - 无接线 stub、兼容别名和永久临时适配层。
 
-清理必须先通过依赖盘点；Cargo 核心能力不得因外围删除而退化。
+清理必须先通过依赖盘点；Cargo 核心能力不得因外围删除而退化。Provider 专用的人类界面
+随对应旧路径一起删除，不投入翻译；每个切片只汉化已经确认保留的 DeepSeek 配置、Agent
+运行和多 Agent 链路。
 
 ## 12. M8：V1 产品化
 
 - 正式产品名、二进制名、配置目录和 User-Agent；
 - 自己的 origin/upstream 远程策略；
 - DeepSeek-only 配置向导；
+- 默认 `zh-Hans` 的 CLI/TUI/Headless 文本界面与中文帮助、Doctor、错误恢复和多 Agent 状态；
+- 保持 NDJSON/API 字段、命令参数、工具名、模型 ID、路径、代码和原始输出稳定；
+- 中文原生 Agent 提示词包通过同任务 A/B 后默认启用，提示词版本可追溯并可回滚；
 - 本地开发、安装、卸载和数据迁移；
 - 精确 Rust toolchain；
 - 自己的 CI、版本、changelog 和发布流程；
 - 架构依赖门禁和长期 benchmark。
+
+M8 退出前必须通过第 2.1 节的中文端到端、机器协议稳定性、CJK 终端布局、英文泄漏和
+提示词 A/B 门禁；只增加翻译字符串但保留英文主流程，不计为完成。
 
 ## 13. 当前源码迁移表
 
