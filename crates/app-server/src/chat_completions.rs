@@ -121,17 +121,14 @@ fn upstream_url(endpoint: &ResolvedModelEndpoint) -> String {
             unversioned_base_url(base),
             suffix.trim_start_matches('/')
         ),
-        _ => {
-            let mut versioned = versioned_base_url(base);
-            if versioned
-                .rsplit('/')
-                .next()
-                .is_some_and(|segment| segment.eq_ignore_ascii_case("beta"))
-            {
-                versioned = format!("{}/v1", unversioned_base_url(base));
-            }
-            format!("{}/chat/completions", versioned.trim_end_matches('/'))
-        }
+        // DeepSeek's strict function schemas are a Chat Completions beta
+        // capability. Preserve an explicitly configured `/beta` base here;
+        // rewriting it to `/v1` silently strips the route-level opt-in while
+        // forwarding the caller's `strict: true` tool definitions unchanged.
+        _ => format!(
+            "{}/chat/completions",
+            versioned_base_url(base).trim_end_matches('/')
+        ),
     }
 }
 
@@ -792,7 +789,7 @@ api_key = "arcee-configured-key"
     }
 
     #[test]
-    fn upstream_url_beta_base_uses_standard_v1_chat_completions() {
+    fn upstream_url_beta_base_preserves_deepseek_strict_chat_route() {
         let endpoint = ResolvedModelEndpoint {
             provider: ProviderKind::Deepseek,
             base_url: "https://api.deepseek.com/beta".to_string(),
@@ -805,7 +802,7 @@ api_key = "arcee-configured-key"
         };
         assert_eq!(
             upstream_url(&endpoint),
-            "https://api.deepseek.com/v1/chat/completions"
+            "https://api.deepseek.com/beta/chat/completions"
         );
     }
 

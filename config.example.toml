@@ -81,6 +81,12 @@ default_text_model = "deepseek-v4-pro"
 # current tier as a ⚡ chip.
 reasoning_effort = "max"
 
+# Validate tool arguments with DeepSeek beta strict schemas when the complete
+# active catalog is compatible. Strict validation does not force a tool call;
+# tool_choice stays automatic. An incompatible catalog keeps ordinary tools
+# available and removes only the strict guarantee. Keep the /beta URL above.
+strict_tool_mode = true
+
 # ─────────────────────────────────────────────────────────────────────────────────
 # Cost Display
 # ─────────────────────────────────────────────────────────────────────────────────
@@ -776,6 +782,10 @@ apply_patch = true
 mcp = true
 exec_policy = true
 # vision_model = false  # enable vision model for image_analyze tool
+# verify_tool = false   # disable the agent-callable `verify` self-critique tool
+                        # (#4196). On by default; the agent decides when to spend
+                        # the extra reasoning, so cost is only incurred on demand.
+                        # Set false to remove it from the model's tool catalog.
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Vision Model Configuration (optional)

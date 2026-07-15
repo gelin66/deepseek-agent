@@ -3085,7 +3085,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     }
     let strict_tool_mode = doctor_strict_tool_mode_status(config);
     let strict_icon = match strict_tool_mode.status {
-        "ready" => "✓".truecolor(aqua_r, aqua_g, aqua_b),
+        "route_ready_catalog_dependent" => "✓".truecolor(aqua_r, aqua_g, aqua_b),
         "fallback_non_beta" | "custom_endpoint" => "!".truecolor(sky_r, sky_g, sky_b),
         _ => "·".dimmed(),
     };
@@ -4958,9 +4958,10 @@ fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus
     match known_deepseek_base_url_kind(&target.base_url) {
         Some(DeepSeekBaseUrlKind::Beta) => DoctorStrictToolModeStatus {
             enabled: true,
-            status: "ready",
-            function_strict_sent: true,
-            message: "enabled; DeepSeek strict schemas use the beta endpoint".to_string(),
+            status: "route_ready_catalog_dependent",
+            function_strict_sent: false,
+            message: "beta route ready; function.strict is sent only when every active tool schema matches DeepSeek's strict subset"
+                .to_string(),
             recommended_base_url: None,
         },
         Some(DeepSeekBaseUrlKind::NonBeta) => {
@@ -4978,8 +4979,9 @@ fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus
         None => DoctorStrictToolModeStatus {
             enabled: true,
             status: "custom_endpoint",
-            function_strict_sent: true,
-            message: "enabled; function.strict will be sent to this custom endpoint".to_string(),
+            function_strict_sent: false,
+            message: "custom endpoint selected; function.strict remains catalog-dependent and endpoint support cannot be verified by doctor"
+                .to_string(),
             recommended_base_url: None,
         },
     }
@@ -9803,9 +9805,10 @@ mod doctor_endpoint_tests {
         let status = doctor_strict_tool_mode_status(&config);
 
         assert!(status.enabled);
-        assert_eq!(status.status, "ready");
-        assert!(status.function_strict_sent);
-        assert!(status.message.contains("beta endpoint"));
+        assert_eq!(status.status, "route_ready_catalog_dependent");
+        assert!(!status.function_strict_sent);
+        assert!(status.message.contains("beta route ready"));
+        assert!(status.message.contains("every active tool schema"));
         assert!(status.recommended_base_url.is_none());
     }
 
@@ -9837,9 +9840,9 @@ mod doctor_endpoint_tests {
 
         let status = doctor_strict_tool_mode_status(&config);
 
-        assert_eq!(status.status, "ready");
-        assert!(status.function_strict_sent);
-        assert!(status.message.contains("beta endpoint"));
+        assert_eq!(status.status, "route_ready_catalog_dependent");
+        assert!(!status.function_strict_sent);
+        assert!(status.message.contains("beta route ready"));
         assert!(status.recommended_base_url.is_none());
     }
 
@@ -9854,8 +9857,9 @@ mod doctor_endpoint_tests {
         let status = doctor_strict_tool_mode_status(&config);
 
         assert_eq!(status.status, "custom_endpoint");
-        assert!(status.function_strict_sent);
+        assert!(!status.function_strict_sent);
         assert!(status.message.contains("custom endpoint"));
+        assert!(status.message.contains("catalog-dependent"));
     }
 
     #[test]

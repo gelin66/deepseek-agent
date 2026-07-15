@@ -1,10 +1,10 @@
 //! Schema sanitizer for tool `input_schema` before sending to provider APIs.
 //!
-//! DeepSeek's `/beta/chat/completions` strict tool mode is harsh. MCP tool
-//! schemas frequently arrive with Pydantic-style `anyOf:[{type:"string"},
-//! {type:"null"}]` unions, bare `{type:"object"}` with no `properties`, or
-//! `required` entries that don't appear in `properties`. These dirty schemas
-//! cause silent 400s that users can't diagnose.
+//! DeepSeek's `/beta/chat/completions` strict tool mode accepts a documented
+//! subset of JSON Schema. General/MCP schemas often contain optional values,
+//! composition, or keywords outside that subset. Strict preparation validates
+//! the complete catalog without rewriting it; incompatible catalogs retain
+//! ordinary tool calling instead of risking a 400 or changing tool semantics.
 //!
 //! The default sanitizer runs in-place on every schema returned by
 //! `ToolRegistry::tools_for_api()` before the registry hands them off.
@@ -42,31 +42,25 @@ pub fn sanitize(schema: &mut Value) {
 
 /// Prepare a complete active tool set for DeepSeek strict function-calling.
 ///
-/// Each tool is evaluated independently: compatible schemas are sanitized and
-/// marked strict, while incompatible schemas remain unchanged and non-strict.
+/// DeepSeek requires every function in one request to opt into strict mode.
+/// Preflight the complete set without mutating schemas. An incompatible tool
+/// leaves every schema untouched and disables strict mode for the set.
 /// Returns `true` only when every tool in the set can use strict mode.
 pub fn prepare_tools_for_strict_mode(tools: &mut [Tool]) -> bool {
-    let mut all_strict = true;
-    for tool in tools {
-        if strict_schema_supported(&tool.input_schema) {
-            sanitize_for_strict(&mut tool.input_schema);
-            tool.strict = Some(true);
-        } else {
+    if tools
+        .iter()
+        .any(|tool| !strict_schema_supported(&tool.input_schema))
+    {
+        for tool in tools {
             tool.strict = None;
-            all_strict = false;
         }
+        return false;
     }
-    all_strict
-}
 
-/// Sanitize a schema for DeepSeek strict function-calling.
-///
-/// This extends the general sanitizer with the official strict-mode object
-/// rules: every object must set `additionalProperties: false`, and every
-/// property must be listed in `required`.
-pub fn sanitize_for_strict(schema: &mut Value) {
-    sanitize(schema);
-    enforce_strict_subset(schema);
+    for tool in tools {
+        tool.strict = Some(true);
+    }
+    true
 }
 
 /// Sanitize a schema for OpenAI Responses function tools.
@@ -107,27 +101,169 @@ pub fn sanitize_for_responses(schema: &mut Value) -> Option<String> {
 }
 
 fn strict_schema_supported(schema: &Value) -> bool {
-    let mut normalized = schema.clone();
-    sanitize(&mut normalized);
-    !has_strict_incompatible_composition(&normalized, true)
+    schema.get("type").and_then(Value::as_str) == Some("object")
+        && strict_schema_node_supported(schema)
 }
 
-fn has_strict_incompatible_composition(schema: &Value, is_root: bool) -> bool {
-    if let Some(obj) = schema.as_object() {
-        if obj.contains_key("oneOf") || obj.contains_key("allOf") {
-            return true;
-        }
-        if is_root && obj.contains_key("anyOf") {
-            return true;
-        }
-        return obj
-            .values()
-            .any(|value| has_strict_incompatible_composition(value, false));
+/// Validate one schema node against the subset DeepSeek documents for Beta
+/// strict function calling. This is deliberately an allowlist, not a rewrite:
+/// a keyword that is valid general JSON Schema but undocumented for this
+/// provider falls back to ordinary tool calling instead of risking a request
+/// rejection or silently changing the tool contract.
+fn strict_schema_node_supported(schema: &Value) -> bool {
+    let Some(obj) = schema.as_object() else {
+        return false;
+    };
+    if obj
+        .get("description")
+        .is_some_and(|description| !description.is_string())
+        || !strict_definitions_supported(obj)
+    {
+        return false;
     }
-    schema.as_array().is_some_and(|arr| {
-        arr.iter()
-            .any(|value| has_strict_incompatible_composition(value, false))
-    })
+
+    if let Some(reference) = obj.get("$ref") {
+        return reference.is_string()
+            && strict_keys_supported(obj, &["$ref", "description"]);
+    }
+
+    if let Some(branches) = obj.get("anyOf") {
+        let Some(branches) = branches.as_array().filter(|branches| !branches.is_empty()) else {
+            return false;
+        };
+        return strict_keys_supported(obj, &["anyOf", "description", "$def"])
+            && branches.iter().all(strict_schema_node_supported);
+    }
+
+    let Some(schema_type) = obj.get("type").and_then(Value::as_str) else {
+        return false;
+    };
+    if let Some(values) = obj.get("enum")
+        && !values.as_array().is_some_and(|values| !values.is_empty())
+    {
+        return false;
+    }
+
+    match schema_type {
+        "object" => {
+            if !strict_keys_supported(
+                obj,
+                &[
+                    "type",
+                    "description",
+                    "properties",
+                    "required",
+                    "additionalProperties",
+                    "$def",
+                ],
+            ) || obj.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            {
+                return false;
+            }
+            let Some(properties) = obj.get("properties").and_then(Value::as_object) else {
+                return false;
+            };
+            let Some(required_values) = obj.get("required").and_then(Value::as_array) else {
+                return false;
+            };
+            let Some(mut required) = required_values
+                .iter()
+                .map(Value::as_str)
+                .collect::<Option<Vec<_>>>()
+            else {
+                return false;
+            };
+            let mut property_names = properties.keys().map(String::as_str).collect::<Vec<_>>();
+            property_names.sort_unstable();
+            required.sort_unstable();
+            if required != property_names {
+                return false;
+            }
+            properties.values().all(strict_schema_node_supported)
+        }
+        "string" => {
+            if !strict_keys_supported(
+                obj,
+                &["type", "description", "pattern", "format", "enum", "$def"],
+            ) || obj.get("pattern").is_some_and(|pattern| !pattern.is_string())
+                || !strict_enum_values_match(obj, Value::is_string)
+            {
+                return false;
+            }
+            obj.get("format").is_none_or(|format| {
+                matches!(
+                    format.as_str(),
+                    Some("email" | "hostname" | "ipv4" | "ipv6" | "uuid")
+                )
+            })
+        }
+        "number" | "integer" => {
+            if !strict_keys_supported(
+                obj,
+                &[
+                    "type",
+                    "description",
+                    "const",
+                    "default",
+                    "minimum",
+                    "maximum",
+                    "exclusiveMinimum",
+                    "exclusiveMaximum",
+                    "multipleOf",
+                    "enum",
+                    "$def",
+                ],
+            ) {
+                return false;
+            }
+            [
+                "const",
+                "default",
+                "minimum",
+                "maximum",
+                "exclusiveMinimum",
+                "exclusiveMaximum",
+                "multipleOf",
+            ]
+            .iter()
+            .all(|key| obj.get(*key).is_none_or(Value::is_number))
+                && strict_enum_values_match(obj, Value::is_number)
+        }
+        "boolean" => {
+            strict_keys_supported(obj, &["type", "description", "enum", "$def"])
+                && strict_enum_values_match(obj, Value::is_boolean)
+        }
+        "array" => {
+            strict_keys_supported(
+                obj,
+                &["type", "description", "items", "enum", "$def"],
+            ) && obj.get("items").is_some_and(strict_schema_node_supported)
+                && strict_enum_values_match(obj, Value::is_array)
+        }
+        _ => false,
+    }
+}
+
+fn strict_definitions_supported(obj: &Map<String, Value>) -> bool {
+    let Some(definitions) = obj.get("$def") else {
+        return true;
+    };
+    let Some(definitions) = definitions.as_object() else {
+        return false;
+    };
+    definitions.values().all(strict_schema_node_supported)
+}
+
+fn strict_keys_supported(obj: &Map<String, Value>, allowed: &[&str]) -> bool {
+    obj.keys().all(|key| allowed.contains(&key.as_str()))
+}
+
+fn strict_enum_values_match(
+    obj: &Map<String, Value>,
+    predicate: impl Fn(&Value) -> bool,
+) -> bool {
+    obj.get("enum")
+        .is_none_or(|values| values.as_array().is_some_and(|values| values.iter().all(predicate)))
 }
 
 /// Collapse `{"anyOf":[X, {"type":"null"}]}` → `X ∪ {"nullable": true}`.
@@ -228,59 +364,6 @@ fn collapse_single_element_unions(schema: &mut Value) {
     }
 }
 
-fn enforce_strict_subset(schema: &mut Value) {
-    if let Some(obj) = schema.as_object_mut() {
-        strip_unsupported_strict_keywords(obj);
-        if is_object_schema(obj) {
-            let originally_required = required_names(obj);
-            let properties = ensure_properties_object(obj);
-            let mut property_names: Vec<String> = properties.keys().cloned().collect();
-            property_names.sort();
-            for property_name in &property_names {
-                if !originally_required
-                    .iter()
-                    .any(|required| required == property_name)
-                    && let Some(property_schema) = properties.get_mut(property_name)
-                {
-                    mark_nullable(property_schema);
-                }
-            }
-            obj.insert(
-                "required".into(),
-                Value::Array(property_names.into_iter().map(Value::String).collect()),
-            );
-            obj.insert("additionalProperties".into(), Value::Bool(false));
-        }
-
-        for value in obj.values_mut() {
-            enforce_strict_subset(value);
-        }
-    } else if let Some(arr) = schema.as_array_mut() {
-        for value in arr {
-            enforce_strict_subset(value);
-        }
-    }
-}
-
-fn strip_unsupported_strict_keywords(obj: &mut Map<String, Value>) {
-    obj.remove("patternProperties");
-    match obj.get("type").and_then(Value::as_str) {
-        Some("string") => {
-            obj.remove("minLength");
-            obj.remove("maxLength");
-        }
-        Some("array") => {
-            obj.remove("minItems");
-            obj.remove("maxItems");
-        }
-        _ => {}
-    }
-}
-
-fn is_object_schema(obj: &Map<String, Value>) -> bool {
-    obj.get("type").and_then(Value::as_str) == Some("object") || obj.contains_key("properties")
-}
-
 fn ensure_properties_object(obj: &mut Map<String, Value>) -> &mut Map<String, Value> {
     let needs_replacement = !matches!(obj.get("properties"), Some(Value::Object(_)));
     if needs_replacement {
@@ -289,25 +372,6 @@ fn ensure_properties_object(obj: &mut Map<String, Value>) -> &mut Map<String, Va
     obj.get_mut("properties")
         .and_then(Value::as_object_mut)
         .expect("properties was just ensured as object")
-}
-
-fn required_names(obj: &Map<String, Value>) -> Vec<String> {
-    obj.get("required")
-        .and_then(Value::as_array)
-        .map(|required| {
-            required
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToOwned::to_owned)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn mark_nullable(schema: &mut Value) {
-    if let Some(obj) = schema.as_object_mut() {
-        obj.insert("nullable".into(), Value::Bool(true));
-    }
 }
 
 fn merge_root_composition_properties(obj: &mut Map<String, Value>) {
@@ -578,137 +642,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_sanitize_requires_all_object_properties_and_closes_extra_keys() {
-        let mut schema = json!({
-            "type": "object",
-            "properties": {
-                "name": {"type": "string"},
-                "count": {"type": "integer"}
-            },
-            "required": ["name"],
-            "additionalProperties": {"type": "string"}
-        });
-
-        sanitize_for_strict(&mut schema);
-
-        assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["required"], json!(["count", "name"]));
-        assert_eq!(schema["properties"]["count"]["nullable"], true);
-        assert!(schema["properties"]["name"].get("nullable").is_none());
-    }
-
-    #[test]
-    fn strict_sanitize_preserves_optional_properties_as_nullable() {
-        let mut schema = json!({
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "start_line": {"type": "integer"},
-                "max_lines": {"type": "integer"},
-                "options": {
-                    "type": "object",
-                    "properties": {
-                        "encoding": {"type": "string"},
-                        "trim": {"type": "boolean"}
-                    },
-                    "required": ["encoding"]
-                }
-            },
-            "required": ["path", "options"]
-        });
-
-        sanitize_for_strict(&mut schema);
-
-        assert_eq!(
-            schema["required"],
-            json!(["max_lines", "options", "path", "start_line"])
-        );
-        assert!(schema["properties"]["path"].get("nullable").is_none());
-        assert!(schema["properties"]["options"].get("nullable").is_none());
-        assert_eq!(schema["properties"]["start_line"]["nullable"], true);
-        assert_eq!(schema["properties"]["max_lines"]["nullable"], true);
-        assert_eq!(
-            schema["properties"]["options"]["required"],
-            json!(["encoding", "trim"])
-        );
-        assert!(
-            schema["properties"]["options"]["properties"]["encoding"]
-                .get("nullable")
-                .is_none()
-        );
-        assert_eq!(
-            schema["properties"]["options"]["properties"]["trim"]["nullable"],
-            true
-        );
-    }
-
-    #[test]
-    fn strict_sanitize_applies_object_rules_recursively() {
-        let mut schema = json!({
-            "type": "object",
-            "properties": {
-                "outer": {
-                    "type": "object",
-                    "properties": {
-                        "inner": {"type": "string"}
-                    },
-                    "required": []
-                }
-            },
-            "required": []
-        });
-
-        sanitize_for_strict(&mut schema);
-
-        assert_eq!(schema["required"], json!(["outer"]));
-        assert_eq!(schema["additionalProperties"], false);
-        assert_eq!(schema["properties"]["outer"]["required"], json!(["inner"]));
-        assert_eq!(schema["properties"]["outer"]["additionalProperties"], false);
-    }
-
-    #[test]
-    fn strict_sanitize_removes_unsupported_string_and_array_bounds() {
-        let mut schema = json!({
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "minLength": 1,
-                    "maxLength": 64,
-                    "pattern": "^[a-z]+$"
-                },
-                "items": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 5,
-                    "items": {"type": "string"}
-                },
-                "score": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 5
-                }
-            }
-        });
-
-        sanitize_for_strict(&mut schema);
-
-        let name = &schema["properties"]["name"];
-        assert!(name.get("minLength").is_none());
-        assert!(name.get("maxLength").is_none());
-        assert_eq!(name["pattern"], "^[a-z]+$");
-
-        let items = &schema["properties"]["items"];
-        assert!(items.get("minItems").is_none());
-        assert!(items.get("maxItems").is_none());
-
-        let score = &schema["properties"]["score"];
-        assert_eq!(score["minimum"], 1);
-        assert_eq!(score["maximum"], 5);
-    }
-
-    #[test]
-    fn strict_mode_applies_per_tool_in_mixed_catalog() {
+    fn strict_mode_is_all_or_nothing_for_mixed_catalog() {
         let mut tools = vec![
             test_tool(
                 "lookup",
@@ -749,18 +683,20 @@ mod tests {
                 }),
             ),
         ];
+        tools[0].strict = Some(true);
+        tools[1].strict = Some(false);
+        let original_schemas: Vec<Value> =
+            tools.iter().map(|tool| tool.input_schema.clone()).collect();
 
         assert!(!prepare_tools_for_strict_mode(&mut tools));
-        assert_eq!(tools[0].strict, Some(true));
-        assert_eq!(tools[0].input_schema["required"], json!(["query"]));
-        assert_eq!(tools[0].input_schema["additionalProperties"], false);
-        assert_eq!(tools[1].strict, None);
-        assert!(tools[1].input_schema.get("anyOf").is_some());
-        assert_eq!(tools[2].strict, None);
-        assert!(
-            tools[2].input_schema["properties"]["value"]
-                .get("oneOf")
-                .is_some()
+        assert!(tools.iter().all(|tool| tool.strict.is_none()));
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.input_schema.clone())
+                .collect::<Vec<_>>(),
+            original_schemas,
+            "incompatible catalogs must not partially sanitize schemas"
         );
     }
 
@@ -788,8 +724,10 @@ mod tests {
             cache_control: None,
         }];
 
+        let original_schema = tools[0].input_schema.clone();
         assert!(!prepare_tools_for_strict_mode(&mut tools));
         assert_eq!(tools[0].strict, None);
+        assert_eq!(tools[0].input_schema, original_schema);
     }
 
     #[test]
@@ -803,7 +741,8 @@ mod tests {
                 "properties": {
                     "query": {"type": "string"}
                 },
-                "required": []
+                "required": ["query"],
+                "additionalProperties": false
             }),
             allowed_callers: None,
             defer_loading: None,
@@ -816,6 +755,163 @@ mod tests {
         assert_eq!(tools[0].strict, Some(true));
         assert_eq!(tools[0].input_schema["required"], json!(["query"]));
         assert_eq!(tools[0].input_schema["additionalProperties"], false);
+    }
+
+    #[test]
+    fn strict_mode_preserves_deepseek_supported_nested_any_of() {
+        let mut tools = vec![test_tool(
+            "lookup_account",
+            json!({
+                "type": "object",
+                "properties": {
+                    "account": {
+                        "anyOf": [
+                            {"type": "string", "format": "email"},
+                            {"type": "string", "pattern": "^\\d{11}$"}
+                        ]
+                    }
+                },
+                "required": ["account"],
+                "additionalProperties": false
+            }),
+        )];
+        let original_any_of = tools[0].input_schema["properties"]["account"]["anyOf"].clone();
+
+        assert!(prepare_tools_for_strict_mode(&mut tools));
+        assert_eq!(tools[0].strict, Some(true));
+        assert_eq!(
+            tools[0].input_schema["properties"]["account"]["anyOf"],
+            original_any_of,
+            "DeepSeek beta documents nested anyOf as a supported strict type"
+        );
+    }
+
+    #[test]
+    fn strict_mode_preserves_deepseek_supported_ref_and_definitions() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "author": {"$ref": "#/$def/author"}
+            },
+            "required": ["author"],
+            "additionalProperties": false,
+            "$def": {
+                "author": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "email": {"type": "string", "format": "email"}
+                    },
+                    "required": ["name", "email"],
+                    "additionalProperties": false
+                }
+            }
+        });
+        let mut tools = vec![test_tool("save_author", schema)];
+
+        assert!(prepare_tools_for_strict_mode(&mut tools));
+        assert_eq!(tools[0].strict, Some(true));
+        assert_eq!(
+            tools[0].input_schema["properties"]["author"]["$ref"],
+            "#/$def/author"
+        );
+        assert_eq!(
+            tools[0].input_schema["$def"]["author"]["additionalProperties"],
+            false
+        );
+    }
+
+    #[test]
+    fn strict_mode_rejects_optional_or_implicitly_open_objects_without_mutation() {
+        for schema in [
+            json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": [],
+                "additionalProperties": false
+            }),
+            json!({
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"]
+            }),
+        ] {
+            let original = schema.clone();
+            let mut tools = vec![test_tool("lookup", schema)];
+            assert!(!prepare_tools_for_strict_mode(&mut tools));
+            assert_eq!(tools[0].strict, None);
+            assert_eq!(tools[0].input_schema, original);
+        }
+    }
+
+    #[test]
+    fn strict_mode_rejects_unsupported_bounds_and_nullable_keyword() {
+        for property in [
+            json!({"type": "string", "minLength": 1}),
+            json!({"type": "array", "items": {"type": "string"}, "maxItems": 5}),
+            json!({"type": "string", "nullable": true}),
+        ] {
+            let schema = json!({
+                "type": "object",
+                "properties": {"value": property},
+                "required": ["value"],
+                "additionalProperties": false
+            });
+            let original = schema.clone();
+            let mut tools = vec![test_tool("bounded", schema)];
+            assert!(!prepare_tools_for_strict_mode(&mut tools));
+            assert_eq!(tools[0].input_schema, original);
+        }
+    }
+
+    #[test]
+    fn strict_mode_rejects_undocumented_composition_and_type_forms() {
+        for property in [
+            json!({"type": ["string", "null"]}),
+            json!({"type": "string", "format": "date-time"}),
+            json!({"type": "string", "const": "fixed"}),
+            json!({"type": "string", "default": "fallback"}),
+            json!({"type": "array", "items": {"type": "string"}, "uniqueItems": true}),
+            json!({"type": "array", "items": {"type": "string"}, "pattern": "x"}),
+            json!({"not": {"type": "string"}}),
+        ] {
+            let schema = json!({
+                "type": "object",
+                "properties": {"value": property},
+                "required": ["value"],
+                "additionalProperties": false
+            });
+            let original = schema.clone();
+            let mut tools = vec![test_tool("strict_subset", schema)];
+            assert!(!prepare_tools_for_strict_mode(&mut tools));
+            assert_eq!(tools[0].strict, None);
+            assert_eq!(tools[0].input_schema, original);
+        }
+    }
+
+    #[test]
+    fn strict_mode_accepts_documented_numeric_keywords() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "score": {
+                    "type": "integer",
+                    "const": 5,
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 5,
+                    "multipleOf": 1
+                }
+            },
+            "required": ["score"],
+            "additionalProperties": false
+        });
+        let original = schema.clone();
+        let mut tools = vec![test_tool("numeric_subset", schema)];
+
+        assert!(prepare_tools_for_strict_mode(&mut tools));
+        assert_eq!(tools[0].strict, Some(true));
+        assert_eq!(tools[0].input_schema, original);
     }
 
     #[test]

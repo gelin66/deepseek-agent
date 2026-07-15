@@ -104,6 +104,7 @@ impl ToolSpec for RunTestsTool {
 
         let mut tool_result =
             ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        tool_result.success = result.success;
         if let Some(summary) = summarize_cargo_failure(
             &result.command,
             &result.stdout,
@@ -269,7 +270,10 @@ mod tests {
         let ctx = ToolContext::new(&project_dir);
         let tool = RunTestsTool;
         let result = tool.execute(json!({}), &ctx).await.expect("execute");
-        assert!(result.success);
+        assert!(
+            !result.success,
+            "a non-zero cargo test exit must be a failed tool result"
+        );
 
         let parsed: RunTestsOutput =
             serde_json::from_str(&result.content).expect("tool result should be json");

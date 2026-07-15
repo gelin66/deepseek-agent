@@ -1,11 +1,14 @@
 use super::*;
 
-use super::context::{COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS};
+use super::context::{
+    COMPACTION_SUMMARY_MARKER, TURN_MAX_OUTPUT_TOKENS, max_output_tokens_for_route_policy,
+    official_deepseek_endpoint,
+};
 use super::turn_loop::{registered_tool_approval_required, tool_error_degradation_runtime_hint};
 use crate::config::ApiProvider;
 use crate::models::{SystemBlock, Usage};
 use crate::test_support::{EnvVarGuard, lock_test_env};
-use crate::tools::plan::{PlanItemArg, PlanSnapshot, StepStatus};
+use crate::tools::plan::{PlanItemArg, PlanSnapshot, StepStatus, UpdatePlanArgs};
 use crate::tools::spec::ToolCapability;
 use crate::tools::todo::{TodoItem, TodoListSnapshot, TodoStatus};
 use serde_json::json;
@@ -17,6 +20,21 @@ use std::time::{Duration, Instant};
 use tempfile::tempdir;
 
 const WORKING_SET_SUMMARY_MARKER: &str = "## Repo Working Set";
+
+fn authoritative_work_state_texts(messages: &[Message]) -> Vec<&str> {
+    messages
+        .iter()
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::Text { text, .. }
+                if text.trim_start().starts_with(AUTHORITATIVE_WORK_STATE_OPEN) =>
+            {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .collect()
+}
 
 #[test]
 fn subagent_mailbox_keeps_lifecycle_events_reliable() {
@@ -329,6 +347,233 @@ fn structured_state_block_uses_checklist_as_work_surface() {
     assert!(!block.contains("Todo list"));
 }
 
+#[tokio::test]
+async fn request_work_state_is_ephemeral_unique_and_refreshes() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "Implement the work plan".to_string(),
+            cache_control: None,
+        }],
+    });
+    {
+        let mut todos = engine.config.todos.lock().await;
+        todos.add(
+            "Implement request projection".to_string(),
+            TodoStatus::InProgress,
+        );
+        todos.add("Run focused tests".to_string(), TodoStatus::Pending);
+    }
+    {
+        let mut plan = engine.config.plan_state.lock().await;
+        plan.update(UpdatePlanArgs {
+            objective: Some("Keep DeepSeek aligned with current work".to_string()),
+            verification_plan: Some("Run engine work-state tests".to_string()),
+            plan: vec![
+                PlanItemArg {
+                    step: "Project state".to_string(),
+                    status: StepStatus::InProgress,
+                },
+                PlanItemArg {
+                    step: "Verify behavior".to_string(),
+                    status: StepStatus::Pending,
+                },
+            ],
+            ..UpdatePlanArgs::default()
+        });
+    }
+
+    let persisted_before: Vec<Message> = engine.session.messages.clone().into();
+    let first = engine
+        .request_messages_with_authoritative_work_state()
+        .await;
+    let second = engine
+        .request_messages_with_authoritative_work_state()
+        .await;
+    let first_blocks = authoritative_work_state_texts(&first);
+    let second_blocks = authoritative_work_state_texts(&second);
+
+    assert_eq!(first_blocks.len(), 1);
+    assert_eq!(second_blocks.len(), 1);
+    assert_eq!(first_blocks[0], second_blocks[0]);
+    assert!(first_blocks[0].contains("authoritative=\"true\""));
+    assert!(first_blocks[0].contains("todo_counts: pending=1 in_progress=1 completed=0"));
+    assert!(first_blocks[0].contains("plan_counts: pending=1 in_progress=1 completed=0"));
+    assert!(first_blocks[0].contains("- [~] #1 Implement request projection"));
+    assert!(first_blocks[0].contains("- [~] Project state"));
+    let persisted_after_repeated_requests: Vec<Message> = engine.session.messages.clone().into();
+    assert_eq!(persisted_after_repeated_requests, persisted_before);
+
+    {
+        let mut todos = engine.config.todos.lock().await;
+        todos.update_status(1, TodoStatus::Completed);
+        todos.update_status(2, TodoStatus::InProgress);
+    }
+    {
+        let mut plan = engine.config.plan_state.lock().await;
+        plan.update(UpdatePlanArgs {
+            objective: Some("Keep DeepSeek aligned with current work".to_string()),
+            verification_plan: Some("Run engine work-state tests".to_string()),
+            plan: vec![
+                PlanItemArg {
+                    step: "Project state".to_string(),
+                    status: StepStatus::Completed,
+                },
+                PlanItemArg {
+                    step: "Verify behavior".to_string(),
+                    status: StepStatus::InProgress,
+                },
+            ],
+            ..UpdatePlanArgs::default()
+        });
+    }
+
+    let refreshed = engine
+        .request_messages_with_authoritative_work_state()
+        .await;
+    let refreshed_blocks = authoritative_work_state_texts(&refreshed);
+    assert_eq!(refreshed_blocks.len(), 1);
+    assert!(refreshed_blocks[0].contains("todo_counts: pending=0 in_progress=1 completed=1"));
+    assert!(refreshed_blocks[0].contains("plan_counts: pending=0 in_progress=1 completed=1"));
+    assert!(refreshed_blocks[0].contains("- [~] #2 Run focused tests"));
+    assert!(refreshed_blocks[0].contains("- [~] Verify behavior"));
+    assert_ne!(refreshed_blocks[0], first_blocks[0]);
+    let persisted_after_refresh: Vec<Message> = engine.session.messages.clone().into();
+    assert_eq!(persisted_after_refresh, persisted_before);
+}
+
+#[tokio::test]
+async fn empty_work_state_does_not_change_request_or_transcript() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "A simple question".to_string(),
+            cache_control: None,
+        }],
+    });
+    let persisted: Vec<Message> = engine.session.messages.clone().into();
+
+    let request = engine
+        .request_messages_with_authoritative_work_state()
+        .await;
+
+    assert!(authoritative_work_state_texts(&request).is_empty());
+    assert_eq!(request, persisted);
+    let persisted_after: Vec<Message> = engine.session.messages.clone().into();
+    assert_eq!(persisted_after, persisted);
+}
+
+#[tokio::test]
+async fn work_state_rebuilds_from_runtime_state_after_transcript_compaction() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    {
+        let mut todos = engine.config.todos.lock().await;
+        todos.add(
+            "Continue after old transcript is summarized".to_string(),
+            TodoStatus::InProgress,
+        );
+    }
+    {
+        let mut plan = engine.config.plan_state.lock().await;
+        plan.update(UpdatePlanArgs {
+            objective: Some("Preserve live work across compaction".to_string()),
+            plan: vec![PlanItemArg {
+                step: "Rebuild request scratch state".to_string(),
+                status: StepStatus::InProgress,
+            }],
+            ..UpdatePlanArgs::default()
+        });
+    }
+
+    // Model the engine's compaction effect: the durable message log is replaced
+    // by a short retained tail while Plan/Work live in their authoritative
+    // runtime stores.
+    engine.session.replace_messages(vec![Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::Text {
+            text: "Pinned message retained after compaction".to_string(),
+            cache_control: None,
+        }],
+    }]);
+    let compacted_transcript: Vec<Message> = engine.session.messages.clone().into();
+
+    let request = engine
+        .request_messages_with_authoritative_work_state()
+        .await;
+    let blocks = authoritative_work_state_texts(&request);
+
+    assert_eq!(blocks.len(), 1);
+    assert!(blocks[0].contains("Continue after old transcript is summarized"));
+    assert!(blocks[0].contains("plan_objective: Preserve live work across compaction"));
+    assert!(blocks[0].contains("- [~] Rebuild request scratch state"));
+    let persisted_after: Vec<Message> = engine.session.messages.clone().into();
+    assert_eq!(persisted_after, compacted_transcript);
+}
+
+#[tokio::test]
+async fn work_state_follows_tool_results_in_a_separate_request_message() {
+    let tmp = tempdir().expect("tempdir");
+    let config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let (mut engine, _handle) = Engine::new(config, &Config::default());
+    {
+        let mut todos = engine.config.todos.lock().await;
+        todos.add("Use the tool result".to_string(), TodoStatus::InProgress);
+    }
+    engine.session.add_message(Message {
+        role: "assistant".to_string(),
+        content: vec![ContentBlock::ToolUse {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            input: json!({"path": "src/lib.rs"}),
+            caller: None,
+        }],
+    });
+    engine.session.add_message(Message {
+        role: "user".to_string(),
+        content: vec![ContentBlock::ToolResult {
+            tool_use_id: "call_1".to_string(),
+            content: "file contents".to_string(),
+            is_error: None,
+            content_blocks: None,
+        }],
+    });
+    let persisted: Vec<Message> = engine.session.messages.clone().into();
+
+    let request = engine
+        .request_messages_with_authoritative_work_state()
+        .await;
+
+    assert_eq!(request.len(), persisted.len() + 1);
+    assert!(matches!(
+        request[request.len() - 2].content.as_slice(),
+        [ContentBlock::ToolResult { .. }]
+    ));
+    assert_eq!(request.last().expect("scratch message").role, "user");
+    assert_eq!(authoritative_work_state_texts(&request).len(), 1);
+    let persisted_after: Vec<Message> = engine.session.messages.clone().into();
+    assert_eq!(persisted_after, persisted);
+}
+
 #[test]
 fn env_only_auth_error_gets_recovery_hint() {
     let _guard = lock_test_env();
@@ -613,6 +858,198 @@ async fn injected_model_drives_real_engine_navigation_trajectory() {
         "real stream projection must emit the final answer"
     );
     assert_eq!(mock.call_count(), 2);
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+}
+
+#[tokio::test]
+async fn max_steps_exhaustion_fails_instead_of_reporting_completion() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    fs::write(workspace.path().join("README.md"), "step-limit-proof\n").expect("write fixture");
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![canned::tool_call_turn(
+        "call-read",
+        "read_file",
+        r#"{"path":"README.md"}"#,
+    )]));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let mut engine_config = deterministic_engine_config(workspace.path());
+    engine_config.max_steps = 1;
+    let (engine, handle) = Engine::new_with_model_client(engine_config, &Config::default(), client);
+    let task = tokio::spawn(engine.run());
+    handle
+        .send(external_user_message_op(
+            "Read README.md, then report its contents.",
+            AppMode::Agent,
+        ))
+        .await
+        .expect("send step-limited turn");
+
+    let mut saw_tool_result = false;
+    let mut saw_limit_status = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timed out waiting for max-step failure")
+    {
+        match event {
+            Event::ToolCallComplete { name, result, .. } if name == "read_file" => {
+                assert!(result.expect("read_file result").success);
+                saw_tool_result = true;
+            }
+            Event::Status { message } => {
+                saw_limit_status |= message.contains("Reached maximum steps (1)");
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Failed);
+                assert!(
+                    error.as_deref().is_some_and(|message| {
+                        message.contains("Reached maximum steps (1)")
+                            && message.contains("before the turn produced a final response")
+                    }),
+                    "{error:?}"
+                );
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert!(
+        saw_tool_result,
+        "the first permitted step must still execute"
+    );
+    assert!(saw_limit_status, "the user must see why the turn failed");
+    assert_eq!(mock.call_count(), 1);
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+}
+
+#[tokio::test]
+async fn deepseek_incomplete_finish_reason_fails_instead_of_reporting_completion() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    let partial_turn = vec![
+        canned::message_start("mock_truncated"),
+        canned::text_block_start(0),
+        canned::text_delta(0, "Partial answer that hit the model limit"),
+        canned::block_stop(0),
+        canned::message_delta("length", None),
+        canned::message_stop(),
+    ];
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![partial_turn]));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let (engine, handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &Config::default(),
+        client,
+    );
+    let task = tokio::spawn(engine.run());
+    handle
+        .send(external_user_message_op(
+            "Produce a response that is deliberately truncated.",
+            AppMode::Agent,
+        ))
+        .await
+        .expect("send truncated turn");
+
+    let mut saw_partial = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timed out waiting for incomplete-finish failure")
+    {
+        match event {
+            Event::MessageDelta { content, .. } => {
+                saw_partial |= content.contains("Partial answer");
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Failed);
+                assert!(
+                    error.as_deref().is_some_and(|message| {
+                        message.contains("finish_reason=length")
+                            && message.contains("before completion")
+                    }),
+                    "{error:?}"
+                );
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert!(
+        saw_partial,
+        "partial output may render but must not count as done"
+    );
+    assert_eq!(mock.call_count(), 1);
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+}
+
+#[tokio::test]
+async fn reasoning_only_response_fails_instead_of_reporting_completion() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
+    let workspace = tempdir().expect("tempdir");
+    let reasoning_only_turn = vec![
+        canned::message_start("mock_reasoning_only"),
+        StreamEvent::ContentBlockStart {
+            index: 0,
+            content_block: crate::models::ContentBlockStart::Thinking {
+                thinking: String::new(),
+            },
+        },
+        canned::thinking_delta(0, "I am still reasoning but produced no answer."),
+        canned::block_stop(0),
+        canned::message_delta("stop", None),
+        canned::message_stop(),
+    ];
+    let mock = std::sync::Arc::new(MockLlmClient::new(vec![reasoning_only_turn]));
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let (engine, handle) = Engine::new_with_model_client(
+        deterministic_engine_config(workspace.path()),
+        &Config::default(),
+        client,
+    );
+    let task = tokio::spawn(engine.run());
+    handle
+        .send(external_user_message_op(
+            "Return a complete answer.",
+            AppMode::Agent,
+        ))
+        .await
+        .expect("send reasoning-only turn");
+
+    let mut saw_failure_status = false;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timed out waiting for reasoning-only failure")
+    {
+        match event {
+            Event::Status { message } => {
+                saw_failure_status |= message.contains("reasoning-only or empty response");
+            }
+            Event::TurnComplete { status, error, .. } => {
+                assert_eq!(status, TurnOutcomeStatus::Failed);
+                assert!(
+                    error.as_deref().is_some_and(|message| {
+                        message.contains("reasoning-only or empty response")
+                            && message.contains("turn failed without output")
+                    }),
+                    "{error:?}"
+                );
+                break;
+            }
+            _ => {}
+        }
+    }
+    drop(rx);
+    assert!(saw_failure_status, "the user must see why the turn failed");
+    assert_eq!(mock.call_count(), 1);
     handle.send(Op::Shutdown).await.expect("shutdown engine");
     task.await.expect("engine task");
 }
@@ -5087,9 +5524,9 @@ fn context_budget_reserves_output_and_headroom() {
     // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
     // the internal effective_max_output_tokens() call sees a stable env.
     let _lock = lock_test_env();
-    // V4 has a 1M context window — the only family that comfortably hosts
-    // a 256K output reservation without saturating the input budget to 0.
-    let budget = context_input_budget_for_provider(ApiProvider::Deepseek, "deepseek-v4-pro")
+    // Official V4 has a 1M context window and uses the explicit 256K policy
+    // cap for both the request and its internal output reservation.
+    let budget = context_input_budget_for_provider(ApiProvider::Deepseek, "deepseek-v4-pro", true)
         .expect("deepseek-v4-pro should have a known context window");
     let v4_window: usize = 1_000_000;
     let expected = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
@@ -5099,10 +5536,10 @@ fn context_budget_reserves_output_and_headroom() {
 #[test]
 fn context_budget_uses_conservative_fallback_for_unknown_models() {
     let _lock = lock_test_env();
-    let budget = context_input_budget_for_provider(ApiProvider::Openai, "auto")
+    let budget = context_input_budget_for_provider(ApiProvider::Openai, "auto", false)
         .expect("unknown/auto model ids should still get a conservative hard preflight budget");
     let expected = 128_000usize
-        - effective_max_output_tokens_for_route(ApiProvider::Openai, "auto", None) as usize
+        - effective_max_output_tokens_for_route(ApiProvider::Openai, "auto", None, false) as usize
         - 1_024usize;
     assert_eq!(budget, expected);
 }
@@ -5110,7 +5547,7 @@ fn context_budget_uses_conservative_fallback_for_unknown_models() {
 #[test]
 fn context_budget_uses_provider_effective_window_for_openai_codex() {
     let _lock = lock_test_env();
-    let budget = context_input_budget_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5")
+    let budget = context_input_budget_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5", false)
         .expect("OpenAI Codex should use a conservative fallback without route metadata");
     let expected = usize::try_from(crate::config::OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS)
         .expect("context window fits usize")
@@ -5123,8 +5560,9 @@ fn context_budget_uses_provider_effective_window_for_openai_codex() {
 #[test]
 fn route_context_budget_uses_shared_budget_service() {
     let _lock = lock_test_env();
-    let budget = route_context_budget_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5", 380_000)
-        .expect("OpenAI Codex should produce a route budget");
+    let budget =
+        route_context_budget_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5", 380_000, false)
+            .expect("OpenAI Codex should produce a route budget");
 
     assert_eq!(
         budget.window_tokens,
@@ -5156,6 +5594,7 @@ fn route_context_budget_prefers_resolved_route_limits() {
         "deepseek/deepseek-v4-pro",
         Some(limits),
         60_000,
+        false,
     )
     .expect("route limits should produce a budget");
 
@@ -5178,6 +5617,7 @@ fn effective_max_output_tokens_for_route_caps_to_route_output_limit() {
             ApiProvider::Deepseek,
             "deepseek-v4-pro",
             Some(limits),
+            true,
         ),
         8_192
     );
@@ -5196,13 +5636,10 @@ fn effective_max_output_tokens_for_route_caps_to_context_window() {
         ApiProvider::Deepseek,
         "deepseek-v4-pro",
         Some(limits),
+        true,
     );
 
-    assert!(cap < 32_000, "request cap must fit the configured window");
-    assert!(
-        cap > 0,
-        "small configured windows should still allow output"
-    );
+    assert_eq!(cap, 16_000, "small routes retain a half-window cap");
 }
 
 #[test]
@@ -5219,6 +5656,7 @@ fn effective_max_output_tokens_for_route_keeps_tiny_window_positive() {
             ApiProvider::Deepseek,
             "deepseek-v4-pro",
             Some(limits),
+            true,
         ),
         1
     );
@@ -5234,35 +5672,227 @@ fn codex_route_without_output_metadata_uses_oauth_capability_floor() {
     };
 
     assert_eq!(
-        effective_max_output_tokens_for_route(ApiProvider::OpenaiCodex, "gpt-5.5", Some(limits)),
+        effective_max_output_tokens_for_route(
+            ApiProvider::OpenaiCodex,
+            "gpt-5.5",
+            Some(limits),
+            false,
+        ),
         4_096
     );
     let budget =
-        route_context_budget_for_route(ApiProvider::OpenaiCodex, "gpt-5.5", Some(limits), 0)
+        route_context_budget_for_route(ApiProvider::OpenaiCodex, "gpt-5.5", Some(limits), 0, false)
             .expect("Codex route budget");
     assert_eq!(budget.output_cap_tokens, 4_096);
 }
 
 #[test]
-fn effective_max_output_tokens_caps_api_request_for_large_window_models() {
-    // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
-    // v4_cap and flash_cap below see the same env state.
+fn official_deepseek_endpoint_requires_exact_final_route_identity() {
+    for (provider, base_url) in [
+        (ApiProvider::Deepseek, "https://api.deepseek.com/beta"),
+        (ApiProvider::Deepseek, "https://api.deepseek.com/v1/"),
+        (ApiProvider::DeepseekCN, "https://api.deepseeki.com/beta/"),
+        (
+            ApiProvider::DeepseekAnthropic,
+            "https://api.deepseek.com/anthropic",
+        ),
+    ] {
+        assert!(
+            official_deepseek_endpoint(provider, Some(base_url), None),
+            "expected official route: {provider:?}/{base_url}"
+        );
+    }
+
+    for (provider, base_url, path_suffix) in [
+        (
+            ApiProvider::Deepseek,
+            "https://self-hosted.example/v1",
+            None,
+        ),
+        (ApiProvider::Deepseek, "http://127.0.0.1:8000/v1", None),
+        (
+            ApiProvider::Openrouter,
+            "https://api.deepseek.com/beta",
+            None,
+        ),
+        (
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com.evil.example/beta",
+            None,
+        ),
+        (
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com:443/beta",
+            None,
+        ),
+        (
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com/proxy/beta",
+            None,
+        ),
+        (
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com/beta?tenant=custom",
+            None,
+        ),
+        (
+            ApiProvider::Deepseek,
+            "https://user@api.deepseek.com/beta",
+            None,
+        ),
+        (
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com/beta",
+            Some("custom/chat/completions"),
+        ),
+    ] {
+        assert!(
+            !official_deepseek_endpoint(provider, Some(base_url), path_suffix),
+            "custom or spoofed route must not be official: {provider:?}/{base_url}/{path_suffix:?}"
+        );
+    }
+}
+
+#[test]
+fn official_deepseek_v4_routes_use_the_explicit_turn_cap() {
     let _lock = lock_test_env();
-    // V4 models have a 1M context window but the API request cap must stay
-    // well below common provider limits (e.g., 131K total on self-hosted
-    // vLLM/SGLang). The cap should never exceed 65K.
-    let v4_cap = effective_max_output_tokens("deepseek-v4-pro");
-    assert!(
-        v4_cap <= 65_536,
-        "V4 API request cap should be ≤64K, got {v4_cap}"
+    let _guard = ScopedDeepSeekMaxOutputTokens::unset();
+
+    assert_eq!(
+        effective_max_output_tokens_for_route(ApiProvider::Deepseek, "deepseek-v4-pro", None, true,),
+        TURN_MAX_OUTPUT_TOKENS
+    );
+    assert_eq!(
+        effective_max_output_tokens_for_route(
+            ApiProvider::Deepseek,
+            "deepseek-v4-flash",
+            None,
+            true,
+        ),
+        TURN_MAX_OUTPUT_TOKENS
     );
     assert!(
-        v4_cap > 0,
-        "V4 API request cap should be positive, got {v4_cap}"
+        crate::config::provider_capability(ApiProvider::Deepseek, "deepseek-v4-pro").max_output
+            > TURN_MAX_OUTPUT_TOKENS,
+        "the 384K provider capability is a safety ceiling, not the default cost cap"
+    );
+}
+
+#[test]
+fn third_party_and_self_hosted_v4_routes_stay_conservative() {
+    let _lock = lock_test_env();
+    let _guard = ScopedDeepSeekMaxOutputTokens::unset();
+
+    assert_eq!(
+        effective_max_output_tokens_for_route(
+            ApiProvider::Deepseek,
+            "deepseek-v4-pro",
+            None,
+            false,
+        ),
+        65_536,
+        "a custom base URL remains conservative even when provider/model labels say DeepSeek"
     );
 
-    let flash_cap = effective_max_output_tokens("deepseek-v4-flash");
-    assert_eq!(v4_cap, flash_cap);
+    for (provider, model) in [
+        (ApiProvider::Openrouter, "deepseek/deepseek-v4-pro"),
+        (ApiProvider::Vllm, "deepseek-ai/DeepSeek-V4-Pro"),
+        (ApiProvider::Sglang, "deepseek-ai/DeepSeek-V4-Flash"),
+        (ApiProvider::Custom, "deepseek-v4-pro"),
+    ] {
+        assert_eq!(
+            effective_max_output_tokens_for_route(provider, model, None, false),
+            65_536,
+            "{provider:?}/{model} must not inherit the official hosted allowance"
+        );
+    }
+
+    // The legacy model-only helper is deliberately equivalent to an unknown
+    // custom route and therefore conservative too.
+    assert_eq!(effective_max_output_tokens("deepseek-v4-pro"), 65_536);
+}
+
+#[test]
+fn pure_route_policy_combines_policy_provider_route_context_and_user_caps() {
+    let official = |context, route_cap, user_cap| {
+        max_output_tokens_for_route_policy(
+            ApiProvider::Deepseek,
+            "deepseek-v4-pro",
+            context,
+            route_cap,
+            user_cap,
+            true,
+        )
+    };
+
+    assert_eq!(official(1_000_000, None, None), TURN_MAX_OUTPUT_TOKENS);
+    assert_eq!(official(1_000_000, Some(8_192), None), 8_192);
+    assert_eq!(
+        official(1_000_000, Some(500_000), None),
+        TURN_MAX_OUTPUT_TOKENS,
+        "route metadata is an upper bound and must not raise product policy"
+    );
+    assert_eq!(official(32_000, None, None), 16_000);
+    assert_eq!(official(1_000_000, None, Some(16_384)), 16_384);
+    assert_eq!(
+        official(1_000_000, None, Some(999_999)),
+        TURN_MAX_OUTPUT_TOKENS,
+        "the user setting is a ceiling, not an expansion knob"
+    );
+    assert_eq!(
+        max_output_tokens_for_route_policy(
+            ApiProvider::OpenaiCodex,
+            "gpt-5.5",
+            272_000,
+            None,
+            Some(999_999),
+            false,
+        ),
+        4_096,
+        "a user ceiling must not bypass provider capability"
+    );
+}
+
+#[test]
+fn request_cap_and_internal_reservation_match_across_routes() {
+    let _lock = lock_test_env();
+    let _guard = ScopedDeepSeekMaxOutputTokens::unset();
+    let cases = [
+        (ApiProvider::Deepseek, "deepseek-v4-pro", None, true),
+        (ApiProvider::Deepseek, "deepseek-v4-flash", None, true),
+        (
+            ApiProvider::Vllm,
+            "deepseek-ai/DeepSeek-V4-Pro",
+            Some(codewhale_config::route::RouteLimits {
+                context_tokens: Some(131_072),
+                input_tokens: None,
+                output_tokens: None,
+            }),
+            false,
+        ),
+        (
+            ApiProvider::Openrouter,
+            "deepseek/deepseek-v4-pro",
+            Some(codewhale_config::route::RouteLimits {
+                context_tokens: Some(128_000),
+                input_tokens: None,
+                output_tokens: Some(32_768),
+            }),
+            false,
+        ),
+    ];
+
+    for (provider, model, limits, official_endpoint) in cases {
+        let request_cap =
+            effective_max_output_tokens_for_route(provider, model, limits, official_endpoint);
+        let budget = route_context_budget_for_route(provider, model, limits, 0, official_endpoint)
+            .expect("route should produce a context budget");
+        assert_eq!(
+            budget.output_cap_tokens,
+            u64::from(request_cap),
+            "request/reservation drift for {provider:?}/{model}"
+        );
+    }
 }
 
 struct ScopedDeepSeekMaxOutputTokens {
@@ -5304,15 +5934,80 @@ impl Drop for ScopedDeepSeekMaxOutputTokens {
 }
 
 #[test]
-fn effective_max_output_tokens_env_override_returns_positive_value() {
+fn effective_max_output_tokens_env_value_is_a_user_ceiling() {
     let _lock = lock_test_env();
     let _guard = ScopedDeepSeekMaxOutputTokens::set("16384");
 
-    // Override applies regardless of model — V4 hosted, V4 flash, sub-500K
-    // self-hosted all return the env value verbatim.
-    assert_eq!(effective_max_output_tokens("deepseek-v4-pro"), 16_384);
-    assert_eq!(effective_max_output_tokens("deepseek-v4-flash"), 16_384);
-    assert_eq!(effective_max_output_tokens("qwen3-32b-256k"), 16_384);
+    assert_eq!(
+        effective_max_output_tokens_for_route(ApiProvider::Deepseek, "deepseek-v4-pro", None, true,),
+        16_384
+    );
+    assert_eq!(
+        effective_max_output_tokens_for_route(
+            ApiProvider::Deepseek,
+            "deepseek-v4-flash",
+            None,
+            true,
+        ),
+        16_384
+    );
+    assert_eq!(
+        effective_max_output_tokens_for_route(
+            ApiProvider::Vllm,
+            "deepseek-ai/DeepSeek-V4-Pro",
+            None,
+            false,
+        ),
+        16_384
+    );
+    assert_eq!(
+        route_context_budget_for_route(ApiProvider::Deepseek, "deepseek-v4-pro", None, 0, true,)
+            .expect("official route budget")
+            .output_cap_tokens,
+        16_384,
+        "the user ceiling must lower request and internal reservation together"
+    );
+}
+
+#[test]
+fn effective_max_output_tokens_env_ceiling_cannot_raise_safety_limits() {
+    let _lock = lock_test_env();
+    let _guard = ScopedDeepSeekMaxOutputTokens::set("999999");
+
+    assert_eq!(
+        effective_max_output_tokens_for_route(ApiProvider::Deepseek, "deepseek-v4-pro", None, true,),
+        TURN_MAX_OUTPUT_TOKENS
+    );
+    assert_eq!(
+        effective_max_output_tokens_for_route(
+            ApiProvider::Deepseek,
+            "deepseek-v4-pro",
+            Some(codewhale_config::route::RouteLimits {
+                context_tokens: Some(1_000_000),
+                input_tokens: None,
+                output_tokens: Some(8_192),
+            }),
+            true,
+        ),
+        8_192
+    );
+    assert_eq!(
+        effective_max_output_tokens_for_route(
+            ApiProvider::Deepseek,
+            "deepseek-v4-pro",
+            Some(codewhale_config::route::RouteLimits {
+                context_tokens: Some(32_000),
+                input_tokens: None,
+                output_tokens: None,
+            }),
+            true,
+        ),
+        16_000
+    );
+    assert_eq!(
+        effective_max_output_tokens_for_route(ApiProvider::OpenaiCodex, "gpt-5.5", None, false,),
+        4_096
+    );
 }
 
 #[test]
@@ -5321,7 +6016,7 @@ fn effective_max_output_tokens_env_override_rejects_zero_and_invalid() {
     // Establish the heuristic baseline with the env unset.
     let baseline = {
         let _guard = ScopedDeepSeekMaxOutputTokens::unset();
-        effective_max_output_tokens("deepseek-v4-pro")
+        effective_max_output_tokens_for_route(ApiProvider::Deepseek, "deepseek-v4-pro", None, true)
     };
     assert!(baseline > 0);
 
@@ -5331,7 +6026,12 @@ fn effective_max_output_tokens_env_override_rejects_zero_and_invalid() {
     for raw in ["0", "abc", "", "  ", "-1"] {
         let _guard = ScopedDeepSeekMaxOutputTokens::set(raw);
         assert_eq!(
-            effective_max_output_tokens("deepseek-v4-pro"),
+            effective_max_output_tokens_for_route(
+                ApiProvider::Deepseek,
+                "deepseek-v4-pro",
+                None,
+                true,
+            ),
             baseline,
             "env={raw:?} should fall through to heuristic"
         );
@@ -5339,28 +6039,28 @@ fn effective_max_output_tokens_env_override_rejects_zero_and_invalid() {
 }
 
 #[test]
-fn internal_context_budget_tiers_reserved_output_by_window() {
+fn internal_context_budget_uses_the_same_route_aware_output_cap() {
     // Serialize with other tests that mutate DEEPSEEK_MAX_OUTPUT_TOKENS so
     // both branches below see a stable env.
     let _lock = lock_test_env();
-    // Large-context (>=500K) models reserve the full TURN_MAX_OUTPUT_TOKENS
-    // headroom so long V4 sessions don't compact prematurely.
+    // Official large-window V4 reserves the same TURN_MAX_OUTPUT_TOKENS sent
+    // in the API request.
     let internal_budget =
-        context_input_budget_for_provider(ApiProvider::Deepseek, "deepseek-v4-pro")
+        context_input_budget_for_provider(ApiProvider::Deepseek, "deepseek-v4-pro", true)
             .expect("V4 should have a known context window");
     let v4_window: usize = 1_000_000;
     let expected_internal = v4_window - (TURN_MAX_OUTPUT_TOKENS as usize) - 1_024usize;
     assert_eq!(internal_budget, expected_internal);
 
-    // Sub-500K windows cross into the effective-cap branch: a 256K self-hosted
-    // deployment must yield a usable positive budget rather than None. The
-    // previous formula reserved the full 262K and computed 256K - 262K - 1K,
-    // which underflowed to None and silently disabled preflight/recovery.
+    // A 256K non-official route uses the conservative request cap and therefore
+    // still yields a usable input budget instead of reserving the official
+    // hosted allowance.
     let small_window_budget =
-        context_input_budget_for_provider(ApiProvider::Openai, "qwen3-32b-256k")
+        context_input_budget_for_provider(ApiProvider::Openai, "qwen3-32b-256k", false)
             .expect("a 256K-suffix model must yield Some budget via the effective-cap branch");
     let effective_output =
-        effective_max_output_tokens_for_route(ApiProvider::Openai, "qwen3-32b-256k", None) as usize;
+        effective_max_output_tokens_for_route(ApiProvider::Openai, "qwen3-32b-256k", None, false)
+            as usize;
     let expected_small = 256_000 - effective_output - 1_024;
     assert_eq!(small_window_budget, expected_small);
 }

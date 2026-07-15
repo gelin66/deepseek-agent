@@ -1,0 +1,45 @@
+# Focused local configuration for the `deepseek-agent` branch.
+# Keep the credential out of this file:
+#   export DEEPSEEK_API_KEY='your-key'
+
+provider = "deepseek"
+base_url = "https://api.deepseek.com/beta"
+default_text_model = "deepseek-v4-pro"
+reasoning_effort = "max"
+
+# DeepSeek strict schemas require /beta. The runtime prepares them atomically;
+# if any active tool is incompatible, the whole request safely stays non-strict
+# while ordinary tool calling remains available with the original schemas.
+strict_tool_mode = true
+
+allow_shell = true
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+max_subagents = 6
+
+[memory]
+enabled = true
+
+[subagents]
+max_concurrent = 6
+max_depth = 2
+api_timeout_secs = 300
+
+[features]
+shell_tool = true
+subagents = true
+apply_patch = true
+exec_policy = true
+verify_tool = true
+
+# Not part of the focused local surface. Enable per task when needed.
+web_search = false
+mcp = false
+vision_model = false
+
+[retry]
+enabled = true
+max_retries = 3
+initial_delay = 1.0
+max_delay = 60.0
+exponential_base = 2.0

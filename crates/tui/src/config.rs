@@ -1930,9 +1930,10 @@ pub struct Config {
     pub mcp_oauth_callback_url: Option<String>,
     pub notes_path: Option<String>,
     pub memory_path: Option<String>,
-    /// When true, set `tool_choice: "required"` and opt compatible function
-    /// schemas into DeepSeek beta strict mode. Schemas with root alternatives
-    /// stay non-strict to avoid changing optional/one-of tool semantics.
+    /// When true, atomically opt a fully compatible function catalog into
+    /// DeepSeek beta strict schema validation. This never forces a tool call;
+    /// `tool_choice` remains automatic. If one schema is incompatible, the
+    /// complete request stays non-strict and schemas remain unchanged.
     pub strict_tool_mode: Option<bool>,
     /// Additional user-owned system-prompt sources concatenated in declared
     /// order (#454). Paths are expanded via `expand_path` so `~` and env vars

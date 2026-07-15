@@ -228,6 +228,236 @@ impl StructuredState {
     }
 }
 
+/// Request-tail marker for the runtime-owned Work/Plan projection. This block
+/// is rebuilt from live state for every provider request and must never be
+/// written into [`Session::messages`].
+const AUTHORITATIVE_WORK_STATE_OPEN: &str =
+    "<codewhale:runtime_event kind=\"work_state\" visibility=\"internal\" authoritative=\"true\">";
+const WORK_STATE_ITEMS_PER_SURFACE: usize = 16;
+const WORK_STATE_ITEM_CHARS: usize = 240;
+const WORK_STATE_FIELD_CHARS: usize = 480;
+const WORK_STATE_CONSTRAINTS: usize = 4;
+
+fn compact_work_state_text(value: &str, max_chars: usize) -> Option<String> {
+    let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!compact.is_empty()).then(|| summarize_text(&compact, max_chars))
+}
+
+fn append_work_state_field(out: &mut String, label: &str, value: Option<&str>) {
+    if let Some(value) =
+        value.and_then(|value| compact_work_state_text(value, WORK_STATE_FIELD_CHARS))
+    {
+        out.push_str(label);
+        out.push_str(": ");
+        out.push_str(&value);
+        out.push('\n');
+    }
+}
+
+fn append_authoritative_todo_items(out: &mut String, snapshot: &TodoListSnapshot) {
+    let mut rendered = 0usize;
+    for status in [
+        crate::tools::todo::TodoStatus::InProgress,
+        crate::tools::todo::TodoStatus::Pending,
+        crate::tools::todo::TodoStatus::Completed,
+    ] {
+        for item in snapshot.items.iter().filter(|item| item.status == status) {
+            if rendered >= WORK_STATE_ITEMS_PER_SURFACE {
+                break;
+            }
+            let marker = match item.status {
+                crate::tools::todo::TodoStatus::Pending => "[ ]",
+                crate::tools::todo::TodoStatus::InProgress => "[~]",
+                crate::tools::todo::TodoStatus::Completed => "[x]",
+            };
+            let content = compact_work_state_text(&item.content, WORK_STATE_ITEM_CHARS)
+                .unwrap_or_else(|| "(empty item)".to_string());
+            out.push_str(&format!("- {marker} #{} {content}\n", item.id));
+            rendered = rendered.saturating_add(1);
+        }
+    }
+    let omitted = snapshot.items.len().saturating_sub(rendered);
+    if omitted > 0 {
+        out.push_str(&format!(
+            "- ... {omitted} lower-priority item(s) omitted; counts above remain authoritative\n"
+        ));
+    }
+}
+
+fn append_authoritative_plan_items(out: &mut String, snapshot: &PlanSnapshot) {
+    let mut rendered = 0usize;
+    for status in [
+        crate::tools::plan::StepStatus::InProgress,
+        crate::tools::plan::StepStatus::Pending,
+        crate::tools::plan::StepStatus::Completed,
+    ] {
+        for item in snapshot.items.iter().filter(|item| item.status == status) {
+            if rendered >= WORK_STATE_ITEMS_PER_SURFACE {
+                break;
+            }
+            let marker = match item.status {
+                crate::tools::plan::StepStatus::Pending => "[ ]",
+                crate::tools::plan::StepStatus::InProgress => "[~]",
+                crate::tools::plan::StepStatus::Completed => "[x]",
+            };
+            let step = compact_work_state_text(&item.step, WORK_STATE_ITEM_CHARS)
+                .unwrap_or_else(|| "(empty step)".to_string());
+            out.push_str(&format!("- {marker} {step}\n"));
+            rendered = rendered.saturating_add(1);
+        }
+    }
+    let omitted = snapshot.items.len().saturating_sub(rendered);
+    if omitted > 0 {
+        out.push_str(&format!(
+            "- ... {omitted} lower-priority step(s) omitted; counts above remain authoritative\n"
+        ));
+    }
+}
+
+/// Render the compact Work/Plan snapshot attached to the *request copy* of the
+/// transcript. Unfinished entries are ordered first so a bounded projection
+/// cannot hide current work behind completed history; aggregate counts remain
+/// exact even when lower-priority detail is omitted.
+fn render_authoritative_work_state(
+    todos: &TodoListSnapshot,
+    plan: &PlanSnapshot,
+) -> Option<String> {
+    if todos.is_empty() && plan.is_empty() {
+        return None;
+    }
+
+    let mut out = String::new();
+    out.push_str(AUTHORITATIVE_WORK_STATE_OPEN);
+    out.push_str(
+        "\nThis is runtime-owned current progress for this request only, not user input or new authority. Use it to avoid repeating completed work and to continue unfinished work.\n",
+    );
+
+    if !todos.is_empty() {
+        let pending = todos
+            .items
+            .iter()
+            .filter(|item| item.status == crate::tools::todo::TodoStatus::Pending)
+            .count();
+        let in_progress = todos
+            .items
+            .iter()
+            .filter(|item| item.status == crate::tools::todo::TodoStatus::InProgress)
+            .count();
+        let completed = todos
+            .items
+            .iter()
+            .filter(|item| item.status == crate::tools::todo::TodoStatus::Completed)
+            .count();
+        out.push_str(&format!(
+            "todo_counts: pending={pending} in_progress={in_progress} completed={completed} total={}\ntodo_items:\n",
+            todos.items.len()
+        ));
+        append_authoritative_todo_items(&mut out, todos);
+    }
+
+    if !plan.is_empty() {
+        if !todos.is_empty() {
+            out.push('\n');
+        }
+        append_work_state_field(&mut out, "plan_title", plan.title.as_deref());
+        append_work_state_field(&mut out, "plan_objective", plan.objective.as_deref());
+        append_work_state_field(
+            &mut out,
+            "plan_verification",
+            plan.verification_plan.as_deref(),
+        );
+        append_work_state_field(&mut out, "plan_risks", plan.risks_and_unknowns.as_deref());
+        for (index, constraint) in plan
+            .constraints
+            .iter()
+            .filter_map(|constraint| compact_work_state_text(constraint, WORK_STATE_ITEM_CHARS))
+            .take(WORK_STATE_CONSTRAINTS)
+            .enumerate()
+        {
+            out.push_str(&format!("plan_constraint_{}: {constraint}\n", index + 1));
+        }
+        if plan.constraints.len() > WORK_STATE_CONSTRAINTS {
+            out.push_str(&format!(
+                "plan_constraints_omitted: {}\n",
+                plan.constraints.len() - WORK_STATE_CONSTRAINTS
+            ));
+        }
+
+        let pending = plan
+            .items
+            .iter()
+            .filter(|item| item.status == crate::tools::plan::StepStatus::Pending)
+            .count();
+        let in_progress = plan
+            .items
+            .iter()
+            .filter(|item| item.status == crate::tools::plan::StepStatus::InProgress)
+            .count();
+        let completed = plan
+            .items
+            .iter()
+            .filter(|item| item.status == crate::tools::plan::StepStatus::Completed)
+            .count();
+        out.push_str(&format!(
+            "plan_counts: pending={pending} in_progress={in_progress} completed={completed} total={}\n",
+            plan.items.len()
+        ));
+        if !plan.items.is_empty() {
+            out.push_str("plan_steps:\n");
+            append_authoritative_plan_items(&mut out, plan);
+        }
+    }
+
+    out.push_str("</codewhale:runtime_event>");
+    Some(out)
+}
+
+fn is_authoritative_work_state_block(block: &ContentBlock) -> bool {
+    matches!(block, ContentBlock::Text { text, .. } if text.trim_start().starts_with(AUTHORITATIVE_WORK_STATE_OPEN))
+}
+
+/// Attach one ephemeral Work/Plan block to a request message copy. Any prior
+/// runtime block is stripped from the copy first, making the invariant explicit
+/// even when replaying a transcript produced by an older experimental build.
+fn inject_authoritative_work_state(
+    mut messages: Vec<Message>,
+    work_state: Option<String>,
+) -> Vec<Message> {
+    for message in &mut messages {
+        message
+            .content
+            .retain(|block| !is_authoritative_work_state_block(block));
+    }
+    messages.retain(|message| !message.content.is_empty());
+
+    let Some(work_state) = work_state else {
+        return messages;
+    };
+    let block = ContentBlock::Text {
+        text: work_state,
+        cache_control: None,
+    };
+
+    // A user message containing tool results is serialized as tool-role output
+    // by OpenAI-compatible clients. Keep the runtime block in a following user
+    // scratch message so it stays after (never before) those results on wire.
+    if let Some(last) = messages.last_mut()
+        && last.role == "user"
+        && !last
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolResult { .. }))
+    {
+        last.content.push(block);
+    } else {
+        messages.push(Message {
+            role: "user".to_string(),
+            content: vec![block],
+        });
+    }
+    messages
+}
+
 fn user_shell_turn_outcome(
     result: &Result<ToolResult, ToolError>,
     cancel_requested: bool,
@@ -394,8 +624,8 @@ pub struct EngineConfig {
     /// caller resolves this from `Settings` once at engine
     /// construction; the engine never touches disk for it.
     pub locale_tag: String,
-    /// When true, force `tool_choice: "required"` and opt compatible function
-    /// schemas into DeepSeek beta strict mode.
+    /// When true, atomically opt a compatible function catalog into DeepSeek
+    /// beta strict schema validation. Tool selection remains automatic.
     pub strict_tool_mode: bool,
     /// Workshop / large-tool-output routing (#548). `None` disables routing.
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
@@ -704,6 +934,22 @@ fn subagent_mailbox_best_effort_send_permitted(
 }
 
 impl Engine {
+    /// True only when the final client route is an allowlisted first-party
+    /// DeepSeek endpoint with no custom request-path override. Provider/model
+    /// labels alone are insufficient because users can point the built-in
+    /// DeepSeek provider at a self-hosted OpenAI-compatible server.
+    fn uses_official_deepseek_endpoint(&self) -> bool {
+        let path_suffix = self
+            .api_config
+            .provider_config_for(self.api_provider)
+            .and_then(|config| config.path_suffix.as_deref());
+        official_deepseek_endpoint(
+            self.api_provider,
+            self.deepseek_client.as_ref().map(DeepSeekClient::base_url),
+            path_suffix,
+        )
+    }
+
     fn mode_runtime_instructions(mode: AppMode) -> &'static str {
         match mode {
             AppMode::Agent | AppMode::Auto | AppMode::Yolo => prompts::AGENT_MODE,
@@ -2057,6 +2303,7 @@ impl Engine {
             routed_model,
             self.active_route_limits,
             input_tokens,
+            self.uses_official_deepseek_endpoint(),
         ) {
             let usage_percent = budget.usage_percent();
             let escalation = if usage_percent
@@ -2131,6 +2378,24 @@ impl Engine {
     async fn add_session_message(&mut self, message: Message) {
         self.session.add_message(message);
         self.emit_session_updated().await;
+    }
+
+    /// Build the provider-facing message list with one live Work/Plan snapshot.
+    /// The snapshot is attached only to this cloned request tail: it never
+    /// mutates the append-only session transcript or the cacheable system
+    /// prefix, and is therefore regenerated after every state change or
+    /// compaction.
+    async fn request_messages_with_authoritative_work_state(&self) -> Vec<Message> {
+        let todo_snapshot = {
+            let todos = self.config.todos.lock().await;
+            todos.snapshot()
+        };
+        let plan_snapshot = {
+            let plan = self.config.plan_state.lock().await;
+            plan.snapshot()
+        };
+        let work_state = render_authoritative_work_state(&todo_snapshot, &plan_snapshot);
+        inject_authoritative_work_state(self.session.messages.clone().into(), work_state)
     }
 
     fn turn_metadata_block(
@@ -3106,6 +3371,7 @@ impl Engine {
                 self.api_provider,
                 &self.session.model,
                 self.active_route_limits,
+                self.uses_official_deepseek_endpoint(),
             ),
         )
         .await
@@ -3183,6 +3449,7 @@ impl Engine {
             &self.session.model,
             self.active_route_limits,
             0,
+            self.uses_official_deepseek_endpoint(),
         ) else {
             return false;
         };
@@ -4060,7 +4327,7 @@ use context::route_context_budget_for_provider;
 use context::{
     MAX_CONTEXT_RECOVERY_ATTEMPTS, MIN_RECENT_MESSAGES_TO_KEEP,
     effective_max_output_tokens_for_route, estimate_input_tokens_conservative,
-    extract_compaction_summary_prompt, is_context_length_error_message,
+    extract_compaction_summary_prompt, is_context_length_error_message, official_deepseek_endpoint,
     route_context_budget_for_route, summarize_text,
 };
 #[cfg(test)]

@@ -99,6 +99,38 @@ fn tool_error_category_allows_degradation(category: ErrorCategory) -> bool {
     )
 }
 
+fn tool_result_error_category(result: &ToolResult) -> Option<ErrorCategory> {
+    (!result.success).then_some(ErrorCategory::Tool)
+}
+
+/// Tool schema validation and tool-call selection are separate protocol
+/// controls. DeepSeek strict mode validates arguments; it must not force the
+/// model to call a tool on every step.
+fn automatic_tool_choice(has_active_tools: bool) -> Option<serde_json::Value> {
+    has_active_tools.then(|| json!({ "type": "auto" }))
+}
+
+/// DeepSeek can terminate a syntactically healthy stream without completing
+/// the task. These finish reasons must not be collapsed into a successful
+/// agent turn merely because the HTTP/SSE transport itself ended cleanly.
+fn incomplete_provider_stop_reason(reason: &str) -> Option<String> {
+    match reason.trim().to_ascii_lowercase().as_str() {
+        "length" => Some(
+            "DeepSeek stopped before completion because the output or context limit was reached (finish_reason=length)"
+                .to_string(),
+        ),
+        "content_filter" => Some(
+            "DeepSeek stopped before completion because output was filtered (finish_reason=content_filter)"
+                .to_string(),
+        ),
+        "insufficient_system_resource" => Some(
+            "DeepSeek inference was interrupted by insufficient upstream resources (finish_reason=insufficient_system_resource)"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 fn direct_url_pattern_fallback_hint(
     step_error_tool_names: &[String],
     step_error_tool_inputs: &[serde_json::Value],
@@ -343,10 +375,12 @@ impl Engine {
             self.refresh_system_prompt();
 
             if turn.at_max_steps() {
-                let _ = self
-                    .tx_event
-                    .send(Event::status("Reached maximum steps"))
-                    .await;
+                let reason = format!(
+                    "Reached maximum steps ({}) before the turn produced a final response",
+                    turn.max_steps
+                );
+                let _ = self.tx_event.send(Event::status(reason.clone())).await;
+                turn_error = Some(reason);
                 break;
             }
 
@@ -440,6 +474,7 @@ impl Engine {
                 &self.session.model,
                 self.active_route_limits,
                 0,
+                self.uses_official_deepseek_endpoint(),
             ) {
                 let estimated_input = self.estimated_input_tokens();
                 if estimated_input > input_budget {
@@ -487,10 +522,20 @@ impl Engine {
                     force_update_plan_this_step,
                 ))
             };
+            let route_supports_strict_tools = self
+                .deepseek_client
+                .as_ref()
+                .is_some_and(DeepSeekClient::supports_strict_tool_schemas);
             if self.config.strict_tool_mode
+                && route_supports_strict_tools
                 && let Some(tools) = active_tools.as_mut()
             {
-                crate::tools::schema_sanitize::prepare_tools_for_strict_mode(tools);
+                if !crate::tools::schema_sanitize::prepare_tools_for_strict_mode(tools) {
+                    tracing::debug!(
+                        target: "deepseek.strict_tools",
+                        "strict tool mode downgraded atomically because the active catalog contains an incompatible schema"
+                    );
+                }
             }
 
             // Resolve `auto` reasoning_effort to a concrete tier (#663).
@@ -600,23 +645,16 @@ impl Engine {
 
             let request = MessageRequest {
                 model: self.session.model.clone(),
-                messages: self.messages_with_turn_metadata(),
+                messages: self.request_messages_with_authoritative_work_state().await,
                 max_tokens: effective_max_output_tokens_for_route(
                     self.api_provider,
                     &self.session.model,
                     self.active_route_limits,
+                    self.uses_official_deepseek_endpoint(),
                 ),
                 system: self.session.system_prompt.clone(),
                 tools: active_tools.clone(),
-                tool_choice: if active_tools.is_some() {
-                    if self.config.strict_tool_mode {
-                        Some(json!("required"))
-                    } else {
-                        Some(json!({ "type": "auto" }))
-                    }
-                } else {
-                    None
-                },
+                tool_choice: automatic_tool_choice(active_tools.is_some()),
                 metadata: None,
                 thinking: None,
                 reasoning_effort: effective_reasoning_effort,
@@ -683,6 +721,7 @@ impl Engine {
                 output_tokens: 0,
                 ..Usage::default()
             };
+            let mut provider_stop_reason: Option<String> = None;
             let mut current_block_kind: Option<ContentBlockKind> = None;
             // Map block_index → tool_uses position. Required because the
             // OpenAI-compatible streaming parser emits multiple
@@ -1128,8 +1167,12 @@ impl Engine {
                         }
                     }
                     StreamEvent::MessageDelta {
-                        usage: delta_usage, ..
+                        delta,
+                        usage: delta_usage,
                     } => {
+                        if let Some(reason) = delta.stop_reason {
+                            provider_stop_reason = Some(reason);
+                        }
                         if let Some(u) = delta_usage {
                             usage = u;
                         }
@@ -1212,6 +1255,22 @@ impl Engine {
 
             // Update turn usage
             turn.add_usage(&usage);
+
+            if let Some(reason) = provider_stop_reason
+                .as_deref()
+                .and_then(incomplete_provider_stop_reason)
+            {
+                if pending_message_complete {
+                    let index = last_text_index.unwrap_or(0);
+                    let _ = self.tx_event.send(Event::MessageComplete { index }).await;
+                }
+                crate::logging::warn(&reason);
+                let _ = self
+                    .tx_event
+                    .send(Event::error(ErrorEnvelope::classify(reason.clone(), true)))
+                    .await;
+                return (TurnOutcomeStatus::Failed, Some(reason));
+            }
 
             // Build content blocks. If this assistant turn produced tool
             // calls, ensure a Thinking block is present even when the model
@@ -1548,11 +1607,11 @@ impl Engine {
                         !pending_steers.is_empty(),
                         holding_for_subagents,
                     ) {
-                        let message = "Model returned reasoning but no answer or tool call; \
-                                       turn ended without output. Send a follow-up to retry."
+                        let message = "Model returned no answer or tool call (reasoning-only or empty response); turn failed without output. Retry the request."
                             .to_string();
                         crate::logging::warn(&message);
-                        let _ = self.tx_event.send(Event::status(message)).await;
+                        let _ = self.tx_event.send(Event::status(message.clone())).await;
+                        return (TurnOutcomeStatus::Failed, Some(message));
                     }
                 }
 
@@ -2618,6 +2677,12 @@ impl Engine {
                             "tool_name": outcome.name.clone(),
                             "success": output.success,
                         }));
+                        if let Some(category) = tool_result_error_category(&output) {
+                            step_error_count += 1;
+                            step_error_categories.push(category);
+                            step_error_tool_names.push(outcome.name.clone());
+                            step_error_tool_inputs.push(tool_input.clone());
+                        }
                         let output_for_context = compact_tool_result_for_route(
                             self.api_provider,
                             &self.session.model,
@@ -2658,12 +2723,12 @@ impl Engine {
 
                         self.add_session_message(Message {
                             role: "user".to_string(),
-                            content: vec![ContentBlock::ToolResult {
-                                tool_use_id: outcome.id,
-                                content: output_for_context,
-                                is_error: None,
-                                content_blocks: None,
-                            }],
+                            content: vec![ContentBlock::native_tool_result(
+                                outcome.id,
+                                output_for_context,
+                                output.success,
+                                output.metadata.clone(),
+                            )],
                         })
                         .await;
                     }
@@ -3369,6 +3434,24 @@ fn is_turn_metadata_text(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_tool_failure_enters_tool_error_recovery_path() {
+        let failed = ToolResult::error("Invalid JSON");
+        let succeeded = ToolResult::success("ok");
+
+        assert_eq!(
+            tool_result_error_category(&failed),
+            Some(ErrorCategory::Tool)
+        );
+        assert_eq!(tool_result_error_category(&succeeded), None);
+    }
+
+    #[test]
+    fn strict_schema_mode_does_not_force_a_tool_call() {
+        assert_eq!(automatic_tool_choice(true), Some(json!({ "type": "auto" })));
+        assert_eq!(automatic_tool_choice(false), None);
+    }
 
     #[test]
     fn subagent_completion_handoff_is_internal_user_message() {

@@ -48,9 +48,10 @@ use std::path::Path;
 
 use chrono::Utc;
 
-/// Maximum size of the user memory file. Larger files are loaded but the
-/// `<user_memory>` block carries a `<truncated bytes=N source="...">`
-/// marker so the user knows the model only saw a slice. Mirrors
+/// Maximum size of the user memory file. Larger files are loaded with both
+/// their head and tail retained; the `<user_memory>` block carries a
+/// `<truncated bytes=N source="...">` marker between them so the model sees
+/// stable older facts plus the newest appended memories. Mirrors
 /// `project_context::MAX_CONTEXT_SIZE`.
 const MAX_MEMORY_SIZE: usize = 100 * 1024;
 
@@ -78,11 +79,7 @@ pub fn as_system_block(content: &str, source: &Path) -> Option<String> {
 
     let display = source.display().to_string();
     let payload = if content.len() > MAX_MEMORY_SIZE {
-        let cutoff = truncation_cutoff(content, &display);
-        let omitted_bytes = content.len() - cutoff;
-        let mut head = content[..cutoff].to_string();
-        head.push_str(&truncation_marker(omitted_bytes, &display));
-        head
+        truncate_head_tail(content, &display)
     } else {
         trimmed.to_string()
     };
@@ -92,27 +89,46 @@ pub fn as_system_block(content: &str, source: &Path) -> Option<String> {
     ))
 }
 
-fn truncation_cutoff(content: &str, source: &str) -> usize {
-    let mut cutoff = previous_char_boundary(content, MAX_MEMORY_SIZE);
+fn truncate_head_tail(content: &str, source: &str) -> String {
+    let mut omitted_bytes = content.len().saturating_sub(MAX_MEMORY_SIZE);
     loop {
-        let omitted_bytes = content.len() - cutoff;
-        let max_head_len =
-            MAX_MEMORY_SIZE.saturating_sub(truncation_marker(omitted_bytes, source).len());
-        let next_cutoff = previous_char_boundary(content, cutoff.min(max_head_len));
-        if next_cutoff == cutoff {
-            return cutoff;
+        let marker = truncation_marker(omitted_bytes, source);
+        let retained_budget = MAX_MEMORY_SIZE.saturating_sub(marker.len());
+        let head_budget = retained_budget / 2;
+        let tail_budget = retained_budget.saturating_sub(head_budget);
+        let head_end = previous_char_boundary(content, head_budget.min(content.len()));
+        let tail_start = next_char_boundary(
+            content,
+            content.len().saturating_sub(tail_budget).max(head_end),
+        );
+        let actual_omitted_bytes = tail_start.saturating_sub(head_end);
+
+        if actual_omitted_bytes == omitted_bytes {
+            let mut payload = String::with_capacity(MAX_MEMORY_SIZE);
+            payload.push_str(&content[..head_end]);
+            payload.push_str(&marker);
+            payload.push_str(&content[tail_start..]);
+            return payload;
         }
-        cutoff = next_cutoff;
+        omitted_bytes = actual_omitted_bytes;
     }
 }
 
 fn truncation_marker(omitted_bytes: usize, source: &str) -> String {
-    format!("\n<truncated bytes={omitted_bytes} source=\"{source}\">")
+    format!("\n<truncated bytes={omitted_bytes} source=\"{source}\">\n")
 }
 
 fn previous_char_boundary(value: &str, mut index: usize) -> usize {
     while !value.is_char_boundary(index) {
         index -= 1;
+    }
+    index
+}
+
+fn next_char_boundary(value: &str, mut index: usize) -> usize {
+    index = index.min(value.len());
+    while index < value.len() && !value.is_char_boundary(index) {
+        index += 1;
     }
     index
 }
@@ -207,57 +223,43 @@ mod tests {
 
     #[test]
     fn as_system_block_truncates_oversize_input() {
-        let big = "x".repeat(MAX_MEMORY_SIZE + 100);
+        let big = format!(
+            "oldest-memory:{}:newest-memory",
+            "x".repeat(MAX_MEMORY_SIZE)
+        );
         let block = as_system_block(&big, Path::new("/tmp/m.md")).unwrap();
         let payload = user_memory_payload(&block);
         assert_eq!(payload.len(), MAX_MEMORY_SIZE);
-        assert!(payload.ends_with("<truncated bytes=141 source=\"/tmp/m.md\">"));
+        let (head, omitted_bytes, tail) = truncated_payload_parts(payload);
+        assert!(head.starts_with("oldest-memory:"));
+        assert!(tail.ends_with(":newest-memory"));
+        assert_eq!(head.len() + omitted_bytes + tail.len(), big.len());
     }
 
     #[test]
     fn as_system_block_truncates_non_ascii_at_char_boundary() {
-        let mut content = "x".repeat(MAX_MEMORY_SIZE - 1);
-        content.push('é');
-        content.push_str("tail");
+        let content = format!("oldest-é-{}-newest-终", "数据".repeat(MAX_MEMORY_SIZE / 3));
 
         let block = as_system_block(&content, Path::new("/tmp/m.md")).unwrap();
-        let payload = block
-            .strip_prefix("<user_memory source=\"/tmp/m.md\">\n")
-            .unwrap()
-            .strip_suffix("\n</user_memory>")
-            .unwrap();
-        let (head, marker) = payload
-            .split_once("\n<truncated bytes=45 source=\"/tmp/m.md\">")
-            .unwrap();
-
-        assert_eq!(payload.len(), MAX_MEMORY_SIZE);
-        assert_eq!(head.len(), MAX_MEMORY_SIZE - 40);
-        assert!(head.bytes().all(|byte| byte == b'x'));
-        assert_eq!(marker, "");
+        let payload = user_memory_payload(&block);
+        let (head, omitted_bytes, tail) = truncated_payload_parts(payload);
+        assert!(payload.len() <= MAX_MEMORY_SIZE);
+        assert!(head.starts_with("oldest-é-"));
+        assert!(tail.ends_with("-newest-终"));
+        assert_eq!(head.len() + omitted_bytes + tail.len(), content.len());
     }
 
     #[test]
     fn as_system_block_truncates_emoji_at_char_boundary() {
-        let mut content = "x".repeat(MAX_MEMORY_SIZE - 1);
-        content.push('😀');
-        content.push_str("tail");
+        let content = format!("oldest-😀-{}-newest-🚀", "🐋".repeat(MAX_MEMORY_SIZE / 2));
 
         let block = as_system_block(&content, Path::new("/tmp/m.md")).unwrap();
-        assert!(block.contains("<truncated bytes=47 source=\"/tmp/m.md\">"));
-
-        let payload = block
-            .strip_prefix("<user_memory source=\"/tmp/m.md\">\n")
-            .unwrap()
-            .strip_suffix("\n</user_memory>")
-            .unwrap();
-        let head = payload
-            .strip_suffix("\n<truncated bytes=47 source=\"/tmp/m.md\">")
-            .unwrap();
-
-        assert_eq!(payload.len(), MAX_MEMORY_SIZE);
-        assert!(head.len() <= MAX_MEMORY_SIZE);
-        assert_eq!(head.len(), MAX_MEMORY_SIZE - 40);
-        assert!(head.bytes().all(|byte| byte == b'x'));
+        let payload = user_memory_payload(&block);
+        let (head, omitted_bytes, tail) = truncated_payload_parts(payload);
+        assert!(payload.len() <= MAX_MEMORY_SIZE);
+        assert!(head.starts_with("oldest-😀-"));
+        assert!(tail.ends_with("-newest-🚀"));
+        assert_eq!(head.len() + omitted_bytes + tail.len(), content.len());
     }
 
     fn user_memory_payload(block: &str) -> &str {
@@ -266,6 +268,28 @@ mod tests {
             .unwrap()
             .strip_suffix("\n</user_memory>")
             .unwrap()
+    }
+
+    fn truncated_payload_parts(payload: &str) -> (&str, usize, &str) {
+        let marker_prefix = "\n<truncated bytes=";
+        let marker_start = payload.find(marker_prefix).expect("truncation marker");
+        let count_start = marker_start + marker_prefix.len();
+        let count_end = payload[count_start..]
+            .find(' ')
+            .map(|offset| count_start + offset)
+            .expect("truncated byte count");
+        let omitted_bytes = payload[count_start..count_end]
+            .parse()
+            .expect("numeric truncated byte count");
+        let tail_start = payload[count_end..]
+            .find(">\n")
+            .map(|offset| count_end + offset + 2)
+            .expect("truncation marker terminator");
+        (
+            &payload[..marker_start],
+            omitted_bytes,
+            &payload[tail_start..],
+        )
     }
 
     #[test]
@@ -294,6 +318,27 @@ mod tests {
         assert!(body.contains("second"));
         // Two bullets means two lines of `- (date) entry`.
         assert_eq!(body.matches("- (").count(), 2);
+    }
+
+    #[test]
+    fn latest_appended_entry_remains_visible_after_memory_is_truncated() {
+        let tmp = tempdir().unwrap();
+        let path = tmp.path().join("memory.md");
+        fs::write(
+            &path,
+            format!(
+                "oldest durable preference\n{}",
+                "x".repeat(MAX_MEMORY_SIZE + 128)
+            ),
+        )
+        .unwrap();
+        append_entry(&path, "newest durable preference").unwrap();
+
+        let block = compose_block(true, &path).expect("memory block");
+
+        assert!(block.contains("oldest durable preference"));
+        assert!(block.contains("<truncated bytes="));
+        assert!(block.contains("newest durable preference"));
     }
 
     #[test]

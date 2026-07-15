@@ -7,6 +7,11 @@ commands, checks the results, and keeps going until the task is done or it
 needs you. TUI for interactive work, `codewhale exec` for scripts and CI.
 Rust, MIT, runs entirely on your machine.
 
+> This checkout has a local `deepseek-agent` specialization branch focused on
+> the official DeepSeek API and coding-agent capability. Start with
+> [the specialization map](docs/DEEPSEEK_AGENT.md) and
+> [the local development workflow](docs/LOCAL_DEEPSEEK_DEVELOPMENT.md).
+
 It started as `deepseek-tui`. The community that formed around it needed more
 providers, so now DeepSeek, Claude, GPT, Kimi, GLM, and 30+ others run through
 the same runtime and tools.

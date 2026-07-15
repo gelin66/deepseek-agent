@@ -1,5 +1,35 @@
 # Repository Agent Guidance
 
+## Local DeepSeek Agent specialization (`deepseek-agent`)
+
+The local `deepseek-agent` branch is intentionally narrower than upstream.
+Its product target is a high-reliability coding-agent framework using the
+official DeepSeek API. On this branch, prioritize work only when it improves
+one of these surfaces:
+
+- DeepSeek protocol fidelity, reasoning/tool-call replay, context/cache use,
+  model limits, streaming, retries, or API observability;
+- agent planning and durable work state, tool correctness, evidence-backed
+  completion, memory/compaction, or sub-agent orchestration;
+- repeatable local development, focused regression tests, and safe upstream
+  synchronization for those two areas.
+
+Audit DeepSeek against its native protocol, not generic OpenAI assumptions.
+Keep these paths distinct: ordinary Chat tool calls, `/beta` strict function
+schemas (all functions strict, documented schema subset), and `/beta` FIM.
+Never remove or downgrade ordinary tool calling merely because one strict
+schema is incompatible; strict preparation may fall back while tool calls stay
+available.
+
+Do not start unrelated provider integrations, UI redesigns, release/social
+automation, or security-scan work on this branch. Preserve upstream provider
+compatibility where it already exists: deleting large shared surfaces creates
+merge debt and is not considered useful cleanup unless the user explicitly
+approves that deletion. Prefer a thin specialization layer and narrowly scoped
+commits over a fork-wide rewrite. See `docs/DEEPSEEK_AGENT.md` and
+`docs/LOCAL_DEEPSEEK_DEVELOPMENT.md` for the current capability map and local
+workflow.
+
 ## Where to work right now (read this first)
 
 - **Repo:** `Hmbown/CodeWhale`. This repo lives on multiple devices, so work in

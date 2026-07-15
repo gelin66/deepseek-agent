@@ -2590,6 +2590,74 @@ fn test_subagent_tool_registry_reports_unavailable_tools() {
     );
 }
 
+#[tokio::test]
+async fn subagent_registry_preserves_native_tool_failure_and_metadata() {
+    let tmp = tempdir().expect("tempdir");
+    let mut runtime = stub_runtime();
+    runtime.context = ToolContext::new(tmp.path().to_path_buf());
+    let registry = SubAgentToolRegistry::new(
+        runtime,
+        SubAgentType::General,
+        Some(vec!["validate_data".to_string()]),
+        Arc::new(Mutex::new(TodoList::new())),
+        Arc::new(Mutex::new(PlanState::default())),
+    );
+
+    let result = registry
+        .execute(
+            "agent_test",
+            "validate_data",
+            json!({"content": "{not-json", "format": "json"}),
+        )
+        .await
+        .expect("validation failures are first-class tool results");
+
+    assert!(!result.success);
+    assert!(
+        result.content.starts_with("Invalid JSON:"),
+        "{}",
+        result.content
+    );
+    assert_eq!(
+        result
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("valid"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+}
+
+#[test]
+fn subagent_feedback_marks_native_failure_and_retains_metadata() {
+    let result = ToolResult::error("Invalid JSON: expected value")
+        .with_metadata(json!({"valid": false, "format": "json"}));
+    let (block, spilled_to) =
+        subagent_tool_result_block("agent_test", "call_1".to_string(), result);
+
+    assert!(spilled_to.is_none());
+    let ContentBlock::ToolResult {
+        content,
+        is_error,
+        content_blocks,
+        ..
+    } = block
+    else {
+        panic!("expected tool result block");
+    };
+    assert_eq!(is_error, Some(true));
+    assert!(content.starts_with("Error: Invalid JSON:"), "{content}");
+    assert_eq!(
+        content_blocks
+            .as_ref()
+            .and_then(|blocks| blocks.first())
+            .and_then(|block| block.get("metadata"))
+            .and_then(|metadata| metadata.get("valid"))
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+}
+
 #[test]
 fn test_subagent_tools_respect_nested_agent_depth_budget() {
     let tmp = tempdir().expect("tempdir");
@@ -4550,8 +4618,9 @@ async fn implementer_delegation_allows_suggest_write_without_parent_auto_approve
         .expect("file should exist after delegated write");
     assert_eq!(written, "hello");
     assert!(
-        !result.contains("requires approval"),
-        "successful write should not look like an approval error: {result}"
+        result.success && !result.content.contains("requires approval"),
+        "successful write should not look like an approval error: {}",
+        result.content
     );
 }
 
@@ -4584,7 +4653,12 @@ async fn workflow_accept_edits_allows_general_file_write_without_parent_auto_app
     let written =
         std::fs::read_to_string(workspace.join("workflow_edit.txt")).expect("file should exist");
     assert_eq!(written, "from workflow");
-    assert!(!result.contains("requires approval"), "{result}");
+    assert!(result.success, "{}", result.content);
+    assert!(
+        !result.content.contains("requires approval"),
+        "{}",
+        result.content
+    );
 
     let err = registry
         .execute("agent_test", "exec_shell", json!({"command": "echo hi"}))

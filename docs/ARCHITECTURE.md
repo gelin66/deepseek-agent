@@ -114,7 +114,7 @@ Current boundary note (v0.8.68):
 
 DeepSeek exposes OpenAI-compatible endpoints. The CLI uses:
 - `https://api.deepseek.com/beta/chat/completions` - default v0.8.16 DeepSeek model turns
-- `https://api.deepseek.com/beta/models` - default v0.8.16 live model discovery and health checks
+- `https://api.deepseek.com/v1/models` - live model discovery and health checks even when chat uses the beta route
 
 `https://api.deepseek.com/v1` is accepted for OpenAI SDK compatibility, and
 can still be configured explicitly to opt out of beta-only features such as

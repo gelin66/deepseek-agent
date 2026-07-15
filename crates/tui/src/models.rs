@@ -136,6 +136,47 @@ pub enum ContentBlock {
     },
 }
 
+impl ContentBlock {
+    /// Build model feedback for a native tool result without flattening its
+    /// execution semantics. OpenAI-compatible dialects do not carry an
+    /// `is_error` bit, so failed results also receive a textual prefix. The
+    /// structured metadata sidecar is retained for session/runtime consumers;
+    /// provider serializers intentionally continue to send only `content`.
+    pub(crate) fn native_tool_result(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        success: bool,
+        metadata: Option<serde_json::Value>,
+    ) -> Self {
+        let mut content = content.into();
+        if !success
+            && !content
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("error:")
+        {
+            content = if content.trim().is_empty() {
+                "Error: tool reported failure without details".to_string()
+            } else {
+                format!("Error: {content}")
+            };
+        }
+        let content_blocks = metadata.map(|metadata| {
+            vec![serde_json::json!({
+                "type": "codewhale_tool_result_metadata",
+                "metadata": metadata,
+            })]
+        });
+
+        Self::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content,
+            is_error: (!success).then_some(true),
+            content_blocks,
+        }
+    }
+}
+
 /// Cache control metadata for tool definitions and blocks.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct CacheControl {

@@ -6077,6 +6077,18 @@ fn bound_subagent_tool_result(
     }
 }
 
+fn subagent_tool_result_block(
+    agent_id: &str,
+    tool_id: String,
+    result: ToolResult,
+) -> (ContentBlock, Option<PathBuf>) {
+    let (content, spilled_to) = bound_subagent_tool_result(agent_id, &tool_id, result.content);
+    (
+        ContentBlock::native_tool_result(tool_id, content, result.success, result.metadata),
+        spilled_to,
+    )
+}
+
 /// Rough serialized size of one message, used for checkpoint/transcript byte
 /// budgets. Exact JSON size via serde; unserializable messages (should not
 /// happen) count as 1 KiB so they still consume budget.
@@ -7049,11 +7061,11 @@ async fn run_subagent(
             .await
             {
                 Ok(Ok(output)) => output,
-                Ok(Err(e)) => format!("Error: {e}"),
-                Err(_) => format!("Error: Tool {tool_name} timed out"),
+                Ok(Err(e)) => ToolResult::error(e.to_string()),
+                Err(_) => ToolResult::error(format!("Tool {tool_name} timed out")),
             };
-            let tool_ok = !result.starts_with("Error:");
-            let (result, spilled_to) = bound_subagent_tool_result(&agent_id, &tool_id, result);
+            let tool_ok = result.success;
+            let (result, spilled_to) = subagent_tool_result_block(&agent_id, tool_id, result);
             if let Some(path) = spilled_to.as_ref() {
                 record_agent_progress(
                     runtime,
@@ -7082,12 +7094,7 @@ async fn run_subagent(
                 });
             }
 
-            tool_results.push(ContentBlock::ToolResult {
-                tool_use_id: tool_id,
-                content: result,
-                is_error: None,
-                content_blocks: None,
-            });
+            tool_results.push(result);
         }
 
         if !tool_results.is_empty() {
@@ -9050,7 +9057,7 @@ impl SubAgentToolRegistry {
         }
     }
 
-    async fn execute(&self, _agent_id: &str, name: &str, input: Value) -> Result<String> {
+    async fn execute(&self, _agent_id: &str, name: &str, input: Value) -> Result<ToolResult> {
         if !self.is_tool_allowed(name) {
             return Err(anyhow!("Tool {name} not allowed for this sub-agent"));
         }
@@ -9101,7 +9108,6 @@ impl SubAgentToolRegistry {
         self.registry
             .execute_full_with_context(name, input, Some(&context))
             .await
-            .map(|result| result.content)
             .map_err(|e| anyhow!(e))
     }
 }

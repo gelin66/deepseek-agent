@@ -461,6 +461,30 @@ environment override is `DEEPSEEK_HTTP_HEADERS`, using comma-separated
 and `Content-Type` are managed by the client and are not overridden by this
 setting.
 
+### DeepSeek strict tool schemas
+
+The official DeepSeek API exposes strict function-schema validation on the
+`/beta` chat route:
+
+```toml
+provider = "deepseek"
+base_url = "https://api.deepseek.com/beta"
+strict_tool_mode = true
+```
+
+CodeWhale preflights the complete active tool catalog. When every schema is
+compatible it sends every function with `strict = true`; if one schema is not
+compatible, the complete request remains non-strict and the original schemas
+stay unchanged. Strict validation does not imply `tool_choice = "required"`:
+the model may still answer without a tool call. Model discovery and health
+checks continue to use `/v1/models`.
+
+This setting controls the Beta strict-schema guarantee, not basic tool-call
+availability. Standard DeepSeek chat routes can still call tools; CodeWhale
+removes only the unsupported `strict` flag when the final route is not Beta.
+Nested `anyOf` remains available because DeepSeek explicitly includes it in the
+Beta strict subset.
+
 ### Vision Model
 
 CodeWhale's chat provider and `image_analyze` tool are configured separately.
@@ -1620,7 +1644,14 @@ web_search = true # enables canonical web.run plus the compatibility web_search 
 apply_patch = true
 mcp = true
 exec_policy = true
+verify_tool = true # lets the agent request an elevated, tool-less adversarial self-check
 ```
+
+`verify_tool` is enabled by default. The model may call `verify` before
+claiming a non-trivial change complete; the critic receives the claim plus
+bounded diff/file evidence, runs without tools so it cannot recurse, and
+returns a structured verdict. Disable the flag when the extra model call is
+not appropriate for the session's cost posture.
 
 You can also override features for a single run:
 

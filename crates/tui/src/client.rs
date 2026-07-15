@@ -563,15 +563,22 @@ pub(super) fn api_url_with_suffix(base_url: &str, path: &str, path_suffix: Optio
         );
     }
     let mut versioned = versioned_base_url(base_url);
-    // The /beta suffix is not a real API version — it is an
-    // opt-in surface for beta features.  Only paths with an
-    // explicit `beta/` prefix should hit the beta surface;
-    // everything else (models, chat/completions, health, …)
-    // must go to the standard /v1 surface.
-    if versioned.ends_with("beta") {
+    // DeepSeek gates beta chat features such as strict tool schemas behind
+    // `/beta/chat/completions`, so a beta base must remain beta for that route.
+    // Discovery and health probes still use `/v1/models`; explicit beta paths
+    // were handled above, and custom chat path suffixes return before here.
+    if path != "chat/completions" && base_url_has_beta_suffix(&versioned) {
         versioned = format!("{}/v1", unversioned_base_url(base_url));
     }
     format!("{}/{}", versioned.trim_end_matches('/'), path)
+}
+
+fn base_url_has_beta_suffix(base_url: &str) -> bool {
+    base_url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .is_some_and(|segment| segment.eq_ignore_ascii_case("beta"))
 }
 
 fn normalize_audio_format(format: &str) -> String {
@@ -1084,6 +1091,13 @@ impl DeepSeekClient {
     /// Returns the API base URL used by this client.
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// Whether this route can receive strict function schemas. The official
+    /// DeepSeek API gates them behind `/beta`; custom compatible routes keep
+    /// their provider-defined behavior.
+    pub fn supports_strict_tool_schemas(&self) -> bool {
+        chat::deepseek_route_supports_strict_tools(&self.base_url, self.path_suffix.as_deref())
     }
 
     /// Returns the active API provider for this client.
@@ -2300,12 +2314,30 @@ impl DeepSeekClient {
             .context("Failed to read FIM API response body")?;
         let value: serde_json::Value =
             serde_json::from_str(&response_text).context("Failed to parse FIM API response")?;
-        let text = value
-            .pointer("/choices/0/text")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("FIM response missing choices[0].text"))?;
-        Ok(text.to_string())
+        parse_fim_completion(&value)
     }
+}
+
+/// Parse one DeepSeek FIM response without accepting a truncated or otherwise
+/// incomplete generation as editable source code.
+fn parse_fim_completion(value: &Value) -> Result<String> {
+    let choice = value
+        .pointer("/choices/0")
+        .ok_or_else(|| anyhow::anyhow!("FIM response missing choices[0]"))?;
+    let finish_reason = choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("FIM response missing choices[0].finish_reason"))?;
+    if finish_reason != "stop" {
+        anyhow::bail!(
+            "FIM generation did not complete safely (finish_reason={finish_reason}); file was not modified"
+        );
+    }
+    choice
+        .get("text")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("FIM response missing choices[0].text"))
 }
 
 mod anthropic;
@@ -2349,7 +2381,7 @@ mod tests {
         build_chat_messages, build_chat_messages_for_request,
         build_chat_messages_for_request_and_provider, count_reasoning_replay_chars,
         parse_chat_message, parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat,
-        tool_to_chat_for_base_url,
+        tool_to_chat_for_base_url, tool_to_chat_for_route,
     };
     use crate::config::{ProviderConfig, ProvidersConfig};
     use crate::models::{
@@ -2367,6 +2399,8 @@ mod tests {
             input_schema: json!({
                 "type": "object",
                 "properties": {},
+                "required": [],
+                "additionalProperties": false,
             }),
             allowed_callers: None,
             defer_loading: Some(false),
@@ -2608,11 +2642,11 @@ mod tests {
             api_url("https://api.deepseek.com/v1", "chat/completions"),
             "https://api.deepseek.com/v1/chat/completions"
         );
-        // Non-beta paths from a /beta base URL route to /v1.
-        // Only paths with an explicit beta/ prefix use the beta surface.
+        // Strict tool schemas are a beta Chat Completions feature, so the
+        // configured beta base must survive URL construction for chat.
         assert_eq!(
             api_url("https://api.deepseek.com/beta", "chat/completions"),
-            "https://api.deepseek.com/v1/chat/completions"
+            "https://api.deepseek.com/beta/chat/completions"
         );
         assert_eq!(
             api_url(
@@ -2642,8 +2676,8 @@ mod tests {
     #[test]
     fn api_url_routes_models_and_non_beta_paths_to_v1() {
         // The /models endpoint only exists at /v1/models, never at
-        // /beta/models. Non-beta paths from a /beta base URL must
-        // still route to /v1.
+        // /beta/models. Discovery and health checks from a /beta base URL
+        // must still route to /v1.
         assert_eq!(
             api_url("https://api.deepseek.com", "models"),
             "https://api.deepseek.com/v1/models"
@@ -3116,6 +3150,40 @@ mod tests {
             requests.is_empty(),
             "unsupported FIM should fail locally before any HTTP call"
         );
+    }
+
+    #[test]
+    fn fim_parser_accepts_only_complete_stop_responses() {
+        let complete = json!({
+            "choices": [{"text": "middle", "finish_reason": "stop"}]
+        });
+        assert_eq!(parse_fim_completion(&complete).unwrap(), "middle");
+
+        for reason in [
+            "length",
+            "content_filter",
+            "insufficient_system_resource",
+        ] {
+            let incomplete = json!({
+                "choices": [{"text": "partial", "finish_reason": reason}]
+            });
+            let error = parse_fim_completion(&incomplete)
+                .expect_err("incomplete FIM output must not be writable")
+                .to_string();
+            assert!(error.contains(reason), "{error}");
+            assert!(error.contains("file was not modified"), "{error}");
+        }
+    }
+
+    #[test]
+    fn fim_parser_rejects_ambiguous_response_shape() {
+        for response in [
+            json!({"choices": []}),
+            json!({"choices": [{"text": "middle"}]}),
+            json!({"choices": [{"finish_reason": "stop"}]}),
+        ] {
+            assert!(parse_fim_completion(&response).is_err(), "{response}");
+        }
     }
 
     #[test]
@@ -4207,6 +4275,16 @@ mod tests {
                 .and_then(|function| function.get("strict"))
                 .is_none()
         );
+        assert_eq!(
+            encoded.pointer("/function/name").and_then(Value::as_str),
+            Some("emit_json"),
+            "standard DeepSeek tool calls remain available outside beta strict mode"
+        );
+        assert_eq!(
+            encoded.pointer("/function/parameters"),
+            Some(&tool.input_schema),
+            "leaving beta strict mode must remove only the strict flag"
+        );
     }
 
     #[test]
@@ -4236,6 +4314,109 @@ mod tests {
                 Some(true)
             );
         }
+    }
+
+    #[test]
+    fn deepseek_beta_strict_flag_follows_the_final_custom_chat_path() {
+        let tool = test_tool("emit_json");
+
+        let non_beta = tool_to_chat_for_route(
+            &tool,
+            "https://api.deepseek.com/beta",
+            Some("/chat/completions"),
+        );
+        assert!(
+            non_beta
+                .pointer("/function/strict")
+                .and_then(Value::as_bool)
+                .is_none(),
+            "custom suffix bypassed /beta and must not retain strict: {non_beta}"
+        );
+
+        let beta = tool_to_chat_for_route(
+            &tool,
+            "https://api.deepseek.com/beta",
+            Some("/beta/chat/completions"),
+        );
+        assert_eq!(
+            beta.pointer("/function/strict").and_then(Value::as_bool),
+            Some(true)
+        );
+
+        for malformed_official_base in [
+            "https://api.deepseek.com:443/beta",
+            "https://user@api.deepseek.com/beta",
+            "https://api.deepseek.com/beta?tenant=custom",
+            "https://api.deepseek.com/proxy/beta",
+        ] {
+            let encoded = tool_to_chat_for_route(&tool, malformed_official_base, None);
+            assert!(
+                encoded.pointer("/function/strict").is_none(),
+                "undocumented DeepSeek-owned route must not be reported as Beta strict: {malformed_official_base}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn beta_chat_request_keeps_strict_tool_on_beta_route() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/beta/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-beta-strict",
+                "model": "deepseek-v4-pro",
+                "choices": [{
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = DeepSeekClient::new(&Config {
+            provider: Some("deepseek".to_string()),
+            api_key: Some("ds-test".to_string()),
+            base_url: Some(format!("{}/beta", server.uri())),
+            default_text_model: Some("deepseek-v4-pro".to_string()),
+            ..Config::default()
+        })
+        .expect("DeepSeek beta client");
+        client
+            .create_message(MessageRequest {
+                model: "deepseek-v4-pro".to_string(),
+                messages: vec![Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "inspect this repository".to_string(),
+                        cache_control: None,
+                    }],
+                }],
+                max_tokens: 32,
+                system: None,
+                tools: Some(vec![test_tool("read_file")]),
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: Some("off".to_string()),
+                stream: Some(false),
+                temperature: None,
+                top_p: None,
+            })
+            .await
+            .expect("beta chat request succeeds");
+
+        let requests = server.received_requests().await.expect("recorded request");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/beta/chat/completions");
+        let body: Value = serde_json::from_slice(&requests[0].body).expect("request JSON");
+        assert_eq!(
+            body.pointer("/tools/0/function/strict")
+                .and_then(Value::as_bool),
+            Some(true),
+            "strict schema must reach the beta endpoint: {body}"
+        );
     }
 
     #[test]
@@ -5454,6 +5635,14 @@ mod tests {
             ),
             "https://api.example.com/chat/completions"
         );
+        assert_eq!(
+            api_url_with_suffix(
+                "https://api.deepseek.com/beta",
+                "chat/completions",
+                Some("/chat/completions")
+            ),
+            "https://api.deepseek.com/chat/completions"
+        );
     }
 
     #[test]
@@ -5497,6 +5686,10 @@ mod tests {
         assert_eq!(
             api_url_with_suffix("https://api.deepseek.com", "chat/completions", None),
             "https://api.deepseek.com/v1/chat/completions"
+        );
+        assert_eq!(
+            api_url_with_suffix("https://api.deepseek.com/beta/", "/chat/completions", None),
+            "https://api.deepseek.com/beta/chat/completions"
         );
     }
 

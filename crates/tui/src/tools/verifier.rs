@@ -519,7 +519,8 @@ pub(crate) async fn run_workflow_completion_gates(
 fn verifier_tool_result(output: &RunVerifiersOutput) -> Result<ToolResult, ToolError> {
     ToolResult::json(output)
         .map_err(|err| ToolError::execution_failed(err.to_string()))
-        .map(|result| {
+        .map(|mut result| {
+            result.success = output.success;
             result.with_metadata(json!({
                 "verifier_verdict": output.verifier_verdict,
                 "hunt_verdict": output.hunt_verdict,
@@ -1422,6 +1423,10 @@ mod tests {
             .execute(json!({"profile": "auto"}), &ctx)
             .await
             .expect("execute partial verifier");
+        assert!(
+            !partial.success,
+            "a verifier with no runnable gates must not report tool success"
+        );
         assert_hunt_mapping(&partial.content, "partial", "wounded", "paused");
         assert_hunt_metadata(&partial, "partial", "wounded", "paused");
 
@@ -1445,6 +1450,7 @@ mod tests {
             )
             .await
             .expect("execute passing verifier");
+        assert!(pass.success, "all passing gates should report tool success");
         assert_hunt_mapping(&pass.content, "pass", "hunted", "complete");
         assert_hunt_metadata(&pass, "pass", "hunted", "complete");
 
@@ -1464,6 +1470,10 @@ mod tests {
             )
             .await
             .expect("execute failing verifier");
+        assert!(
+            !fail.success,
+            "a failed verifier gate must be a failed tool result"
+        );
         assert_hunt_mapping(&fail.content, "fail", "escaped", "blocked");
         assert_hunt_metadata(&fail, "fail", "escaped", "blocked");
     }
@@ -1514,6 +1524,10 @@ mod tests {
             .await
             .expect("execute");
 
+        assert!(
+            result.success,
+            "starting every background gate should succeed"
+        );
         let parsed: RunVerifiersBackgroundOutput =
             serde_json::from_str(&result.content).expect("background verifier output json");
         assert!(parsed.success, "result: {}", result.content);
@@ -1569,6 +1583,47 @@ mod tests {
             output.stdout.contains("rustc"),
             "stdout should include rustc version: {:?}",
             output.stdout
+        );
+    }
+
+    #[test]
+    fn run_verifiers_background_start_failure_is_a_failed_tool_result() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path());
+        let missing_cwd = tmp.path().join("missing-cwd");
+        let result = start_background_gates(
+            &ctx,
+            VerifierProfile::Auto,
+            VerifierLevel::Quick,
+            vec![gate(
+                "cannot-start",
+                "custom",
+                &missing_cwd,
+                "unused-program",
+                ["--version"],
+            )],
+        )
+        .expect("structured background verifier result");
+
+        assert!(
+            !result.success,
+            "a background gate start failure must not report tool success"
+        );
+        let parsed: RunVerifiersBackgroundOutput =
+            serde_json::from_str(&result.content).expect("background verifier output json");
+        assert!(!parsed.success);
+        assert_eq!(parsed.started, 0);
+        assert_eq!(parsed.skipped, 0);
+        assert_eq!(parsed.failed_to_start, 1);
+        assert_eq!(parsed.jobs[0].status, "failed_to_start");
+        assert!(parsed.jobs[0].error.is_some());
+        assert_eq!(
+            result
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata["verifier_background"].as_bool()),
+            Some(true),
+            "failure must retain background verifier metadata"
         );
     }
 }

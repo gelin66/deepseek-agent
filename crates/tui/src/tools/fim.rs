@@ -86,7 +86,9 @@ impl ToolSpec for FimEditTool {
                 },
                 "max_tokens": {
                     "type": "integer",
-                    "description": "Maximum tokens to generate (default: 1024)"
+                    "minimum": 1,
+                    "maximum": 4096,
+                    "description": "Maximum tokens to generate (default: 1024; DeepSeek FIM limit: 4096)"
                 }
             },
             "required": ["path", "prefix_anchor", "suffix_anchor"]
@@ -110,6 +112,11 @@ impl ToolSpec for FimEditTool {
         let prefix_anchor = required_str(&input, "prefix_anchor")?;
         let suffix_anchor = required_str(&input, "suffix_anchor")?;
         let max_tokens = optional_u64(&input, "max_tokens", 1024);
+        if !(1..=4096).contains(&max_tokens) {
+            return Err(ToolError::invalid_input(
+                "max_tokens must be between 1 and 4096 for DeepSeek FIM",
+            ));
+        }
 
         // 1. Read the file
         let resolved = context.resolve_path(path)?;
@@ -158,6 +165,23 @@ impl ToolSpec for FimEditTool {
                 ));
             }
         };
+
+        // The model call can take long enough for the user, a watcher, or a
+        // sibling agent to edit the file. Never overwrite those newer bytes
+        // with a completion based on the stale pre-request snapshot.
+        let latest_content = fs::read_to_string(&resolved).map_err(|e| {
+            ToolError::execution_failed(format!(
+                "Failed to re-read {} before applying FIM edit: {}",
+                resolved.display(),
+                e
+            ))
+        })?;
+        if latest_content != content {
+            return Err(ToolError::execution_failed(
+                "File changed while DeepSeek was generating the FIM edit; no changes were applied. Re-read the file and retry with fresh anchors."
+                    .to_string(),
+            ));
+        }
 
         // 7. Build the new content and write it back
         let generated_len = generated_text.len();

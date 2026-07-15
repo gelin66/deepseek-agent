@@ -84,7 +84,9 @@ impl ToolSpec for GrepFilesTool {
                 },
                 "max_results": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default: 100)"
+                    "minimum": 1,
+                    "maximum": MAX_RESULTS,
+                    "description": "Maximum number of results to return (default: 100, range: 1-100)"
                 }
             },
             "required": ["pattern"]
@@ -107,7 +109,8 @@ impl ToolSpec for GrepFilesTool {
             .min(1000);
         let case_insensitive = optional_bool(&input, "case_insensitive", false);
         let max_results = usize::try_from(optional_u64(&input, "max_results", MAX_RESULTS as u64))
-            .unwrap_or(MAX_RESULTS);
+            .unwrap_or(MAX_RESULTS)
+            .clamp(1, MAX_RESULTS);
 
         // Parse include patterns
         let include_patterns: Vec<String> = input
@@ -180,12 +183,14 @@ impl ToolSpec for GrepFilesTool {
             let cancel_token = cancel_token.as_ref();
 
             // Stream the walk: each file is searched as it is discovered and
-            // the traversal stops as soon as the match budget is exhausted.
+            // the traversal stops after one match beyond the return budget.
+            // That sentinel match lets the response distinguish an exact-limit
+            // result set from a truncated one without walking the entire tree.
             // Files are never materialized in a big Vec and file contents are
             // read line-by-line, so memory stays bounded by the result set.
             let mut results: Vec<GrepMatch> = Vec::new();
             let mut files_searched = 0;
-            let mut total_matches = 0;
+            let probe_limit = max_results + 1;
 
             visit_files(
                 &search_path,
@@ -194,7 +199,7 @@ impl ToolSpec for GrepFilesTool {
                 cancel_token,
                 follow_symlinks,
                 &mut |file_path| {
-                    if results.len() >= max_results {
+                    if results.len() >= probe_limit {
                         return Ok(WalkControl::Stop);
                     }
                     check_cancelled(cancel_token)?;
@@ -213,7 +218,7 @@ impl ToolSpec for GrepFilesTool {
                         .to_string_lossy()
                         .to_string();
 
-                    let budget = max_results - results.len();
+                    let budget = probe_limit - results.len();
                     let Some(file_matches) = search_file_streaming(
                         file_path,
                         &relative_path,
@@ -227,12 +232,14 @@ impl ToolSpec for GrepFilesTool {
                     };
 
                     files_searched += 1;
-                    total_matches += file_matches.len();
                     results.extend(file_matches);
                     Ok(WalkControl::Continue)
                 },
             )?;
 
+            let truncated = results.len() > max_results;
+            results.truncate(max_results);
+            let total_matches = results.len();
             let matches_json: Vec<Value> = results
                 .iter()
                 .map(|item| grep_match_to_json(item, context_lines))
@@ -241,12 +248,19 @@ impl ToolSpec for GrepFilesTool {
             // Build result. When context_lines == 1, return the single context
             // line as a string instead of a one-item array. That keeps the common
             // "show just the adjacent line" case easy for model callers to read.
-            Ok(json!({
+            let mut response = json!({
                 "matches": matches_json,
                 "total_matches": total_matches,
                 "files_searched": files_searched,
-                "truncated": total_matches > max_results,
-            }))
+                "truncated": truncated,
+                "max_results": max_results,
+            });
+            if truncated {
+                response["next_action"] = json!(format!(
+                    "Results were truncated at max_results={max_results}. Narrow pattern, path, include, or exclude and retry."
+                ));
+            }
+            Ok(response)
         })
         .await?;
 
@@ -664,7 +678,7 @@ mod tests {
 
     use crate::tools::spec::{ApprovalRequirement, ToolContext, ToolSpec};
 
-    use super::{GrepFilesTool, matches_glob};
+    use super::{GrepFilesTool, MAX_RESULTS, matches_glob};
 
     #[test]
     fn test_matches_glob_star() {
@@ -949,7 +963,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_grep_files_streaming_stops_at_max_results() {
+    async fn test_grep_files_reports_truncation_at_max_results() {
         let tmp = tempdir().expect("tempdir");
         let ctx = ToolContext::new(tmp.path().to_path_buf());
 
@@ -971,6 +985,13 @@ mod tests {
         let matches = parsed["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 5);
         assert_eq!(parsed["total_matches"].as_u64().unwrap(), 5);
+        assert_eq!(parsed["max_results"].as_u64().unwrap(), 5);
+        assert_eq!(parsed["truncated"], true);
+        assert!(
+            parsed["next_action"]
+                .as_str()
+                .is_some_and(|hint| hint.contains("Narrow pattern, path, include, or exclude"))
+        );
         // All five matches must come from the first file walked, in file
         // order (streaming preserves walk order).
         let first_file = matches[0]["file"].as_str().unwrap().to_string();
@@ -984,6 +1005,65 @@ mod tests {
             json!(["needle 6", "needle 7"]),
             "last match must keep after-context lines"
         );
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_exact_limit_is_not_truncated() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let body: String = (1..=5).map(|n| format!("needle {n}\n")).collect();
+        fs::write(tmp.path().join("exact.txt"), body).expect("write");
+
+        let result = GrepFilesTool
+            .execute(json!({"pattern": "needle", "max_results": 5}), &ctx)
+            .await
+            .expect("execute");
+
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["matches"].as_array().unwrap().len(), 5);
+        assert_eq!(parsed["total_matches"], 5);
+        assert_eq!(parsed["max_results"], 5);
+        assert_eq!(parsed["truncated"], false);
+        assert!(parsed.get("next_action").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_clamps_zero_max_results_to_one() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        fs::write(tmp.path().join("zero.txt"), "needle 1\nneedle 2\n").expect("write");
+
+        let result = GrepFilesTool
+            .execute(json!({"pattern": "needle", "max_results": 0}), &ctx)
+            .await
+            .expect("execute");
+
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["matches"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["total_matches"], 1);
+        assert_eq!(parsed["max_results"], 1);
+        assert_eq!(parsed["truncated"], true);
+        assert!(parsed.get("next_action").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_grep_files_clamps_huge_max_results_to_hard_limit() {
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let body: String = (1..=120).map(|n| format!("needle {n}\n")).collect();
+        fs::write(tmp.path().join("huge.txt"), body).expect("write");
+
+        let result = GrepFilesTool
+            .execute(json!({"pattern": "needle", "max_results": 10_000}), &ctx)
+            .await
+            .expect("execute");
+
+        let parsed: Value = serde_json::from_str(&result.content).unwrap();
+        assert_eq!(parsed["matches"].as_array().unwrap().len(), MAX_RESULTS);
+        assert_eq!(parsed["total_matches"], MAX_RESULTS);
+        assert_eq!(parsed["max_results"], MAX_RESULTS);
+        assert_eq!(parsed["truncated"], true);
+        assert!(parsed.get("next_action").is_some());
     }
 
     #[tokio::test]
@@ -1052,6 +1132,11 @@ mod tests {
         assert!(tool.is_read_only());
         assert!(tool.is_sandboxable());
         assert_eq!(tool.approval_requirement(), ApprovalRequirement::Auto);
+
+        let schema = tool.input_schema();
+        let max_results = &schema["properties"]["max_results"];
+        assert_eq!(max_results["minimum"], 1);
+        assert_eq!(max_results["maximum"], MAX_RESULTS);
     }
 
     #[test]

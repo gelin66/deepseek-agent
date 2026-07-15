@@ -179,7 +179,9 @@ impl DeepSeekClient {
         if let Some(tools) = request.tools.as_ref() {
             let mut chat_tools: Vec<_> = tools
                 .iter()
-                .map(|tool| tool_to_chat_for_base_url(tool, &self.base_url))
+                .map(|tool| {
+                    tool_to_chat_for_route(tool, &self.base_url, self.path_suffix.as_deref())
+                })
                 .collect();
             // Kimi / Moonshot enforces stricter JSON Schema: `type` must be
             // inside `anyOf` / `oneOf` items, not on the parent (#2438).
@@ -306,7 +308,9 @@ impl DeepSeekClient {
         if let Some(tools) = request.tools.as_ref() {
             let mut chat_tools: Vec<_> = tools
                 .iter()
-                .map(|tool| tool_to_chat_for_base_url(tool, &self.base_url))
+                .map(|tool| {
+                    tool_to_chat_for_route(tool, &self.base_url, self.path_suffix.as_deref())
+                })
                 .collect();
             // Kimi / Moonshot enforces stricter JSON Schema: `type` must be
             // inside `anyOf` / `oneOf` items, not on the parent (#2438).
@@ -543,6 +547,10 @@ impl DeepSeekClient {
                                         yield Ok(event);
                                     }
                                 }
+                                SseDataFrame::Invalid(error) => {
+                                    yield Err(anyhow::anyhow!(error));
+                                    break 'stream;
+                                }
                             }
                         }
                         continue;
@@ -562,8 +570,13 @@ impl DeepSeekClient {
 
                     lines_processed = lines_processed.saturating_add(1);
                     if lines_processed >= SSE_MAX_LINES_PER_CHUNK {
-                        // Yield backpressure relief to avoid starving downstream consumers.
-                        break;
+                        // Yield cooperatively, then keep draining complete
+                        // lines already buffered from this network chunk. A
+                        // hard break here used to strand the tail until the
+                        // next chunk; at EOF it was parsed as one multi-line
+                        // JSON frame and silently lost.
+                        tokio::task::yield_now().await;
+                        lines_processed = 0;
                     }
                 }
             }
@@ -589,7 +602,7 @@ impl DeepSeekClient {
                 }
                 if !line_buf.is_empty() {
                     let data = std::mem::take(&mut line_buf);
-                    if let SseDataFrame::Events(events) = parse_sse_data_frame(
+                    match parse_sse_data_frame(
                         &data,
                         &mut content_index,
                         &mut text_started,
@@ -599,16 +612,20 @@ impl DeepSeekClient {
                         &mut inline_reasoning_tags,
                         reasoning_stream_style,
                     ) {
-                        for mut event in events {
-                            if let Some(tokens) = replay_input_tokens
-                                && let StreamEvent::MessageDelta {
-                                    usage: Some(usage), ..
-                                } = &mut event
-                            {
-                                usage.reasoning_replay_tokens = Some(tokens);
+                        SseDataFrame::Events(events) => {
+                            for mut event in events {
+                                if let Some(tokens) = replay_input_tokens
+                                    && let StreamEvent::MessageDelta {
+                                        usage: Some(usage), ..
+                                    } = &mut event
+                                {
+                                    usage.reasoning_replay_tokens = Some(tokens);
+                                }
+                                yield Ok(event);
                             }
-                            yield Ok(event);
                         }
+                        SseDataFrame::Invalid(error) => yield Err(anyhow::anyhow!(error)),
+                        SseDataFrame::Done => {}
                     }
                 }
             }
@@ -1570,7 +1587,7 @@ fn last_chars(value: &str, count: usize) -> String {
 fn build_chat_messages_with_reasoning(
     system: Option<&SystemPrompt>,
     messages: &[Message],
-    _model: &str,
+    model: &str,
     include_reasoning: bool,
     include_tool_budget_metadata: bool,
 ) -> Vec<Value> {
@@ -1669,6 +1686,14 @@ fn build_chat_messages_with_reasoning(
             let mut reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_tool_calls = !tool_calls.is_empty();
+            // The current request's effort controls newly generated thinking,
+            // not the validity of an earlier DeepSeek tool round. DeepSeek
+            // requires an assistant tool-call message's reasoning_content to
+            // be passed back on every subsequent request, including after the
+            // caller switches thinking off.
+            let replay_tool_call_reasoning =
+                has_tool_calls && requires_tool_call_reasoning_replay(model);
+            let replay_reasoning = include_reasoning || replay_tool_call_reasoning;
             // Reasoning replay must be a function of the stored message ONLY,
             // never of later history. DeepSeek's prefix cache hashes the raw
             // bytes of every message; flipping `reasoning_content` on/off
@@ -1679,8 +1704,8 @@ fn build_chat_messages_with_reasoning(
             // Tool-call messages with empty thinking still need a placeholder
             // (DeepSeek 400s without it), but text-only assistant messages
             // simply omit the field when there's nothing to replay.
-            let mut has_reasoning = include_reasoning && !reasoning_content.trim().is_empty();
-            if include_reasoning && has_tool_calls && !has_reasoning {
+            let mut has_reasoning = replay_reasoning && !reasoning_content.trim().is_empty();
+            if replay_reasoning && has_tool_calls && !has_reasoning {
                 logging::warn(
                     "Substituting placeholder reasoning_content for DeepSeek tool-call assistant message",
                 );
@@ -1926,8 +1951,16 @@ pub(super) fn tool_to_chat(tool: &Tool) -> Value {
 }
 
 pub(super) fn tool_to_chat_for_base_url(tool: &Tool, base_url: &str) -> Value {
+    tool_to_chat_for_route(tool, base_url, None)
+}
+
+pub(super) fn tool_to_chat_for_route(
+    tool: &Tool,
+    base_url: &str,
+    path_suffix: Option<&str>,
+) -> Value {
     let mut value = tool_to_chat(tool);
-    if !deepseek_base_url_supports_strict_tools(base_url)
+    if !deepseek_route_supports_strict_tools(base_url, path_suffix)
         && let Some(function) = value.get_mut("function")
         && let Some(obj) = function.as_object_mut()
     {
@@ -1936,15 +1969,42 @@ pub(super) fn tool_to_chat_for_base_url(tool: &Tool, base_url: &str) -> Value {
     value
 }
 
-fn deepseek_base_url_supports_strict_tools(base_url: &str) -> bool {
+fn is_official_deepseek_base_url(base_url: &str) -> bool {
     let trimmed = base_url.trim_end_matches('/').to_ascii_lowercase();
-    let is_deepseek = trimmed == "https://api.deepseek.com"
+    trimmed == "https://api.deepseek.com"
         || trimmed == "https://api.deepseek.com/v1"
         || trimmed == "https://api.deepseek.com/beta"
         || trimmed == "https://api.deepseeki.com"
         || trimmed == "https://api.deepseeki.com/v1"
-        || trimmed == "https://api.deepseeki.com/beta";
-    !is_deepseek || trimmed.ends_with("/beta")
+        || trimmed == "https://api.deepseeki.com/beta"
+}
+
+fn targets_deepseek_owned_host(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url).ok().is_some_and(|url| {
+        matches!(
+            url.host_str().map(str::to_ascii_lowercase).as_deref(),
+            Some("api.deepseek.com" | "api.deepseeki.com")
+        )
+    })
+}
+
+pub(super) fn deepseek_route_supports_strict_tools(
+    base_url: &str,
+    path_suffix: Option<&str>,
+) -> bool {
+    if !is_official_deepseek_base_url(base_url) {
+        if targets_deepseek_owned_host(base_url) {
+            // A malformed/customized URL on DeepSeek's own host is not an
+            // unknown gateway contract. Refuse to claim Beta strict support
+            // for ports, query strings, userinfo, or undocumented paths.
+            return false;
+        }
+        // Custom OpenAI-compatible routes own their strict-schema contract.
+        return true;
+    }
+    super::api_url_with_suffix(base_url, "chat/completions", path_suffix)
+        .to_ascii_lowercase()
+        .ends_with("/beta/chat/completions")
 }
 
 fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
@@ -1987,10 +2047,11 @@ fn reasoning_effort_enables_thinking(effort: Option<&str>) -> bool {
 
 /// Final-pass sanitizer over the outgoing chat-completions JSON payload.
 /// Forces a non-empty `reasoning_content` onto assistant messages that carry
-/// `tool_calls`, when the model + effort combination requires it. DeepSeek's
-/// thinking-mode API rejects such messages with a 400 error; substituting a
-/// placeholder keeps the conversation chain intact. Non-tool assistant
-/// reasoning can stay omitted once a later user text turn begins.
+/// `tool_calls` whenever the model protocol requires historical replay.
+/// DeepSeek's thinking-mode API rejects such messages with a 400 error;
+/// substituting a placeholder keeps the conversation chain intact even when
+/// the current completion has thinking disabled. Non-tool assistant reasoning
+/// can stay omitted once a later user text turn begins.
 ///
 /// Also tallies the size of all replayed `reasoning_content` and logs it, so
 /// users on `RUST_LOG=codewhale_tui=debug` can see how much of their input
@@ -2001,7 +2062,9 @@ pub(super) fn sanitize_thinking_mode_messages(
     effort: Option<&str>,
     provider: ApiProvider,
 ) -> Option<u32> {
-    if !should_replay_reasoning_content_for_provider(provider, model, effort) {
+    let replay_reasoning = should_replay_reasoning_content_for_provider(provider, model, effort);
+    let replay_tool_call_reasoning = requires_tool_call_reasoning_replay(model);
+    if !replay_reasoning && !replay_tool_call_reasoning {
         return None;
     }
     let messages = body.get_mut("messages").and_then(Value::as_array_mut)?;
@@ -2017,7 +2080,7 @@ pub(super) fn sanitize_thinking_mode_messages(
             .get("reasoning_content")
             .and_then(Value::as_str)
             .is_none_or(|s| s.trim().is_empty());
-        if has_tool_calls && needs_placeholder {
+        if has_tool_calls && (replay_reasoning || replay_tool_call_reasoning) && needs_placeholder {
             msg["reasoning_content"] = json!("(reasoning omitted)");
             substitutions = substitutions.saturating_add(1);
             logging::warn(format!(
@@ -2140,6 +2203,15 @@ fn requires_reasoning_content(model: &str) -> bool {
         || lower.contains("-reasoning")
         || lower.contains("-thinking")
         || has_deepseek_r_series_marker(&lower)
+}
+
+/// Whether historical assistant tool calls must keep their reasoning payload.
+///
+/// This is intentionally independent of the current request's reasoning
+/// effort: disabling thinking affects the next completion, while DeepSeek's
+/// wire protocol still requires prior tool-call reasoning to be replayed.
+fn requires_tool_call_reasoning_replay(model: &str) -> bool {
+    requires_reasoning_content(model)
 }
 
 fn should_replay_reasoning_content(model: &str, effort: Option<&str>) -> bool {
@@ -2597,6 +2669,7 @@ fn push_thinking_delta(
 enum SseDataFrame {
     Done,
     Events(Vec<StreamEvent>),
+    Invalid(String),
 }
 
 // The six `&mut` streaming-state fields plus the style flag are a deliberate,
@@ -2616,22 +2689,21 @@ fn parse_sse_data_frame(
     if data.trim() == "[DONE]" {
         return SseDataFrame::Done;
     }
-    let events = serde_json::from_str::<Value>(data).map_or_else(
-        |_| Vec::new(),
-        |chunk_json| {
-            parse_sse_chunk_with_reasoning_style(
-                &chunk_json,
-                content_index,
-                text_started,
-                thinking_started,
-                tool_indices,
-                reasoning_detail_buffers,
-                inline_reasoning_tags,
-                reasoning_stream_style,
-            )
-        },
-    );
-    SseDataFrame::Events(events)
+    match serde_json::from_str::<Value>(data) {
+        Ok(chunk_json) => SseDataFrame::Events(parse_sse_chunk_with_reasoning_style(
+            &chunk_json,
+            content_index,
+            text_started,
+            thinking_started,
+            tool_indices,
+            reasoning_detail_buffers,
+            inline_reasoning_tags,
+            reasoning_stream_style,
+        )),
+        Err(error) => SseDataFrame::Invalid(format!(
+            "DeepSeek SSE contained an invalid JSON data frame: {error}"
+        )),
+    }
 }
 
 /// Parse a single SSE chunk from the Chat Completions streaming API into
@@ -3715,6 +3787,32 @@ mod stream_decoder_tests {
     }
 
     #[test]
+    fn decoder_rejects_malformed_deepseek_sse_json() {
+        let mut content_index = 0u32;
+        let mut text_started = false;
+        let mut thinking_started = false;
+        let mut tool_indices = std::collections::HashMap::new();
+        let mut reasoning_detail_buffers = std::collections::HashMap::new();
+        let mut inline_reasoning_tags = InlineReasoningTagState::default();
+
+        let outcome = parse_sse_data_frame(
+            r#"{"choices":[BROKEN]}"#,
+            &mut content_index,
+            &mut text_started,
+            &mut thinking_started,
+            &mut tool_indices,
+            &mut reasoning_detail_buffers,
+            &mut inline_reasoning_tags,
+            ReasoningStreamStyle::SeparateField,
+        );
+
+        let SseDataFrame::Invalid(error) = outcome else {
+            panic!("malformed provider data must not be silently discarded");
+        };
+        assert!(error.contains("invalid JSON data frame"), "{error}");
+    }
+
+    #[test]
     fn decoder_emits_tool_use_block_for_tool_call_delta() {
         // Tool-call deltas are content too — once one arrives, transparent
         // retry must be off (the model has committed to a tool invocation
@@ -4444,6 +4542,152 @@ mod stream_decoder_tests {
 }
 
 #[cfg(test)]
+mod deepseek_tool_reasoning_replay_tests {
+    use super::{build_chat_messages_for_request_and_provider, sanitize_thinking_mode_messages};
+    use crate::config::ApiProvider;
+    use crate::models::{ContentBlock, Message, MessageRequest};
+    use serde_json::{Value, json};
+
+    fn request_with_history(assistant_content: Vec<ContentBlock>) -> MessageRequest {
+        MessageRequest {
+            model: "deepseek-v4-pro".to_string(),
+            messages: vec![
+                Message {
+                    role: "assistant".to_string(),
+                    content: assistant_content,
+                },
+                Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::ToolResult {
+                        tool_use_id: "call-1".to_string(),
+                        content: "tests passed".to_string(),
+                        is_error: None,
+                        content_blocks: None,
+                    }],
+                },
+            ],
+            max_tokens: 128,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            // The earlier tool round was produced with thinking enabled; the
+            // next completion intentionally disables new thinking.
+            reasoning_effort: Some("off".to_string()),
+            stream: None,
+            temperature: None,
+            top_p: None,
+        }
+    }
+
+    fn tool_call() -> ContentBlock {
+        ContentBlock::ToolUse {
+            id: "call-1".to_string(),
+            name: "shell_command".to_string(),
+            input: json!({"command": "cargo test"}),
+            caller: None,
+        }
+    }
+
+    fn assistant_message(messages: &[Value]) -> &Value {
+        messages
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .expect("assistant history message")
+    }
+
+    #[test]
+    fn switching_thinking_off_preserves_tool_call_reasoning_history() {
+        let request = request_with_history(vec![
+            ContentBlock::Thinking {
+                thinking: "Run the targeted tests before claiming success.".to_string(),
+                signature: None,
+            },
+            tool_call(),
+        ]);
+
+        let messages =
+            build_chat_messages_for_request_and_provider(&request, ApiProvider::Deepseek);
+        let assistant = assistant_message(&messages);
+
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("Run the targeted tests before claiming success.")
+        );
+        assert!(assistant.get("tool_calls").is_some());
+    }
+
+    #[test]
+    fn thinking_off_uses_stable_placeholder_for_tool_round_without_reasoning() {
+        let request = request_with_history(vec![tool_call()]);
+
+        let messages =
+            build_chat_messages_for_request_and_provider(&request, ApiProvider::Deepseek);
+        let assistant = assistant_message(&messages);
+
+        assert_eq!(
+            assistant.get("reasoning_content").and_then(Value::as_str),
+            Some("(reasoning omitted)")
+        );
+
+        // The final wire sanitizer must enforce the same invariant for any
+        // restored/cached payload that bypasses the normal message builder.
+        let mut body = json!({
+            "messages": [{
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "shell_command", "arguments": "{}"}
+                }]
+            }]
+        });
+        sanitize_thinking_mode_messages(
+            &mut body,
+            "deepseek-v4-pro",
+            Some("off"),
+            ApiProvider::Deepseek,
+        );
+        assert_eq!(
+            body.pointer("/messages/0/reasoning_content")
+                .and_then(Value::as_str),
+            Some("(reasoning omitted)")
+        );
+    }
+
+    #[test]
+    fn thinking_off_does_not_replay_reasoning_for_plain_assistant_history() {
+        let mut request = request_with_history(vec![
+            ContentBlock::Thinking {
+                thinking: "Private reasoning from the prior answer.".to_string(),
+                signature: None,
+            },
+            ContentBlock::Text {
+                text: "The prior answer.".to_string(),
+                cache_control: None,
+            },
+        ]);
+        request.messages.truncate(1);
+
+        let messages =
+            build_chat_messages_for_request_and_provider(&request, ApiProvider::Deepseek);
+        let assistant = assistant_message(&messages);
+
+        assert_eq!(
+            assistant.get("content").and_then(Value::as_str),
+            Some("The prior answer.")
+        );
+        assert!(
+            assistant.get("reasoning_content").is_none(),
+            "plain assistant history must not gain reasoning_content when thinking is off"
+        );
+        assert!(assistant.get("tool_calls").is_none());
+    }
+}
+
+#[cfg(test)]
 mod alias_thinking_detection_tests {
     //! Regression coverage for the DeepSeek public model aliases.
     //!
@@ -4459,7 +4703,8 @@ mod alias_thinking_detection_tests {
     use super::{
         apply_openai_reasoning_effort, apply_provider_token_limit, is_reasoning_model_for_stream,
         provider_accepts_reasoning_content, requires_reasoning_content,
-        should_replay_reasoning_content, should_replay_reasoning_content_for_provider,
+        requires_tool_call_reasoning_replay, should_replay_reasoning_content,
+        should_replay_reasoning_content_for_provider,
     };
     use crate::config::ApiProvider;
     use serde_json::json;
@@ -4503,10 +4748,10 @@ mod alias_thinking_detection_tests {
     }
 
     #[test]
-    fn explicit_reasoning_off_overrides_alias_detection() {
-        // `reasoning_effort = "off"` is the documented escape hatch: even when
-        // the model is in the thinking family, the user can opt out and the
-        // sanitizer must respect that choice.
+    fn explicit_reasoning_off_disables_plain_history_replay_only() {
+        // `reasoning_effort = "off"` disables newly generated thinking and
+        // avoids replaying reasoning on plain assistant history. It does not
+        // relax DeepSeek's protocol requirement for historical tool rounds.
         assert!(!should_replay_reasoning_content(
             "deepseek-chat",
             Some("off")
@@ -4515,6 +4760,8 @@ mod alias_thinking_detection_tests {
             "deepseek-reasoner",
             Some("disabled")
         ));
+        assert!(requires_tool_call_reasoning_replay("deepseek-chat"));
+        assert!(requires_tool_call_reasoning_replay("deepseek-reasoner"));
         // Without an explicit override, alias models still trigger replay.
         assert!(should_replay_reasoning_content("deepseek-chat", None));
         assert!(should_replay_reasoning_content(

@@ -8,76 +8,187 @@ use crate::compaction::estimate_tokens;
 use crate::config::ApiProvider;
 use crate::context_budget::ContextBudget;
 use crate::error_taxonomy::ErrorCategory;
-use crate::models::{Message, SystemPrompt, context_window_for_model};
+use crate::models::{Message, SystemPrompt};
 use crate::tools::spec::ToolResult;
 use codewhale_config::route::RouteLimits;
 use serde_json::Value;
 
-/// Max output tokens requested for normal agent turns. Generous on purpose:
-/// V4 thinking models can produce tens of thousands of reasoning tokens on
-/// hard prompts before the visible reply, and DeepSeek V4 ships with a 1M
-/// context window. v0.7.5 keeps this cap fixed instead of silently lowering
-/// `max_tokens` near pressure; hard-cycle/preflight checks reserve this budget
-/// plus safety headroom before sending the next request.
+/// Default output-token policy cap for official DeepSeek V4 agent turns.
+///
+/// DeepSeek V4 advertises a 384K provider capability, but requesting that full
+/// amount by default would enlarge the worst-case cost of every turn. Keep an
+/// explicit 256-Ki-token product cap and use the provider capability only as a
+/// hard safety ceiling. The same route-aware cap is used for the API request
+/// and the internal context reservation, so preflight math cannot drift from
+/// what the provider is actually asked to generate.
 pub(super) const TURN_MAX_OUTPUT_TOKENS: u32 = 262_144;
 
-/// Safe max output tokens sent in the API request. This must be low enough to
-/// work with providers that have smaller context limits than the model's native
-/// window (e.g., self-hosted vLLM/SGLang with `--max-model-len 131072`).
-/// DeepSeek's API will still produce as many tokens as needed for thinking;
-/// this cap just prevents HTTP 400 from providers with tight limits.
-const API_MAX_OUTPUT_TOKENS: u32 = 65_536;
+/// Conservative policy ceiling for third-party and self-hosted routes. Those
+/// deployments frequently expose a model's native name while serving a much
+/// smaller runtime window, so a V4-looking model id alone must never unlock the
+/// official hosted allowance.
+const CONSERVATIVE_API_MAX_OUTPUT_TOKENS: u32 = 65_536;
 
-/// Compute the effective `max_tokens` to send in the API request for a given
-/// model. Uses `API_MAX_OUTPUT_TOKENS` (64K) which fits within common provider
-/// limits (128K+ total). For non-V4 models with smaller context windows, caps
-/// at half the context window.
-///
-/// Override: when the env var `DEEPSEEK_MAX_OUTPUT_TOKENS` is set to a positive
-/// integer, this function returns that value directly. Use this for self-hosted
-/// providers (vLLM/SGLang) whose `max-model-len` is tight and where the
-/// model-table heuristic above would over-allocate. Example: vLLM serving
-/// Qwen3.6 with `--max-model-len 65536` should set
-/// `DEEPSEEK_MAX_OUTPUT_TOKENS=16384` so input + output stays well under the
-/// provider's hard limit.
-pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
-    if let Ok(raw) = std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS")
-        && let Ok(n) = raw.trim().parse::<u32>()
-        && n > 0
+fn configured_max_output_tokens() -> Option<u32> {
+    std::env::var("DEEPSEEK_MAX_OUTPUT_TOKENS")
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u32>().ok())
+        .filter(|tokens| *tokens > 0)
+}
+
+/// Whether this provider/model pair has DeepSeek's V4-class capability. This
+/// does not prove endpoint ownership: users may keep `provider = "deepseek"`
+/// while overriding its base URL to a self-hosted server.
+fn is_deepseek_v4_capability(provider: ApiProvider, model: &str) -> bool {
+    if !matches!(
+        provider,
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic
+    ) {
+        return false;
+    }
+    let capability = crate::config::provider_capability(provider, model);
+    capability.context_window == crate::models::DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS
+        && capability.max_output == 384_000
+}
+
+/// Classify a final resolved DeepSeek endpoint without trusting provider/model
+/// labels. Large output caps are expensive, so the allowlist is intentionally
+/// exact: HTTPS only, an official host, no userinfo/port/query/fragment, no
+/// custom request-path suffix, and only the paths CodeWhale explicitly uses
+/// for the official Chat or Anthropic-compatible APIs.
+pub(super) fn official_deepseek_endpoint(
+    provider: ApiProvider,
+    base_url: Option<&str>,
+    path_suffix: Option<&str>,
+) -> bool {
+    if !matches!(
+        provider,
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic
+    ) || path_suffix.is_some()
     {
-        return n;
+        return false;
     }
-    let window = context_window_for_model(model).unwrap_or(128_000);
-    if window >= 500_000 {
-        // V4-class models on large-context providers: use 64K which is safe
-        // for most deployments while still allowing substantial output.
-        API_MAX_OUTPUT_TOKENS
+    let Some(base_url) = base_url.map(str::trim).filter(|url| !url.is_empty()) else {
+        return false;
+    };
+    let Ok(parsed) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    if parsed.scheme() != "https"
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return false;
+    }
+    if !matches!(
+        parsed.host_str(),
+        Some("api.deepseek.com" | "api.deepseeki.com")
+    ) {
+        return false;
+    }
+    // `url::Url` normalizes an explicit default `:443` away. Compare the raw
+    // authority to the parsed host so any explicit port, userinfo, trailing
+    // dot, or other authority decoration remains a conservative rejection.
+    let Some(raw_authority) = base_url
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .and_then(|rest| rest.split(['/', '?', '#']).next())
+    else {
+        return false;
+    };
+    if !parsed
+        .host_str()
+        .is_some_and(|host| raw_authority.eq_ignore_ascii_case(host))
+    {
+        return false;
+    }
+
+    match provider {
+        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
+            matches!(parsed.path(), "/" | "/v1" | "/v1/" | "/beta" | "/beta/")
+        }
+        ApiProvider::DeepseekAnthropic => {
+            matches!(parsed.path(), "/anthropic" | "/anthropic/")
+        }
+        _ => false,
+    }
+}
+
+/// Pure route policy for a request's output ceiling.
+///
+/// The result is the minimum of five independent upper bounds:
+///
+/// 1. the product policy (262K only for an official, large-window V4 route;
+///    otherwise at most 64K and half of the effective route window),
+/// 2. the optional user ceiling from `DEEPSEEK_MAX_OUTPUT_TOKENS`,
+/// 3. the provider/model capability,
+/// 4. resolved route `max_output` metadata, and
+/// 5. the context-window safety allowance from [`ContextBudget`].
+///
+/// It deliberately does not grow from the current input size: `max_tokens`
+/// remains an explicit, predictable cost cap. A pathological window too small
+/// to preserve the normal input floor still returns one token so the request is
+/// valid and the provider can return its own precise limit error.
+pub(super) fn max_output_tokens_for_route_policy(
+    provider: ApiProvider,
+    model: &str,
+    context_window: u32,
+    route_output_limit: Option<u32>,
+    user_output_limit: Option<u32>,
+    official_deepseek_endpoint: bool,
+) -> u32 {
+    let capability = crate::config::provider_capability(provider, model);
+    let official_v4_large_window = official_deepseek_endpoint
+        && is_deepseek_v4_capability(provider, model)
+        && context_window >= INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD;
+    let policy_cap = if official_v4_large_window {
+        TURN_MAX_OUTPUT_TOKENS
     } else {
-        // Smaller models: cap at half the context window (leave room for input)
-        let capped = window / 2;
-        capped.min(API_MAX_OUTPUT_TOKENS)
+        CONSERVATIVE_API_MAX_OUTPUT_TOKENS.min((context_window / 2).max(1))
+    };
+
+    let mut cap = policy_cap.min(capability.max_output.max(1));
+    if let Some(user_cap) = user_output_limit.filter(|tokens| *tokens > 0) {
+        cap = cap.min(user_cap);
     }
+    if let Some(route_cap) = route_output_limit.filter(|tokens| *tokens > 0) {
+        cap = cap.min(route_cap);
+    }
+
+    u32::try_from(
+        ContextBudget::new(u64::from(context_window), 0, u64::from(cap)).output_cap_tokens,
+    )
+    .unwrap_or(cap)
+    .max(1)
+}
+
+/// Conservative model-only compatibility helper used by legacy tests. Runtime
+/// requests use [`effective_max_output_tokens_for_route`], which can distinguish
+/// the official hosted route from third-party and self-hosted endpoints.
+#[cfg(test)]
+pub(super) fn effective_max_output_tokens(model: &str) -> u32 {
+    effective_max_output_tokens_for_route(ApiProvider::Custom, model, None, false)
 }
 
 pub(super) fn effective_max_output_tokens_for_route(
     provider: ApiProvider,
     model: &str,
     route_limits: Option<RouteLimits>,
+    official_deepseek_endpoint: bool,
 ) -> u32 {
-    let cap = effective_max_output_tokens(model)
-        .min(crate::config::provider_capability(provider, model).max_output);
-    let cap = crate::route_budget::route_output_limit_tokens(route_limits)
-        .map_or(cap, |route_cap| cap.min(route_cap));
-    let Some(window) = route_limits
-        .and_then(|limits| limits.context_tokens)
-        .and_then(|tokens| u32::try_from(tokens).ok())
-        .filter(|tokens| *tokens > 0)
-    else {
-        return cap;
-    };
-    u32::try_from(ContextBudget::new(u64::from(window), 0, u64::from(cap)).output_cap_tokens)
-        .unwrap_or(cap)
-        .max(1)
+    let context_window =
+        crate::route_budget::route_context_window_tokens(provider, model, route_limits);
+    max_output_tokens_for_route_policy(
+        provider,
+        model,
+        context_window,
+        crate::route_budget::route_output_limit_tokens(route_limits),
+        configured_max_output_tokens(),
+        official_deepseek_endpoint,
+    )
 }
 /// Keep this many most recent messages when emergency trimming is required.
 pub(super) const MIN_RECENT_MESSAGES_TO_KEEP: usize = 4;
@@ -580,11 +691,10 @@ pub(super) fn estimate_input_tokens_conservative(
         .saturating_add(framing_overhead)
 }
 
-/// Context windows at or above this size reserve the full
-/// [`TURN_MAX_OUTPUT_TOKENS`] (262K) when computing the internal input budget,
-/// leaving room for V4-class interleaved thinking. Below it, the reservation
-/// falls back to [`effective_max_output_tokens`] so a smaller self-hosted
-/// window does not underflow to a negative budget.
+/// Only official DeepSeek V4 routes at or above this window size are eligible
+/// for the larger [`TURN_MAX_OUTPUT_TOKENS`] policy. Smaller configured windows
+/// and third-party/self-hosted providers retain the conservative half-window /
+/// 64K ceiling even when their model id contains `deepseek-v4`.
 const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
 
 /// Internal input-side token budget for a provider/model route:
@@ -594,37 +704,39 @@ const INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD: u32 = 500_000;
 /// of disabling preflight; custom long-context deployments can still advertise
 /// their window with a `-256k`/`-1024k` model suffix.
 ///
-/// The reserved-output term is window-dependent:
-///   * `window >= 500K` (V4-class large-context) -> [`TURN_MAX_OUTPUT_TOKENS`]
-///     (262K). Preserves the "leave room for interleaved thinking" contract.
-///   * `window < 500K` (smaller / self-hosted, e.g. a 256K vLLM Qwen window)
-///     -> [`effective_max_output_tokens`], i.e. what the API actually caps
-///     output at. Reserving the full 262K here would compute
-///     `256K - 262K - 1K`, which underflows `checked_sub` to `None` and
-///     *silently disables every preflight and emergency recovery path* — the
-///     session then runs until the provider hard-rejects on context length.
+/// The reserved-output term is exactly the route-aware request cap. This keeps
+/// official V4's 262K request/reservation aligned while allowing route limits,
+/// user limits, provider capability, and smaller self-hosted windows to lower
+/// both numbers together.
 #[cfg(test)]
 pub(super) fn context_input_budget_for_provider(
     provider: ApiProvider,
     model: &str,
+    official_deepseek_endpoint: bool,
 ) -> Option<usize> {
-    context_input_budget_for_route(provider, model, None, 0)
+    context_input_budget_for_route(provider, model, None, 0, official_deepseek_endpoint)
 }
 
 /// Public so external callers (e.g. a host/bridge deriving its own compaction
 /// trigger line) can reuse the *exact* same internal input-budget math — window
-/// minus the window-dependent output reservation (`route_output_reservation_for_window`,
-/// which encodes the ≥500K→262K vs smaller-window split) minus headroom —
-/// instead of re-deriving those constants and silently drifting from the engine.
-/// Pass `input_tokens = 0` to get the full emergency input budget for the route.
+/// minus the route-aware request cap minus headroom — instead of re-deriving
+/// those limits and silently drifting from the engine. Pass `input_tokens = 0`
+/// to get the full emergency input budget for the route.
 pub fn context_input_budget_for_route(
     provider: ApiProvider,
     model: &str,
     route_limits: Option<RouteLimits>,
     input_tokens: usize,
+    official_deepseek_endpoint: bool,
 ) -> Option<usize> {
-    route_context_budget_for_route(provider, model, route_limits, input_tokens)
-        .and_then(|budget| usize::try_from(budget.available_input_tokens).ok())
+    route_context_budget_for_route(
+        provider,
+        model,
+        route_limits,
+        input_tokens,
+        official_deepseek_endpoint,
+    )
+    .and_then(|budget| usize::try_from(budget.available_input_tokens).ok())
 }
 
 #[cfg(test)]
@@ -632,8 +744,15 @@ pub(super) fn route_context_budget_for_provider(
     provider: ApiProvider,
     model: &str,
     input_tokens: usize,
+    official_deepseek_endpoint: bool,
 ) -> Option<ContextBudget> {
-    route_context_budget_for_route(provider, model, None, input_tokens)
+    route_context_budget_for_route(
+        provider,
+        model,
+        None,
+        input_tokens,
+        official_deepseek_endpoint,
+    )
 }
 
 pub(super) fn route_context_budget_for_route(
@@ -641,9 +760,16 @@ pub(super) fn route_context_budget_for_route(
     model: &str,
     route_limits: Option<RouteLimits>,
     input_tokens: usize,
+    official_deepseek_endpoint: bool,
 ) -> Option<ContextBudget> {
     let window = crate::route_budget::route_context_window_tokens(provider, model, route_limits);
-    let output_cap = route_output_reservation_for_window(provider, model, window, route_limits);
+    let output_cap = route_output_reservation_for_window(
+        provider,
+        model,
+        window,
+        route_limits,
+        official_deepseek_endpoint,
+    );
     crate::route_budget::route_context_budget(
         provider,
         model,
@@ -658,15 +784,16 @@ fn route_output_reservation_for_window(
     model: &str,
     window_tokens: u32,
     route_limits: Option<RouteLimits>,
+    official_deepseek_endpoint: bool,
 ) -> u32 {
-    if let Some(route_cap) = crate::route_budget::route_output_limit_tokens(route_limits) {
-        return route_cap.min(TURN_MAX_OUTPUT_TOKENS);
-    }
-    if window_tokens >= INTERNAL_BUDGET_LARGE_WINDOW_THRESHOLD {
-        TURN_MAX_OUTPUT_TOKENS
-    } else {
-        effective_max_output_tokens_for_route(provider, model, route_limits)
-    }
+    max_output_tokens_for_route_policy(
+        provider,
+        model,
+        window_tokens,
+        crate::route_budget::route_output_limit_tokens(route_limits),
+        configured_max_output_tokens(),
+        official_deepseek_endpoint,
+    )
 }
 
 pub(super) fn is_context_length_error_message(message: &str) -> bool {
