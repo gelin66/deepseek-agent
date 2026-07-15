@@ -1,187 +1,171 @@
 # Repository Agent Guidance
 
-## Local DeepSeek Agent specialization (`deepseek-agent`)
+## Read first
 
-The local `deepseek-agent` branch is intentionally narrower than upstream.
-Its product target is a high-reliability coding-agent framework using the
-official DeepSeek API. On this branch, prioritize work only when it improves
-one of these surfaces:
+Before changing this repository, read in order:
 
-- DeepSeek protocol fidelity, reasoning/tool-call replay, context/cache use,
-  model limits, streaming, retries, or API observability;
-- agent planning and durable work state, tool correctness, evidence-backed
-  completion, memory/compaction, or sub-agent orchestration;
-- repeatable local development, focused regression tests, and safe upstream
-  synchronization for those two areas.
+1. `docs/product/PRODUCT_PLAN.md` — fixed product scope and architecture.
+2. `docs/decisions/` — accepted long-term decisions.
+3. `docs/product/ROADMAP.md` — current milestone, migration, and deletion plan.
+4. `docs/product/EVALUATION.md` — evidence required to keep a capability.
+5. `docs/architecture/CURRENT_CODEWHALE.md` — current implementation facts,
+   not the target design.
 
-Audit DeepSeek against its native protocol, not generic OpenAI assumptions.
-Keep these paths distinct: ordinary Chat tool calls, `/beta` strict function
-schemas (all functions strict, documented schema subset), and `/beta` FIM.
-Never remove or downgrade ordinary tool calling merely because one strict
-schema is incompatible; strict preparation may fall back while tool calls stay
-available.
+If older CodeWhale docs conflict with these files, the product plan and ADRs win.
 
-Do not start unrelated provider integrations, UI redesigns, release/social
-automation, or security-scan work on this branch. Preserve upstream provider
-compatibility where it already exists: deleting large shared surfaces creates
-merge debt and is not considered useful cleanup unless the user explicitly
-approves that deletion. Prefer a thin specialization layer and narrowly scoped
-commits over a fork-wide rewrite. See `docs/DEEPSEEK_AGENT.md` and
-`docs/LOCAL_DEEPSEEK_DEVELOPMENT.md` for the current capability map and local
-workflow.
+## Product north star
 
-## Where to work right now (read this first)
+This repository is becoming a Rust-native, local-first coding agent dedicated
+to the official DeepSeek API. CodeWhale is the sole source base. Cline and
+other agents are capability references only; do not add a TypeScript runtime,
+sidecar, source-code splice, or permanent bridge.
 
-- **Repo:** `Hmbown/CodeWhale`. This repo lives on multiple devices, so work in
-  whichever local checkout you have — keep paths here device-agnostic and always
-  **confirm with `git branch --show-current` before editing.**
-- **Active branch:** start from live truth. Confirm the current fix/integration
-  branch from the latest handoff/objective file and `git branch --show-current`;
-  recent work has landed on `main` through small PRs rather than a long-lived
-  `codex/...` integration branch, so verify a named integration branch still
-  exists before relying on it.
-- **Workspace version:** read it from `Cargo.toml` (`[workspace.package]
-  version`); it advances per release lane, so treat that file as the source of
-  truth over any memorized number. Bump versions deliberately, keeping a bump to
-  its own commit.
-- **Milestone guidepost:** use the current release milestone named in the active
-  handoff and list it live, e.g.
-  `gh issue list --repo Hmbown/CodeWhale --milestone "<current milestone>" --state open`.
-- **Default branch is `main`.** Committing directly to `main` is fine for
-  release-lane work — keep each commit to one reviewable concern with a real
-  body. A fresh `codex/...` branch or worktree is still the right call for an
-  isolated or risky change, opened as a PR when that reads better for review.
-- **Always run before pushing a change:** `cargo fmt`, then the targeted tests
-  for the area (`cargo test -p codewhale-tui --bin codewhale-tui --locked <filter>`,
-  `cargo test -p codewhale-config`, `cargo test -p codewhale-protocol`, …). Full
-  gate: `cargo test --workspace`. Release build:
-  `cargo build --release -p codewhale-cli -p codewhale-tui`.
-- **Known suite papercuts (pre-existing, not regressions):**
-  `run_verifiers_background_*` is flaky under full-suite parallelism but passes
-  in isolation. Attribute it to the known flake, not to your change. (The old
-  `config_command_allow_shell_*` failures on machines with
-  `default_mode = "yolo"` were fixed by pinning the command-test app to
-  Agent mode.)
+Optimize for:
 
-## Continuous agent work conventions
+```text
+verified task success / tokens / time / code complexity
+```
 
-- One concern per commit; write a real commit body. Keep unrelated changes in
-  separate commits.
-- Commit as **WIP** unless you have actually verified the behavior (built the
-  binary, ran the test, reproduced the fix). Stating "fixed" without evidence is
-  worse than an honest WIP.
-- Build only on the surfaces that exist today (removed machinery stays gone):
-  the model-facing sub-agent surface is **`agent` only** — the
-  `agent_open`/`agent_eval`/`agent_close`/`delegate_to_agent` variants,
-  capacity/coherence/runtime-tag systems, lifecycle tools, and runtime prompt/tag
-  injection were all removed. `constitution.md` is the sole base prompt.
-- Configurable sub-agent depth stays. Add a new limit only when it's clearly
-  needed, and explain why.
-- **Do-not-delete guardrail** (salvaged from the 0.8.68 handoff; these were
-  repeatedly misflagged as dead code and deleting them broke the build):
-  `tui/src/memory.rs`, `tui/src/context_budget.rs`,
-  `tui/src/model_registry.rs`, `tui/src/prompt_zones.rs`,
-  `tui/src/tools/remember.rs`, and the entire `config/src/route/` directory
-  are all actively imported. Verify consumers with `rg` before believing any
-  dead-code audit.
-- The sub-agent **TUI freeze reported in older handoffs is resolved** by the
-  v0.8.61 cutover (cap-20, persist-debounce, AgentProgress redraw throttle,
-  ListSubAgents coalescing, input-pump-off-render-thread). The leading
-  "blocking I/O starves the worker pool" theory was measured and **disproven**
-  (`git rev-parse` ~10ms, 18-core machine). Treat the freeze as closed and spend
-  effort elsewhere rather than on a speculative `spawn_blocking` fix.
+Do not treat more abstractions, tools, modes, or lines of code as progress.
 
-## CodeWhale Stewardship
+## Fixed architecture constraints
 
-- Treat community contributors as partners. Good-faith PRs, issue reports,
-  repros, logs, reviews, and verification comments are maintainer evidence,
-  not queue noise.
-- Keep gates warm and dry-run unless Hunter explicitly approves enforcement.
-  Gate copy should guide contributors clearly and respectfully.
-- Credit every harvested PR, issue report, or comment that materially shaped a
-  fix. Preserve authorship when possible; otherwise use mappable GitHub
-  noreply `Co-authored-by` trailers from `.github/AUTHOR_MAP`.
-- CodeWhale started as a DeepSeek-only harness; it's now about building the
-  greatest possible coding harness with the help of an open-source community.
-  Keep CodeWhale branding and every model/provider first-class — none
-  privileged. When retiring legacy names like `deepseek-tui`, keep it clear that
-  every model and provider stays fully supported.
-- Review PRs from code, tests, linked issues, comments, and check results — let
-  those, rather than the title or labels alone, drive every merge, close,
-  harvest, or defer decision on community work.
-- Respect concurrent work in the tree — leave unrelated edits by other people or
-  agents intact.
+- One DeepSeek backend.
+- One `AgentRuntime` for root and child agents.
+- One canonical runtime event protocol.
+- One `RunStore` as persistent truth.
+- Multi-agent is `AgentRuntime x N + Orchestrator`.
+- Writing agents use worktrees and converge through diff/review/verify/merge.
+- CLI, TUI, and local API are thin clients of the same application service.
+- Completion depends on evidence for the latest workspace revision.
+- A replacement slice deletes its old path after cutover.
+- No new Provider ecosystem, cloud platform, marketplace, or chat bridge.
 
-## Release PR Integration
+Changing one of these constraints requires evidence and a new ADR.
 
-- Use scratch integration branches when triaging a crowded release queue. A
-  branch such as `scratch/vX.Y.Z-pr-train-YYYYMMDD` may merge or cherry-pick
-  many PR heads to expose conflicts, missing tests, duplicate work, and hidden
-  coupling quickly.
-- Treat scratch branches as evidence, not as the artifact to ship. Land work by
-  harvesting the safe resolved hunks or commits back into the release branch in
-  narrow, reviewable commits — keep tags, releases, and fast-forwards off the
-  scratch train.
-- Prefer direct GitHub merge only when the PR is clean against the real landing
-  branch, has acceptable checks, and does not cross trust-boundary surfaces. A
-  PR that is clean against `main` can still conflict with a release branch; test
-  against the actual release head before calling it merge-ready.
-- For already approved PRs, start with a scratch merge against the release
-  branch, then decide between direct merge, cherry-pick with conflict
-  resolution, or credited harvest. Maintainer approval is a priority signal,
-  not permission to skip review or tests.
-- When harvesting, preserve or add machine-readable credit: keep the original
-  author where possible, add `Co-authored-by` using `.github/AUTHOR_MAP` or
-  GitHub numeric noreply identity, and include `Harvested from PR #N by
-  @handle` in the commit body so the auto-close workflow can close the PR with
-  credit after it reaches `main`. Merge a PR whose commit carries that line
-  with rebase or a merge commit so the body survives intact — a squash can
-  rewrite it, drop the `Harvested from PR` line, and silently lose both the
-  machine-readable credit and the auto-close.
-- Keep `Co-authored-by` trailers to human contributors —
-  `scripts/check-coauthor-trailers.py` rejects bot/tool ones (Claude, codex,
-  cursor, `noreply@anthropic.com`) on harvest commits. Also refresh the manual
-  credit surfaces that do not auto-populate from trailers: `docs/CONTRIBUTORS.md`
-  and `CHANGELOG.md`.
-- Close or update issues and PRs only after verifying the landed commit on the
-  relevant branch. If the release branch already contains equivalent behavior,
-  leave a clear note linking the commit and describing any remaining delta.
-- For the active release queue, start from the current GitHub release milestone
-  named in the active handoff
-  (`gh issue list --repo Hmbown/CodeWhale --milestone "<current milestone>"`) and
-  refresh state before acting. Older per-version triage docs under `docs/` are
-  historical reference only.
+## Current repository truth
 
-## Cursor Cloud specific instructions
+- Imported CodeWhale baseline: `352e86a611fdf3cd8bd27c36d24d482c06a71117`.
+- The live production agent loop is still under `crates/tui`.
+- `crates/core` is not yet the production model loop.
+- Root and child agents still have different execution loops.
+- Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
+  branch `archive/pre-product-plan-20260715`.
+- That WIP is not automatically accepted as stable behavior. It must be split
+  into protocol, agent reliability, verify experiment, and local-development
+  slices and evaluated independently.
+- `crates/tui/src/tools/verify.rs` is wired production code, not disposable
+  scratch. It is also an unproven model-critic experiment, not equivalent to
+  deterministic test evidence.
 
-Standard build/test/run commands are already documented above and in
-`CONTRIBUTING.md`; this section only records the non-obvious cloud-VM caveats.
+Never use broad `git clean`, `git restore`, reset, or file moves to make a
+dirty tree look tidy. Inspect consumers with `rg`, preserve unrelated changes,
+and remove code only after its replacement is running.
 
-- **System build dep:** the build needs `libdbus-1-dev` (pulled in by
-  `crates/secrets` for the OS keyring). It is installed by the startup update
-  script; if a `cargo build` fails with a `dbus`/`pkg-config` error, that dep is
-  missing.
-- **`rustup default` must be set:** some tests and runtime paths spawn shells in
-  temp dirs *outside* this checkout (e.g. `run_verifiers_background_*`, sub-agent
-  worktrees). Those spawned shells only see the repo's `rust-toolchain.toml`
-  override while inside `/workspace`, so without a global default they fail with
-  "rustup could not choose a version of rustc to run". The update script runs
-  `rustup default stable` to fix this.
-- **Known env-specific test failures at `/workspace` (not code bugs):** because
-  the checkout sits directly under `/`, two `codewhale-tui` subagent tests fail
-  here — `git_repo_root_reports_attempted_paths_when_no_repo_found` (cannot
-  create a temp dir in the unwritable parent `/`) and
-  `create_isolated_worktree_reports_friendly_error_when_no_repo_found` (walking
-  up to `/` discovers `/workspace` itself as a repo). Both pass when the repo is
-  checked out under a normal, writable parent. `run_verifiers_background_*` is
-  the separate pre-existing flake already noted above. Everything else in
-  `cargo test --workspace` passes (~6384 tests).
-- **Running the agent without provider API keys:** point CodeWhale at any local
-  OpenAI-compatible endpoint via the keyless `vllm`/`ollama`/`sglang` providers,
-  e.g. `CODEWHALE_PROVIDER=vllm VLLM_BASE_URL=http://127.0.0.1:8000/v1
-  VLLM_MODEL=<id> codewhale exec --auto "..."`. `codewhale exec` (add `--auto`
-  for tool use) is the non-interactive path to exercise the full agent loop.
-- **Dispatcher needs its sibling:** the `codewhale` binary shells out to a
-  sibling `codewhale-tui` in the same directory (both land in `target/debug`
-  after a build). If they are not co-located, set `DEEPSEEK_TUI_BIN` to the
-  `codewhale-tui` path.
+## Development method
+
+Each implementation slice must state:
+
+1. the real problem;
+2. acceptance criteria;
+3. the single owning module;
+4. the old path it replaces;
+5. tests and evaluation evidence;
+6. what is deleted at cutover.
+
+Build vertical behavior before broad module moves. A normal slice is:
+
+```text
+contract/test
+  -> implementation
+  -> real caller migration
+  -> old path deletion
+  -> benchmark and docs update
+```
+
+Temporary adapters may span at most one roadmap milestone and must have a
+named deletion point. Do not create empty crates or speculative traits to make
+the directory tree resemble the target architecture.
+
+## DeepSeek protocol rules
+
+Audit against the official DeepSeek protocol, not generic OpenAI assumptions:
+
+- ordinary Chat and ordinary tool calls are standard Chat capabilities;
+- Strict Function Calling is a Beta Chat capability and requires the whole
+  request tool catalog to be strict-compatible;
+- if one tool is incompatible, fall back to ordinary tool calling without
+  dropping tools;
+- FIM is a distinct Beta Completions surface;
+- context cache is automatic for ordinary Chat and depends on stable prefixes;
+- replay assistant reasoning and tool-call history exactly as required;
+- finish reason, SSE errors, usage, retries, and output limits are typed
+  protocol outcomes, not warnings hidden in text.
+
+Transient model names, prices, limits, and Beta behavior must be covered by
+fixtures and revalidated with official documentation before changing them.
+
+## Runtime and multi-agent rules
+
+- Keep canonical transcript separate from per-request projection.
+- Root and child agents must eventually pass the same conformance suite.
+- A model may propose completion; the host accepts a terminal state.
+- `ToolOutcome` must distinguish invocation, operation, retry, evidence, and
+  artifact state.
+- Model self-review is advisory unless backed by deterministic evidence.
+- Agent roles are profiles, not different runtimes.
+- Read-only agents may share a read view; writing agents require worktrees.
+- Do not copy Cline-style team tool proliferation or free-chat swarm behavior.
+
+## Repository work conventions
+
+- Confirm `git branch --show-current` and `git status --short` before editing.
+- Use `rg`/`rg --files` for discovery.
+- Preserve existing user and agent changes that are outside the active slice.
+- Keep a commit to one reviewable concern and give it an honest body.
+- Use WIP wording when behavior has not been verified.
+- Do not push, release, force-push, or repoint remotes unless explicitly asked.
+- Keep credentials, logs, generated outputs, and local runtime state untracked.
+- Do not mix product branding, UI polish, provider deletion, and runtime
+  refactoring in the same slice.
+
+## Validation
+
+Minimum for documentation-only work:
+
+```bash
+git diff --check
+```
+
+Focused current WIP gate:
+
+```bash
+./scripts/dev-deepseek-agent.sh focused
+```
+
+Targeted Rust work:
+
+```bash
+cargo fmt --all -- --check
+cargo test -p <owning-crate> --locked <filter>
+cargo check -p <owning-crate> --locked
+```
+
+Full pre-integration gate:
+
+```bash
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+```
+
+Credentialed DeepSeek tests are opt-in, cost-bounded canaries. Protocol
+behavior must first be covered by offline fixtures.
+
+## Documentation discipline
+
+- Update `PRODUCT_PLAN.md` only for accepted scope or architecture changes.
+- Update `ROADMAP.md` for milestone status and execution adjustments.
+- Update `EVALUATION.md` for task, metric, and keep/delete evidence.
+- Add an ADR only for a long-lived architectural decision.
+- Do not create parallel roadmaps, handoffs, version trackers, or speculative
+  design documents when an existing authority file can be updated.

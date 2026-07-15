@@ -1,6 +1,5 @@
-# Build artifacts
-/target
-/extensions/vscode/out/
+# Rust build output
+/target/
 *.pdb
 *.exe
 *.dll
@@ -9,136 +8,82 @@
 *.rlib
 *.o
 
-# Development
+# Credentials and local configuration
 .env
 .env.*
 !.env.example
-node_modules/
-.vscode/
+!**/.env.example
+.envrc
+.direnv/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
-.DS_Store
-Thumbs.db
 
-# Python
+# Node/Python build and dependency output
+node_modules/
+dist/
 __pycache__/
 *.py[cod]
-*$py.class
 .pytest_cache/
+.venv/
 venv/
 ENV/
 env/
-.venv/
 *.egg-info/
-dist/
 
-# Logs
+# Logs, temporary output, and evaluation artifacts
 *.log
-
-# Generated
 outputs/
+results/
 tmp/
 backup/
-
-# Reference papers / large research blobs (keep locally if needed, don't ship)
-docs/DeepSeek_V4.pdf
-docs/*.pdf
-
-# Note: Cargo.lock is intentionally NOT ignored for reproducible builds
-
-# Local dev scripts and temp files
-*.sh
-*.cmd
-!scripts/**
-!.github/scripts/**
-!web/public/install.sh
-test.txt
-TODO*.md
-todo*.md
-AGENTS.md
-# …except the deliberate, maintained agent-guidance files:
-!/AGENTS.md
-!crates/tui/AGENTS.md
-!crates/tui/locales/AGENTS.md
-!web/AGENTS.md
-NEXT_SESSION.md
-AI_HANDOFF.md
-result.json
-count_deps.py
-project_overhaul_prompt.md
-.codex/
-.context/
-.wrangler/
+eval/results/
+eval/raw/
 
 # Local runtime state
-# Ignore everything under any .codewhale/ (snapshots, auto-generated
-# instructions.md, etc.) at any depth EXCEPT the committed repo authority policy.
 **/.codewhale/*
-!**/.codewhale/constitution.json
+!/.codewhale/constitution.json
 .deepseek/
 **/session_*.json
 *.db
-npm/*/bin/downloads/
 
-# Companion app (tracked separately)
-apps/
-
-# Claude Code runtime artifacts
-.claude/settings.json
-.claude/scheduled_tasks.lock
-.claude/worktrees/
+# Agent and worktree state
+.codex/
+.context/
+.agents/
+.claude/
 .worktrees/
 .ace-tool/
-
-# Local-only Claude / ralph notes
-.claude/*.local.md
-.claude/*.local.json
-
-# Maintainer handoff + codemap notes are working-state, not user-facing
-# artifacts. They've leaked into the public repo via .claude/ in the past
-# (HANDOFF_v0.8.28, CODEMAP_v0.8.25) — those files now live under
-# .private/handoffs/ instead. Block the patterns here so a future accidental
-# add doesn't silently land on main.
-.claude/HANDOFF_*
-.claude/CODEMAP_*
-.claude/handoff_*
-.claude/codemap_*
-
-# Maintainer-internal design notes (trade-secret material, never published)
+scratchpad/
+notes/
+logs/
+issues/
 .private/
 
-# Agent handoffs and version-specific setup plans are working-state notes, not
-# public docs. Keep durable setup guidance in docs/runbooks instead.
-docs/*HANDOFF*.md
-docs/*handoff*.md
-docs/*_PLAN.md
-!docs/archive/**
-
-# direnv
-.envrc
-.direnv
-scripts/run_deep_swe.py
-.claude/
-
-# Local run artifacts and caches re-included by !scripts/**
-results/
-scripts/**/__pycache__/
-
-# Maintainer-local verification artifacts
+# Tool caches
+.wrangler/
 .uv-bin/
 .uv-cache/
 .uv-tools/
-issues/
-logs/
-notes/
+npm/*/bin/downloads/
 
-# Agent-local roadmap and scratch (never commit — may hold unreleased plans)
-.agents/
-scratchpad/
+# Large local research files
+docs/*.pdf
+docs/DeepSeek_V4.pdf
 
-# Exploratory operations spec / prompt — never track (canonical copy lives at CW root)
+# Local handoff/scratch documents; durable decisions belong in docs/
+NEXT_SESSION.md
+AI_HANDOFF.md
+TODO*.md
+todo*.md
+result.json
+project_overhaul_prompt.md
 operations9.md
 OPERATIONS_0_9_0.md
 operations_0_9_0.md

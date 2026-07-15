@@ -1124,7 +1124,7 @@ impl Default for SnapshotsToml {
 }
 
 /// On-disk schema for the `[fleet]` table (#3165). See `config.example.toml`
-/// and `docs/FLEET.md` for documentation.
+/// and `docs/legacy/FLEET.md` for documentation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FleetConfigToml {
     /// Default trust level for fleet workers. One of `"sandbox"`, `"local"`,

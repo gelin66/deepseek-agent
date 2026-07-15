@@ -180,7 +180,7 @@ impl WorkerRuntimeProfile {
     }
 
     /// The default profile for a role — the per-role posture. Mirrors the role
-    /// stances documented in `docs/SUBAGENTS.md` (explore/plan/review are
+    /// stances documented in `docs/architecture/SUBAGENTS.md` (explore/plan/review are
     /// read-only; verifier runs tests; implementer/general write).
     #[must_use]
     pub fn for_role(role: SubAgentType) -> Self {

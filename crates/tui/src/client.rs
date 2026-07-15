@@ -3159,11 +3159,7 @@ mod tests {
         });
         assert_eq!(parse_fim_completion(&complete).unwrap(), "middle");
 
-        for reason in [
-            "length",
-            "content_filter",
-            "insufficient_system_resource",
-        ] {
+        for reason in ["length", "content_filter", "insufficient_system_resource"] {
             let incomplete = json!({
                 "choices": [{"text": "partial", "finish_reason": reason}]
             });

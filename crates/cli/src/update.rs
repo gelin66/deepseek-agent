@@ -574,7 +574,7 @@ fn ensure_supported_release_target(os: &str, arch: &str) -> Result<()> {
         bail!(
             "Linux riscv64 release assets are temporarily unavailable because \
              rquickjs-sys 0.12.0 does not ship riscv64gc-unknown-linux-gnu bindings. \
-             See docs/INSTALL.md for the current platform matrix."
+             See the project README for the current development targets."
         );
     }
     Ok(())

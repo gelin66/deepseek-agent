@@ -2619,7 +2619,7 @@ fn provider_config_table_key(provider: crate::config::ApiProvider) -> &'static s
 
 fn provider_auth_hint(provider: crate::config::ApiProvider) -> String {
     if provider == crate::config::ApiProvider::OpenaiCodex {
-        "see docs/PROVIDERS.md for ChatGPT/Codex OAuth setup".to_string()
+        "see docs/reference/PROVIDERS.md for ChatGPT/Codex OAuth setup".to_string()
     } else {
         format!(
             "codewhale auth set --provider {} --api-key \"...\"",

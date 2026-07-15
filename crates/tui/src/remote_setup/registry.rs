@@ -209,14 +209,14 @@ pub fn bridge_by_slug(slug: &str) -> Option<&'static BridgeSpec> {
 // Cloud registry
 // ---------------------------------------------------------------------------
 
-/// Tencent Lighthouse — native systemd, env-file secrets, CNB-driven deploy.
+/// Tencent Lighthouse — native systemd and env-file secrets.
 pub const LIGHTHOUSE: CloudTarget = CloudTarget {
     slug: "lighthouse",
     display: "Tencent Lighthouse",
     secret_store: SecretStore::EnvFile,
     install: InstallMethod::NativeSystemd,
     default_region: "ap-hongkong",
-    cli_tool: "cnb",
+    cli_tool: "bash",
     plan: lighthouse_plan,
 };
 
@@ -264,21 +264,11 @@ pub fn cloud_by_slug(slug: &str) -> Option<&'static CloudTarget> {
 // ---------------------------------------------------------------------------
 
 fn lighthouse_plan(inputs: &DeployInputs) -> Vec<ProvisionStep> {
-    // Lighthouse provisioning is driven by the existing CNB pipeline
-    // (deploy/tencent-lighthouse/cnb/*). The "plan" here is the CNB trigger plus
-    // the host-side service install the RUNBOOK walks the user through.
+    // The imported CNB publication pipeline is not part of this product line.
+    // Keep the legacy generate-only target internally consistent by describing
+    // only the retained host-side installation path.
     let restart_bridge = format!("codewhale-{}-bridge", inputs.bridge_slug);
     vec![
-        ProvisionStep::new(
-            "Render and commit the CNB pipeline (cnb.yml + tag_deploy.yml) for this deploy",
-            "git",
-            &["add", ".cnb.yml", ".cnb/tag_deploy.yml"],
-        ),
-        ProvisionStep::new(
-            "Trigger the CNB `web_trigger_lighthouse` button to build + ship to the host",
-            "cnb",
-            &["trigger", "web_trigger_lighthouse"],
-        ),
         ProvisionStep::new(
             "On the host: install both systemd units and start the runtime + bridge",
             "bash",

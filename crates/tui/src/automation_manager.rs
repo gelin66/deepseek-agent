@@ -1058,7 +1058,7 @@ pub fn default_automations_dir() -> PathBuf {
         }
     }
     // $CODEWHALE_HOME is a hard override of the base data directory
-    // (docs/CONFIGURATION.md): when SET, automations live under it and we do
+    // (docs/reference/CONFIGURATION.md): when SET, automations live under it and we do
     // NOT fall back to the legacy ~/.deepseek path — silent fallback would
     // defeat the isolation the override promises. Check the env var directly
     // (not codewhale_home()'s Ok/Err, which succeeds for the default home too).

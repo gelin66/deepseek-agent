@@ -1849,6 +1849,7 @@ mod tests {
         app.auto_model = false;
         app.reasoning_effort = ReasoningEffort::Max;
         app.api_provider = crate::config::ApiProvider::Deepseek;
+        app.ui_locale = crate::localization::Locale::En;
         app.model_ids_passthrough = false;
         app.provider_models.clear();
         (app, config, (env_guards, lock))
@@ -3748,7 +3749,10 @@ mod tests {
                 "browse catalog",
                 "cancel",
             ] {
-                assert!(text.contains(label), "{w}x{h}: missing '{label}' hint");
+                assert!(
+                    text.contains(label),
+                    "{w}x{h}: missing '{label}' hint\n{text}"
+                );
             }
             // The shared list/detail layout keeps both picker panes visible;
             // narrow blocker sizes stack them instead of squeezing columns.

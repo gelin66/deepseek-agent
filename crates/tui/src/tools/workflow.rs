@@ -4344,7 +4344,7 @@ reviewer = "reviewer"
         std::fs::create_dir_all(&workflow_dir).expect("workflow dir");
         let fixture = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../workflows/issue_audit.workflow.js"),
+                .join("../workflow/tests/fixtures/issue_audit.workflow.js"),
         )
         .expect("issue audit fixture");
         std::fs::write(workflow_dir.join("issue_audit.workflow.js"), fixture)

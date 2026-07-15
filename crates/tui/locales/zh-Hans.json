@@ -741,7 +741,7 @@
     "SetupToolsMcpHotbarLabel": "快捷栏来源：",
     "SetupToolsMcpNeedsActionSaved": "工具/MCP 仍需处理；已记录到设置报告（不阻塞首次运行）。",
     "SetupToolsMcpPreviewTitle": "工具 / MCP 安全引导",
-    "SetupToolsMcpOnRampText": "工具、MCP、技能与插件 — 安全引导\n\n/setup 只读取本地清单。不会启动 MCP 服务器、安装技能、运行插件或自动执行不受信任的命令。\n\n当前清单：\n- MCP：{mcp_result}\n- 技能：{skills_result}\n- 工具目录：{tools_result}\n- 插件：{plugins_result}\n- 快捷栏（共享适配器）：{hotbar_result}\n\n路径：\n- MCP：{mcp_path}\n- 技能：{skills_path}\n- 插件：{plugins_path}\n\n安全引导（请自行在终端或 TUI 中执行）：\n- MCP：/mcp · codewhale mcp init · codewhale doctor\n- 技能：/skills · codewhale setup --skills\n- 插件：/plugin · codewhale setup --plugins\n- 工具：codewhale setup --tools\n\n有副作用的操作始终需要明确确认。详见 docs/MCP.md。",
+    "SetupToolsMcpOnRampText": "工具、MCP、技能与插件 — 安全引导\n\n/setup 只读取本地清单。不会启动 MCP 服务器、安装技能、运行插件或自动执行不受信任的命令。\n\n当前清单：\n- MCP：{mcp_result}\n- 技能：{skills_result}\n- 工具目录：{tools_result}\n- 插件：{plugins_result}\n- 快捷栏（共享适配器）：{hotbar_result}\n\n路径：\n- MCP：{mcp_path}\n- 技能：{skills_path}\n- 插件：{plugins_path}\n\n安全引导（请自行在终端或 TUI 中执行）：\n- MCP：/mcp · codewhale mcp init · codewhale doctor\n- 技能：/skills · codewhale setup --skills\n- 插件：/plugin · codewhale setup --plugins\n- 工具：codewhale setup --tools\n\n有副作用的操作始终需要明确确认。详见 docs/reference/MCP.md。",
     "HotbarActionModeOperateName": "Operate 模式",
     "HotbarActionModeOperateDescription": "协调 Fleet 完成多步骤工作。",
     "HomeOperateModeTip": "Operate — 协调 Fleet 完成多步骤工作",

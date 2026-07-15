@@ -1692,7 +1692,7 @@ impl StateStore {
 
 fn default_state_db_path() -> PathBuf {
     // $CODEWHALE_HOME is a hard override of the base data directory
-    // (docs/CONFIGURATION.md): when set, the state DB lives under it and we do
+    // (docs/reference/CONFIGURATION.md): when set, the state DB lives under it and we do
     // NOT fall back to the legacy ~/.deepseek path — silent fallback would
     // defeat the isolation the override promises (CI, containers, multi-project,
     // test harnesses). Legacy ~/.deepseek migration only applies to the default

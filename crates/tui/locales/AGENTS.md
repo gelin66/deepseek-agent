@@ -41,9 +41,6 @@ setup-wizard match arms, and locale display arms in the config/change
 commands. The `/config` hint and invalid-locale error derive from
 `Locale::shipped()` automatically.
 
-## READMEs
-
-Translated READMEs (repo root) are separate from these packs but follow
-the same discipline: `scripts/check-readme-translations.py` (in CI) fails
-when English changes without the six translations being refreshed and
-restamped.
+Repository marketing README translations were removed from this product line.
+Locale packs remain runtime UI assets and are validated by the Rust parity
+tests described above.

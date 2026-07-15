@@ -30,8 +30,6 @@
 //!   [`SettingsPickerLayout::resolve`] instead of ad-hoc splits.
 //! - **Fleet setup**: framework only — billing/Fleet UX sibling owns flow
 //!   rewrites; plug drafts into the controller when ready.
-//!
-//! See `docs/SETTINGS_PICKER_FRAMEWORK.md` for the short integration note.
 
 pub mod controller;
 pub mod layout;

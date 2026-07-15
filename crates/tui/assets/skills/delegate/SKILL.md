@@ -49,7 +49,7 @@ For code changes, give the child a precise write boundary and tell it not to rev
 ```json
 {
   "name": "docs_patch",
-  "prompt": "Update only docs/configuration.md to document the new [statusline] keys. Match the surrounding style. Do not edit other files.",
+  "prompt": "Update only docs/reference/CONFIGURATION.md to document the new [statusline] keys. Match the surrounding style. Do not edit other files.",
   "type": "implementer",
   "model_strength": "same",
   "cwd": "."

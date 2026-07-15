@@ -123,8 +123,7 @@ fn strict_schema_node_supported(schema: &Value) -> bool {
     }
 
     if let Some(reference) = obj.get("$ref") {
-        return reference.is_string()
-            && strict_keys_supported(obj, &["$ref", "description"]);
+        return reference.is_string() && strict_keys_supported(obj, &["$ref", "description"]);
     }
 
     if let Some(branches) = obj.get("anyOf") {
@@ -185,7 +184,9 @@ fn strict_schema_node_supported(schema: &Value) -> bool {
             if !strict_keys_supported(
                 obj,
                 &["type", "description", "pattern", "format", "enum", "$def"],
-            ) || obj.get("pattern").is_some_and(|pattern| !pattern.is_string())
+            ) || obj
+                .get("pattern")
+                .is_some_and(|pattern| !pattern.is_string())
                 || !strict_enum_values_match(obj, Value::is_string)
             {
                 return false;
@@ -234,10 +235,8 @@ fn strict_schema_node_supported(schema: &Value) -> bool {
                 && strict_enum_values_match(obj, Value::is_boolean)
         }
         "array" => {
-            strict_keys_supported(
-                obj,
-                &["type", "description", "items", "enum", "$def"],
-            ) && obj.get("items").is_some_and(strict_schema_node_supported)
+            strict_keys_supported(obj, &["type", "description", "items", "enum", "$def"])
+                && obj.get("items").is_some_and(strict_schema_node_supported)
                 && strict_enum_values_match(obj, Value::is_array)
         }
         _ => false,
@@ -258,12 +257,12 @@ fn strict_keys_supported(obj: &Map<String, Value>, allowed: &[&str]) -> bool {
     obj.keys().all(|key| allowed.contains(&key.as_str()))
 }
 
-fn strict_enum_values_match(
-    obj: &Map<String, Value>,
-    predicate: impl Fn(&Value) -> bool,
-) -> bool {
-    obj.get("enum")
-        .is_none_or(|values| values.as_array().is_some_and(|values| values.iter().all(predicate)))
+fn strict_enum_values_match(obj: &Map<String, Value>, predicate: impl Fn(&Value) -> bool) -> bool {
+    obj.get("enum").is_none_or(|values| {
+        values
+            .as_array()
+            .is_some_and(|values| values.iter().all(predicate))
+    })
 }
 
 /// Collapse `{"anyOf":[X, {"type":"null"}]}` → `X ∪ {"nullable": true}`.
@@ -780,8 +779,7 @@ mod tests {
         assert!(prepare_tools_for_strict_mode(&mut tools));
         assert_eq!(tools[0].strict, Some(true));
         assert_eq!(
-            tools[0].input_schema["properties"]["account"]["anyOf"],
-            original_any_of,
+            tools[0].input_schema["properties"]["account"]["anyOf"], original_any_of,
             "DeepSeek beta documents nested anyOf as a supported strict type"
         );
     }

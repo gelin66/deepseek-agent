@@ -2467,7 +2467,7 @@ mod tests {
     // The stdio `capabilities` method is the benchmark/SDK contract: external
     // harnesses probe it (without spending model tokens) to learn what the
     // app-server can do. Pin the advertised method set so any change forces a
-    // deliberate update here, in the dispatcher, and in docs/RUNTIME_API.md.
+    // deliberate update here, in the dispatcher, and in docs/architecture/RUNTIME_API.md.
 
     /// Methods advertised by the top-level `capabilities` probe, in order.
     const EXPECTED_CAPABILITY_METHODS: &[&str] = &[
@@ -2525,7 +2525,7 @@ mod tests {
         assert_eq!(
             methods, EXPECTED_CAPABILITY_METHODS,
             "app-server stdio capability set drifted; update the dispatcher, this \
-             snapshot, and docs/RUNTIME_API.md together"
+             snapshot, and docs/architecture/RUNTIME_API.md together"
         );
     }
 

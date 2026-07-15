@@ -208,11 +208,14 @@ release_lead = "manager"
 
     #[test]
     fn loads_workspace_fleet_file() {
-        // Relative to crate CARGO_MANIFEST_DIR → repo root fleets/
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..");
-        let fleet = load_named_fleet("v0868-stopship", &[root]).expect("load workspace fleet");
+        let root = tempfile::tempdir().expect("temp workspace");
+        let fleet_dir = root.path().join("fleets");
+        std::fs::create_dir_all(&fleet_dir).expect("fleet directory");
+        std::fs::write(fleet_dir.join("v0868-stopship.toml"), STOPSHIP_TOML)
+            .expect("fleet fixture");
+
+        let fleet = load_named_fleet("v0868-stopship", &[root.path().to_path_buf()])
+            .expect("load workspace fleet");
         fleet.validate_stopship_roles().unwrap();
     }
 }

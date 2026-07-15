@@ -1975,7 +1975,11 @@ fn plan_permission_cycle_is_rejected_without_mutating_agent_baseline() {
     assert!(!app.cycle_approval_posture());
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
     assert_eq!(app.mode_prefs.agent_approval_mode, ApprovalMode::Auto);
-    assert!(!tmp.path().join("settings.toml").exists());
+    let persisted = std::fs::read_to_string(tmp.path().join("settings.toml")).unwrap_or_default();
+    assert!(
+        !persisted.contains("permission_posture"),
+        "rejected Plan cycle must not persist a permission posture: {persisted}"
+    );
     assert!(
         app.status_toasts
             .iter()

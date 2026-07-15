@@ -210,7 +210,7 @@ pub fn init() -> Result<TuiLogGuard> {
 
 pub(crate) fn log_directory() -> Option<PathBuf> {
     // $CODEWHALE_HOME is a hard override of the base data directory
-    // (docs/CONFIGURATION.md): when SET, logs live under it and we do NOT fall
+    // (docs/reference/CONFIGURATION.md): when SET, logs live under it and we do NOT fall
     // back to the legacy ~/.deepseek path — silent fallback would defeat the
     // isolation the override promises (CI, containers, test harnesses). We
     // check the env var directly rather than codewhale_home()'s Ok/Err because

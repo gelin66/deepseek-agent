@@ -2752,6 +2752,7 @@ Parse error: permissions.toml at permissions.toml could not be parsed: expected 
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Hidden;
         app.last_sidebar_host_width = Some(120);
+        app.context_panel = false;
 
         let result = sidebar(&mut app, Some("auto"));
 

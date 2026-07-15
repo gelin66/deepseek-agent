@@ -327,7 +327,7 @@ Transports:
 --http`/`--mobile`, which remain as compatibility aliases. The runtime API token
 is read from --auth-token, CODEWHALE_RUNTIME_TOKEN, or DEEPSEEK_RUNTIME_TOKEN.
 
-See docs/RUNTIME_API.md.")]
+See docs/architecture/RUNTIME_API.md.")]
     AppServer(AppServerArgs),
     /// Generate shell completions.
     #[command(after_help = r#"Examples:
@@ -3955,9 +3955,15 @@ mod tests {
         let _base_url = ScopedEnvVar::remove("DEEPSEEK_BASE_URL");
         let _api_key = ScopedEnvVar::remove("DEEPSEEK_API_KEY");
         let _cli_api_key = ScopedEnvVar::remove("CODEWHALE_CLI_API_KEY");
-        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..");
+        let workspace_dir = tempfile::TempDir::new().expect("workflow workspace");
+        let workspace = workspace_dir.path().to_path_buf();
+        let workflow_dir = workspace.join("workflows");
+        std::fs::create_dir_all(&workflow_dir).expect("workflow directory");
+        std::fs::write(
+            workflow_dir.join("v0868_stopship_lane.workflow.js"),
+            "workflow({ \"goal\": \"fixture\", \"nodes\": [] });\n",
+        )
+        .expect("workflow fixture");
         let cli = parse_ok(&[
             "codewhale",
             "--profile",

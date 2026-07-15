@@ -1,17 +1,18 @@
 # ╔══════════════════════════════════════════════════════════════════════════════╗
 # ║                         CodeWhale Configuration                               ║
 # ║                                                                              ║
-# ║  Terminal coding agent for any model — open models first.                ║
+# ║  Imported runtime reference; the product target is official DeepSeek API. ║
 # ╚══════════════════════════════════════════════════════════════════════════════╝
 
-# See `docs/CONFIGURATION.md` for how config is loaded (profiles, env overrides, etc.).
+# See `docs/reference/CONFIGURATION.md` for config loading and overrides.
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Active provider + DeepSeek defaults
 # ─────────────────────────────────────────────────────────────────────────────────
-# Choose which provider to use by default. Per-provider credentials live in the
-# `[providers.*]` sections near the bottom of
-# this file — keeping both stored at once means `/provider deepseek` and
+# Choose which provider to use by default. DeepSeek is the product path. The
+# other imported provider sections remain only while their runtime callers are
+# being removed; they are frozen compatibility surface, not product targets.
+# Existing builds can still use `/provider deepseek` and
 # `/provider nvidia-nim` (or `--provider openai`, `--provider wanjie-ark`,
 # `--provider volcengine`, `--provider openrouter`, `--provider xiaomi-mimo`,
 # `--provider fireworks`, `--provider siliconflow`, `--provider siliconflow-CN`,
@@ -96,11 +97,10 @@ cost_currency = "usd" # usd | cny
 # ─────────────────────────────────────────────────────────────────────────────────
 # Startup update check
 # ─────────────────────────────────────────────────────────────────────────────────
-# The TUI checks for newer CodeWhale releases in the background at startup.
-# Set check_for_updates = false in managed or air-gapped environments.
-# update_uri may point at a GitHub-compatible latest-release JSON endpoint.
+# Upstream CodeWhale releases are not this product's update channel. Keep the
+# imported updater disabled until M8 provides an owned release process.
 [update]
-check_for_updates = true
+check_for_updates = false
 # update_uri = "https://internal.mirror.example/codewhale/releases/latest"
 
 # ─────────────────────────────────────────────────────────────────────────────────

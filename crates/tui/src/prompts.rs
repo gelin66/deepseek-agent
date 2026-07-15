@@ -2885,7 +2885,7 @@ mod tests {
             contents.contains(&header),
             "CHANGELOG.md is missing a `{header}` entry for the current package \
              version. Add a release section at the top before tagging — see \
-             docs/RELEASE_CHECKLIST.md."
+             docs/product/ROADMAP.md."
         );
     }
 
@@ -3116,7 +3116,7 @@ mod tests {
         );
         assert!(
             LANGUAGE_PROMPT.contains("latest user message first")
-                && LANGUAGE_PROMPT.contains("README.zh-CN.md")
+                && LANGUAGE_PROMPT.contains("localized files")
                 && LANGUAGE_PROMPT.contains("tool results")
                 && LANGUAGE_PROMPT
                     .contains("even when the `lang` field in `## Environment` is `en`")

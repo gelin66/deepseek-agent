@@ -1,110 +1,121 @@
-# CodeWhale
+# DeepSeek Agent（工作名称）
 
-A coding agent for your terminal. Works with any model; open models first.
+一个以 CodeWhale Rust 源码为底座、面向官方 DeepSeek API 的本地编码 Agent 产品。
 
-You give it a provider, a model, and a task. It reads code, edits files, runs
-commands, checks the results, and keeps going until the task is done or it
-needs you. TUI for interactive work, `codewhale exec` for scripts and CI.
-Rust, MIT, runs entirely on your machine.
+目标不是继续扩展通用模型兼容，也不是把多个 Agent 项目拼接在一起；目标是形成一套
+统一、可恢复、可验证、支持单 Agent 与多 Agent 的 Rust 运行时，并让 CLI、TUI 和
+Headless API 共用它。
 
-> This checkout has a local `deepseek-agent` specialization branch focused on
-> the official DeepSeek API and coding-agent capability. Start with
-> [the specialization map](docs/DEEPSEEK_AGENT.md) and
-> [the local development workflow](docs/LOCAL_DEEPSEEK_DEVELOPMENT.md).
+> 当前处于产品基线与架构迁移阶段。现有可执行文件、配置目录和部分文档仍使用
+> `codewhale` 名称；生产 Agent loop 也仍位于 `crates/tui`。仓库不会把目标架构写成
+> 已经完成的能力。
 
-It started as `deepseek-tui`. The community that formed around it needed more
-providers, so now DeepSeek, Claude, GPT, Kimi, GLM, and 30+ others run through
-the same runtime and tools.
+## 从这里开始
 
-[简体中文](README.zh-CN.md) · [日本語](README.ja-JP.md) · [Tiếng Việt](README.vi.md) · [한국어](README.ko-KR.md) · [Español](README.es-419.md) · [Português](README.pt-BR.md) · [codewhale.net](https://codewhale.net/) · [Docs](docs) · [Changelog](CHANGELOG.md)
+- [产品总纲](docs/product/PRODUCT_PLAN.md)
+- [开发路线图](docs/product/ROADMAP.md)
+- [能力评测规范](docs/product/EVALUATION.md)
+- [文档入口](docs/README.md)
+- [当前实现架构](docs/architecture/CURRENT_CODEWHALE.md)
 
-[![CI](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml/badge.svg)](https://github.com/Hmbown/CodeWhale/actions/workflows/ci.yml)
-[![crates.io](https://img.shields.io/crates/v/codewhale-cli?label=crates.io)](https://crates.io/crates/codewhale-cli)
-[![npm](https://img.shields.io/npm/v/codewhale?label=npm)](https://www.npmjs.com/package/codewhale)
+这几份文档的职责不同：产品总纲定义固定方向，Roadmap 记录可调整的执行顺序，
+Evaluation 决定能力是否值得保留，当前架构文档只描述尚未迁移的源码事实。
 
-![CodeWhale running in a terminal](assets/screenshot.png)
+## 产品目标
 
-## Install
-
-```bash
-npm install -g codewhale
+```text
+用户任务
+  -> 精准代码上下文
+  -> AgentRuntime
+  -> 工具和工作区
+  -> 最新验证证据
+  -> 明确终态
 ```
 
-Cargo, Docker, Nix, Scoop, prebuilt archives, Android/Termux, and a CNB mirror
-for users who cannot reach GitHub are covered in
-[docs/INSTALL.md](docs/INSTALL.md). Coming from `deepseek-tui`? Your config and
-sessions carry over — see [docs/REBRAND.md](docs/REBRAND.md).
+最终产品只保留三个入口：
 
-## Use
+1. 交互式 CLI/TUI；
+2. Headless/NDJSON 本地自动化；
+3. 多 Agent 团队任务。
+
+它们必须共享：
+
+- 一个 DeepSeekBackend；
+- 一个 AgentRuntime；
+- 一个 RuntimeEvent 协议；
+- 一个 RunStore；
+- 一个 TaskGraph/Orchestrator；
+- 一套 ToolOutcome 和 EvidenceReceipt 语义。
+
+## 当前已有能力
+
+CodeWhale 底座已经包含大量真实能力：
+
+- 流式 Agent、工具调用、steer、cancel、compaction 和恢复；
+- 文件读写、patch、shell、git、LSP 和测试工具；
+- Skills、MCP、hooks 和本地 runtime API；
+- 子 Agent、预算、mailbox、checkpoint 和 worktree 基础；
+- DeepSeek reasoning replay、Strict Function Calling、FIM 和 cache 相关实现。
+
+当前主要问题不是功能数量，而是这些能力分散在 TUI、core、subagent、Workflow、
+Fleet、Lane 和多套状态系统中。开发路线会逐条迁移并删除旧路径，而不是继续叠加。
+
+## 当前本地开发
+
+要求 Rust 1.88 或更高版本。当前二进制名称在产品化里程碑前仍保持 CodeWhale：
 
 ```bash
-codewhale auth set --provider deepseek   # or export ANTHROPIC_API_KEY, etc.
-codewhale                                # open the TUI
-codewhale exec "fix the failing test"    # headless
+rustup default stable
+cargo build -p codewhale-cli -p codewhale-tui --locked
 ```
 
-In the TUI: `/model` switches provider and model together, `/fleet` runs a
-team of workers, `/restore` undoes a turn, `Tab` cycles Plan / Act / Operate,
-`Shift+Tab` cycles the Ask / Auto-Review / Full Access approval posture, and
-`!` runs a shell command through the normal approval path.
+API Key 只放在环境或系统凭据存储中：
 
-## What it does
+```bash
+export DEEPSEEK_API_KEY='your-key'
+```
 
-- Resolves your provider + model choice to a concrete route: endpoint, wire
-  protocol, context limit, price. Context budgets and cost display come from
-  the real route; an unknown price shows as unknown, not $0.
-  ([docs/PROVIDERS.md](docs/PROVIDERS.md))
-- Talks to hosted open-model providers (`deepseek`, `openrouter`, `moonshot`,
-  `zai`, `minimax`, `nvidia-nim`, …), to your own `vllm` / `sglang` / `ollama`
-  with no key, and to Anthropic natively over the Messages API with thinking
-  and prompt caching.
-- Runs multiple workers durably: Fleet records work in an append-only ledger,
-  so runs survive restarts and `fleet resume` picks up where things stopped.
-  Workflow plans bigger jobs into resumable, verifiable lanes.
-  ([docs/FLEET.md](docs/FLEET.md))
-- Gates risk in code, not vibes: three modes (Plan is read-only), a separate
-  approval posture, OS sandboxing (Seatbelt, Landlock + seccomp, bwrap),
-  hooks that can allow/deny/ask per tool call, and side-git snapshots so
-  `/restore` never touches your real history.
-- Lets a repo declare its own law: `.codewhale/constitution.json` invariants
-  compile into write holds that even Full Access can't skip.
-  ([docs/CONFIGURATION.md](docs/CONFIGURATION.md))
-- Speaks MCP in both directions, loads reusable skills, exposes HTTP/SSE and
-  ACP runtime APIs, and backs a community
-  [VS Code GUI](https://github.com/HengQuWorld/CodeWhale-VSCode).
-- The TUI shows work as receipts you can inspect, keeps one live row moving,
-  has a real context inspector, 12 themes, reduced-motion and ASCII-safe
-  modes, and ships in English, 简体中文, 日本語, Tiếng Việt, Español,
-  Português, 한국어, and partial 繁體中文.
+当前 DeepSeek 配置样例：
 
-Everything else — configuration, keybindings, sandbox details, architecture —
-is in [docs](docs) and on [codewhale.net](https://codewhale.net/).
+```text
+config.deepseek-agent.example.toml
+```
 
-## Contributing
+运行当前本地入口：
 
-All feedback is a gift. Issues, PRs, repro steps, logs, feature requests, and
-first contributions are all real project work here. When a PR can't merge
-as-is, maintainers harvest what works and the author stays credited — in the
-commit, the changelog, and [docs/CONTRIBUTORS.md](docs/CONTRIBUTORS.md). If a
-model or provider you use is missing, or something breaks on your machine,
-telling us is the most useful thing you can do.
+```bash
+cargo run -p codewhale-cli --locked --
+cargo run -p codewhale-cli --locked -- exec --auto "inspect this repository"
+```
 
-- [Open issues](https://github.com/Hmbown/CodeWhale/issues) — good first
-  contributions live here
-- [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup and PR flow
-- [docs/CONTRIBUTORS.md](docs/CONTRIBUTORS.md) — everyone who has shaped this
-- [Buy me a coffee](https://www.buymeacoffee.com/hmbown)
+Focused 检查：
 
-Thanks to [DeepSeek](https://github.com/deepseek-ai) for the models and support
-that started the project, [DataWhale](https://github.com/datawhalechina) 🐋 for
-welcoming us into the Whale Brother family, and
-[OpenWarp](https://github.com/zerx-lab/warp) and
-[Open Design](https://github.com/nexu-io/open-design) for collaborating on the
-terminal-agent experience.
+```bash
+./scripts/dev-deepseek-agent.sh focused
+```
 
-## License
+当前 DeepSeek WIP 已被保存，但尚未通过新的产品评测门禁。它包含协议、Agent
+可靠性和独立模型评审实验，后续会按 [Roadmap](docs/product/ROADMAP.md) 分开验证。
 
-[MIT](LICENSE). Independent community project; not affiliated with any model
-provider.
+## 开发原则
 
-[![Star History Chart](https://api.star-history.com/chart?repos=Hmbown/CodeWhale&type=date&legend=top-left)](https://www.star-history.com/?repos=Hmbown%2FCodeWhale&type=date)
+- 真实可用性优先于功能数量；
+- 每次只迁移一条完整能力链；
+- 新路径接管后删除旧路径；
+- 只在真正会变化的边界使用小型 trait；
+- 多 Agent 复用同一个 Runtime；
+- 写 Agent 使用独立 worktree；
+- 完成依赖最新证据，不依赖模型自报；
+- 没有基准收益的功能缩小、推迟或删除；
+- 不引入其他模型、TypeScript sidecar、云平台或插件市场。
+
+## 项目状态
+
+M0 仓库整理和文档基线已经完成，当前里程碑是 M1：建立可重复的 DeepSeek 能力基准。具体状态和下一步只
+在 [ROADMAP.md](docs/product/ROADMAP.md) 更新，不再创建平行的版本 tracker 或 handoff 文件。
+
+## 来源与许可
+
+本项目基于 MIT 许可的 CodeWhale 源码继续开发。许可证见 [LICENSE](LICENSE)。
+CodeWhale 和其他 Agent 项目提供了重要参考，但本产品独立开发，且不隶属于任何模型
+提供商。

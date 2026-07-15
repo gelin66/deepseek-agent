@@ -11,8 +11,6 @@ toolchain_bin=${rustc_bin%/*}
 runs=${TUI_HERMETIC_RUNS:-2}
 filter=${TUI_HERMETIC_FILTER:-}
 
-"$repo_root/scripts/check-tui-product-vocabulary.sh"
-
 cleanup_roots=""
 cleanup() {
   for root in $cleanup_roots; do

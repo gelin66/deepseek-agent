@@ -2,29 +2,31 @@
   "schema_version": 1,
   "authority": [
     "current user request",
-    "live code and tests",
-    "GitHub issue/PR details",
-    "AGENTS.md and project CLAUDE.md",
-    "memory",
-    "previous-session handoffs"
+    "docs/product/PRODUCT_PLAN.md and accepted ADRs",
+    "live code and deterministic tests",
+    "docs/product/ROADMAP.md and docs/product/EVALUATION.md",
+    "AGENTS.md"
   ],
   "protected_invariants": [
-    "Keep the active first-turn tool-catalog head byte-stable (DeepSeek KV prefix-cache invariant); changes to it must be one-time and deterministic.",
-    "Preserve old-session transcript replay: never remove a tool's registration just because it is deprecated/hidden.",
-    "Stable Rust only (edition 2024); no nightly features.",
-    "Keep the codewhale CLI dispatcher and the codewhale-tui binary in sync when crates/tui changes."
+    "CodeWhale Rust is the sole implementation base and DeepSeek is the sole target model backend.",
+    "Root and child agents converge on one AgentRuntime, one event protocol, and one RunStore.",
+    "Writing agents use isolated worktrees and evidence for the latest workspace revision.",
+    "A new path names and deletes the old path it replaces; no permanent dual runtime or state truth.",
+    "Stable model/tool prefixes change only deliberately and deterministically.",
+    "Stable Rust only; no nightly-only language features."
   ],
-  "branch_policy": "Start from live branch and handoff truth. Never commit directly to main; use the active integration branch or a fresh codex/... branch/worktree for isolated work, and open reviewable PRs into main. One PR per logical workstream; do not mix unrelated fixes.",
+  "branch_policy": "Confirm the live branch and worktree before editing. Preserve unrelated changes. Use one reviewable concern per commit. Do not push, release, force-push, or repoint remotes without explicit user direction.",
   "verification_policy": {
     "before_claiming_done": [
-      "run the focused tests for the changed crate (cargo test -p <crate>), then cargo check/clippy as appropriate",
-      "read changed files back to confirm the edit landed as intended",
-      "never claim verification you did not perform"
+      "run the narrowest relevant deterministic tests and cargo checks",
+      "compare capability changes against docs/product/EVALUATION.md when applicable",
+      "read changed files and inspect the final diff",
+      "never claim verification that was not performed"
     ]
   },
   "escalate_when": [
-    "an action is destructive or hard to reverse and was not explicitly authorized",
-    "changing provider/auth/config or anything that sends data to an external service",
-    "deleting or overwriting files you did not create, or that contradict how they were described"
+    "a destructive action would remove unpreserved user work",
+    "a change would violate an accepted architecture invariant",
+    "external credentials, publishing, or irreversible remote state are involved"
   ]
 }

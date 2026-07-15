@@ -4,7 +4,7 @@
 //! stable, addressable surface that can be accessed from the TUI, mobile page,
 //! chat bridges, and programmatic Runtime API consumers.
 //!
-//! See `docs/rfcs/3209-workrooms.md` for the full design.
+//! See `docs/legacy/rfcs/3209-workrooms.md` for the imported design.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

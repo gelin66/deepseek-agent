@@ -1950,6 +1950,7 @@ pub(super) fn tool_to_chat(tool: &Tool) -> Value {
     value
 }
 
+#[cfg(test)]
 pub(super) fn tool_to_chat_for_base_url(tool: &Tool, base_url: &str) -> Value {
     tool_to_chat_for_route(tool, base_url, None)
 }

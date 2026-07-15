@@ -691,7 +691,7 @@ workflow({
 
     #[test]
     fn javascript_example_compiles_and_replays_with_mock_trace() {
-        let source = include_str!("../../../workflows/issue_audit.workflow.js");
+        let source = include_str!("../tests/fixtures/issue_audit.workflow.js");
         let workflow =
             compile_javascript_workflow("issue_audit.workflow.js", source).expect("compile");
         let trace = crate::WorkflowReplayTrace {
