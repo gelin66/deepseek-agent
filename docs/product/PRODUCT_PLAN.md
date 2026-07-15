@@ -13,6 +13,10 @@
 [CURRENT_CODEWHALE.md](../architecture/CURRENT_CODEWHALE.md)，
 它描述现状，不覆盖本文件中的目标方向。
 
+当前实施状态仍以路线图为准；截至 2026-07-15，
+[M1-A 离线契约基线](../../eval/summaries/m1-offline-baseline-2026-07-15.md)已完成，
+但尚无真实 DeepSeek 任务级提升证据，M1 仍在进行中。
+
 ## 1. 产品结论
 
 本仓库将演进为一个：

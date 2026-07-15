@@ -5,6 +5,9 @@
 
 ## 当前离线基线
 
+2026-07-15 的同 Harness 结果、证据边界和后续决策见
+[M1-A 离线契约基线汇总](summaries/m1-offline-baseline-2026-07-15.md)。
+
 `manifests/m1-offline.tsv` 将证据明确分为：
 
 - `full-runtime-offline`：用注入模型或本地 WireMock 驱动真实 Engine、真实工具注册表，
@@ -50,6 +53,28 @@ bash scripts/eval-m1.sh \
 等级不合法时也会直接失败。结果同时记录被测提交、评测器提交和 manifest blob，避免
 以后用不同清单生成同名“基线”。整套运行完成后才会原子发布 JSONL 和正式日志目录；
 被中断的日志只会留在带 `.incomplete.<pid>` 后缀的目录中。
+
+## DeepSeek 协议 live canary
+
+先检查固定计划，不读取 Key，也不联网：
+
+```bash
+python3 scripts/eval-deepseek-live.py --dry-run
+```
+
+显式确认费用后运行最多 5 个请求，覆盖 Standard Chat、thinking 工具轮原样 replay、
+Beta Strict Chat 和 Beta FIM：
+
+```bash
+python3 scripts/eval-deepseek-live.py \
+  --acknowledge-cost \
+  --key-file key.txt \
+  > eval/results/m1-b-deepseek-live.jsonl
+```
+
+`key.txt` 已被仓库忽略，仍应保持 `0600` 权限。脚本不输出模型正文、reasoning、工具参数、
+完整请求/响应或 Key；当前价格快照下预估上界约 `$0.0042`，并设置 `$0.01` 停止线。
+这些记录只证明线上协议契约，不属于任务级 `verified_success`。
 
 ## 结果边界
 

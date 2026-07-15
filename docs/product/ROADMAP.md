@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
 - 状态：执行中
-- 当前阶段：M1 原始 DeepSeek 能力基准
+- 当前阶段：M1 评测基线（M1-A 离线契约基线已完成，M1-B/M1-C 待完成）
 - 上次更新：2026-07-15
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -35,12 +35,16 @@
 
 禁止只新增抽象或新实现而长期不接管生产入口。
 
+“垂直迁移”必须在同一切片内让一个真实生产入口改用新内核，并删除该入口的旧循环、
+旧事件翻译或旧状态写入。临时兼容层最多跨一个里程碑；任何时刻都不能长期保留两套
+生产 Agent loop 或两个可写状态真相。
+
 ## 3. 里程碑总览
 
 | 里程碑 | 目标 | 状态 | 主要退出门槛 |
 |---|---|---|---|
 | M0 | 保护基线、整理仓库、建立唯一文档真相 | 已完成 | 工作区可追溯，产品方案落库，现有 WIP 被隔离说明 |
-| M1 | 建立原始 DeepSeek 能力基准 | 进行中 | 可重复测量成功率、假成功、Token、时间和成本 |
+| M1 | 建立原始 DeepSeek 能力基准 | 进行中（M1-A 已完成） | 可重复测量成功率、假成功、Token、时间和成本 |
 | M2 | 独立 DeepSeekBackend 与领域协议 | 待开始 | Standard/Strict/FIM fixture 和 live canary 通过 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 待开始 | 可完成 read/edit/shell/verify/complete 真实任务 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 待开始 | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
@@ -83,20 +87,34 @@
 
 ## 5. M1：评测基线
 
-### 工作
+### 已完成：M1-A 离线契约基线
 
-- 建立离线 protocol fixtures、固定仓库任务和结果格式。
-- 用当前 CodeWhale + DeepSeek 跑出基线。
-- 将现有 WIP 拆为四个可独立验证的切片：
-  1. DeepSeek 协议；
-  2. Agent 可靠性；
-  3. verify 模型评审实验；
-  4. 配置与本地开发支持。
-- 独立评估当前 `verify` 工具；它是额外模型评审，不等同于测试证据。
+- 当前提交在同一 Harness/manifest 下通过 41/41 离线用例。
+- 导入提交在同一 Harness/manifest 下通过 12/12 个 `cross_revision` 可比较用例。
+- 12 个跨提交用例包含生产 Engine 离线链路与多 Agent 契约，作为重构防回归底线。
+- 另外 29 个 `candidate_only` 用例只证明候选契约通过，不证明能力提升。
+- 完整证据、哈希和解释边界见
+  [M1-A 离线契约基线](../../eval/summaries/m1-offline-baseline-2026-07-15.md)。
+
+M1-A 完成不等于 M1 完成：本轮没有真实 DeepSeek Token、cache、成本和可验证任务成功率，
+两套用例的总耗时也不可用于性能比较。
+
+### 待完成
+
+1. **M1-B DeepSeek live canary**：以费用、Token、请求数和超时上限分别验证 Standard、
+   Strict 与 FIM 的官方 API 契约、fallback、reasoning replay、SSE、usage/cache 和错误分类。
+2. **M1-C 固定真实编码任务基线**：同任务、同仓库 revision、同预算、同确定性验收器，
+   对比导入提交和候选提交的 verified success、false-success、Token、时间、费用和 diff。
+3. **M1-D WIP 处置**：对 DeepSeek 协议、Agent 可靠性、`verify` 和本地配置逐项给出保留、
+   重做、缩小或删除结论。
+
+`verify` 仍是额外模型评审实验，不等同于测试证据；未经真实缺陷检出率和误报率评测，
+不得默认成为完成门禁。
 
 ### 退出门槛
 
-- 基线结果可重复。
+- 离线契约、live 协议和真实任务三层基线均可重复。
+- 真实任务能测量 verified success、false-success、输入/输出/cache Token、时间和成本。
 - 每项 WIP 有保留、重做、缩小或删除结论。
 - `verify` 未经评测不得默认成为完成门禁。
 
@@ -106,14 +124,20 @@
 
 - 在 `protocol` 定义 Task、Run、Turn、Event、ToolOutcome、Evidence 和 TerminalState。
 - 建立版本化 NDJSON 事件。
-- 抽取独立 DeepSeekBackend。
-- 实现 Standard Chat、Beta Strict Chat、Beta FIM。
+- 定义唯一的 `ApiSurface::{StandardChat, StrictChat, Fim}`，分别映射普通 Chat、
+  `/beta` Strict Chat 和 `/beta` FIM；三条协议不能按通用 OpenAI 假设混写。
+- 让 `RequestPlan` 成为每次调用的确定性预检产物：一次性决定 surface、endpoint、模型参数、
+  streaming、reasoning replay、工具/strict 状态、Token limits、retry 分类和 stable-prefix 元数据。
+- 抽取独立 `DeepSeekBackend`，只消费 `RequestPlan`，后续层不得再次猜 URL、删除工具或改变 surface。
+- Strict 只有在所有函数 schema 兼容时启用；不兼容时退回 `StandardChat` 并保留普通工具调用。
 - 统一 reasoning replay、SSE、finish reason、usage、cache、retry 和 limits。
 - 建立 fixture transport 和有费用上限的 live canary。
 
 ### 删除/替代
 
 - 冻结旧通用 client，不再增加能力。
+- 先迁移一个真实 Headless 调用方；每迁移一个调用方，同一切片删除它对旧 URL、序列化、
+  parser、retry 和 usage 分支的依赖。
 - 新 Backend 接管全部调用后删除旧 DeepSeek 路由分支和通用 Provider 选择路径。
 
 ### 退出门槛
@@ -139,15 +163,25 @@ Headless Task
 
 ### 工作
 
-- 从 TUI Engine 提取 canonical transcript、request projection 和 turn loop。
-- 建立 `ModelPort`、`ContextPort`、`ToolExecutor`、`RunStore` 等小端口。
+- 以真实 `codewhale exec` 为第一个生产调用方，不先铺设无人使用的新框架。
+- 从 TUI Engine 提取唯一 `AgentRuntime`、canonical transcript、request projection 和 turn loop。
+- 建立 `ModelPort`、`ContextPort`、`ToolExecutor` 和 `RunStore` 等小端口；首个切片使用
+  `DeepSeekBackend`、内存 `RunStore`、fixture Backend 和最小真实工具集。
+- 所有运行进度只发出 canonical `RuntimeEvent`；Headless 入口只发送命令和消费事件。
 - 实现 steer、interrupt、cancel、usage 和明确终态。
 - 使用内存 Store 与 fixture Backend 完成 conformance 测试。
+
+### 删除/替代
+
+- `codewhale exec` 切换到 `AgentRuntime` 的同一切片，删除它原有的 `spawn_engine`/TUI Engine
+  生产入口，不保留第二套 Headless loop。
+- 不新增第二个 runtime store、event enum 或 completion 判定器。
 
 ### 退出门槛
 
 - Runtime 不依赖 TUI、HTTP 或具体数据库。
 - 能在真实仓库完成一组基础 DeepSeek 编码任务。
+- `codewhale exec` 只有一条生产 Agent loop，并能重放同一 `RuntimeEvent` 序列。
 - 没有引入新的通用 Provider SDK。
 
 ## 8. M4：工具、状态和入口统一
@@ -156,32 +190,38 @@ Headless Task
 
 - 将真实工具逐步迁入 `crates/tools`。
 - 统一 `ToolOutcome`，区分调用成功、操作成功、验证成功。
-- 建立 SQLite append-only RunStore、snapshot、replay、artifact。
+- 扩展现有 `crates/state` 实现唯一 SQLite append-only `RunStore`、snapshot、replay 和 artifact，
+  不新建并行数据库真相。
 - 先迁移 Headless CLI，再迁移 app-server，最后迁移 TUI。
-- 统一 steer、resume、request_user_input 和 compaction 事件。
+- 三个入口只使用同一个 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，统一 steer、resume、
+  request_user_input、compaction 与 completion 事件。
 
 ### 删除/替代
 
-- 删除假的 `crates/core::Runtime::handle_prompt` 执行路径。
-- 删除 app-server 启动 TUI 子进程的 bridge。
-- 删除 TUI 内生产 turn loop。
-- 逐个删除 runtime/session/task/fleet/lane 重复 JSON/JSONL 状态。
+- Headless 切换时删除假的 `crates/core::Runtime::handle_prompt` 与残留旧 exec 路径。
+- app-server 切换时删除启动 TUI 子进程的 bridge、`RuntimeBridge`、`monitor_turn` 和
+  `RuntimeThreadStore` 等事件/状态翻译层。
+- TUI 切换时删除 TUI 内生产 turn loop，只保留交互和 `RuntimeEvent` 投影。
+- 每个入口切换时同步删除对应 runtime/session/task/fleet/lane 重复 JSON/JSONL 写入。
 
 ### 退出门槛
 
 - CLI/TUI/API 对同一 fixture 产生相同事件和终态。
 - 内存 Store 与 SQLite Store 重放一致。
 - crash/resume 和 exactly-once completion 通过。
+- 不存在第二个生产 loop、可写 Store 或入口私有 completion 语义。
 
 ## 9. M5：RepoGraph 与证据化完成
 
 ### 工作
 
 - 用 tree-sitter、ripgrep、LSP、包依赖和 git diff 建立增量 RepoGraph。
-- 实现任务相关性和 Token 预算排序。
+- 在统一 Runtime 上实现 `ContextBroker`，按任务相关性、证据新鲜度和 Token 预算选择上下文。
 - 重构 compaction，保留 TaskContract、未决问题、当前 diff 和最新证据。
 - 引入 `workspace_revision` 和 `EvidenceReceipt`。
 - 提供可执行任意项目命令的显式 verify 入口，不写命令字符串猜测器。
+- 让 `ToolOutcome`、证据失效和 completion 判定都经过同一 Runtime/RunStore；先完成这条
+  单 Agent 证据链，再让多 Agent 复用，避免把不可靠终态并行放大。
 
 ### 退出门槛
 
@@ -191,26 +231,34 @@ Headless Task
 
 ## 10. M6：统一多 Agent
 
+多 Agent 是必须保留的产品能力。本阶段不是删除智能体，而是删除多套重复内核和产品外壳。
+
 ### 工作
 
-- 让子 Agent 运行相同 AgentRuntime。
-- 实现 TaskGraph、预算、并发、mailbox、follow-up、wait、interrupt。
+- 让根 Agent 与每个子 Agent 都运行相同 `AgentRuntime`、发出相同 `RuntimeEvent`、写入同一
+  `RunStore` 契约；差异只来自 TaskContract、预算、权限和 workspace。
+- 建立唯一 `Orchestrator`，只负责 TaskGraph、预算、并发、mailbox、follow-up、wait、
+  interrupt 和结果汇聚，不拥有第二套模型/工具循环。
 - 建立 `AgentTask/AgentOutcome`。
 - 建立 worktree create、diff、review、verify、merge、conflict、cleanup。
-- 将 Workflow DAG、Fleet ledger/lease 和 Lane worktree 的有效思想迁入一个 Orchestrator。
+- 模型侧只保留一个 `agent` 工具入口；生命周期与调度语义是其参数/事件，不扩张为多组工具。
+- 将现有 SubAgent、Workflow DAG、Fleet ledger/lease 和 Lane worktree 中经过测试的能力逐项
+  迁入 `Orchestrator`，每迁完一个生产调用方就删除对应旧入口和重复状态写入。
 
 ### 删除/替代
 
-- 删除第二套 `run_subagent` 循环。
-- 删除 Workflow/Fleet/Lane 重复用户概念和 scheduler。
-- 删除 `workflow-js`。
+- 子 Agent 切换到 `AgentRuntime` 时删除第二套 `run_subagent` 循环。
+- 能力迁入并有回归测试后，删除 Workflow/Fleet/Lane 重复用户概念、scheduler 和状态真相。
+- 删除不再承载独有能力的 `workflow-js`，不删除已迁入统一 Orchestrator 的智能体能力。
 
 ### 退出门槛
 
 - 根/子 Agent通过同一 conformance suite。
 - 写 Agent 不共享 cwd。
 - AgentOutcome 包含证据、文件、检查、未解决项和 usage。
-- 适合并行的任务相对单 Agent 有可测净收益。
+- worktree 的 create、diff、review、verify、merge/conflict 和 cleanup 生命周期可恢复。
+- 固定任务 A/B 证明适合并行的任务相对单 Agent 在 verified success、时间、Token、成本和
+  冲突率综合后有可测净收益；无收益时自动退回单 Agent。
 
 ## 11. M7：专项调优与外围清理
 
