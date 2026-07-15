@@ -15,6 +15,7 @@
 !**/.env.example
 .envrc
 .direnv/
+/key.txt
 
 # Editor and OS files
 .DS_Store

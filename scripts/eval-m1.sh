@@ -214,7 +214,7 @@ for line in "${rows[@]}"; do
   set -e
 
   finished="$(date +%s)"
-  duration_seconds=$((finished - started))
+  harness_duration_seconds=$((finished - started))
   status="failed"
   if [[ $cargo_status -eq 0 ]] && grep -Eq '^running 1 test$' "$log_path" && grep -Eq 'test result: ok\. 1 passed; 0 failed;' "$log_path"; then
     status="passed"
@@ -228,7 +228,7 @@ for line in "${rows[@]}"; do
   fi
 
   log_record="$(relative_log_path "$final_raw_dir/${case_id}.log")"
-  printf '{"schema":"codewhale.eval.m1.v1","record_type":"case","suite":"m1-offline","case_id":"%s","slice":"%s","evidence_level":"%s","comparison":"%s","revision":"%s","harness_revision":"%s","manifest_blob":"%s","dirty":false,"status":"%s","duration_seconds":%d,"package":"%s","target":"%s","test_name":"%s","requirement":"%s","log":"%s"}\n' \
+  printf '{"schema":"codewhale.eval.m1.v1","record_type":"case","record_class":"regression_contract","product_metric_eligible":false,"verified_success":null,"suite":"m1-offline","case_id":"%s","slice":"%s","evidence_level":"%s","comparison":"%s","revision":"%s","harness_revision":"%s","manifest_blob":"%s","dirty":false,"status":"%s","harness_duration_seconds":%d,"package":"%s","target":"%s","test_name":"%s","requirement":"%s","log":"%s"}\n' \
     "$(json_escape "$case_id")" \
     "$(json_escape "$slice")" \
     "$(json_escape "$evidence_level")" \
@@ -237,7 +237,7 @@ for line in "${rows[@]}"; do
     "$(json_escape "$harness_revision")" \
     "$(json_escape "$manifest_blob")" \
     "$(json_escape "$status")" \
-    "$duration_seconds" \
+    "$harness_duration_seconds" \
     "$(json_escape "$package")" \
     "$(json_escape "$target")" \
     "$(json_escape "$test_name")" \
@@ -251,18 +251,43 @@ if ((selected == 0)); then
 fi
 
 suite_finished="$(date +%s)"
-suite_duration=$((suite_finished - suite_started))
+suite_harness_duration_seconds=$((suite_finished - suite_started))
 suite_status="passed"
 if ((failed > 0)); then
   suite_status="failed"
 fi
-printf '{"schema":"codewhale.eval.m1.v1","record_type":"summary","suite":"m1-offline","scope":"%s","revision":"%s","harness_revision":"%s","manifest_blob":"%s","dirty":false,"status":"%s","total":%d,"passed":%d,"failed":%d,"duration_seconds":%d}\n' \
+printf '{"schema":"codewhale.eval.m1.v1","record_type":"summary","record_class":"regression_suite","product_metric_eligible":false,"verified_success":null,"suite":"m1-offline","scope":"%s","revision":"%s","harness_revision":"%s","manifest_blob":"%s","dirty":false,"status":"%s","total":%d,"passed":%d,"failed":%d,"harness_duration_seconds":%d}\n' \
   "$(json_escape "$scope")" \
   "$(json_escape "$revision")" \
   "$(json_escape "$harness_revision")" \
   "$(json_escape "$manifest_blob")" \
   "$(json_escape "$suite_status")" \
-  "$selected" "$passed" "$failed" "$suite_duration" >> "$output_tmp"
+  "$selected" "$passed" "$failed" "$suite_harness_duration_seconds" >> "$output_tmp"
+
+publish_revision="$(git -C "$repo_root" rev-parse HEAD)"
+if [[ "$publish_revision" != "$revision" ]]; then
+  echo "refusing to publish: target HEAD changed during evaluation: $repo_root" >&2
+  exit 2
+fi
+if [[ -n "$(git -C "$repo_root" status --porcelain)" ]]; then
+  echo "refusing to publish: target worktree became dirty during evaluation: $repo_root" >&2
+  exit 2
+fi
+
+publish_harness_revision="$(git -C "$harness_root" rev-parse HEAD)"
+if [[ "$publish_harness_revision" != "$harness_revision" ]]; then
+  echo "refusing to publish: harness HEAD changed during evaluation: $harness_root" >&2
+  exit 2
+fi
+if [[ -n "$(git -C "$harness_root" status --porcelain)" ]]; then
+  echo "refusing to publish: harness worktree became dirty during evaluation: $harness_root" >&2
+  exit 2
+fi
+publish_manifest_blob="$(git -C "$harness_root" hash-object "$manifest")"
+if [[ "$publish_manifest_blob" != "$manifest_blob" ]]; then
+  echo "refusing to publish: manifest changed during evaluation: $manifest" >&2
+  exit 2
+fi
 
 mv "$raw_dir" "$final_raw_dir"
 mv "$output_tmp" "$output"

@@ -2856,66 +2856,131 @@ fn tools_always_load_overrides_default_native_deferral() {
     assert!(!should_default_defer_tool("git_blame", &always_load));
 }
 
-#[test]
+#[tokio::test]
 #[ignore = "one-shot metric for scripts/measure-tool-catalog.py"]
 #[allow(clippy::print_stderr)]
-fn print_agent_tool_catalog_metrics() {
+async fn print_agent_tool_catalog_metrics() {
+    use crate::llm_client::mock::{MockLlmClient, canned};
+
     let tmp = tempdir().expect("tempdir");
-    let context = crate::tools::ToolContext::new(tmp.path().to_path_buf());
-    let client = DeepSeekClient::new(&Config {
+    let api_config = Config {
+        provider: Some("deepseek".to_string()),
         api_key: Some("test-key".to_string()),
         ..Config::default()
-    })
-    .expect("stub client");
-    let manager = crate::tools::subagent::new_shared_subagent_manager(tmp.path().to_path_buf(), 8);
-    let runtime = crate::tools::subagent::SubAgentRuntime::new(
-        client,
-        DEFAULT_TEXT_MODEL.to_string(),
-        context.clone(),
-        true,
-        None,
-        manager.clone(),
-    );
-    let registry = crate::tools::ToolRegistryBuilder::new()
-        .with_agent_tools(true)
-        .with_todo_tool(new_shared_todo_list())
-        .with_plan_tool(new_shared_plan_state())
-        .with_review_tool(None, DEFAULT_TEXT_MODEL.to_string())
-        .with_rlm_tool(None, DEFAULT_TEXT_MODEL.to_string())
-        .with_notify_tool()
-        .with_subagent_tools(manager, runtime)
-        .build(context);
-    let baseline_catalog = registry.to_api_tools_with_cache(true);
-    let baseline_json = serde_json::to_vec(&baseline_catalog).expect("serialize baseline");
+    };
+    let mode = AppMode::Agent;
+    let engine_config = EngineConfig {
+        workspace: tmp.path().to_path_buf(),
+        snapshots_enabled: false,
+        terminal_chrome_enabled: false,
+        ..EngineConfig::default()
+    };
+    let always_load = engine_config.tools_always_load.clone();
+    let model = engine_config.model.clone();
+    let provider = api_config.api_provider();
+    let profile = crate::model_profile::resolved_capability_profile(provider, &model);
+    let profile_name = match profile.tool_surface_budget {
+        crate::model_profile::ToolSurfaceBudget::Compact => "compact",
+        crate::model_profile::ToolSurfaceBudget::Standard => "standard",
+        crate::model_profile::ToolSurfaceBudget::Full => "full",
+    };
 
-    let always_load = HashSet::new();
-    let mut catalog = build_model_tool_catalog(
-        baseline_catalog.clone(),
-        vec![],
-        AppMode::Agent,
-        &always_load,
+    let mock = std::sync::Arc::new(
+        MockLlmClient::new(vec![canned::simple_text_turn(
+            "Catalog measurement complete.",
+        )])
+        .with_provider("deepseek")
+        .with_model(model.clone()),
     );
-    ensure_advanced_tooling(&mut catalog, AppMode::Agent, &always_load);
-    let active = initial_active_tools(&catalog);
-    let active_catalog = active_tools_for_step(&catalog, &active, false);
+    let client: crate::core::model_client::SharedModelClient = mock.clone();
+    let (engine, handle) = Engine::new_with_model_client(engine_config, &api_config, client);
+    let task = tokio::spawn(engine.run());
+    handle
+        .send(external_user_message_op(
+            "Return one short final response without calling a tool.",
+            mode,
+        ))
+        .await
+        .expect("send catalog measurement turn");
+
+    let mut turn_catalog = None;
+    let mut rx = handle.rx_event.write().await;
+    while let Some(event) = tokio::time::timeout(model_turn_event_timeout(), rx.recv())
+        .await
+        .expect("timed out waiting for catalog measurement turn")
+    {
+        if let Event::TurnComplete {
+            status,
+            error,
+            tool_catalog,
+            ..
+        } = event
+        {
+            assert_eq!(status, TurnOutcomeStatus::Completed, "{error:?}");
+            turn_catalog = tool_catalog;
+            break;
+        }
+    }
+    drop(rx);
+    handle.send(Op::Shutdown).await.expect("shutdown engine");
+    task.await.expect("engine task");
+
+    // TurnComplete carries the catalog built by the real per-turn registry,
+    // feature gates, surface budget, and allow/deny filters. The production
+    // turn loop then adds environment-backed advanced tools before projecting
+    // the initially active subset into the model request; mirror exactly that
+    // one remaining production step for the full side of this comparison.
+    let mut full_catalog = turn_catalog.expect("production turn must expose its tool catalog");
+    ensure_advanced_tooling(&mut full_catalog, mode, &always_load);
+
+    let requests = mock.captured_requests();
+    assert_eq!(
+        requests.len(),
+        1,
+        "measurement must use exactly one model turn"
+    );
+    let active_catalog = requests[0]
+        .tools
+        .clone()
+        .expect("production Agent request must expose active tools");
+    assert!(
+        active_catalog
+            .iter()
+            .all(|active| { full_catalog.iter().any(|full| full.name == active.name) }),
+        "every model-visible tool must come from the production full catalog"
+    );
+
+    let full_json = serde_json::to_vec(&full_catalog).expect("serialize full catalog");
     let active_json = serde_json::to_vec(&active_catalog).expect("serialize active");
-    let reduction_percent = if baseline_json.is_empty() {
+    let reduction_percent = if full_json.is_empty() {
         0.0
     } else {
-        100.0 * (baseline_json.len().saturating_sub(active_json.len())) as f64
-            / baseline_json.len() as f64
+        100.0 * (full_json.len().saturating_sub(active_json.len())) as f64 / full_json.len() as f64
     };
 
     eprintln!(
         "TOOL_CATALOG_METRICS {}",
         serde_json::json!({
-            "baseline_tools": baseline_catalog.len(),
-            "baseline_bytes": baseline_json.len(),
-            "baseline_tokens_est": baseline_json.len().div_ceil(4),
+            "measurement": "production_engine_turn_tool_catalog",
+            "comparison": "same_turn_full_vs_model_visible_active",
+            "mode": mode.as_setting(),
+            "profile": {
+                "provider": provider.as_str(),
+                "model": model,
+                "tool_surface_budget": profile_name,
+            },
+            "full_catalog_source": "TurnComplete.tool_catalog + production ensure_advanced_tooling",
+            "active_catalog_source": "MockLlmClient.captured_requests[0].tools",
+            "full_tools": full_catalog.len(),
+            "full_bytes": full_json.len(),
+            "full_tokens_est": full_json.len().div_ceil(4),
             "active_tools": active_catalog.len(),
             "active_bytes": active_json.len(),
             "active_tokens_est": active_json.len().div_ceil(4),
             "reduction_percent": reduction_percent,
+            "token_estimate_method": "ceil(serialized_json_bytes/4)",
+            "server_usage_measured": false,
+            "full_tool_names": full_catalog.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
             "active_tool_names": active_catalog.iter().map(|tool| tool.name.as_str()).collect::<Vec<_>>(),
         })
     );
