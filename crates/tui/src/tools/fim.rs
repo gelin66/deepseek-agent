@@ -31,13 +31,12 @@ pub struct FimEditResult {
 /// Tool for performing Fill-in-the-Middle edits via the DeepSeek FIM API.
 pub struct FimEditTool {
     pub client: Option<DeepSeekClient>,
-    pub model: String,
 }
 
 impl FimEditTool {
     #[must_use]
-    pub fn new(client: Option<DeepSeekClient>, model: String) -> Self {
-        Self { client, model }
+    pub fn new(client: Option<DeepSeekClient>) -> Self {
+        Self { client }
     }
 }
 
@@ -154,7 +153,7 @@ impl ToolSpec for FimEditTool {
         // 6. Call FIM API
         let generated_text = match self.client.as_ref() {
             Some(client) => client
-                .fim_completion(&self.model, &fim_prompt, &fim_suffix, max_tokens as u32)
+                .fim_completion(&fim_prompt, &fim_suffix, max_tokens as u32)
                 .await
                 .map_err(|e| {
                     ToolError::execution_failed(FimError::ApiFailed(e.to_string()).to_string())
@@ -202,5 +201,56 @@ impl ToolSpec for FimEditTool {
         };
 
         ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, ProviderConfig, ProvidersConfig};
+    use tempfile::tempdir;
+
+    fn unsupported_fim_client() -> DeepSeekClient {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let providers = ProvidersConfig {
+            zai: ProviderConfig {
+                api_key: Some("zai-test".to_string()),
+                base_url: Some("https://api.z.ai/api/coding/paas/v4".to_string()),
+                ..ProviderConfig::default()
+            },
+            ..ProvidersConfig::default()
+        };
+        DeepSeekClient::new(&Config {
+            provider: Some("zai".to_string()),
+            providers: Some(providers),
+            ..Config::default()
+        })
+        .expect("test client")
+    }
+
+    #[tokio::test]
+    async fn fim_preflight_failure_never_modifies_the_file() {
+        let workspace = tempdir().expect("workspace");
+        let path = workspace.path().join("sample.rs");
+        let original = "fn main() {\n    old();\n}\n";
+        fs::write(&path, original).expect("seed file");
+        let tool = FimEditTool::new(Some(unsupported_fim_client()));
+        let context = ToolContext::new(workspace.path());
+
+        let error = tool
+            .execute(
+                json!({
+                    "path": "sample.rs",
+                    "prefix_anchor": "fn main() {\n",
+                    "suffix_anchor": "}\n",
+                    "max_tokens": 16
+                }),
+                &context,
+            )
+            .await
+            .expect_err("unsupported provider must fail before HTTP");
+
+        assert!(error.to_string().contains("official DeepSeek"), "{error}");
+        assert_eq!(fs::read_to_string(path).expect("read file"), original);
     }
 }

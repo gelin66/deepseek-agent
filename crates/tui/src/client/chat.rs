@@ -53,6 +53,7 @@ use crate::models::{
     model_is_openai_reasoning_family, model_supports_reasoning,
 };
 
+use super::deepseek::{self, RequestPlan, ResponseMode};
 use super::{
     DeepSeekClient, ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK,
     SSE_BACKPRESSURE_SLEEP_MS, SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, api_url_with_suffix,
@@ -155,75 +156,130 @@ fn mirror_minimax_reasoning_details_for_body(body: &mut Value, provider: ApiProv
     mirror_minimax_reasoning_details_for_messages(messages);
 }
 
+fn official_deepseek_request_plan(
+    client: &DeepSeekClient,
+    request: &MessageRequest,
+    response_mode: ResponseMode,
+) -> Option<RequestPlan> {
+    deepseek::plan_chat(
+        client.api_provider,
+        &client.base_url,
+        client.path_suffix.as_deref(),
+        client.strict_tool_mode,
+        request,
+        response_mode,
+    )
+}
+
+fn legacy_chat_request(
+    client: &DeepSeekClient,
+    request: &MessageRequest,
+    response_mode: ResponseMode,
+) -> (Value, String, String, Option<u32>) {
+    let messages = build_chat_messages_for_request_and_provider(request, client.api_provider);
+    let model = wire_model_for_provider(client.api_provider, &request.model);
+    let streaming = response_mode == ResponseMode::Streaming;
+    let mut body = json!({
+        "model": model.clone(),
+        "messages": messages,
+        "max_tokens": request.max_tokens,
+    });
+    if streaming {
+        body["stream"] = json!(true);
+        body["stream_options"] = json!({"include_usage": true});
+    }
+    apply_provider_token_limit(&mut body, client.api_provider, &model, request.max_tokens);
+    if let Some(temperature) = request.temperature {
+        body["temperature"] = json!(temperature);
+    }
+    if let Some(top_p) = request.top_p {
+        body["top_p"] = json!(top_p);
+    }
+    if let Some(tools) = request.tools.as_ref() {
+        let mut chat_tools: Vec<_> = tools
+            .iter()
+            .map(|tool| {
+                tool_to_chat_for_legacy_route(tool, &client.base_url, client.path_suffix.as_deref())
+            })
+            .collect();
+        if client.api_provider == ApiProvider::Moonshot {
+            for tool in &mut chat_tools {
+                if let Some(parameters) = tool
+                    .as_object_mut()
+                    .and_then(|tool| tool.get_mut("function"))
+                    .and_then(|function| function.get_mut("parameters"))
+                {
+                    crate::tools::schema_sanitize::sanitize_for_kimi_parameters(parameters);
+                }
+            }
+        }
+        body["tools"] = json!(chat_tools);
+    }
+    if should_send_tool_choice_for_chat(client.api_provider, request.reasoning_effort.as_deref())
+        && let Some(choice) = request.tool_choice.as_ref()
+        && let Some(mapped) = map_tool_choice_for_chat(choice)
+    {
+        body["tool_choice"] = mapped;
+    }
+    apply_reasoning_effort(
+        &mut body,
+        request.reasoning_effort.as_deref(),
+        client.api_provider,
+    );
+    apply_openai_reasoning_effort(
+        &mut body,
+        client.api_provider,
+        &model,
+        request.reasoning_effort.as_deref(),
+    );
+    let reasoning_replay_tokens = streaming
+        .then(|| {
+            sanitize_thinking_mode_messages(
+                &mut body,
+                &model,
+                request.reasoning_effort.as_deref(),
+                client.api_provider,
+            )
+        })
+        .flatten();
+    mirror_minimax_reasoning_details_for_body(&mut body, client.api_provider);
+    let url = api_url_with_suffix(
+        &client.base_url,
+        "chat/completions",
+        client.path_suffix.as_deref(),
+    );
+    (body, url, model, reasoning_replay_tokens)
+}
+
 impl DeepSeekClient {
     pub(super) async fn create_message_chat(
         &self,
         request: &MessageRequest,
     ) -> Result<MessageResponse> {
         let cacheable = crate::llm_response_cache::request_is_cacheable(request);
-        let messages = build_chat_messages_for_request_and_provider(request, self.api_provider);
-        let model = wire_model_for_provider(self.api_provider, &request.model);
-        let mut body = json!({
-            "model": model.clone(),
-            "messages": messages,
-            "max_tokens": request.max_tokens,
-        });
-        apply_provider_token_limit(&mut body, self.api_provider, &model, request.max_tokens);
-
-        if let Some(temperature) = request.temperature {
-            body["temperature"] = json!(temperature);
-        }
-        if let Some(top_p) = request.top_p {
-            body["top_p"] = json!(top_p);
-        }
-        if let Some(tools) = request.tools.as_ref() {
-            let mut chat_tools: Vec<_> = tools
-                .iter()
-                .map(|tool| {
-                    tool_to_chat_for_route(tool, &self.base_url, self.path_suffix.as_deref())
-                })
-                .collect();
-            // Kimi / Moonshot enforces stricter JSON Schema: `type` must be
-            // inside `anyOf` / `oneOf` items, not on the parent (#2438).
-            if matches!(self.api_provider, crate::config::ApiProvider::Moonshot) {
-                for t in &mut chat_tools {
-                    if let Some(fn_obj) = t
-                        .as_object_mut()
-                        .and_then(|t| t.get_mut("function"))
-                        .and_then(|f| f.get_mut("parameters"))
-                    {
-                        crate::tools::schema_sanitize::sanitize_for_kimi_parameters(fn_obj);
-                    }
-                }
-            }
-            body["tools"] = json!(chat_tools);
-        }
-        if should_send_tool_choice_for_chat(self.api_provider, request.reasoning_effort.as_deref())
-            && let Some(choice) = request.tool_choice.as_ref()
-            && let Some(mapped) = map_tool_choice_for_chat(choice)
+        let (body, url, reasoning_replay_tokens, official_plan) = if let Some(plan) =
+            official_deepseek_request_plan(self, request, ResponseMode::NonStreaming)
         {
-            body["tool_choice"] = mapped;
-        }
-        apply_reasoning_effort(
-            &mut body,
-            request.reasoning_effort.as_deref(),
-            self.api_provider,
-        );
-        apply_openai_reasoning_effort(
-            &mut body,
-            self.api_provider,
-            &model,
-            request.reasoning_effort.as_deref(),
-        );
-        mirror_minimax_reasoning_details_for_body(&mut body, self.api_provider);
+            debug_assert_eq!(plan.response_mode, ResponseMode::NonStreaming);
+            (plan.body, plan.url, plan.reasoning_replay_tokens, true)
+        } else {
+            let (body, url, _model, replay) =
+                legacy_chat_request(self, request, ResponseMode::NonStreaming);
+            (body, url, replay, false)
+        };
 
         let response_cache_key = if cacheable {
             let wire_body =
                 serde_json::to_vec(&body).context("Failed to serialize Chat API cache key")?;
+            let (cache_base_url, cache_path_suffix) = if official_plan {
+                (url.as_str(), None)
+            } else {
+                (self.base_url.as_str(), self.path_suffix.as_deref())
+            };
             let key = crate::llm_response_cache::ResponseCache::make_key(
                 self.api_provider.as_str(),
-                &self.base_url,
-                self.path_suffix.as_deref(),
+                cache_base_url,
+                cache_path_suffix,
                 &self.api_key,
                 &wire_body,
             );
@@ -235,11 +291,6 @@ impl DeepSeekClient {
             None
         };
 
-        let url = api_url_with_suffix(
-            &self.base_url,
-            "chat/completions",
-            self.path_suffix.as_deref(),
-        );
         let open_timeout = stream_open_timeout();
         let response = match tokio_timeout(open_timeout, self.send_json_with_retry(&url, &body))
             .await
@@ -272,7 +323,10 @@ impl DeepSeekClient {
             .context("Failed to read Chat API response body")?;
         let value: Value =
             serde_json::from_str(&response_text).context("Failed to parse Chat API JSON")?;
-        let parsed = parse_chat_message(&value)?;
+        let mut parsed = parse_chat_message(&value)?;
+        if let Some(tokens) = reasoning_replay_tokens {
+            parsed.usage.reasoning_replay_tokens = Some(tokens);
+        }
         if let Some(key) = response_cache_key {
             crate::llm_response_cache::response_cache().put(key, parsed.clone());
         }
@@ -285,87 +339,19 @@ impl DeepSeekClient {
         &self,
         request: MessageRequest,
     ) -> Result<StreamEventBox> {
-        // Try true SSE streaming via chat completions (widely supported)
-        let messages = build_chat_messages_for_request_and_provider(&request, self.api_provider);
-        let model = wire_model_for_provider(self.api_provider, &request.model);
-        let mut body = json!({
-            "model": model.clone(),
-            "messages": messages,
-            "max_tokens": request.max_tokens,
-            "stream": true,
-            "stream_options": {
-                "include_usage": true
-            },
-        });
-        apply_provider_token_limit(&mut body, self.api_provider, &model, request.max_tokens);
-
-        if let Some(temperature) = request.temperature {
-            body["temperature"] = json!(temperature);
-        }
-        if let Some(top_p) = request.top_p {
-            body["top_p"] = json!(top_p);
-        }
-        if let Some(tools) = request.tools.as_ref() {
-            let mut chat_tools: Vec<_> = tools
-                .iter()
-                .map(|tool| {
-                    tool_to_chat_for_route(tool, &self.base_url, self.path_suffix.as_deref())
-                })
-                .collect();
-            // Kimi / Moonshot enforces stricter JSON Schema: `type` must be
-            // inside `anyOf` / `oneOf` items, not on the parent (#2438).
-            if matches!(self.api_provider, crate::config::ApiProvider::Moonshot) {
-                for t in &mut chat_tools {
-                    if let Some(fn_obj) = t
-                        .as_object_mut()
-                        .and_then(|t| t.get_mut("function"))
-                        .and_then(|f| f.get_mut("parameters"))
-                    {
-                        crate::tools::schema_sanitize::sanitize_for_kimi_parameters(fn_obj);
-                    }
-                }
-            }
-            body["tools"] = json!(chat_tools);
-        }
-        if should_send_tool_choice_for_chat(self.api_provider, request.reasoning_effort.as_deref())
-            && let Some(choice) = request.tool_choice.as_ref()
-            && let Some(mapped) = map_tool_choice_for_chat(choice)
+        let (body, url, model, replay_input_tokens) = if let Some(plan) =
+            official_deepseek_request_plan(self, &request, ResponseMode::Streaming)
         {
-            body["tool_choice"] = mapped;
-        }
-        apply_reasoning_effort(
-            &mut body,
-            request.reasoning_effort.as_deref(),
-            self.api_provider,
-        );
-        apply_openai_reasoning_effort(
-            &mut body,
-            self.api_provider,
-            &model,
-            request.reasoning_effort.as_deref(),
-        );
-
-        // Bulletproof final sanitizer: walk the wire payload and force
-        // `reasoning_content` onto any assistant message that has tool_calls
-        // but no reasoning_content. DeepSeek's thinking-mode API rejects
-        // such messages with a 400. This is the last line of defense after
-        // engine-side and build-side substitution; if either upstream path
-        // misses a case (e.g. a session restored from disk, a sub-agent
-        // adding messages directly, or a cached prefix mismatch), this pass
-        // still produces a valid request.
-        let replay_input_tokens = sanitize_thinking_mode_messages(
-            &mut body,
-            &model,
-            request.reasoning_effort.as_deref(),
-            self.api_provider,
-        );
-        mirror_minimax_reasoning_details_for_body(&mut body, self.api_provider);
-
-        let url = api_url_with_suffix(
-            &self.base_url,
-            "chat/completions",
-            self.path_suffix.as_deref(),
-        );
+            debug_assert_eq!(plan.response_mode, ResponseMode::Streaming);
+            (
+                plan.body,
+                plan.url,
+                plan.model,
+                plan.reasoning_replay_tokens,
+            )
+        } else {
+            legacy_chat_request(self, &request, ResponseMode::Streaming)
+        };
         let response = self.send_json_with_retry(&url, &body).await?;
 
         let status = response.status();
@@ -1951,17 +1937,17 @@ pub(super) fn tool_to_chat(tool: &Tool) -> Value {
 }
 
 #[cfg(test)]
-pub(super) fn tool_to_chat_for_base_url(tool: &Tool, base_url: &str) -> Value {
-    tool_to_chat_for_route(tool, base_url, None)
+pub(super) fn tool_to_chat_for_legacy_base_url(tool: &Tool, base_url: &str) -> Value {
+    tool_to_chat_for_legacy_route(tool, base_url, None)
 }
 
-pub(super) fn tool_to_chat_for_route(
+pub(super) fn tool_to_chat_for_legacy_route(
     tool: &Tool,
     base_url: &str,
     path_suffix: Option<&str>,
 ) -> Value {
     let mut value = tool_to_chat(tool);
-    if !deepseek_route_supports_strict_tools(base_url, path_suffix)
+    if !legacy_route_supports_strict_tools(base_url, path_suffix)
         && let Some(function) = value.get_mut("function")
         && let Some(obj) = function.as_object_mut()
     {
@@ -1975,21 +1961,16 @@ fn is_official_deepseek_base_url(base_url: &str) -> bool {
     trimmed == "https://api.deepseek.com"
         || trimmed == "https://api.deepseek.com/v1"
         || trimmed == "https://api.deepseek.com/beta"
-        || trimmed == "https://api.deepseeki.com"
-        || trimmed == "https://api.deepseeki.com/v1"
-        || trimmed == "https://api.deepseeki.com/beta"
 }
 
 fn targets_deepseek_owned_host(base_url: &str) -> bool {
     reqwest::Url::parse(base_url).ok().is_some_and(|url| {
-        matches!(
-            url.host_str().map(str::to_ascii_lowercase).as_deref(),
-            Some("api.deepseek.com" | "api.deepseeki.com")
-        )
+        url.host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("api.deepseek.com"))
     })
 }
 
-pub(super) fn deepseek_route_supports_strict_tools(
+pub(super) fn legacy_route_supports_strict_tools(
     base_url: &str,
     path_suffix: Option<&str>,
 ) -> bool {
@@ -2008,7 +1989,7 @@ pub(super) fn deepseek_route_supports_strict_tools(
         .ends_with("/beta/chat/completions")
 }
 
-fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
+pub(super) fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
     if let Some(choice_str) = choice.as_str() {
         return Some(json!(choice_str));
     }
@@ -2029,7 +2010,10 @@ fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {
     }
 }
 
-fn should_send_tool_choice_for_chat(provider: ApiProvider, effort: Option<&str>) -> bool {
+pub(super) fn should_send_tool_choice_for_chat(
+    provider: ApiProvider,
+    effort: Option<&str>,
+) -> bool {
     if !matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
         return true;
     }

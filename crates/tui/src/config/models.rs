@@ -128,8 +128,6 @@ pub const OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
 ///
 /// DeepSeek's official API host is the same worldwide. Keep this alias for
 /// old configs, but route it through the normal beta-enabled DeepSeek default.
-/// Legacy typo hostname `api.deepseeki.com` remains recognized in URL
-/// heuristics for backward compatibility.
 pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = DEFAULT_DEEPSEEK_BASE_URL;
 pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
     "deepseek-v4-pro",

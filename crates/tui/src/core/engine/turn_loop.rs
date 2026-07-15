@@ -522,18 +522,25 @@ impl Engine {
                     force_update_plan_this_step,
                 ))
             };
-            let route_supports_strict_tools = self
-                .deepseek_client
-                .as_ref()
-                .is_some_and(DeepSeekClient::supports_strict_tool_schemas);
-            if self.config.strict_tool_mode
-                && route_supports_strict_tools
-                && let Some(tools) = active_tools.as_mut()
-            {
-                if !crate::tools::schema_sanitize::prepare_tools_for_strict_mode(tools) {
+            if let Some(client) = self.deepseek_client.as_ref() {
+                if let Some(plan) = client.deepseek_tool_plan(active_tools.as_deref()) {
+                    if plan.strict_fallback {
+                        tracing::debug!(
+                            target: "deepseek.strict_tools",
+                            "strict tool mode downgraded atomically because the active catalog contains an incompatible schema"
+                        );
+                    }
+                    // Prefix hashes and the later wire planner must see the
+                    // same catalog, including strict flags or their removal.
+                    active_tools = plan.tools;
+                } else if self.config.strict_tool_mode
+                    && client.supports_legacy_strict_tool_schemas()
+                    && let Some(tools) = active_tools.as_mut()
+                    && !crate::tools::schema_sanitize::prepare_tools_for_strict_mode(tools)
+                {
                     tracing::debug!(
                         target: "deepseek.strict_tools",
-                        "strict tool mode downgraded atomically because the active catalog contains an incompatible schema"
+                        "legacy compatible route downgraded strict tools because the active catalog contains an incompatible schema"
                     );
                 }
             }

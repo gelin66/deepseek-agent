@@ -20,6 +20,9 @@
 //! `PinnedPrefix` / `FrozenPrefix` / `PrefixDrift` are ready for use.
 //! `AppendLog` / `TurnScratch` / `ThreeZoneRequest` are type scaffolding
 //! for future phases — not yet wired into the request path.
+//!
+//! The frozen diagnostic covers only immutable system text and the exact wire
+//! tool-catalog array. It does not hash or validate append-only history.
 
 use crate::models::{Message, SystemPrompt, Tool};
 // ── helpers ────────────────────────────────────────────────────────────
@@ -45,15 +48,16 @@ fn system_text(system: Option<&SystemPrompt>) -> String {
     }
 }
 
-/// Serialize tools to a deterministic, sorted JSON string for hashing.
+/// Serialize the exact wire tool array in request order for hashing.
 #[allow(dead_code)]
 fn tool_catalog_digest(tools: &[Tool]) -> String {
-    let mut serialized: Vec<String> = tools
-        .iter()
-        .filter_map(|t| serde_json::to_string(t).ok())
-        .collect();
-    serialized.sort();
-    serialized.join("\n")
+    serde_json::Value::Array(
+        tools
+            .iter()
+            .map(crate::client::tool_to_chat_wire_json)
+            .collect(),
+    )
+    .to_string()
 }
 
 #[allow(dead_code)]
@@ -67,9 +71,9 @@ fn combined_hash(system_text: &str, tools: &[Tool]) -> String {
 
 // ── FrozenPrefix ───────────────────────────────────────────────────────
 
-/// An immutable frozen prefix — system prompt text + tool catalog,
-/// hashed at freeze time. The hash is stable as long as the system prompt
-/// text and full tool definitions (name, description, schema) are unchanged.
+/// An immutable diagnostic for system text plus the exact wire tool catalog,
+/// hashed at freeze time. It intentionally does not cover message history or
+/// any other request fields.
 ///
 /// Use [`PinnedPrefix::freeze`] to produce one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -448,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn freeze_tool_order_is_stable() {
+    fn freeze_detects_tool_order_change() {
         let sys = SystemPrompt::Text("system".to_string());
         let tools_a = vec![make_tool("b"), make_tool("a")];
         let tools_b = vec![make_tool("a"), make_tool("b")];
@@ -456,16 +460,45 @@ mod tests {
         let a = PinnedPrefix::new(Some(&sys), tools_a).freeze();
         let b = PinnedPrefix::new(Some(&sys), tools_b).freeze();
 
-        assert_eq!(a.combined_sha256, b.combined_sha256);
+        assert_ne!(a.combined_sha256, b.combined_sha256);
     }
 
     #[test]
     fn freeze_empty_tools() {
         let sys = SystemPrompt::Text("system".to_string());
         let frozen = PinnedPrefix::new(Some(&sys), vec![]).freeze();
-        assert!(frozen.tool_catalog.is_empty());
+        assert_eq!(frozen.tool_catalog, "[]");
         assert!(!frozen.combined_sha256.is_empty());
         assert_eq!(frozen.short_id().len(), 12);
+    }
+
+    #[test]
+    fn frozen_prefix_matches_cached_prefix_fingerprint() {
+        let sys = SystemPrompt::Text("system".to_string());
+        let mut tool = make_tool("mcp:read-file");
+        tool.description = "Read one file".to_string();
+        tool.input_schema = serde_json::json!({
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"]
+        });
+        tool.strict = Some(true);
+        let tools = vec![tool];
+
+        let frozen = PinnedPrefix::new(Some(&sys), tools.clone()).freeze();
+        let cached = crate::prefix_cache::PrefixFingerprint::compute("system", Some(&tools));
+
+        assert_eq!(frozen.combined_sha256, cached.combined_sha256);
+        assert_eq!(
+            frozen.tool_catalog,
+            serde_json::Value::Array(
+                tools
+                    .iter()
+                    .map(crate::client::tool_to_chat_wire_json)
+                    .collect()
+            )
+            .to_string()
+        );
     }
 
     #[test]

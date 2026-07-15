@@ -5756,7 +5756,7 @@ fn official_deepseek_endpoint_requires_exact_final_route_identity() {
     for (provider, base_url) in [
         (ApiProvider::Deepseek, "https://api.deepseek.com/beta"),
         (ApiProvider::Deepseek, "https://api.deepseek.com/v1/"),
-        (ApiProvider::DeepseekCN, "https://api.deepseeki.com/beta/"),
+        (ApiProvider::DeepseekCN, "https://api.deepseek.com/beta/"),
         (
             ApiProvider::DeepseekAnthropic,
             "https://api.deepseek.com/anthropic",
@@ -5783,6 +5783,11 @@ fn official_deepseek_endpoint_requires_exact_final_route_identity() {
         (
             ApiProvider::Deepseek,
             "https://api.deepseek.com.evil.example/beta",
+            None,
+        ),
+        (
+            ApiProvider::DeepseekCN,
+            "https://api.deepseeki.com/beta/",
             None,
         ),
         (

@@ -905,9 +905,9 @@ impl ToolRegistryBuilder {
 
     /// Include the FIM (Fill-in-the-Middle) edit tool.
     #[must_use]
-    pub fn with_fim_tool(self, client: Option<DeepSeekClient>, model: String) -> Self {
+    pub fn with_fim_tool(self, client: Option<DeepSeekClient>) -> Self {
         use super::fim::FimEditTool;
-        self.with_tool(Arc::new(FimEditTool::new(client, model)))
+        self.with_tool(Arc::new(FimEditTool::new(client)))
     }
 
     /// Include the `remember` tool — model-callable bullet-add into the
@@ -1065,7 +1065,7 @@ impl ToolRegistryBuilder {
             .with_review_tool(client.clone(), model.clone())
             .with_slop_ledger_tools()
             .with_rlm_tool(client.clone(), model.clone())
-            .with_fim_tool(client, model)
+            .with_fim_tool(client)
             .with_speech_tools(speech_client, options.speech_output_dir.clone());
 
         if options.verify_tool_enabled {

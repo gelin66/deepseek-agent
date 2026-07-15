@@ -29,7 +29,8 @@ use crate::llm_client::{
 };
 use crate::logging;
 use crate::models::{
-    ContentBlock, Message, MessageRequest, MessageResponse, ServerToolUsage, SystemPrompt, Usage,
+    ContentBlock, Message, MessageRequest, MessageResponse, ServerToolUsage, SystemPrompt, Tool,
+    Usage,
 };
 
 pub(super) fn to_api_tool_name(name: &str) -> String {
@@ -172,6 +173,7 @@ pub struct DeepSeekClient {
     rate_limiter: Arc<AsyncMutex<TokenBucket>>,
     request_concurrency: Option<ProviderConcurrencyLimiter>,
     path_suffix: Option<String>,
+    strict_tool_mode: bool,
     pub(super) reasoning_stream_style: Option<String>,
     pub(super) stream_idle_timeout: Duration,
 }
@@ -394,6 +396,7 @@ impl Clone for DeepSeekClient {
             rate_limiter: self.rate_limiter.clone(),
             request_concurrency: self.request_concurrency.clone(),
             path_suffix: self.path_suffix.clone(),
+            strict_tool_mode: self.strict_tool_mode,
             reasoning_stream_style: self.reasoning_stream_style.clone(),
             stream_idle_timeout: self.stream_idle_timeout,
         }
@@ -749,6 +752,7 @@ impl DeepSeekClient {
             .provider_config_for(api_provider)
             .and_then(|p| p.reasoning_stream_style.clone());
         let request_concurrency_limit = config.provider_max_concurrency(api_provider);
+        let strict_tool_mode = config.strict_tool_mode.unwrap_or(false);
 
         logging::info(format!("API provider: {}", api_provider.as_str()));
         logging::info(format!(
@@ -799,6 +803,7 @@ impl DeepSeekClient {
             rate_limiter: Arc::new(AsyncMutex::new(TokenBucket::from_env())),
             request_concurrency: request_concurrency_limit.map(ProviderConcurrencyLimiter::new),
             path_suffix,
+            strict_tool_mode,
             reasoning_stream_style,
             stream_idle_timeout,
         })
@@ -1093,11 +1098,23 @@ impl DeepSeekClient {
         &self.base_url
     }
 
-    /// Whether this route can receive strict function schemas. The official
-    /// DeepSeek API gates them behind `/beta`; custom compatible routes keep
-    /// their provider-defined behavior.
-    pub fn supports_strict_tool_schemas(&self) -> bool {
-        chat::deepseek_route_supports_strict_tools(&self.base_url, self.path_suffix.as_deref())
+    /// Plan the official DeepSeek surface and exact tool catalog. Custom and
+    /// non-DeepSeek routes deliberately return `None` and stay on the legacy
+    /// compatibility path for this migration slice.
+    pub(crate) fn deepseek_tool_plan(&self, tools: Option<&[Tool]>) -> Option<deepseek::ToolPlan> {
+        deepseek::plan_tools(
+            self.api_provider,
+            &self.base_url,
+            self.path_suffix.as_deref(),
+            self.strict_tool_mode,
+            tools,
+        )
+    }
+
+    /// Legacy strict-schema capability for routes not owned by the official
+    /// DeepSeek planner. Remove with the remaining provider compatibility path.
+    pub(crate) fn supports_legacy_strict_tool_schemas(&self) -> bool {
+        chat::legacy_route_supports_strict_tools(&self.base_url, self.path_suffix.as_deref())
     }
 
     /// Returns the active API provider for this client.
@@ -1155,13 +1172,18 @@ impl DeepSeekClient {
         target_language: &str,
     ) -> Result<String> {
         let model = wire_model_for_provider(self.api_provider, model);
+        let request = translation_message_request(text, model.clone(), target_language);
         if api_provider_uses_anthropic_messages(self.api_provider) {
-            let response = self
-                .handle_anthropic_message(translation_message_request(text, model, target_language))
-                .await?;
+            let response = self.handle_anthropic_message(request).await?;
+            return translation_text_from_response(&response);
+        }
+        if self.deepseek_tool_plan(None).is_some() {
+            let response = self.create_message_chat(&request).await?;
             return translation_text_from_response(&response);
         }
 
+        // Preserve the established compatibility request for every custom or
+        // non-DeepSeek route; only official DeepSeek is owned by the planner.
         let url = api_url_with_suffix(
             &self.base_url,
             "chat/completions",
@@ -1186,14 +1208,12 @@ impl DeepSeekClient {
         apply_reasoning_effort(&mut body, Some("off"), self.api_provider);
 
         let response = self.send_json_with_retry(&url, &body).await?;
-
         let value: serde_json::Value = response.json().await?;
         let translated = value["choices"][0]["message"]["content"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("translate: unexpected API response shape"))?
             .trim()
             .to_string();
-
         Ok(translated)
     }
 
@@ -2278,26 +2298,19 @@ impl DeepSeekClient {
     /// Call the DeepSeek `/beta/completions` FIM endpoint.
     pub async fn fim_completion(
         &self,
-        model: &str,
         prompt: &str,
         suffix: &str,
         max_tokens: u32,
     ) -> anyhow::Result<String> {
-        if api_provider_uses_anthropic_messages(self.api_provider) {
-            bail!(
-                "FIM completion is not supported for {} because it uses the Anthropic Messages protocol",
-                self.api_provider.display_name()
-            );
-        }
-        let url = api_url_with_suffix(&self.base_url, "beta/completions", None);
-        let model = wire_model_for_provider(self.api_provider, model);
-        let body = json!({
-            "model": model,
-            "prompt": prompt,
-            "suffix": suffix,
-            "max_tokens": max_tokens,
-        });
-        let response = self.send_json_with_retry(&url, &body).await?;
+        let plan = deepseek::plan_fim(
+            self.api_provider,
+            &self.base_url,
+            self.path_suffix.as_deref(),
+            prompt,
+            suffix,
+            max_tokens,
+        )?;
+        let response = self.send_json_with_retry(&plan.url, &plan.body).await?;
         let status = response.status();
         if !status.is_success() {
             let raw_error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
@@ -2321,9 +2334,17 @@ impl DeepSeekClient {
 /// Parse one DeepSeek FIM response without accepting a truncated or otherwise
 /// incomplete generation as editable source code.
 fn parse_fim_completion(value: &Value) -> Result<String> {
-    let choice = value
-        .pointer("/choices/0")
-        .ok_or_else(|| anyhow::anyhow!("FIM response missing choices[0]"))?;
+    let choices = value
+        .get("choices")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("FIM response missing choices array"))?;
+    if choices.len() != 1 {
+        anyhow::bail!(
+            "FIM response must contain exactly one choice, received {}",
+            choices.len()
+        );
+    }
+    let choice = &choices[0];
     let finish_reason = choice
         .get("finish_reason")
         .and_then(Value::as_str)
@@ -2342,7 +2363,13 @@ fn parse_fim_completion(value: &Value) -> Result<String> {
 
 mod anthropic;
 mod chat;
+pub(crate) mod deepseek;
 mod responses;
+
+/// Encode one tool with the exact JSON projection used by the chat sender.
+pub(crate) fn tool_to_chat_wire_json(tool: &Tool) -> Value {
+    chat::tool_to_chat(tool)
+}
 
 fn extract_sse_data_value(line: &str) -> Option<&str> {
     line.strip_prefix("data:")
@@ -2381,7 +2408,7 @@ mod tests {
         build_chat_messages, build_chat_messages_for_request,
         build_chat_messages_for_request_and_provider, count_reasoning_replay_chars,
         parse_chat_message, parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat,
-        tool_to_chat_for_base_url, tool_to_chat_for_route,
+        tool_to_chat_for_legacy_base_url, tool_to_chat_for_legacy_route,
     };
     use crate::config::{ProviderConfig, ProvidersConfig};
     use crate::models::{
@@ -3136,15 +3163,11 @@ mod tests {
         let client = deepseek_anthropic_client(&server);
 
         let err = client
-            .fim_completion("deepseek-chat", "fn main() {", "}", 16)
+            .fim_completion("fn main() {", "}", 16)
             .await
             .expect_err("FIM is unsupported");
         let message = err.to_string();
-        assert!(
-            message.contains("FIM completion is not supported"),
-            "{message}"
-        );
-        assert!(message.contains("Anthropic Messages protocol"), "{message}");
+        assert!(message.contains("official DeepSeek"), "{message}");
         let requests = server.received_requests().await.expect("recorded requests");
         assert!(
             requests.is_empty(),
@@ -3175,6 +3198,11 @@ mod tests {
     fn fim_parser_rejects_ambiguous_response_shape() {
         for response in [
             json!({"choices": []}),
+            json!({"choices": [
+                {"text": "first", "finish_reason": "stop"},
+                {"text": "second", "finish_reason": "stop"}
+            ]}),
+            json!({"choices": {"0": {"text": "middle", "finish_reason": "stop"}}}),
             json!({"choices": [{"text": "middle"}]}),
             json!({"choices": [{"finish_reason": "stop"}]}),
         ] {
@@ -4263,7 +4291,7 @@ mod tests {
             cache_control: None,
         };
 
-        let encoded = tool_to_chat_for_base_url(&tool, "https://api.deepseek.com/v1");
+        let encoded = tool_to_chat_for_legacy_base_url(&tool, "https://api.deepseek.com/v1");
 
         assert!(
             encoded
@@ -4301,7 +4329,7 @@ mod tests {
             "https://api.deepseek.com/beta",
             "https://example.com/openai/v1",
         ] {
-            let encoded = tool_to_chat_for_base_url(&tool, base_url);
+            let encoded = tool_to_chat_for_legacy_base_url(&tool, base_url);
             assert_eq!(
                 encoded
                     .get("function")
@@ -4316,7 +4344,7 @@ mod tests {
     fn deepseek_beta_strict_flag_follows_the_final_custom_chat_path() {
         let tool = test_tool("emit_json");
 
-        let non_beta = tool_to_chat_for_route(
+        let non_beta = tool_to_chat_for_legacy_route(
             &tool,
             "https://api.deepseek.com/beta",
             Some("/chat/completions"),
@@ -4329,7 +4357,7 @@ mod tests {
             "custom suffix bypassed /beta and must not retain strict: {non_beta}"
         );
 
-        let beta = tool_to_chat_for_route(
+        let beta = tool_to_chat_for_legacy_route(
             &tool,
             "https://api.deepseek.com/beta",
             Some("/beta/chat/completions"),
@@ -4345,7 +4373,7 @@ mod tests {
             "https://api.deepseek.com/beta?tenant=custom",
             "https://api.deepseek.com/proxy/beta",
         ] {
-            let encoded = tool_to_chat_for_route(&tool, malformed_official_base, None);
+            let encoded = tool_to_chat_for_legacy_route(&tool, malformed_official_base, None);
             assert!(
                 encoded.pointer("/function/strict").is_none(),
                 "undocumented DeepSeek-owned route must not be reported as Beta strict: {malformed_official_base}"
@@ -4354,7 +4382,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn beta_chat_request_keeps_strict_tool_on_beta_route() {
+    async fn custom_beta_route_preserves_strict_tool_for_legacy_compatibility() {
+        // A localhost base is deliberately outside the official planner's
+        // ownership. This test protects the temporary custom-route path; it
+        // is not evidence for the official DeepSeek RequestPlan sender gate.
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/beta/chat/completions"))
@@ -4378,7 +4409,7 @@ mod tests {
             default_text_model: Some("deepseek-v4-pro".to_string()),
             ..Config::default()
         })
-        .expect("DeepSeek beta client");
+        .expect("custom beta-compatible client");
         client
             .create_message(MessageRequest {
                 model: "deepseek-v4-pro".to_string(),
@@ -4401,7 +4432,7 @@ mod tests {
                 top_p: None,
             })
             .await
-            .expect("beta chat request succeeds");
+            .expect("custom beta-compatible request succeeds");
 
         let requests = server.received_requests().await.expect("recorded request");
         assert_eq!(requests.len(), 1);
@@ -4411,7 +4442,7 @@ mod tests {
             body.pointer("/tools/0/function/strict")
                 .and_then(Value::as_bool),
             Some(true),
-            "strict schema must reach the beta endpoint: {body}"
+            "legacy compatibility must preserve strict on the configured custom beta route: {body}"
         );
     }
 
@@ -4429,7 +4460,8 @@ mod tests {
             cache_control: None,
         };
 
-        let encoded = tool_to_chat_for_base_url(&tool, "https://api.fireworks.ai/inference/v1");
+        let encoded =
+            tool_to_chat_for_legacy_base_url(&tool, "https://api.fireworks.ai/inference/v1");
 
         assert!(encoded.get("allowed_callers").is_none());
         assert!(encoded.get("defer_loading").is_none());

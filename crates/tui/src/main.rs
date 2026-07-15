@@ -4955,35 +4955,28 @@ fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus
     }
 
     let target = doctor_api_target(config);
-    match known_deepseek_base_url_kind(&target.base_url) {
-        Some(DeepSeekBaseUrlKind::Beta) => DoctorStrictToolModeStatus {
+    let provider = config.api_provider();
+    let path_suffix = config
+        .provider_config_for(provider)
+        .and_then(|provider| provider.path_suffix.as_deref());
+    if crate::client::deepseek::owns_route(provider, &target.base_url, path_suffix) {
+        DoctorStrictToolModeStatus {
             enabled: true,
             status: "route_ready_catalog_dependent",
             function_strict_sent: false,
-            message: "beta route ready; function.strict is sent only when every active tool schema matches DeepSeek's strict subset"
+            message: "official DeepSeek planner will select /beta only when every active tool schema matches DeepSeek's strict subset; otherwise it keeps all tools on /v1"
                 .to_string(),
             recommended_base_url: None,
-        },
-        Some(DeepSeekBaseUrlKind::NonBeta) => {
-            let recommended = recommended_strict_base_url(config, &target.base_url);
-            DoctorStrictToolModeStatus {
-                enabled: true,
-                status: "fallback_non_beta",
-                function_strict_sent: false,
-                message:
-                    "enabled, but function.strict is stripped for this non-beta DeepSeek endpoint"
-                        .to_string(),
-                recommended_base_url: Some(recommended.to_string()),
-            }
         }
-        None => DoctorStrictToolModeStatus {
+    } else {
+        DoctorStrictToolModeStatus {
             enabled: true,
             status: "custom_endpoint",
             function_strict_sent: false,
             message: "custom endpoint selected; function.strict remains catalog-dependent and endpoint support cannot be verified by doctor"
                 .to_string(),
             recommended_base_url: None,
-        },
+        }
     }
 }
 
@@ -5012,33 +5005,6 @@ fn doctor_tls_status(config: &Config) -> DoctorTlsStatus {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeepSeekBaseUrlKind {
-    Beta,
-    NonBeta,
-}
-
-fn known_deepseek_base_url_kind(base_url: &str) -> Option<DeepSeekBaseUrlKind> {
-    let normalized = base_url.trim_end_matches('/');
-    if normalized.eq_ignore_ascii_case("https://api.deepseek.com/beta")
-        || normalized.eq_ignore_ascii_case("https://api.deepseeki.com/beta")
-    {
-        Some(DeepSeekBaseUrlKind::Beta)
-    } else if normalized.eq_ignore_ascii_case("https://api.deepseek.com")
-        || normalized.eq_ignore_ascii_case("https://api.deepseek.com/v1")
-        || normalized.eq_ignore_ascii_case("https://api.deepseeki.com")
-        || normalized.eq_ignore_ascii_case("https://api.deepseeki.com/v1")
-    {
-        Some(DeepSeekBaseUrlKind::NonBeta)
-    } else {
-        None
-    }
-}
-
-fn recommended_strict_base_url(_config: &Config, _base_url: &str) -> &'static str {
-    crate::config::DEFAULT_DEEPSEEK_BASE_URL
-}
-
 fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
     let target = doctor_api_target(config);
     let mut lines = vec![format!(
@@ -5047,10 +5013,7 @@ fn doctor_timeout_recovery_lines(config: &Config) -> Vec<String> {
     )];
 
     match config.api_provider() {
-        crate::config::ApiProvider::Deepseek
-            if target.base_url.contains("api.deepseek.com")
-                && !target.base_url.contains("api.deepseeki.com") =>
-        {
+        crate::config::ApiProvider::Deepseek if target.base_url.contains("api.deepseek.com") => {
             lines.push(
                 "If this is a custom DeepSeek-compatible endpoint, set its HTTPS base URL in ~/.codewhale/config.toml and rerun `codewhale doctor`."
                     .to_string(),
@@ -9781,18 +9744,10 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn doctor_known_base_urls_are_ascii_case_insensitive() {
+    fn doctor_xiaomi_base_url_is_ascii_case_insensitive() {
         assert!(doctor_xiaomi_mimo_base_url_uses_token_plan(
             "HTTPS://TOKEN-PLAN-CN.XIAOMIMIMO.COM/V1/"
         ));
-        assert_eq!(
-            known_deepseek_base_url_kind("HTTPS://API.DEEPSEEK.COM/BETA/"),
-            Some(DeepSeekBaseUrlKind::Beta)
-        );
-        assert_eq!(
-            known_deepseek_base_url_kind("HTTPS://API.DEEPSEEK.COM/V1/"),
-            Some(DeepSeekBaseUrlKind::NonBeta)
-        );
     }
 
     #[test]
@@ -9807,13 +9762,13 @@ mod doctor_endpoint_tests {
         assert!(status.enabled);
         assert_eq!(status.status, "route_ready_catalog_dependent");
         assert!(!status.function_strict_sent);
-        assert!(status.message.contains("beta route ready"));
+        assert!(status.message.contains("official DeepSeek planner"));
         assert!(status.message.contains("every active tool schema"));
         assert!(status.recommended_base_url.is_none());
     }
 
     #[test]
-    fn strict_tool_mode_doctor_warns_for_non_beta_deepseek_endpoint() {
+    fn strict_tool_mode_doctor_accepts_official_non_beta_base() {
         let config = Config {
             strict_tool_mode: Some(true),
             base_url: Some("https://api.deepseek.com".to_string()),
@@ -9822,12 +9777,10 @@ mod doctor_endpoint_tests {
 
         let status = doctor_strict_tool_mode_status(&config);
 
-        assert_eq!(status.status, "fallback_non_beta");
+        assert_eq!(status.status, "route_ready_catalog_dependent");
         assert!(!status.function_strict_sent);
-        assert_eq!(
-            status.recommended_base_url.as_deref(),
-            Some(crate::config::DEFAULT_DEEPSEEK_BASE_URL)
-        );
+        assert!(status.message.contains("select /beta"));
+        assert!(status.recommended_base_url.is_none());
     }
 
     #[test]
@@ -9842,7 +9795,7 @@ mod doctor_endpoint_tests {
 
         assert_eq!(status.status, "route_ready_catalog_dependent");
         assert!(!status.function_strict_sent);
-        assert!(status.message.contains("beta route ready"));
+        assert!(status.message.contains("official DeepSeek planner"));
         assert!(status.recommended_base_url.is_none());
     }
 

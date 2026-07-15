@@ -83,10 +83,7 @@ pub(super) fn official_deepseek_endpoint(
     {
         return false;
     }
-    if !matches!(
-        parsed.host_str(),
-        Some("api.deepseek.com" | "api.deepseeki.com")
-    ) {
+    if parsed.host_str() != Some("api.deepseek.com") {
         return false;
     }
     // `url::Url` normalizes an explicit default `:443` away. Compare the raw

@@ -3457,12 +3457,6 @@ impl Config {
             .as_deref()
             .filter(|base| base.contains("integrate.api.nvidia.com"))
             .map(|_| ApiProvider::NvidiaNim)
-            .or_else(|| {
-                self.base_url
-                    .as_deref()
-                    .filter(|base| base.contains("api.deepseeki.com"))
-                    .map(|_| ApiProvider::DeepseekCN)
-            })
             .unwrap_or(ApiProvider::Deepseek)
     }
 
@@ -6096,11 +6090,11 @@ fn model_for_provider(provider: ApiProvider, normalized: String) -> String {
 
 fn normalize_base_url(base: &str) -> String {
     let trimmed = base.trim_end_matches('/');
-    let deepseek_domains = ["api.deepseek.com", "api.deepseeki.com"];
-    if deepseek_domains
-        .iter()
-        .any(|domain| trimmed.contains(domain))
-    {
+    let is_official_deepseek_host = reqwest::Url::parse(trimmed).ok().is_some_and(|url| {
+        url.host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case("api.deepseek.com"))
+    });
+    if is_official_deepseek_host {
         return trimmed.trim_end_matches("/v1").to_string();
     }
     trimmed.to_string()

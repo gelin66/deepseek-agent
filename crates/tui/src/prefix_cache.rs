@@ -1,9 +1,10 @@
 //! Prefix-cache stability manager (inspired by Reasonix's Pillar 1).
 //!
 //! DeepSeek's automatic prefix caching activates only when the *exact*
-//! byte prefix of a request matches the prior request. Any system-prompt
-//! drift, tool-list reordering, or message-rewriting busts the cache
-//! for every token after the changed byte.
+//! byte prefix of a request matches the prior request. This module diagnoses
+//! two intended immutable components: the system-prompt text and the exact
+//! wire tool-catalog array. It does not fingerprint or validate message
+//! history, so a stable result is not proof of a whole-request cache hit.
 //!
 //! This module provides a `PrefixStabilityManager` that:
 //!
@@ -15,7 +16,7 @@
 //!    Did the tool set change? Both?
 //! 4. **Emits events** so the TUI can surface stability to the user.
 //!
-//! ## Three-region model (from Reasonix)
+//! ## Conceptual three-region model (from Reasonix)
 //!
 //! ```text
 //! ┌─────────────────────────────────────────┐
@@ -28,6 +29,8 @@
 //! │ LATEST USER TURN                        │ ← the only new content per request
 //! └─────────────────────────────────────────┘
 //! ```
+//!
+//! Only the immutable system and tool-catalog components are measured here.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, VecDeque};
@@ -38,15 +41,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::{SystemPrompt, Tool};
 
-/// A snapshot of the immutable prefix's fingerprint.
+/// A diagnostic fingerprint of immutable system text and the wire tool array.
 ///
-/// Two snapshots with the same `combined` hash are guaranteed to
-/// produce the same byte prefix when serialized for the API.
+/// Matching hashes mean these two measured components match. Message history
+/// and the rest of the serialized request are outside this fingerprint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrefixFingerprint {
     /// SHA-256 of the system prompt text.
     pub system_sha256: String,
-    /// SHA-256 of the full tool catalog JSON (names, descriptions, schemas).
+    /// SHA-256 of the exact serialized wire tool array.
     pub tools_sha256: String,
     /// SHA-256 of system_sha256 ++ tools_sha256 (combined).
     pub combined_sha256: String,
@@ -55,16 +58,15 @@ pub struct PrefixFingerprint {
 impl PrefixFingerprint {
     /// Compute a fingerprint from system prompt text and tool list.
     ///
-    /// Tools are serialized to the same JSON shape the chat API receives
-    /// (`type`, `name`, `description`, `parameters`, `strict`), sorted
-    /// lexicographically by JSON text, then SHA-256 hashed. This catches
-    /// schema/description drift that actually affects the API prefix,
-    /// while ignoring internal-only fields like `allowed_callers` (#2264).
+    /// Tools are serialized in request-array order through the same encoder as
+    /// the chat sender (`type`, encoded `name`, `description`, `parameters`,
+    /// `strict`) and then SHA-256 hashed. This catches wire-visible drift while
+    /// ignoring internal-only fields like `allowed_callers` (#2264).
     ///
     /// This entry point shares a process-local [`ToolCatalogCache`] with
     /// every other call, so a stable tool set (the common case after the
-    /// first turn of a session) avoids the per-tool JSON serialization
-    /// and sort/join entirely. Callers that hold their own cache — e.g.
+    /// first turn of a session) avoids rebuilding the wire array. Callers
+    /// that hold their own cache — e.g.
     /// [`PrefixStabilityManager`] — should use
     /// [`Self::compute_with_tool_cache`] to share *that* cache instead
     /// and avoid the thread-local lookup.
@@ -75,9 +77,9 @@ impl PrefixFingerprint {
     }
 
     /// Compute a fingerprint while reusing a [`ToolCatalogCache`] for the
-    /// tool-side work. The cache holds the joined+sorted+SHA-256'd catalog
-    /// under a content-derived identity so the per-tool JSON serialization
-    /// and the sort/join only run on the first call for a given tool set.
+    /// tool-side work. The cache holds the serialized wire array and its
+    /// SHA-256 under a content-derived identity, so encoding only runs on the
+    /// first call for a given ordered tool catalog.
     ///
     /// On a cache hit this function avoids the entire tool serialization
     /// path, which can be 100+ microseconds for a 60-tool catalog.
@@ -89,7 +91,7 @@ impl PrefixFingerprint {
         let system_sha256 = sha256_hex(system_text.as_bytes());
 
         let tools_sha256 = match tools {
-            Some(tools) if !tools.is_empty() => {
+            Some(tools) => {
                 // `fingerprint_for` consults the cache first; on a hit
                 // it returns the pre-computed hex digest directly.
                 cache.fingerprint_for(tools).sha256_hex
@@ -179,10 +181,9 @@ pub struct PrefixStabilityManager {
     change_count: u64,
     /// Total number of stability checks performed.
     check_count: u64,
-    /// Process-local cache for the tool-catalog JSON serialization. Avoids
-    /// re-running `tool_to_api_json` + sort + join on every `check_and_update`
-    /// when the tool set is unchanged (the common case once tools are
-    /// registered at session start).
+    /// Process-local cache for the exact wire tool-array serialization. Avoids
+    /// rebuilding it on every `check_and_update` when the ordered tool catalog
+    /// is unchanged (the common case once tools are registered at session start).
     tool_catalog_cache: ToolCatalogCache,
 }
 
@@ -190,17 +191,15 @@ pub struct PrefixStabilityManager {
 /// "session + 1 or 2 forked subagent catalogs" without unbounded growth.
 const TOOL_CATALOG_CACHE_CAPACITY: usize = 8;
 
-/// Bounded LRU cache of `(tool_set_identity) -> (sha256_hex, joined_string)`.
+/// Bounded LRU cache of `(tool_set_identity) -> (sha256_hex, wire_array)`.
 ///
 /// The cache key is a content-derived `u64` hash of the tool list (length +
 /// per-tool `name` + `description` + serialized `input_schema`). On a hit,
-/// `PrefixFingerprint::compute` skips the per-tool JSON serialization, the
-/// sort, and the join — a workload that can be 100+ microseconds for a
-/// 60-tool catalog. On a miss, the work runs once and the result is stored.
+/// `PrefixFingerprint::compute` skips rebuilding the serialized wire array.
+/// On a miss, the work runs once and the result is stored.
 ///
 /// The cache is intentionally *not* generic over `PrefixFingerprint` because
-/// only the joined string is large; the SHA-256 is recomputed from the cached
-/// joined string when the catalog changes (cheap, ≤ a few hundred bytes).
+/// only the serialized array is large; its SHA-256 is stored alongside it.
 #[derive(Debug, Default, Clone)]
 pub struct ToolCatalogCache {
     by_identity: HashMap<u64, CachedCatalog>,
@@ -208,15 +207,14 @@ pub struct ToolCatalogCache {
     capacity: usize,
 }
 
-/// One entry in [`ToolCatalogCache`]. Stores the joined JSON catalog plus
+/// One entry in [`ToolCatalogCache`]. Stores the serialized wire array plus
 /// the pre-computed SHA-256 hex digest so [`PrefixFingerprint::compute`]
 /// does not need to re-hash on the hot path.
 #[derive(Debug, Clone)]
 pub struct CachedCatalog {
-    /// The newline-joined, sorted tool-catalog JSON. Wrapped in an `Arc` so
-    /// multiple cache consumers can hold the same allocation. Exposed for
-    /// observability (debug builds, `/status` chip) and for tests that
-    /// need to assert byte-stability of the joined catalog.
+    /// The exact serialized wire tool array, in request order. Wrapped in an
+    /// `Arc` so multiple cache consumers can hold the same allocation. Exposed
+    /// for observability and tests that assert byte stability.
     #[allow(dead_code)] // observability + tests; not consumed on the hot path
     pub joined: Arc<String>,
     /// SHA-256 hex digest of `joined`, computed once on cache miss.
@@ -242,7 +240,7 @@ impl ToolCatalogCache {
         }
     }
 
-    /// Compute (or recall) the joined-and-hashed tool catalog for `tools`.
+    /// Compute (or recall) the serialized-and-hashed wire array for `tools`.
     /// The cache is keyed on a content-derived `u64` identity so two `&[Tool]`
     /// slices with the same payloads — in the same order — hit the same entry.
     pub fn fingerprint_for(&mut self, tools: &[Tool]) -> CachedCatalog {
@@ -253,11 +251,9 @@ impl ToolCatalogCache {
             return cached.clone();
         }
 
-        // Miss: serialize, sort, join, hash. Store the joined string in an
-        // `Arc` so a later hit can return the same allocation.
-        let mut serialized: Vec<String> = tools.iter().filter_map(tool_to_api_json).collect();
-        serialized.sort();
-        let joined = Arc::new(serialized.join("\n"));
+        // Miss: encode in request order, serialize as one JSON array, and hash.
+        // Store the array in an `Arc` so a later hit returns the same allocation.
+        let joined = Arc::new(tool_catalog_wire_json(tools));
         let sha256_hex = sha256_hex(joined.as_bytes());
         let entry = CachedCatalog {
             joined: Arc::clone(&joined),
@@ -305,18 +301,16 @@ impl ToolCatalogCache {
     }
 }
 
-/// Content-derived identity for a tool slice. Order-sensitive: two slices
-/// with the same tools in different orders produce different identities.
-/// (The downstream fingerprint itself is order-insensitive — the sort in
-/// `fingerprint_for` takes care of that — but the cache key matches the
-/// input order so re-registration of the same set in the same order hits.)
+/// Content-derived identity for a tool slice. Order-sensitive, matching the
+/// wire array: two slices with the same tools in different orders produce
+/// different identities and fingerprints.
 fn tool_set_identity(tools: &[Tool]) -> u64 {
     let mut hasher = DefaultHasher::new();
     tools.len().hash(&mut hasher);
     for tool in tools {
         tool.name.hash(&mut hasher);
         tool.description.hash(&mut hasher);
-        // `strict` participates in `tool_to_api_json` output (it is part of
+        // `strict` participates in the chat wire output (it is part of
         // the wire-format the chat API receives), so it MUST be part of the
         // identity. Omitting it lets two semantically different catalogs
         // collide and serve a stale fingerprint.
@@ -363,14 +357,9 @@ fn hash_json_value<H: Hasher>(value: &serde_json::Value, state: &mut H) {
         serde_json::Value::Object(obj) => {
             5u8.hash(state);
             obj.len().hash(state);
-            // Iterate by sorted key so `{"a":1,"b":2}` and `{"b":2,"a":1}`
-            // collide — the wire format already canonicalizes via the
-            // `serde_json` Map ordering, but a defensively-sorted view
-            // future-proofs against schema serializers that emit
-            // declaration order.
-            let mut entries: Vec<(&String, &serde_json::Value)> = obj.iter().collect();
-            entries.sort_by(|a, b| a.0.cmp(b.0));
-            for (k, v) in entries {
+            // `serde_json` uses `preserve_order` in this crate, so object key
+            // order is wire-visible and must also be cache-key-visible.
+            for (k, v) in obj {
                 k.hash(state);
                 hash_json_value(v, state);
             }
@@ -555,24 +544,15 @@ impl PrefixStabilityManager {
     }
 }
 
-/// Serialize a tool to the same JSON shape the chat API receives,
-/// excluding internal-only fields like `allowed_callers`, `defer_loading`,
-/// `input_examples`, and `cache_control` that are never sent to DeepSeek.
-fn tool_to_api_json(tool: &Tool) -> Option<String> {
-    let mut value = serde_json::json!({
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description,
-            "parameters": tool.input_schema,
-        }
-    });
-    if let Some(strict) = tool.strict
-        && let Some(function) = value.get_mut("function")
-    {
-        function["strict"] = serde_json::json!(strict);
-    }
-    serde_json::to_string(&value).ok()
+/// Serialize the exact wire tool array using the chat sender's encoder.
+fn tool_catalog_wire_json(tools: &[Tool]) -> String {
+    serde_json::Value::Array(
+        tools
+            .iter()
+            .map(crate::client::tool_to_chat_wire_json)
+            .collect(),
+    )
+    .to_string()
 }
 
 /// Compute the SHA-256 hex digest of a byte slice.
@@ -631,12 +611,12 @@ mod tests {
     }
 
     #[test]
-    fn tool_order_does_not_affect_fingerprint() {
+    fn tool_order_changes_wire_fingerprint() {
         let tools_a = vec![make_tool("read_file"), make_tool("write_file")];
         let tools_b = vec![make_tool("write_file"), make_tool("read_file")];
         let a = PrefixFingerprint::compute("system", Some(&tools_a));
         let b = PrefixFingerprint::compute("system", Some(&tools_b));
-        assert_eq!(a.combined_sha256, b.combined_sha256);
+        assert_ne!(a.combined_sha256, b.combined_sha256);
     }
 
     #[test]
@@ -712,11 +692,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_tools_and_none_tools_produce_same_hash() {
+    fn empty_wire_catalog_differs_from_absent_catalog() {
         let empty = PrefixFingerprint::compute("system", Some(&[]));
         let none = PrefixFingerprint::compute("system", None);
-        // Both should produce sha256(b"") for the tool component
-        assert_eq!(empty.tools_sha256, none.tools_sha256);
+        assert_eq!(empty.tools_sha256, sha256_hex(b"[]"));
+        assert_eq!(none.tools_sha256, sha256_hex(b""));
+        assert_ne!(empty.tools_sha256, none.tools_sha256);
     }
 
     #[test]
@@ -805,20 +786,51 @@ mod tests {
     }
 
     #[test]
-    fn tool_catalog_cache_pinned_by_input_order() {
-        // The identity hash includes the input order so re-registering the
-        // same set with a different permutation produces a separate cache
-        // entry. The sorted-and-joined digest still matches the order-
-        // independent fingerprint that the chat API sees.
+    fn tool_catalog_cache_preserves_input_order() {
         let mut cache = ToolCatalogCache::new();
         let a = vec![make_tool("read_file"), make_tool("write_file")];
         let b = vec![make_tool("write_file"), make_tool("read_file")];
         let entry_a = cache.fingerprint_for(&a);
         let entry_b = cache.fingerprint_for(&b);
-        // Joined output is the same (sorted) but the two cache entries are
-        // distinct because their identities differ.
-        assert_eq!(entry_a.joined.as_str(), entry_b.joined.as_str());
+        assert_ne!(entry_a.joined.as_str(), entry_b.joined.as_str());
+        assert_ne!(entry_a.sha256_hex, entry_b.sha256_hex);
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn tool_catalog_cache_uses_wire_name_and_omits_internal_fields() {
+        let mut cache = ToolCatalogCache::new();
+        let clean = make_tool("mcp:read-file");
+        let mut tool = clean.clone();
+        tool.allowed_callers = Some(vec!["internal-agent".to_string()]);
+        tool.defer_loading = Some(true);
+        tool.input_examples = Some(vec![serde_json::json!({"path": "internal"})]);
+
+        let entry = cache.fingerprint_for(&[tool]);
+        let clean_entry = cache.fingerprint_for(&[clean]);
+        let wire: serde_json::Value = serde_json::from_str(&entry.joined).unwrap();
+        assert!(Arc::ptr_eq(&entry.joined, &clean_entry.joined));
+        assert_eq!(cache.len(), 1);
+        assert_eq!(
+            wire.pointer("/0/function/name")
+                .and_then(serde_json::Value::as_str),
+            Some("mcp-x00003A-read--file")
+        );
+        assert!(wire.pointer("/0/allowed_callers").is_none());
+        assert!(wire.pointer("/0/defer_loading").is_none());
+        assert!(wire.pointer("/0/input_examples").is_none());
+    }
+
+    #[test]
+    fn strict_and_fallback_catalogs_have_different_wire_fingerprints() {
+        let mut strict = make_tool("lookup");
+        strict.strict = Some(true);
+        let fallback = make_tool("lookup");
+
+        let strict = PrefixFingerprint::compute("system", Some(&[strict]));
+        let fallback = PrefixFingerprint::compute("system", Some(&[fallback]));
+        assert_ne!(strict.tools_sha256, fallback.tools_sha256);
+        assert_ne!(strict.combined_sha256, fallback.combined_sha256);
     }
 
     #[test]
@@ -831,6 +843,21 @@ mod tests {
         let entry_v1 = cache.fingerprint_for(&[tool_v1]);
         let entry_v2 = cache.fingerprint_for(&[tool_v2]);
         assert_ne!(entry_v1.sha256_hex, entry_v2.sha256_hex);
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn tool_catalog_cache_detects_wire_visible_schema_key_order() {
+        let mut first = make_tool("t");
+        first.input_schema = serde_json::json!({"type": "object", "properties": {}});
+        let mut second = make_tool("t");
+        second.input_schema = serde_json::json!({"properties": {}, "type": "object"});
+        let mut cache = ToolCatalogCache::new();
+
+        let first = cache.fingerprint_for(&[first]);
+        let second = cache.fingerprint_for(&[second]);
+        assert_ne!(first.joined, second.joined);
+        assert_ne!(first.sha256_hex, second.sha256_hex);
         assert_eq!(cache.len(), 2);
     }
 
@@ -867,6 +894,7 @@ mod tests {
         // Empty input is fine — should produce a stable, non-empty digest.
         let mut cache = ToolCatalogCache::new();
         let entry = cache.fingerprint_for(&[]);
+        assert_eq!(entry.joined.as_str(), "[]");
         assert!(!entry.sha256_hex.is_empty());
         let again = cache.fingerprint_for(&[]);
         assert!(Arc::ptr_eq(&entry.joined, &again.joined));
