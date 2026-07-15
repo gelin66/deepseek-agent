@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from typing import TextIO
 
 
 MARKER = "TOOL_CATALOG_METRICS "
@@ -36,16 +35,16 @@ def main() -> int:
     proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
     marker_payload: str | None = None
 
-    def forward_without_marker(stream: str, destination: TextIO) -> None:
+    def forward_without_marker(stream: str) -> None:
         nonlocal marker_payload
         for line in stream.splitlines(keepends=True):
             if MARKER in line:
                 marker_payload = line.split(MARKER, 1)[1].strip()
             else:
-                destination.write(line)
+                sys.stderr.write(line)
 
-    forward_without_marker(proc.stdout, sys.stdout)
-    forward_without_marker(proc.stderr, sys.stderr)
+    forward_without_marker(proc.stdout)
+    forward_without_marker(proc.stderr)
 
     if marker_payload is not None:
         metrics = json.loads(marker_payload)

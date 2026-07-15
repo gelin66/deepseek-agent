@@ -9,7 +9,7 @@ output=""
 
 usage() {
   cat <<'EOF'
-usage: ./scripts/eval-m1.sh [options]
+usage: bash scripts/eval-m1.sh [options]
 
 Options:
   --repo PATH                 Clean Git worktree to evaluate (default: this repository)
@@ -94,12 +94,11 @@ if [[ -e "$output" ]]; then
 fi
 
 run_name="$(basename "${output%.jsonl}")"
-raw_dir="$harness_root/eval/raw/$run_name"
-if [[ -e "$raw_dir" ]]; then
-  echo "refusing to overwrite existing raw logs: $raw_dir" >&2
+final_raw_dir="$harness_root/eval/raw/$run_name"
+if [[ -e "$final_raw_dir" ]]; then
+  echo "refusing to overwrite existing raw logs: $final_raw_dir" >&2
   exit 2
 fi
-mkdir -p "$(dirname "$output")" "$raw_dir"
 
 expected_header=$'case_id\tslice\tevidence_level\tcomparison\tpackage\ttarget\ttest_name\trequirement'
 IFS= read -r header < "$manifest"
@@ -110,8 +109,13 @@ fi
 
 rows=()
 seen_file="$(mktemp "${TMPDIR:-/tmp}/codewhale-m1-seen.XXXXXX")"
+output_tmp=""
+published=false
 cleanup() {
   rm -f "$seen_file"
+  if [[ "$published" != true && -n "$output_tmp" ]]; then
+    rm -f "$output_tmp"
+  fi
 }
 trap cleanup EXIT
 
@@ -132,7 +136,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   echo "$case_id" >> "$seen_file"
 
   case "$evidence_level" in
-    full-runtime-offline|protocol-fixture|runtime-contract|critic-plumbing|config-contract) ;;
+    full-runtime-offline|protocol-unit|runtime-contract|critic-plumbing|config-contract) ;;
     *) echo "invalid evidence_level at line $line_number: $evidence_level" >&2; exit 2 ;;
   esac
   case "$comparison" in
@@ -170,7 +174,14 @@ relative_log_path() {
   esac
 }
 
-: > "$output"
+output_tmp="${output}.incomplete.$$"
+raw_dir="${final_raw_dir}.incomplete.$$"
+if [[ -e "$output_tmp" || -e "$raw_dir" ]]; then
+  echo "refusing to overwrite incomplete evaluation artifacts" >&2
+  exit 2
+fi
+mkdir -p "$(dirname "$output")" "$raw_dir"
+: > "$output_tmp"
 suite_started="$(date +%s)"
 selected=0
 passed=0
@@ -216,7 +227,7 @@ for line in "${rows[@]}"; do
     fi
   fi
 
-  log_record="$(relative_log_path "$log_path")"
+  log_record="$(relative_log_path "$final_raw_dir/${case_id}.log")"
   printf '{"schema":"codewhale.eval.m1.v1","record_type":"case","suite":"m1-offline","case_id":"%s","slice":"%s","evidence_level":"%s","comparison":"%s","revision":"%s","harness_revision":"%s","manifest_blob":"%s","dirty":false,"status":"%s","duration_seconds":%d,"package":"%s","target":"%s","test_name":"%s","requirement":"%s","log":"%s"}\n' \
     "$(json_escape "$case_id")" \
     "$(json_escape "$slice")" \
@@ -231,7 +242,7 @@ for line in "${rows[@]}"; do
     "$(json_escape "$target")" \
     "$(json_escape "$test_name")" \
     "$(json_escape "$requirement")" \
-    "$(json_escape "$log_record")" >> "$output"
+    "$(json_escape "$log_record")" >> "$output_tmp"
 done
 
 if ((selected == 0)); then
@@ -251,11 +262,15 @@ printf '{"schema":"codewhale.eval.m1.v1","record_type":"summary","suite":"m1-off
   "$(json_escape "$harness_revision")" \
   "$(json_escape "$manifest_blob")" \
   "$(json_escape "$suite_status")" \
-  "$selected" "$passed" "$failed" "$suite_duration" >> "$output"
+  "$selected" "$passed" "$failed" "$suite_duration" >> "$output_tmp"
+
+mv "$raw_dir" "$final_raw_dir"
+mv "$output_tmp" "$output"
+published=true
 
 echo "M1 offline: $suite_status ($passed/$selected passed)"
 echo "result: $output"
-echo "raw logs: $raw_dir"
+echo "raw logs: $final_raw_dir"
 
 if ((failed > 0)); then
   exit 1

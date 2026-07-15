@@ -9,7 +9,8 @@
 
 - `full-runtime-offline`：用注入模型或本地 WireMock 驱动真实 Engine、真实工具注册表，
   或真实 `codewhale-tui exec`；
-- `protocol-fixture`：验证 DeepSeek 路由、Strict、FIM、SSE、reasoning replay 和 usage；
+- `protocol-unit`：验证 DeepSeek 路由、Strict、FIM parser、SSE decoder、reasoning replay
+  和 usage 的 inline 单元契约；它不是 HTTP fixture；
 - `runtime-contract`：验证终态、错误恢复、上下文、多 Agent 预算与 worktree 等确定性契约；
 - `critic-plumbing`：只验证 `verify` 模型评审工具的接线和结果归一化；
 - `config-contract`：验证本地 DeepSeek 配置约定。
@@ -26,19 +27,19 @@ Shell 函数，绕过生产 Agent loop 和生产工具注册表，因此它只�
 当前提交的全部离线用例：
 
 ```bash
-./scripts/eval-m1.sh
+bash scripts/eval-m1.sh
 ```
 
 只运行可与导入基线 `352e86a6` 比较的用例：
 
 ```bash
-./scripts/eval-m1.sh --scope cross-revision
+bash scripts/eval-m1.sh --scope cross-revision
 ```
 
 使用当前评测器测试另一个干净 worktree：
 
 ```bash
-./scripts/eval-m1.sh \
+bash scripts/eval-m1.sh \
   --repo /absolute/path/to/worktree \
   --scope cross-revision \
   --output eval/results/m1-offline-imported.jsonl
@@ -47,7 +48,8 @@ Shell 函数，绕过生产 Agent loop 和生产工具注册表，因此它只�
 脚本逐项使用 Cargo 的精确测试名，并检查确实运行且通过了一个测试，避免“过滤器匹配
 零项但 Cargo 返回成功”的假绿。目标仓库必须是干净提交；清单、结果 Schema 或证据
 等级不合法时也会直接失败。结果同时记录被测提交、评测器提交和 manifest blob，避免
-以后用不同清单生成同名“基线”。
+以后用不同清单生成同名“基线”。整套运行完成后才会原子发布 JSONL 和正式日志目录；
+被中断的日志只会留在带 `.incomplete.<pid>` 后缀的目录中。
 
 ## 结果边界
 
