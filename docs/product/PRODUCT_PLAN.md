@@ -14,8 +14,11 @@
 它描述现状，不覆盖本文件中的目标方向。
 
 当前实施状态仍以路线图为准；截至 2026-07-15，
-[M1-A 离线契约基线](../../eval/summaries/m1-offline-baseline-2026-07-15.md)已完成，
-但尚无真实 DeepSeek 任务级提升证据，M1 仍在进行中。
+[M1-A 离线契约基线](../../eval/summaries/m1-offline-baseline-2026-07-15.md)与生产工具目录测量已完成；
+[M1-B 官方 DeepSeek live canary](../../eval/summaries/m1-b-deepseek-live-2026-07-15.md)
+通过 5/5 个受限请求。它们证明离线契约和 Standard、Thinking tool/exact replay、
+Beta Strict、Beta FIM 的线上协议兼容，不证明编码能力提升。M1-C 真实编码任务 A/B
+仍待完成，因此 M1 仍在进行中。
 
 ## 1. 产品结论
 
@@ -132,7 +135,9 @@ Writing agents -> WorkspaceLane / Worktree
 | `app` | 唯一 composition root 和产品级命令 | 业务状态复制 |
 | `cli/tui/app-server` | 输入、输出与事件投影 | 模型循环、独立状态机 |
 
-先调整职责，最后再统一 crate 名称。不能为了目录好看而一次性搬动整个仓库。
+表中的模块名首先表示唯一职责，不要求立即创建同名 crate。先调整职责，最后再统一
+crate 名称；不能为了目录好看而一次性搬动整个仓库。下一切片 M2-A 的 DeepSeek
+request planner 直接进入现有生产 `crates/tui/src/client/`，不得先创建无人调用的新 crate。
 
 ### 5.2 真正可替换的端口
 
@@ -171,8 +176,18 @@ enum ApiSurface {
 - assistant reasoning/tool-call 历史按 DeepSeek 协议精确回放；
 - SSE、finish reason、usage、cache、retry 和 limits 由一个 Backend 统一负责。
 
+每次模型调用必须先产生一个确定性的 `RequestPlan`，一次性固定 surface、endpoint、
+wire model、streaming、reasoning replay 与工具 strict 状态；发送层不得再次猜测或改写。
+M2-A 只在现有生产 Client 内接管这段预检并复用当前 transport、retry、SSE parser 和
+Agent loop，不创建第二个 Runtime。待真实调用路径完成迁移并删除旧分支后，再决定是否
+值得抽成独立 crate。
+
 模型名、上下文上限、价格和 Beta 状态属于可变化能力，必须从官方协议 fixture 和
 定期 canary 中验证，不能散落为永久业务假设。
+
+当前 5/5 live canary 是上述 wire 契约的外部事实基线，且记录明确标记为
+`product_metric_eligible=false`、`verified_success=null`。M2-A 切换生产请求路径后必须
+重跑它，但无论通过多少次都不能替代 M1-C 的真实编码任务验收。
 
 ## 7. 工具与完成语义
 

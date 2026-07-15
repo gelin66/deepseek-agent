@@ -8,6 +8,9 @@
 2026-07-15 的同 Harness 结果、证据边界和后续决策见
 [M1-A 离线契约基线汇总](summaries/m1-offline-baseline-2026-07-15.md)。
 
+同日 5 次真实 DeepSeek 请求的协议结果、usage/费用和能力边界见
+[M1-B DeepSeek live 协议 Canary](summaries/m1-b-deepseek-live-2026-07-15.md)。
+
 `manifests/m1-offline.tsv` 将证据明确分为：
 
 - `full-runtime-offline`：用注入模型或本地 WireMock 驱动真实 Engine、真实工具注册表，
@@ -66,15 +69,17 @@ python3 scripts/eval-deepseek-live.py --dry-run
 Beta Strict Chat 和 Beta FIM：
 
 ```bash
+output="eval/results/m1-b-deepseek-live-$(git rev-parse --short=8 HEAD)-$(date -u +%Y%m%dT%H%M%SZ).jsonl"
 python3 scripts/eval-deepseek-live.py \
   --acknowledge-cost \
   --key-file key.txt \
-  > eval/results/m1-b-deepseek-live.jsonl
+  > "$output"
 ```
 
 `key.txt` 已被仓库忽略，仍应保持 `0600` 权限。脚本不输出模型正文、reasoning、工具参数、
-完整请求/响应或 Key；当前价格快照下预估上界约 `$0.0042`，并设置 `$0.01` 停止线。
-这些记录只证明线上协议契约，不属于任务级 `verified_success`。
+完整请求/响应或 Key。最终运行 5/5 通过，按原始 usage 估算费用为 `$0.0000850004`；当前价格快照下的
+计划上界为 `$0.00413424`，并设置 `$0.01` 停止线。这些记录只证明线上协议契约，不属于
+任务级 `verified_success`；完整口径见上方 M1-B 汇总。
 
 ## 结果边界
 

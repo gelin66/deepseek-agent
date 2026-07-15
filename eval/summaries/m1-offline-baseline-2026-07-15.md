@@ -9,8 +9,8 @@
 
 | 本地结果（默认不提交） | 被测提交 | Harness 提交 | Manifest blob | JSONL SHA-256 | 范围 | 结果 | 记录耗时 |
 |---|---|---|---|---|---|---|---|
-| `eval/results/m1-offline-current-880da451.jsonl` | `880da451ff8617f16a72ec5e5dcebdf608ba7113` | `880da451ff8617f16a72ec5e5dcebdf608ba7113` | `678c8e30d471e356cb93c47781c87b0c8624c26d` | `d1b05f8e0f23e52e36fb45a6e64b7e48bfb9b1013539765104567cfe58bdd3cd` | `all` | 41/41 | 72 s |
-| `eval/results/m1-offline-imported-352e86a6-h880da451.jsonl` | `352e86a611fdf3cd8bd27c36d24d482c06a71117` | `880da451ff8617f16a72ec5e5dcebdf608ba7113` | `678c8e30d471e356cb93c47781c87b0c8624c26d` | `70f8b414f58ce1b302b3c9bcb5a04e26472fee062a49b48822c9f84b9e41152f` | `cross-revision` | 12/12 | 57 s |
+| `eval/results/m1-offline-current-366e8b5b.jsonl` | `366e8b5b37bedbbf3b1ebb326b14a70e885a57a2` | `366e8b5b37bedbbf3b1ebb326b14a70e885a57a2` | `678c8e30d471e356cb93c47781c87b0c8624c26d` | `c43de6064e23927848a7270a139d0de97e04ed0c5c77018996596331f6141034` | `all` | 41/41 | 88 s |
+| `eval/results/m1-offline-imported-352e86a6-h366e8b5b.jsonl` | `352e86a611fdf3cd8bd27c36d24d482c06a71117` | `366e8b5b37bedbbf3b1ebb326b14a70e885a57a2` | `678c8e30d471e356cb93c47781c87b0c8624c26d` | `73fc2b5a86b531dc3f3ec46967f7e74f1d313a52869e80acda714b71c36fec6f` | `cross-revision` | 12/12 | 323 s |
 
 清单为 [m1-offline.tsv](../manifests/m1-offline.tsv)，评测入口为
 [`scripts/eval-m1.sh`](../../scripts/eval-m1.sh)。导入结果只运行 12 个两边都存在的
@@ -31,20 +31,38 @@
 内全部通过，且 12 个可比较契约没有发生回归。两边都是 pass；`pass/pass` 没有能力增量，
 更不能替代真实任务 A/B。
 
-72 秒和 57 秒也不可用于性能比较。整套耗时包含 Cargo 构建/缓存、测试进程启动和主机
+88 秒和 323 秒也不可用于性能比较。整套耗时包含 Cargo 构建/缓存、测试进程启动和主机
 调度，且两边执行的用例数不同；它不是受控、重复的 Agent 任务延迟。
 
-## 3. 当前没有的证据
+## 3. 生产工具目录测量
 
-本轮没有调用真实 DeepSeek API，因此没有可归因的：
+在干净提交 `366e8b5b` 上运行 [`scripts/measure-tool-catalog.py`](../../scripts/measure-tool-catalog.py)，
+由真实生产 Engine turn 捕获同一请求阶段的完整目录与模型可见目录：
 
-- Standard Chat、`/beta` Strict Chat 与 `/beta` FIM 线上请求证据；
+| 目录 | 工具数 | 序列化 JSON 字节 | 粗略 Token 估算 |
+|---|---:|---:|---:|
+| 完整生产目录 | 92 | 78,483 | 19,621 |
+| 当前模型可见目录 | 26 | 29,465 | 7,367 |
+
+模型可见目录的序列化体积比完整目录低 62.46%。这里的 Token 只是
+`ceil(serialized_json_bytes / 4)` 的确定性估算，`server_usage_measured=false`；它证明按需暴露
+已进入真实 Engine 请求，不证明服务端实际节省同等 Token，也不证明任务能力提升。目录内容
+还会受编译能力和运行环境影响，后续对比必须固定相同环境与 revision。
+
+## 4. 当前没有的证据
+
+M1-A 离线基线本身没有调用真实 DeepSeek API，因此没有可归因的：
+
 - 输入、输出、reasoning、cache hit/miss Token 与 API 成本；
 - 真实仓库任务的 `verified_task_success`、false-success 和失败分类；
 - 同任务、同验收器、同预算下的导入提交与候选提交 A/B；
 - 可比较的单任务墙钟时间或多 Agent 相对单 Agent 的净收益。
 
-## 4. 决策
+Standard Chat、Thinking tool replay、`/beta` Strict Chat 与 `/beta` FIM 的线上协议证据已由
+[M1-B DeepSeek live canary](m1-b-deepseek-live-2026-07-15.md) 单独记录。该证据同样不代表
+真实编码能力。
+
+## 5. 决策
 
 1. 将这对结果冻结为 **M1-A 离线契约基线**；M1-A 完成，但 M1 不完成。
 2. 保留 12 个跨提交契约，包括现有多 Agent 契约，作为后续重构的防回归底线。
@@ -52,15 +70,13 @@
 4. `verify` 继续作为独立实验；在真实缺陷检出率和误报率得到证据前，不成为完成门禁。
 5. DeepSeek Strict schema 不兼容时，只允许 Strict 准备降级；普通工具调用能力必须保留。
 
-## 5. 下一切片
+## 6. 后续切片
 
-### M1-B：有上限的 DeepSeek live canary
+### M1-B：有上限的 DeepSeek live canary（已完成）
 
-- 分开验证 `ApiSurface::StandardChat`、`ApiSurface::StrictChat` 和 `ApiSurface::Fim`；
-- 覆盖普通工具调用、全 strict 函数、strict 不兼容回退、reasoning/tool replay、SSE 终止、
-  usage/cache 字段和错误分类；
-- 预先固定请求次数、Token、费用和超时上限，原始响应脱敏留证；
-- 输出协议成功率和每种 surface 的 Token/费用，不宣称真实编码能力。
+- 官方线上 5 个请求全部通过，费用、请求数与超时均有硬上限；
+- 已验证 Standard、Thinking tool call + exact replay、Beta Strict 与 Beta FIM；
+- 结果为协议 canary，`verified_success=null`，不进入产品能力指标。
 
 ### M1-C：固定真实编码任务基线
 

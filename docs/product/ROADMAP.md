@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
 - 状态：执行中
-- 当前阶段：M1 评测基线（M1-A 离线契约基线已完成，M1-B/M1-C 待完成）
+- 当前阶段：M1 评测基线（M1-A/M1-B 已完成，M1-C 待完成）；下一工程切片为 M2-A production request planner
 - 上次更新：2026-07-15
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -17,6 +17,9 @@
 - 当前真实 Agent loop 仍位于 `crates/tui`。
 - `crates/core` 尚不是生产模型执行内核。
 - 根 Agent 与子 Agent 仍有不同运行循环。
+- M1-A 离线契约证据与生产工具目录测量已经完成。
+- M1-B 官方 DeepSeek live canary 已通过 5/5，但仅属于协议兼容证据。
+- 尚无导入基线与当前候选之间的真实编码任务 A/B，不能声称 Agent 能力提升。
 - 当前已有一组 DeepSeek 协议、Agent 可靠性和独立 verify 实验 WIP。
 - WIP 保存提交：`2ccccdd4`。
 - 本地归档分支：`archive/pre-product-plan-20260715`。
@@ -44,8 +47,8 @@
 | 里程碑 | 目标 | 状态 | 主要退出门槛 |
 |---|---|---|---|
 | M0 | 保护基线、整理仓库、建立唯一文档真相 | 已完成 | 工作区可追溯，产品方案落库，现有 WIP 被隔离说明 |
-| M1 | 建立原始 DeepSeek 能力基准 | 进行中（M1-A 已完成） | 可重复测量成功率、假成功、Token、时间和成本 |
-| M2 | 独立 DeepSeekBackend 与领域协议 | 待开始 | Standard/Strict/FIM fixture 和 live canary 通过 |
+| M1 | 建立原始 DeepSeek 能力基准 | 进行中（M1-A/M1-B 已完成） | 真实编码 A/B 可重复测量成功率、假成功、Token、时间和成本 |
+| M2 | 独立 DeepSeekBackend 与领域协议 | 待开始（M2-A 下一工程切片） | Production RequestPlan 接管真实请求，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 待开始 | 可完成 read/edit/shell/verify/complete 真实任务 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 待开始 | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
 | M5 | RepoGraph、ContextBroker 和证据化完成 | 待开始 | 成功率或 Token 明显优于基线，假成功下降 |
@@ -95,17 +98,31 @@
 - 另外 29 个 `candidate_only` 用例只证明候选契约通过，不证明能力提升。
 - 完整证据、哈希和解释边界见
   [M1-A 离线契约基线](../../eval/summaries/m1-offline-baseline-2026-07-15.md)。
+- [`scripts/measure-tool-catalog.py`](../../scripts/measure-tool-catalog.py) 已通过真实生产 Engine
+  turn 测量完整目录、模型可见目录和确定性字节估算；该测量描述工具面规模，不是
+  Provider Token、真实模型调用或能力提升证据。
 
-M1-A 完成不等于 M1 完成：本轮没有真实 DeepSeek Token、cache、成本和可验证任务成功率，
-两套用例的总耗时也不可用于性能比较。
+M1-A 完成不等于 M1 完成：离线用例没有真实 DeepSeek Token、cache、成本和可验证任务
+成功率，两套用例的总耗时也不可用于性能比较。
+
+### 已完成：M1-B 官方 DeepSeek live canary
+
+- 在干净提交 `366e8b5b37bedbbf3b1ebb326b14a70e885a57a2` 上，以 5 个受费用、Token、
+  请求数和超时限制的真实请求通过 5/5。
+- 覆盖 Standard Chat、Thinking tool call、`reasoning_content` exact replay、Beta Strict Chat
+  和 Beta FIM；usage/cache 与 finish reason 均按各用例契约记录。
+- 结果、哈希、usage 和费用口径见
+  [M1-B DeepSeek live 协议 Canary](../../eval/summaries/m1-b-deepseek-live-2026-07-15.md)。
+- 结果明确记录 `record_class=protocol_canary`、`product_metric_eligible=false` 和
+  `verified_success=null`；它只证明当时官方 API 的 wire 契约兼容，不是编码任务成绩，
+  也不证明当前生产 Client 已统一通过一个 RequestPlan 生成这些请求。
 
 ### 待完成
 
-1. **M1-B DeepSeek live canary**：以费用、Token、请求数和超时上限分别验证 Standard、
-   Strict 与 FIM 的官方 API 契约、fallback、reasoning replay、SSE、usage/cache 和错误分类。
-2. **M1-C 固定真实编码任务基线**：同任务、同仓库 revision、同预算、同确定性验收器，
+1. **M1-C 固定真实编码任务基线**：同任务、同仓库 revision、同预算、同确定性验收器，
    对比导入提交和候选提交的 verified success、false-success、Token、时间、费用和 diff。
-3. **M1-D WIP 处置**：对 DeepSeek 协议、Agent 可靠性、`verify` 和本地配置逐项给出保留、
+2. **M1-D WIP 处置**：根据离线、live 协议和真实任务三层证据，对 DeepSeek 协议、
+   Agent 可靠性、`verify` 和本地配置逐项给出保留、
    重做、缩小或删除结论。
 
 `verify` 仍是额外模型评审实验，不等同于测试证据；未经真实缺陷检出率和误报率评测，
@@ -113,39 +130,59 @@ M1-A 完成不等于 M1 完成：本轮没有真实 DeepSeek Token、cache、成
 
 ### 退出门槛
 
-- 离线契约、live 协议和真实任务三层基线均可重复。
+- 离线契约与 live 协议基线已经可重复；真实任务 A/B 仍须可重复。
 - 真实任务能测量 verified success、false-success、输入/输出/cache Token、时间和成本。
 - 每项 WIP 有保留、重做、缩小或删除结论。
 - `verify` 未经评测不得默认成为完成门禁。
 
 ## 6. M2：领域协议与 DeepSeekBackend
 
-### 工作
+### M2-A 下一切片：production DeepSeek request planner
+
+- 不新建 crate；在现有生产 `crates/tui/src/client/` 内建立最小
+  `ApiSurface::{StandardChat, StrictChat, Fim}` 与 `RequestPlan`。
+- `RequestPlan` 一次性决定 surface、endpoint、wire model、streaming、reasoning replay、
+  工具/strict 状态和请求 body，发送层不得再次改写。
+- 首先接管 `codewhale exec`、TUI 和子 Agent 共用的真实 DeepSeek streaming Client 路径；
+  Standard/Strict 使用现有 Chat 响应与 SSE parser，FIM 保留独立 Beta Completions 语义。
+- Strict 只有在整组函数 schema 兼容时启用；任一不兼容即原子退回 `StandardChat`，
+  保留全部普通工具调用。
+- 复用现有 HTTP transport、retry、usage parser、SSE decoder 和 Agent loop；本切片禁止
+  新 Runtime、第二套 Client 主循环或大范围目录搬迁。
+- 用纯 planner 单测、WireMock 生产路径测试和现有 5/5 live canary 复核切换结果。
+
+### 同切片删除/替代
+
+- 生产路径切换时删除它原有的 DeepSeek URL、Beta route、strict flag 保留/剥离和 FIM
+  endpoint 决策分支；不能让新旧 planner 并存。
+- 保留仍被未迁移调用方或其他 Provider 使用的通用 transport；不得为了目录纯度扩大删除范围。
+- 不新增独立 `deepseek` crate。只有当生产调用方已经迁移、旧分支已经删除且依赖方向明确后，
+  才评估物理抽取。
+
+### 后续工作
 
 - 在 `protocol` 定义 Task、Run、Turn、Event、ToolOutcome、Evidence 和 TerminalState。
 - 建立版本化 NDJSON 事件。
-- 定义唯一的 `ApiSurface::{StandardChat, StrictChat, Fim}`，分别映射普通 Chat、
-  `/beta` Strict Chat 和 `/beta` FIM；三条协议不能按通用 OpenAI 假设混写。
-- 让 `RequestPlan` 成为每次调用的确定性预检产物：一次性决定 surface、endpoint、模型参数、
-  streaming、reasoning replay、工具/strict 状态、Token limits、retry 分类和 stable-prefix 元数据。
-- 抽取独立 `DeepSeekBackend`，只消费 `RequestPlan`，后续层不得再次猜 URL、删除工具或改变 surface。
-- Strict 只有在所有函数 schema 兼容时启用；不兼容时退回 `StandardChat` 并保留普通工具调用。
+- 在生产迁移中逐步形成独立 `DeepSeekBackend` 职责；后续层不得再次猜 URL、删除工具或改变 surface。
 - 统一 reasoning replay、SSE、finish reason、usage、cache、retry 和 limits。
-- 建立 fixture transport 和有费用上限的 live canary。
+- 将现有官方 live canary 固化为 Backend 变更后的受限回归，不把它当作编码 benchmark。
 
 ### 删除/替代
 
 - 冻结旧通用 client，不再增加能力。
-- 先迁移一个真实 Headless 调用方；每迁移一个调用方，同一切片删除它对旧 URL、序列化、
+- 每迁移一个真实调用方，同一切片删除它对旧 URL、序列化、
   parser、retry 和 usage 分支的依赖。
 - 新 Backend 接管全部调用后删除旧 DeepSeek 路由分支和通用 Provider 选择路径。
 
 ### 退出门槛
 
+- `RequestPlan` 已由真实生产调用路径消费，不是无人调用的新抽象。
 - 协议 fixture 覆盖正常流、畸形流、工具循环、retry 和不完整终止。
+- Production planner 切换后的 Standard、Thinking exact replay、Strict 和 FIM canary 仍通过。
 - Strict 不兼容时普通工具调用保持可用。
 - usage 无重复计算。
 - Backend 不依赖 TUI、工具实现或调度器。
+- 没有新增第二个 Runtime、第二个生产 Client loop 或仅为未来准备的新 crate。
 
 ## 7. M3：最小 AgentRuntime
 
