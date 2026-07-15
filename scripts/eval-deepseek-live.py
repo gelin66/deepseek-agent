@@ -124,10 +124,8 @@ def post_json(
     work = tempfile.mkdtemp(prefix="codewhale-deepseek-canary-")
     os.chmod(work, 0o700)
     request_path = Path(work, "request.json")
-    response_path = Path(work, "response.json")
     try:
         request_path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
-        response_path.touch(mode=0o600)
         os.chmod(request_path, 0o600)
         command = [
             curl,
@@ -141,10 +139,8 @@ def post_json(
             url,
             "--data-binary",
             f"@{request_path}",
-            "--output",
-            str(response_path),
             "--write-out",
-            "%{http_code}",
+            "\n%{http_code}",
             "--connect-timeout",
             str(min(15, int(timeout))),
             "--max-time",
@@ -165,7 +161,8 @@ def post_json(
             check=False,
             env=environment,
         )
-        status_text = completed.stdout.decode("ascii", "ignore").strip()
+        raw, separator, status_bytes = completed.stdout.rpartition(b"\n")
+        status_text = status_bytes.decode("ascii", "ignore").strip() if separator else ""
         status = int(status_text) if status_text.isdigit() else None
         elapsed = time.monotonic() - started
         if completed.returncode != 0:
@@ -180,7 +177,6 @@ def post_json(
                 "error": f"http_{status}",
                 "seconds": elapsed,
             }
-        raw = response_path.read_bytes()
         if len(raw) > MAX_RESPONSE_BYTES:
             return {"attempted": True, "http_status": status, "error": "response_too_large", "seconds": elapsed}
         try:
@@ -263,15 +259,27 @@ def usage(outcome: dict[str, Any]) -> dict[str, int | None]:
     }
 
 
+def usage_complete(outcome: dict[str, Any]) -> bool:
+    measured = usage(outcome)
+    prompt = measured["prompt_tokens"]
+    completion = measured["completion_tokens"]
+    total = measured["total_tokens"]
+    hit = measured["cache_hit_tokens"]
+    miss = measured["cache_miss_tokens"]
+    return (
+        None not in (prompt, completion, total, hit, miss)
+        and prompt == hit + miss
+        and total == prompt + completion
+    )
+
+
 def estimated_cost(model: str, measured: dict[str, int | None]) -> float | None:
     prompt = measured["prompt_tokens"]
     output = measured["completion_tokens"]
-    if prompt is None or output is None:
-        return None
-    hit = measured["cache_hit_tokens"] or 0
+    hit = measured["cache_hit_tokens"]
     miss = measured["cache_miss_tokens"]
-    if miss is None:
-        miss = max(0, prompt - hit)
+    if None in (prompt, output, hit, miss):
+        return None
     price = PRICES[model]
     return (hit * price["hit"] + miss * price["miss"] + output * price["output"]) / 1_000_000
 
@@ -283,7 +291,7 @@ def record(
     model: str,
     outcome: dict[str, Any],
     assertions: dict[str, bool],
-) -> tuple[bool, float]:
+) -> tuple[bool, float | None]:
     measured = usage(outcome)
     cost = estimated_cost(model, measured)
     passed = outcome.get("error") is None and bool(assertions) and all(assertions.values())
@@ -306,7 +314,7 @@ def record(
             "error_code": outcome.get("error"),
         }
     )
-    return passed, cost or 0.0
+    return passed, cost
 
 
 def git_metadata() -> dict[str, Any]:
@@ -331,6 +339,7 @@ def run_live(curl: str, key: str) -> int:
     attempted = 0
     results: list[bool] = []
     total_cost = 0.0
+    cost_known = True
 
     def run(
         case_id: str,
@@ -341,7 +350,7 @@ def run_live(curl: str, key: str) -> int:
         body: dict[str, Any],
         check: Any,
     ) -> dict[str, Any]:
-        nonlocal attempted, total_cost
+        nonlocal attempted, cost_known, total_cost
         if attempted >= REQUEST_CAP:
             outcome = {"attempted": False, "error": "request_cap", "seconds": 0.0}
         elif total_cost >= MAX_COST_USD:
@@ -351,7 +360,10 @@ def run_live(curl: str, key: str) -> int:
             attempted += int(bool(outcome.get("attempted")))
         passed, cost = record(case_id, step, surface, model, outcome, check(outcome))
         results.append(passed)
-        total_cost += cost
+        if cost is None:
+            cost_known = False
+        else:
+            total_cost += cost
         return outcome
 
     standard = {
@@ -373,7 +385,7 @@ def run_live(curl: str, key: str) -> int:
             "finish_stop": choice(out).get("finish_reason") == "stop",
             "content_nonempty": bool(message(out).get("content")),
             "reasoning_empty": not message(out).get("reasoning_content"),
-            "usage_present": usage(out)["total_tokens"] is not None,
+            "usage_complete": usage_complete(out),
         },
     )
 
@@ -387,6 +399,7 @@ def run_live(curl: str, key: str) -> int:
         "thinking": {"type": "enabled"},
         "reasoning_effort": "high",
         "tools": [echo],
+        # DeepSeek thinking mode rejects explicit tool_choice.
         "max_tokens": 128,
         "stream": False,
     }
@@ -407,7 +420,7 @@ def run_live(curl: str, key: str) -> int:
             and function_name(tool_calls(out)[0]) == "canary_echo",
             "arguments_match": len(tool_calls(out)) == 1
             and arguments(tool_calls(out)[0]) == {"value": "CANARY"},
-            "usage_present": usage(out)["total_tokens"] is not None,
+            "usage_complete": usage_complete(out),
         },
     )
     assistant = message(first)
@@ -431,8 +444,9 @@ def run_live(curl: str, key: str) -> int:
             lambda out: {
                 "http_200": out.get("http_status") == 200,
                 "finish_stop": choice(out).get("finish_reason") == "stop",
-                "content_nonempty": bool(message(out).get("content")),
-                "usage_present": usage(out)["total_tokens"] is not None,
+                "content_matches_tool_result": str(message(out).get("content") or "").strip()
+                == "REPLAY_OK",
+                "usage_complete": usage_complete(out),
             },
         )
     else:
@@ -442,7 +456,10 @@ def run_live(curl: str, key: str) -> int:
             {"prior_tool_call_valid": False},
         )
         results.append(passed)
-        total_cost += cost
+        if cost is None:
+            cost_known = False
+        else:
+            total_cost += cost
 
     strict_tools = [
         function_tool("canary_flag", {"enabled": {"type": "boolean"}}, ["enabled"], strict=True),
@@ -469,9 +486,14 @@ def run_live(curl: str, key: str) -> int:
             "all_functions_strict": all(tool["function"].get("strict") is True for tool in strict_tools),
             "finish_tool_calls": choice(out).get("finish_reason") == "tool_calls",
             "one_tool_call": len(tool_calls(out)) == 1,
+            "tool_id_present": len(tool_calls(out)) == 1 and bool(tool_calls(out)[0].get("id")),
+            "tool_type_function": len(tool_calls(out)) == 1
+            and tool_calls(out)[0].get("type") == "function",
+            "tool_name_matches": len(tool_calls(out)) == 1
+            and function_name(tool_calls(out)[0]) == "canary_flag",
             "strict_arguments_valid": len(tool_calls(out)) == 1
             and arguments(tool_calls(out)[0]) == {"enabled": True},
-            "usage_present": usage(out)["total_tokens"] is not None,
+            "usage_complete": usage_complete(out),
         },
     )
 
@@ -492,15 +514,21 @@ def run_live(curl: str, key: str) -> int:
             "http_200": out.get("http_status") == 200,
             "finish_stop": choice(out).get("finish_reason") == "stop",
             "text_nonempty": bool(choice(out).get("text")),
-            "usage_present": usage(out)["total_tokens"] is not None,
+            "usage_complete": usage_complete(out),
         },
     )
 
     passed = sum(results)
+    suite_passed = (
+        len(results) == REQUEST_CAP
+        and passed == len(results)
+        and cost_known
+        and total_cost <= MAX_COST_USD
+    )
     emit(
         {
             "record_type": "summary",
-            "status": "passed" if len(results) == REQUEST_CAP and passed == len(results) else "failed",
+            "status": "passed" if suite_passed else "failed",
             "planned_requests": REQUEST_CAP,
             "requests_attempted": attempted,
             "records_total": len(results),
@@ -508,12 +536,14 @@ def run_live(curl: str, key: str) -> int:
             "records_failed": len(results) - passed,
             "suite_duration_seconds": round(time.monotonic() - started, 3),
             "estimated_cost_usd": round(total_cost, 9),
+            "cost_known": cost_known,
+            "cost_within_cap": cost_known and total_cost <= MAX_COST_USD,
             "max_cost_usd": MAX_COST_USD,
             "price_snapshot": PRICE_SNAPSHOT,
             **git_metadata(),
         }
     )
-    return 0 if len(results) == REQUEST_CAP and passed == len(results) else 1
+    return 0 if suite_passed else 1
 
 
 def main() -> int:
