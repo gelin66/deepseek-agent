@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{ApiProvider, expand_path, normalize_model_name};
-use crate::localization::normalize_configured_locale;
+use crate::localization::{DEFAULT_LOCALE, normalize_configured_locale};
 use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
 
 const SETTINGS_FILE_NAME: &str = "settings.toml";
@@ -262,7 +262,7 @@ pub struct Settings {
     pub show_thinking: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
-    /// UI locale: auto, en, ja, zh-Hans, pt-BR, es-419
+    /// UI locale. Defaults to zh-Hans; an explicit `auto` follows the system.
     pub locale: String,
     /// Named UI theme. Accepts `"system"` (follow terminal background),
     /// `"dark"`, `"light"`, `"grayscale"`, or one of the community
@@ -410,7 +410,7 @@ impl Default for Settings {
             // never displace the actual conversation in the default TUI.
             show_thinking: false,
             show_tool_details: false,
-            locale: "auto".to_string(),
+            locale: DEFAULT_LOCALE.tag().to_string(),
             theme: "system".to_string(),
             background_color: None,
             composer_density: "comfortable".to_string(),
@@ -572,7 +572,7 @@ impl Settings {
             s.synchronized_output =
                 normalize_synchronized_output(&s.synchronized_output).to_string();
             s.locale = normalize_configured_locale(&s.locale)
-                .unwrap_or("en")
+                .unwrap_or(DEFAULT_LOCALE.tag())
                 .to_string();
             s.background_color = normalize_optional_background_color(s.background_color.as_deref());
             s.theme = normalize_settings_theme(&s.theme).to_string();
@@ -1915,8 +1915,31 @@ mod tests {
     }
 
     #[test]
+    fn locale_defaults_to_simplified_chinese_without_overriding_explicit_choices() {
+        assert_eq!(Settings::default().locale, "zh-Hans");
+
+        let without_locale: Settings =
+            toml::from_str("theme = \"dark\"\n").expect("deserialize settings without locale");
+        assert_eq!(without_locale.locale, "zh-Hans");
+
+        for explicit in ["auto", "en", "ja"] {
+            let settings: Settings = toml::from_str(&format!("locale = \"{explicit}\"\n"))
+                .expect("deserialize explicit locale");
+            assert_eq!(settings.locale, explicit);
+        }
+    }
+
+    #[test]
     fn locale_normalizes_supported_values_and_rejects_unknowns() {
         let mut settings = Settings::default();
+        assert_eq!(settings.locale, "zh-Hans");
+
+        settings.set("locale", "auto").expect("set auto");
+        assert_eq!(settings.locale, "auto");
+
+        settings.set("locale", "en").expect("set en");
+        assert_eq!(settings.locale, "en");
+
         settings.set("locale", "ja_JP.UTF-8").expect("set ja");
         assert_eq!(settings.locale, "ja");
 

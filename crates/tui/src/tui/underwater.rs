@@ -931,8 +931,9 @@ mod tests {
             !later.contains("Auto-compaction"),
             "an informational acknowledgement must expire without user action: {later}"
         );
+        let later_compact: String = later.chars().filter(|ch| !ch.is_whitespace()).collect();
         assert!(
-            later.contains("idle"),
+            later_compact.contains("空闲"),
             "the stable phase fact survives the expiry: {later}"
         );
     }
@@ -1049,7 +1050,7 @@ mod tests {
         app.turn_started_at = Some(Instant::now() - Duration::from_millis(1_250));
         let (working, label) = phase_marker(&app, ShellPhase::from_app(&app));
         assert_eq!(working, WORKING_BUBBLE_FRAMES[4]);
-        assert_eq!(label, "working");
+        assert_eq!(label, "工作中");
 
         app.low_motion = true;
         app.turn_started_at = Some(Instant::now() - Duration::from_secs(9));
@@ -1062,13 +1063,13 @@ mod tests {
         app.plan_prompt_pending = true;
         let (marker, label) = phase_marker(&app, ShellPhase::from_app(&app));
         assert_eq!(marker, "◆");
-        assert_eq!(label, "waiting on you");
+        assert_eq!(label, "等你处理");
 
         app.plan_prompt_pending = false;
         app.runtime_turn_status = Some("failed".to_string());
         let (marker, label) = phase_marker(&app, ShellPhase::from_app(&app));
         assert_eq!(marker, "✕");
-        assert_eq!(label, "failed");
+        assert_eq!(label, "失败");
     }
 
     #[test]
@@ -1105,7 +1106,7 @@ mod tests {
         app.low_motion = true;
         let (marker, label) = phase_marker(&app, ShellPhase::Verifying);
         assert_eq!(marker, crate::tui::spinner::VERIFY_TICK_FRAMES[4]);
-        assert_eq!(label, "verifying");
+        assert_eq!(label, "校验中");
         app.low_motion = false;
 
         // An ordinary build stays `working` — checking must not lie.
@@ -1148,17 +1149,25 @@ mod tests {
 
         let (marker, label) = phase_marker(&app, ShellPhase::from_app(&app));
         assert_ne!(marker, "✓");
-        assert_eq!(label, "finishing");
+        assert_eq!(label, "收尾中");
 
         app.ocean_completion_started_at = Some(Instant::now() - Duration::from_millis(700));
         let (marker, label) = phase_marker(&app, ShellPhase::Done);
         assert_eq!(marker, "✓");
-        assert_eq!(label, "done");
+        assert_eq!(label, "完成");
 
         app.low_motion = true;
         app.ocean_completion_started_at = Some(Instant::now());
         let (marker, label) = phase_marker(&app, ShellPhase::Done);
         assert_eq!(marker, "✓");
-        assert_eq!(label, "done");
+        assert_eq!(label, "完成");
+    }
+
+    #[test]
+    fn phase_labels_keep_explicit_english_locale() {
+        assert_eq!(ShellPhase::Idle.label(Locale::En), "idle");
+        assert_eq!(ShellPhase::Working.label(Locale::En), "working");
+        assert_eq!(ShellPhase::Verifying.label(Locale::En), "verifying");
+        assert_eq!(ShellPhase::Done.label(Locale::En), "done");
     }
 }

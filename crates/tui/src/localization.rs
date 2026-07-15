@@ -17,6 +17,10 @@ pub enum Locale {
     Ko,
 }
 
+/// Human-facing product default used when the user has not selected a locale
+/// and no supported system locale can be resolved.
+pub const DEFAULT_LOCALE: Locale = Locale::ZhHans;
+
 impl Locale {
     pub fn tag(self) -> &'static str {
         match self {
@@ -1972,7 +1976,7 @@ where
 {
     let normalized = normalize_locale_input(setting);
     if !matches!(normalized.as_str(), "" | "auto" | "system") {
-        return parse_locale(&normalized).unwrap_or(Locale::En);
+        return parse_locale(&normalized).unwrap_or(DEFAULT_LOCALE);
     }
 
     for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
@@ -1983,7 +1987,7 @@ where
         }
     }
 
-    Locale::En
+    DEFAULT_LOCALE
 }
 
 #[allow(dead_code)]
@@ -2072,6 +2076,7 @@ mod tests {
     #[test]
     fn locale_setting_normalizes_supported_tags() {
         assert_eq!(normalize_configured_locale("auto"), Some("auto"));
+        assert_eq!(normalize_configured_locale("en_US.UTF-8"), Some("en"));
         assert_eq!(normalize_configured_locale("ja_JP.UTF-8"), Some("ja"));
         assert_eq!(normalize_configured_locale("zh-CN"), Some("zh-Hans"));
         assert_eq!(normalize_configured_locale("zh-TW"), Some("zh-Hant"));
@@ -2083,10 +2088,15 @@ mod tests {
     }
 
     #[test]
-    fn locale_resolution_uses_config_then_environment_then_english() {
+    fn locale_resolution_uses_config_then_environment_then_product_default() {
         assert_eq!(
             resolve_locale_with_env("ja", |_| Some("pt_BR.UTF-8".to_string())),
             Locale::Ja
+        );
+        assert_eq!(
+            resolve_locale_with_env("en", |_| Some("zh_CN.UTF-8".to_string())),
+            Locale::En,
+            "an explicit user locale must win over the environment"
         );
         assert_eq!(
             resolve_locale_with_env("auto", |key| {
@@ -2100,7 +2110,12 @@ mod tests {
             }),
             Locale::ZhHant
         );
-        assert_eq!(resolve_locale_with_env("auto", |_| None), Locale::En);
+        assert_eq!(resolve_locale_with_env("auto", |_| None), Locale::ZhHans);
+        assert_eq!(
+            resolve_locale_with_env("auto", |_| Some("ar_EG.UTF-8".to_string())),
+            Locale::ZhHans,
+            "unsupported environment locales fall back to the product default"
+        );
     }
 
     pub fn missing_message_ids(locale: Locale) -> Vec<MessageId> {
@@ -2292,11 +2307,11 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_locale_falls_back_to_english() {
+    fn unsupported_configured_locale_falls_back_to_product_default() {
         assert_eq!(
             resolve_locale_with_env("ar", |_| None),
-            Locale::En,
-            "Arabic is planned for QA but not shipped in the v0.7.6 core pack"
+            Locale::ZhHans,
+            "unsupported configured locales must not reintroduce an English default"
         );
     }
 
