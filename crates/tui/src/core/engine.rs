@@ -24,6 +24,7 @@ use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
 use crate::client::DeepSeekClient;
+use crate::client::request_budget::SharedApiRequestBudget;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
@@ -821,6 +822,7 @@ pub struct Engine {
     config: EngineConfig,
     api_config: Config,
     deepseek_client: Option<DeepSeekClient>,
+    api_request_budget: Option<SharedApiRequestBudget>,
     /// Provider-neutral client used by the canonical main turn loop. Concrete
     /// clients remain temporarily available to provider-specific helper tools
     /// while those boundaries migrate independently.
@@ -1132,6 +1134,10 @@ impl Engine {
         let route_config = route.config;
         match DeepSeekClient::from_candidate(&route_config, &route.candidate) {
             Ok(client) => {
+                let client = match self.api_request_budget.clone() {
+                    Some(budget) => client.with_api_request_budget(budget),
+                    None => client,
+                };
                 self.api_provider = provider;
                 self.api_config = route_config;
                 self.active_route_limits =
@@ -1158,6 +1164,22 @@ impl Engine {
 
     /// Create a new engine with the given configuration
     pub fn new(config: EngineConfig, api_config: &Config) -> (Self, EngineHandle) {
+        Self::new_inner(config, api_config, None)
+    }
+
+    pub(crate) fn new_with_api_request_budget(
+        config: EngineConfig,
+        api_config: &Config,
+        api_request_budget: SharedApiRequestBudget,
+    ) -> (Self, EngineHandle) {
+        Self::new_inner(config, api_config, Some(api_request_budget))
+    }
+
+    fn new_inner(
+        config: EngineConfig,
+        api_config: &Config,
+        api_request_budget: Option<SharedApiRequestBudget>,
+    ) -> (Self, EngineHandle) {
         crate::tls::ensure_rustls_crypto_provider();
 
         if let Some(objective) = normalized_goal_objective(config.goal_objective.as_deref()) {
@@ -1183,7 +1205,13 @@ impl Engine {
 
         // Create clients for both providers
         let (deepseek_client, deepseek_client_error) = match DeepSeekClient::new(api_config) {
-            Ok(client) => (Some(client), None),
+            Ok(client) => {
+                let client = match api_request_budget.clone() {
+                    Some(budget) => client.with_api_request_budget(budget),
+                    None => client,
+                };
+                (Some(client), None)
+            }
             Err(err) => (None, Some(err.to_string())),
         };
         let model_client = deepseek_client
@@ -1329,6 +1357,7 @@ impl Engine {
             config,
             api_config: api_config.clone(),
             deepseek_client,
+            api_request_budget,
             model_client,
             deepseek_client_error,
             api_key_env_only_recovery,
@@ -4231,7 +4260,20 @@ fn apply_patch_permission_paths(input: &Value) -> Vec<String> {
 /// Spawn the engine in a background task
 pub fn spawn_engine(config: EngineConfig, api_config: &Config) -> EngineHandle {
     let (engine, handle) = Engine::new(config, api_config);
+    spawn_engine_task(engine, handle)
+}
 
+pub(crate) fn spawn_engine_with_api_request_budget(
+    config: EngineConfig,
+    api_config: &Config,
+    api_request_budget: SharedApiRequestBudget,
+) -> EngineHandle {
+    let (engine, handle) =
+        Engine::new_with_api_request_budget(config, api_config, api_request_budget);
+    spawn_engine_task(engine, handle)
+}
+
+fn spawn_engine_task(engine: Engine, handle: EngineHandle) -> EngineHandle {
     spawn_supervised(
         "engine-event-loop",
         std::panic::Location::caller(),

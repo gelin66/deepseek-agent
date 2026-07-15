@@ -33,6 +33,8 @@ use crate::models::{
     Usage,
 };
 
+use self::request_budget::{ApiRequestBudgetError, SharedApiRequestBudget};
+
 pub(super) fn to_api_tool_name(name: &str) -> String {
     let mut out = String::new();
     for ch in name.chars() {
@@ -176,6 +178,7 @@ pub struct DeepSeekClient {
     strict_tool_mode: bool,
     pub(super) reasoning_stream_style: Option<String>,
     pub(super) stream_idle_timeout: Duration,
+    api_request_budget: Option<SharedApiRequestBudget>,
 }
 
 const CONNECTION_FAILURE_THRESHOLD: u32 = 2;
@@ -399,6 +402,7 @@ impl Clone for DeepSeekClient {
             strict_tool_mode: self.strict_tool_mode,
             reasoning_stream_style: self.reasoning_stream_style.clone(),
             stream_idle_timeout: self.stream_idle_timeout,
+            api_request_budget: self.api_request_budget.clone(),
         }
     }
 }
@@ -806,7 +810,18 @@ impl DeepSeekClient {
             strict_tool_mode,
             reasoning_stream_style,
             stream_idle_timeout,
+            api_request_budget: None,
         })
+    }
+
+    /// Bind a runtime-only hard request budget to this client and every clone.
+    pub(crate) fn with_api_request_budget(mut self, budget: SharedApiRequestBudget) -> Self {
+        self.api_request_budget = Some(budget);
+        self
+    }
+
+    pub(crate) fn api_request_budget(&self) -> Option<SharedApiRequestBudget> {
+        self.api_request_budget.clone()
     }
 
     fn build_http_client(
@@ -1269,6 +1284,8 @@ impl DeepSeekClient {
         // non-retryable auth failures, neither of which suits a typed refresh.
         // Auth headers are baked into `http_client` (the key is used but never
         // persisted into the delta or cache).
+        self.reserve_api_request()
+            .map_err(|_| CatalogRefreshError::Network)?;
         let response = self
             .http_client
             .get(&url)
@@ -1477,6 +1494,23 @@ impl DeepSeekClient {
         }
     }
 
+    fn reserve_api_request(&self) -> std::result::Result<(), LlmError> {
+        let Some(budget) = &self.api_request_budget else {
+            return Ok(());
+        };
+        budget
+            .try_reserve()
+            .map(|_| ())
+            .map_err(|error| match error {
+                ApiRequestBudgetError::Exhausted { limit, started } => {
+                    LlmError::ApiRequestBudgetExhausted { limit, started }
+                }
+                ApiRequestBudgetError::Sealed { limit, started } => {
+                    LlmError::ApiRequestBudgetSealed { limit, started }
+                }
+            })
+    }
+
     async fn mark_request_success(&self) {
         let mut health = self.connection_health.lock().await;
         if apply_request_success(&mut health, Instant::now()) {
@@ -1507,6 +1541,10 @@ impl DeepSeekClient {
             return;
         }
         let health_url = api_url(&self.base_url, "models");
+        if let Err(error) = self.reserve_api_request() {
+            logging::info(format!("跳过恢复探测：{error}"));
+            return;
+        }
         let probe = self.http_client.get(health_url).send().await;
         match probe {
             Ok(resp) if resp.status().is_success() => {
@@ -1545,6 +1583,7 @@ impl DeepSeekClient {
                         tokio::time::sleep(delay.min(RATE_LIMIT_PAUSE_RECHECK_INTERVAL)).await;
                     }
                     self.wait_for_rate_limit().await;
+                    self.reserve_api_request()?;
                     let response = request
                         .send()
                         .await
@@ -1590,6 +1629,11 @@ impl DeepSeekClient {
                 Ok(response)
             }
             Err(err) => {
+                let budget_blocked = matches!(
+                    &err.last_error,
+                    LlmError::ApiRequestBudgetExhausted { .. }
+                        | LlmError::ApiRequestBudgetSealed { .. }
+                );
                 if let LlmError::RateLimited { retry_after, .. } = &err.last_error {
                     crate::retry_status::note_rate_limit(
                         retry_after
@@ -1597,13 +1641,17 @@ impl DeepSeekClient {
                     );
                 }
                 let last = err.last_error.to_string();
-                if err.attempts > 1 {
+                if budget_blocked {
+                    crate::retry_status::clear();
+                } else if err.attempts > 1 {
                     crate::retry_status::failed(last.clone());
                 } else {
                     crate::retry_status::clear();
                 }
-                self.mark_request_failure(&last).await;
-                self.maybe_probe_recovery().await;
+                if !budget_blocked {
+                    self.mark_request_failure(&last).await;
+                    self.maybe_probe_recovery().await;
+                }
                 // Keep the structured `LlmError` downcastable so failure
                 // surfaces can classify auth/rate-limit/invalid-request
                 // instead of reporting an opaque string (#3884).
@@ -1646,6 +1694,14 @@ fn retry_reason_label_and_human(err: &LlmError) -> (&'static str, String) {
         LlmError::ServerError { status, .. } => ("server_error", format!("upstream {status}")),
         LlmError::NetworkError(_) => ("network_error", "network error".to_string()),
         LlmError::Timeout(_) => ("timeout", "timeout".to_string()),
+        LlmError::ApiRequestBudgetExhausted { limit, started } => (
+            "api_request_budget_exhausted",
+            format!("API 请求预算已用尽（{started}/{limit}）"),
+        ),
+        LlmError::ApiRequestBudgetSealed { limit, started } => (
+            "api_request_budget_sealed",
+            format!("API 请求预算已封存（{started}/{limit}）"),
+        ),
         _ => ("other", "other".to_string()),
     }
 }
@@ -1666,6 +1722,7 @@ impl LlmClient for DeepSeekClient {
         }
         let health_url = api_url(&self.base_url, "models");
         self.wait_for_rate_limit().await;
+        self.reserve_api_request().map_err(anyhow::Error::new)?;
         let response = self.http_client.get(health_url).send().await;
         match response {
             Ok(resp) if resp.status().is_success() => {
@@ -2364,6 +2421,7 @@ fn parse_fim_completion(value: &Value) -> Result<String> {
 mod anthropic;
 mod chat;
 pub(crate) mod deepseek;
+pub(crate) mod request_budget;
 mod responses;
 
 /// Encode one tool with the exact JSON projection used by the chat sender.
@@ -2410,7 +2468,7 @@ mod tests {
         parse_chat_message, parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat,
         tool_to_chat_for_legacy_base_url, tool_to_chat_for_legacy_route,
     };
-    use crate::config::{ProviderConfig, ProvidersConfig};
+    use crate::config::{ProviderConfig, ProvidersConfig, RetryConfig};
     use crate::models::{
         ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, StreamEvent, Tool,
     };
@@ -2489,6 +2547,69 @@ mod tests {
             ..Config::default()
         })
         .expect("zai client")
+    }
+
+    #[tokio::test]
+    async fn shared_request_budget_caps_transport_retries_without_recovery_probe() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("temporary failure"))
+            .mount(&server)
+            .await;
+
+        let budget = SharedApiRequestBudget::new(std::num::NonZeroU32::new(2).unwrap());
+        let client = DeepSeekClient::new(&Config {
+            provider: Some("deepseek".to_string()),
+            api_key: Some("ds-test".to_string()),
+            base_url: Some(server.uri()),
+            retry: Some(RetryConfig {
+                enabled: Some(true),
+                max_retries: Some(5),
+                initial_delay: Some(0.0),
+                max_delay: Some(0.0),
+                exponential_base: Some(1.0),
+            }),
+            ..Config::default()
+        })
+        .expect("mock client")
+        .with_api_request_budget(budget.clone());
+        let url = format!("{}/v1/chat/completions", server.uri());
+
+        let error = client
+            .send_with_retry(|| client.http_client.post(&url).body("{}"))
+            .await
+            .expect_err("third transport attempt must be blocked by the hard budget");
+        assert!(matches!(
+            error.downcast_ref::<LlmError>(),
+            Some(LlmError::ApiRequestBudgetExhausted {
+                limit: 2,
+                started: 2
+            })
+        ));
+        assert_eq!(
+            budget.snapshot(),
+            request_budget::ApiRequestBudgetSnapshot {
+                limit: 2,
+                started: 2,
+                denied: 1,
+                sealed: false,
+            }
+        );
+
+        let requests = server.received_requests().await.expect("request journal");
+        assert_eq!(requests.len(), 2, "no request may start beyond the limit");
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.method.as_str() == "POST")
+        );
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.url.path() != "/v1/models"),
+            "budget exhaustion must not trigger an uncounted recovery probe"
+        );
     }
 
     #[tokio::test]

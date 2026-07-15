@@ -283,6 +283,20 @@ impl From<LlmError> for ErrorEnvelope {
                 "llm_context_length",
                 message,
             ),
+            LlmError::ApiRequestBudgetExhausted { limit, started } => Self::new(
+                ErrorCategory::State,
+                ErrorSeverity::Warning,
+                false,
+                "llm_api_request_budget_exhausted",
+                format!("DeepSeek API 请求预算已用尽（已发起：{started}，上限：{limit}）"),
+            ),
+            LlmError::ApiRequestBudgetSealed { limit, started } => Self::new(
+                ErrorCategory::State,
+                ErrorSeverity::Warning,
+                false,
+                "llm_api_request_budget_sealed",
+                format!("DeepSeek API 请求预算已封存（已发起：{started}，上限：{limit}）"),
+            ),
             LlmError::Other(message) => Self::new(
                 ErrorCategory::Internal,
                 ErrorSeverity::Error,

@@ -7,6 +7,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read, Write};
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -402,6 +403,9 @@ struct ExecArgs {
     /// Maximum number of model steps (tool calls) before the run ends.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     max_turns: Option<u32>,
+    /// Maximum number of real DeepSeek HTTP requests started by this run.
+    #[arg(long, value_name = "COUNT")]
+    max_api_requests: Option<NonZeroU32>,
     /// Extra text appended to the system prompt for this run.
     #[arg(long)]
     append_system_prompt: Option<String>,
@@ -1416,6 +1420,7 @@ async fn run_async_main() -> Result<()> {
                     || resume_session_id.is_some()
                     || args.output_format == ExecOutputFormat::StreamJson
                     || args.max_turns.is_some()
+                    || args.max_api_requests.is_some()
                     || args.allowed_tools.is_some()
                     || args.disallowed_tools.is_some()
                     || args.append_system_prompt.is_some()
@@ -1450,6 +1455,7 @@ async fn run_async_main() -> Result<()> {
                         resume_session_id,
                         args.output_format,
                         max_turns,
+                        args.max_api_requests,
                         allowed_tools,
                         disallowed_tools,
                         args.append_system_prompt.clone(),
@@ -7563,6 +7569,12 @@ struct ExecStreamMeta {
     duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     retry_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_limit: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_budget_exhausted: Option<bool>,
     approval_posture: String,
     sandbox_posture: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -7864,6 +7876,9 @@ async fn run_workflow_tool_command_inner(cli: &Cli, args: WorkflowToolArgs) -> R
             reasoning_tokens: None,
             duration_ms: u64::try_from(tool_started.elapsed().as_millis()).unwrap_or(u64::MAX),
             retry_count: None,
+            api_request_count: None,
+            api_request_limit: None,
+            api_request_budget_exhausted: None,
             approval_posture: "explicit_workflow_command".to_string(),
             sandbox_posture: "configured".to_string(),
             binary_sha256: current_binary_sha256(),
@@ -8348,23 +8363,43 @@ async fn run_exec_agent(
     resume_session_id: Option<String>,
     output_format: ExecOutputFormat,
     max_turns: u32,
+    max_api_requests: Option<NonZeroU32>,
     allowed_tools: Option<Vec<String>>,
     disallowed_tools: Option<Vec<String>>,
     append_system_prompt: Option<String>,
 ) -> Result<()> {
+    use crate::client::request_budget::SharedApiRequestBudget;
     use crate::compaction::CompactionConfig;
-    use crate::core::engine::{EngineConfig, spawn_engine};
+    use crate::core::engine::{EngineConfig, spawn_engine, spawn_engine_with_api_request_budget};
     use crate::core::events::Event;
     use crate::core::ops::Op;
     use crate::tools::plan::new_shared_plan_state;
     use crate::tools::todo::new_shared_todo_list;
     use crate::tui::app::AppMode;
 
+    if max_api_requests.is_some() && model.trim().eq_ignore_ascii_case("auto") {
+        bail!(
+            "使用 --max-api-requests 时必须通过 --model 指定 DeepSeek 模型；自动路由可能在共享预算绑定前发起探测请求"
+        );
+    }
+
     let route = resolve_cli_auto_route(config, model, prompt).await?;
     let execution_config = config_for_cli_route(config, &route);
     let auto_model = route.auto_model;
     let effective_provider = route.provider;
     let effective_model = route.model;
+    if max_api_requests.is_some() {
+        let base_url = execution_config.deepseek_base_url();
+        let path_suffix = execution_config
+            .provider_config_for(effective_provider)
+            .and_then(|provider| provider.path_suffix.as_deref());
+        if !crate::client::deepseek::owns_route(effective_provider, &base_url, path_suffix) {
+            bail!(
+                "--max-api-requests 当前只支持 DeepSeek 官方 OpenAI 兼容路由；请使用 deepseek/deepseek-cn、官方 API 地址且不要配置 path_suffix"
+            );
+        }
+    }
+    let api_request_budget = max_api_requests.map(SharedApiRequestBudget::new);
     let effective_provider_name = effective_provider.as_str().to_string();
     let route_source = if auto_model {
         "auto_resolver"
@@ -8525,7 +8560,12 @@ async fn run_exec_agent(
         terminal_chrome_enabled: false,
     };
 
-    let engine_handle = spawn_engine(engine_config, &execution_config);
+    let engine_handle = match api_request_budget.clone() {
+        Some(budget) => {
+            spawn_engine_with_api_request_budget(engine_config, &execution_config, budget)
+        }
+        None => spawn_engine(engine_config, &execution_config),
+    };
     let mode = if auto_approve {
         AppMode::Yolo
     } else {
@@ -8627,6 +8667,12 @@ async fn run_exec_agent(
         termination_reason: Option<String>,
         error_category: Option<String>,
         error: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        api_request_count: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        api_request_limit: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        api_request_budget_exhausted: Option<bool>,
     }
     let mut summary = ExecSummary {
         mode: "agent".to_string(),
@@ -8650,6 +8696,7 @@ async fn run_exec_agent(
     let mut latest_model = effective_model;
     let mut latest_workspace = workspace.clone();
     let mut tool_starts: HashMap<String, (Instant, String)> = HashMap::new();
+    let mut saw_turn_complete = false;
 
     let mut stdout = io::stdout();
     let mut ends_with_newline = false;
@@ -8897,6 +8944,26 @@ async fn run_exec_agent(
                 tool_catalog,
                 ..
             } => {
+                saw_turn_complete = true;
+                let api_request_snapshot = api_request_budget
+                    .as_ref()
+                    .map(SharedApiRequestBudget::seal_and_snapshot);
+                if let Some(snapshot) = api_request_snapshot {
+                    summary.api_request_count = Some(snapshot.started);
+                    summary.api_request_limit = Some(snapshot.limit);
+                    summary.api_request_budget_exhausted = Some(snapshot.denied > 0);
+                    if output_format == ExecOutputFormat::Text && !json_output {
+                        let suffix = if snapshot.denied > 0 {
+                            "，已有后续请求被阻止"
+                        } else {
+                            ""
+                        };
+                        eprintln!(
+                            "DeepSeek API 请求：{}/{}{}",
+                            snapshot.started, snapshot.limit, suffix
+                        );
+                    }
+                }
                 summary.status = Some(format!("{status:?}").to_lowercase());
                 if error.is_some() {
                     summary.error = error;
@@ -8918,12 +8985,30 @@ async fn run_exec_agent(
                     summary.error_category =
                         last_error_category.map(|category| category.to_string());
                 }
-                let termination_reason = crate::core::termination::classify_turn_termination(
-                    status,
-                    last_error_category,
-                    tool_error_seen,
-                    approval_required,
-                );
+                let request_budget_exhausted =
+                    api_request_snapshot.is_some_and(|snapshot| snapshot.denied > 0);
+                if request_budget_exhausted {
+                    last_error_category = Some(crate::error_taxonomy::ErrorCategory::State);
+                    summary.error_category = Some("state".to_string());
+                    if summary.error.is_none()
+                        && let Some(snapshot) = api_request_snapshot
+                    {
+                        summary.error = Some(format!(
+                            "DeepSeek API 请求预算已用尽（已发起：{}，上限：{}）",
+                            snapshot.started, snapshot.limit
+                        ));
+                    }
+                }
+                let termination_reason = if request_budget_exhausted {
+                    crate::core::termination::RunTerminationReason::BudgetExhausted
+                } else {
+                    crate::core::termination::classify_turn_termination(
+                        status,
+                        last_error_category,
+                        tool_error_seen,
+                        approval_required,
+                    )
+                };
                 summary.termination_reason = Some(termination_reason.as_str().to_string());
                 let saved_session_id = if should_persist_session && !latest_messages.is_empty() {
                     match persist_exec_session(
@@ -8972,6 +9057,11 @@ async fn run_exec_agent(
                             duration_ms: u64::try_from(exec_started.elapsed().as_millis())
                                 .unwrap_or(u64::MAX),
                             retry_count: None,
+                            api_request_count: api_request_snapshot
+                                .map(|snapshot| snapshot.started),
+                            api_request_limit: api_request_snapshot.map(|snapshot| snapshot.limit),
+                            api_request_budget_exhausted: api_request_snapshot
+                                .map(|snapshot| snapshot.denied > 0),
                             approval_posture: approval_posture.clone(),
                             sandbox_posture: sandbox_posture.clone(),
                             binary_sha256: binary_sha256.clone(),
@@ -9031,6 +9121,33 @@ async fn run_exec_agent(
             }
             _ => {}
         }
+    }
+
+    if summary.api_request_count.is_none()
+        && let Some(snapshot) = api_request_budget
+            .as_ref()
+            .map(SharedApiRequestBudget::seal_and_snapshot)
+    {
+        summary.api_request_count = Some(snapshot.started);
+        summary.api_request_limit = Some(snapshot.limit);
+        summary.api_request_budget_exhausted = Some(snapshot.denied > 0);
+    }
+
+    if !saw_turn_complete {
+        let message = "Agent 事件通道在发送终态前关闭，本次执行不能判定为成功".to_string();
+        summary.status = Some("failed".to_string());
+        summary.termination_reason = Some("infrastructure_error".to_string());
+        summary.error_category = Some("internal".to_string());
+        summary.error = Some(message.clone());
+        if output_format == ExecOutputFormat::StreamJson {
+            emit_exec_stream_event(&ExecStreamEvent::Error {
+                error: message.clone(),
+            })?;
+            emit_exec_stream_event(&ExecStreamEvent::Done)?;
+        } else if !json_output {
+            eprintln!("错误：{message}");
+        }
+        let _ = engine_handle.send(Op::Shutdown).await;
     }
 
     if json_output {
@@ -10553,6 +10670,8 @@ mod terminal_mode_tests {
             "exec_shell",
             "--max-turns",
             "7",
+            "--max-api-requests",
+            "11",
             "--append-system-prompt",
             "extra rules",
             "do the thing",
@@ -10570,6 +10689,7 @@ mod terminal_mode_tests {
             Some(&["exec_shell".to_string()][..])
         );
         assert_eq!(args.max_turns, Some(7));
+        assert_eq!(args.max_api_requests.map(NonZeroU32::get), Some(11));
         assert_eq!(args.append_system_prompt.as_deref(), Some("extra rules"));
         assert_eq!(args.prompt, vec!["do the thing"]);
     }
@@ -10716,6 +10836,13 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn exec_rejects_zero_max_api_requests() {
+        let err = Cli::try_parse_from(["codewhale", "exec", "--max-api-requests", "0", "hello"])
+            .expect_err("max-api-requests must be >= 1");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
     fn exec_accepts_continue_for_latest_workspace_session() {
         let cli = parse_cli(&["codewhale", "exec", "--continue", "follow up"]);
         let Some(Commands::Exec(args)) = cli.command else {
@@ -10817,6 +10944,9 @@ mod terminal_mode_tests {
                 reasoning_tokens: Some(3),
                 duration_ms: 2500,
                 retry_count: None,
+                api_request_count: Some(2),
+                api_request_limit: Some(3),
+                api_request_budget_exhausted: Some(false),
                 approval_posture: "ask".to_string(),
                 sandbox_posture: "configured_default".to_string(),
                 binary_sha256: Some("sha256:binary".to_string()),
@@ -10853,6 +10983,9 @@ mod terminal_mode_tests {
         );
         assert_eq!(parsed["meta"]["workspace"], "/tmp/work");
         assert_eq!(parsed["meta"]["message_count"], 4);
+        assert_eq!(parsed["meta"]["api_request_count"], 2);
+        assert_eq!(parsed["meta"]["api_request_limit"], 3);
+        assert_eq!(parsed["meta"]["api_request_budget_exhausted"], false);
         assert_eq!(parsed["meta"]["visible_final_answer_chars"], 17);
 
         let capture = ExecStreamEvent::SessionCapture {

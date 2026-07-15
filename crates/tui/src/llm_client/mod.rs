@@ -312,6 +312,12 @@ pub enum LlmError {
     /// Context length exceeded
     ContextLengthError(String),
 
+    /// A caller-defined hard limit prevented another DeepSeek HTTP request.
+    ApiRequestBudgetExhausted { limit: u32, started: u32 },
+
+    /// The shared request budget was sealed while this worker was still active.
+    ApiRequestBudgetSealed { limit: u32, started: u32 },
+
     /// Catch-all for other errors
     Other(String),
 }
@@ -336,6 +342,14 @@ impl std::fmt::Display for LlmError {
             LlmError::ContentPolicyError(msg) => write!(f, "Content policy violation: {msg}"),
             LlmError::ParseError(msg) => write!(f, "Response parsing error: {msg}"),
             LlmError::ContextLengthError(msg) => write!(f, "Context length exceeded: {msg}"),
+            LlmError::ApiRequestBudgetExhausted { limit, started } => write!(
+                f,
+                "DeepSeek API 请求预算已用尽（已发起：{started}，上限：{limit}）"
+            ),
+            LlmError::ApiRequestBudgetSealed { limit, started } => write!(
+                f,
+                "DeepSeek API 请求预算已封存（已发起：{started}，上限：{limit}）"
+            ),
             LlmError::Other(msg) => write!(f, "LLM error: {msg}"),
         }
     }

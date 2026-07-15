@@ -229,6 +229,7 @@ Common forwarded flags:
   --session-id <SESSION_ID>        Resume a previous session by ID or prefix
   --continue                       Continue the most recent session for this workspace
   --output-format <FORMAT>         Output format: text or stream-json
+  --max-api-requests <COUNT>       Hard cap on real DeepSeek HTTP requests
 
 Plain `codewhale exec` is a one-shot model response. Use `--auto` for
 non-interactive filesystem/shell tool use, matching the supported automation

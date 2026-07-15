@@ -5286,6 +5286,25 @@ fn cross_provider_runtime() -> SubAgentRuntime {
     runtime
 }
 
+fn budgeted_deepseek_runtime() -> SubAgentRuntime {
+    let mut config = cross_provider_config();
+    config
+        .providers
+        .as_mut()
+        .expect("providers")
+        .deepseek
+        .base_url = Some("https://api.deepseek.com".to_string());
+    let budget = crate::client::request_budget::SharedApiRequestBudget::new(
+        std::num::NonZeroU32::new(3).unwrap(),
+    );
+    let client = DeepSeekClient::new(&config)
+        .expect("official DeepSeek session client builds")
+        .with_api_request_budget(budget);
+    let mut runtime = stub_runtime().with_api_config(config);
+    runtime.client = client;
+    runtime
+}
+
 /// A roster member whose profile explicitly pins `provider` (+ an arbitrary
 /// `model`), mirroring the on-disk `[fleet]` profile shape.
 fn member_pinning_provider(provider: &str, model: &str) -> crate::fleet::profile::AgentProfile {
@@ -5417,6 +5436,39 @@ fn spawn_child_client_fails_closed_when_pinned_provider_unavailable() {
         msg.contains("zai"),
         "error must name the pinned provider so the failure is actionable: {msg}"
     );
+}
+
+#[test]
+fn budgeted_subagent_rejects_non_deepseek_provider_pin() {
+    let runtime = budgeted_deepseek_runtime();
+    let member = member_pinning_provider("zai", "glm-4.6");
+    let error = match child_client_for_member(&runtime, Some(&member)) {
+        Ok(_) => panic!("a budgeted DeepSeek-only run must reject non-DeepSeek child routes"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("共享 API 请求预算只允许子智能体使用 DeepSeek 官方"),
+        "the failure must explain the DeepSeek-only boundary: {error}"
+    );
+}
+
+#[test]
+fn budgeted_same_provider_subagent_shares_parent_counter() {
+    let runtime = budgeted_deepseek_runtime();
+    let parent_budget = runtime.client.api_request_budget().expect("parent budget");
+    let member = member_pinning_provider("deepseek", "deepseek-v4-pro");
+    let child = child_client_for_member(&runtime, Some(&member))
+        .expect("same-provider child reuses the DeepSeek client");
+
+    child
+        .api_request_budget()
+        .expect("child budget")
+        .try_reserve()
+        .expect("first shared reservation");
+    assert_eq!(parent_budget.snapshot().started, 1);
 }
 
 // ---- #405 session-boundary classification ----

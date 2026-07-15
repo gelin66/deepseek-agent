@@ -1799,7 +1799,24 @@ impl SubAgentRuntime {
                 .map(|provider| provider.as_str().to_string())
                 .unwrap_or_else(|| provider_id.to_string()),
         );
-        DeepSeekClient::new(&provider_config).map_err(|err| err.to_string())
+        if self.client.api_request_budget().is_some() {
+            let provider = provider_config.api_provider();
+            let base_url = provider_config.deepseek_base_url();
+            let path_suffix = provider_config
+                .provider_config_for(provider)
+                .and_then(|entry| entry.path_suffix.as_deref());
+            if !crate::client::deepseek::owns_route(provider, &base_url, path_suffix) {
+                return Err(
+                    "共享 API 请求预算只允许子智能体使用 DeepSeek 官方 OpenAI 兼容路由".to_string(),
+                );
+            }
+        }
+        DeepSeekClient::new(&provider_config)
+            .map(|client| match self.client.api_request_budget() {
+                Some(budget) => client.with_api_request_budget(budget),
+                None => client,
+            })
+            .map_err(|err| err.to_string())
     }
 
     /// Install the merged fleet roster (#fleet-roster cutover (v0.8.67)).
@@ -9194,6 +9211,8 @@ fn subagent_failure_message(err: &anyhow::Error) -> String {
         Some(LlmError::ModelError(_)) => Some("model"),
         Some(LlmError::ContentPolicyError(_)) => Some("content_policy"),
         Some(LlmError::ContextLengthError(_)) => Some("context_length"),
+        Some(LlmError::ApiRequestBudgetExhausted { .. }) => Some("api_request_budget_exhausted"),
+        Some(LlmError::ApiRequestBudgetSealed { .. }) => Some("api_request_budget_sealed"),
         Some(LlmError::ParseError(_)) | Some(LlmError::Other(_)) | None => None,
     };
     match class {
