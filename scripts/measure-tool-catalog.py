@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from typing import TextIO
 
 
 MARKER = "TOOL_CATALOG_METRICS "
@@ -22,22 +23,35 @@ def main() -> int:
         "test",
         "-p",
         "codewhale-tui",
-        "print_agent_tool_catalog_metrics",
+        "--bin",
+        "codewhale-tui",
+        "--locked",
+        "core::engine::tests::print_agent_tool_catalog_metrics",
         "--",
+        "--exact",
         "--ignored",
         "--nocapture",
         "--test-threads=1",
     ]
     proc = subprocess.run(cmd, text=True, capture_output=True, check=False)
-    sys.stderr.write(proc.stderr)
+    marker_payload: str | None = None
 
-    for line in proc.stdout.splitlines():
-        if MARKER in line:
-            metrics = json.loads(line.split(MARKER, 1)[1])
-            print(json.dumps(metrics, indent=2, sort_keys=True))
-            return proc.returncode
+    def forward_without_marker(stream: str, destination: TextIO) -> None:
+        nonlocal marker_payload
+        for line in stream.splitlines(keepends=True):
+            if MARKER in line:
+                marker_payload = line.split(MARKER, 1)[1].strip()
+            else:
+                destination.write(line)
 
-    sys.stdout.write(proc.stdout)
+    forward_without_marker(proc.stdout, sys.stdout)
+    forward_without_marker(proc.stderr, sys.stderr)
+
+    if marker_payload is not None:
+        metrics = json.loads(marker_payload)
+        print(json.dumps(metrics, indent=2, sort_keys=True))
+        return proc.returncode
+
     sys.stderr.write("missing TOOL_CATALOG_METRICS marker\n")
     return proc.returncode or 1
 

@@ -40,6 +40,7 @@
 - 当前生产 Agent loop 仍在 `crates/tui`。
 - 当前 DeepSeek WIP 已保存在提交 `2ccccdd4`，但尚未通过新评测门禁。
 - 本地 focused 检查脚本：`../scripts/dev-deepseek-agent.sh`。
+- M1 离线能力基线：`../eval/README.md`。
 - 当前配置样例：`../config.deepseek-agent.example.toml`。
 - 当前二进制和状态目录仍保留 CodeWhale 名称，直到产品化里程碑统一修改。
 

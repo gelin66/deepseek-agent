@@ -15,6 +15,7 @@ Headless API 共用它。
 - [产品总纲](docs/product/PRODUCT_PLAN.md)
 - [开发路线图](docs/product/ROADMAP.md)
 - [能力评测规范](docs/product/EVALUATION.md)
+- [M1 可执行评测](eval/README.md)
 - [文档入口](docs/README.md)
 - [当前实现架构](docs/architecture/CURRENT_CODEWHALE.md)
 
