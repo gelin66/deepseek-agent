@@ -393,6 +393,13 @@ pub async fn execute_managed_program(
     {
         return Err(anyhow!("managed verifier command canceled before start"));
     }
+    if !program_exists(program, working_dir, &extra_env) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("program is not installed or not in PATH: {program}"),
+        )
+        .into());
+    }
 
     let spawned = {
         let mut manager = shell_manager
@@ -411,6 +418,60 @@ pub async fn execute_managed_program(
         )?
     };
     wait_for_managed_foreground(context, shell_manager, spawned, timeout_ms, true, false).await
+}
+
+fn program_exists(program: &str, working_dir: &Path, extra_env: &HashMap<String, String>) -> bool {
+    let program_path = Path::new(program);
+    if program_path.is_absolute() || program_path.components().count() > 1 {
+        let path = if program_path.is_absolute() {
+            program_path.to_path_buf()
+        } else {
+            working_dir.join(program_path)
+        };
+        return program_file_exists(&path, extra_env);
+    }
+
+    let path = extra_env
+        .get("PATH")
+        .map(std::ffi::OsString::from)
+        .or_else(|| std::env::var_os("PATH"));
+    path.is_some_and(|path| {
+        std::env::split_paths(&path)
+            .map(|directory| {
+                if directory.is_absolute() {
+                    directory.join(program_path)
+                } else {
+                    working_dir.join(directory).join(program_path)
+                }
+            })
+            .any(|candidate| program_file_exists(&candidate, extra_env))
+    })
+}
+
+#[cfg(not(windows))]
+fn program_file_exists(path: &Path, _extra_env: &HashMap<String, String>) -> bool {
+    path.is_file()
+}
+
+#[cfg(windows)]
+fn program_file_exists(path: &Path, extra_env: &HashMap<String, String>) -> bool {
+    if path.is_file() {
+        return true;
+    }
+    if path.extension().is_some() {
+        return false;
+    }
+
+    let path_ext = extra_env
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case("PATHEXT"))
+        .map(|(_, value)| value.clone())
+        .or_else(|| std::env::var("PATHEXT").ok())
+        .unwrap_or_else(|| ".COM;.EXE;.BAT;.CMD".to_string());
+    path_ext
+        .split(';')
+        .filter(|ext| !ext.is_empty())
+        .any(|ext| path.with_extension(ext.trim_start_matches('.')).is_file())
 }
 
 async fn wait_for_managed_foreground(
@@ -909,6 +970,28 @@ mod tests {
             new_shared_shell_manager(context.workspace().to_path_buf()),
             policy,
         )
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_program_preflight_resolves_relative_path_and_missing_program() {
+        let workspace = tempdir().expect("workspace");
+        let bin = workspace.path().join("bin");
+        fs::create_dir(&bin).expect("bin directory");
+        let program = bin.join("fixture-program");
+        fs::write(&program, "#!/bin/sh\nexit 0\n").expect("program");
+
+        let relative_path = HashMap::from([("PATH".to_string(), "bin".to_string())]);
+        assert!(program_exists(
+            "fixture-program",
+            workspace.path(),
+            &relative_path
+        ));
+        assert!(!program_exists(
+            "missing-program",
+            workspace.path(),
+            &relative_path
+        ));
     }
 
     #[cfg(unix)]
