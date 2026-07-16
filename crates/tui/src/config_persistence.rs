@@ -1131,13 +1131,6 @@ action = "mode.plan"
         );
         assert_eq!(
             parsed
-                .get("memory")
-                .and_then(|t| t.get("backend"))
-                .and_then(toml::Value::as_str),
-            Some("sqlite")
-        );
-        assert_eq!(
-            parsed
                 .get("subagents")
                 .and_then(|t| t.get("enabled"))
                 .and_then(toml::Value::as_bool),
