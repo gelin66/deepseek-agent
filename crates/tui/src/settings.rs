@@ -483,6 +483,15 @@ pub fn preset_fields(name: &str) -> Option<&'static [(&'static str, &'static str
 }
 
 impl Settings {
+    /// Prompt-only projection consumed by the transport-neutral context owner.
+    #[must_use]
+    pub fn prompt_preferences(&self) -> codewhale_config::PromptPreferences {
+        codewhale_config::PromptPreferences {
+            locale_setting: self.locale.clone(),
+            show_thinking: self.show_thinking,
+        }
+    }
+
     /// Get the canonical settings file path.
     ///
     /// New writes should target `~/.codewhale/settings.toml`. Legacy

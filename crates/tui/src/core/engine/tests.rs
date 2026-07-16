@@ -2793,7 +2793,7 @@ fn default_defer_lookup_matches_linear_scan_over_active_native_tools() {
     // explicit linear scan over the ordered array — every array member is a hit
     // (not deferred); names outside the array miss (deferred by default).
     let always_load = HashSet::new();
-    let active = default_active_native_tool_names();
+    let active = tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS;
 
     for name in active {
         // Reference linear scan == what the converted lookup must agree with.

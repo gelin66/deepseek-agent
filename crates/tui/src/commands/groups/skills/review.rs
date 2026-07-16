@@ -1,6 +1,6 @@
 //! Review command: activate review skill and send a target immediately.
 
-use crate::skills::{SkillRegistry, default_skills_dir};
+use crate::skill_context::{SkillRegistry, default_skills_dir};
 use crate::tui::app::{App, AppAction};
 use crate::tui::history::HistoryCell;
 

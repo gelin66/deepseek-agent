@@ -13,13 +13,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
+use codewhale_context::{InstructionSource, ProductionPromptRequest, production_system_prompt};
 use codewhale_runtime::{
     AgentOutcome, AgentRuntime, ApiSurface, CanonicalTranscript, DurableActionState,
     ModelAccounting, ModelErrorCategory, ModelPort, ModelPortError, ModelRequest, ModelStream,
-    PromptCacheControl, ReasoningEffort, RunEnvironment, RunId, RunLimits, RunReplay, RunRequest,
-    RunStore, RuntimeEventKind, RuntimeEventSink, RuntimeFailure, RuntimeTimeoutPhase,
-    StoredRuntimeEvent, SystemPrompt as RuntimeSystemPrompt, SystemPromptBlock, TerminalState,
-    ToolExecutor, ToolPolicy, TranscriptEntry,
+    ReasoningEffort, RunEnvironment, RunId, RunLimits, RunReplay, RunRequest, RunStore,
+    RuntimeEventKind, RuntimeEventSink, RuntimeFailure, RuntimeTimeoutPhase, StoredRuntimeEvent,
+    SystemPrompt as RuntimeSystemPrompt, TerminalState, ToolExecutor, ToolPolicy, TranscriptEntry,
 };
 use codewhale_state::StateStore;
 use serde::Serialize;
@@ -27,13 +27,12 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::agent_runtime_adapter::{
-    DeepSeekModelPort, ProductionToolExecutor, canonical_system_prompt, model_accounting_snapshot,
+    DeepSeekModelPort, ProductionToolExecutor, model_accounting_snapshot,
 };
 use crate::client::DeepSeekClient;
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::core::termination::RunTerminationReason;
 use crate::exec_output::ExecTerminalReceipt;
-use crate::prompts::{InstructionSource, PromptSessionContext};
 use crate::tools::spec::ToolContext;
 use crate::tui::app::AppMode;
 use codewhale_deepseek::SharedApiRequestBudget;
@@ -1035,7 +1034,6 @@ fn runtime_system_prompt(
     append_system_prompt: Option<String>,
     tool_mode: bool,
 ) -> RuntimeSystemPrompt {
-    let locale = codewhale_config::resolve_locale(&settings.locale);
     let mut instructions = config
         .instructions_paths()
         .into_iter()
@@ -1047,34 +1045,19 @@ fn runtime_system_prompt(
             content,
         });
     }
-    let prompt = crate::prompts::system_prompt_for_mode_with_context_skills_and_session(
+    let preferences = settings.prompt_preferences();
+    production_system_prompt(ProductionPromptRequest {
         workspace,
-        None,
-        Some(&config.skills_dir()),
-        Some(&instructions),
-        PromptSessionContext {
-            user_memory_block: None,
-            goal_objective: None,
-            project_context_pack_enabled: config.project_context_pack_enabled(),
-            locale_tag: locale.tag(),
-            translation_enabled: false,
-            model_id: model,
-            context_window_override: None,
-            show_thinking: settings.show_thinking,
-            verbosity: config.verbosity.as_deref(),
-            skills_scan_codewhale_only: config.skills_config().scan_codewhale_only(),
-        },
-    );
-    let mut runtime = canonical_system_prompt(&prompt);
-    runtime.blocks.push(SystemPromptBlock {
-        text: if tool_mode {
-            "你正在唯一 AgentRuntime 中执行编码任务。只使用本次请求实际提供的工具；先读取再修改，修改后运行最相关验证。`agent` 会启动同一 Runtime 的后台子 Agent，运行时会自动等待并把结构化结果回注；不要轮询或调用不存在的等待工具。".to_owned()
-        } else {
-            "本次是无工具执行。直接给出准确、简洁、可操作的最终答案，不要声称执行了文件或命令操作。".to_owned()
-        },
-        cache_control: PromptCacheControl::Volatile,
-    });
-    runtime
+        model,
+        preferences: &preferences,
+        instructions: &instructions,
+        skills_dir: Some(&config.skills_dir()),
+        project_context_pack_enabled: config.project_context_pack_enabled(),
+        verbosity: config.verbosity.as_deref(),
+        skills_scan_codewhale_only: config.skills_config().scan_codewhale_only(),
+        shell_binary: crate::shell_dispatcher::global_dispatcher().kind().binary(),
+        tool_mode,
+    })
 }
 
 fn runtime_reasoning_effort(value: &str) -> ReasoningEffort {

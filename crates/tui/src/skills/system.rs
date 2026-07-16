@@ -223,7 +223,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         install_system_skills(tmp.path()).unwrap();
 
-        let registry = crate::skills::SkillRegistry::discover(tmp.path());
+        let registry = crate::skill_context::SkillRegistry::discover(tmp.path());
         assert!(
             registry.warnings().is_empty(),
             "bundled skills should parse cleanly: {:?}",

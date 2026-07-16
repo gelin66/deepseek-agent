@@ -2098,7 +2098,14 @@ fn app_system_prompt_includes_configured_instructions() {
         ..Config::default()
     };
 
-    let prompt = crate::prompts::system_prompt_flat_text(&build_app_system_prompt(&app, &config));
+    let prompt = match build_app_system_prompt(&app, &config) {
+        crate::models::SystemPrompt::Text(text) => text,
+        crate::models::SystemPrompt::Blocks(blocks) => blocks
+            .into_iter()
+            .map(|block| block.text)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+    };
 
     assert!(prompt.contains("CONFIGURED_INSTRUCTIONS_MARKER"));
     assert!(prompt.contains(&instructions.display().to_string()));

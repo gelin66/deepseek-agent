@@ -3718,7 +3718,7 @@ fn skills_search_directories_includes_custom_skills_dir() {
     let directories = skills_search_directories(
         &workspace,
         &custom_skills,
-        crate::skills::SkillDiscoveryMode::Compatible,
+        crate::skill_context::SkillDiscoveryMode::Compatible,
     );
 
     assert!(
@@ -3756,14 +3756,14 @@ fn skill_entry_is_bundled_requires_configured_bundle_path() {
     )
     .expect("write override skill");
 
-    let bundled_skill = crate::skills::Skill {
+    let bundled_skill = crate::skill_context::Skill {
         name: "delegate".to_string(),
         description: String::new(),
         localized_descriptions: std::collections::HashMap::new(),
         body: String::new(),
         path: bundled_skill_path,
     };
-    let override_skill = crate::skills::Skill {
+    let override_skill = crate::skill_context::Skill {
         name: "delegate".to_string(),
         description: String::new(),
         localized_descriptions: std::collections::HashMap::new(),

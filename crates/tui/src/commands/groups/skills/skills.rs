@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use crate::network_policy::NetworkPolicy;
-use crate::skills::SkillRegistry;
+use crate::skill_context::SkillRegistry;
 use crate::skills::install::{
     self, DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL, InstallOutcome, InstallSource,
     RegistryFetchResult, SkillSyncOutcome, SyncResult, UpdateResult,
@@ -21,27 +21,30 @@ thread_local! {
 
 #[cfg(not(test))]
 fn discover_visible_skills(app: &App) -> SkillRegistry {
-    crate::skills::discover_for_workspace_and_dir_with_mode(
+    crate::skill_context::discover_for_workspace_and_dir_with_mode(
         &app.workspace,
         &app.skills_dir,
-        crate::skills::SkillDiscoveryMode::from_codewhale_only(app.skills_scan_codewhale_only),
+        crate::skill_context::SkillDiscoveryMode::from_codewhale_only(
+            app.skills_scan_codewhale_only,
+        ),
     )
 }
 
 #[cfg(test)]
 fn discover_visible_skills(app: &App) -> SkillRegistry {
-    let mode =
-        crate::skills::SkillDiscoveryMode::from_codewhale_only(app.skills_scan_codewhale_only);
+    let mode = crate::skill_context::SkillDiscoveryMode::from_codewhale_only(
+        app.skills_scan_codewhale_only,
+    );
     TEST_HOME_DIR.with(|home| {
         if let Some(home) = home.borrow().as_deref() {
-            crate::skills::discover_for_workspace_and_dir_with_home_and_mode(
+            crate::skill_context::discover_for_workspace_and_dir_with_home_and_mode(
                 &app.workspace,
                 &app.skills_dir,
                 Some(home),
                 mode,
             )
         } else {
-            crate::skills::discover_for_workspace_and_dir_with_mode(
+            crate::skill_context::discover_for_workspace_and_dir_with_mode(
                 &app.workspace,
                 &app.skills_dir,
                 mode,
@@ -63,19 +66,19 @@ fn render_skill_warnings(registry: &SkillRegistry) -> String {
     out
 }
 
-fn skill_discovery_mode(app: &App) -> crate::skills::SkillDiscoveryMode {
-    crate::skills::SkillDiscoveryMode::from_codewhale_only(app.skills_scan_codewhale_only)
+fn skill_discovery_mode(app: &App) -> crate::skill_context::SkillDiscoveryMode {
+    crate::skill_context::SkillDiscoveryMode::from_codewhale_only(app.skills_scan_codewhale_only)
 }
 
-fn skill_discovery_mode_label(mode: crate::skills::SkillDiscoveryMode) -> &'static str {
+fn skill_discovery_mode_label(mode: crate::skill_context::SkillDiscoveryMode) -> &'static str {
     match mode {
-        crate::skills::SkillDiscoveryMode::Compatible => "compatible",
-        crate::skills::SkillDiscoveryMode::CodeWhaleOnly => "codewhale-only",
+        crate::skill_context::SkillDiscoveryMode::Compatible => "compatible",
+        crate::skill_context::SkillDiscoveryMode::CodeWhaleOnly => "codewhale-only",
     }
 }
 
 fn visible_skill_directories(app: &App) -> Vec<std::path::PathBuf> {
-    crate::skills::skill_directories_for_workspace_and_dir(
+    crate::skill_context::skill_directories_for_workspace_and_dir(
         &app.workspace,
         &app.skills_dir,
         skill_discovery_mode(app),
@@ -183,7 +186,7 @@ fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         return CommandResult::message(msg);
     }
 
-    let filtered: Vec<&crate::skills::Skill> = if let Some(p) = prefix.as_deref() {
+    let filtered: Vec<&crate::skill_context::Skill> = if let Some(p) = prefix.as_deref() {
         registry
             .list()
             .iter()
@@ -230,8 +233,8 @@ fn list_skills(app: &mut App, arg: Option<&str>) -> CommandResult {
         // their full description; bundled skills render compactly when
         // numerous so the whole menu fits in a typical terminal viewport.
         let (user_skills, bundled_skills): (
-            Vec<&&crate::skills::Skill>,
-            Vec<&&crate::skills::Skill>,
+            Vec<&&crate::skill_context::Skill>,
+            Vec<&&crate::skill_context::Skill>,
         ) = filtered
             .iter()
             .partition(|s| !crate::skills::is_bundled_skill_name(&s.name));

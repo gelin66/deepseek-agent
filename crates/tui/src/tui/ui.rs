@@ -1636,8 +1636,10 @@ fn build_app_system_prompt(app: &App, config: &Config) -> SystemPrompt {
             show_thinking: app.show_thinking,
             verbosity: app.verbosity.as_deref(),
             skills_scan_codewhale_only: app.skills_scan_codewhale_only,
+            shell_binary: crate::shell_dispatcher::global_dispatcher().kind().binary(),
         },
     )
+    .into()
 }
 
 /// How long after a task finishes it should still appear in the Work

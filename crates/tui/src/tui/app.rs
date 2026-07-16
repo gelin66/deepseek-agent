@@ -87,7 +87,8 @@ pub(crate) fn resolve_skills_dir(
         if config.skills_dir.is_some() {
             return global_skills_dir.to_path_buf();
         }
-        if let Some(codewhale_skills_dir) = crate::skills::codewhale_workspace_skills_dir(workspace)
+        if let Some(codewhale_skills_dir) =
+            crate::skill_context::codewhale_workspace_skills_dir(workspace)
         {
             return codewhale_skills_dir;
         }
@@ -105,7 +106,7 @@ pub(crate) fn resolve_skills_dir(
     }
 
     if config.skills_dir.is_none()
-        && let Some(global_agents) = crate::skills::agents_global_skills_dir()
+        && let Some(global_agents) = crate::skill_context::agents_global_skills_dir()
         && global_agents.exists()
     {
         return global_agents;
@@ -3242,10 +3243,10 @@ impl App {
         skills_dir: &std::path::Path,
         scan_codewhale_only: bool,
     ) -> Vec<(String, String)> {
-        crate::skills::discover_for_workspace_and_dir_with_mode(
+        crate::skill_context::discover_for_workspace_and_dir_with_mode(
             workspace,
             skills_dir,
-            crate::skills::SkillDiscoveryMode::from_codewhale_only(scan_codewhale_only),
+            crate::skill_context::SkillDiscoveryMode::from_codewhale_only(scan_codewhale_only),
         )
         .list()
         .iter()

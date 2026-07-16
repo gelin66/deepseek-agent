@@ -1283,7 +1283,7 @@ async fn list_skills(
     let (skills_dir, mode) = {
         let config = state.config.read();
         let skills_dir = resolve_skills_dir(&config, &state.workspace);
-        let mode = crate::skills::SkillDiscoveryMode::from_codewhale_only(
+        let mode = crate::skill_context::SkillDiscoveryMode::from_codewhale_only(
             config.skills_config().scan_codewhale_only(),
         );
         (skills_dir, mode)
@@ -1318,7 +1318,7 @@ async fn set_skill_enabled(
     let (skills_dir, mode) = {
         let config = state.config.read();
         let skills_dir = resolve_skills_dir(&config, &state.workspace);
-        let mode = crate::skills::SkillDiscoveryMode::from_codewhale_only(
+        let mode = crate::skill_context::SkillDiscoveryMode::from_codewhale_only(
             config.skills_config().scan_codewhale_only(),
         );
         (skills_dir, mode)
@@ -2314,7 +2314,8 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
         if config.skills_dir.is_some() {
             return config.skills_dir();
         }
-        if let Some(codewhale_skills_dir) = crate::skills::codewhale_workspace_skills_dir(workspace)
+        if let Some(codewhale_skills_dir) =
+            crate::skill_context::codewhale_workspace_skills_dir(workspace)
             && let Ok(canonical_skills) = fs::canonicalize(&codewhale_skills_dir)
         {
             return canonical_skills;
@@ -2351,22 +2352,22 @@ fn resolve_skills_dir(config: &Config, workspace: &std::path::Path) -> PathBuf {
 fn skills_search_directories(
     workspace: &FsPath,
     skills_dir: &FsPath,
-    mode: crate::skills::SkillDiscoveryMode,
+    mode: crate::skill_context::SkillDiscoveryMode,
 ) -> Vec<PathBuf> {
-    crate::skills::skill_directories_for_workspace_and_dir(workspace, skills_dir, mode)
+    crate::skill_context::skill_directories_for_workspace_and_dir(workspace, skills_dir, mode)
 }
 
 fn discover_skills_for_runtime_api(
     workspace: &FsPath,
     skills_dir: &FsPath,
-    mode: crate::skills::SkillDiscoveryMode,
-) -> (crate::skills::SkillRegistry, Vec<PathBuf>) {
+    mode: crate::skill_context::SkillDiscoveryMode,
+) -> (crate::skill_context::SkillRegistry, Vec<PathBuf>) {
     let directories = skills_search_directories(workspace, skills_dir, mode);
-    let registry = crate::skills::discover_from_directories(directories.clone());
+    let registry = crate::skill_context::discover_from_directories(directories.clone());
     (registry, directories)
 }
 
-fn skill_entry_is_bundled(skill: &crate::skills::Skill, skills_dir: &FsPath) -> bool {
+fn skill_entry_is_bundled(skill: &crate::skill_context::Skill, skills_dir: &FsPath) -> bool {
     if !crate::skills::is_bundled_skill_name(&skill.name) {
         return false;
     }

@@ -1,4 +1,4 @@
-//! Process-local cache for project context loading.
+//! Process-local cache for canonical project context loading.
 //!
 //! The project-context loader sits on prompt/session hot paths and repeatedly
 //! checks the same workspace, parent, global, constitution, and trust files.

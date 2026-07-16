@@ -24,6 +24,7 @@ path = "src/main.rs"
 ahash = "0.8"
 anyhow.workspace = true
 codewhale-config = { path = "../config", version = "0.8.68" }
+codewhale-context = { path = "../context", version = "0.8.68" }
 codewhale-deepseek = { path = "../deepseek", version = "0.8.68" }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.8.68" }
 codewhale-lane = { path = "../lane", version = "0.8.68" }
@@ -94,6 +95,7 @@ mimalloc.workspace = true
 codewhale-build-support = { path = "../build-support", version = "0.8.68" }
 
 [dev-dependencies]
+codewhale-context = { path = "../context", features = ["test-support"] }
 cucumber = "0.23.0"
 wiremock = "0.6"
 pretty_assertions = "1.4"

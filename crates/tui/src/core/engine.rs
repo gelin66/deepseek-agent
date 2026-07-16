@@ -692,7 +692,7 @@ impl Default for EngineConfig {
             trust_mode: false,
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
-            skills_dir: crate::skills::default_skills_dir(),
+            skills_dir: crate::skill_context::default_skills_dir(),
             skills_scan_codewhale_only: false,
             instructions: Vec::new(),
             project_context_pack_enabled: true,
@@ -1283,7 +1283,7 @@ impl Engine {
         );
         let prompt_goal_objective =
             goal_objective_for_prompt(config.goal_objective.as_deref(), &config.goal_state);
-        let system_prompt =
+        let system_prompt: SystemPrompt =
             prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
                 &config.workspace,
                 None,
@@ -1306,8 +1306,10 @@ impl Engine {
                     show_thinking: config.show_thinking,
                     verbosity: config.verbosity.as_deref(),
                     skills_scan_codewhale_only: config.skills_scan_codewhale_only,
+                    shell_binary: crate::shell_dispatcher::global_dispatcher().kind().binary(),
                 },
-            );
+            )
+            .into();
         let stable_prompt = Some(system_prompt);
         session.last_system_prompt_hash = Some(system_prompt_hash(stable_prompt.as_ref()));
         session.system_prompt = stable_prompt;
@@ -4211,28 +4213,33 @@ impl Engine {
             self.config.goal_objective.as_deref(),
             &self.config.goal_state,
         );
-        let base = prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
-            &self.config.workspace,
-            None,
-            Some(&self.config.skills_dir),
-            Some(&self.config.instructions),
-            prompts::PromptSessionContext {
-                user_memory_block: user_memory_block.as_deref(),
-                goal_objective: prompt_goal_objective.as_deref(),
-                project_context_pack_enabled: self.config.project_context_pack_enabled,
-                locale_tag: &self.config.locale_tag,
-                translation_enabled: self.config.translation_enabled,
-                model_id: &self.config.model,
-                context_window_override: Some(crate::route_budget::route_context_window_tokens(
-                    self.api_provider,
-                    &self.config.model,
-                    self.active_route_limits,
-                )),
-                show_thinking: self.config.show_thinking,
-                verbosity: self.config.verbosity.as_deref(),
-                skills_scan_codewhale_only: self.config.skills_scan_codewhale_only,
-            },
-        );
+        let base: SystemPrompt =
+            prompts::system_prompt_for_mode_with_context_skills_session_and_approval(
+                &self.config.workspace,
+                None,
+                Some(&self.config.skills_dir),
+                Some(&self.config.instructions),
+                prompts::PromptSessionContext {
+                    user_memory_block: user_memory_block.as_deref(),
+                    goal_objective: prompt_goal_objective.as_deref(),
+                    project_context_pack_enabled: self.config.project_context_pack_enabled,
+                    locale_tag: &self.config.locale_tag,
+                    translation_enabled: self.config.translation_enabled,
+                    model_id: &self.config.model,
+                    context_window_override: Some(
+                        crate::route_budget::route_context_window_tokens(
+                            self.api_provider,
+                            &self.config.model,
+                            self.active_route_limits,
+                        ),
+                    ),
+                    show_thinking: self.config.show_thinking,
+                    verbosity: self.config.verbosity.as_deref(),
+                    skills_scan_codewhale_only: self.config.skills_scan_codewhale_only,
+                    shell_binary: crate::shell_dispatcher::global_dispatcher().kind().binary(),
+                },
+            )
+            .into();
         let mut stable_prompt =
             merge_system_prompts(Some(&base), self.session.compaction_summary_prompt.clone());
 
@@ -4736,10 +4743,6 @@ mod turn_loop;
 pub(crate) use token_estimate_cache::TokenEstimateCache;
 
 pub(super) const MAX_PARALLEL_SHELL_EXEC: usize = 4;
-
-pub(crate) fn default_active_native_tool_names() -> &'static [&'static str] {
-    tool_catalog::DEFAULT_ACTIVE_NATIVE_TOOLS
-}
 
 /// Drop catalog entries the execution gates would reject (#3027): the model
 /// should never be advertised a tool it cannot call. Deny wins over allow.

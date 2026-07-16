@@ -12,11 +12,9 @@ use async_trait::async_trait;
 use codewhale_runtime::{
     ActorRequestAccounting, AgentActorKind, ApiSurface as RuntimeApiSurface, CancellationToken,
     ModelAccounting, ModelErrorCategory, ModelFinishReason, ModelOutput, ModelPort, ModelPortError,
-    ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, PromptCacheControl, SurfaceUsage,
-    SystemPrompt as RuntimeSystemPrompt, SystemPromptBlock as RuntimeSystemPromptBlock,
-    ToolArguments, ToolDefinition, ToolExecutionError, ToolExecutor, ToolInvocation,
-    ToolOperationStatus, ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus,
-    Usage as RuntimeUsage,
+    ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, SurfaceUsage, ToolArguments,
+    ToolDefinition, ToolExecutionError, ToolExecutor, ToolInvocation, ToolOperationStatus,
+    ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus, Usage as RuntimeUsage,
 };
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -26,9 +24,7 @@ use crate::client::DeepSeekClient;
 use crate::client::deepseek::{ApiSurface, ChatPlanError};
 use crate::error_taxonomy::StreamError;
 use crate::llm_client::{LlmError, StreamEventBox};
-use crate::models::{
-    ContentBlock, ContentBlockStart, Delta, MessageResponse, StreamEvent, SystemPrompt, Usage,
-};
+use crate::models::{ContentBlock, ContentBlockStart, Delta, MessageResponse, StreamEvent, Usage};
 use crate::tools::apply_patch::ApplyPatchTool;
 use crate::tools::file::{EditFileTool, ListDirTool, ReadFileTool};
 use crate::tools::file_search::FileSearchTool;
@@ -199,29 +195,6 @@ impl ModelPort for DeepSeekModelPort {
             self.accounting.accounting_snapshot()
         };
         Ok(runtime_accounting(requests, actors, usage))
-    }
-}
-
-/// Projects the existing prompt builder's value into the runtime's canonical
-/// prompt without flattening block order or losing its stable-prefix marker.
-#[must_use]
-pub(crate) fn canonical_system_prompt(prompt: &SystemPrompt) -> RuntimeSystemPrompt {
-    match prompt {
-        SystemPrompt::Text(text) => RuntimeSystemPrompt::from_text(text.clone()),
-        SystemPrompt::Blocks(blocks) => RuntimeSystemPrompt {
-            blocks: blocks
-                .iter()
-                .enumerate()
-                .map(|(index, block)| RuntimeSystemPromptBlock {
-                    text: block.text.clone(),
-                    cache_control: if index == 0 || block.cache_control.is_some() {
-                        PromptCacheControl::Stable
-                    } else {
-                        PromptCacheControl::Volatile
-                    },
-                })
-                .collect(),
-        },
     }
 }
 
@@ -854,10 +827,12 @@ mod tests {
     use super::*;
     use crate::client::deepseek::ResponseMode;
     use crate::config::{ApiProvider, Config, RetryConfig};
-    use crate::models::{CacheControl, MessageDelta, SystemBlock};
+    use crate::models::MessageDelta;
     use crate::tools::spec::{ToolCapability, ToolSpec};
     use codewhale_runtime::{
-        AgentActor, ModelMessage, ReasoningEffort, RunId, ToolInvocationStatus, ToolTransportStatus,
+        AgentActor, ModelMessage, PromptCacheControl, ReasoningEffort, RunId,
+        SystemPrompt as RuntimeSystemPrompt, SystemPromptBlock as RuntimeSystemPromptBlock,
+        ToolInvocationStatus, ToolTransportStatus,
     };
 
     struct TypedListDirTool;
@@ -1091,46 +1066,6 @@ mod tests {
         assert_eq!(
             error,
             ChatPlanError::MissingReasoningContent { message_index: 0 }
-        );
-    }
-
-    #[test]
-    fn canonical_prompt_preserves_block_order_and_cache_semantics() {
-        let prompt = SystemPrompt::Blocks(vec![
-            SystemBlock {
-                block_type: "text".to_owned(),
-                text: "稳定前缀".to_owned(),
-                cache_control: None,
-            },
-            SystemBlock {
-                block_type: "text".to_owned(),
-                text: "显式稳定".to_owned(),
-                cache_control: Some(CacheControl {
-                    cache_type: "ephemeral".to_owned(),
-                }),
-            },
-            SystemBlock {
-                block_type: "text".to_owned(),
-                text: "每轮变化".to_owned(),
-                cache_control: None,
-            },
-        ]);
-
-        let canonical = canonical_system_prompt(&prompt);
-        assert_eq!(canonical.blocks[0].text, "稳定前缀");
-        assert_eq!(canonical.blocks[1].text, "显式稳定");
-        assert_eq!(canonical.blocks[2].text, "每轮变化");
-        assert_eq!(
-            canonical.blocks[0].cache_control,
-            PromptCacheControl::Stable
-        );
-        assert_eq!(
-            canonical.blocks[1].cache_control,
-            PromptCacheControl::Stable
-        );
-        assert_eq!(
-            canonical.blocks[2].cache_control,
-            PromptCacheControl::Volatile
         );
     }
 

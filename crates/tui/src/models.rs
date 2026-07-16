@@ -66,6 +66,28 @@ pub struct SystemBlock {
     pub cache_control: Option<CacheControl>,
 }
 
+/// Temporary interactive-engine representation adapter.
+///
+/// The canonical owner emits runtime prompt blocks directly. The legacy TUI
+/// request model is deleted with the interactive runtime in M4-C; until then
+/// this conversion preserves block body and order without rebuilding prompt
+/// content.
+impl From<codewhale_runtime::SystemPrompt> for SystemPrompt {
+    fn from(prompt: codewhale_runtime::SystemPrompt) -> Self {
+        Self::Blocks(
+            prompt
+                .blocks
+                .into_iter()
+                .map(|block| SystemBlock {
+                    block_type: "text".to_owned(),
+                    text: block.text,
+                    cache_control: None,
+                })
+                .collect(),
+        )
+    }
+}
+
 /// OpenAI-compatible image URL payload inside a multimodal message.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct ImageUrlContent {

@@ -403,10 +403,10 @@ fn base_source_entries(model: &str, workspace: &Path, skills_dir: Option<&Path>)
     }
 
     let skills_block = match skills_dir {
-        Some(dir) => {
-            crate::skills::render_available_skills_context_for_workspace_and_dir(workspace, dir)
-        }
-        None => crate::skills::render_available_skills_context_for_workspace(workspace),
+        Some(dir) => crate::skill_context::render_available_skills_context_for_workspace_and_dir(
+            workspace, dir,
+        ),
+        None => crate::skill_context::render_available_skills_context_for_workspace(workspace),
     };
     if let Some(block) = skills_block {
         builder.push(SourceEntry::text(

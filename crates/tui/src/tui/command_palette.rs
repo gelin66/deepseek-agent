@@ -18,7 +18,6 @@ use unicode_width::UnicodeWidthStr;
 use crate::commands;
 use crate::localization::{MessageId, tr};
 use crate::palette;
-use crate::skills;
 use crate::tools::spec::ApprovalRequirement;
 use crate::tools::spec::ToolCapability;
 use crate::tools::{ToolContext, ToolRegistryBuilder};
@@ -27,6 +26,7 @@ use crate::tui::views::{
     centered_modal_area, render_modal_footer, render_modal_surface,
 };
 use codewhale_config::Locale;
+use codewhale_context::skills;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum PaletteSection {

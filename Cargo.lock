@@ -910,6 +910,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-context"
+version = "0.8.68"
+dependencies = [
+ "codewhale-config",
+ "codewhale-protocol",
+ "dirs",
+ "globset",
+ "libc",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "codewhale-core"
 version = "0.8.68"
 dependencies = [
@@ -1089,6 +1107,7 @@ dependencies = [
  "clap_complete",
  "codewhale-build-support",
  "codewhale-config",
+ "codewhale-context",
  "codewhale-deepseek",
  "codewhale-execpolicy",
  "codewhale-lane",

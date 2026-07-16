@@ -20,6 +20,7 @@ use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
 
 use crate::dependencies::ExternalTool;
+use codewhale_context::{project_context, prompts, skills as skill_context};
 
 use rust_i18n::i18n;
 i18n!("locales", fallback = ["en"]);
@@ -67,7 +68,6 @@ mod mcp;
 mod mcp_server;
 mod memory;
 mod model_catalog;
-mod model_context;
 mod model_inventory;
 mod model_profile;
 mod model_registry;
@@ -80,10 +80,7 @@ mod palette;
 mod plugins;
 mod prefix_cache;
 mod pricing;
-mod project_context;
-mod project_context_cache;
 mod prompt_zones;
-mod prompts;
 mod provider_lake;
 mod provider_readiness;
 mod purge;
@@ -2814,7 +2811,7 @@ fn skills_count_for(dir: &Path) -> usize {
     if !dir.exists() {
         return 0;
     }
-    crate::skills::SkillRegistry::discover(dir).len()
+    crate::skill_context::SkillRegistry::discover(dir).len()
 }
 
 fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
@@ -3441,7 +3438,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = crate::skill_context::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs. Presence is reported here
     // even though they sit lower in the precedence chain so users can
     // see at a glance whether a `.opencode/skills/`, `.claude/skills/`,
@@ -4734,7 +4731,7 @@ fn run_doctor_json(
     let global_skills_dir = config.skills_dir();
     let agents_skills_dir = workspace.join(".agents").join("skills");
     let local_skills_dir = workspace.join("skills");
-    let agents_global_skills_dir = crate::skills::agents_global_skills_dir();
+    let agents_global_skills_dir = crate::skill_context::agents_global_skills_dir();
     // #432: cross-tool skill discovery dirs surface in the JSON
     // report so external dashboards can see whether any
     // `.opencode/skills/`, `.claude/skills/`, `.cursor/skills/`, or

@@ -27,7 +27,7 @@
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use crate::skills::{
+use crate::skill_context::{
     Skill, SkillDiscoveryMode, discover_for_workspace_and_dir_with_mode,
     discover_in_workspace_with_mode, skill_directories_for_workspace_and_dir,
     skills_directories_for_mode,
@@ -217,7 +217,7 @@ fn collect_companion_files(skill: &Skill) -> Vec<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::skills::SkillRegistry;
+    use crate::skill_context::SkillRegistry;
     use std::fs;
     use tempfile::tempdir;
 

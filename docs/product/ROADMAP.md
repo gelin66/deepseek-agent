@@ -477,6 +477,17 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 7. focused crate tests、fmt、workspace Clippy `-D warnings`、workspace tests、现有 M4-A
    exec acceptance 和 resume gates 全部通过，随后冻结可 checkout/rebuild 的提交。
 
+#### M4-B 准备切片记录（进行中）
+
+- 生产 system prompt、项目上下文、技能发现和既有 WorldState block 顺序已从 TUI 源码
+  move 到无 TUI/core/tools/app 反向依赖的 `crates/context`；`exec` 与交互 TUI 均调用这一个
+  builder，旧 TUI builder 和 runtime prompt converter 已删除。本切片只冻结现有正文、顺序
+  和 Stable/Volatile 边界，没有调优或翻译提示词，也不代表 M4-B app-server 迁移完成。
+- 交互 TUI 在进入旧 `models::SystemPrompt` 请求路径前仍有一次纯表示转换；该 adapter 不构造
+  或修改正文，并在 M4-C 交互 Runtime 切换到 canonical protocol type 时随旧请求模型一起删除。
+- `ProductionPromptRequest` 暂由真实 `exec` 调用；`crates/app` 不为未来 composition 预建空依赖，
+  待 app-server 与 `exec` 真正同步迁入 application composition 时再接入。
+
 ### M4 总体后续顺序
 
 - M4-A 已完成 Headless CLI 的 canonical `ToolOutcome`、SQLite RunStore 和恢复闭环。
