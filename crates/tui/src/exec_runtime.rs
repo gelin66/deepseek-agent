@@ -44,7 +44,7 @@ use super::{
     ExecStreamInputAnalysis, ExecStreamMeta, ExecSurfaceModelUsageBucket,
     commit_exec_terminal_signal, config_for_cli_route, current_binary_sha256,
     exec_sandbox_elevation_authorized, exec_stream_line, exec_supports_provider, recv_exec_signal,
-    resolve_cli_auto_route, stop_exec_signal_controller, wait_exec_output_until,
+    resolve_exec_deepseek_route, stop_exec_signal_controller, wait_exec_output_until,
     wait_terminal_output, write_exec_stream_terminal,
 };
 
@@ -319,6 +319,13 @@ pub(crate) async fn run_exec_runtime(
             false,
         )
     };
+    let mut bound_transport = if resume_replay.is_none() && model.trim().eq_ignore_ascii_case("auto")
+    {
+        startup_failure = ExecStartupFailure::Client;
+        Some(bind_exec_deepseek_transport(config, &api_request_budget)?)
+    } else {
+        None
+    };
     let deadline = deadline_origin + Duration::from_secs(max_runtime_secs.max(1));
     let (mut signal_rx, signal_task, signal_phase) = super::spawn_exec_signal_controller();
     let mut signal_task = Some(signal_task);
@@ -343,7 +350,7 @@ pub(crate) async fn run_exec_runtime(
             }
             route = tokio::time::timeout_at(
                 deadline,
-                resolve_cli_auto_route(config, model, prompt, Some(&api_request_budget)),
+                resolve_exec_deepseek_route(config, model, prompt, bound_transport.as_ref()),
             ) => match route {
                 Ok(Ok(route)) => route,
                 Ok(Err(error)) => {
@@ -481,18 +488,15 @@ pub(crate) async fn run_exec_runtime(
         Arc::new(ReplayOnlyModelPort)
     } else {
         startup_failure = ExecStartupFailure::Client;
-        let client = match DeepSeekClient::new(&execution_config) {
-            Ok(client) => client,
-            Err(error) => {
-                stop_exec_signal_controller(&mut signal_task).await;
-                return Err(error);
-            }
-        };
-        let transport = match client.official_deepseek_transport() {
-            Ok(transport) => transport,
-            Err(error) => {
-                stop_exec_signal_controller(&mut signal_task).await;
-                return Err(error);
+        let transport = if let Some(transport) = bound_transport.take() {
+            transport
+        } else {
+            match bind_exec_deepseek_transport(&execution_config, &api_request_budget) {
+                Ok(transport) => transport,
+                Err(error) => {
+                    stop_exec_signal_controller(&mut signal_task).await;
+                    return Err(error);
+                }
             }
         };
         Arc::new(DeepSeekModelPort::new(transport, api_request_budget))
@@ -876,6 +880,15 @@ pub(crate) async fn run_exec_runtime(
         return Err(anyhow!("{error}; startup output failed: {output_error}"));
     }
     result
+}
+
+fn bind_exec_deepseek_transport(
+    config: &Config,
+    budget: &SharedApiRequestBudget,
+) -> Result<codewhale_deepseek::DeepSeekTransport> {
+    DeepSeekClient::new(config)?
+        .with_api_request_budget(budget.clone())
+        .official_deepseek_transport()
 }
 
 #[allow(clippy::too_many_arguments)]

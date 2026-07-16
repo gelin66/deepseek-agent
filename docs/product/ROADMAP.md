@@ -454,9 +454,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   进程树、超时/取消、输出边界和结构化结果已从 TUI 迁入 `crates/tools`；TUI 只保留尚被交互
   入口使用的策略、hook、外部 OpenSandbox transport 和 `ToolSpec` 投影。固定 11 工具的
   catalog/schema/executor 仍待同一生产调用方切换后收口，不能把当前薄投影误报为完成。
-- DeepSeek `auto` 模型路由仍由 TUI 发起一次真实请求；在它迁入 DeepSeek lower owner 并与
-  root/child 共享同一 physical request budget 前，不能把“先路由、再把显式模型交给 app”
-  当作 application composition 完成，否则 hard budget 与 accounting 会漏记路由请求。
+- DeepSeek 专用 auto-route classifier 的普通 Chat RequestPlan、4 秒执行边界、JSON 解析、
+  canonical pro/flash 校验和确定性 fallback 进入 `crates/deepseek`。生产 `exec` 不再读取 TUI
+  Provider inventory：auto 路由与随后根/子 Agent 复用同一个已绑定 transport 和
+  `SharedApiRequestBudget`，显式模型在任何 classifier 请求前经 official capability fail closed。
+  TUI 的旧 DeepSeek classifier sender/prompt/parser 已删除；交互 TUI 仍使用的 generic
+  inventory/非 DeepSeek heuristic 保留到 M4-C/Provider 清理，不是第二套 DeepSeek classifier。
 
 #### 同切片删除/替代
 

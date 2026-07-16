@@ -1169,6 +1169,39 @@ async fn auto_router_and_root_agent_share_one_exact_request_ledger() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_model_alias_fails_before_any_classifier_or_root_request() {
+    let _serial = EXEC_TEST_LOCK.lock().await;
+    let server = MockServer::start().await;
+    mount_models(&server).await;
+    mount_chat(&server, sse_response(complete_sse("must-not-reach-model"))).await;
+
+    let (command, _workspace, _home) = prepare_exec_with_options(
+        &server.uri(),
+        10,
+        "reject the explicit compatibility alias locally",
+        "",
+        None,
+        "deepseek-v4flash",
+        None,
+        None,
+    );
+    let output = run_with_timeout(command, PROCESS_TIMEOUT);
+    assert!(!output.status.success(), "explicit alias must fail closed");
+    assert!(
+        output
+            .stderr
+            .contains("unsupported official DeepSeek model")
+            || output
+                .stdout
+                .contains("unsupported official DeepSeek model"),
+        "missing typed capability failure\nstdout:\n{}\nstderr:\n{}",
+        output.stdout,
+        output.stderr
+    );
+    assert_eq!(chat_request_count(&server).await, 0);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn multi_agent_exec_waits_for_child_handoff_before_one_success_terminal() {
     let _serial = EXEC_TEST_LOCK.lock().await;

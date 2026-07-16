@@ -138,6 +138,7 @@ impl ModelInventory {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn candidate(
         &self,
         provider: ApiProvider,
@@ -160,10 +161,6 @@ impl ModelInventory {
                     .find(|candidate| candidate.provider == self.active_provider)
             })
             .or_else(|| self.candidates.first())
-    }
-
-    pub(crate) fn router_context_json(&self) -> String {
-        serde_json::to_string(self).unwrap_or_else(|_| "{}".to_string())
     }
 }
 
@@ -405,7 +402,7 @@ mod tests {
             .expect("openai candidate");
 
         assert_eq!(candidate.auth_source, ModelAuthSource::Command);
-        let json = inventory.router_context_json();
+        let json = serde_json::to_string(&inventory).expect("serialize inventory");
         assert!(json.contains(r#""auth_source":"command""#));
         assert!(!json.contains("secret-tool"));
         assert!(!json.contains("lookup"));

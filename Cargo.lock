@@ -958,6 +958,7 @@ dependencies = [
  "codewhale-runtime",
  "futures-util",
  "reqwest 0.13.4",
+ "rustls",
  "serde_json",
  "thiserror 2.0.18",
  "tokio",

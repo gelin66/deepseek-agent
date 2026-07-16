@@ -15,6 +15,7 @@ use codewhale_runtime::{ModelMessage, ModelRequest, ReasoningEffort, SystemPromp
 use serde_json::{Map, Value, json};
 
 mod accounting;
+mod auto_route;
 mod model_port;
 mod pricing;
 mod transport;
@@ -23,6 +24,11 @@ pub use accounting::{
     ApiRequestActor, ApiRequestActorSnapshot, ApiRequestBudgetError, ApiRequestBudgetSnapshot,
     ApiRequestKind, ApiRequestLease, ApiResponseAccountingGuard, ApiUsageBucket, ApiUsageSnapshot,
     SharedApiRequestBudget,
+};
+pub use auto_route::{
+    DEEPSEEK_AUTO_ROUTE_FLASH_MODEL, DEEPSEEK_AUTO_ROUTE_PRO_MODEL, DeepSeekAutoRouteError,
+    DeepSeekAutoRouteFallback, DeepSeekAutoRouteInput, DeepSeekAutoRouteSelection,
+    DeepSeekAutoRouteSource, resolve_deepseek_auto_route,
 };
 pub use model_port::{
     DeepSeekModelPort, OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_MAX_OUTPUT_TOKENS,

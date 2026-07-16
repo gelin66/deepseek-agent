@@ -24,8 +24,11 @@ Current boundary note:
   output composition remains in `crates/tui` while that production entry is
   migrated vertically. Official request planning, HTTP/SSE transport, typed
   response parsing, physical request/usage accounting, exact V4 capability
-  validation, and the concrete `DeepSeekModelPort` live in `crates/deepseek`.
-  Runtime requests no longer pass through TUI message/stream DTOs.
+  validation, DeepSeek-only auto-route request/parse/fallback, and the concrete
+  `DeepSeekModelPort` live in `crates/deepseek`. Runtime requests no longer pass
+  through TUI message/stream DTOs. Auto-routed `exec` binds one transport before
+  classification and moves that same transport and request ledger into the root
+  and child model port; explicit official models do not issue a classifier request.
 - Production `exec` persists schema-v3 canonical runtime events through the
   schema-v6 `crates/state::StateStore` SQLite `RunStore`.
 - The interactive TUI, runtime API, app-server, and task manager have not
@@ -125,15 +128,16 @@ runtime or state truth is accepted as the final design.
 
 - **`crates/deepseek`** - Official DeepSeek planner, Chat HTTP/SSE sender,
   typed response parser, canonical Runtime `ModelPort`, exact official V4
-  capability table, and physical request/usage accounting owner for Standard
-  Chat and Beta Strict Chat; FIM planning/accounting already shares this owner
-  while its sender cutover remains separate
+  capability table, DeepSeek-only auto-route classifier/fallback, and physical
+  request/usage accounting owner for Standard Chat and Beta Strict Chat; FIM
+  planning/accounting already shares this owner while its sender cutover remains
+  separate
 - **`client.rs` / `client/chat.rs`** - Generic compatibility HTTP/SSE path for
   non-DeepSeek providers; it no longer sends, parses, or adapts canonical
   Runtime requests for official DeepSeek Chat responses
 - **`client/deepseek.rs`** - Unmigrated interactive-TUI composition and legacy
   presentation conversion around `crates/deepseek`; it is not a second sender,
-  parser, or Runtime `ModelPort`
+  parser, classifier, or Runtime `ModelPort`
 - **`llm_client.rs`** - Abstract LLM client trait with retry logic
 - **`models.rs`** - Data structures for API requests/responses
 

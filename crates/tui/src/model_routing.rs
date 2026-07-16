@@ -3,15 +3,11 @@
 //! The CLI, TUI, runtime threads, subagents, and command handlers all need
 //! this behavior, so it intentionally lives outside the command tree.
 
-use std::time::Duration;
-
 use anyhow::Result;
 
 use crate::client::DeepSeekClient;
 use crate::config::{ApiProvider, Config, normalize_model_name_for_provider};
-use crate::llm_client::LlmClient;
 use crate::model_inventory::ModelInventory;
-use crate::models::{ContentBlock, Message, MessageRequest, MessageResponse, SystemPrompt};
 use crate::tui::app::ReasoningEffort;
 
 /// Big/cheap model pair the auto-router may choose between for the active
@@ -242,22 +238,6 @@ pub(crate) struct AutoRouteSelection {
     pub(crate) source: AutoRouteSource,
 }
 
-fn extract_first_json_object(raw: &str) -> Option<&str> {
-    let start = raw.find('{')?;
-    let end = raw.rfind('}')?;
-    (end >= start).then_some(&raw[start..=end])
-}
-
-fn parse_auto_route_reasoning_effort(effort: &str) -> Option<ReasoningEffort> {
-    match effort.trim().to_ascii_lowercase().as_str() {
-        "off" | "disabled" | "none" | "false" => Some(ReasoningEffort::Off),
-        "low" | "minimal" | "medium" | "mid" => Some(ReasoningEffort::High),
-        "high" => Some(ReasoningEffort::High),
-        "max" | "maximum" | "xhigh" | "ultracode" => Some(ReasoningEffort::Max),
-        _ => None,
-    }
-}
-
 #[must_use]
 pub(crate) fn normalize_auto_route_effort(effort: ReasoningEffort) -> ReasoningEffort {
     normalize_auto_route_effort_for_provider(ApiProvider::Deepseek, effort)
@@ -275,13 +255,6 @@ pub(crate) fn normalize_auto_route_effort_for_provider(
         ReasoningEffort::Low | ReasoningEffort::Medium => ReasoningEffort::High,
         other => other,
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct InventoryAutoRouteRecommendation {
-    provider: ApiProvider,
-    model: String,
-    reasoning_effort: Option<ReasoningEffort>,
 }
 
 pub(crate) async fn resolve_auto_route_with_inventory(
@@ -314,9 +287,11 @@ pub(crate) async fn resolve_auto_route_with_inventory_for_session(
     api_request_budget: Option<&codewhale_deepseek::SharedApiRequestBudget>,
 ) -> Result<AutoRouteSelection> {
     let inventory = ModelInventory::from_config(config);
-    if !inventory.router_available {
+    if !inventory.router_available || config.api_provider() != ApiProvider::Deepseek {
         // Fall back to heuristic-only auto routing when the flash router
-        // is unavailable (e.g. non-DeepSeek providers like wanjie-ark).
+        // is unavailable. Non-DeepSeek inventory remains a legacy M4-C path;
+        // it must not ask the official DeepSeek classifier to select another
+        // provider.
         return Ok(auto_route_from_inventory_heuristic(
             config,
             latest_request,
@@ -329,28 +304,31 @@ pub(crate) async fn resolve_auto_route_with_inventory_for_session(
         return Ok(heuristic);
     }
 
-    match auto_route_inventory_recommendation(
-        config,
-        &inventory,
-        AutoRoutePromptInput {
-            latest_request,
-            recent_context,
-            session_mode,
-            selected_model_mode,
-            selected_thinking_mode,
-        },
-        api_request_budget,
+    let mut client = match DeepSeekClient::new(config) {
+        Ok(client) => client,
+        Err(_) => return Ok(heuristic),
+    };
+    if let Some(budget) = api_request_budget {
+        client = client.with_api_request_budget(budget.clone());
+    }
+    let transport = match client.official_deepseek_transport() {
+        Ok(transport) => transport,
+        Err(_) => return Ok(heuristic),
+    };
+    let fallback = codewhale_deepseek::DeepSeekAutoRouteFallback::new(
+        &heuristic.model,
+        heuristic.reasoning_effort.map(tui_effort_to_runtime),
+    )?;
+    resolve_deepseek_auto_route_with_transport(
+        &transport,
+        latest_request,
+        recent_context,
+        session_mode,
+        selected_model_mode,
+        selected_thinking_mode,
+        fallback,
     )
     .await
-    {
-        Ok(Some(recommendation)) => Ok(AutoRouteSelection {
-            provider: recommendation.provider,
-            model: recommendation.model,
-            reasoning_effort: recommendation.reasoning_effort,
-            source: AutoRouteSource::FlashRouter,
-        }),
-        Ok(None) | Err(_) => Ok(heuristic),
-    }
 }
 
 pub(crate) fn resolve_explicit_route_with_inventory(
@@ -464,145 +442,59 @@ fn auto_route_from_inventory_heuristic(
     }
 }
 
-#[derive(Clone, Copy)]
-struct AutoRoutePromptInput<'a> {
-    latest_request: &'a str,
-    recent_context: &'a str,
-    session_mode: &'a str,
-    selected_model_mode: &'a str,
-    selected_thinking_mode: &'a str,
-}
-
-async fn auto_route_inventory_recommendation(
-    config: &Config,
-    inventory: &ModelInventory,
-    prompt_input: AutoRoutePromptInput<'_>,
-    api_request_budget: Option<&codewhale_deepseek::SharedApiRequestBudget>,
-) -> Result<Option<InventoryAutoRouteRecommendation>> {
-    let mut router_config = config.clone();
-    router_config.provider = Some(ApiProvider::Deepseek.as_str().to_string());
-    router_config.default_text_model = Some(inventory.router_model.to_string());
-
-    let mut client = DeepSeekClient::new(&router_config)?;
-    if let Some(budget) = api_request_budget {
-        client = client.with_api_request_budget(budget.clone());
-    }
-    let router_system = inventory_auto_router_system_prompt(inventory);
-    let request = MessageRequest {
-        model: inventory.router_model.to_string(),
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: auto_route_prompt(prompt_input),
-                cache_control: None,
-            }],
-        }],
-        max_tokens: 128,
-        system: Some(SystemPrompt::Text(router_system)),
-        tools: None,
-        tool_choice: None,
-        metadata: None,
-        thinking: None,
-        reasoning_effort: Some("off".to_string()),
-        stream: Some(false),
-        temperature: Some(0.0),
-        top_p: None,
-    };
-
-    let response =
-        tokio::time::timeout(Duration::from_secs(4), client.create_message(request)).await??;
-    Ok(parse_inventory_auto_route_recommendation(
-        &message_response_text(&response),
-        inventory,
-    ))
-}
-
-fn inventory_auto_router_system_prompt(inventory: &ModelInventory) -> String {
-    format!(
-        "You are the codewhale model-routing classifier. Return only compact JSON: \
-{{\"provider\":\"<provider>\",\"model\":\"<model>\",\"thinking\":\"off|high|max\"}}.\n\
-Choose only provider/model pairs present in the inventory JSON. Use off only for trivial no-tool answers, \
-high for ordinary reasoning, and max for agentic, coding, multi-file, release, architecture, debugging, \
-security, tool-heavy, or uncertain work.\n\nInventory JSON:\n{}",
-        inventory.router_context_json()
+pub(crate) async fn resolve_deepseek_auto_route_with_transport(
+    transport: &codewhale_deepseek::DeepSeekTransport,
+    latest_request: &str,
+    recent_context: &str,
+    session_mode: &str,
+    selected_model_mode: &str,
+    selected_thinking_mode: &str,
+    fallback: codewhale_deepseek::DeepSeekAutoRouteFallback,
+) -> Result<AutoRouteSelection> {
+    let selected = codewhale_deepseek::resolve_deepseek_auto_route(
+        transport,
+        codewhale_deepseek::DeepSeekAutoRouteInput {
+            latest_request,
+            recent_context,
+            session_mode,
+            selected_model_mode,
+            selected_thinking_mode,
+            fallback,
+        },
     )
-}
-
-fn parse_inventory_auto_route_recommendation(
-    raw: &str,
-    inventory: &ModelInventory,
-) -> Option<InventoryAutoRouteRecommendation> {
-    let json = extract_first_json_object(raw)?;
-    let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let provider = value
-        .get("provider")
-        .and_then(serde_json::Value::as_str)
-        .and_then(ApiProvider::parse)?;
-    let model = value.get("model").and_then(serde_json::Value::as_str)?;
-    let candidate = inventory.candidate(provider, model)?;
-    let reasoning_effort = value
-        .get("thinking")
-        .or_else(|| value.get("reasoning_effort"))
-        .or_else(|| value.get("effort"))
-        .and_then(serde_json::Value::as_str)
-        .and_then(parse_auto_route_reasoning_effort)
-        .map(|effort| normalize_auto_route_effort_for_provider(provider, effort));
-
-    Some(InventoryAutoRouteRecommendation {
-        provider,
-        model: candidate.model.clone(),
-        reasoning_effort,
+    .await?;
+    Ok(AutoRouteSelection {
+        provider: ApiProvider::Deepseek,
+        model: selected.model().to_owned(),
+        reasoning_effort: selected.reasoning_effort().map(runtime_effort_to_tui),
+        source: match selected.source() {
+            codewhale_deepseek::DeepSeekAutoRouteSource::FlashClassifier => {
+                AutoRouteSource::FlashRouter
+            }
+            codewhale_deepseek::DeepSeekAutoRouteSource::Heuristic => AutoRouteSource::Heuristic,
+        },
     })
 }
 
-fn auto_route_prompt(input: AutoRoutePromptInput<'_>) -> String {
-    format!(
-        "Session mode: {}\nSelected model mode: {}\nSelected thinking mode: {}\n\nRecent context:\n{}\n\nLatest user request:\n{}\n\nReturn JSON only.",
-        input.session_mode,
-        input.selected_model_mode,
-        input.selected_thinking_mode,
-        if input.recent_context.trim().is_empty() {
-            "No prior context."
-        } else {
-            input.recent_context
-        },
-        truncate_for_auto_router(input.latest_request, 4_000)
-    )
-}
-
-fn message_response_text(response: &MessageResponse) -> String {
-    let mut out = String::new();
-    for block in &response.content {
-        match block {
-            ContentBlock::Text { text, .. } | ContentBlock::ToolResult { content: text, .. } => {
-                append_router_text(&mut out, text);
-            }
-            ContentBlock::Thinking { thinking, .. } => {
-                append_router_text(&mut out, thinking);
-            }
-            ContentBlock::ToolUse { name, .. } => {
-                append_router_text(&mut out, &format!("[tool call: {name}]"));
-            }
-            _ => {}
-        }
+pub(crate) fn tui_effort_to_runtime(effort: ReasoningEffort) -> codewhale_runtime::ReasoningEffort {
+    match effort {
+        ReasoningEffort::Off => codewhale_runtime::ReasoningEffort::Off,
+        ReasoningEffort::Low => codewhale_runtime::ReasoningEffort::Low,
+        ReasoningEffort::Medium => codewhale_runtime::ReasoningEffort::Medium,
+        ReasoningEffort::High => codewhale_runtime::ReasoningEffort::High,
+        ReasoningEffort::Auto => codewhale_runtime::ReasoningEffort::Auto,
+        ReasoningEffort::Max => codewhale_runtime::ReasoningEffort::Max,
     }
-    out
 }
 
-fn append_router_text(out: &mut String, text: &str) {
-    if !out.is_empty() {
-        out.push('\n');
-    }
-    out.push_str(text);
-}
-
-fn truncate_for_auto_router(text: &str, max_chars: usize) -> String {
-    let mut chars = text.chars();
-    let truncated: String = chars.by_ref().take(max_chars).collect();
-    if chars.next().is_some() {
-        format!("{truncated}...")
-    } else {
-        truncated
+fn runtime_effort_to_tui(effort: codewhale_runtime::ReasoningEffort) -> ReasoningEffort {
+    match effort {
+        codewhale_runtime::ReasoningEffort::Off => ReasoningEffort::Off,
+        codewhale_runtime::ReasoningEffort::Low => ReasoningEffort::Low,
+        codewhale_runtime::ReasoningEffort::Medium => ReasoningEffort::Medium,
+        codewhale_runtime::ReasoningEffort::High => ReasoningEffort::High,
+        codewhale_runtime::ReasoningEffort::Auto => ReasoningEffort::Auto,
+        codewhale_runtime::ReasoningEffort::Max => ReasoningEffort::Max,
     }
 }
 
@@ -658,22 +550,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_route_prompt_uses_current_session_mode() {
-        let prompt = auto_route_prompt(AutoRoutePromptInput {
-            latest_request: "Please explain the change before editing files.",
-            recent_context: "No prior context.",
-            session_mode: "plan",
-            selected_model_mode: "auto",
-            selected_thinking_mode: "auto",
-        });
-
-        assert!(
-            prompt.starts_with("Session mode: plan\n"),
-            "auto-route prompt should reflect the active session mode, got: {prompt}"
-        );
-    }
-
-    #[test]
     fn auto_route_effort_normalization_is_provider_aware() {
         assert_eq!(
             normalize_auto_route_effort_for_provider(ApiProvider::Deepseek, ReasoningEffort::Low),
@@ -707,76 +583,6 @@ mod tests {
             ),
             ReasoningEffort::Low
         );
-    }
-
-    #[test]
-    fn inventory_auto_route_recommendation_requires_runnable_pair() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
-        let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let config = Config {
-            provider: Some("zai".to_string()),
-            default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-            ..Default::default()
-        };
-        let inventory = ModelInventory::from_config(&config);
-
-        let route = parse_inventory_auto_route_recommendation(
-            r#"{"provider":"zai","model":"GLM-5.2","thinking":"max"}"#,
-            &inventory,
-        )
-        .expect("valid inventory route should parse");
-        assert_eq!(route.provider, ApiProvider::Zai);
-        assert_eq!(route.model, crate::config::ZAI_GLM_5_2_MODEL);
-        assert_eq!(route.reasoning_effort, Some(ReasoningEffort::Max));
-
-        assert!(
-            parse_inventory_auto_route_recommendation(
-                r#"{"provider":"zai","model":"deepseek-v4-pro","thinking":"max"}"#,
-                &inventory,
-            )
-            .is_none(),
-            "router must not pair a DeepSeek model with the Z.ai provider"
-        );
-
-        let wrapped = parse_inventory_auto_route_recommendation(
-            r#"route: {"provider":"zai","model":"GLM-5-Turbo","reasoning_effort":"medium"}"#,
-            &inventory,
-        )
-        .expect("wrapped inventory route should parse");
-        assert_eq!(wrapped.provider, ApiProvider::Zai);
-        assert_eq!(wrapped.model, crate::config::ZAI_GLM_5_TURBO_MODEL);
-        assert_eq!(wrapped.reasoning_effort, Some(ReasoningEffort::High));
-    }
-
-    #[test]
-    fn inventory_auto_route_recommendation_accepts_wanjie_v4_ids() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _deepseek = crate::test_support::EnvVarGuard::set("DEEPSEEK_API_KEY", "ds-key");
-        let _wanjie = crate::test_support::EnvVarGuard::set("WANJIE_ARK_API_KEY", "wanjie-key");
-        let config = Config {
-            provider: Some("wanjie-ark".to_string()),
-            ..Default::default()
-        };
-        let inventory = ModelInventory::from_config(&config);
-
-        let route = parse_inventory_auto_route_recommendation(
-            r#"{"provider":"wanjie-ark","model":"deepseek-v4-pro","thinking":"max"}"#,
-            &inventory,
-        )
-        .expect("Wanjie V4 Pro inventory route should parse");
-        assert_eq!(route.provider, ApiProvider::WanjieArk);
-        assert_eq!(route.model, "deepseek-v4-pro");
-        assert_eq!(route.reasoning_effort, Some(ReasoningEffort::Max));
-
-        let route = parse_inventory_auto_route_recommendation(
-            r#"{"provider":"wanjie-ark","model":"deepseek-v4-flash","thinking":"off"}"#,
-            &inventory,
-        )
-        .expect("Wanjie V4 Flash inventory route should parse");
-        assert_eq!(route.provider, ApiProvider::WanjieArk);
-        assert_eq!(route.model, "deepseek-v4-flash");
-        assert_eq!(route.reasoning_effort, Some(ReasoningEffort::Off));
     }
 
     #[test]

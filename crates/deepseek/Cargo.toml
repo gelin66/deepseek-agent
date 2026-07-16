@@ -16,3 +16,6 @@ reqwest = { workspace = true, features = ["stream", "http2", "gzip"] }
 serde_json = { workspace = true, features = ["preserve_order"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+rustls.workspace = true

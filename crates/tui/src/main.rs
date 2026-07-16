@@ -7616,6 +7616,47 @@ async fn resolve_cli_auto_route(
     }
 }
 
+/// Resolve the production `exec` route without consulting the legacy
+/// provider inventory. `exec` has already rejected every non-DeepSeek
+/// provider before this boundary.
+async fn resolve_exec_deepseek_route(
+    config: &Config,
+    model: &str,
+    prompt: &str,
+    auto_route_transport: Option<&codewhale_deepseek::DeepSeekTransport>,
+) -> Result<CliAutoRoute> {
+    if !model.trim().eq_ignore_ascii_case("auto") {
+        let capability = codewhale_deepseek::official_model_capabilities(model)?;
+        return Ok(CliAutoRoute {
+            provider: crate::config::ApiProvider::Deepseek,
+            model: capability.model.to_owned(),
+            reasoning_effort: config
+                .reasoning_effort()
+                .map(crate::tui::app::ReasoningEffort::from_setting),
+            auto_model: false,
+        });
+    }
+
+    let transport = auto_route_transport
+        .ok_or_else(|| anyhow::anyhow!("DeepSeek auto route requires one bound transport"))?;
+    let fallback = codewhale_deepseek::DeepSeekAutoRouteFallback::for_request(
+        prompt,
+        Some(model_routing::tui_effort_to_runtime(
+            crate::auto_reasoning::select(false, prompt),
+        )),
+    );
+    let selection = model_routing::resolve_deepseek_auto_route_with_transport(
+        transport, prompt, "", "agent", "auto", "auto", fallback,
+    )
+    .await?;
+    Ok(CliAutoRoute {
+        provider: selection.provider,
+        model: selection.model,
+        reasoning_effort: selection.reasoning_effort,
+        auto_model: true,
+    })
+}
+
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
 struct ExecSurfaceModelUsageBucket {
     model: String,
@@ -9634,6 +9675,46 @@ mod terminal_mode_tests {
         assert!(message.contains("/provider"));
         assert!(message.contains("/model"));
         assert!(message.contains("/setup"));
+    }
+
+    #[tokio::test]
+    async fn production_exec_explicit_model_never_requires_auto_route_transport() {
+        let config = Config {
+            provider: Some("deepseek".to_string()),
+            ..Default::default()
+        };
+        let route = resolve_exec_deepseek_route(
+            &config,
+            "deepseek-v4-flash",
+            "must not classify this explicit route",
+            None,
+        )
+        .await
+        .expect("canonical explicit model resolves without a classifier transport");
+        assert_eq!(route.provider, crate::config::ApiProvider::Deepseek);
+        assert_eq!(route.model, "deepseek-v4-flash");
+        assert!(!route.auto_model);
+    }
+
+    #[tokio::test]
+    async fn production_exec_rejects_explicit_alias_before_auto_route_transport() {
+        let config = Config {
+            provider: Some("deepseek".to_string()),
+            ..Default::default()
+        };
+        let error = resolve_exec_deepseek_route(
+            &config,
+            "deepseek-v4flash",
+            "must not classify this rejected alias",
+            None,
+        )
+        .await
+        .expect_err("official exec route must fail closed on aliases");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported official DeepSeek model")
+        );
     }
 
     #[test]
