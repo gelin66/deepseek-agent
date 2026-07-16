@@ -1536,6 +1536,47 @@ mod tests {
             b"patched"
         );
 
+        let reread = executor
+            .execute(
+                ToolInvocation {
+                    run_id: RunId::from("run-1"),
+                    call_id: "reread".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: ToolArguments::from_value(json!({"path": "visible.txt"})),
+                },
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(reread.is_success());
+        assert_eq!(reread.content, "patched");
+
+        let edited = executor
+            .execute(
+                ToolInvocation {
+                    run_id: RunId::from("run-1"),
+                    call_id: "edit".to_owned(),
+                    name: "edit_file".to_owned(),
+                    arguments: ToolArguments::from_value(json!({
+                        "path": "visible.txt",
+                        "search": "patched",
+                        "replace": "edited"
+                    })),
+                },
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(edited.is_success());
+        assert_eq!(edited.invocation, ToolInvocationStatus::Accepted);
+        assert_eq!(edited.transport, ToolTransportStatus::Succeeded);
+        assert_eq!(edited.operation, ToolOperationStatus::Succeeded);
+        assert_eq!(edited.side_effect, ToolSideEffectStatus::Applied);
+        assert_eq!(
+            std::fs::read(temp.path().join("visible.txt")).unwrap(),
+            b"edited"
+        );
+
         let malformed = executor
             .execute(
                 ToolInvocation {

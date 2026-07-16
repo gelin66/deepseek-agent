@@ -409,16 +409,6 @@ impl ToolContext {
         self.production.note_file_read(path);
     }
 
-    /// Require a still-current read before a narrow file edit.
-    pub fn require_fresh_file_read(
-        &self,
-        path: &Path,
-        requested_path: &str,
-    ) -> Result<(), ToolError> {
-        self.production
-            .require_fresh_file_read(path, requested_path)
-    }
-
     /// Attach a per-domain network policy to this context (#135).
     #[must_use]
     pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {

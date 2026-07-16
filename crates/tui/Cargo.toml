@@ -54,7 +54,6 @@ reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2",
 rmcp = { version = "2.2.0", default-features = false, features = ["auth", "client"] }
 rustls.workspace = true
 qrcode = { version = "0.14", default-features = false }
-similar = "3"
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
