@@ -16,12 +16,14 @@ mod git;
 mod grep_files;
 mod list_dir;
 mod production_context;
+mod read_file;
 
 pub use file_search::execute_file_search;
 pub use git::{execute_git_diff, execute_git_status};
 pub use grep_files::execute_grep_files;
 pub use list_dir::execute_list_dir;
 pub use production_context::ProductionToolContext;
+pub use read_file::{ReadFileHost, execute_read_file};
 
 tokio::task_local! {
     static TOOL_EXECUTION_LOCK_HELD: ();

@@ -1493,6 +1493,24 @@ mod tests {
                 .any(|entry| { entry["name"] == "visible.txt" && entry["is_dir"] == false })
         );
 
+        let read = executor
+            .execute(
+                ToolInvocation {
+                    run_id: RunId::from("run-1"),
+                    call_id: "read".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: ToolArguments::from_value(json!({"path": "visible.txt"})),
+                },
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(read.is_success());
+        assert_eq!(read.content, "fixture");
+        assert_eq!(read.invocation, ToolInvocationStatus::Accepted);
+        assert_eq!(read.transport, ToolTransportStatus::Succeeded);
+        assert_eq!(read.operation, ToolOperationStatus::Succeeded);
+
         let malformed = executor
             .execute(
                 ToolInvocation {

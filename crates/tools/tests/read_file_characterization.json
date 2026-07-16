@@ -1,0 +1,8 @@
+{
+  "small": "line 1\nline 2\nline 3\n",
+  "ranged": "<file path=\"ranged.txt\" total_lines=\"10\" shown_lines=\"3-6\" truncated=\"true\" next_start_line=\"7\">\n     3│ line 3\n     4│ line 4\n     5│ line 5\n     6│ line 6\n\n[TRUNCATED] Showing lines 3-6 of 10. To continue, call read_file with path=\"ranged.txt\" start_line=7 max_lines=4\n</file>",
+  "past_end": "<file path=\"short.txt\" total_lines=\"3\" shown_lines=\"none\" truncated=\"false\">\n\n[NO CONTENT] start_line 99 is beyond total_lines 3.\n</file>",
+  "ocr": "<image_ocr path=\"ocr.png\">\nHELLO OCR\n</image_ocr>",
+  "invalid_pages": "Failed to validate input: invalid `pages` value `1-` (expected `N` or `N-M`, e.g. `1-5`)",
+  "missing_path": "Failed to validate input: missing required field 'path'"
+}

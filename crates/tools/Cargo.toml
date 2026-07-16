@@ -6,11 +6,16 @@ license.workspace = true
 repository.workspace = true
 description = "Tool invocation lifecycle, schema validation, and scheduler parallelism for CodeWhale"
 
+[features]
+default = []
+pdf = ["dep:pdf-extract"]
+
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
 ignore = "0.4"
+pdf-extract = { version = "0.12", optional = true }
 regex = "1.11"
 serde.workspace = true
 serde_json.workspace = true

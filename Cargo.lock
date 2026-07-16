@@ -1051,6 +1051,7 @@ dependencies = [
  "async-trait",
  "codewhale-protocol",
  "ignore",
+ "pdf-extract",
  "regex",
  "serde",
  "serde_json",

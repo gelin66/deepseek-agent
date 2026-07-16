@@ -14,7 +14,7 @@ web = ["dep:schemaui", "schemaui/web", "json", "toml"]
 json = ["schemaui/json"]
 toml = ["schemaui/toml"]
 long-running-tests = []
-pdf = ["dep:pdf-extract"]
+pdf = ["dep:pdf-extract", "codewhale-tools/pdf"]
 
 [[bin]]
 name = "codewhale-tui"
