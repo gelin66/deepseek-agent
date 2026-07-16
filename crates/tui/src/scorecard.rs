@@ -15,8 +15,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ApiProvider;
-#[cfg(test)]
-use crate::config::{DEEPSEEK_ALIAS_REPLACEMENT, DEEPSEEK_ALIAS_RETIREMENT_UTC};
 use crate::models::Usage;
 use crate::pricing::{calculate_turn_cost_estimate_for_route_at, token_usage_for_pricing};
 
@@ -747,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_deepseek_compact_aliases_use_canonical_pricing() {
+    fn direct_deepseek_prices_only_canonical_model_ids() {
         let u = usage(1000, 500, 100);
         let models = [
             "deepseek-v4-pro",
@@ -770,37 +768,39 @@ mod tests {
 
         let card = Scorecard::from_turns(&turns);
 
-        for alias in [1, 2] {
-            assert_eq!(card.per_turn[alias].cost_usd, card.per_turn[0].cost_usd);
-            assert_eq!(card.per_turn[alias].cost_cny, card.per_turn[0].cost_cny);
+        for canonical in [0, 3] {
+            assert!(!card.per_turn[canonical].cost_unpriced);
+            assert!(!card.per_turn[canonical].cost_cny_unpriced);
+            assert!(card.per_turn[canonical].cost_usd > 0.0);
+            assert!(card.per_turn[canonical].cost_cny > 0.0);
         }
-        for alias in [4, 5] {
-            assert_eq!(card.per_turn[alias].cost_usd, card.per_turn[3].cost_usd);
-            assert_eq!(card.per_turn[alias].cost_cny, card.per_turn[3].cost_cny);
+        for alias in [1, 2, 4, 5] {
+            assert!(card.per_turn[alias].cost_unpriced);
+            assert!(card.per_turn[alias].cost_cny_unpriced);
+            assert_eq!(card.per_turn[alias].cost_usd, 0.0);
+            assert_eq!(card.per_turn[alias].cost_cny, 0.0);
         }
-        assert!(card.per_turn.iter().all(|turn| !turn.cost_unpriced));
-        assert!(card.per_turn.iter().all(|turn| !turn.cost_cny_unpriced));
+        assert_eq!(card.metrics.unpriced_turns, 4);
+        assert_eq!(card.metrics.cny_unpriced_turns, 4);
+        assert!(!card.metrics.cost_complete);
+        assert!(!card.metrics.cny_cost_complete);
     }
 
     #[test]
-    fn direct_deepseek_compatibility_aliases_use_the_flash_route() {
+    fn direct_deepseek_legacy_aliases_remain_unpriced() {
         let u = usage(1000, 500, 100);
-        let before_retirement: DateTime<Utc> =
-            "2026-07-24T15:58:59Z".parse().expect("pre-retirement time");
-        let at_retirement: DateTime<Utc> = DEEPSEEK_ALIAS_RETIREMENT_UTC
-            .parse()
-            .expect("retirement time");
+        let recorded_at: DateTime<Utc> = "2026-07-24T15:58:59Z".parse().expect("recorded time");
         let turns = [
             TurnInput {
                 turn_id: "chat-alias".into(),
-                created_at: Some(&before_retirement),
+                created_at: Some(&recorded_at),
                 provider: Some("deepseek"),
                 model: "deepseek-chat".into(),
                 usage: &u,
             },
             TurnInput {
                 turn_id: "reasoner-alias".into(),
-                created_at: Some(&before_retirement),
+                created_at: Some(&recorded_at),
                 provider: Some("deepseek"),
                 model: "deepseek-reasoner".into(),
                 usage: &u,
@@ -809,12 +809,12 @@ mod tests {
                 turn_id: "canonical".into(),
                 created_at: None,
                 provider: Some("deepseek"),
-                model: DEEPSEEK_ALIAS_REPLACEMENT.into(),
+                model: "deepseek-v4-flash".into(),
                 usage: &u,
             },
             TurnInput {
-                turn_id: "retired-alias".into(),
-                created_at: Some(&at_retirement),
+                turn_id: "undated-chat-alias".into(),
+                created_at: None,
                 provider: Some("deepseek"),
                 model: "deepseek-chat".into(),
                 usage: &u,
@@ -830,18 +830,16 @@ mod tests {
 
         let card = Scorecard::from_turns(&turns);
 
-        assert_eq!(card.per_turn[0].cost_usd, card.per_turn[2].cost_usd);
-        assert_eq!(card.per_turn[1].cost_usd, card.per_turn[2].cost_usd);
-        assert_eq!(card.per_turn[0].cost_cny, card.per_turn[2].cost_cny);
-        assert_eq!(card.per_turn[1].cost_cny, card.per_turn[2].cost_cny);
-        assert!(card.per_turn[..3].iter().all(|turn| !turn.cost_unpriced));
-        assert!(
-            card.per_turn[..3]
-                .iter()
-                .all(|turn| !turn.cost_cny_unpriced)
-        );
-        assert!(card.per_turn[3].cost_unpriced);
-        assert!(card.per_turn[4].cost_unpriced);
+        for alias in [0, 1, 3, 4] {
+            assert!(card.per_turn[alias].cost_unpriced);
+            assert!(card.per_turn[alias].cost_cny_unpriced);
+            assert_eq!(card.per_turn[alias].cost_usd, 0.0);
+            assert_eq!(card.per_turn[alias].cost_cny, 0.0);
+        }
+        assert!(!card.per_turn[2].cost_unpriced);
+        assert!(!card.per_turn[2].cost_cny_unpriced);
+        assert!(card.per_turn[2].cost_usd > 0.0);
+        assert!(card.per_turn[2].cost_cny > 0.0);
     }
 
     #[test]
