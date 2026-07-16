@@ -140,6 +140,7 @@ trait RunComposition: Send + Sync {
     async fn resume(
         &self,
         run_id: RunId,
+        replay: RunReplay,
         store: Arc<dyn RunStore>,
         sink: Arc<dyn RuntimeEventSink>,
     ) -> Result<RuntimeRun, RunApiError>;
@@ -352,7 +353,7 @@ impl AgentApplication {
         let sink = self.event_sink();
         let run = match self
             .composition
-            .resume(run_id.clone(), self.store.clone(), sink)
+            .resume(run_id.clone(), replay, self.store.clone(), sink)
             .await
         {
             Ok(run) => run,
@@ -749,6 +750,7 @@ mod tests {
         mode: ModelMode,
         starts: AtomicUsize,
         resumes: AtomicUsize,
+        last_resume_sequence: AtomicU64,
         ready_gate: Option<Arc<ReadyGate>>,
     }
 
@@ -758,6 +760,7 @@ mod tests {
                 mode,
                 starts: AtomicUsize::new(0),
                 resumes: AtomicUsize::new(0),
+                last_resume_sequence: AtomicU64::new(0),
                 ready_gate: None,
             }
         }
@@ -767,6 +770,7 @@ mod tests {
                 mode,
                 starts: AtomicUsize::new(0),
                 resumes: AtomicUsize::new(0),
+                last_resume_sequence: AtomicU64::new(0),
                 ready_gate: Some(ready_gate),
             }
         }
@@ -844,10 +848,13 @@ mod tests {
         async fn resume(
             &self,
             run_id: RunId,
+            replay: RunReplay,
             store: Arc<dyn RunStore>,
             sink: Arc<dyn RuntimeEventSink>,
         ) -> Result<RuntimeRun, RunApiError> {
             self.resumes.fetch_add(1, Ordering::AcqRel);
+            self.last_resume_sequence
+                .store(replay.snapshot.last_sequence, Ordering::Release);
             Ok(self.runtime(store, sink).resume(run_id))
         }
     }
@@ -1182,6 +1189,11 @@ mod tests {
         );
         assert_eq!(resumed.run_id, seeded);
         assert_eq!(composition.resumes.load(Ordering::Acquire), 1);
+        assert_eq!(
+            composition.last_resume_sequence.load(Ordering::Acquire),
+            1,
+            "composition must receive the exact replay already loaded by the application"
+        );
 
         let steer = app
             .execute(envelope(
