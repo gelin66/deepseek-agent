@@ -1,15 +1,232 @@
 //! Pure request planning for the official DeepSeek OpenAI-format API.
 
-use std::collections::HashMap;
+use std::time::Duration;
 
 pub(crate) use codewhale_deepseek::{
-    ApiSurface, ChatPlanError, FimPlanError, RequestPlan, ResponseMode,
+    ApiSurface, ChatPlanError, DeepSeekEndpoint, DeepSeekResponse, DeepSeekTransport,
+    DeepSeekTransportConfig, FimPlanError, RequestPlan, ResponseMode, TransportRetryPolicy,
 };
-use codewhale_deepseek::{ChatPlanInput, PlannedTool, ReasoningMode, RuntimeChatPlanInput};
-use codewhale_runtime::ModelRequest;
+use codewhale_deepseek::{
+    ChatPlanInput, DeepSeekCredential, PlannedTool, ReasoningMode, RuntimeChatPlanInput,
+};
+use codewhale_runtime::{ModelFinishReason, ModelRequest, ModelStreamEvent};
+use futures_util::StreamExt;
 
 use crate::config::{ApiProvider, wire_model_for_provider};
-use crate::models::{ContentBlock, MessageRequest, Tool};
+use crate::llm_client::StreamEventBox;
+use crate::models::{
+    ContentBlock, ContentBlockStart, Delta, MessageDelta, MessageRequest, MessageResponse,
+    StreamEvent, Tool, Usage,
+};
+
+use super::DeepSeekClient;
+
+impl DeepSeekClient {
+    pub(crate) fn official_deepseek_transport(&self) -> anyhow::Result<DeepSeekTransport> {
+        let endpoint = if codewhale_deepseek::official_root(&self.base_url).is_some() {
+            DeepSeekEndpoint::Official
+        } else {
+            DeepSeekEndpoint::loopback_fixture(super::versioned_base_url(&self.base_url))?
+        };
+        let retry = TransportRetryPolicy {
+            max_retries: if self.retry.enabled {
+                self.retry.max_retries
+            } else {
+                0
+            },
+            initial_delay: Duration::from_secs_f64(self.retry.initial_delay.clamp(0.0, 300.0)),
+            max_delay: Duration::from_secs_f64(self.retry.max_delay.clamp(0.0, 300.0)),
+            exponential_base: self.retry.exponential_base,
+        };
+        let config = DeepSeekTransportConfig {
+            endpoint,
+            credential: DeepSeekCredential::new(self.api_key.clone())?,
+            strict_tools: self.strict_tool_mode,
+            response_header_timeout: self.stream_open_timeout,
+            stream_idle_timeout: self.stream_idle_timeout,
+            retry,
+            request_budget: self
+                .api_request_budget
+                .clone()
+                .unwrap_or_else(codewhale_deepseek::SharedApiRequestBudget::tracking_only),
+        };
+        DeepSeekTransport::new(self.http_client.clone(), config).map_err(Into::into)
+    }
+}
+
+pub(crate) fn message_response_from_deepseek(response: DeepSeekResponse) -> MessageResponse {
+    let output = response.output;
+    let mut content = Vec::new();
+    if let Some(reasoning) = output.reasoning_content.filter(|value| !value.is_empty()) {
+        content.push(ContentBlock::Thinking {
+            signature: None,
+            thinking: reasoning,
+        });
+    }
+    if !output.content.is_empty() {
+        content.push(ContentBlock::Text {
+            text: output.content,
+            cache_control: None,
+        });
+    }
+    for tool_call in output.tool_calls {
+        content.push(ContentBlock::ToolUse {
+            id: tool_call.id,
+            name: tool_call.name,
+            input: tool_call
+                .arguments
+                .parsed
+                .unwrap_or_else(|| serde_json::Value::String(tool_call.arguments.raw.clone())),
+            raw_arguments: Some(tool_call.arguments.raw),
+            caller: None,
+        });
+    }
+    MessageResponse {
+        id: response.id,
+        r#type: "message".to_string(),
+        role: "assistant".to_string(),
+        content,
+        model: response.model,
+        stop_reason: Some(finish_reason_name(output.finish_reason).to_string()),
+        stop_sequence: None,
+        container: None,
+        usage: tui_usage(output.usage),
+    }
+}
+
+pub(crate) fn tui_stream_from_deepseek(
+    mut source: codewhale_deepseek::DeepSeekStream,
+    model: String,
+) -> StreamEventBox {
+    Box::pin(async_stream::stream! {
+        yield Ok(StreamEvent::MessageStart {
+            message: MessageResponse {
+                id: String::new(),
+                r#type: "message".to_string(),
+                role: "assistant".to_string(),
+                content: Vec::new(),
+                model,
+                stop_reason: None,
+                stop_sequence: None,
+                container: None,
+                usage: Usage::default(),
+            },
+        });
+        let mut next_index = 0_u32;
+        let mut reasoning_index = None;
+        let mut text_index = None;
+        let mut reasoning_started = false;
+        let mut text_started = false;
+        while let Some(event) = source.next().await {
+            match event {
+                Ok(ModelStreamEvent::ReasoningDelta { delta }) => {
+                    let index = *reasoning_index.get_or_insert_with(|| {
+                        let index = next_index;
+                        next_index = next_index.saturating_add(1);
+                        index
+                    });
+                    if delta.is_empty() {
+                        continue;
+                    }
+                    if !reasoning_started {
+                        reasoning_started = true;
+                        yield Ok(StreamEvent::ContentBlockStart {
+                            index,
+                            content_block: ContentBlockStart::Thinking { thinking: String::new() },
+                        });
+                    }
+                    yield Ok(StreamEvent::ContentBlockDelta {
+                        index,
+                        delta: Delta::ThinkingDelta { thinking: delta },
+                    });
+                }
+                Ok(ModelStreamEvent::ContentDelta { delta }) => {
+                    if delta.is_empty() {
+                        continue;
+                    }
+                    let index = *text_index.get_or_insert_with(|| {
+                        let index = next_index;
+                        next_index = next_index.saturating_add(1);
+                        index
+                    });
+                    if !text_started {
+                        text_started = true;
+                        yield Ok(StreamEvent::ContentBlockStart {
+                            index,
+                            content_block: ContentBlockStart::Text { text: String::new() },
+                        });
+                    }
+                    yield Ok(StreamEvent::ContentBlockDelta {
+                        index,
+                        delta: Delta::TextDelta { text: delta },
+                    });
+                }
+                Ok(ModelStreamEvent::Completed { output }) => {
+                    if let Some(index) = reasoning_index.take() {
+                        yield Ok(StreamEvent::ContentBlockStop { index });
+                    }
+                    if let Some(index) = text_index.take() {
+                        yield Ok(StreamEvent::ContentBlockStop { index });
+                    }
+                    for tool_call in output.tool_calls {
+                        let index = next_index;
+                        next_index = next_index.saturating_add(1);
+                        yield Ok(StreamEvent::ContentBlockStart {
+                            index,
+                            content_block: ContentBlockStart::ToolUse {
+                                id: tool_call.id,
+                                name: tool_call.name,
+                                input: serde_json::json!({}),
+                                caller: None,
+                            },
+                        });
+                        if !tool_call.arguments.raw.is_empty() {
+                            yield Ok(StreamEvent::ContentBlockDelta {
+                                index,
+                                delta: Delta::InputJsonDelta {
+                                    partial_json: tool_call.arguments.raw,
+                                },
+                            });
+                        }
+                        yield Ok(StreamEvent::ContentBlockStop { index });
+                    }
+                    yield Ok(StreamEvent::MessageDelta {
+                        delta: MessageDelta {
+                            stop_reason: Some(finish_reason_name(output.finish_reason).to_string()),
+                            stop_sequence: None,
+                        },
+                        usage: Some(tui_usage(output.usage)),
+                    });
+                    yield Ok(StreamEvent::MessageStop);
+                }
+                Err(error) => yield Err(anyhow::Error::new(error)),
+            }
+        }
+    })
+}
+
+fn finish_reason_name(reason: ModelFinishReason) -> &'static str {
+    match reason {
+        ModelFinishReason::Stop => "stop",
+        ModelFinishReason::ToolCalls => "tool_calls",
+        ModelFinishReason::Length => "length",
+        ModelFinishReason::ContentFilter => "content_filter",
+        ModelFinishReason::InsufficientSystemResource => "insufficient_system_resource",
+    }
+}
+
+fn tui_usage(usage: codewhale_runtime::Usage) -> Usage {
+    Usage {
+        input_tokens: usage.input_tokens.min(u64::from(u32::MAX)) as u32,
+        output_tokens: usage.output_tokens.min(u64::from(u32::MAX)) as u32,
+        prompt_cache_hit_tokens: Some(usage.cache_hit_tokens.min(u64::from(u32::MAX)) as u32),
+        prompt_cache_miss_tokens: Some(usage.cache_miss_tokens.min(u64::from(u32::MAX)) as u32),
+        prompt_cache_write_tokens: Some(usage.cache_write_tokens.min(u64::from(u32::MAX)) as u32),
+        reasoning_tokens: Some(usage.reasoning_tokens.min(u64::from(u32::MAX)) as u32),
+        reasoning_replay_tokens: Some(usage.reasoning_replay_tokens.min(u64::from(u32::MAX)) as u32),
+        server_tool_use: None,
+    }
+}
 
 /// Resolve the official DeepSeek thinking switch for one request.
 ///
@@ -112,7 +329,7 @@ pub(crate) fn plan_chat(
         tools
             .iter()
             .map(|tool| PlannedTool {
-                name: super::to_api_tool_name(&tool.name),
+                name: codewhale_deepseek::encode_tool_name(&tool.name),
                 description: tool.description.clone(),
                 input_schema: tool.input_schema.clone(),
             })
@@ -159,7 +376,6 @@ pub(crate) fn plan_runtime_chat(
     let max_tokens = request.max_output_tokens.unwrap_or_else(|| {
         crate::models::max_output_tokens_for_model(&request.model).unwrap_or(4096)
     });
-    let mut seen_tool_results: HashMap<String, super::chat::SeenToolResult> = HashMap::new();
     codewhale_deepseek::plan_runtime_chat(
         RuntimeChatPlanInput {
             root: &root,
@@ -168,17 +384,6 @@ pub(crate) fn plan_runtime_chat(
             max_tokens,
         },
         request,
-        super::to_api_tool_name,
-        |tool_name, input, content, label| {
-            super::chat::compact_tool_result_for_wire(
-                tool_name,
-                input,
-                content,
-                label,
-                &mut seen_tool_results,
-            )
-            .content
-        },
     )
     .map(Some)
 }

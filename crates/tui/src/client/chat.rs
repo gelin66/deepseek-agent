@@ -27,7 +27,7 @@ const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(45);
 /// response-header wait. This is intentionally shorter than the per-chunk idle
 /// timeout because it only covers connection setup and upstream header return,
 /// not model thinking time after streaming has started.
-fn stream_open_timeout() -> Duration {
+pub(super) fn stream_open_timeout() -> Duration {
     stream_open_timeout_from_env(
         std::env::var("DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS")
             .ok()
@@ -339,25 +339,40 @@ impl DeepSeekClient {
             None
         };
 
-        self.send_planned_chat_message(plan, response_cache_key)
+        if official_plan {
+            let response = self
+                .official_deepseek_transport()?
+                .complete(plan)
+                .await
+                .map_err(anyhow::Error::new)?;
+            let parsed = deepseek::message_response_from_deepseek(response);
+            if let Some(key) = response_cache_key {
+                crate::llm_response_cache::response_cache().put(key, parsed.clone());
+            }
+            return Ok(parsed);
+        }
+        self.send_legacy_chat_message(plan, response_cache_key)
             .await
     }
 
-    /// Send one already-frozen official DeepSeek non-streaming plan.
-    ///
-    /// AgentRuntime calls this method after `plan_runtime_chat`; no provider,
-    /// surface, strict-tool or body decision is repeated here.
+    /// Temporary presentation adapter for the canonical AgentRuntime.
+    /// `codewhale-deepseek` owns HTTP, parsing and protocol outcomes; this is
+    /// deleted when ModelPort consumes its canonical output directly.
     pub(crate) async fn create_planned_deepseek_message(
         &self,
         plan: RequestPlan,
     ) -> Result<MessageResponse> {
-        if plan.response_mode != ResponseMode::NonStreaming {
-            anyhow::bail!("DeepSeek non-streaming sender received a streaming RequestPlan");
-        }
-        self.send_planned_chat_message(plan, None).await
+        let response = self
+            .official_deepseek_transport()?
+            .complete(plan)
+            .await
+            .map_err(anyhow::Error::new)?;
+        Ok(deepseek::message_response_from_deepseek(response))
     }
 
-    async fn send_planned_chat_message(
+    /// Compatibility sender for non-DeepSeek providers still using Chat
+    /// Completions. Official DeepSeek is owned by `codewhale-deepseek`.
+    async fn send_legacy_chat_message(
         &self,
         plan: RequestPlan,
         response_cache_key: Option<[u8; 32]>,
@@ -435,35 +450,52 @@ impl DeepSeekClient {
         &self,
         request: MessageRequest,
     ) -> Result<StreamEventBox> {
-        let plan = if let Some(plan) =
-            official_deepseek_request_plan(self, &request, ResponseMode::Streaming)?
+        if let Some(plan) = official_deepseek_request_plan(self, &request, ResponseMode::Streaming)?
         {
             debug_assert_eq!(plan.response_mode, ResponseMode::Streaming);
-            plan
-        } else {
-            let (body, url, model, replay) =
-                legacy_chat_request(self, &request, ResponseMode::Streaming);
-            RequestPlan {
-                surface: ApiSurface::StandardChat,
-                url,
-                model,
-                body,
-                response_mode: ResponseMode::Streaming,
-                reasoning_replay_tokens: replay,
-            }
-        };
-        self.handle_planned_chat_completion_stream(plan).await
+            let model = plan.model.clone();
+            let source = self
+                .official_deepseek_transport()?
+                .stream(plan)
+                .await
+                .map_err(anyhow::Error::new)?;
+            return Ok(deepseek::tui_stream_from_deepseek(source, model));
+        }
+        let (body, url, model, replay) =
+            legacy_chat_request(self, &request, ResponseMode::Streaming);
+        self.handle_legacy_chat_completion_stream(RequestPlan {
+            surface: ApiSurface::StandardChat,
+            url,
+            model,
+            body,
+            response_mode: ResponseMode::Streaming,
+            reasoning_replay_tokens: replay,
+        })
+        .await
     }
 
-    /// Send one already-frozen official DeepSeek streaming plan through the
-    /// existing production HTTP/SSE implementation.
+    /// Temporary presentation adapter for the canonical AgentRuntime.
+    /// `codewhale-deepseek` owns HTTP and SSE parsing; this is deleted when
+    /// ModelPort consumes the canonical stream directly.
     pub(crate) async fn handle_planned_chat_completion_stream(
         &self,
         plan: RequestPlan,
     ) -> Result<StreamEventBox> {
-        if plan.response_mode != ResponseMode::Streaming {
-            anyhow::bail!("DeepSeek streaming sender received a non-streaming RequestPlan");
-        }
+        let model = plan.model.clone();
+        let source = self
+            .official_deepseek_transport()?
+            .stream(plan)
+            .await
+            .map_err(anyhow::Error::new)?;
+        Ok(deepseek::tui_stream_from_deepseek(source, model))
+    }
+
+    /// Compatibility SSE sender/parser for non-DeepSeek providers. Official
+    /// DeepSeek streaming is owned by `codewhale-deepseek`.
+    async fn handle_legacy_chat_completion_stream(
+        &self,
+        plan: RequestPlan,
+    ) -> Result<StreamEventBox> {
         let RequestPlan {
             surface,
             url,

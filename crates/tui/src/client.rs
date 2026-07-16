@@ -179,6 +179,7 @@ pub struct DeepSeekClient {
     path_suffix: Option<String>,
     strict_tool_mode: bool,
     pub(super) reasoning_stream_style: Option<String>,
+    pub(super) stream_open_timeout: Duration,
     pub(super) stream_idle_timeout: Duration,
     api_request_budget: Option<SharedApiRequestBudget>,
     recovery_probe_enabled: bool,
@@ -404,6 +405,7 @@ impl Clone for DeepSeekClient {
             path_suffix: self.path_suffix.clone(),
             strict_tool_mode: self.strict_tool_mode,
             reasoning_stream_style: self.reasoning_stream_style.clone(),
+            stream_open_timeout: self.stream_open_timeout,
             stream_idle_timeout: self.stream_idle_timeout,
             api_request_budget: self.api_request_budget.clone(),
             recovery_probe_enabled: self.recovery_probe_enabled,
@@ -750,6 +752,7 @@ impl DeepSeekClient {
         let api_provider = config.api_provider();
         validate_base_url_security(&base_url)?;
         let retry = config.retry_policy();
+        let stream_open_timeout = chat::stream_open_timeout();
         let stream_idle_timeout = Duration::from_secs(config.stream_chunk_timeout_secs());
         let http_headers = config.http_headers();
         let insecure_skip_tls_verify = config.insecure_skip_tls_verify();
@@ -813,6 +816,7 @@ impl DeepSeekClient {
             path_suffix,
             strict_tool_mode,
             reasoning_stream_style,
+            stream_open_timeout,
             stream_idle_timeout,
             api_request_budget: None,
             recovery_probe_enabled: true,
@@ -3192,7 +3196,7 @@ mod tests {
     async fn planned_deepseek_sender_transmits_frozen_url_surface_and_body_without_replanning() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/frozen-plan"))
+            .and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "chatcmpl-frozen",
                 "model": "deepseek-v4-pro",
@@ -3234,8 +3238,8 @@ mod tests {
             "sentinel": "must-survive"
         });
         let plan = deepseek::RequestPlan {
-            surface: deepseek::ApiSurface::StrictChat,
-            url: format!("{}/frozen-plan", server.uri()),
+            surface: deepseek::ApiSurface::StandardChat,
+            url: format!("{}/v1/chat/completions", server.uri()),
             model: "deepseek-v4-pro".to_owned(),
             body: frozen_body.clone(),
             response_mode: deepseek::ResponseMode::NonStreaming,
@@ -3243,13 +3247,18 @@ mod tests {
         };
 
         let response = client
-            .create_planned_deepseek_message(plan)
+            .official_deepseek_transport()
+            .expect("resolved transport")
+            .complete(plan)
             .await
             .expect("frozen plan sender succeeds");
-        assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+        assert_eq!(
+            response.output.finish_reason,
+            codewhale_runtime::ModelFinishReason::Stop
+        );
         let requests = server.received_requests().await.expect("request journal");
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].url.path(), "/frozen-plan");
+        assert_eq!(requests[0].url.path(), "/v1/chat/completions");
         assert_eq!(
             serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
             frozen_body

@@ -5,8 +5,8 @@
 - 状态：执行中
 - 当前阶段：M4-A `ToolOutcome + SQLite RunStore + crash/resume` 已严格完成；被测代码提交为
   `0a5b76a8627fe8ae108a0a7688c0dd39ce5601a3`。M4-B 已启动依赖收敛：官方 DeepSeek 的
-  request planner、物理请求预算、usage ledger 与精确 first-party pricing 已进入
-  `crates/deepseek`；HTTP/SSE parser、`ModelPort` 与 app-server 纵切仍待完成。M1 的导入基线
+  request planner、HTTP/SSE transport、类型化协议错误、物理请求预算、usage ledger 与精确
+  first-party pricing 已进入 `crates/deepseek`；`ModelPort` 与 app-server 纵切仍待完成。M1 的导入基线
   A/B 与 M2 的完整官方 surface
   canary 仍是独立证据债务
 - 上次更新：2026-07-16
@@ -437,9 +437,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   attribution、usage completeness、surface buckets 和官方 V4 first-party pricing 的唯一 owner；
   exec 与未迁移交互 DeepSeek sender 已切到同一 owner。
 - `crates/tui/src/client/request_budget.rs` 已物理删除；TUI 只保留一个待 response parser
-  迁移时删除的 presentation `Usage -> runtime::Usage` 窄映射。
-- 本进度不表示 transport 已迁移：HTTP/SSE parser、typed transport error 和
-  `DeepSeekModelPort` 仍由 TUI 生产路径持有，必须在后续两个 move-and-delete 纵切完成。
+  /ModelPort cutover 时删除的 canonical output -> legacy presentation 窄映射。
+- 第二依赖纵切已完成：官方与显式 loopback fixture 的 HTTP sender、非流式/SSE parser、
+  reasoning/raw tool arguments/finish/usage 解析、typed transport error 和工具名 wire 投影由
+  `crates/deepseek` 唯一持有；exec 与交互 DeepSeek 调用方共用该实现。TUI 的通用非 DeepSeek
+  Chat compatibility sender/parser 暂留给未清理 Provider，不再承载官方 DeepSeek 流量。
+- `DeepSeekModelPort` 仍在 TUI，并通过临时 canonical output -> TUI DTO -> runtime event 适配；
+  下一纵切必须让它直接消费 `codewhale-deepseek` 输出、删除该往返，并把官方模型输出约束移出 TUI。
 
 #### 同切片删除/替代
 

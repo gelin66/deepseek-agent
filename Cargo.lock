@@ -952,8 +952,13 @@ dependencies = [
 name = "codewhale-deepseek"
 version = "0.8.68"
 dependencies = [
+ "async-stream",
  "codewhale-runtime",
+ "futures-util",
+ "reqwest 0.13.4",
  "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

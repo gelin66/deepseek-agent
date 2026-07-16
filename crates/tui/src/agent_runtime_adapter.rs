@@ -36,7 +36,8 @@ use crate::tools::test_runner::RunTestsTool;
 use crate::tools::verifier::RunVerifiersTool;
 use crate::tools::{ToolRegistry, ToolRegistryBuilder};
 use codewhale_deepseek::{
-    ApiRequestActorSnapshot, ApiRequestBudgetSnapshot, ApiUsageSnapshot, SharedApiRequestBudget,
+    ApiRequestActorSnapshot, ApiRequestBudgetSnapshot, ApiUsageSnapshot, DeepSeekTransportError,
+    SharedApiRequestBudget,
 };
 
 const MINIMAL_PRODUCTION_TOOL_NAMES: [&str; 11] = [
@@ -627,6 +628,9 @@ impl ModelStream for DeepSeekStreamingAdapter {
 }
 
 fn model_port_error(error: anyhow::Error) -> ModelPortError {
+    if let Some(error) = error.downcast_ref::<DeepSeekTransportError>() {
+        return deepseek_transport_error_ref(error);
+    }
     if let Some(error) = error.downcast_ref::<LlmError>() {
         return llm_error(error);
     }
@@ -682,6 +686,54 @@ fn model_port_error(error: anyhow::Error) -> ModelPortError {
         error.to_string(),
         false,
     )
+}
+
+#[cfg(test)]
+fn deepseek_transport_error(error: DeepSeekTransportError) -> ModelPortError {
+    deepseek_transport_error_ref(&error)
+}
+
+fn deepseek_transport_error_ref(error: &DeepSeekTransportError) -> ModelPortError {
+    let (code, category) = match error {
+        DeepSeekTransportError::RequestBudget(_) => {
+            ("deepseek_request_budget", ModelErrorCategory::Protocol)
+        }
+        DeepSeekTransportError::ResponseHeaderTimeout { .. } => {
+            ("deepseek_timeout", ModelErrorCategory::Timeout)
+        }
+        DeepSeekTransportError::Network(_) => ("deepseek_transport", ModelErrorCategory::Transport),
+        DeepSeekTransportError::Http {
+            status: 401 | 403, ..
+        } => (
+            "deepseek_authentication",
+            ModelErrorCategory::Authentication,
+        ),
+        DeepSeekTransportError::Http { status: 429, .. } => {
+            ("deepseek_rate_limited", ModelErrorCategory::RateLimit)
+        }
+        DeepSeekTransportError::Http { status, .. } if *status >= 500 => {
+            ("deepseek_server", ModelErrorCategory::Service)
+        }
+        DeepSeekTransportError::StreamStall { .. } => {
+            ("stream_stall", ModelErrorCategory::StreamStall)
+        }
+        DeepSeekTransportError::StreamOverflow { .. } => {
+            ("stream_overflow", ModelErrorCategory::Protocol)
+        }
+        DeepSeekTransportError::StreamIncomplete => {
+            ("deepseek_stream_incomplete", ModelErrorCategory::Protocol)
+        }
+        DeepSeekTransportError::InvalidConfig(_)
+        | DeepSeekTransportError::InvalidPlan(_)
+        | DeepSeekTransportError::Http { .. }
+        | DeepSeekTransportError::InvalidJson(_)
+        | DeepSeekTransportError::SseProvider(_)
+        | DeepSeekTransportError::UnsupportedFinishReason(_)
+        | DeepSeekTransportError::MissingField(_) => {
+            ("deepseek_protocol", ModelErrorCategory::Protocol)
+        }
+    };
+    ModelPortError::new(code, category, error.to_string(), error.retryable())
 }
 
 fn llm_error(error: &LlmError) -> ModelPortError {
@@ -1332,11 +1384,16 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-            plan.url = format!("{base_url}/chat/completions");
+            plan.url = format!("{base_url}/v1/chat/completions");
 
-            let error = match client.create_planned_deepseek_message(plan).await {
+            let error = match client
+                .official_deepseek_transport()
+                .expect("resolved transport")
+                .complete(plan)
+                .await
+            {
                 Ok(_) => panic!("truncated 200 response must not be accepted"),
-                Err(error) => model_port_error(error),
+                Err(error) => deepseek_transport_error(error),
             };
             server.await.expect("truncated response fixture");
 

@@ -22,9 +22,10 @@ Current boundary note:
 - `codewhale exec` runs through the UI-independent
   `crates/runtime::AgentRuntime`. Its concrete DeepSeek, tool, persistence, and
   output composition remains in `crates/tui` while that production entry is
-  migrated vertically. Official request planning plus physical request/usage
-  accounting already live in `crates/deepseek`; HTTP/SSE and the concrete
-  `DeepSeekModelPort` still live in `crates/tui`.
+  migrated vertically. Official request planning, HTTP/SSE transport, typed
+  response parsing, and physical request/usage accounting live in
+  `crates/deepseek`; the concrete `DeepSeekModelPort` still lives in
+  `crates/tui` behind a temporary presentation adapter.
 - Production `exec` persists schema-v3 canonical runtime events through the
   schema-v6 `crates/state::StateStore` SQLite `RunStore`.
 - The interactive TUI, runtime API, app-server, and task manager have not
@@ -46,8 +47,8 @@ Current boundary note:
 codewhale exec
   -> crates/tui exec composition + output projection
   -> crates/runtime::AgentRuntime
-       -> TUI DeepSeekModelPort -> TUI HTTP/SSE client
-            -> crates/deepseek request plan + shared physical accounting
+       -> TUI DeepSeekModelPort + temporary presentation adapter
+            -> crates/deepseek request plan + HTTP/SSE + shared physical accounting
        -> ProductionToolExecutor -> fixed 11-tool catalog
        -> crates/state::StateStore as SQLite RunStore
             -> canonical events -> reducer/snapshot -> terminal replay
@@ -104,9 +105,11 @@ runtime or state truth is accepted as the final design.
   execution kernel, canonical reducer, small ports, and test-only in-memory
   `RunStore`.
 - **`crates/deepseek`** - Official Standard/Strict/FIM request planning plus
-  the shared physical request budget, root/child attribution, exact usage
-  completeness ledger, surface buckets, and official V4 first-party pricing.
-  It has no TUI/config/tool dependency; HTTP/SSE has not migrated into it yet.
+  official Chat HTTP/SSE transport and typed parser, shared physical request
+  budget, root/child attribution, exact usage completeness ledger, surface
+  buckets, and official V4 first-party pricing. It has no TUI/config/tool
+  dependency and accepts only resolved official/explicit-loopback transport
+  configuration.
 - **`crates/secrets`** - OS keyring integration for API key storage.
 - **`crates/state`** - Schema-v6 SQLite state database. It implements the
   production canonical `RunStore` for `exec` alongside still-unmigrated legacy
@@ -120,13 +123,15 @@ runtime or state truth is accepted as the final design.
 
 ### LLM Integration
 
-- **`crates/deepseek`** - Pure official DeepSeek planner and physical
-  request/usage accounting owner for Standard Chat, Beta Strict Chat, and
-  Beta FIM
-- **`client.rs` / `client/chat.rs`** - Still-owning production HTTP/SSE client
-  and response parser used by the `AgentRuntime` DeepSeek adapter
-- **`client/deepseek.rs`** - Temporary TUI projection adapter into
-  `crates/deepseek`; it is not a second planner
+- **`crates/deepseek`** - Official DeepSeek planner, Chat HTTP/SSE sender,
+  typed response parser, and physical request/usage accounting owner for
+  Standard Chat and Beta Strict Chat; FIM planning/accounting already shares
+  this owner while its sender cutover remains separate
+- **`client.rs` / `client/chat.rs`** - Generic compatibility HTTP/SSE path for
+  non-DeepSeek providers plus the temporary official output presentation adapter;
+  it no longer sends or parses official DeepSeek Chat responses
+- **`client/deepseek.rs`** - Temporary TUI composition/presentation adapter into
+  `crates/deepseek`; it is not a second sender or parser
 - **`llm_client.rs`** - Abstract LLM client trait with retry logic
 - **`models.rs`** - Data structures for API requests/responses
 

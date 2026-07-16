@@ -2,13 +2,13 @@
 //!
 //! It owns the official wire decision, canonical `ModelRequest` projection,
 //! physical request admission, and provider-reported usage ledger. The HTTP
-//! sender and SSE decoder migrate in the next vertical slice.
+//! sender and SSE decoder for production Chat traffic.
 //!
 //! The next deletion point is the TUI legacy `MessageRequest` projection and
 //! its local replay preflight, after the interactive loop emits canonical
 //! `ModelRequest` directly.
 
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
 
 use codewhale_runtime::{ModelMessage, ModelRequest, ReasoningEffort, SystemPrompt};
@@ -16,6 +16,7 @@ use serde_json::{Map, Value, json};
 
 mod accounting;
 mod pricing;
+mod transport;
 
 pub use accounting::{
     ApiRequestActor, ApiRequestActorSnapshot, ApiRequestBudgetError, ApiRequestBudgetSnapshot,
@@ -25,6 +26,11 @@ pub use accounting::{
 pub use pricing::{
     CostEstimate, CurrencyPricing, ModelPricing, calculate_turn_cost_estimate,
     pricing_for_official_model,
+};
+pub use transport::{
+    DeepSeekCredential, DeepSeekEndpoint, DeepSeekResponse, DeepSeekStream, DeepSeekTransport,
+    DeepSeekTransportConfig, DeepSeekTransportError, TransportRetryPolicy, decode_tool_name,
+    encode_tool_name, parse_chat_response,
 };
 
 pub const FIM_MODEL: &str = "deepseek-v4-pro";
@@ -257,37 +263,27 @@ pub fn plan_chat(
 
 /// Project one canonical runtime request and freeze its official Chat plan.
 ///
-/// Tool-result compaction remains a context/tool concern. The caller supplies
-/// only the final content projection; this crate still owns message ordering,
-/// reasoning/raw-argument replay, strict selection, and every wire decision.
-pub fn plan_runtime_chat<N, F>(
+/// Canonical tool results have already passed the runtime/tool output policy.
+/// The provider layer replays them exactly and owns tool-name projection,
+/// message ordering, reasoning/raw-argument replay, strict selection, and
+/// every remaining wire decision.
+pub fn plan_runtime_chat(
     input: RuntimeChatPlanInput<'_>,
     request: &ModelRequest,
-    mut project_tool_name: N,
-    mut project_tool_result: F,
-) -> Result<RequestPlan, ChatPlanError>
-where
-    N: FnMut(&str) -> String,
-    F: FnMut(&str, &Value, &str, &str) -> String,
-{
+) -> Result<RequestPlan, ChatPlanError> {
     validate_runtime_reasoning_replay(request, &input.wire_model)?;
     let response_mode = if request.streaming {
         ResponseMode::Streaming
     } else {
         ResponseMode::NonStreaming
     };
-    let messages = runtime_chat_messages(
-        request,
-        &input.wire_model,
-        &mut project_tool_name,
-        &mut project_tool_result,
-    );
+    let messages = runtime_chat_messages(request, &input.wire_model);
     let tools = (!request.tools.is_empty()).then(|| {
         request
             .tools
             .iter()
             .map(|tool| PlannedTool {
-                name: project_tool_name(&tool.name),
+                name: encode_tool_name(&tool.name),
                 description: tool.description.clone(),
                 input_schema: tool.input_schema.clone(),
             })
@@ -385,25 +381,16 @@ fn planned_tool_to_chat(tool: &PlannedTool, strict: bool) -> Value {
     value
 }
 
-fn runtime_chat_messages<N, F>(
-    request: &ModelRequest,
-    wire_model: &str,
-    project_tool_name: &mut N,
-    project_tool_result: &mut F,
-) -> Vec<Value>
-where
-    N: FnMut(&str) -> String,
-    F: FnMut(&str, &Value, &str, &str) -> String,
-{
+fn runtime_chat_messages(request: &ModelRequest, wire_model: &str) -> Vec<Value> {
     let mut messages = Vec::new();
-    let mut pending_tool_calls: HashMap<String, (String, Value)> = HashMap::new();
+    let mut pending_tool_calls: HashSet<String> = HashSet::new();
     if let Some(system) = runtime_system_instructions(&request.system_prompt) {
         messages.push(json!({"role": "system", "content": system}));
     }
 
     let replay_current_reasoning =
         ReasoningMode::from_runtime(request.reasoning_effort).thinking_enabled();
-    for (message_index, message) in request.messages.iter().enumerate() {
+    for message in &request.messages {
         match message {
             ModelMessage::User { content } => {
                 pending_tool_calls.clear();
@@ -447,27 +434,14 @@ where
                                     "id": call.id,
                                     "type": "function",
                                     "function": {
-                                    "name": project_tool_name(&call.name),
+                                        "name": encode_tool_name(&call.name),
                                         "arguments": call.arguments.raw,
                                     }
                                 })
                             })
                             .collect(),
                     );
-                    pending_tool_calls = tool_calls
-                        .iter()
-                        .map(|call| {
-                            (
-                                call.id.clone(),
-                                (
-                                    call.name.clone(),
-                                    call.arguments.parsed.clone().unwrap_or_else(|| {
-                                        Value::String(call.arguments.raw.clone())
-                                    }),
-                                ),
-                            )
-                        })
-                        .collect();
+                    pending_tool_calls = tool_calls.iter().map(|call| call.id.clone()).collect();
                 } else {
                     pending_tool_calls.clear();
                 }
@@ -476,15 +450,9 @@ where
             ModelMessage::Tool {
                 call_id, content, ..
             } => {
-                let Some((tool_name, input)) = pending_tool_calls.remove(call_id) else {
+                if !pending_tool_calls.remove(call_id) {
                     continue;
-                };
-                let content = project_tool_result(
-                    &tool_name,
-                    &input,
-                    content,
-                    &format!("Message #{message_index}"),
-                );
+                }
                 messages.push(json!({
                     "role": "tool",
                     "tool_call_id": call_id,
@@ -801,7 +769,6 @@ mod tests {
     #[test]
     fn canonical_projection_is_stable_and_replays_raw_arguments_exactly() {
         let request = runtime_request(true);
-        let project = |_: &str, _: &Value, content: &str, _: &str| content.to_owned();
         let plan = plan_runtime_chat(
             RuntimeChatPlanInput {
                 root: "https://api.deepseek.com",
@@ -810,8 +777,6 @@ mod tests {
                 max_tokens: 64,
             },
             &request,
-            str::to_owned,
-            project,
         )
         .unwrap();
         let repeated = plan_runtime_chat(
@@ -822,8 +787,6 @@ mod tests {
                 max_tokens: 64,
             },
             &request,
-            str::to_owned,
-            |_, _, content, _| content.to_owned(),
         )
         .unwrap();
 
@@ -858,8 +821,6 @@ mod tests {
                 max_tokens: 64,
             },
             &request,
-            str::to_owned,
-            |_, _, content, _| content.to_owned(),
         )
         .unwrap();
 
