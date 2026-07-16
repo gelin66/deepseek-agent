@@ -1,7 +1,7 @@
 # M4-A Headless 状态真相证据汇总
 
 > 日期：2026-07-16
-> 状态：实现与最终离线门禁已通过；可重建源码提交与正式 v2 canary 待完成
+> 状态：严格完成
 > 范围：仅 `codewhale exec`，不代表整个 M4 完成
 
 ## 1. 结论
@@ -16,11 +16,11 @@ M4-A 已经在真实生产 `exec` 路径实现并验证以下行为：
 - 真实 DeepSeek 编码 run 在安全持久点被 `SIGKILL` 后，可重开同一 run 完成；
 - 已完成 run 可在没有 API Key 时重放，且不追加事件、不修改工作区或账本。
 
-这还不是严格的最终完成签字。候选仍来自 dirty worktree，虽然已有 release 二进制行为
-证据，但还没有一个能从 Git 直接 checkout/rebuild 的候选提交，也尚未用该提交自构建的
-二进制运行正式 v2 recovery record。按照
-[`EVALUATION.md`](../../docs/product/EVALUATION.md) 的代码提交记录要求，在冻结该提交之前，
-本汇总不得把 M4-A 写成完全可复现的已完成里程碑，也不得启动 M4-B 来掩盖该缺口。
+上述行为已绑定到可 checkout 的代码提交 `0a5b76a8627fe8ae108a0a7688c0dd39ce5601a3`：
+该提交对应的最终源码通过离线门禁；正式 supervisor 又在 clean worktree 从该提交执行
+locked/offline release build，并完成真实 DeepSeek v2 crash/reopen/resume canary。最终
+fresh-run A/B 的 candidate cell 也绑定到同一提交和同一组 candidate release 二进制。
+M4-A 因此严格完成；M4-B/M4-C 仍未开始，整个 M4 仍未完成。
 
 ## 2. 范围与非目标
 
@@ -41,16 +41,19 @@ codewhale exec
 
 | 项目 | 值 |
 |---|---|
-| Git HEAD | `54fb7cb9bcd0fd613cf417b683b0b3bdbe190bd3` |
-| operator revision label | `worktree-head-54fb7cb9bcd0fd613cf417b683b0b3bdbe190bd3-source-d07423e03ff8ae5349e1323542a8df8ce4f6078c4f9fec0ac68a9017ee6b234f` |
-| dispatcher SHA-256 | `6b21f04beeb6ab99c2fb09e3c79ae43f0be887cbd296106aa5b6c2763d70be92` |
-| runtime SHA-256 | `20c45444167b573c1c44bc7f3afdb15676b41b2a34f0a4952d5edccfb557cec4` |
-| binary-pair SHA-256 | `sha256:189852b559828b3fa0ef2de601e6e22b1e5a9752e0ad0bece66a3d4fb0b895e2` |
+| 被测代码提交 | `0a5b76a8627fe8ae108a0a7688c0dd39ce5601a3` |
+| Git tree | `2f664616def40906c2ef62b5a3fec46a9a76c7a3` |
+| 源码身份 | `git_verified_clean_source`；revision 与 HEAD 一致 |
+| 构建命令 | `cargo build --release --locked --offline -p codewhale-cli -p codewhale-tui` |
+| 工具链 | Cargo `1.97.0`；Rustc `1.97.0` |
+| dispatcher SHA-256 | `ba7fa952f50d164cab45ae03dd68bc22c1b36c501a3f1a4eec3476d7667d30d6` |
+| runtime SHA-256 | `a51f8c0301de2d97e7994aaff1eeaa42dbd05bfc49e8fc6b012c0a234d653329` |
+| binary-pair SHA-256 | `sha256:f4a7065612180257882afab195c2f5674164bd3a37fbaa642fd319610aeda8ad` |
 
-release 候选由离线、locked 的 `cargo build --release` 同时构建 `codewhale-cli/codewhale`
-与 `codewhale-tui/codewhale-tui`。上述 revision label 是对 dirty source snapshot 的
-operator attestation，不是 Git commit；二进制摘要证明被测行为身份，但不能单独证明源码
-可 checkout/rebuild。
+正式 v2 supervisor 自己执行构建并记录命令、退出码、Git commit/tree、clean 状态和
+二进制摘要，而不是接受无法核验的 operator label。`0a5b76a` 是将此前 M2/M3/M4-A 与保留
+WIP 冻结到一起的诚实 checkpoint，不冒充纯 M4-A 单切片 diff；本汇总之后的纯文档提交不
+改变上述被测源码和二进制身份。
 
 ## 4. 实现与旧路径删除
 
@@ -70,7 +73,7 @@ operator attestation，不是 Git commit；二进制摘要证明被测行为身�
 
 ## 5. 离线验证
 
-当前待冻结源码在最后一次 Rust/评测 supervisor 变更后通过以下门禁：
+提交 `0a5b76a` 在最后一次 Rust/评测 supervisor 变更后通过以下门禁：
 
 | 门禁 | 结果 |
 |---|---:|
@@ -84,6 +87,7 @@ operator attestation，不是 Git commit；二进制摘要证明被测行为身�
 | `cargo fmt --all -- --check` | passed |
 | workspace all-target Clippy `-D warnings` | passed |
 | `cargo test --workspace --locked --offline` | passed |
+| locked/offline release build | passed |
 | Python resume supervisor self-test | passed |
 | `git diff --check` | passed |
 
@@ -102,26 +106,32 @@ keepalive；两个相关 stall 用例重复 12/12 后，完整 production accept
 
 | 中断窗口 | 恢复契约 |
 |---|---|
-| 模型请求已在途 | fail closed；不重发；未知账单不写成 0 |
-| 工具副作用后、outcome 提交前 | fail closed；副作用计数不增加 |
-| 模型响应已提交、sink 未收到 | 从持久响应继续；请求、usage、assistant entry 不重复 |
-| terminal 已提交、sink 未收到 | 重放同一 terminal；terminal count 保持 1 |
-| commit 成功、调用方未收到返回 | 同 event id 重试返回原事件，不追加第二份 |
+| 模型请求已在途 | `model_request_in_flight_crash_is_not_reissued_after_reopen`：fail closed；不重发；未知账单不写成 0 |
+| 工具副作用后、outcome 提交前 | `tool_side_effect_crash_is_not_executed_twice_after_reopen`：fail closed；副作用计数不增加 |
+| 模型响应已提交、sink 未收到 | `committed_model_response_resumes_without_duplicate_request_usage_or_assistant`：从持久响应继续；请求、usage、assistant entry 不重复 |
+| terminal 已提交、sink 未收到 | `committed_terminal_is_returned_after_reopen_without_second_terminal`：重放同一 terminal；terminal count 保持 1 |
+| commit 成功、调用方未收到返回 | `caller_retry_after_reopen_returns_the_committed_event_by_id`：同 event id 重试返回原事件，不追加第二份 |
+
+`execution_epoch_fences_stale_leases_and_reclaims_dead_pid` 证明失效 owner 可回收且旧 epoch 被
+fence；`concurrent_store_instances_allow_only_one_writer` 证明存活 owner 存在时第二个
+Store 实例不能同时推进同一 run。
 
 ## 6. 真实 DeepSeek fresh-run A/B
 
-正式的 5 次/cell single-lane A/B：
+最终提交绑定的 5 次/cell single-lane A/B：
 
 | 项目 | 值 |
 |---|---|
-| evaluation id | `deepseek-exec-ab-5c9a4160fbf14a15afd4b45a84887103` |
-| result SHA-256 | `a6a2cd0880cc992aca315b25d30b3c2fdccb25807db538b60a2254a5581f0e22` |
+| evaluation id | `deepseek-exec-ab-e5235bac28e5473ca75252cef22a104c` |
+| result SHA-256 | `5692236a23f0e6223164fc6a1cdd29b727ed57e8438699c3306e3c3247fcf71b` |
+| candidate revision | `0a5b76a8627fe8ae108a0a7688c0dd39ce5601a3`；Harness 记录 `git_dirty=false` |
+| candidate binary pair | `sha256:f4a7065612180257882afab195c2f5674164bd3a37fbaa642fd319610aeda8ad` |
 | verified success | 10/10 |
 | false success | 0 |
-| 总请求 | 49 |
-| 总 Token | 252,111 |
-| 总 wall time | 126,951 ms |
-| 总费用 | `$0.005061179` |
+| 总请求 | 47 |
+| 总 Token | 235,669 |
+| 总 wall time | 97,045 ms |
+| 总费用 | `$0.004559766` |
 
 每次运行使用相同任务、模型、评测提示词、工具目录与预算；prompt SHA-256 为
 `sha256:461ec5858d944511f0362a3ebdabcf8ef842bc3ae954db4927829072f69d8194`，工具目录
@@ -131,66 +141,74 @@ SHA-256 为 `sha256:7f6556e7031e3847f5fcded23ede4f609d3e09fdc523ae5250d26d7fa039
 |---|---:|---:|---:|
 | verified success | 5/5 | 5/5 | 0 |
 | false success | 0 | 0 | 0 |
-| 平均 Token | 23,394.4 | 27,027.8 | +15.53% |
-| 平均 API 请求 | 4.6 | 5.2 | +13.04% |
-| 平均 wall time | 12,040.4 ms | 13,349.8 ms | +10.88% |
-| 平均费用 | `$0.000474935` | `$0.000537301` | +13.13% |
+| 平均 Token | 21,782.4 | 25,351.4 | +16.38% |
+| 平均 API 请求 | 4.4 | 5.0 | +13.64% |
+| 平均 wall time | 9,321.6 ms | 10,087.4 ms | +8.22% |
+| 平均费用 | `$0.000433606` | `$0.000478348` | +10.32% |
 
-按请求归一化后，candidate 的 Token/request 为 +2.201%，ms/request 为 -1.918%，
-cost/request 为 +0.078%。聚合退化主要来自 candidate 平均多 0.6 次请求，但现有样本不能
+按请求归一化后，candidate 的 Token/request 为 +2.419%，ms/request 为 -4.771%，
+cost/request 为 -2.920%。聚合退化主要来自 candidate 平均多 0.6 次请求，但现有样本不能
 证明这是持久化造成还是模型随机性。结论必须保持为：成功率和假成功没有退化，fresh-run
 聚合效率证据负向且归因不确定；不能声称 M4-A 提升了 Token、时间或费用。
 
+此前 dirty candidate 的 10/10 A/B 因 binary pair 与最终构建不一致，仅保留为历史诊断，
+不再用于最终候选结论。
+
 ## 7. 真实 DeepSeek crash/reopen/resume
 
-当前已完成的正式 v1 canary（历史证据，不用于最终签字）：
+正式 v2 canary：
 
 | 项目 | 值 |
 |---|---|
-| result schema | `codewhale.eval.m4a-resume-canary.v1` |
-| result SHA-256 | `sha256:b4e343af5bcb75d38961773a1567d5dde7de8ccbbc8b8a479fc3ad011414f214` |
+| result schema | `codewhale.eval.m4a-resume-canary.v2` |
+| result SHA-256 | `210a9771f4f78df77f8459ab2216381eea1ff2a3378af5b70bccee5c3f6720ee` |
+| tested source | commit `0a5b76a8627fe8ae108a0a7688c0dd39ce5601a3`；tree `2f664616def40906c2ef62b5a3fec46a9a76c7a3`；clean |
+| tested binary pair | `sha256:f4a7065612180257882afab195c2f5674164bd3a37fbaa642fd319610aeda8ad` |
 | crash phase | `durable_pre_model_io` |
 | kill | external `SIGKILL`，exit `-9` |
 | crash prefix | 1 event：`run_created` |
 | same-run resume | passed |
 | Host verifier | passed |
 | false success | 0 |
-| API 请求 | 4/10 |
-| Token | 19,180 |
-| wall time | 8,667 ms |
-| 费用 | `$0.000372999` |
-| final event/terminal | 529 events；1 terminal；sequence contiguous；event id unique |
+| API 请求 | 6/10；0 retry；usage response 6 |
+| Token | 30,022（input 29,222；output 800；cache hit 27,904；miss 1,318；reasoning 290；replay 705） |
+| wall time | 11,632 ms（持久 terminal duration 11,588 ms） |
+| 费用 | `$0.000486651` / CNY `0.00347608`；usage 完整；unknown billing false |
+| final event/terminal | 501 events；501 unique event id；sequence 1..501；1 terminal |
+| 工具副作用 | before 0；after 1；delta 1；前后摘要均记录 |
+| lease | epoch 1 -> 2；旧 PID 已死亡；新 owner 已观测；最终 owner 已释放 |
 | no-key terminal replay | passed；0 new events；workspace/accounting unchanged |
 | product metric eligible | `false` |
 
-监督进程只在 Store 已持久化 `run_created`（也允许已追加 `model_request_prepared`）、模型
-请求尚未进入 in-flight 且 lease owner 正确时停止并杀死进程。恢复使用同一 `run_id`；完成后只修改
-`ranges.py`，冻结 verifier 的 public/hidden cases、文件集合、文件模式和 immutable files
-全部通过。随后移除 Key 再次执行 `--resume`，进程退出 0，事件 count/sequence/digest、工作区
-摘要与稳定 terminal/accounting 全部不变。
+监督进程只在 Store 已持久化 `run_created`、模型请求尚未进入 in-flight 且 lease owner
+正确时发送 `SIGKILL`。恢复继续同一 `run_id`，首个新 sequence 为 2；崩溃前后前缀摘要均为
+`sha256:da2dcdc031ed642cdeadedb522b51ff871b29aadcdfd51c64c804e6411ac1951`，
+最终事件摘要为
+`sha256:87465340785d7be5898212d63798f142d5cd12783e6679418685a1e015607ffe`。
+完成后只修改 `ranges.py`，冻结 verifier 的六类检查全部通过。随后移除 Key 再次执行
+`--resume`，进程退出 0，事件 count/sequence/digest、工作区、工具副作用和稳定
+terminal/accounting 全部不变。
 
-第一次诊断 run 的 same-run resume 本身成功，但临时 supervisor 错把本次投影的
-`duration_ms` 纳入持久终态相等比较，因此错误判失败。修正为比较稳定 terminal 与完整
-accounting、自测通过后，临时 supervisor 的独立 validation run 通过。随后将 supervisor
-落为 [`scripts/eval-deepseek-resume.py`](../../scripts/eval-deepseek-resume.py)，增加自身 SHA、
-依赖 Harness SHA、候选 revision 与 binary-pair 自绑定，再执行了上表的最终正式 canary。
-前两次不计为产品样本，但实际消耗仍披露：第一次为 4 请求、19,060 Token、8,593 ms、
-`$0.000335138`；第二次为 6 请求、30,439 Token、12,597 ms、`$0.000528466`。三次操作
-总计 14 请求、68,679 Token、29,857 ms、`$0.001236603`。
+所有真实恢复运行的实际消耗均披露，不把诊断失败隐藏为零成本：
 
-v2 supervisor 的 dirty-source preflight 另行通过：5 请求、25,684 Token、11,169 ms、
-`$0.000523746`，result SHA-256 为
-`c763610353f1fbc075659be1bf7e3470dffc6a1e79735ebb96383734c1ea4ecf`。它已覆盖 sequence
-前缀摘要、唯一 event id、唯一 terminal、request/usage delta、工具副作用摘要、dead-owner
-lease reclaim 与 no-key replay，但仍是 preflight，不能代替最终 Git-bound 正式 canary。
-最终 v2 supervisor 还会从干净 Git 提交执行 locked/offline release build，并记录 commit、
-tree、旧/新 lease owner、before/after/delta 副作用与二进制 pair 摘要。
+| 运行 | 请求 | Token | wall time | 费用 USD |
+|---|---:|---:|---:|---:|
+| v1 首次诊断 | 4 | 19,060 | 8,593 ms | `$0.000335138` |
+| v1 validation 诊断 | 6 | 30,439 | 12,597 ms | `$0.000528466` |
+| v1 正式历史 canary | 4 | 19,180 | 8,667 ms | `$0.000372999` |
+| v2 dirty-source preflight | 5 | 25,684 | 11,169 ms | `$0.000523746` |
+| v2 commit-bound 正式 canary | 6 | 30,022 | 11,632 ms | `$0.000486651` |
+| 合计 | 25 | 124,385 | 52,658 ms | `$0.002247000` |
 
-当前待提交 supervisor SHA-256 为
+supervisor SHA-256 为
 `b9510949687e176f91643040a1f421defdd99092914dcfad8cfe843cd678597f`，其依赖的 exec
-Harness SHA-256 为 `ef97a5e87b7ee76bfb76fc4321785317979de4526f660833c735c6c7a1cdbc97`；
-正式 v2 会把两者写入结果。原始结果位于被忽略的 `eval/results/`，权限为 `0600`；仓库只记录
+Harness SHA-256 为 `ef97a5e87b7ee76bfb76fc4321785317979de4526f660833c735c6c7a1cdbc97`。
+原始结果位于被忽略的 `eval/results/`，权限为 `0600`；仓库只记录
 脱敏汇总与结果摘要，不保存 Key、模型正文、reasoning、工具参数、event JSON 或 stderr。
+
+计入历史 dirty A/B、最终 commit-bound A/B 和上表五次恢复运行，M4-A 实际消费合计为
+121 次请求、612,165 Token、276,654 ms 被测进程 wall time、`$0.011867945`。该数值只用于
+成本披露，不把不同证据等级的运行合并成成功率样本。
 
 ## 8. 复杂度
 
@@ -216,11 +234,12 @@ Rust footprint。它复用现有 exec Harness、fixture 和 verifier，不实现
 由于没有冻结的 M3 source tree 可用于逐文件归因，这些数字只表示当前所有权 footprint，
 不能写成净新增 LOC、圈复杂度改善或 M3→M4 精确差值。
 
+冻结 checkpoint 的 Git diff 为 `+34,234/-5,323`，但它同时包含 M2、M3、M4-A 和保留 WIP，
+不能冒充 M4-A 的净代码增量。
+
 ## 9. 边界、残余风险与下一步
 
-- 候选仍缺可 checkout/rebuild 的 Git commit，以及从该提交自构建二进制运行的正式 v2
-  canary；两者都是 M4-A 严格签字前的硬缺口。
-- fresh-run A/B 只覆盖一个 Python single-lane 任务，且效率结果负向/不确定；不能外推到
+- fresh-run A/B 只覆盖一个 Python single-lane 任务，且最终候选效率结果负向/不确定；不能外推到
   广泛仓库成功率，也不能作为性能提升声明。
 - live safe-point continuation 与 no-key replay 均为 1/1 canary，只证明链路可用，不是恢复率
   的统计估计；危险窗口由离线真实子进程矩阵覆盖。
@@ -229,4 +248,5 @@ Rust footprint。它复用现有 exec Harness、fixture 和 verifier，不实现
   的 process identity。
 - TUI/app-server 仍有旧 loop 和私有状态；M4 总体没有完成。
 - M5 的 TaskContract/EvidenceReceipt、M6 的 writer worktree 和 multi A/B 均不属于本切片。
-- 源码提交冻结并重验身份后，下一垂直切片才是 M4-B app-server 单一 Runtime 迁移。
+- 下一垂直切片是 M4-B app-server 单一 Runtime/RunStore 迁移；它必须删除 app-server 的
+  TUI 子进程 bridge、私有 thread store 和 completion 翻译，不把 M4-A 再实现一遍。
