@@ -814,6 +814,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-app"
+version = "0.8.68"
+dependencies = [
+ "async-trait",
+ "codewhale-protocol",
+ "codewhale-runtime",
+ "tokio",
+]
+
+[[package]]
 name = "codewhale-app-server"
 version = "0.8.68"
 dependencies = [
