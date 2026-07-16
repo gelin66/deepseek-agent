@@ -35,7 +35,7 @@
 //!   3. Crate-level `#![deny(clippy::print_stderr, clippy::print_stdout)]`
 //!      on the TUI runtime modules forbids new `eprintln!` / `println!`
 //!      calls at compile time. CLI-output paths (`main.rs` eval, init,
-//!      `runtime_api::print_*`, `logging::info`/`warn`) keep their existing
+//!      `logging::info`/`warn`) keep their existing
 //!      prints via `#[allow(clippy::print_stderr)]` because they run before
 //!      the alt-screen is entered.
 

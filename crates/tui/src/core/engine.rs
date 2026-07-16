@@ -772,8 +772,7 @@ impl Default for EngineConfig {
 pub enum CancelReason {
     /// User-initiated cancel (Esc, `/cancel`, click cancel on modal).
     User,
-    /// External / runtime-API cancel (HTTP `DELETE /v1/threads/...`,
-    /// task manager stop, parent agent cancel).
+    /// External task-manager stop or parent-agent cancel.
     External,
     /// Cancel triggered when a new turn starts before the previous one
     /// finished — e.g. plain Enter while busy after the queueing path

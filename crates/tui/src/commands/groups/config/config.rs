@@ -900,13 +900,6 @@ fn config_editability_audit(app: &App) -> CommandResult {
             "Memory loading changes prompt context and is resolved at startup.",
         ),
         (
-            "runtime_api",
-            file_only_status(config.runtime_api.as_ref().map(|_| true)),
-            "file-only restart",
-            "edit config.toml",
-            "Serve/API tuning belongs to the runtime server startup path.",
-        ),
-        (
             "vision_model",
             file_only_status(config.vision_model.as_ref().map(|_| true)),
             "file-only restart",

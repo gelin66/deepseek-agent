@@ -55,7 +55,6 @@ regex = "1.11"
 reqwest = { workspace = true, features = ["blocking", "stream", "form", "http2", "gzip"] }
 rmcp = { version = "2.2.0", default-features = false, features = ["auth", "client"] }
 rustls.workspace = true
-qrcode = { version = "0.14", default-features = false }
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 schemars = { version = "1.2.1", features = ["derive", "preserve_order"] }
@@ -73,7 +72,6 @@ tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
-tower-http.workspace = true
 wait-timeout = "0.2"
 webbrowser = "1.0"
 multimap = "0.10.0"

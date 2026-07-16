@@ -56,8 +56,8 @@ const SUMMARY_LIMIT: usize = 280;
 /// so `SyncSession` → `extract_compaction_summary_prompt` restores it on
 /// engine reload). Delimiters make replacement idempotent: each completed
 /// compaction swaps the section in place instead of stacking duplicates.
-/// External `PATCH /v1/threads/{id}` callers that rewrite `system_prompt`
-/// should preserve this section verbatim or the summary is lost on reload.
+/// Interactive callers that rewrite `system_prompt` should preserve this
+/// section verbatim or the summary is lost on reload.
 const COMPACTION_SUMMARY_BEGIN: &str = "<!-- compaction-summary:begin -->";
 const COMPACTION_SUMMARY_END: &str = "<!-- compaction-summary:end -->";
 
@@ -702,9 +702,7 @@ impl RuntimeThreadManagerConfig {
     }
 }
 
-/// Visibility filter for `list_threads`. Default is `ActiveOnly`. The runtime
-/// API exposes this as the combination of `include_archived` and
-/// `archived_only` query params (see `runtime_api.rs`); whalescale#260 / #563.
+/// Visibility filter for the unmigrated interactive thread manager.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ThreadListFilter {
     /// Only `archived = false` threads. The original default.
@@ -736,7 +734,7 @@ pub struct CreateThreadRequest {
     pub environments: Vec<TurnEnvironmentParams>,
 }
 
-/// Mutable fields accepted by `PATCH /v1/threads/{id}`.
+/// Mutable fields retained by the unmigrated interactive thread manager.
 ///
 /// Each field is optional — missing means "no change". Extended in v0.8.10
 /// (#562, whalescale#256) so the UI can flip persistent thread state without
@@ -4205,8 +4203,7 @@ fn tool_kind_for_name(name: &str) -> TurnItemKind {
 /// before fresh mailbox envelopes arrive on a re-attached engine.
 ///
 /// The helper is the testable contract here — actual TUI wire-up to the
-/// resume flow is a follow-up; the runtime API consumer (`runtime_api.rs`)
-/// can already call `resume_thread_with_agent_rebind` to drive it.
+/// resume flow is a follow-up for the interactive TaskManager consumer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)] // consumed by #128 follow-up TUI resume wiring; tested here.
 pub struct AgentRebindHint {

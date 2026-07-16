@@ -1717,7 +1717,6 @@ pub struct RetryPolicy {
 impl RetryPolicy {
     /// Compute the backoff delay for a retry attempt.
     #[must_use]
-    #[allow(dead_code)] // used by runtime_api; will be wired into client retry loop
     pub fn delay_for_attempt(&self, attempt: u32) -> std::time::Duration {
         let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
         let delay = self.initial_delay * self.exponential_base.powi(exponent);
@@ -2085,13 +2084,6 @@ pub struct Config {
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
 
-    /// Runtime API server tuning (`codewhale serve --http`). Currently only
-    /// hosts the CORS allow-list extension (whalescale#255 / #561). When the
-    /// table is absent, the daemon ships with localhost:3000 / localhost:1420
-    /// / tauri://localhost as the only allowed dev origins.
-    #[serde(default)]
-    pub runtime_api: Option<RuntimeApiConfig>,
-
     /// Workshop / large-tool-output routing (#548). When absent, the global
     /// default threshold of 4 096 tokens applies and routing is active.
     #[serde(default)]
@@ -2323,20 +2315,6 @@ pub struct VisionModelConfig {
     /// Base URL for the vision model API. Defaults to OpenAI.
     #[serde(default)]
     pub base_url: Option<String>,
-}
-
-/// `[runtime_api]` table — knobs for the local HTTP/SSE daemon.
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct RuntimeApiConfig {
-    /// Additional CORS origins to allow on top of the built-in defaults
-    /// (`http://localhost:{3000,1420}`, `http://127.0.0.1:{3000,1420}`,
-    /// `tauri://localhost`). Useful when developing a UI against a non-default
-    /// dev server port (e.g. Vite's default `:5173`).
-    ///
-    /// Resolution order (highest priority first): `--cors-origin` CLI flag,
-    /// `DEEPSEEK_CORS_ORIGINS` env var (comma-separated), this field. Whalescale#255 / #561.
-    #[serde(default)]
-    pub cors_origins: Option<Vec<String>>,
 }
 
 /// `[skills]` table — knobs for the community-skill installer.
@@ -6239,7 +6217,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         workflow: override_cfg.workflow.or(base.workflow),
         subagents: override_cfg.subagents.or(base.subagents),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
-        runtime_api: override_cfg.runtime_api.or(base.runtime_api),
         workshop: override_cfg.workshop.or(base.workshop),
         exec_policy_engine: override_cfg.exec_policy_engine,
     }

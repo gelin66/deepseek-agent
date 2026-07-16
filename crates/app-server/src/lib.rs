@@ -1760,6 +1760,45 @@ mod tests {
     }
 
     #[test]
+    fn retired_http_mobile_and_chat_bridge_product_paths_are_absent() {
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("workspace root");
+        for relative in [
+            "crates/tui/src/runtime_api.rs",
+            "crates/tui/src/runtime_api/tests.rs",
+            "crates/tui/src/runtime_mobile.html",
+            "crates/tui/src/remote_setup/mod.rs",
+            "deploy/tencent-lighthouse/systemd/codewhale-runtime.service",
+            "scripts/tencent-lighthouse/install-services.sh",
+            "integrations/bridge-core/package.json",
+            "integrations/feishu-bridge/package.json",
+            "integrations/telegram-bridge/package.json",
+        ] {
+            assert!(
+                !workspace.join(relative).exists(),
+                "retired product path survived: {relative}"
+            );
+        }
+        for relative in ["crates/cli/src/lib.rs", "crates/tui/src/main.rs"] {
+            let source = std::fs::read_to_string(workspace.join(relative))
+                .expect("read retained command source");
+            for forbidden in [
+                "serve --http",
+                "serve --mobile",
+                "RemoteSetup",
+                "remote_setup",
+            ] {
+                assert!(
+                    !source.contains(forbidden),
+                    "retired command survived in {relative}: {forbidden}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn options_fail_closed_and_debug_redacts_the_token() {
         let options = AppServerOptions::default();
         assert!(validate_options(&options).is_err());
