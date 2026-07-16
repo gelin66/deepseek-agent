@@ -355,18 +355,6 @@ impl RunComposition for ProductionComposition {
             ));
         }
         let workspace = canonical_resume_workspace(&run_id, &request.environment.workspace)?;
-        let capability = official_model_capabilities(&request.model)
-            .map_err(|error| environment_mismatch(&run_id, error.to_string()))?;
-        let expected_max_output = capability
-            .resolve_output_tokens(request.max_output_tokens)
-            .map_err(|error| environment_mismatch(&run_id, error.to_string()))?;
-        if request.max_output_tokens != Some(expected_max_output) {
-            return Err(environment_mismatch(
-                &run_id,
-                "persisted run does not contain an exact resolved max_output_tokens value",
-            ));
-        }
-
         let controls = RunProductControls {
             auto_approve: request.environment.auto_approve,
             trust_mode: request.environment.trust_mode,
@@ -415,6 +403,17 @@ impl RunComposition for ProductionComposition {
             return Err(environment_mismatch(
                 &run_id,
                 "run_resume_fingerprint_mismatch：production execution fingerprint does not match the persisted run",
+            ));
+        }
+        let capability = official_model_capabilities(&request.model)
+            .map_err(|error| environment_mismatch(&run_id, error.to_string()))?;
+        let expected_max_output = capability
+            .resolve_output_tokens(request.max_output_tokens)
+            .map_err(|error| environment_mismatch(&run_id, error.to_string()))?;
+        if request.max_output_tokens != Some(expected_max_output) {
+            return Err(environment_mismatch(
+                &run_id,
+                "persisted run does not contain an exact resolved max_output_tokens value",
             ));
         }
         Ok(runtime.resume(run_id))

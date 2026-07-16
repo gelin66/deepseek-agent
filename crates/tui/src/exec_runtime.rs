@@ -1,149 +1,53 @@
-//! Production composition and presentation for `codewhale exec`.
+//! Thin `codewhale exec` client for the production Agent application.
 //!
-//! This module is deliberately a thin client of `codewhale-runtime`: it
-//! resolves the DeepSeek route, constructs the concrete ports, submits one
-//! run, and projects canonical stored events. It never owns a model/tool loop,
-//! accumulates usage, or decides whether a run completed successfully.
+//! This module projects CLI/config inputs into canonical Run commands, forwards
+//! control commands, and renders canonical stored events. Production route,
+//! prompt, model, tool, Store, resume, and runtime composition stay in
+//! `codewhale-app`.
 
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
-use async_trait::async_trait;
-use codewhale_app::{ReplayOnlyModelPort, resume_needs_live_model};
-use codewhale_context::{InstructionSource, ProductionPromptRequest, production_system_prompt};
-use codewhale_runtime::{
-    AgentOutcome, AgentRuntime, ApiSurface, CanonicalTranscript, ModelAccounting,
-    ModelErrorCategory, ModelPort, ReasoningEffort, RunEnvironment, RunId, RunLimits, RunRequest,
-    RunStore, RuntimeEventKind, RuntimeEventSink, RuntimeFailure, RuntimeTimeoutPhase,
-    StoredRuntimeEvent, SystemPrompt as RuntimeSystemPrompt, TerminalState, ToolExecutor,
-    ToolPolicy, TranscriptEntry,
+use codewhale_app::{
+    AgentApplication, DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
+    ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
 };
-use codewhale_state::StateStore;
-use codewhale_tools::{ProductionToolConfig, ProductionToolExecutor};
+use codewhale_context::InstructionSource;
+use codewhale_protocol::run_api::{
+    RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope,
+    RunCommandResult, RunProductControls, StartRunCommand,
+};
+use codewhale_runtime::{
+    AgentOutcome, ApiSurface, CanonicalTranscript, ModelAccounting, ModelErrorCategory,
+    ReasoningEffort, RunId, RunLimits, RuntimeEventKind, RuntimeFailure, RuntimeTimeoutPhase,
+    StoredRuntimeEvent, TerminalState, ToolPolicy, TranscriptEntry,
+};
 use serde::Serialize;
 use serde_json::Value;
-use tokio::sync::mpsc;
 
-use crate::client::DeepSeekClient;
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::core::termination::RunTerminationReason;
 use crate::exec_output::ExecTerminalReceipt;
-use crate::tools::spec::ToolContext;
-use crate::tui::app::AppMode;
-use codewhale_deepseek::{
-    DeepSeekModelPort, SharedApiRequestBudget, model_accounting_snapshot, resume_api_request_budget,
-};
 
 use super::{
     EXEC_OUTPUT_CLOSE_TIMEOUT_SECS, EXEC_OUTPUT_QUEUE_CAPACITY, EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS,
     ExecAccountingReceipt, ExecOutputFormat, ExecOutputWait, ExecStreamEvent,
     ExecStreamInputAnalysis, ExecStreamMeta, ExecSurfaceModelUsageBucket,
-    commit_exec_terminal_signal, config_for_cli_route, current_binary_sha256,
-    exec_sandbox_elevation_authorized, exec_stream_line, exec_supports_provider, recv_exec_signal,
-    resolve_exec_deepseek_route, stop_exec_signal_controller, wait_exec_output_until,
-    wait_terminal_output, write_exec_stream_terminal,
+    commit_exec_terminal_signal, current_binary_sha256, exec_stream_line, exec_supports_provider,
+    recv_exec_signal, stop_exec_signal_controller, wait_exec_output_until, wait_terminal_output,
+    write_exec_stream_terminal,
 };
-
-const RUNTIME_EVENT_CHANNEL_CAPACITY: usize = 256;
 
 fn protocol_label(value: &impl Serialize) -> String {
     serde_json::to_value(value)
         .ok()
         .and_then(|value| value.as_str().map(str::to_owned))
         .unwrap_or_else(|| "unknown".to_owned())
-}
-
-fn execution_fingerprint_sha256(
-    config: &Config,
-    model: &str,
-    context: &ToolContext,
-    tool_catalog_sha256: Option<&str>,
-    composition_build_revision: &str,
-) -> String {
-    let provider = config.api_provider();
-    let provider_config = config.provider_config_for(provider);
-    let mut trusted_external_paths = context
-        .trusted_external_paths()
-        .iter()
-        .map(|path| path.display().to_string())
-        .collect::<Vec<_>>();
-    trusted_external_paths.sort();
-    let enabled_features = context
-        .features
-        .enabled_features()
-        .into_iter()
-        .map(|feature| feature.key())
-        .collect::<Vec<_>>();
-    let network = config.network.as_ref().map(|policy| {
-        serde_json::json!({
-            "default": &policy.default,
-            "allow": &policy.allow,
-            "deny": &policy.deny,
-            "proxy": &policy.proxy,
-            "audit": policy.audit,
-        })
-    });
-    let sandbox_backend = match config
-        .sandbox_backend
-        .as_deref()
-        .and_then(codewhale_tools::sandbox::backend::SandboxKind::parse)
-    {
-        Some(codewhale_tools::sandbox::backend::SandboxKind::OpenSandbox) => {
-            let endpoint = config
-                .sandbox_url
-                .as_deref()
-                .unwrap_or("http://localhost:8080");
-            Some(serde_json::json!({
-                "kind": "opensandbox",
-                "endpoint_sha256": format!(
-                    "sha256:{}",
-                    crate::hashing::sha256_hex(endpoint.as_bytes())
-                ),
-            }))
-        }
-        Some(codewhale_tools::sandbox::backend::SandboxKind::None) | None => None,
-    };
-    let value = serde_json::json!({
-        "schema": 3,
-        // Resume compatibility belongs to the shared application
-        // composition, not to one presentation binary. `codewhale exec` and
-        // app-server are different executables built from the same revision;
-        // their exact binary hashes remain diagnostic receipt fields only.
-        "composition_build_revision": composition_build_revision,
-        "provider": provider.as_str(),
-        "model": model,
-        "base_url_sha256": format!(
-            "sha256:{}",
-            crate::hashing::sha256_hex(config.deepseek_base_url().as_bytes())
-        ),
-        "deepseek_request_plan": {
-            "strict_tool_mode": config.strict_tool_mode.unwrap_or(false),
-            "path_suffix": provider_config.and_then(|provider| provider.path_suffix.as_deref()),
-        },
-        "deepseek_stream_decoder": {
-            "reasoning_stream_style": provider_config
-                .and_then(|provider| provider.reasoning_stream_style.as_deref()),
-            "idle_timeout_secs": config.stream_chunk_timeout_secs(),
-        },
-        "workspace": context.workspace().display().to_string(),
-        "auto_approve": context.auto_approve(),
-        "trust_mode": context.trust_mode(),
-        "shell_policy": context.shell_policy,
-        "sandbox_policy": format!("{:?}", context.sandbox_policy),
-        "elevated_sandbox_policy": &context.elevated_sandbox_policy,
-        "sandbox_backend": sandbox_backend,
-        "follow_symlinks": context.follow_symlinks(),
-        "trusted_external_paths": trusted_external_paths,
-        "enabled_features": enabled_features,
-        "network": network,
-        "tool_catalog_sha256": tool_catalog_sha256,
-    });
-    let bytes = serde_json::to_vec(&value).expect("execution fingerprint value is serializable");
-    format!("sha256:{}", crate::hashing::sha256_hex(&bytes))
 }
 
 #[derive(Clone, Copy)]
@@ -254,452 +158,293 @@ pub(crate) async fn run_exec_runtime(
     let mut runtime_started = false;
     let mut startup_failure = ExecStartupFailure::InvalidArguments;
     let result: Result<()> = async {
-    #[cfg(unix)]
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_IGN);
-    }
-    if max_runtime_secs > super::MAX_EXEC_MAX_RUNTIME_SECS {
-        bail!(
-            "--max-runtime-secs 不能超过 {} 秒",
-            super::MAX_EXEC_MAX_RUNTIME_SECS
-        );
-    }
-    startup_failure = ExecStartupFailure::ProviderUnsupported;
-    if !exec_supports_provider(config.api_provider()) {
-        bail!(
-            "codewhale exec 是 DeepSeek 专用入口；当前 provider={}，请切换为 deepseek",
-            config.api_provider().as_str()
-        );
-    }
-    validate_budget_route(config, max_api_requests)?;
-
-    startup_failure = ExecStartupFailure::RunStore;
-    let store = Arc::new(StateStore::open(None).context("无法打开 canonical Agent RunStore")?);
-    let resume_run_id = resume_run_id.map(RunId::from);
-    let resume_replay = if let Some(run_id) = resume_run_id.as_ref() {
-        let replay = store.load(run_id).await.map_err(|error| anyhow!(error))?;
-        let Some(replay) = replay else {
-            startup_failure = ExecStartupFailure::ResumeNotFound;
-            bail!("exec_run_not_found：找不到可恢复运行 {run_id}");
-        };
-        Some(replay)
-    } else {
-        None
-    };
-    if let Some(replay) = resume_replay.as_ref() {
-        let persisted = &replay.snapshot.request.environment;
-        if persisted.workspace != workspace.display().to_string() {
-            startup_failure = ExecStartupFailure::ResumeWorkspaceMismatch;
+        #[cfg(unix)]
+        unsafe {
+            libc::signal(libc::SIGPIPE, libc::SIG_IGN);
+        }
+        if max_runtime_secs > super::MAX_EXEC_MAX_RUNTIME_SECS {
             bail!(
-                "exec_resume_workspace_mismatch：运行绑定工作区 '{}'，当前工作区为 '{}'",
-                persisted.workspace,
-                workspace.display()
+                "--max-runtime-secs 不能超过 {} 秒",
+                super::MAX_EXEC_MAX_RUNTIME_SECS
             );
         }
-        if persisted.provider != config.api_provider().as_str() {
-            startup_failure = ExecStartupFailure::ResumeProviderMismatch;
+        startup_failure = ExecStartupFailure::ProviderUnsupported;
+        if !exec_supports_provider(config.api_provider()) {
             bail!(
-                "exec_resume_provider_mismatch：运行绑定 provider={}，当前 provider={}",
-                persisted.provider,
+                "codewhale exec 是 DeepSeek 专用入口；当前 provider={}，请切换为 deepseek",
                 config.api_provider().as_str()
             );
         }
-    }
 
-    // The route classifier and every root/child request share this one
-    // physical admission and billing owner.
-    let (api_request_budget, resume_budget_exhausted) = if let Some(replay) = resume_replay.as_ref() {
-        resume_api_request_budget(&replay.snapshot.accounting)
-    } else {
-        (
-            max_api_requests.map_or_else(
-                SharedApiRequestBudget::tracking_only,
-                SharedApiRequestBudget::new,
-            ),
-            false,
-        )
-    };
-    let mut bound_transport = if resume_replay.is_none() && model.trim().eq_ignore_ascii_case("auto")
-    {
-        startup_failure = ExecStartupFailure::Client;
-        Some(bind_exec_deepseek_transport(config, &api_request_budget)?)
-    } else {
-        None
-    };
-    let deadline = deadline_origin + Duration::from_secs(max_runtime_secs.max(1));
-    let (mut signal_rx, signal_task, signal_phase) = super::spawn_exec_signal_controller();
-    let mut signal_task = Some(signal_task);
+        let deadline = deadline_origin + Duration::from_secs(max_runtime_secs.max(1));
+        let (mut signal_rx, signal_task, signal_phase) = super::spawn_exec_signal_controller();
+        let mut signal_task = Some(signal_task);
+        let settings = crate::settings::Settings::load().unwrap_or_default();
+        startup_failure = ExecStartupFailure::ToolContext;
+        let application_config = production_application_config(
+            config,
+            &workspace,
+            &settings,
+            auto_approve,
+            trust_mode,
+            append_system_prompt,
+        )?;
+        startup_failure = ExecStartupFailure::RunStore;
+        let application = AgentApplication::production(application_config)
+            .context("无法创建 production AgentApplication")?;
 
-    startup_failure = ExecStartupFailure::Route;
-    let route = if let Some(replay) = resume_replay.as_ref() {
-        super::CliAutoRoute {
-            provider: config.api_provider(),
-            model: replay.snapshot.request.model.clone(),
-            reasoning_effort: None,
-            auto_model: false,
+        let is_resume = resume_run_id.is_some();
+        let requested_auto_model = !is_resume && model.trim().eq_ignore_ascii_case("auto");
+        let route_source = if is_resume {
+            "run_store_resume"
+        } else if requested_auto_model {
+            "auto_resolver"
+        } else {
+            "explicit_or_configured"
+        };
+        let remaining_runtime_ms = absolute_deadline_unix_ms.saturating_sub(unix_ms_now());
+        if remaining_runtime_ms == 0 {
+            startup_failure = ExecStartupFailure::RouteTimeout;
+            stop_exec_signal_controller(&mut signal_task).await;
+            bail!("exec_watchdog_timeout: AgentApplication 启动前已耗尽全局运行时间");
         }
-    } else {
-        tokio::select! {
+        let command = if let Some(run_id) = resume_run_id {
+            RunCommand::Resume {
+                run_id: RunId::from(run_id),
+                expected_workspace: Some(workspace.display().to_string()),
+            }
+        } else {
+            RunCommand::Start(StartRunCommand {
+                input: prompt.to_owned(),
+                workspace: workspace.display().to_string(),
+                model: (!requested_auto_model).then(|| model.to_owned()),
+                reasoning_effort: config
+                    .reasoning_effort
+                    .as_deref()
+                    .map(runtime_reasoning_effort)
+                    .unwrap_or_default(),
+                // `exec` deliberately requests the complete official 384K
+                // output allowance. Other app clients retain their own policy.
+                max_output_tokens: Some(384_000),
+                max_api_requests,
+                streaming: tool_mode || output_format == ExecOutputFormat::StreamJson,
+                tool_policy: runtime_tool_policy(tool_mode, allowed_tools, disallowed_tools),
+                limits: runtime_limits(
+                    config,
+                    config.api_provider(),
+                    max_subagents,
+                    max_turns,
+                    max_api_requests,
+                    remaining_runtime_ms,
+                ),
+                controls: RunProductControls {
+                    auto_approve,
+                    trust_mode,
+                    allow_sandbox_elevation,
+                    sandbox: explicit_sandbox
+                        .map(str::to_owned)
+                        .or_else(|| config.sandbox_mode.clone()),
+                },
+            })
+        };
+        startup_failure = if requested_auto_model {
+            ExecStartupFailure::Route
+        } else {
+            ExecStartupFailure::InvalidArguments
+        };
+        let response = tokio::select! {
             biased;
             signal = recv_exec_signal(&mut signal_rx) => {
                 stop_exec_signal_controller(&mut signal_task).await;
                 if let Some(exit_code) = signal {
                     std::process::exit(exit_code);
                 }
-                bail!("Headless 信号控制器在 DeepSeek 路由阶段意外退出");
+                bail!("Headless 信号控制器在 AgentApplication 启动阶段意外退出");
             }
-            route = tokio::time::timeout_at(
+            response = tokio::time::timeout_at(
                 deadline,
-                resolve_exec_deepseek_route(config, model, prompt, bound_transport.as_ref()),
-            ) => match route {
-                Ok(Ok(route)) => route,
-                Ok(Err(error)) => {
-                    stop_exec_signal_controller(&mut signal_task).await;
-                    return Err(error).context("DeepSeek 路由解析失败");
-                }
+                application.execute(run_envelope("exec-launch", command)),
+            ) => match response {
+                Ok(response) => response,
                 Err(_) => {
                     startup_failure = ExecStartupFailure::RouteTimeout;
                     stop_exec_signal_controller(&mut signal_task).await;
-                    bail!("exec_watchdog_timeout: DeepSeek 路由解析超过最大运行时间");
+                    bail!("exec_watchdog_timeout: AgentApplication 启动超过最大运行时间");
                 }
             }
-        }
-    };
-    startup_failure = ExecStartupFailure::ProviderUnsupported;
-    if !exec_supports_provider(route.provider) {
-        stop_exec_signal_controller(&mut signal_task).await;
-        bail!(
-            "Headless 自动路由选择了非 DeepSeek provider={}；codewhale exec 只允许 deepseek",
-            route.provider.as_str()
-        );
-    }
-
-    let execution_config = config_for_cli_route(config, &route);
-    if let Err(error) = validate_budget_route(&execution_config, max_api_requests) {
-        stop_exec_signal_controller(&mut signal_task).await;
-        return Err(error);
-    }
-    let effective_model = route.model.clone();
-    let route_source = if resume_replay.is_some() {
-        "run_store_resume"
-    } else if route.auto_model {
-        "auto_resolver"
-    } else {
-        "explicit_or_configured"
-    };
-    let settings = crate::settings::Settings::load().unwrap_or_default();
-    let (
-        tool_policy,
-        limits,
-        system_prompt,
-        reasoning_effort,
-        effective_prompt,
-        effective_deadline_unix_ms,
-        effective_auto_approve,
-        effective_trust_mode,
-        effective_allow_sandbox_elevation,
-        effective_sandbox,
-    ) = if let Some(replay) = resume_replay.as_ref() {
-        let request = &replay.snapshot.request;
-        let environment = &request.environment;
-        (
-            request.tool_policy.clone(),
-            request.limits,
-            request.system_prompt.clone(),
-            request.reasoning_effort,
-            request.input.clone(),
-            request.deadline_unix_ms,
-            environment.auto_approve,
-            environment.trust_mode,
-            environment.allow_sandbox_elevation,
-            environment.sandbox.clone(),
-        )
-    } else {
-        let tool_policy = runtime_tool_policy(tool_mode, allowed_tools, disallowed_tools);
-        let remaining_runtime_ms = absolute_deadline_unix_ms.saturating_sub(unix_ms_now());
-        if remaining_runtime_ms == 0 {
-            startup_failure = ExecStartupFailure::RouteTimeout;
-            stop_exec_signal_controller(&mut signal_task).await;
-            bail!("exec_watchdog_timeout: DeepSeek 路由已耗尽全局运行时间");
-        }
-        let limits = runtime_limits(
-            &execution_config,
-            route.provider,
-            max_subagents,
-            max_turns,
-            max_api_requests,
-            remaining_runtime_ms,
-        );
-        let system_prompt = runtime_system_prompt(
-            &execution_config,
-            &effective_model,
-            &workspace,
-            &settings,
-            append_system_prompt,
-            tool_mode,
-        );
-        let reasoning_effort = route
-            .reasoning_effort
-            .and_then(|effort| super::cli_reasoning_effort_value(&execution_config, effort))
-            .as_deref()
-            .map(runtime_reasoning_effort)
-            .unwrap_or_default();
-        (
-            tool_policy,
-            limits,
-            system_prompt,
-            reasoning_effort,
-            prompt.to_owned(),
-            Some(absolute_deadline_unix_ms),
-            auto_approve,
-            trust_mode,
-            allow_sandbox_elevation,
-            explicit_sandbox.map(str::to_owned),
-        )
-    };
-
-    startup_failure = ExecStartupFailure::ToolContext;
-    let tool_context = match production_tool_context(
-        &execution_config,
-        &workspace,
-        &settings,
-        effective_auto_approve,
-        effective_trust_mode,
-        effective_allow_sandbox_elevation,
-        effective_sandbox.as_deref(),
-    ) {
-        Ok(context) => context,
-        Err(error) => {
-            stop_exec_signal_controller(&mut signal_task).await;
-            return Err(error);
-        }
-    };
-    let tool_config = match production_tool_config(&tool_context, &settings) {
-        Ok(config) => config,
-        Err(error) => {
-            stop_exec_signal_controller(&mut signal_task).await;
-            return Err(error);
-        }
-    };
-    let fingerprint_context = tool_context.clone();
-    let accounting_baseline = if resume_replay.is_none() {
-        model_accounting_snapshot(&api_request_budget)
-    } else {
-        Default::default()
-    };
-    let model_port: Arc<dyn ModelPort> = if resume_budget_exhausted
-        || resume_replay
-            .as_ref()
-            .is_some_and(|replay| !resume_needs_live_model(replay))
-    {
-        Arc::new(ReplayOnlyModelPort)
-    } else {
-        startup_failure = ExecStartupFailure::Client;
-        let transport = if let Some(transport) = bound_transport.take() {
-            transport
-        } else {
-            match bind_exec_deepseek_transport(&execution_config, &api_request_budget) {
-                Ok(transport) => transport,
-                Err(error) => {
+        };
+        let run = match response.result {
+            RunCommandResult::Run { run } => *run,
+            RunCommandResult::Error { error } => {
+                if is_resume && error.code == RunApiErrorCode::RunAlreadyRunning {
+                    runtime_started = true;
+                    startup_failure = ExecStartupFailure::RunStore;
                     stop_exec_signal_controller(&mut signal_task).await;
-                    return Err(error);
+                    if output_format == ExecOutputFormat::StreamJson {
+                        emit_exec_stream_failure(
+                            config,
+                            model,
+                            prompt,
+                            &workspace,
+                            started,
+                            auto_approve,
+                            explicit_sandbox,
+                            "runtime_failure",
+                            "run_store_resume",
+                            error.run_id.as_ref(),
+                            startup_failure,
+                            "runtime_store_failed",
+                            &error.message,
+                        )
+                        .await
+                        .map_err(anyhow::Error::msg)?;
+                    }
+                    bail!("runtime_store_failed：{}", error.message);
                 }
+                startup_failure = startup_failure_for_run_api(&error);
+                stop_exec_signal_controller(&mut signal_task).await;
+                bail!("{}：{}", startup_failure.code(), error.message);
+            }
+            other => {
+                stop_exec_signal_controller(&mut signal_task).await;
+                bail!("AgentApplication 启动返回了非 Run 结果: {other:?}");
             }
         };
-        Arc::new(DeepSeekModelPort::new(transport, api_request_budget))
-    };
-    let tool_executor: Arc<dyn ToolExecutor> = Arc::new(ProductionToolExecutor::new(tool_config));
-    let (event_tx, mut event_rx) = mpsc::channel(RUNTIME_EVENT_CHANNEL_CAPACITY);
-    let sink = Arc::new(ChannelEventSink { sender: event_tx });
-    let runtime = Arc::new(AgentRuntime::new(
-        model_port,
-        tool_executor,
-        sink,
-        store.clone(),
-    ));
-    let tool_catalog = runtime.tool_definitions(&tool_policy, 0, limits.max_depth);
-    let tool_catalog_sha256 = serde_json::to_vec(&tool_catalog)
-        .ok()
-        .map(|bytes| format!("sha256:{}", crate::hashing::sha256_hex(&bytes)));
-    let execution_fingerprint_sha256 = execution_fingerprint_sha256(
-        &execution_config,
-        &effective_model,
-        &fingerprint_context,
-        tool_catalog_sha256.as_deref(),
-        env!("DEEPSEEK_BUILD_VERSION"),
-    );
+        runtime_started = true;
+        let root_run_id = run.run_id.clone();
+        let mut effective_model = run.model;
+        let mut effective_prompt = prompt.to_owned();
+        let mut effective_auto_approve = auto_approve;
+        let mut effective_sandbox = explicit_sandbox
+            .map(str::to_owned)
+            .or_else(|| config.sandbox_mode.clone());
+        let mut run_provider = "deepseek".to_owned();
+        let mut run_workspace = workspace.clone();
+        let mut tool_catalog_sha256 = None;
 
-    if let Some(replay) = resume_replay.as_ref()
-        && replay.snapshot.request.environment.tool_catalog_sha256 != tool_catalog_sha256
-    {
-        startup_failure = ExecStartupFailure::ResumeToolCatalogMismatch;
-        stop_exec_signal_controller(&mut signal_task).await;
-        bail!(
-            "exec_resume_tool_catalog_mismatch：当前二进制的模型可见工具目录与持久运行不一致"
+        let output = crate::exec_output::ExecOutput::new(
+            NonZeroUsize::new(EXEC_OUTPUT_QUEUE_CAPACITY)
+                .expect("output queue capacity is non-zero"),
         );
-    }
-    if let Some(replay) = resume_replay.as_ref() {
-        match replay
-            .snapshot
-            .request
-            .environment
-            .execution_fingerprint_sha256
-            .as_deref()
-        {
-            None => {
-                startup_failure = ExecStartupFailure::ResumeFingerprintMissing;
-                stop_exec_signal_controller(&mut signal_task).await;
-                bail!("exec_resume_fingerprint_missing：持久运行缺少执行环境指纹");
-            }
-            Some(persisted) if persisted != execution_fingerprint_sha256 => {
-                startup_failure = ExecStartupFailure::ResumeFingerprintMismatch;
-                stop_exec_signal_controller(&mut signal_task).await;
-                bail!("exec_resume_fingerprint_mismatch：当前执行环境与持久运行不一致");
-            }
-            Some(_) => {}
-        }
-    }
-
-    let run = if let Some(run_id) = resume_run_id {
-        runtime.resume(run_id)
-    } else {
-        runtime.start(RunRequest {
-            run_id: None,
-            parent_run_id: None,
+        let mut summary = ExecSummary {
+            mode: "runtime".to_owned(),
             model: effective_model.clone(),
-            input: effective_prompt.clone(),
-            system_prompt,
-            transcript: CanonicalTranscript::default(),
-            reasoning_effort,
-            // Preserve exec's existing explicit 384K request while moving the
-            // authority out of the TUI model catalog. `None` remains available
-            // to app callers that deliberately choose the lower Agent policy.
-            max_output_tokens: Some(
-                codewhale_deepseek::official_model_capabilities(&effective_model)
-                    .map_err(anyhow::Error::new)?
-                    .max_output_tokens,
-            ),
-            streaming: tool_mode || output_format == ExecOutputFormat::StreamJson,
-            actor: codewhale_runtime::AgentActor::default(),
-            deadline_unix_ms: effective_deadline_unix_ms,
-            tool_policy,
-            limits,
-            environment: RunEnvironment {
-                workspace: workspace.display().to_string(),
-                provider: route.provider.as_str().to_owned(),
-                tool_catalog_sha256: tool_catalog_sha256.clone(),
-                execution_fingerprint_sha256: Some(execution_fingerprint_sha256),
-                auto_approve: effective_auto_approve,
-                trust_mode: effective_trust_mode,
-                allow_sandbox_elevation: effective_allow_sandbox_elevation,
-                sandbox: effective_sandbox.clone(),
-            },
-            accounting_baseline,
-        })
-    };
-    runtime_started = true;
-    let root_run_id = run.run_id.clone();
-    let control = run.control();
-    let mut runtime_wait = Box::pin(run.wait());
-    drop(runtime);
-
-    let output = crate::exec_output::ExecOutput::new(
-        NonZeroUsize::new(EXEC_OUTPUT_QUEUE_CAPACITY).expect("output queue capacity is non-zero"),
-    );
-    let mut summary = ExecSummary {
-        mode: "runtime".to_owned(),
-        model: effective_model.clone(),
-        prompt: effective_prompt.clone(),
-        ..ExecSummary::default()
-    };
-    let mut transcript = CanonicalTranscript::default();
-    let mut tool_starts: HashMap<String, ToolStart> = HashMap::new();
-    let mut terminal: Option<AgentOutcome> = None;
-    let mut canonical_terminal = true;
-    let mut runtime_joined = false;
-    let mut drain_events = false;
-    let mut drain_deadline = None;
-    let mut output_failure = None;
-    let mut signal_exit_code = None;
-
-    while terminal.is_none() {
-        enum Next {
-            Event(Option<StoredRuntimeEvent>),
-            Signal(Option<i32>),
-            Runtime(Result<AgentOutcome, codewhale_runtime::RuntimeJoinError>),
-            DrainTimeout,
-        }
-
-        let next = if drain_events {
-            let settle_deadline = *drain_deadline.get_or_insert_with(|| {
-                tokio::time::Instant::now() + Duration::from_secs(EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS)
-            });
-            tokio::select! {
-                event = tokio::time::timeout_at(settle_deadline, event_rx.recv()) => match event {
-                    Ok(event) => Next::Event(event),
-                    Err(_) => Next::DrainTimeout,
-                },
-                result = &mut runtime_wait, if !runtime_joined => Next::Runtime(result),
-            }
-        } else {
-            tokio::select! {
-                biased;
-                signal = recv_exec_signal(&mut signal_rx) => Next::Signal(signal),
-                event = event_rx.recv() => Next::Event(event),
-                result = &mut runtime_wait, if !runtime_joined => Next::Runtime(result),
-            }
+            prompt: effective_prompt.clone(),
+            ..ExecSummary::default()
         };
+        let mut transcript = CanonicalTranscript::default();
+        let mut tool_starts: HashMap<String, ToolStart> = HashMap::new();
+        let mut terminal: Option<AgentOutcome> = None;
+        let mut after_sequence = 0_u64;
+        let mut drain_events = false;
+        let mut ignore_signals = false;
+        let mut drain_deadline = None;
+        let mut output_failure = None;
+        let mut signal_exit_code = None;
 
-        match next {
-            Next::Signal(Some(exit_code)) => {
-                signal_exit_code = Some(exit_code);
-                let _ = control.cancel();
-                drain_events = true;
+        while terminal.is_none() {
+            enum Next {
+                Events(RunCommandResult),
+                Signal(Option<i32>),
+                DrainTimeout,
             }
-            Next::Signal(None) => {
-                output_failure
-                    .get_or_insert_with(|| "Headless 信号控制器在运行期间意外退出".to_owned());
-                let _ = control.cancel();
-                drain_events = true;
-            }
-            Next::Runtime(result) => {
-                runtime_joined = true;
-                match result {
-                    Ok(outcome)
-                        if matches!(
-                            &outcome.terminal,
-                            TerminalState::Failed {
-                                failure: RuntimeFailure::Store { .. }
-                            }
-                        ) =>
-                    {
-                        canonical_terminal = false;
-                        terminal = Some(outcome);
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        output_failure.get_or_insert_with(|| error.to_string());
-                    }
+
+            let next = if drain_events {
+                let settle_deadline = *drain_deadline.get_or_insert_with(|| {
+                    tokio::time::Instant::now()
+                        + Duration::from_secs(EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS)
+                });
+                match tokio::time::timeout_at(
+                    settle_deadline,
+                    application.wait_events(&root_run_id, after_sequence),
+                )
+                .await
+                {
+                    Ok(events) => Next::Events(events),
+                    Err(_) => Next::DrainTimeout,
                 }
-            }
-            Next::DrainTimeout => {
-                std::process::exit(1);
-            }
-            // A RunStore acquisition failure has no durable event to publish,
-            // so its sink closes just before the Runtime join produces the
-            // typed fallback outcome. Resolve that join below instead of
-            // racing the closed channel into an untyped process error.
-            Next::Event(None) => break,
-            Next::Event(Some(event)) => {
-                if event.run_id != root_run_id {
+            } else if ignore_signals {
+                Next::Events(
+                    application
+                        .wait_events(&root_run_id, after_sequence)
+                        .await,
+                )
+            } else {
+                tokio::select! {
+                    biased;
+                    signal = recv_exec_signal(&mut signal_rx) => Next::Signal(signal),
+                    events = application.wait_events(&root_run_id, after_sequence) => Next::Events(events),
+                }
+            };
+
+            let events = match next {
+                Next::Signal(Some(exit_code)) => {
+                    let response = application
+                        .execute(run_envelope(
+                            "exec-signal-cancel",
+                            RunCommand::Cancel {
+                                run_id: root_run_id.clone(),
+                            },
+                        ))
+                        .await;
+                    if signal_cancel_won(&response.result, &signal_phase) {
+                        signal_exit_code = Some(exit_code);
+                        drain_events = true;
+                    } else {
+                        ignore_signals = true;
+                    }
                     continue;
                 }
+                Next::Signal(None) => {
+                    output_failure.get_or_insert_with(|| {
+                        "Headless 信号控制器在运行期间意外退出".to_owned()
+                    });
+                    let response = application
+                        .execute(run_envelope(
+                            "exec-controller-cancel",
+                            RunCommand::Cancel {
+                                run_id: root_run_id.clone(),
+                            },
+                        ))
+                        .await;
+                    if signal_cancel_won(&response.result, &signal_phase) {
+                        drain_events = true;
+                    } else {
+                        ignore_signals = true;
+                    }
+                    continue;
+                }
+                Next::DrainTimeout => std::process::exit(1),
+                Next::Events(RunCommandResult::Events { events, .. }) => events,
+                Next::Events(RunCommandResult::Error { error }) => {
+                    output_failure.get_or_insert(error.message);
+                    break;
+                }
+                Next::Events(other) => {
+                    output_failure.get_or_insert_with(|| {
+                        format!("AgentApplication events 返回了意外结果: {other:?}")
+                    });
+                    break;
+                }
+            };
+
+            for event in events {
+                if event.run_id != root_run_id || event.sequence <= after_sequence {
+                    continue;
+                }
+                after_sequence = event.sequence;
+                if let RuntimeEventKind::RunCreated { request } = &event.event {
+                    effective_model.clone_from(&request.model);
+                    effective_prompt.clone_from(&request.input);
+                    effective_auto_approve = request.environment.auto_approve;
+                    effective_sandbox.clone_from(&request.environment.sandbox);
+                    run_provider.clone_from(&request.environment.provider);
+                    run_workspace = PathBuf::from(&request.environment.workspace);
+                    tool_catalog_sha256.clone_from(&request.environment.tool_catalog_sha256);
+                    summary.model.clone_from(&request.model);
+                    summary.prompt.clone_from(&request.input);
+                }
                 if matches!(&event.event, RuntimeEventKind::Terminal { .. }) {
-                    // Claim the terminal outcome before projecting any
-                    // terminal-specific stdout. If a signal already won the
-                    // CAS, suppress the runtime terminal receipt and preserve
-                    // the signal exit; if Runtime wins, later signals cannot
-                    // turn a published success into a non-zero signal exit.
                     let committed_signal = commit_exec_terminal_signal(&signal_phase);
                     signal_exit_code = signal_exit_code.or(committed_signal);
                     drain_events |= committed_signal.is_some();
@@ -716,162 +461,169 @@ pub(crate) async fn run_exec_runtime(
                 .project(&event)
                 .await;
                 if let Some(wait) = wait {
-                    match wait_exec_output_until(wait, deadline, &mut signal_rx).await {
-                        ExecOutputWait::Written => {}
-                        ExecOutputWait::WatchdogTimeout => {
-                            // Stop waiting on the blocked writer and drain the
-                            // canonical sink so Runtime can publish its own
-                            // typed timeout terminal.
-                            drain_events = true;
+                    if ignore_signals {
+                        if let Err(error) = wait.await {
+                            output_failure.get_or_insert_with(|| error.to_string());
                         }
+                    } else {
+                        match wait_exec_output_until(wait, deadline, &mut signal_rx).await {
+                        ExecOutputWait::Written => {}
+                        ExecOutputWait::WatchdogTimeout => drain_events = true,
                         ExecOutputWait::Signal(Some(exit_code)) => {
-                            signal_exit_code = Some(exit_code);
-                            let _ = control.cancel();
-                            drain_events = true;
+                            let response = application
+                                .execute(run_envelope(
+                                    "exec-output-cancel",
+                                    RunCommand::Cancel {
+                                        run_id: root_run_id.clone(),
+                                    },
+                                ))
+                                .await;
+                            if signal_cancel_won(&response.result, &signal_phase) {
+                                signal_exit_code = Some(exit_code);
+                                drain_events = true;
+                            } else {
+                                ignore_signals = true;
+                            }
                         }
                         ExecOutputWait::Signal(None) => {
                             output_failure.get_or_insert_with(|| {
                                 "Headless 信号控制器在输出期间意外退出".to_owned()
                             });
-                            let _ = control.cancel();
-                            drain_events = true;
+                            let response = application
+                                .execute(run_envelope(
+                                    "exec-output-controller-cancel",
+                                    RunCommand::Cancel {
+                                        run_id: root_run_id.clone(),
+                                    },
+                                ))
+                                .await;
+                            if signal_cancel_won(&response.result, &signal_phase) {
+                                drain_events = true;
+                            } else {
+                                ignore_signals = true;
+                            }
                         }
                         ExecOutputWait::Failed(error) => {
                             output_failure.get_or_insert(error);
-                            let _ = control.cancel();
+                            let _ = application
+                                .execute(run_envelope(
+                                    "exec-output-failure-cancel",
+                                    RunCommand::Cancel {
+                                        run_id: root_run_id.clone(),
+                                    },
+                                ))
+                                .await;
                             drain_events = true;
+                        }
                         }
                     }
                 }
                 if let RuntimeEventKind::Terminal { outcome } = event.event {
                     terminal = Some(*outcome);
+                    break;
                 }
             }
         }
-    }
 
-    if !runtime_joined {
-        match tokio::time::timeout(
-            Duration::from_secs(EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS),
-            &mut runtime_wait,
-        )
-        .await
-        {
-            Ok(Ok(outcome)) => {
-                runtime_joined = true;
-                if matches!(
-                    &outcome.terminal,
-                    TerminalState::Failed {
-                        failure: RuntimeFailure::Store { .. }
-                    }
-                ) {
-                    canonical_terminal = false;
-                    terminal = Some(outcome);
-                }
+        let Some(outcome) = terminal else {
+            let report = output
+                .close_and_join(Duration::from_secs(EXEC_OUTPUT_CLOSE_TIMEOUT_SECS))
+                .await;
+            stop_exec_signal_controller(&mut signal_task).await;
+            if report.unjoined {
+                std::process::exit(1);
             }
-            Ok(Err(error)) => {
-                output_failure.get_or_insert_with(|| error.to_string());
-            }
-            Err(_) => std::process::exit(1),
+            bail!(
+                "AgentApplication ended without a canonical terminal event{}",
+                output_failure
+                    .as_deref()
+                    .map(|error| format!(": {error}"))
+                    .unwrap_or_default()
+            );
         };
-    }
-    let Some(outcome) = terminal else {
+        let terminal_projection = project_terminal(&outcome.terminal);
+        summary.terminal = Some(terminal_projection.receipt);
+        summary.accounting = accounting_receipt(&outcome.accounting);
+        summary.error = terminal_projection.error.clone();
+        summary.error_category = terminal_projection
+            .error
+            .as_ref()
+            .map(|_| terminal_projection.category.to_owned());
+
+        if !drain_events {
+            emit_terminal_output(
+                &output,
+                &summary,
+                &transcript,
+                &outcome,
+                &terminal_projection,
+                TerminalMetadata {
+                    receipt_kind: "terminal",
+                    provider: &run_provider,
+                    model: &effective_model,
+                    route_source,
+                    started,
+                    approval_posture: if effective_auto_approve {
+                        "auto_tools"
+                    } else {
+                        "ask"
+                    },
+                    sandbox_posture: effective_sandbox
+                        .as_deref()
+                        .unwrap_or("configured_default"),
+                    prompt: &effective_prompt,
+                    tool_catalog_sha256,
+                    workspace: &run_workspace,
+                    run_id: &root_run_id,
+                },
+                output_format,
+                json_output,
+            )
+            .await
+            .unwrap_or_else(|error| {
+                output_failure.get_or_insert(error);
+            });
+        }
+
+        if json_output && output_format != ExecOutputFormat::StreamJson && !drain_events {
+            let mut bytes = serde_json::to_vec_pretty(&summary)?;
+            bytes.push(b'\n');
+            if let Err(error) = wait_terminal_output(output.enqueue_stdout(bytes)).await {
+                output_failure.get_or_insert(error);
+            }
+        }
+
         let report = output
             .close_and_join(Duration::from_secs(EXEC_OUTPUT_CLOSE_TIMEOUT_SECS))
             .await;
         stop_exec_signal_controller(&mut signal_task).await;
+        if let Some(exit_code) = signal_exit_code {
+            std::process::exit(exit_code);
+        }
         if report.unjoined {
             std::process::exit(1);
         }
-        bail!(
-            "exec runtime ended without a canonical terminal event{}",
-            output_failure
-                .as_deref()
-                .map(|error| format!(": {error}"))
-                .unwrap_or_default()
-        );
-    };
-    let terminal_projection = project_terminal(&outcome.terminal);
-    summary.terminal = Some(terminal_projection.receipt);
-    summary.accounting = accounting_receipt(&outcome.accounting);
-    summary.error = terminal_projection.error.clone();
-    summary.error_category = terminal_projection
-        .error
-        .as_ref()
-        .map(|_| terminal_projection.category.to_owned());
-
-    if !drain_events {
-        emit_terminal_output(
-            &output,
-            &summary,
-            &transcript,
-            &outcome,
-            &terminal_projection,
-            TerminalMetadata {
-                receipt_kind: if canonical_terminal {
-                    "terminal"
-                } else {
-                    "runtime_failure"
-                },
-                provider: route.provider.as_str(),
-                model: &effective_model,
-                route_source,
-                started,
-                approval_posture: if effective_auto_approve { "auto_tools" } else { "ask" },
-                sandbox_posture: effective_sandbox.as_deref().unwrap_or("configured_default"),
-                prompt: &effective_prompt,
-                tool_catalog_sha256,
-                workspace: &workspace,
-                run_id: &root_run_id,
-            },
-            output_format,
-            json_output,
-        )
-        .await
-        .unwrap_or_else(|error| {
-            output_failure.get_or_insert(error);
-        });
-    }
-
-    if json_output && output_format != ExecOutputFormat::StreamJson && !drain_events {
-        let mut bytes = serde_json::to_vec_pretty(&summary)?;
-        bytes.push(b'\n');
-        if let Err(error) = wait_terminal_output(output.enqueue_stdout(bytes)).await {
+        if let Some(error) = report
+            .write_error
+            .map(|error| error.to_string())
+            .or(report.join_error)
+        {
             output_failure.get_or_insert(error);
         }
-    }
-
-    let report = output
-        .close_and_join(Duration::from_secs(EXEC_OUTPUT_CLOSE_TIMEOUT_SECS))
-        .await;
-    stop_exec_signal_controller(&mut signal_task).await;
-    if let Some(exit_code) = signal_exit_code {
-        std::process::exit(exit_code);
-    }
-    if !runtime_joined || report.unjoined {
-        std::process::exit(1);
-    }
-    if let Some(error) = report
-        .write_error
-        .map(|error| error.to_string())
-        .or(report.join_error)
-    {
-        output_failure.get_or_insert(error);
-    }
-    if let Some(error) = output_failure {
-        bail!("exec output failed: {error}");
-    }
-    if let Some(error) = terminal_projection.error {
-        bail!("exec runtime failed: {error}");
-    }
-    Ok(())
+        if let Some(error) = output_failure {
+            bail!("exec output failed: {error}");
+        }
+        if let Some(error) = terminal_projection.error {
+            bail!("exec runtime failed: {error}");
+        }
+        Ok(())
     }
     .await;
 
     if let Err(error) = &result
         && !runtime_started
         && output_format == ExecOutputFormat::StreamJson
-        && let Err(output_error) = emit_startup_stream_failure(
+        && let Err(output_error) = emit_exec_stream_failure(
             config,
             model,
             prompt,
@@ -879,7 +631,11 @@ pub(crate) async fn run_exec_runtime(
             started,
             auto_approve,
             explicit_sandbox,
+            "startup_failure",
+            "startup",
+            None,
             startup_failure,
+            startup_failure.code(),
             &error.to_string(),
         )
         .await
@@ -889,17 +645,8 @@ pub(crate) async fn run_exec_runtime(
     result
 }
 
-fn bind_exec_deepseek_transport(
-    config: &Config,
-    budget: &SharedApiRequestBudget,
-) -> Result<codewhale_deepseek::DeepSeekTransport> {
-    DeepSeekClient::new(config)?
-        .with_api_request_budget(budget.clone())
-        .official_deepseek_transport()
-}
-
 #[allow(clippy::too_many_arguments)]
-async fn emit_startup_stream_failure(
+async fn emit_exec_stream_failure(
     config: &Config,
     model: &str,
     prompt: &str,
@@ -907,7 +654,11 @@ async fn emit_startup_stream_failure(
     started: Instant,
     auto_approve: bool,
     explicit_sandbox: Option<&str>,
+    receipt_kind: &'static str,
+    route_source: &str,
+    run_id: Option<&RunId>,
     failure: ExecStartupFailure,
+    error_code: &str,
     message: &str,
 ) -> std::result::Result<(), String> {
     let output = crate::exec_output::ExecOutput::new(
@@ -915,22 +666,27 @@ async fn emit_startup_stream_failure(
     );
     let terminal = ExecTerminalReceipt::from_reason(failure.termination_reason());
     let meta = ExecStreamMeta {
-        receipt_kind: "startup_failure",
+        receipt_kind,
         provider: config.api_provider().as_str().to_owned(),
         model: model.to_owned(),
-        route_source: "startup".to_owned(),
+        route_source: route_source.to_owned(),
         accounting: ExecAccountingReceipt::default(),
         duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         approval_posture: if auto_approve { "auto_tools" } else { "ask" }.to_owned(),
-        sandbox_posture: explicit_sandbox.unwrap_or("configured_default").to_owned(),
+        sandbox_posture: explicit_sandbox
+            .or(config.sandbox_mode.as_deref())
+            .unwrap_or("configured_default")
+            .to_owned(),
         binary_sha256: current_binary_sha256(),
         config_sha256: None,
         prompt_sha256: format!("sha256:{}", crate::hashing::sha256_hex(prompt.as_bytes())),
         tool_catalog_sha256: None,
         input_analysis: ExecStreamInputAnalysis::default(),
         visible_final_answer_chars: 0,
-        run_id: String::new(),
-        resume_command: String::new(),
+        run_id: run_id.map(ToString::to_string).unwrap_or_default(),
+        resume_command: run_id
+            .map(|run_id| format!("codewhale exec --resume {run_id}"))
+            .unwrap_or_default(),
         workspace: workspace.display().to_string(),
         message_count: 0,
         terminal,
@@ -948,7 +704,7 @@ async fn emit_startup_stream_failure(
             &output,
             &ExecStreamEvent::Error {
                 error: message.to_owned(),
-                code: failure.code().to_owned(),
+                code: error_code.to_owned(),
                 category: failure.category().to_owned(),
                 recoverable: false,
                 termination_reason: failure.termination_reason(),
@@ -974,21 +730,164 @@ async fn emit_startup_stream_failure(
     writes.map(|_| ())
 }
 
-fn validate_budget_route(config: &Config, limit: Option<NonZeroU32>) -> Result<()> {
-    if limit.is_none() {
-        return Ok(());
+fn run_envelope(request_id: &str, command: RunCommand) -> RunCommandEnvelope {
+    RunCommandEnvelope {
+        schema_version: RUN_API_SCHEMA_VERSION,
+        request_id: request_id.to_owned(),
+        command,
     }
+}
+
+/// Settle the process signal against the canonical control result.
+///
+/// `RunTerminal` means the Store terminal was already authoritative before
+/// Cancel reached the active control. In that case suppress the latched signal
+/// so the canonical terminal receipt and its normal exit status win. Every
+/// other result keeps the signal as the cooperative shutdown owner.
+fn signal_cancel_won(result: &RunCommandResult, phase: &AtomicI32) -> bool {
+    if matches!(
+        result,
+        RunCommandResult::Error { error }
+            if error.code == RunApiErrorCode::RunTerminal
+    ) {
+        phase.store(-1, Ordering::SeqCst);
+        false
+    } else {
+        true
+    }
+}
+
+fn startup_failure_for_run_api(error: &RunApiError) -> ExecStartupFailure {
+    let message = error.message.as_str();
+    if message.starts_with("run_resume_workspace_mismatch：") {
+        return ExecStartupFailure::ResumeWorkspaceMismatch;
+    }
+    if message.starts_with("run_resume_provider_mismatch：") {
+        return ExecStartupFailure::ResumeProviderMismatch;
+    }
+    if message.starts_with("run_resume_tool_catalog_mismatch：") {
+        return ExecStartupFailure::ResumeToolCatalogMismatch;
+    }
+    if message.starts_with("run_resume_fingerprint_missing：") {
+        return ExecStartupFailure::ResumeFingerprintMissing;
+    }
+    if message.starts_with("run_resume_fingerprint_mismatch：") {
+        return ExecStartupFailure::ResumeFingerprintMismatch;
+    }
+    match error.code {
+        RunApiErrorCode::RunNotFound => ExecStartupFailure::ResumeNotFound,
+        RunApiErrorCode::RunStoreFailed | RunApiErrorCode::RunAlreadyRunning => {
+            ExecStartupFailure::RunStore
+        }
+        RunApiErrorCode::InvalidRequest if message.starts_with("deepseek_auto_route_") => {
+            ExecStartupFailure::Route
+        }
+        RunApiErrorCode::InvalidRequest if message.starts_with("deepseek_credential_missing：") => {
+            ExecStartupFailure::Client
+        }
+        RunApiErrorCode::InvalidRequest => ExecStartupFailure::InvalidArguments,
+        _ => ExecStartupFailure::InvalidArguments,
+    }
+}
+
+fn production_application_config(
+    config: &Config,
+    workspace: &Path,
+    settings: &crate::settings::Settings,
+    auto_approve: bool,
+    trust_mode: bool,
+    append_system_prompt: Option<String>,
+) -> Result<ProductionApplicationConfig> {
     let provider = config.api_provider();
-    let base_url = config.deepseek_base_url();
     let path_suffix = config
         .provider_config_for(provider)
         .and_then(|provider| provider.path_suffix.as_deref());
-    if !crate::client::deepseek::owns_route(provider, &base_url, path_suffix) {
-        bail!(
-            "--max-api-requests 当前只支持 DeepSeek 官方路由；请使用 deepseek、官方 API 地址且不要配置 path_suffix"
-        );
+    if path_suffix.is_some() {
+        bail!("DeepSeek production AgentApplication 不支持 path_suffix 路由改写");
     }
-    Ok(())
+    let base_url = config.deepseek_base_url();
+    let endpoint = if codewhale_deepseek::official_root(&base_url).is_some() {
+        DeepSeekEndpoint::Official
+    } else {
+        DeepSeekEndpoint::loopback_fixture(crate::client::versioned_base_url(&base_url))?
+    };
+    let retry = config.retry_policy();
+    let connection = DeepSeekConnectionConfig {
+        endpoint,
+        strict_tools: config.strict_tool_mode.unwrap_or(false),
+        response_header_timeout: Duration::from_secs(45),
+        stream_idle_timeout: Duration::from_secs(config.stream_chunk_timeout_secs()),
+        retry: TransportRetryPolicy {
+            max_retries: if retry.enabled { retry.max_retries } else { 0 },
+            initial_delay: Duration::from_secs_f64(retry.initial_delay.clamp(0.0, 300.0)),
+            max_delay: Duration::from_secs_f64(retry.max_delay.clamp(0.0, 300.0)),
+            exponential_base: retry.exponential_base,
+        },
+    };
+
+    let mut instructions = config
+        .instructions_paths()
+        .into_iter()
+        .map(Into::into)
+        .collect::<Vec<InstructionSource>>();
+    if let Some(content) = append_system_prompt {
+        instructions.push(InstructionSource::Inline {
+            name: "cli:append-system-prompt".to_owned(),
+            content,
+        });
+    }
+    let prompt = ProductionPromptConfig {
+        preferences: settings.prompt_preferences(),
+        instructions,
+        skills_dir: Some(config.skills_dir()),
+        project_context_pack_enabled: config.project_context_pack_enabled(),
+        verbosity: config.verbosity.clone(),
+        skills_scan_codewhale_only: config.skills_config().scan_codewhale_only(),
+        shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()
+            .kind()
+            .binary()
+            .to_owned(),
+    };
+
+    let trusted = crate::workspace_trust::WorkspaceTrust::load_for(workspace);
+    let shell_policy = if auto_approve || config.allow_shell() {
+        ShellPolicy::Full
+    } else {
+        ShellPolicy::None
+    };
+    let mut tools = ProductionToolConfig::new(workspace.to_path_buf())
+        .with_trust_mode(trust_mode)
+        .with_trusted_external_paths(trusted.paths().to_vec())
+        .with_follow_symlinks(settings.workspace_follow_symlinks)
+        .with_auto_approve(auto_approve)
+        .with_shell_policy(shell_policy)
+        .with_prefer_external_pdftotext(settings.prefer_external_pdftotext);
+    if let Some(backend) = crate::sandbox_backend::create_backend(config)? {
+        tools = tools.with_sandbox_backend(Arc::from(backend));
+    }
+    let exec_policy = if config
+        .features()
+        .enabled(crate::features::Feature::ExecPolicy)
+    {
+        crate::execpolicy::load_default_policy()?.map(|policy| policy.production_snapshot())
+    } else {
+        None
+    };
+    tools = tools.with_exec_policy(exec_policy);
+
+    let mut application = ProductionApplicationConfig::official()
+        .with_deepseek_connection(connection)
+        .with_tool_config(tools)
+        .with_prompt(prompt)
+        .with_default_max_api_requests(
+            NonZeroU32::new(u32::MAX).expect("exec request tracking limit is non-zero"),
+        );
+    if let Ok(api_key) = config.deepseek_api_key()
+        && !api_key.trim().is_empty()
+    {
+        application = application.with_api_key(api_key)?;
+    }
+    Ok(application)
 }
 
 fn runtime_tool_policy(
@@ -996,10 +895,12 @@ fn runtime_tool_policy(
     allowed: Option<Vec<String>>,
     denied: Option<Vec<String>>,
 ) -> ToolPolicy {
-    let mut denied = denied.unwrap_or_default();
-    if !denied.iter().any(|name| name == "workflow") {
-        denied.push("workflow".to_owned());
+    let mut allowed = allowed;
+    if let Some(allowed) = allowed.as_mut() {
+        allowed.sort();
+        allowed.dedup();
     }
+    let mut denied = denied.unwrap_or_default();
     denied.sort();
     denied.dedup();
     ToolPolicy {
@@ -1046,42 +947,6 @@ fn runtime_limits(
     }
 }
 
-fn runtime_system_prompt(
-    config: &Config,
-    model: &str,
-    workspace: &Path,
-    settings: &crate::settings::Settings,
-    append_system_prompt: Option<String>,
-    tool_mode: bool,
-) -> RuntimeSystemPrompt {
-    let mut instructions = config
-        .instructions_paths()
-        .into_iter()
-        .map(Into::into)
-        .collect::<Vec<InstructionSource>>();
-    if let Some(content) = append_system_prompt {
-        instructions.push(InstructionSource::Inline {
-            name: "cli:append-system-prompt".to_owned(),
-            content,
-        });
-    }
-    let preferences = settings.prompt_preferences();
-    production_system_prompt(ProductionPromptRequest {
-        workspace,
-        model,
-        preferences: &preferences,
-        instructions: &instructions,
-        skills_dir: Some(&config.skills_dir()),
-        project_context_pack_enabled: config.project_context_pack_enabled(),
-        verbosity: config.verbosity.as_deref(),
-        skills_scan_codewhale_only: config.skills_config().scan_codewhale_only(),
-        shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()
-            .kind()
-            .binary(),
-        tool_mode,
-    })
-}
-
 fn runtime_reasoning_effort(value: &str) -> ReasoningEffort {
     match value.trim().to_ascii_lowercase().as_str() {
         "off" => ReasoningEffort::Off,
@@ -1090,124 +955,6 @@ fn runtime_reasoning_effort(value: &str) -> ReasoningEffort {
         "high" => ReasoningEffort::High,
         "max" => ReasoningEffort::Max,
         _ => ReasoningEffort::Auto,
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn production_tool_context(
-    config: &Config,
-    workspace: &Path,
-    settings: &crate::settings::Settings,
-    auto_approve: bool,
-    trust_mode: bool,
-    allow_sandbox_elevation: bool,
-    explicit_sandbox: Option<&str>,
-) -> Result<ToolContext> {
-    let mode = if auto_approve {
-        AppMode::Yolo
-    } else {
-        AppMode::Agent
-    };
-    let shell_policy =
-        crate::core::authority::shell_policy_for_mode(mode, auto_approve || config.allow_shell());
-    let trusted = crate::workspace_trust::WorkspaceTrust::load_for(workspace);
-    let mut context = ToolContext::with_auto_approve(
-        workspace.to_path_buf(),
-        trust_mode,
-        config.notes_path(),
-        config.mcp_config_path(),
-        auto_approve,
-    )
-    .with_features(config.features())
-    .with_shell_policy(shell_policy)
-    .with_elevated_sandbox_policy(
-        if exec_sandbox_elevation_authorized(allow_sandbox_elevation, explicit_sandbox) {
-            codewhale_tools::sandbox::SandboxPolicy::DangerFullAccess
-        } else {
-            effective_sandbox_policy(config, mode, workspace)
-        },
-    );
-    context.set_trusted_external_paths(trusted.paths().to_vec());
-    context.set_follow_symlinks(settings.workspace_follow_symlinks);
-    if let Some(network) = config.network.clone() {
-        context = context.with_network_policy(
-            crate::network_policy::NetworkPolicyDecider::with_default_audit(network.into_runtime()),
-        );
-    }
-    if let Some(backend) = crate::sandbox_backend::create_backend(config)? {
-        context = context.with_sandbox_backend(Arc::from(backend));
-    }
-    context.search_provider = config.search_provider();
-    context.search_api_key = config
-        .search
-        .as_ref()
-        .and_then(|search| search.api_key.clone());
-    context.search_base_url = config
-        .search
-        .as_ref()
-        .and_then(|search| search.base_url.clone());
-    Ok(context)
-}
-
-fn production_tool_config(
-    context: &ToolContext,
-    settings: &crate::settings::Settings,
-) -> Result<ProductionToolConfig> {
-    let mut config = ProductionToolConfig::new(context.workspace().to_path_buf())
-        .with_trust_mode(context.trust_mode())
-        .with_trusted_external_paths(context.trusted_external_paths().to_vec())
-        .with_follow_symlinks(context.follow_symlinks())
-        .with_auto_approve(context.auto_approve())
-        .with_shell_policy(context.shell_policy)
-        .with_shell_network_denied_hint(context.shell_network_denied_hint.clone())
-        .with_prefer_external_pdftotext(settings.prefer_external_pdftotext);
-    if let Some(policy) = context.elevated_sandbox_policy.clone() {
-        config = config.with_elevated_sandbox_policy(policy);
-    }
-    if let Some(backend) = context.sandbox_backend.clone() {
-        config = config.with_sandbox_backend(backend);
-    }
-    let exec_policy = if context
-        .features
-        .enabled(crate::features::Feature::ExecPolicy)
-    {
-        crate::execpolicy::load_default_policy()?.map(|policy| policy.production_snapshot())
-    } else {
-        None
-    };
-    Ok(config.with_exec_policy(exec_policy))
-}
-
-fn effective_sandbox_policy(
-    config: &Config,
-    mode: AppMode,
-    workspace: &Path,
-) -> codewhale_tools::sandbox::SandboxPolicy {
-    match config.sandbox_mode.as_deref() {
-        Some("read-only") => codewhale_tools::sandbox::SandboxPolicy::ReadOnly,
-        Some("workspace-write") => codewhale_tools::sandbox::SandboxPolicy::WorkspaceWrite {
-            writable_roots: vec![workspace.to_path_buf()],
-            network_access: true,
-            exclude_tmpdir: false,
-            exclude_slash_tmp: false,
-        },
-        Some("danger-full-access") => codewhale_tools::sandbox::SandboxPolicy::DangerFullAccess,
-        Some("external-sandbox") => codewhale_tools::sandbox::SandboxPolicy::ExternalSandbox {
-            network_access: true,
-        },
-        _ => crate::core::authority::sandbox_policy_for_mode(mode, workspace),
-    }
-}
-
-#[derive(Clone)]
-struct ChannelEventSink {
-    sender: mpsc::Sender<StoredRuntimeEvent>,
-}
-
-#[async_trait]
-impl RuntimeEventSink for ChannelEventSink {
-    async fn emit(&self, event: StoredRuntimeEvent) {
-        let _ = self.sender.send(event).await;
     }
 }
 
@@ -1967,161 +1714,32 @@ fn unix_ms_now() -> u64 {
 mod tests {
     use super::*;
 
-    fn test_execution_fingerprint(config: &Config) -> String {
-        execution_fingerprint_sha256(
-            config,
-            "deepseek-v4-pro",
-            &ToolContext::new(std::env::temp_dir().join("codewhale-exec-fingerprint")),
-            Some("sha256:test-tool-catalog"),
-            "0.8.68 (composition-a)",
-        )
-    }
-
     #[test]
-    fn execution_fingerprint_binds_deepseek_wire_decoder_and_tool_backend_without_secrets() {
-        let mut baseline = Config {
-            provider: Some("deepseek".to_owned()),
-            api_key: Some("deepseek-secret-a".to_owned()),
-            base_url: Some("https://api.deepseek.com".to_owned()),
-            strict_tool_mode: Some(false),
-            sandbox_backend: Some("opensandbox".to_owned()),
-            sandbox_url: Some("https://sandbox-a.example".to_owned()),
-            sandbox_api_key: Some("sandbox-secret-a".to_owned()),
-            providers: Some(crate::config::ProvidersConfig::default()),
-            tui: Some(crate::config::TuiConfig {
-                stream_chunk_timeout_secs: Some(900),
-                ..crate::config::TuiConfig::default()
-            }),
-            ..Config::default()
+    fn canonical_terminal_rejects_an_already_latched_process_signal() {
+        let phase = AtomicI32::new(143);
+        let result = RunCommandResult::Error {
+            error: RunApiError {
+                code: RunApiErrorCode::RunTerminal,
+                message: "run already terminal".to_owned(),
+                run_id: Some(RunId::from("run-terminal")),
+                terminal: None,
+            },
         };
-        baseline
-            .providers
-            .as_mut()
-            .expect("providers")
-            .deepseek
-            .reasoning_stream_style = Some("separate_field".to_owned());
-        let expected = test_execution_fingerprint(&baseline);
 
-        let mut strict = baseline.clone();
-        strict.strict_tool_mode = Some(true);
-        assert_ne!(test_execution_fingerprint(&strict), expected);
-
-        let mut suffix = baseline.clone();
-        suffix
-            .providers
-            .as_mut()
-            .expect("providers")
-            .deepseek
-            .path_suffix = Some("v1/custom-chat".to_owned());
-        assert_ne!(test_execution_fingerprint(&suffix), expected);
-
-        let mut decoder = baseline.clone();
-        decoder
-            .providers
-            .as_mut()
-            .expect("providers")
-            .deepseek
-            .reasoning_stream_style = Some("inline_tags".to_owned());
-        assert_ne!(test_execution_fingerprint(&decoder), expected);
-
-        let mut idle_timeout = baseline.clone();
-        idle_timeout
-            .tui
-            .as_mut()
-            .expect("tui")
-            .stream_chunk_timeout_secs = Some(901);
-        assert_ne!(test_execution_fingerprint(&idle_timeout), expected);
-
-        let mut sandbox_endpoint = baseline.clone();
-        sandbox_endpoint.sandbox_url = Some("https://sandbox-b.example".to_owned());
-        assert_ne!(test_execution_fingerprint(&sandbox_endpoint), expected);
-
-        let mut rotated_credentials = baseline;
-        rotated_credentials.api_key = Some("deepseek-secret-b".to_owned());
-        rotated_credentials.sandbox_api_key = Some("sandbox-secret-b".to_owned());
-        assert_eq!(test_execution_fingerprint(&rotated_credentials), expected);
-
-        assert_ne!(
-            execution_fingerprint_sha256(
-                &rotated_credentials,
-                "deepseek-v4-pro",
-                &ToolContext::new(std::env::temp_dir().join("codewhale-exec-fingerprint")),
-                Some("sha256:test-tool-catalog"),
-                "0.8.68 (composition-b)",
-            ),
-            expected,
-            "a different application composition revision must require an explicit resume cutover"
-        );
+        assert!(!signal_cancel_won(&result, &phase));
+        assert_eq!(phase.load(Ordering::SeqCst), -1);
+        assert_eq!(commit_exec_terminal_signal(&phase), None);
     }
 
     #[test]
-    fn disabled_subagents_collapse_exec_limits_to_the_root_actor() {
-        let config: Config =
-            toml::from_str("[subagents]\nenabled = false\n").expect("disabled subagent config");
-
-        let limits = runtime_limits(
-            &config,
-            crate::config::ApiProvider::Deepseek,
-            4,
-            10,
-            None,
-            30_000,
-        );
-
-        assert_eq!(limits.max_depth, 0);
-        assert_eq!(limits.max_concurrent_children, 0);
-        assert_eq!(limits.max_model_requests, 10);
-        assert_eq!(limits.max_tool_calls, 40);
-    }
-
-    #[test]
-    fn fixed_catalog_strict_request_falls_back_atomically_without_tool_loss() {
-        let definitions = codewhale_tools::production_tool_definitions();
-        assert_eq!(definitions.len(), 11);
-        assert!(definitions[0].input_schema.get("oneOf").is_some());
-        let decision = codewhale_deepseek::plan_tool_surface(
-            true,
-            definitions
-                .iter()
-                .map(|definition| &definition.input_schema),
-        );
-        assert_eq!(
-            decision.surface,
-            codewhale_deepseek::ApiSurface::StandardChat
-        );
-        assert!(!decision.strict_compatible);
-        assert!(decision.strict_fallback);
-        assert_eq!(
-            definitions
-                .iter()
-                .map(|definition| definition.name.as_str())
-                .collect::<Vec<_>>(),
-            codewhale_tools::PRODUCTION_TOOL_NAMES
-        );
-    }
-
-    #[test]
-    fn resume_restores_physical_budget_from_accounting_not_runtime_limits() {
-        let mut accounting = ModelAccounting {
-            hard_request_limit: Some(9),
-            ..ModelAccounting::default()
+    fn accepted_cancel_keeps_the_latched_process_signal_authoritative() {
+        let phase = AtomicI32::new(143);
+        let result = RunCommandResult::Accepted {
+            run_id: RunId::from("run-active"),
+            last_sequence: 2,
         };
-        accounting.root.started = 3;
-        accounting.child.started = 2;
 
-        let (budget, exhausted) = resume_api_request_budget(&accounting);
-        let (requests, _, _) = budget.accounting_snapshot();
-        assert!(!exhausted);
-        assert_eq!(requests.limit, 4);
-
-        accounting.hard_request_limit = None;
-        let (tracking_only, exhausted) = resume_api_request_budget(&accounting);
-        let (requests, _, _) = tracking_only.accounting_snapshot();
-        assert!(!exhausted);
-        assert_eq!(requests.limit, u32::MAX);
-
-        accounting.hard_request_limit = Some(5);
-        let (_, exhausted) = resume_api_request_budget(&accounting);
-        assert!(exhausted);
+        assert!(signal_cancel_won(&result, &phase));
+        assert_eq!(commit_exec_terminal_signal(&phase), Some(143));
     }
 }
