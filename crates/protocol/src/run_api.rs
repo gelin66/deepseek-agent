@@ -90,6 +90,8 @@ pub enum RunCommand {
     },
     Resume {
         run_id: RunId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_workspace: Option<String>,
     },
     Steer {
         run_id: RunId,
@@ -332,6 +334,7 @@ mod tests {
             },
             RunCommand::Resume {
                 run_id: RunId::from("run-1"),
+                expected_workspace: None,
             },
             RunCommand::Steer {
                 run_id: RunId::from("run-1"),
@@ -362,6 +365,29 @@ mod tests {
                 command
             );
         }
+    }
+
+    #[test]
+    fn resume_expected_workspace_is_optional_and_exact() {
+        let without_workspace = RunCommand::Resume {
+            run_id: RunId::from("run-1"),
+            expected_workspace: None,
+        };
+        let encoded = serde_json::to_value(&without_workspace).expect("serialize resume");
+        assert_eq!(encoded, json!({ "kind": "resume", "run_id": "run-1" }));
+        assert_eq!(
+            serde_json::from_value::<RunCommand>(encoded).expect("default missing workspace"),
+            without_workspace
+        );
+
+        let exact = RunCommand::Resume {
+            run_id: RunId::from("run-1"),
+            expected_workspace: Some("/workspace/项目".to_owned()),
+        };
+        assert_eq!(
+            serde_json::to_value(&exact).expect("serialize expected workspace")["expected_workspace"],
+            "/workspace/项目"
+        );
     }
 
     #[test]

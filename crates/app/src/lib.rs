@@ -224,7 +224,10 @@ impl AgentApplication {
                     run_id,
                     after_sequence,
                 } => self.events(&run_id, after_sequence).await,
-                RunCommand::Resume { run_id } => self.resume(&run_id).await,
+                RunCommand::Resume {
+                    run_id,
+                    expected_workspace,
+                } => self.resume(&run_id, expected_workspace.as_deref()).await,
                 RunCommand::Steer { run_id, content } => {
                     if content.trim().is_empty() {
                         error_result(api_error(
@@ -349,11 +352,24 @@ impl AgentApplication {
         }
     }
 
-    async fn resume(&self, run_id: &RunId) -> RunCommandResult {
+    async fn resume(&self, run_id: &RunId, expected_workspace: Option<&str>) -> RunCommandResult {
         let replay = match self.load(run_id).await {
             Ok(replay) => replay,
             Err(error) => return error_result(error),
         };
+        if let Some(expected_workspace) = expected_workspace
+            && expected_workspace != replay.snapshot.request.environment.workspace
+        {
+            return error_result(api_error(
+                RunApiErrorCode::RunEnvironmentMismatch,
+                format!(
+                    "run_resume_workspace_mismatch：expected workspace {expected_workspace:?} does not match persisted workspace {:?}",
+                    replay.snapshot.request.environment.workspace
+                ),
+                Some(run_id.clone()),
+                None,
+            ));
+        }
         if replay.snapshot.terminal.is_some() {
             return RunCommandResult::Run {
                 run: Box::new(project_run(&replay)),
@@ -932,8 +948,12 @@ mod tests {
     }
 
     fn error_code(response: RunCommandResponse) -> RunApiErrorCode {
+        error(response).code
+    }
+
+    fn error(response: RunCommandResponse) -> RunApiError {
         match response.result {
-            RunCommandResult::Error { error } => error.code,
+            RunCommandResult::Error { error } => error,
             other => panic!("expected error result, got {other:?}"),
         }
     }
@@ -1094,11 +1114,29 @@ mod tests {
                 "resume",
                 RunCommand::Resume {
                     run_id: run.run_id.clone(),
+                    expected_workspace: Some("/workspace/project".to_owned()),
                 },
             ))
             .await,
         );
         assert!(resumed.terminal.is_some());
+        assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
+        let mismatch = error(
+            app.execute(envelope(
+                "resume-wrong-workspace",
+                RunCommand::Resume {
+                    run_id: run.run_id.clone(),
+                    expected_workspace: Some("/workspace/other".to_owned()),
+                },
+            ))
+            .await,
+        );
+        assert_eq!(mismatch.code, RunApiErrorCode::RunEnvironmentMismatch);
+        assert!(
+            mismatch
+                .message
+                .starts_with("run_resume_workspace_mismatch：")
+        );
         assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
         assert_eq!(
             store
@@ -1174,6 +1212,7 @@ mod tests {
                     "resume-persistent",
                     RunCommand::Resume {
                         run_id: run.run_id.clone(),
+                        expected_workspace: None,
                     },
                 ))
                 .await,
@@ -1201,6 +1240,7 @@ mod tests {
                 "resume",
                 RunCommand::Resume {
                     run_id: seeded.clone(),
+                    expected_workspace: Some("/workspace/project".to_owned()),
                 },
             ))
             .await,
@@ -1293,8 +1333,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resume_workspace_mismatch_precedes_composition() {
+        let (app, store, composition) = new_fixture(ModelMode::Pending).await;
+        let run_id = seed_resumable(&store, "workspace-mismatch").await;
+
+        let mismatch = error(
+            app.execute(envelope(
+                "resume-workspace-mismatch",
+                RunCommand::Resume {
+                    run_id,
+                    expected_workspace: Some("/workspace/other".to_owned()),
+                },
+            ))
+            .await,
+        );
+        assert_eq!(mismatch.code, RunApiErrorCode::RunEnvironmentMismatch);
+        assert!(
+            mismatch
+                .message
+                .starts_with("run_resume_workspace_mismatch：")
+        );
+        assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
     async fn commands_return_typed_not_found_not_active_terminal_and_input_errors() {
-        let (app, store, _) = new_fixture(ModelMode::Pending).await;
+        let (app, store, composition) = new_fixture(ModelMode::Pending).await;
         let bad_schema = RunCommandEnvelope {
             schema_version: RUN_API_SCHEMA_VERSION + 1,
             request_id: "bad-schema".to_owned(),
@@ -1345,12 +1409,33 @@ mod tests {
             ))
             .await,
         );
+        let active_mismatch = error(
+            app.execute(envelope(
+                "active-workspace-mismatch",
+                RunCommand::Resume {
+                    run_id: active.run_id.clone(),
+                    expected_workspace: Some("/workspace/other".to_owned()),
+                },
+            ))
+            .await,
+        );
+        assert_eq!(
+            active_mismatch.code,
+            RunApiErrorCode::RunEnvironmentMismatch
+        );
+        assert!(
+            active_mismatch
+                .message
+                .starts_with("run_resume_workspace_mismatch：")
+        );
+        assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
         assert_eq!(
             error_code(
                 app.execute(envelope(
                     "double-resume",
                     RunCommand::Resume {
                         run_id: active.run_id.clone(),
+                        expected_workspace: None,
                     },
                 ))
                 .await
@@ -1552,6 +1637,7 @@ mod tests {
                     "resume-abort",
                     RunCommand::Resume {
                         run_id: task_run_id,
+                        expected_workspace: None,
                     },
                 ))
                 .await

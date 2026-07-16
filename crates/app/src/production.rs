@@ -351,7 +351,7 @@ impl RunComposition for ProductionComposition {
         if request.environment.provider != DEEPSEEK_PROVIDER {
             return Err(environment_mismatch(
                 &run_id,
-                "persisted run provider is not the official DeepSeek production provider",
+                "run_resume_provider_mismatch：persisted run provider is not the official DeepSeek production provider",
             ));
         }
         let workspace = canonical_resume_workspace(&run_id, &request.environment.workspace)?;
@@ -393,20 +393,28 @@ impl RunComposition for ProductionComposition {
         {
             return Err(environment_mismatch(
                 &run_id,
-                "model-visible tool catalog does not match the persisted run",
+                "run_resume_tool_catalog_mismatch：model-visible tool catalog does not match the persisted run",
             ));
         }
+        let persisted_fingerprint = request
+            .environment
+            .execution_fingerprint_sha256
+            .as_deref()
+            .ok_or_else(|| {
+                environment_mismatch(
+                    &run_id,
+                    "run_resume_fingerprint_missing：persisted run has no production execution fingerprint",
+                )
+            })?;
         let current_fingerprint = self.execution_fingerprint_sha256(
             &request.model,
             &tool_identity,
             &current_catalog_sha256,
         );
-        if request.environment.execution_fingerprint_sha256.as_deref()
-            != Some(current_fingerprint.as_str())
-        {
+        if persisted_fingerprint != current_fingerprint {
             return Err(environment_mismatch(
                 &run_id,
-                "production execution fingerprint does not match the persisted run",
+                "run_resume_fingerprint_mismatch：production execution fingerprint does not match the persisted run",
             ));
         }
         Ok(runtime.resume(run_id))
@@ -531,7 +539,7 @@ fn canonical_resume_workspace(run_id: &RunId, raw: &str) -> Result<PathBuf, RunA
         environment_mismatch(
             run_id,
             format!(
-                "persisted workspace {} cannot be canonicalized: {error}",
+                "run_resume_workspace_mismatch：persisted workspace {} cannot be canonicalized: {error}",
                 path.display()
             ),
         )
@@ -539,7 +547,7 @@ fn canonical_resume_workspace(run_id: &RunId, raw: &str) -> Result<PathBuf, RunA
     if !canonical.is_dir() || stable_path(&canonical) != raw {
         return Err(environment_mismatch(
             run_id,
-            "persisted workspace is no longer the same canonical directory",
+            "run_resume_workspace_mismatch：persisted workspace is no longer the same canonical directory",
         ));
     }
     Ok(canonical)
@@ -1022,6 +1030,7 @@ mod tests {
                 "resume-no-key",
                 RunCommand::Resume {
                     run_id: run_id.clone(),
+                    expected_workspace: None,
                 },
             ))
             .await,
@@ -1223,7 +1232,7 @@ mod tests {
         store: &dyn RunStore,
         workspace: &Path,
         catalog: String,
-        fingerprint: String,
+        fingerprint: Option<String>,
         suffix: &str,
     ) -> RunId {
         let mut request = RunRequest::new(format!("恢复 {suffix}"), "persisted prompt");
@@ -1240,7 +1249,7 @@ mod tests {
                 .to_string(),
             provider: DEEPSEEK_PROVIDER.to_owned(),
             tool_catalog_sha256: Some(catalog),
-            execution_fingerprint_sha256: Some(fingerprint),
+            execution_fingerprint_sha256: fingerprint,
             sandbox: Some("workspace-write".to_owned()),
             ..RunEnvironment::default()
         };
@@ -1264,7 +1273,7 @@ mod tests {
             app.store.as_ref(),
             temp.path(),
             "sha256:wrong-catalog".to_owned(),
-            "sha256:wrong-fingerprint".to_owned(),
+            Some("sha256:wrong-fingerprint".to_owned()),
             "catalog",
         )
         .await;
@@ -1273,12 +1282,17 @@ mod tests {
                 "catalog-mismatch",
                 RunCommand::Resume {
                     run_id: catalog_run,
+                    expected_workspace: None,
                 },
             ))
             .await,
         );
         assert_eq!(catalog_error.code, RunApiErrorCode::RunEnvironmentMismatch);
-        assert!(catalog_error.message.contains("tool catalog"));
+        assert!(
+            catalog_error
+                .message
+                .starts_with("run_resume_tool_catalog_mismatch：")
+        );
 
         let tool_config = tool_config_for_run(
             &ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full),
@@ -1298,11 +1312,39 @@ mod tests {
         );
         let current_catalog =
             tool_catalog_sha256(&catalog_runtime.tool_definitions(&ToolPolicy::default(), 0, 0));
+        let missing_fingerprint_run = seed_resume_mismatch(
+            app.store.as_ref(),
+            temp.path(),
+            current_catalog.clone(),
+            None,
+            "fingerprint-missing",
+        )
+        .await;
+        let missing_fingerprint_error = error_result(
+            app.execute(envelope(
+                "fingerprint-missing",
+                RunCommand::Resume {
+                    run_id: missing_fingerprint_run,
+                    expected_workspace: None,
+                },
+            ))
+            .await,
+        );
+        assert_eq!(
+            missing_fingerprint_error.code,
+            RunApiErrorCode::RunEnvironmentMismatch
+        );
+        assert!(
+            missing_fingerprint_error
+                .message
+                .starts_with("run_resume_fingerprint_missing：")
+        );
+
         let fingerprint_run = seed_resume_mismatch(
             app.store.as_ref(),
             temp.path(),
             current_catalog,
-            "sha256:wrong-fingerprint".to_owned(),
+            Some("sha256:wrong-fingerprint".to_owned()),
             "fingerprint",
         )
         .await;
@@ -1311,6 +1353,7 @@ mod tests {
                 "fingerprint-mismatch",
                 RunCommand::Resume {
                     run_id: fingerprint_run,
+                    expected_workspace: None,
                 },
             ))
             .await,
@@ -1319,7 +1362,11 @@ mod tests {
             fingerprint_error.code,
             RunApiErrorCode::RunEnvironmentMismatch
         );
-        assert!(fingerprint_error.message.contains("fingerprint"));
+        assert!(
+            fingerprint_error
+                .message
+                .starts_with("run_resume_fingerprint_mismatch：")
+        );
         assert_eq!(accepted.await.expect("zero request fixture"), 0);
     }
 
