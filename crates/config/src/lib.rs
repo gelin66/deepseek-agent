@@ -6,6 +6,7 @@ pub mod model_reference;
 pub mod models_dev;
 pub mod persistence;
 pub mod pricing;
+pub mod prompt_preferences;
 pub mod provider;
 mod provider_defaults;
 mod provider_kind;
@@ -20,6 +21,9 @@ pub use locale::{
     DEFAULT_LOCALE, Locale, normalize_configured_locale, resolve_locale, resolve_locale_with_env,
 };
 pub use model_reference::{Modality, ModelReferenceCard, ModelReferenceDatabase};
+pub use prompt_preferences::{
+    PromptPreferences, SettingsSource, load_prompt_preferences, load_settings_source, settings_path,
+};
 pub(crate) use provider_defaults::*;
 pub use provider_kind::ProviderKind;
 pub use setup_state::{

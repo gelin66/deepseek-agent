@@ -5,7 +5,7 @@
 //! TUI-specific preferences (theme, keybinds, font_size) that survive project
 //! switches are stored separately in tui.toml. See [`TuiPrefs`].
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -14,7 +14,6 @@ use crate::config::{ApiProvider, expand_path, normalize_model_name};
 use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
 use codewhale_config::{DEFAULT_LOCALE, normalize_configured_locale};
 
-const SETTINGS_FILE_NAME: &str = "settings.toml";
 const TUI_PREFS_FILE_NAME: &str = "tui.toml";
 
 // ============================================================================
@@ -490,10 +489,7 @@ impl Settings {
     /// DeepSeek-branded paths remain readable as fallbacks during load, but we
     /// no longer surface them as the primary path in `/config`.
     pub fn path() -> Result<PathBuf> {
-        let (primary, _legacy_home, legacy_config_dir) = settings_path_candidates();
-        primary.or(legacy_config_dir).ok_or_else(|| {
-            anyhow::anyhow!("Failed to resolve settings path: no config directory found.")
-        })
+        codewhale_config::settings_path()
     }
 
     /// Load settings from disk, or return defaults if not found
@@ -507,90 +503,69 @@ impl Settings {
     /// overlays. Configuration editors use this path so a value labelled
     /// "saved" never silently reports a tmux, SSH, or accessibility override.
     pub(crate) fn load_persisted() -> Result<Self> {
-        let (primary, legacy_home, legacy_config_dir) = settings_path_candidates();
-        Self::load_persisted_from_candidates(primary, legacy_home, legacy_config_dir)
-    }
-
-    fn load_persisted_from_candidates(
-        primary: Option<PathBuf>,
-        legacy_home: Option<PathBuf>,
-        legacy_config_dir: Option<PathBuf>,
-    ) -> Result<Self> {
-        let write_path = primary
-            .as_ref()
-            .cloned()
-            .or_else(|| legacy_config_dir.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!("Failed to resolve settings path: no config directory found.")
-            })?;
-        let read_path =
-            resolve_settings_path_from_candidates(primary, legacy_home, legacy_config_dir)
-                .unwrap_or_else(|_| write_path.clone());
-
-        let settings = if !read_path.exists() {
-            Self::default()
-        } else {
-            let content = std::fs::read_to_string(&read_path)
-                .with_context(|| format!("Failed to read settings from {}", read_path.display()))?;
-            let mut s: Settings = match toml::from_str(&content) {
-                Ok(s) => s,
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to parse {} (using defaults): {e:#}",
-                        read_path.display()
-                    );
-                    Self::default()
+        let source = codewhale_config::load_settings_source()?;
+        let settings = match source.deserialize::<Settings>() {
+            Ok(None) => Self::default(),
+            Ok(Some(mut s)) => {
+                // "yolo" used to bundle two independent choices: Agent mode and
+                // unrestricted approvals.  Keep that behavior on upgrade, but
+                // store/show the two choices explicitly so Settings does not claim
+                // the app starts in a fictional mode.
+                let legacy_yolo_default = s.default_mode.trim().eq_ignore_ascii_case("yolo");
+                s.legacy_yolo_default = legacy_yolo_default;
+                s.default_mode = if legacy_yolo_default {
+                    "agent".to_string()
+                } else {
+                    normalize_mode(&s.default_mode).to_string()
+                };
+                s.composer_density = normalize_composer_density(&s.composer_density).to_string();
+                s.transcript_spacing =
+                    normalize_transcript_spacing(&s.transcript_spacing).to_string();
+                s.tool_collapse_mode =
+                    normalize_tool_collapse_mode(&s.tool_collapse_mode).to_string();
+                s.sidebar_focus = normalize_sidebar_focus(&s.sidebar_focus).to_string();
+                if s.sidebar_focus == "auto" && !s.sidebar_auto_collapse_opt_in {
+                    // v0.8.62 wrote the surprising auto-collapse default into many
+                    // full settings files. Treat unmarked saved "auto" as that
+                    // legacy default so upgraded users get the sidebar back, while
+                    // `/sidebar auto --save` and `/set sidebar_focus auto` below
+                    // preserve an explicit opt-in from this release onward (#3328).
+                    s.sidebar_focus = "pinned".to_string();
                 }
-            };
-            // "yolo" used to bundle two independent choices: Agent mode and
-            // unrestricted approvals.  Keep that behavior on upgrade, but
-            // store/show the two choices explicitly so Settings does not claim
-            // the app starts in a fictional mode.
-            let legacy_yolo_default = s.default_mode.trim().eq_ignore_ascii_case("yolo");
-            s.legacy_yolo_default = legacy_yolo_default;
-            s.default_mode = if legacy_yolo_default {
-                "agent".to_string()
-            } else {
-                normalize_mode(&s.default_mode).to_string()
-            };
-            s.composer_density = normalize_composer_density(&s.composer_density).to_string();
-            s.transcript_spacing = normalize_transcript_spacing(&s.transcript_spacing).to_string();
-            s.tool_collapse_mode = normalize_tool_collapse_mode(&s.tool_collapse_mode).to_string();
-            s.sidebar_focus = normalize_sidebar_focus(&s.sidebar_focus).to_string();
-            if s.sidebar_focus == "auto" && !s.sidebar_auto_collapse_opt_in {
-                // v0.8.62 wrote the surprising auto-collapse default into many
-                // full settings files. Treat unmarked saved "auto" as that
-                // legacy default so upgraded users get the sidebar back, while
-                // `/sidebar auto --save` and `/set sidebar_focus auto` below
-                // preserve an explicit opt-in from this release onward (#3328).
-                s.sidebar_focus = "pinned".to_string();
+                s.status_indicator = normalize_status_indicator(&s.status_indicator).to_string();
+                s.ocean_treatment = normalize_ocean_treatment(&s.ocean_treatment).to_string();
+                s.work_surface_placement =
+                    normalize_work_surface_placement(&s.work_surface_placement).to_string();
+                s.synchronized_output =
+                    normalize_synchronized_output(&s.synchronized_output).to_string();
+                s.locale = normalize_configured_locale(&s.locale)
+                    .unwrap_or(DEFAULT_LOCALE.tag())
+                    .to_string();
+                s.background_color =
+                    normalize_optional_background_color(s.background_color.as_deref());
+                s.theme = normalize_settings_theme(&s.theme).to_string();
+                s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
+                s.reasoning_effort = s
+                    .reasoning_effort
+                    .as_deref()
+                    .and_then(|value| normalize_reasoning_effort_setting(value).ok().flatten());
+                s.permission_posture = s
+                    .permission_posture
+                    .as_deref()
+                    .and_then(normalize_permission_posture);
+                if legacy_yolo_default && s.permission_posture.is_none() {
+                    s.permission_posture = Some("full-access".to_string());
+                }
+                s
             }
-            s.status_indicator = normalize_status_indicator(&s.status_indicator).to_string();
-            s.ocean_treatment = normalize_ocean_treatment(&s.ocean_treatment).to_string();
-            s.work_surface_placement =
-                normalize_work_surface_placement(&s.work_surface_placement).to_string();
-            s.synchronized_output =
-                normalize_synchronized_output(&s.synchronized_output).to_string();
-            s.locale = normalize_configured_locale(&s.locale)
-                .unwrap_or(DEFAULT_LOCALE.tag())
-                .to_string();
-            s.background_color = normalize_optional_background_color(s.background_color.as_deref());
-            s.theme = normalize_settings_theme(&s.theme).to_string();
-            s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
-            s.reasoning_effort = s
-                .reasoning_effort
-                .as_deref()
-                .and_then(|value| normalize_reasoning_effort_setting(value).ok().flatten());
-            s.permission_posture = s
-                .permission_posture
-                .as_deref()
-                .and_then(normalize_permission_posture);
-            if legacy_yolo_default && s.permission_posture.is_none() {
-                s.permission_posture = Some("full-access".to_string());
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to parse {} (using defaults): {e:#}",
+                    source.read_path().display()
+                );
+                Self::default()
             }
-            s
         };
-        migrate_settings_file_to_primary_if_needed(&write_path, &read_path);
         Ok(settings)
     }
 
@@ -605,21 +580,8 @@ impl Settings {
     /// Whether the user explicitly persisted an `auto_compact` preference.
     /// When absent, callers may choose a model-aware default.
     pub fn auto_compact_explicitly_configured() -> bool {
-        let (primary, legacy_home, legacy_config_dir) = settings_path_candidates();
-        let Ok(path) =
-            resolve_settings_path_from_candidates(primary, legacy_home, legacy_config_dir)
-        else {
-            return false;
-        };
-        let Ok(content) = std::fs::read_to_string(path) else {
-            return false;
-        };
-        let Ok(value) = toml::from_str::<toml::Value>(&content) else {
-            return false;
-        };
-        value
-            .as_table()
-            .is_some_and(|table| table.contains_key("auto_compact"))
+        codewhale_config::load_settings_source()
+            .is_ok_and(|source| source.contains_top_level_key("auto_compact"))
     }
 
     /// Apply environment-driven overlays after disk load. Used for
@@ -1325,89 +1287,6 @@ impl Settings {
     #[must_use]
     pub fn effective_bracketed_paste(&self) -> bool {
         self.bracketed_paste && !detected_legacy_windows_console_host()
-    }
-}
-
-fn resolve_settings_path_from_candidates(
-    primary: Option<PathBuf>,
-    legacy_home: Option<PathBuf>,
-    legacy_config_dir: Option<PathBuf>,
-) -> Result<PathBuf> {
-    if let Some(path) = primary.as_ref()
-        && path.exists()
-    {
-        return Ok(path.clone());
-    }
-
-    if let Some(path) = legacy_home
-        && path.exists()
-    {
-        return Ok(path);
-    }
-
-    if let Some(path) = legacy_config_dir.as_ref()
-        && path.exists()
-    {
-        return Ok(path.clone());
-    }
-
-    primary.or(legacy_config_dir).ok_or_else(|| {
-        anyhow::anyhow!("Failed to resolve settings path: no config directory found.")
-    })
-}
-
-fn settings_path_candidates() -> (Option<PathBuf>, Option<PathBuf>, Option<PathBuf>) {
-    // Allow tests to override the settings directory via the same env var
-    // used for config (DEEPSEEK_CONFIG_PATH points at config.toml; the
-    // settings file lives as a sibling in the same directory).
-    if let Ok(config_path) = std::env::var("DEEPSEEK_CONFIG_PATH") {
-        let config_path = config_path.trim();
-        if !config_path.is_empty() {
-            let p = expand_path(config_path);
-            if let Some(parent) = p.parent() {
-                return (Some(parent.join(SETTINGS_FILE_NAME)), None, None);
-            }
-        }
-    }
-
-    let primary = codewhale_config::codewhale_home()
-        .ok()
-        .map(|home| home.join(SETTINGS_FILE_NAME));
-    if codewhale_config::codewhale_home_is_explicit() {
-        return (primary, None, None);
-    }
-    let legacy_home = codewhale_config::legacy_deepseek_home()
-        .ok()
-        .map(|home| home.join(SETTINGS_FILE_NAME));
-    let legacy_config_dir =
-        dirs::config_dir().map(|dir| dir.join("deepseek").join(SETTINGS_FILE_NAME));
-
-    (primary, legacy_home, legacy_config_dir)
-}
-
-fn migrate_settings_file_to_primary_if_needed(primary: &Path, active_read_path: &Path) {
-    if primary == active_read_path || primary.exists() || !active_read_path.exists() {
-        return;
-    }
-
-    let Some(parent) = primary.parent() else {
-        return;
-    };
-
-    if let Err(err) = std::fs::create_dir_all(parent) {
-        tracing::warn!(
-            "failed to create settings migration directory {}: {err}",
-            parent.display()
-        );
-        return;
-    }
-
-    if let Err(err) = std::fs::copy(active_read_path, primary) {
-        tracing::warn!(
-            "failed to migrate settings from {} to {}: {err}",
-            active_read_path.display(),
-            primary.display()
-        );
     }
 }
 
@@ -3110,46 +2989,6 @@ mod tests {
         assert!(
             primary.exists(),
             "settings load should migrate to primary path"
-        );
-        let display = loaded.display(codewhale_config::Locale::En);
-        assert!(
-            display.contains(&format!("Config file: {}", primary.display())),
-            "settings display should surface the canonical codewhale path:\n{display}"
-        );
-    }
-
-    #[test]
-    fn settings_load_migrates_platform_legacy_fallback_into_codewhale_home_without_explicit_home() {
-        let _g = config_path_test_guard();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let primary = tmp.path().join(".codewhale").join("settings.toml");
-        let _config_override = EnvVarRestore::remove("DEEPSEEK_CONFIG_PATH");
-        let _codewhale_home =
-            EnvVarRestore::set("CODEWHALE_HOME", primary.parent().expect("primary parent"));
-        let legacy_config_dir = tmp
-            .path()
-            .join("platform-config")
-            .join("deepseek")
-            .join("settings.toml");
-        std::fs::create_dir_all(legacy_config_dir.parent().expect("parent"))
-            .expect("legacy config dir");
-        std::fs::write(&legacy_config_dir, "low_motion = true\n").expect("legacy settings");
-
-        // Exercise the same load and migration path with explicit candidates.
-        // `dirs::config_dir()` uses the Win32 known-folder API on Windows, so
-        // APPDATA/XDG environment overrides cannot isolate that process-global
-        // location in a parallel test runner.
-        let loaded = Settings::load_persisted_from_candidates(
-            Some(primary.clone()),
-            None,
-            Some(legacy_config_dir),
-        )
-        .expect("load persisted settings");
-
-        assert!(loaded.low_motion, "legacy settings should still be read");
-        assert!(
-            primary.exists(),
-            "legacy fallback should be copied into primary"
         );
         let display = loaded.display(codewhale_config::Locale::En);
         assert!(
