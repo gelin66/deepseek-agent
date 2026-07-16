@@ -25,9 +25,13 @@
 //! — probing a binary involves a `Command::output` per candidate and
 //! we'd rather not pay that on every model turn.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
+use std::time::Duration;
+
+use wait_timeout::ChildExt;
 
 /// Candidate executable names for the Python interpreter, in the
 /// order we try them. On Windows the launcher convention is `py -3`,
@@ -40,6 +44,9 @@ use std::sync::OnceLock;
 /// modern macOS where Homebrew installs both. `py -3` last as a
 /// Windows-launcher fallback.
 pub const PYTHON_CANDIDATES: &[&str] = &["python3", "python", "py -3"];
+
+const PYTHON_CAPABILITY_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+const PYTHON_CAPABILITY_PROBE: &str = "import json, math";
 
 /// Probe a single executable. Returns `true` when the candidate
 /// responds to `--version` with a successful exit. Splits on
@@ -139,25 +146,32 @@ fn resolve_executable_path(spec: &str, version_flag: &str) -> Option<String> {
     None
 }
 
-/// Resolve the Python interpreter once per process. Returns the
-/// candidate spec (e.g. `"python3"` or `"py -3"`) that succeeded,
-/// or `None` when every candidate failed.
+/// Resolve the Python interpreter once per process. Returns an absolute,
+/// shell-quoted interpreter spec (including fixed launcher arguments such as
+/// `-3`) or `None` when every candidate failed.
 ///
-/// Callers that need to spawn the interpreter should split this
-/// string on whitespace — see [`split_interpreter_spec`].
+/// A version banner is not enough: RLM needs Python's standard and native
+/// modules. Each actual executable on `PATH` therefore runs a bounded import
+/// probe. A wedged or broken interpreter is killed and reaped before the
+/// resolver continues to the next path, including another executable with the
+/// same basename later on `PATH`.
 pub fn resolve_python_interpreter() -> Option<String> {
     static CACHE: OnceLock<Option<String>> = OnceLock::new();
     CACHE
         .get_or_init(|| {
-            for candidate in PYTHON_CANDIDATES {
-                if probe_executable(candidate) {
-                    tracing::info!(
-                        target: "tool_dependencies",
-                        candidate = candidate,
-                        "Resolved Python interpreter",
-                    );
-                    return Some((*candidate).to_string());
-                }
+            let resolved = resolve_python_from_candidates(
+                PYTHON_CANDIDATES,
+                executable_path_candidates,
+                python_has_required_capabilities,
+            );
+            if let Some((program, fixed_args)) = resolved {
+                let spec = format_interpreter_spec(&program, &fixed_args);
+                tracing::info!(
+                    target: "tool_dependencies",
+                    interpreter = %program.display(),
+                    "Resolved capable Python interpreter",
+                );
+                return Some(spec);
             }
             tracing::warn!(
                 target: "tool_dependencies",
@@ -167,6 +181,77 @@ pub fn resolve_python_interpreter() -> Option<String> {
             None
         })
         .clone()
+}
+
+fn resolve_python_from_candidates<F, P>(
+    specs: &[&str],
+    mut path_candidates: F,
+    mut probe: P,
+) -> Option<(PathBuf, Vec<String>)>
+where
+    F: FnMut(&str) -> Vec<PathBuf>,
+    P: FnMut(&Path, &[String]) -> bool,
+{
+    let mut seen = HashSet::new();
+    for spec in specs {
+        let (program, fixed_args) = split_interpreter_spec(spec);
+        if program.is_empty() {
+            continue;
+        }
+        for candidate in path_candidates(&program) {
+            if !candidate.is_file() {
+                continue;
+            }
+            let candidate = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+            if !seen.insert((candidate.clone(), fixed_args.clone())) {
+                continue;
+            }
+            if probe(&candidate, &fixed_args) {
+                return Some((candidate, fixed_args));
+            }
+        }
+    }
+    None
+}
+
+fn python_has_required_capabilities(program: &Path, fixed_args: &[String]) -> bool {
+    let mut cmd = Command::new(program);
+    crate::utils::suppress_console_window(&mut cmd);
+    cmd.args(fixed_args)
+        .args(["-I", "-c", PYTHON_CAPABILITY_PROBE])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    codewhale_tools::child_env::apply_to_command(
+        &mut cmd,
+        std::iter::empty::<(std::ffi::OsString, std::ffi::OsString)>(),
+    );
+
+    let Ok(mut child) = cmd.spawn() else {
+        return false;
+    };
+    match child.wait_timeout(PYTHON_CAPABILITY_PROBE_TIMEOUT) {
+        Ok(Some(status)) => status.success(),
+        Ok(None) | Err(_) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            tracing::warn!(
+                target: "tool_dependencies",
+                interpreter = %program.display(),
+                timeout_secs = PYTHON_CAPABILITY_PROBE_TIMEOUT.as_secs(),
+                "Python capability probe timed out",
+            );
+            false
+        }
+    }
+}
+
+fn format_interpreter_spec(program: &Path, fixed_args: &[String]) -> String {
+    std::iter::once(program.to_string_lossy().into_owned())
+        .chain(fixed_args.iter().cloned())
+        .map(|part| shell_words::quote(&part).into_owned())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Resolve `pdftotext` (from Poppler) once per process. Used by
@@ -473,19 +558,19 @@ impl ExternalTool for Node {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy interpreter helpers (kept for existing callers until migrated)
+// Interpreter command encoding
 // ---------------------------------------------------------------------------
 
-/// Split an interpreter spec like `"py -3"` into the program name
+/// Split a shell-quoted interpreter spec like `"py -3"` into the program name
 /// and any initial arguments. Returns `("py", vec!["-3"])` for the
 /// example; returns `("python3", vec![])` for a bare name.
 ///
 /// Callers spawn `Command::new(program).args(args).arg(script_path)`.
 #[must_use]
 pub fn split_interpreter_spec(spec: &str) -> (String, Vec<String>) {
-    let mut parts = spec.split_whitespace();
-    let program = parts.next().unwrap_or("").to_string();
-    let args = parts.map(str::to_string).collect();
+    let mut parts = shell_words::split(spec).unwrap_or_default().into_iter();
+    let program = parts.next().unwrap_or_default();
+    let args = parts.collect();
     (program, args)
 }
 
@@ -568,6 +653,60 @@ mod tests {
     }
 
     #[test]
+    fn python_capability_resolution_skips_broken_path_and_keeps_searching() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let broken = temp.path().join("broken-python");
+        let healthy = temp.path().join("healthy-python");
+        std::fs::write(&broken, []).expect("write broken candidate");
+        std::fs::write(&healthy, []).expect("write healthy candidate");
+        let healthy = std::fs::canonicalize(healthy).expect("canonical healthy candidate");
+
+        let mut probed = Vec::new();
+        let resolved = resolve_python_from_candidates(
+            &["python3"],
+            |_| vec![broken.clone(), healthy.clone()],
+            |program, args| {
+                probed.push((program.to_path_buf(), args.to_vec()));
+                program == healthy
+            },
+        );
+
+        assert_eq!(resolved, Some((healthy.clone(), Vec::new())));
+        assert_eq!(
+            probed.len(),
+            2,
+            "broken interpreter must not stop PATH search"
+        );
+        assert_eq!(probed[1].0, healthy);
+    }
+
+    #[test]
+    fn python_capability_resolution_preserves_launcher_args_and_spaced_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let bin_dir = temp.path().join("Program Files");
+        std::fs::create_dir(&bin_dir).expect("create spaced directory");
+        let launcher = bin_dir.join("py.exe");
+        std::fs::write(&launcher, []).expect("write launcher candidate");
+        let launcher = std::fs::canonicalize(launcher).expect("canonical launcher");
+
+        let resolved = resolve_python_from_candidates(
+            &["py -3"],
+            |_| vec![launcher.clone()],
+            |program, args| program == launcher && args == ["-3"],
+        )
+        .expect("launcher should resolve");
+        let spec = format_interpreter_spec(&resolved.0, &resolved.1);
+
+        assert_eq!(
+            split_interpreter_spec(&spec),
+            (
+                launcher.to_string_lossy().into_owned(),
+                vec!["-3".to_string()]
+            )
+        );
+    }
+
+    #[test]
     fn python_resolver_is_cached_across_calls() {
         // Whatever the first call returns, subsequent calls return
         // the same value (cached). If this test ever flakes, the
@@ -593,10 +732,10 @@ mod tests {
                 !name.is_empty(),
                 "resolved interpreter name must be non-empty"
             );
-            // The resolved name must be one of our candidates.
+            let (program, _) = split_interpreter_spec(&name);
             assert!(
-                PYTHON_CANDIDATES.contains(&name.as_str()),
-                "resolved {name:?} is not in PYTHON_CANDIDATES {PYTHON_CANDIDATES:?}"
+                Path::new(&program).is_absolute(),
+                "resolved interpreter must be an absolute path: {name:?}"
             );
         }
     }
