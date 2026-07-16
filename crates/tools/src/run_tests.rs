@@ -298,6 +298,14 @@ mod tests {
             "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
         )
         .unwrap();
+        // This fixture lives outside the repository's rust-toolchain override.
+        // Pin it independently so the production-path test does not rely on a
+        // developer having configured a global rustup default.
+        std::fs::write(
+            workspace.path().join("rust-toolchain.toml"),
+            "[toolchain]\nchannel = \"stable\"\nprofile = \"minimal\"\n",
+        )
+        .unwrap();
         std::fs::write(workspace.path().join(".gitignore"), "/target\n").unwrap();
         let body = if with_test {
             "pub fn add(a: i32, b: i32) -> i32 { a + b }\n#[cfg(test)] mod tests { #[test] fn adds() { assert_eq!(super::add(1, 2), 3); } }\n"
