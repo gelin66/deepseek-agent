@@ -304,21 +304,7 @@ pub(crate) async fn run_exec_runtime(
     // The route classifier and every root/child request share this one
     // physical admission and billing owner.
     let (api_request_budget, resume_budget_exhausted) = if let Some(replay) = resume_replay.as_ref() {
-        let physical_started = u32::try_from(replay.snapshot.accounting.total_started())
-            .unwrap_or(u32::MAX);
-        let remaining = replay
-            .snapshot
-            .request
-            .limits
-            .max_model_requests
-            .saturating_sub(physical_started);
-        (
-            NonZeroU32::new(remaining).map_or_else(
-                SharedApiRequestBudget::tracking_only,
-                SharedApiRequestBudget::new,
-            ),
-            remaining == 0,
-        )
+        resume_api_request_budget(&replay.snapshot.accounting)
     } else {
         (
             max_api_requests.map_or_else(
@@ -870,6 +856,21 @@ pub(crate) async fn run_exec_runtime(
         return Err(anyhow!("{error}; startup output failed: {output_error}"));
     }
     result
+}
+
+fn resume_api_request_budget(accounting: &ModelAccounting) -> (SharedApiRequestBudget, bool) {
+    let Some(limit) = accounting.hard_request_limit else {
+        return (SharedApiRequestBudget::tracking_only(), false);
+    };
+    let physical_started = u32::try_from(accounting.total_started()).unwrap_or(u32::MAX);
+    let remaining = limit.saturating_sub(physical_started);
+    (
+        NonZeroU32::new(remaining).map_or_else(
+            SharedApiRequestBudget::tracking_only,
+            SharedApiRequestBudget::new,
+        ),
+        remaining == 0,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2067,5 +2068,30 @@ mod tests {
         assert_eq!(limits.max_concurrent_children, 0);
         assert_eq!(limits.max_model_requests, 10);
         assert_eq!(limits.max_tool_calls, 40);
+    }
+
+    #[test]
+    fn resume_restores_physical_budget_from_accounting_not_runtime_limits() {
+        let mut accounting = ModelAccounting {
+            hard_request_limit: Some(9),
+            ..ModelAccounting::default()
+        };
+        accounting.root.started = 3;
+        accounting.child.started = 2;
+
+        let (budget, exhausted) = resume_api_request_budget(&accounting);
+        let (requests, _, _) = budget.accounting_snapshot();
+        assert!(!exhausted);
+        assert_eq!(requests.limit, 4);
+
+        accounting.hard_request_limit = None;
+        let (tracking_only, exhausted) = resume_api_request_budget(&accounting);
+        let (requests, _, _) = tracking_only.accounting_snapshot();
+        assert!(!exhausted);
+        assert_eq!(requests.limit, u32::MAX);
+
+        accounting.hard_request_limit = Some(5);
+        let (_, exhausted) = resume_api_request_budget(&accounting);
+        assert!(exhausted);
     }
 }
