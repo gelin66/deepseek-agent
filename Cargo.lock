@@ -818,11 +818,21 @@ name = "codewhale-app"
 version = "0.8.68"
 dependencies = [
  "async-trait",
+ "codewhale-build-support",
+ "codewhale-config",
+ "codewhale-context",
  "codewhale-deepseek",
  "codewhale-protocol",
  "codewhale-runtime",
  "codewhale-state",
+ "codewhale-tools",
+ "reqwest 0.13.4",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
 ]
 

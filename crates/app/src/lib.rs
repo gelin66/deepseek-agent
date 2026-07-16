@@ -21,12 +21,26 @@ use codewhale_runtime::{
 };
 use tokio::sync::{Mutex, Notify};
 
+mod production;
+
+pub use production::{
+    DEFAULT_MAX_API_REQUESTS, ProductionApplicationConfig, ProductionApplicationError,
+    ProductionPromptConfig,
+};
+
 // Production compositions may retain these credential-free settings while
 // serving read-only get/events/terminal replay. A credential and per-run
 // budget are bound only inside a live start/resume path.
 pub use codewhale_deepseek::{
-    DeepSeekConnectionConfig, DeepSeekModelPort, OfficialModelCapabilities,
-    OfficialModelCapabilityError, official_model_capabilities,
+    DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekModelPort,
+    OfficialModelCapabilities, OfficialModelCapabilityError, TransportRetryPolicy,
+    official_model_capabilities,
+};
+pub use codewhale_tools::sandbox::SandboxPolicy;
+pub use codewhale_tools::shell::ShellPolicy;
+pub use codewhale_tools::{
+    ProductionExecPolicyRuleSet, ProductionExecPolicySnapshot, ProductionToolConfig,
+    ProductionToolExecutionIdentity, ProductionToolExecutor,
 };
 
 /// Model port used only when a persisted run can be replayed or failed closed
@@ -171,8 +185,7 @@ impl RuntimeEventSink for NotifyingSink {
 }
 
 impl AgentApplication {
-    #[cfg(test)]
-    fn new(store: Arc<dyn RunStore>, composition: Arc<dyn RunComposition>) -> Self {
+    fn from_parts(store: Arc<dyn RunStore>, composition: Arc<dyn RunComposition>) -> Self {
         Self {
             store,
             composition,
@@ -180,6 +193,11 @@ impl AgentApplication {
             next_launch_token: AtomicU64::new(1),
             watch: Arc::new(StoreWatch::default()),
         }
+    }
+
+    #[cfg(test)]
+    fn new(store: Arc<dyn RunStore>, composition: Arc<dyn RunComposition>) -> Self {
+        Self::from_parts(store, composition)
     }
 
     /// Execute one of the seven canonical Run commands.

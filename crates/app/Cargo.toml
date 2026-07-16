@@ -8,11 +8,23 @@ repository.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+codewhale-config = { path = "../config" }
+codewhale-context = { path = "../context" }
 codewhale-protocol = { path = "../protocol" }
 codewhale-deepseek = { path = "../deepseek" }
 codewhale-runtime = { path = "../runtime" }
+codewhale-state = { path = "../state" }
+codewhale-tools = { path = "../tools" }
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
 
+[build-dependencies]
+codewhale-build-support = { path = "../build-support" }
+
 [dev-dependencies]
-codewhale-state = { path = "../state" }
 tempfile.workspace = true
