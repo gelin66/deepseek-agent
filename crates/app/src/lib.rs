@@ -15,10 +15,71 @@ use codewhale_protocol::run_api::{
     RunCommandResponse, RunCommandResult, RunView, StartRunCommand,
 };
 use codewhale_runtime::{
-    AgentControl, ControlError, RunReadyError, RunReplay, RunStore, RunStoreError,
+    AgentControl, ControlError, DurableActionState, ModelAccounting, ModelErrorCategory, ModelPort,
+    ModelPortError, ModelRequest, ModelStream, RunReadyError, RunReplay, RunStore, RunStoreError,
     RuntimeEventSink, RuntimeRun,
 };
 use tokio::sync::{Mutex, Notify};
+
+// Production compositions may retain these credential-free settings while
+// serving read-only get/events/terminal replay. A credential and per-run
+// budget are bound only inside a live start/resume path.
+pub use codewhale_deepseek::{
+    DeepSeekConnectionConfig, DeepSeekModelPort, OfficialModelCapabilities,
+    OfficialModelCapabilityError, official_model_capabilities,
+};
+
+/// Model port used only when a persisted run can be replayed or failed closed
+/// without live model access. Constructing the application and reading
+/// terminal/events therefore never requires a DeepSeek credential.
+pub struct ReplayOnlyModelPort;
+
+#[async_trait]
+impl ModelPort for ReplayOnlyModelPort {
+    async fn stream(&self, _request: ModelRequest) -> Result<Box<dyn ModelStream>, ModelPortError> {
+        Err(ModelPortError::new(
+            "resume_model_access_forbidden",
+            ModelErrorCategory::Protocol,
+            "纯恢复路径不得发起 DeepSeek 请求",
+            false,
+        ))
+    }
+
+    async fn accounting_snapshot(&self, _seal: bool) -> Result<ModelAccounting, ModelPortError> {
+        Ok(ModelAccounting {
+            complete: true,
+            usage_complete: true,
+            ..ModelAccounting::default()
+        })
+    }
+}
+
+/// Whether an unfinished persisted run may safely issue another live model
+/// request. Terminal/failed/in-flight actions and pending children replay
+/// without touching the credential or network.
+#[must_use]
+pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
+    if replay.snapshot.terminal.is_some()
+        || replay.snapshot.last_model_failure.is_some()
+        || !replay.snapshot.pending_children.is_empty()
+    {
+        return false;
+    }
+    if replay
+        .snapshot
+        .pending_model
+        .as_ref()
+        .is_some_and(|pending| pending.state == DurableActionState::InFlight)
+        || replay
+            .snapshot
+            .pending_tool
+            .as_ref()
+            .is_some_and(|pending| pending.state == DurableActionState::InFlight)
+    {
+        return false;
+    }
+    true
+}
 
 /// Canonical product command service shared by CLI, HTTP, SSE, and stdio.
 ///
@@ -918,6 +979,32 @@ mod tests {
             .await
             .expect("release seed lease");
         run_id
+    }
+
+    #[tokio::test]
+    async fn replay_only_composition_needs_no_credential_or_network() {
+        let port = ReplayOnlyModelPort;
+        let accounting = port
+            .accounting_snapshot(false)
+            .await
+            .expect("read-only replay accounting is local");
+        assert!(accounting.complete);
+        assert!(accounting.usage_complete);
+
+        let store = InMemoryRunStore::default();
+        let run_id = seed_resumable(&store, "lazy-live-model").await;
+        let mut replay = store
+            .load(&run_id)
+            .await
+            .expect("load local run")
+            .expect("run exists");
+        assert!(resume_needs_live_model(&replay));
+
+        replay
+            .snapshot
+            .pending_children
+            .push(RunId::from("pending-child"));
+        assert!(!resume_needs_live_model(&replay));
     }
 
     #[tokio::test]

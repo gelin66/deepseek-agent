@@ -355,21 +355,6 @@ impl DeepSeekClient {
             .await
     }
 
-    /// Temporary presentation adapter for the canonical AgentRuntime.
-    /// `codewhale-deepseek` owns HTTP, parsing and protocol outcomes; this is
-    /// deleted when ModelPort consumes its canonical output directly.
-    pub(crate) async fn create_planned_deepseek_message(
-        &self,
-        plan: RequestPlan,
-    ) -> Result<MessageResponse> {
-        let response = self
-            .official_deepseek_transport()?
-            .complete(plan)
-            .await
-            .map_err(anyhow::Error::new)?;
-        Ok(deepseek::message_response_from_deepseek(response))
-    }
-
     /// Compatibility sender for non-DeepSeek providers still using Chat
     /// Completions. Official DeepSeek is owned by `codewhale-deepseek`.
     async fn send_legacy_chat_message(
@@ -472,22 +457,6 @@ impl DeepSeekClient {
             reasoning_replay_tokens: replay,
         })
         .await
-    }
-
-    /// Temporary presentation adapter for the canonical AgentRuntime.
-    /// `codewhale-deepseek` owns HTTP and SSE parsing; this is deleted when
-    /// ModelPort consumes the canonical stream directly.
-    pub(crate) async fn handle_planned_chat_completion_stream(
-        &self,
-        plan: RequestPlan,
-    ) -> Result<StreamEventBox> {
-        let model = plan.model.clone();
-        let source = self
-            .official_deepseek_transport()?
-            .stream(plan)
-            .await
-            .map_err(anyhow::Error::new)?;
-        Ok(deepseek::tui_stream_from_deepseek(source, model))
     }
 
     /// Compatibility SSE sender/parser for non-DeepSeek providers. Official

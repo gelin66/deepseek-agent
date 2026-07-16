@@ -23,9 +23,9 @@ Current boundary note:
   `crates/runtime::AgentRuntime`. Its concrete DeepSeek, tool, persistence, and
   output composition remains in `crates/tui` while that production entry is
   migrated vertically. Official request planning, HTTP/SSE transport, typed
-  response parsing, and physical request/usage accounting live in
-  `crates/deepseek`; the concrete `DeepSeekModelPort` still lives in
-  `crates/tui` behind a temporary presentation adapter.
+  response parsing, physical request/usage accounting, exact V4 capability
+  validation, and the concrete `DeepSeekModelPort` live in `crates/deepseek`.
+  Runtime requests no longer pass through TUI message/stream DTOs.
 - Production `exec` persists schema-v3 canonical runtime events through the
   schema-v6 `crates/state::StateStore` SQLite `RunStore`.
 - The interactive TUI, runtime API, app-server, and task manager have not
@@ -47,8 +47,8 @@ Current boundary note:
 codewhale exec
   -> crates/tui exec composition + output projection
   -> crates/runtime::AgentRuntime
-       -> TUI DeepSeekModelPort + temporary presentation adapter
-            -> crates/deepseek request plan + HTTP/SSE + shared physical accounting
+       -> crates/deepseek DeepSeekModelPort
+            -> request plan + HTTP/SSE + shared physical accounting
        -> ProductionToolExecutor -> fixed 11-tool catalog
        -> crates/state::StateStore as SQLite RunStore
             -> canonical events -> reducer/snapshot -> terminal replay
@@ -124,14 +124,16 @@ runtime or state truth is accepted as the final design.
 ### LLM Integration
 
 - **`crates/deepseek`** - Official DeepSeek planner, Chat HTTP/SSE sender,
-  typed response parser, and physical request/usage accounting owner for
-  Standard Chat and Beta Strict Chat; FIM planning/accounting already shares
-  this owner while its sender cutover remains separate
+  typed response parser, canonical Runtime `ModelPort`, exact official V4
+  capability table, and physical request/usage accounting owner for Standard
+  Chat and Beta Strict Chat; FIM planning/accounting already shares this owner
+  while its sender cutover remains separate
 - **`client.rs` / `client/chat.rs`** - Generic compatibility HTTP/SSE path for
-  non-DeepSeek providers plus the temporary official output presentation adapter;
-  it no longer sends or parses official DeepSeek Chat responses
-- **`client/deepseek.rs`** - Temporary TUI composition/presentation adapter into
-  `crates/deepseek`; it is not a second sender or parser
+  non-DeepSeek providers; it no longer sends, parses, or adapts canonical
+  Runtime requests for official DeepSeek Chat responses
+- **`client/deepseek.rs`** - Unmigrated interactive-TUI composition and legacy
+  presentation conversion around `crates/deepseek`; it is not a second sender,
+  parser, or Runtime `ModelPort`
 - **`llm_client.rs`** - Abstract LLM client trait with retry logic
 - **`models.rs`** - Data structures for API requests/responses
 

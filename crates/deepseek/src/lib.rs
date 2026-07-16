@@ -15,6 +15,7 @@ use codewhale_runtime::{ModelMessage, ModelRequest, ReasoningEffort, SystemPromp
 use serde_json::{Map, Value, json};
 
 mod accounting;
+mod model_port;
 mod pricing;
 mod transport;
 
@@ -23,14 +24,19 @@ pub use accounting::{
     ApiRequestKind, ApiRequestLease, ApiResponseAccountingGuard, ApiUsageBucket, ApiUsageSnapshot,
     SharedApiRequestBudget,
 };
+pub use model_port::{
+    DeepSeekModelPort, OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_MAX_OUTPUT_TOKENS,
+    OfficialModelCapabilities, OfficialModelCapabilityError, model_accounting_snapshot,
+    official_model_capabilities, resume_api_request_budget,
+};
 pub use pricing::{
     CostEstimate, CurrencyPricing, ModelPricing, calculate_turn_cost_estimate,
     pricing_for_official_model,
 };
 pub use transport::{
-    DeepSeekCredential, DeepSeekEndpoint, DeepSeekResponse, DeepSeekStream, DeepSeekTransport,
-    DeepSeekTransportConfig, DeepSeekTransportError, TransportRetryPolicy, decode_tool_name,
-    encode_tool_name, parse_chat_response,
+    DeepSeekConnectionConfig, DeepSeekCredential, DeepSeekEndpoint, DeepSeekResponse,
+    DeepSeekStream, DeepSeekTransport, DeepSeekTransportConfig, DeepSeekTransportError,
+    TransportRetryPolicy, decode_tool_name, encode_tool_name, parse_chat_response,
 };
 
 pub const FIM_MODEL: &str = "deepseek-v4-pro";

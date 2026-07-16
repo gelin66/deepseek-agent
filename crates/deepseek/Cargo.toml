@@ -9,6 +9,7 @@ description = "Official DeepSeek request planning for CodeWhale"
 
 [dependencies]
 async-stream = "0.3.6"
+async-trait.workspace = true
 codewhale-runtime = { path = "../runtime", version = "0.8.68" }
 futures-util = "0.3.31"
 reqwest = { workspace = true, features = ["stream", "http2", "gzip"] }

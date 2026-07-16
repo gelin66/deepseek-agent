@@ -837,6 +837,7 @@ impl DeepSeekClient {
     /// policy. Runtime requests use a fresh clone with exactly one physical
     /// attempt so actionable-output and first-failure retry decisions cannot
     /// be duplicated below the Runtime boundary.
+    #[cfg(test)]
     pub(crate) fn with_transport_retries_disabled_for_runtime(mut self) -> Self {
         self.retry.enabled = false;
         self.retry.max_retries = 0;
@@ -1147,23 +1148,6 @@ impl DeepSeekClient {
             self.path_suffix.as_deref(),
             self.strict_tool_mode,
             tools,
-        )
-    }
-
-    /// Freeze one canonical AgentRuntime request into the official DeepSeek
-    /// wire plan. The caller sends this exact plan through the existing single
-    /// HTTP/SSE implementation; the sender must not infer the surface or
-    /// rebuild the body.
-    pub(crate) fn plan_runtime_chat(
-        &self,
-        request: &codewhale_runtime::ModelRequest,
-    ) -> std::result::Result<Option<deepseek::RequestPlan>, deepseek::ChatPlanError> {
-        deepseek::plan_runtime_chat(
-            self.api_provider,
-            &self.base_url,
-            self.path_suffix.as_deref(),
-            self.strict_tool_mode,
-            request,
         )
     }
 

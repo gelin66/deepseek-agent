@@ -818,6 +818,7 @@ name = "codewhale-app"
 version = "0.8.68"
 dependencies = [
  "async-trait",
+ "codewhale-deepseek",
  "codewhale-protocol",
  "codewhale-runtime",
  "codewhale-state",
@@ -953,6 +954,7 @@ name = "codewhale-deepseek"
 version = "0.8.68"
 dependencies = [
  "async-stream",
+ "async-trait",
  "codewhale-runtime",
  "futures-util",
  "reqwest 0.13.4",
@@ -1110,6 +1112,7 @@ dependencies = [
  "chrono",
  "clap",
  "clap_complete",
+ "codewhale-app",
  "codewhale-build-support",
  "codewhale-config",
  "codewhale-context",

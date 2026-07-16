@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 async-trait.workspace = true
 codewhale-protocol = { path = "../protocol" }
+codewhale-deepseek = { path = "../deepseek" }
 codewhale-runtime = { path = "../runtime" }
 tokio.workspace = true
 

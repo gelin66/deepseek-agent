@@ -13,29 +13,30 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use async_trait::async_trait;
+use codewhale_app::{ReplayOnlyModelPort, resume_needs_live_model};
 use codewhale_context::{InstructionSource, ProductionPromptRequest, production_system_prompt};
 use codewhale_runtime::{
-    AgentOutcome, AgentRuntime, ApiSurface, CanonicalTranscript, DurableActionState,
-    ModelAccounting, ModelErrorCategory, ModelPort, ModelPortError, ModelRequest, ModelStream,
-    ReasoningEffort, RunEnvironment, RunId, RunLimits, RunReplay, RunRequest, RunStore,
-    RuntimeEventKind, RuntimeEventSink, RuntimeFailure, RuntimeTimeoutPhase, StoredRuntimeEvent,
-    SystemPrompt as RuntimeSystemPrompt, TerminalState, ToolExecutor, ToolPolicy, TranscriptEntry,
+    AgentOutcome, AgentRuntime, ApiSurface, CanonicalTranscript, ModelAccounting,
+    ModelErrorCategory, ModelPort, ReasoningEffort, RunEnvironment, RunId, RunLimits, RunRequest,
+    RunStore, RuntimeEventKind, RuntimeEventSink, RuntimeFailure, RuntimeTimeoutPhase,
+    StoredRuntimeEvent, SystemPrompt as RuntimeSystemPrompt, TerminalState, ToolExecutor,
+    ToolPolicy, TranscriptEntry,
 };
 use codewhale_state::StateStore;
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::agent_runtime_adapter::{
-    DeepSeekModelPort, ProductionToolExecutor, model_accounting_snapshot,
-};
+use crate::agent_runtime_adapter::ProductionToolExecutor;
 use crate::client::DeepSeekClient;
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::core::termination::RunTerminationReason;
 use crate::exec_output::ExecTerminalReceipt;
 use crate::tools::spec::ToolContext;
 use crate::tui::app::AppMode;
-use codewhale_deepseek::SharedApiRequestBudget;
+use codewhale_deepseek::{
+    DeepSeekModelPort, SharedApiRequestBudget, model_accounting_snapshot, resume_api_request_budget,
+};
 
 use super::{
     EXEC_OUTPUT_CLOSE_TIMEOUT_SECS, EXEC_OUTPUT_QUEUE_CAPACITY, EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS,
@@ -487,7 +488,14 @@ pub(crate) async fn run_exec_runtime(
                 return Err(error);
             }
         };
-        Arc::new(DeepSeekModelPort::new(client, api_request_budget))
+        let transport = match client.official_deepseek_transport() {
+            Ok(transport) => transport,
+            Err(error) => {
+                stop_exec_signal_controller(&mut signal_task).await;
+                return Err(error);
+            }
+        };
+        Arc::new(DeepSeekModelPort::new(transport, api_request_budget))
     };
     let tool_executor: Arc<dyn ToolExecutor> = Arc::new(ProductionToolExecutor::new(tool_context));
     let (event_tx, mut event_rx) = mpsc::channel(RUNTIME_EVENT_CHANNEL_CAPACITY);
@@ -552,7 +560,14 @@ pub(crate) async fn run_exec_runtime(
             system_prompt,
             transcript: CanonicalTranscript::default(),
             reasoning_effort,
-            max_output_tokens: crate::models::max_output_tokens_for_model(&effective_model),
+            // Preserve exec's existing explicit 384K request while moving the
+            // authority out of the TUI model catalog. `None` remains available
+            // to app callers that deliberately choose the lower Agent policy.
+            max_output_tokens: Some(
+                codewhale_deepseek::official_model_capabilities(&effective_model)
+                    .map_err(anyhow::Error::new)?
+                    .max_output_tokens,
+            ),
             streaming: tool_mode || output_format == ExecOutputFormat::StreamJson,
             actor: codewhale_runtime::AgentActor::default(),
             deadline_unix_ms: effective_deadline_unix_ms,
@@ -863,21 +878,6 @@ pub(crate) async fn run_exec_runtime(
     result
 }
 
-fn resume_api_request_budget(accounting: &ModelAccounting) -> (SharedApiRequestBudget, bool) {
-    let Some(limit) = accounting.hard_request_limit else {
-        return (SharedApiRequestBudget::tracking_only(), false);
-    };
-    let physical_started = u32::try_from(accounting.total_started()).unwrap_or(u32::MAX);
-    let remaining = limit.saturating_sub(physical_started);
-    (
-        NonZeroU32::new(remaining).map_or_else(
-            SharedApiRequestBudget::tracking_only,
-            SharedApiRequestBudget::new,
-        ),
-        remaining == 0,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn emit_startup_stream_failure(
     config: &Config,
@@ -1158,55 +1158,6 @@ impl RuntimeEventSink for ChannelEventSink {
     async fn emit(&self, event: StoredRuntimeEvent) {
         let _ = self.sender.send(event).await;
     }
-}
-
-/// Terminal replay and fail-closed recovery are state-store operations. They
-/// must remain inspectable after a credential is removed or rotated, and the
-/// runtime conformance contract guarantees that neither path opens a model
-/// request.
-struct ReplayOnlyModelPort;
-
-#[async_trait]
-impl ModelPort for ReplayOnlyModelPort {
-    async fn stream(&self, _request: ModelRequest) -> Result<Box<dyn ModelStream>, ModelPortError> {
-        Err(ModelPortError::new(
-            "resume_model_access_forbidden",
-            ModelErrorCategory::Protocol,
-            "纯恢复路径不得发起 DeepSeek 请求",
-            false,
-        ))
-    }
-
-    async fn accounting_snapshot(&self, _seal: bool) -> Result<ModelAccounting, ModelPortError> {
-        Ok(ModelAccounting {
-            complete: true,
-            usage_complete: true,
-            ..ModelAccounting::default()
-        })
-    }
-}
-
-fn resume_needs_live_model(replay: &RunReplay) -> bool {
-    if replay.snapshot.terminal.is_some()
-        || replay.snapshot.last_model_failure.is_some()
-        || !replay.snapshot.pending_children.is_empty()
-    {
-        return false;
-    }
-    if replay
-        .snapshot
-        .pending_model
-        .as_ref()
-        .is_some_and(|pending| pending.state == DurableActionState::InFlight)
-        || replay
-            .snapshot
-            .pending_tool
-            .as_ref()
-            .is_some_and(|pending| pending.state == DurableActionState::InFlight)
-    {
-        return false;
-    }
-    true
 }
 
 #[derive(Default, Serialize)]

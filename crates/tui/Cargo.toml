@@ -23,6 +23,7 @@ path = "src/main.rs"
 [dependencies]
 ahash = "0.8"
 anyhow.workspace = true
+codewhale-app = { path = "../app", version = "0.8.68" }
 codewhale-config = { path = "../config", version = "0.8.68" }
 codewhale-context = { path = "../context", version = "0.8.68" }
 codewhale-deepseek = { path = "../deepseek", version = "0.8.68" }

@@ -155,17 +155,15 @@ impl TransportRetryPolicy {
 }
 
 #[derive(Debug, Clone)]
-pub struct DeepSeekTransportConfig {
+pub struct DeepSeekConnectionConfig {
     pub endpoint: DeepSeekEndpoint,
-    pub credential: DeepSeekCredential,
     pub strict_tools: bool,
     pub response_header_timeout: Duration,
     pub stream_idle_timeout: Duration,
     pub retry: TransportRetryPolicy,
-    pub request_budget: SharedApiRequestBudget,
 }
 
-impl DeepSeekTransportConfig {
+impl DeepSeekConnectionConfig {
     pub fn validate(&self) -> Result<(), DeepSeekTransportError> {
         if self.response_header_timeout.is_zero() {
             return Err(DeepSeekTransportError::InvalidConfig(
@@ -183,6 +181,58 @@ impl DeepSeekTransportConfig {
             ));
         }
         Ok(())
+    }
+
+    /// Bind resolved connection settings to a credential and one per-run
+    /// physical request budget only when a live start/resume actually needs
+    /// model access. Read-only application construction and terminal replay
+    /// can retain this plain configuration without touching a Key.
+    pub fn bind(
+        self,
+        client: reqwest::Client,
+        credential: DeepSeekCredential,
+        request_budget: SharedApiRequestBudget,
+    ) -> Result<DeepSeekTransport, DeepSeekTransportError> {
+        DeepSeekTransport::new(
+            client,
+            DeepSeekTransportConfig {
+                endpoint: self.endpoint,
+                credential,
+                strict_tools: self.strict_tools,
+                response_header_timeout: self.response_header_timeout,
+                stream_idle_timeout: self.stream_idle_timeout,
+                retry: self.retry,
+                request_budget,
+            },
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeepSeekTransportConfig {
+    pub endpoint: DeepSeekEndpoint,
+    pub credential: DeepSeekCredential,
+    pub strict_tools: bool,
+    pub response_header_timeout: Duration,
+    pub stream_idle_timeout: Duration,
+    pub retry: TransportRetryPolicy,
+    pub request_budget: SharedApiRequestBudget,
+}
+
+impl DeepSeekTransportConfig {
+    pub fn validate(&self) -> Result<(), DeepSeekTransportError> {
+        self.connection().validate()
+    }
+
+    #[must_use]
+    pub fn connection(&self) -> DeepSeekConnectionConfig {
+        DeepSeekConnectionConfig {
+            endpoint: self.endpoint.clone(),
+            strict_tools: self.strict_tools,
+            response_header_timeout: self.response_header_timeout,
+            stream_idle_timeout: self.stream_idle_timeout,
+            retry: self.retry,
+        }
     }
 }
 

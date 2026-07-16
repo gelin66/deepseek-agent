@@ -6,7 +6,8 @@
 - 当前阶段：M4-A `ToolOutcome + SQLite RunStore + crash/resume` 已严格完成；被测代码提交为
   `0a5b76a8627fe8ae108a0a7688c0dd39ce5601a3`。M4-B 已启动依赖收敛：官方 DeepSeek 的
   request planner、HTTP/SSE transport、类型化协议错误、物理请求预算、usage ledger 与精确
-  first-party pricing 已进入 `crates/deepseek`；`ModelPort` 与 app-server 纵切仍待完成。M1 的导入基线
+  first-party pricing、canonical `ModelPort` 与精确 V4 capability table 已进入
+  `crates/deepseek`；app-server 纵切仍待完成。M1 的导入基线
   A/B 与 M2 的完整官方 surface
   canary 仍是独立证据债务
 - 上次更新：2026-07-16
@@ -436,14 +437,19 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - 第一依赖纵切已完成源码迁移：`crates/deepseek` 成为 physical request admission、root/child
   attribution、usage completeness、surface buckets 和官方 V4 first-party pricing 的唯一 owner；
   exec 与未迁移交互 DeepSeek sender 已切到同一 owner。
-- `crates/tui/src/client/request_budget.rs` 已物理删除；TUI 只保留一个待 response parser
-  /ModelPort cutover 时删除的 canonical output -> legacy presentation 窄映射。
+- `crates/tui/src/client/request_budget.rs` 已物理删除；Runtime 的 canonical request/output
+  不再通过 TUI DTO 往返，交互 TUI 仍保留自己尚未迁移的 presentation 转换。
 - 第二依赖纵切已完成：官方与显式 loopback fixture 的 HTTP sender、非流式/SSE parser、
   reasoning/raw tool arguments/finish/usage 解析、typed transport error 和工具名 wire 投影由
   `crates/deepseek` 唯一持有；exec 与交互 DeepSeek 调用方共用该实现。TUI 的通用非 DeepSeek
   Chat compatibility sender/parser 暂留给未清理 Provider，不再承载官方 DeepSeek 流量。
-- `DeepSeekModelPort` 仍在 TUI，并通过临时 canonical output -> TUI DTO -> runtime event 适配；
-  下一纵切必须让它直接消费 `codewhale-deepseek` 输出、删除该往返，并把官方模型输出约束移出 TUI。
+- 第三依赖纵切已完成源码迁移：`DeepSeekModelPort` 直接消费 `crates/deepseek` canonical
+  output；官方模型只接受 `deepseek-v4-pro`/`deepseek-v4-flash`，上下文为 1M，最大输出为
+  384K，旧 alias 与外部模型 fail closed。未显式指定输出长度时使用 262144 的 Agent 策略，
+  exec 的显式 384K 契约保持不变。
+- Model accounting snapshot、resume 物理请求余量进入 `crates/deepseek`；纯重放端口与是否需要
+  live model 的恢复门进入 `crates/app`。读 run/events/terminal replay 可只持有无凭据的
+  `DeepSeekConnectionConfig`，Key 与每 run budget 仅在 live start/resume 时绑定。
 
 #### 同切片删除/替代
 

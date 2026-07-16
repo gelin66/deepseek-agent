@@ -2,14 +2,16 @@
 
 use std::time::Duration;
 
+#[cfg(test)]
+use codewhale_deepseek::RuntimeChatPlanInput;
 pub(crate) use codewhale_deepseek::{
-    ApiSurface, ChatPlanError, DeepSeekEndpoint, DeepSeekResponse, DeepSeekTransport,
-    DeepSeekTransportConfig, FimPlanError, RequestPlan, ResponseMode, TransportRetryPolicy,
+    ApiSurface, ChatPlanError, DeepSeekConnectionConfig, DeepSeekEndpoint, DeepSeekResponse,
+    DeepSeekTransport, FimPlanError, RequestPlan, ResponseMode, TransportRetryPolicy,
 };
-use codewhale_deepseek::{
-    ChatPlanInput, DeepSeekCredential, PlannedTool, ReasoningMode, RuntimeChatPlanInput,
-};
-use codewhale_runtime::{ModelFinishReason, ModelRequest, ModelStreamEvent};
+use codewhale_deepseek::{ChatPlanInput, DeepSeekCredential, PlannedTool, ReasoningMode};
+#[cfg(test)]
+use codewhale_runtime::ModelRequest;
+use codewhale_runtime::{ModelFinishReason, ModelStreamEvent};
 use futures_util::StreamExt;
 
 use crate::config::{ApiProvider, wire_model_for_provider};
@@ -38,19 +40,22 @@ impl DeepSeekClient {
             max_delay: Duration::from_secs_f64(self.retry.max_delay.clamp(0.0, 300.0)),
             exponential_base: self.retry.exponential_base,
         };
-        let config = DeepSeekTransportConfig {
+        let connection = DeepSeekConnectionConfig {
             endpoint,
-            credential: DeepSeekCredential::new(self.api_key.clone())?,
             strict_tools: self.strict_tool_mode,
             response_header_timeout: self.stream_open_timeout,
             stream_idle_timeout: self.stream_idle_timeout,
             retry,
-            request_budget: self
-                .api_request_budget
-                .clone()
-                .unwrap_or_else(codewhale_deepseek::SharedApiRequestBudget::tracking_only),
         };
-        DeepSeekTransport::new(self.http_client.clone(), config).map_err(Into::into)
+        connection
+            .bind(
+                self.http_client.clone(),
+                DeepSeekCredential::new(self.api_key.clone())?,
+                self.api_request_budget
+                    .clone()
+                    .unwrap_or_else(codewhale_deepseek::SharedApiRequestBudget::tracking_only),
+            )
+            .map_err(Into::into)
     }
 }
 
@@ -362,6 +367,7 @@ pub(crate) fn plan_chat(
 /// This path deliberately consumes [`ModelRequest`] directly. Runtime turns
 /// must not be projected through the legacy TUI `MessageRequest`/content-block
 /// model before the DeepSeek surface, exact history and body are frozen.
+#[cfg(test)]
 pub(crate) fn plan_runtime_chat(
     provider: ApiProvider,
     base_url: &str,
@@ -455,6 +461,7 @@ fn official_root(provider: ApiProvider, base_url: &str) -> Option<&'static str> 
 /// Loopback is an offline protocol fixture, not a provider compatibility
 /// fallback: it still receives the exact official DeepSeek request plan. The
 /// interactive legacy route remains unclaimed for every custom base.
+#[cfg(test)]
 fn runtime_planner_root(
     provider: ApiProvider,
     base_url: &str,
