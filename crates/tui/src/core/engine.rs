@@ -71,9 +71,7 @@ use codewhale_tools::shell::{SharedShellManager, new_shared_shell_manager};
 use super::authority::agent_approval_mode_for_turn;
 use super::authority::{TurnAuthority, effective_input_policy, shell_policy_for_mode};
 use super::events::{Event, TurnOutcomeStatus, TurnRoute};
-use super::ops::{
-    Op, ProviderRuntimeStatus, SessionSnapshot, USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance,
-};
+use super::ops::{Op, ProviderRuntimeStatus, USER_SHELL_TOOL_ID_PREFIX, UserInputProvenance};
 use super::session::Session;
 use super::tool_parser;
 use super::turn::{TurnContext, post_turn_snapshot, pre_turn_snapshot};
@@ -2217,22 +2215,6 @@ impl Engine {
                         }
                         Op::CompactContext => {
                             self.handle_manual_compaction().await;
-                        }
-                        Op::GetSessionSnapshot { tx } => {
-                            let total_tokens = self.session.total_usage.input_tokens
-                                + self.session.total_usage.output_tokens;
-                            let snapshot = SessionSnapshot {
-                                messages: self.session.messages.to_vec(),
-                                total_tokens,
-                                model: self.session.model.clone(),
-                                model_provider: self.api_provider.as_str().to_string(),
-                                workspace: self.session.workspace.clone(),
-                                system_prompt: self.session.system_prompt.clone(),
-                                mode: self.current_mode.as_setting().to_string(),
-                            };
-                            if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
-                                let _ = tx.send(snapshot);
-                            }
                         }
                         Op::GetProviderRuntimeStatus { tx } => {
                             let status = if let Some(client) = self.deepseek_client.as_ref() {

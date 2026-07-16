@@ -16,14 +16,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, broadcast, oneshot};
-use tokio_util::sync::CancellationToken;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use crate::compaction::CompactionConfig;
@@ -41,12 +39,8 @@ use crate::tools::plan::new_shared_plan_state;
 use crate::tools::subagent::SubAgentStatus;
 use crate::tools::todo::new_shared_todo_list;
 use crate::tui::app::AppMode;
-use codewhale_protocol::runtime::{
-    DynamicToolCallContent, DynamicToolCallParams, DynamicToolCallResult, DynamicToolSpec,
-    TurnEnvironmentParams,
-};
+use codewhale_protocol::runtime::{DynamicToolSpec, TurnEnvironmentParams};
 
-const EVENT_CHANNEL_CAPACITY: usize = 1024;
 const MAX_ACTIVE_THREADS_DEFAULT: usize = 8;
 const SUMMARY_LIMIT: usize = 280;
 
@@ -130,28 +124,6 @@ fn sort_turn_items_by_start(items: &mut [TurnItemRecord]) {
 const CURRENT_RUNTIME_SCHEMA_VERSION: u32 = 2;
 const RUNTIME_RESTART_REASON: &str = "Interrupted by process restart";
 const EMPTY_TURN_REASON: &str = "Turn completed without engine output";
-const APPROVAL_DECISION_TIMEOUT: Duration = Duration::from_secs(300);
-
-#[cfg(test)]
-static TEST_APPROVAL_DECISION_TIMEOUT_MS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-fn approval_decision_timeout() -> Duration {
-    #[cfg(test)]
-    {
-        let ms = TEST_APPROVAL_DECISION_TIMEOUT_MS.load(std::sync::atomic::Ordering::SeqCst);
-        if ms > 0 {
-            return Duration::from_millis(ms);
-        }
-    }
-    APPROVAL_DECISION_TIMEOUT
-}
-
-#[cfg(test)]
-pub(crate) fn set_test_approval_decision_timeout_ms(ms: u64) -> u64 {
-    TEST_APPROVAL_DECISION_TIMEOUT_MS.swap(ms, std::sync::atomic::Ordering::SeqCst)
-}
-
 const fn default_runtime_schema_version() -> u32 {
     CURRENT_RUNTIME_SCHEMA_VERSION
 }
@@ -542,51 +514,6 @@ impl RuntimeThreadStore {
         Ok(out)
     }
 
-    pub fn list_items_for_turns_map(
-        &self,
-        turn_ids: &[String],
-    ) -> Result<HashMap<String, Vec<TurnItemRecord>>> {
-        if turn_ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-
-        for turn_id in turn_ids {
-            validated_record_id(turn_id, "turn id")?;
-        }
-
-        let wanted: HashSet<&str> = turn_ids.iter().map(String::as_str).collect();
-        let mut out: HashMap<String, Vec<TurnItemRecord>> = HashMap::new();
-        let items_dir = checked_existing_runtime_store_dir(&self.items_dir)?;
-        for entry in fs::read_dir(&items_dir)
-            .with_context(|| format!("Failed to read {}", items_dir.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().is_none_or(|ext| ext != "json") {
-                continue;
-            }
-            let raw = read_store_file(&path)
-                .with_context(|| format!("Failed to read {}", path.display()))?;
-            let item: TurnItemRecord = serde_json::from_str(&raw)
-                .with_context(|| format!("Failed to parse {}", path.display()))?;
-            if item.schema_version > CURRENT_RUNTIME_SCHEMA_VERSION {
-                bail!(
-                    "Item schema v{} is newer than supported v{}",
-                    item.schema_version,
-                    CURRENT_RUNTIME_SCHEMA_VERSION
-                );
-            }
-            if wanted.contains(item.turn_id.as_str()) {
-                out.entry(item.turn_id.clone()).or_default().push(item);
-            }
-        }
-
-        for items in out.values_mut() {
-            sort_turn_items_by_start(items);
-        }
-        Ok(out)
-    }
-
     pub async fn append_event(
         &self,
         thread_id: &str,
@@ -668,11 +595,6 @@ impl RuntimeThreadStore {
         }
         Ok(out)
     }
-
-    pub async fn current_seq(&self) -> u64 {
-        let state = self.state.lock().await;
-        state.next_seq.saturating_sub(1)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -702,18 +624,6 @@ impl RuntimeThreadManagerConfig {
     }
 }
 
-/// Visibility filter for the unmigrated interactive thread manager.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ThreadListFilter {
-    /// Only `archived = false` threads. The original default.
-    #[default]
-    ActiveOnly,
-    /// Active and archived threads, sorted as the store returns them.
-    IncludeArchived,
-    /// Only `archived = true` threads.
-    ArchivedOnly,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CreateThreadRequest {
     pub model: Option<String>,
@@ -734,24 +644,6 @@ pub struct CreateThreadRequest {
     pub environments: Vec<TurnEnvironmentParams>,
 }
 
-/// Mutable fields retained by the unmigrated interactive thread manager.
-///
-/// Each field is optional — missing means "no change". Extended in v0.8.10
-/// (#562, whalescale#256) so the UI can flip persistent thread state without
-/// having to recreate a thread or pass per-turn overrides on every send.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct UpdateThreadRequest {
-    pub archived: Option<bool>,
-    pub allow_shell: Option<bool>,
-    pub trust_mode: Option<bool>,
-    pub auto_approve: Option<bool>,
-    pub model: Option<String>,
-    pub mode: Option<String>,
-    pub title: Option<String>,
-    pub system_prompt: Option<String>,
-    pub workspace: Option<PathBuf>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StartTurnRequest {
     pub prompt: String,
@@ -766,64 +658,6 @@ pub struct StartTurnRequest {
     pub dynamic_tools: Vec<DynamicToolSpec>,
     #[serde(default)]
     pub environment_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SteerTurnRequest {
-    pub prompt: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CompactThreadRequest {
-    #[serde(default)]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadDetail {
-    pub thread: ThreadRecord,
-    pub turns: Vec<TurnRecord>,
-    pub items: Vec<TurnItemRecord>,
-    pub latest_seq: u64,
-}
-
-/// Aggregation key for `aggregate_usage`. Whalescale#261 / #564.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UsageGroupBy {
-    Day,
-    Model,
-    Provider,
-    Thread,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct UsageTotals {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cached_tokens: u64,
-    pub reasoning_tokens: u64,
-    pub cost_usd: f64,
-    pub turns: u64,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct UsageBucket {
-    pub key: String,
-    pub input_tokens: u64,
-    pub output_tokens: u64,
-    pub cached_tokens: u64,
-    pub reasoning_tokens: u64,
-    pub cost_usd: f64,
-    pub turns: u64,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct UsageAggregation {
-    pub since: Option<DateTime<Utc>>,
-    pub until: Option<DateTime<Utc>>,
-    pub group_by: String,
-    pub totals: UsageTotals,
-    pub buckets: Vec<UsageBucket>,
 }
 
 #[derive(Debug, Clone)]
@@ -909,8 +743,8 @@ pub type SharedRuntimeThreadManager = Arc<RuntimeThreadManager>;
 ///
 /// **No code path holds both locks simultaneously.** The `state` lock is only
 /// acquired inside `RuntimeThreadStore::append_event` (where it is explicitly
-/// dropped before any I/O) and `current_seq`. All `emit_event` calls (which
-/// call `append_event`) happen *after* `active` has been released. If you add
+/// dropped before any I/O). All `emit_event` calls (which call `append_event`)
+/// happen *after* `active` has been released. If you add
 /// new code that touches both, always acquire `state` before `active` to
 /// preserve a consistent ordering.
 #[derive(Clone)]
@@ -919,42 +753,8 @@ pub struct RuntimeThreadManager {
     workspace: PathBuf,
     store: RuntimeThreadStore,
     active: Arc<Mutex<ActiveThreads>>,
-    event_tx: broadcast::Sender<RuntimeEventRecord>,
     manager_cfg: RuntimeThreadManagerConfig,
-    cancel_token: CancellationToken,
     task_manager: Arc<parking_lot::Mutex<Option<crate::task_manager::SharedTaskManager>>>,
-    automations:
-        Arc<parking_lot::Mutex<Option<crate::automation_manager::SharedAutomationManager>>>,
-    pending_approvals:
-        Arc<parking_lot::Mutex<HashMap<String, oneshot::Sender<ExternalApprovalDecision>>>>,
-    pending_dynamic_tools:
-        Arc<parking_lot::Mutex<HashMap<String, oneshot::Sender<DynamicToolCallResult>>>>,
-}
-
-/// Helper types for `seed_thread_from_messages` — intermediate representation
-/// of a turn being built from session messages before persisting as items.
-///
-/// A single content block extracted from an assistant message.
-enum SeedItem {
-    Text(String),
-    Thinking(String),
-    ToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-    },
-    ToolResult {
-        tool_use_id: String,
-        content: String,
-        is_error: bool,
-        content_blocks: Option<Vec<serde_json::Value>>,
-    },
-}
-
-/// A turn being assembled from session messages.
-struct TurnSeed {
-    user_text: String,
-    items: Vec<SeedItem>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -962,12 +762,6 @@ enum RuntimeApprovalDecision {
     ApproveTool,
     DenyTool,
     RetryWithFullAccess,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExternalApprovalDecision {
-    Allow { remember: bool },
-    Deny { remember: bool },
 }
 
 impl RuntimeThreadManager {
@@ -1008,138 +802,19 @@ impl RuntimeThreadManager {
         }
     }
 
-    /// Reload config from an updated Config instance (called after /v1/config/reload).
-    pub fn reload_config(&self, new_config: Config) {
-        let mut guard = self.config.write();
-        *guard = new_config;
-    }
-
-    /// Propagate the current config to all active engines by sending
-    /// `Op::SetModel`, `Op::SetCompaction`, `Op::SetStreamChunkTimeout`, and
-    /// `Op::SetSubagentRuntimeConfig`. This mirrors what the TUI does via
-    /// `apply_model_and_compaction_update` after a config change, ensuring
-    /// running engines pick up the new settings without a restart.
-    pub async fn sync_engines_with_config(&self) {
-        let (
-            config,
-            auto_compact,
-            auto_compact_explicit,
-            auto_compact_threshold_percent,
-            stream_chunk_timeout_secs,
-        ) = {
-            let cfg = self.read_config();
-            let settings = crate::settings::Settings::load().unwrap_or_default();
-            (
-                cfg.clone(),
-                settings.auto_compact,
-                crate::settings::Settings::auto_compact_explicitly_configured(),
-                settings.auto_compact_threshold_percent,
-                cfg.stream_chunk_timeout_secs(),
-            )
-        };
-
-        // Keep each already-loaded engine on its actual provider/model route.
-        // `SetModel` cannot swap the provider client; the next `SendMessage`
-        // performs provider activation if a turn explicitly selects another
-        // route.
-        let entries: Vec<(String, EngineHandle, ApiProvider, String)> = {
-            let active = self.active.lock().await;
-            active
-                .engines
-                .iter()
-                .map(|(id, state)| {
-                    (
-                        id.clone(),
-                        state.engine.clone(),
-                        state.route_provider,
-                        state.route_model.clone(),
-                    )
-                })
-                .collect()
-        };
-
-        for (thread_id, engine, provider, engine_model) in entries {
-            let route = match resolve_runtime_thread_route(&config, provider, Some(&engine_model)) {
-                Ok(route) => route,
-                Err(err) => {
-                    tracing::warn!(
-                        thread_id = %thread_id,
-                        provider = provider.as_str(),
-                        model = %engine_model,
-                        error = %err,
-                        "Skipped runtime engine route sync"
-                    );
-                    continue;
-                }
-            };
-            let route_limits = route.limits;
-            let engine_compaction = runtime_compaction_config(
-                provider,
-                &route.model,
-                route_limits,
-                auto_compact,
-                auto_compact_explicit,
-                auto_compact_threshold_percent,
-            );
-
-            let _ = engine
-                .send(Op::SetModel {
-                    model: route.model.clone(),
-                    mode: crate::tui::app::AppMode::Agent,
-                    route_limits,
-                })
-                .await;
-            let _ = engine
-                .send(Op::SetCompaction {
-                    config: engine_compaction,
-                })
-                .await;
-            let _ = engine
-                .send(Op::SetStreamChunkTimeout {
-                    timeout_secs: stream_chunk_timeout_secs,
-                })
-                .await;
-            let _ = engine
-                .send(Op::SetSubagentRuntimeConfig {
-                    enabled: config.subagents_enabled_for_provider(provider),
-                    max_subagents: config
-                        .max_subagents_for_provider(provider)
-                        .clamp(1, crate::config::MAX_SUBAGENTS),
-                    launch_concurrency: config.launch_concurrency_for_provider(provider),
-                    max_spawn_depth: config.subagent_max_spawn_depth_for_provider(provider),
-                    api_timeout_secs: config.subagent_api_timeout_secs_for_provider(provider),
-                    heartbeat_timeout_secs: config
-                        .subagent_heartbeat_timeout_secs_for_provider(provider),
-                })
-                .await;
-
-            if let Some(state) = self.active.lock().await.engines.get_mut(&thread_id) {
-                state.route_model = route.model;
-            }
-
-            tracing::info!(thread_id = %thread_id, "Synced engine with reloaded config");
-        }
-    }
-
     pub fn open(
         config: Config,
         workspace: PathBuf,
         manager_cfg: RuntimeThreadManagerConfig,
     ) -> Result<Self> {
         let store = RuntimeThreadStore::open(manager_cfg.data_dir.clone())?;
-        let (event_tx, _event_rx) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
         let manager = Self {
             config: Arc::new(parking_lot::RwLock::new(config)),
             workspace,
             store,
             active: Arc::new(Mutex::new(ActiveThreads::default())),
-            event_tx,
             manager_cfg,
-            cancel_token: CancellationToken::new(),
             task_manager: Arc::new(parking_lot::Mutex::new(None)),
-            automations: Arc::new(parking_lot::Mutex::new(None)),
-            pending_approvals: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-            pending_dynamic_tools: Arc::new(parking_lot::Mutex::new(HashMap::new())),
         };
         manager.recover_interrupted_state()?;
         Ok(manager)
@@ -1151,162 +826,6 @@ impl RuntimeThreadManager {
         *self.task_manager.lock() = Some(task_manager);
     }
 
-    /// Attach the automation manager for model-visible scheduling tools.
-    pub fn attach_automation_manager(
-        &self,
-        automations: crate::automation_manager::SharedAutomationManager,
-    ) {
-        *self.automations.lock() = Some(automations);
-    }
-
-    #[allow(dead_code)] // Public API for external callers (runtime API, task manager)
-    pub fn shutdown(&self) {
-        self.cancel_token.cancel();
-        self.pending_approvals.lock().clear();
-        self.pending_dynamic_tools.lock().clear();
-    }
-
-    #[allow(dead_code)] // Public API for external callers
-    pub fn is_shutdown(&self) -> bool {
-        self.cancel_token.is_cancelled()
-    }
-
-    fn register_pending_approval(
-        &self,
-        approval_id: &str,
-    ) -> oneshot::Receiver<ExternalApprovalDecision> {
-        let (tx, rx) = oneshot::channel();
-        self.pending_approvals
-            .lock()
-            .insert(approval_id.to_string(), tx);
-        rx
-    }
-
-    fn cancel_pending_approval(&self, approval_id: &str) {
-        self.pending_approvals.lock().remove(approval_id);
-    }
-
-    fn register_pending_dynamic_tool(
-        &self,
-        call_id: &str,
-    ) -> oneshot::Receiver<DynamicToolCallResult> {
-        let (tx, rx) = oneshot::channel();
-        self.pending_dynamic_tools
-            .lock()
-            .insert(call_id.to_string(), tx);
-        rx
-    }
-
-    fn cancel_pending_dynamic_tool(&self, call_id: &str) {
-        self.pending_dynamic_tools.lock().remove(call_id);
-    }
-
-    pub fn deliver_external_approval(
-        &self,
-        approval_id: &str,
-        decision: ExternalApprovalDecision,
-    ) -> bool {
-        let sender = self.pending_approvals.lock().remove(approval_id);
-        match sender {
-            Some(tx) => tx.send(decision).is_ok(),
-            None => false,
-        }
-    }
-
-    pub fn deliver_dynamic_tool_result(
-        &self,
-        call_id: &str,
-        result: DynamicToolCallResult,
-    ) -> bool {
-        let sender = self.pending_dynamic_tools.lock().remove(call_id);
-        match sender {
-            Some(tx) => tx.send(result).is_ok(),
-            None => false,
-        }
-    }
-
-    pub async fn submit_user_input(
-        &self,
-        thread_id: &str,
-        input_id: &str,
-        response: crate::tools::user_input::UserInputResponse,
-    ) -> Result<bool> {
-        let active = self.active.lock().await;
-        let Some(state) = active.engines.get(thread_id) else {
-            bail!("thread '{thread_id}' not found");
-        };
-        state.engine.submit_user_input(input_id, response).await?;
-        Ok(true)
-    }
-
-    #[allow(dead_code)]
-    pub async fn cancel_user_input(&self, thread_id: &str, input_id: &str) -> Result<bool> {
-        let active = self.active.lock().await;
-        let Some(state) = active.engines.get(thread_id) else {
-            bail!("thread '{thread_id}' not found");
-        };
-        state.engine.cancel_user_input(input_id).await?;
-        Ok(true)
-    }
-
-    #[allow(dead_code)]
-    pub fn pending_approvals_count(&self) -> usize {
-        self.pending_approvals.lock().len()
-    }
-
-    #[allow(dead_code)]
-    pub fn pending_dynamic_tools_count(&self) -> usize {
-        self.pending_dynamic_tools.lock().len()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn register_pending_approval_for_test(
-        &self,
-        approval_id: &str,
-    ) -> oneshot::Receiver<ExternalApprovalDecision> {
-        self.register_pending_approval(approval_id)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn register_pending_dynamic_tool_for_test(
-        &self,
-        call_id: &str,
-    ) -> oneshot::Receiver<DynamicToolCallResult> {
-        self.register_pending_dynamic_tool(call_id)
-    }
-
-    async fn remember_thread_auto_approve(&self, thread_id: &str) {
-        let Ok(mut thread) = self.store.load_thread(thread_id) else {
-            return;
-        };
-        if thread.auto_approve {
-            return;
-        }
-        thread.auto_approve = true;
-        thread.updated_at = Utc::now();
-        if let Err(err) = self.store.save_thread(&thread) {
-            tracing::warn!(
-                "Failed to persist auto_approve flip for thread {}: {}",
-                thread_id,
-                err
-            );
-        }
-
-        {
-            let mut active = self.active.lock().await;
-            if let Some(state) = active.engines.get_mut(thread_id)
-                && let Some(turn) = state.active_turn.as_mut()
-            {
-                turn.auto_approve = true;
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn subscribe_events(&self) -> broadcast::Receiver<RuntimeEventRecord> {
-        self.event_tx.subscribe()
-    }
-
     async fn emit_event(
         &self,
         thread_id: &str,
@@ -1315,17 +834,9 @@ impl RuntimeThreadManager {
         event: impl Into<String>,
         payload: Value,
     ) -> Result<RuntimeEventRecord> {
-        let record = self
-            .store
+        self.store
             .append_event(thread_id, turn_id, item_id, event, payload)
-            .await?;
-        if let Err(e) = self.event_tx.send(record.clone()) {
-            tracing::debug!(
-                "Runtime event broadcast failed (no receivers or channel full): {}",
-                e
-            );
-        }
-        Ok(record)
+            .await
     }
 
     pub async fn create_thread(&self, req: CreateThreadRequest) -> Result<ThreadRecord> {
@@ -1377,827 +888,10 @@ impl RuntimeThreadManager {
         Ok(thread)
     }
 
-    pub async fn list_threads(
-        &self,
-        filter: ThreadListFilter,
-        limit: Option<usize>,
-    ) -> Result<Vec<ThreadRecord>> {
-        let mut threads = self.store.list_threads()?;
-        match filter {
-            ThreadListFilter::ActiveOnly => threads.retain(|t| !t.archived),
-            ThreadListFilter::ArchivedOnly => threads.retain(|t| t.archived),
-            ThreadListFilter::IncludeArchived => {}
-        }
-        if let Some(limit) = limit {
-            threads.truncate(limit);
-        }
-        Ok(threads)
-    }
-
-    /// Aggregate token + cost usage across all threads/turns inside the time
-    /// range `[since, until]`. Each turn's cost is computed via
-    /// provider-aware pricing using each turn's persisted concrete route.
-    /// Legacy turns without provider provenance and providers without an
-    /// authoritative runtime price (including ChatGPT/Codex OAuth) accrue
-    /// tokens but no fabricated dollar cost. Whalescale#261 / #564.
-    ///
-    /// Buckets are sorted by ascending key for deterministic output. Empty
-    /// ranges produce empty `buckets` (never an error).
-    pub async fn aggregate_usage(
-        &self,
-        since: Option<DateTime<Utc>>,
-        until: Option<DateTime<Utc>>,
-        group_by: UsageGroupBy,
-    ) -> Result<UsageAggregation> {
-        use std::collections::BTreeMap;
-
-        let mut buckets: BTreeMap<String, UsageBucket> = BTreeMap::new();
-        let mut totals = UsageTotals::default();
-        for thread in self.store.list_threads()? {
-            let turns = self.store.list_turns_for_thread(&thread.id)?;
-            for turn in turns {
-                if let Some(s) = since
-                    && turn.created_at < s
-                {
-                    continue;
-                }
-                if let Some(u) = until
-                    && turn.created_at > u
-                {
-                    continue;
-                }
-                let Some(usage) = turn.usage.as_ref() else {
-                    continue;
-                };
-                let cached = usage.prompt_cache_hit_tokens.unwrap_or(0) as u64;
-                let reasoning = usage.reasoning_tokens.unwrap_or(0) as u64;
-                let input = usage.input_tokens as u64;
-                let output = usage.output_tokens as u64;
-                let model = turn
-                    .effective_model
-                    .as_deref()
-                    .filter(|model| !model.trim().is_empty())
-                    .unwrap_or(&thread.model);
-                let provider_label = turn
-                    .effective_provider
-                    .as_deref()
-                    .filter(|provider| !provider.trim().is_empty())
-                    .unwrap_or("unknown");
-                let provider = ApiProvider::parse(provider_label);
-                let cost = provider
-                    .and_then(|provider| {
-                        crate::pricing::calculate_turn_cost_estimate_for_route_at(
-                            provider,
-                            model,
-                            turn.effective_billing_surface.as_deref(),
-                            usage,
-                            turn.created_at,
-                        )
-                    })
-                    .map(|estimate| estimate.usd)
-                    .unwrap_or(0.0);
-
-                totals.input_tokens += input;
-                totals.output_tokens += output;
-                totals.cached_tokens += cached;
-                totals.reasoning_tokens += reasoning;
-                totals.cost_usd += cost;
-                totals.turns += 1;
-
-                let key = match group_by {
-                    UsageGroupBy::Day => turn.created_at.format("%Y-%m-%d").to_string(),
-                    UsageGroupBy::Model => model.to_string(),
-                    UsageGroupBy::Provider => provider_label.to_string(),
-                    UsageGroupBy::Thread => thread.id.clone(),
-                };
-                let bucket = buckets.entry(key.clone()).or_insert_with(|| UsageBucket {
-                    key,
-                    ..UsageBucket::default()
-                });
-                bucket.input_tokens += input;
-                bucket.output_tokens += output;
-                bucket.cached_tokens += cached;
-                bucket.reasoning_tokens += reasoning;
-                bucket.cost_usd += cost;
-                bucket.turns += 1;
-            }
-        }
-
-        let group_by_str = match group_by {
-            UsageGroupBy::Day => "day",
-            UsageGroupBy::Model => "model",
-            UsageGroupBy::Provider => "provider",
-            UsageGroupBy::Thread => "thread",
-        }
-        .to_string();
-
-        Ok(UsageAggregation {
-            since,
-            until,
-            group_by: group_by_str,
-            totals,
-            buckets: buckets.into_values().collect(),
-        })
-    }
-
     pub async fn get_thread(&self, id: &str) -> Result<ThreadRecord> {
         self.store
             .load_thread(id)
             .with_context(|| format!("Thread not found: {id}"))
-    }
-
-    pub async fn update_thread(&self, id: &str, req: UpdateThreadRequest) -> Result<ThreadRecord> {
-        if req.archived.is_none()
-            && req.allow_shell.is_none()
-            && req.trust_mode.is_none()
-            && req.auto_approve.is_none()
-            && req.model.is_none()
-            && req.mode.is_none()
-            && req.title.is_none()
-            && req.system_prompt.is_none()
-            && req.workspace.is_none()
-        {
-            bail!("At least one thread field is required");
-        }
-
-        if let Some(model) = req.model.as_ref()
-            && model.trim().is_empty()
-        {
-            bail!("model must not be empty");
-        }
-        if let Some(mode) = req.mode.as_ref()
-            && mode.trim().is_empty()
-        {
-            bail!("mode must not be empty");
-        }
-        if let Some(workspace) = req.workspace.as_ref()
-            && workspace.as_os_str().is_empty()
-        {
-            bail!("workspace must not be empty");
-        }
-
-        let mut thread = self.get_thread(id).await?;
-        let mut changes = serde_json::Map::new();
-
-        if let Some(archived) = req.archived
-            && thread.archived != archived
-        {
-            thread.archived = archived;
-            changes.insert("archived".to_string(), json!(archived));
-        }
-        if let Some(allow_shell) = req.allow_shell
-            && thread.allow_shell != allow_shell
-        {
-            thread.allow_shell = allow_shell;
-            changes.insert("allow_shell".to_string(), json!(allow_shell));
-        }
-        if let Some(trust_mode) = req.trust_mode
-            && thread.trust_mode != trust_mode
-        {
-            thread.trust_mode = trust_mode;
-            changes.insert("trust_mode".to_string(), json!(trust_mode));
-        }
-        if let Some(auto_approve) = req.auto_approve
-            && thread.auto_approve != auto_approve
-        {
-            thread.auto_approve = auto_approve;
-            changes.insert("auto_approve".to_string(), json!(auto_approve));
-        }
-        if let Some(model) = req.model
-            && thread.model != model
-        {
-            thread.model = model.clone();
-            changes.insert("model".to_string(), json!(model));
-        }
-        if let Some(mode) = req.mode
-            && thread.mode != mode
-        {
-            thread.mode = mode.clone();
-            changes.insert("mode".to_string(), json!(mode));
-        }
-        if let Some(title) = req.title {
-            // Empty string clears a previously-set title and reverts to derived.
-            let new_title = if title.trim().is_empty() {
-                None
-            } else {
-                Some(title)
-            };
-            if thread.title != new_title {
-                thread.title = new_title.clone();
-                changes.insert("title".to_string(), json!(new_title));
-            }
-        }
-        if let Some(system_prompt) = req.system_prompt {
-            let new_sys = if system_prompt.trim().is_empty() {
-                None
-            } else {
-                Some(system_prompt)
-            };
-            if thread.system_prompt != new_sys {
-                thread.system_prompt = new_sys.clone();
-                changes.insert("system_prompt".to_string(), json!(new_sys));
-            }
-        }
-        if let Some(workspace) = req.workspace
-            && thread.workspace != workspace
-        {
-            changes.insert("workspace".to_string(), json!(workspace));
-            thread.workspace = workspace;
-        }
-
-        if !changes.is_empty() {
-            let workspace_changed = changes.contains_key("workspace");
-            if workspace_changed {
-                self.ensure_thread_has_no_active_turn(&thread.id).await?;
-            }
-
-            thread.updated_at = Utc::now();
-            self.store.save_thread(&thread)?;
-            if workspace_changed {
-                self.evict_cached_engine(&thread.id).await;
-            }
-            self.emit_event(
-                &thread.id,
-                None,
-                None,
-                "thread.updated",
-                json!({
-                    "thread": thread.clone(),
-                    "changes": Value::Object(changes),
-                }),
-            )
-            .await?;
-        }
-
-        Ok(thread)
-    }
-
-    /// Link a session to a thread so that `ensure_engine_loaded` can restore
-    /// the full message history (including thinking/tool blocks) from the
-    /// session file instead of reconstructing from turns.
-    pub async fn set_thread_session_id(&self, thread_id: &str, session_id: &str) -> Result<()> {
-        let mut thread = self.get_thread(thread_id).await?;
-        if thread.session_id.as_deref() == Some(session_id) {
-            return Ok(());
-        }
-        thread.session_id = Some(session_id.to_string());
-        thread.updated_at = Utc::now();
-        self.store.save_thread(&thread)?;
-        self.emit_event(
-            thread_id,
-            None,
-            None,
-            "thread.updated",
-            json!({ "thread": thread, "changes": { "session_id": session_id } }),
-        )
-        .await?;
-        Ok(())
-    }
-
-    async fn ensure_thread_has_no_active_turn(&self, thread_id: &str) -> Result<()> {
-        let active = self.active.lock().await;
-        if active
-            .engines
-            .get(thread_id)
-            .and_then(|state| state.active_turn.as_ref())
-            .is_some()
-        {
-            bail!("workspace cannot be changed while the thread has an active turn");
-        }
-        Ok(())
-    }
-
-    async fn evict_cached_engine(&self, thread_id: &str) {
-        let engine = {
-            let mut active = self.active.lock().await;
-            active.lru.retain(|id| id != thread_id);
-            active.engines.remove(thread_id).map(|state| state.engine)
-        };
-        if let Some(engine) = engine {
-            let _ = engine.send(Op::Shutdown).await;
-        }
-    }
-
-    pub async fn get_thread_detail(&self, id: &str) -> Result<ThreadDetail> {
-        let thread = self.get_thread(id).await?;
-        let turns = self.store.list_turns_for_thread(id)?;
-        let turn_ids: Vec<String> = turns.iter().map(|turn| turn.id.clone()).collect();
-        let mut items_by_turn = self.store.list_items_for_turns_map(&turn_ids)?;
-        let mut items = Vec::new();
-        for turn in &turns {
-            if let Some(mut turn_items) = items_by_turn.remove(&turn.id) {
-                items.append(&mut turn_items);
-            }
-        }
-        let latest_seq = self.store.current_seq().await;
-        Ok(ThreadDetail {
-            thread,
-            turns,
-            items,
-            latest_seq,
-        })
-    }
-
-    pub async fn resume_thread(&self, id: &str) -> Result<ThreadRecord> {
-        let thread = self.get_thread(id).await?;
-        self.ensure_engine_loaded(&thread).await?;
-        Ok(thread)
-    }
-
-    /// Resume a thread and recover the sub-agent rebind hints needed to
-    /// reconstruct in-transcript cards (issue #128). Drains the persisted
-    /// `agent.*` event stream and collapses it into the latest known
-    /// status per `agent_id` — the UI consumes this to seed empty
-    /// `DelegateCard` / `FanoutCard` placeholders so subsequent live
-    /// mailbox envelopes mutate them in place.
-    #[allow(dead_code)] // exposed for the runtime API resume flow; consumed by #128 follow-up.
-    pub async fn resume_thread_with_agent_rebind(
-        &self,
-        id: &str,
-    ) -> Result<(ThreadRecord, Vec<AgentRebindHint>)> {
-        let thread = self.resume_thread(id).await?;
-        let events = self.store.events_since(&thread.id, None)?;
-        let hints = collect_agent_rebind_hints(&events);
-        Ok((thread, hints))
-    }
-
-    pub async fn fork_thread(&self, id: &str) -> Result<ThreadRecord> {
-        let source = self.get_thread(id).await?;
-        let mut forked = source.clone();
-        let now = Utc::now();
-        forked.id = format!("thr_{}", &Uuid::new_v4().to_string()[..8]);
-        forked.created_at = now;
-        forked.updated_at = now;
-        forked.latest_turn_id = None;
-        forked.archived = false;
-        self.store.save_thread(&forked)?;
-
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-        for source_turn in source_turns {
-            let mut cloned_turn = source_turn.clone();
-            cloned_turn.id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
-            cloned_turn.thread_id = forked.id.clone();
-            cloned_turn.item_ids.clear();
-            self.store.save_turn(&cloned_turn)?;
-
-            let items = self.store.list_items_for_turn(&source_turn.id)?;
-            for item in items {
-                let mut cloned_item = item.clone();
-                cloned_item.id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
-                cloned_item.turn_id = cloned_turn.id.clone();
-                self.store.save_item(&cloned_item)?;
-                cloned_turn.item_ids.push(cloned_item.id.clone());
-            }
-            self.store.save_turn(&cloned_turn)?;
-            forked.latest_turn_id = Some(cloned_turn.id.clone());
-            forked.updated_at = now;
-            self.store.save_thread(&forked)?;
-        }
-
-        self.emit_event(
-            &forked.id,
-            None,
-            None,
-            "thread.forked",
-            json!({
-                "thread": forked,
-                "source_thread_id": source.id,
-            }),
-        )
-        .await?;
-        Ok(forked)
-    }
-
-    /// Fork a thread, dropping every turn from the Nth-from-tail user
-    /// message onward (issue #133 — Esc-Esc backtrack).
-    ///
-    /// `depth_from_tail` selects which user turn to roll back *to*:
-    ///
-    /// - `0` — drop the most recent turn (the freshest user message and
-    ///   everything after it)
-    /// - `1` — drop the two most recent turns (rewind one further)
-    /// - …and so on
-    ///
-    /// Returns a tuple of `(forked_thread, original_user_text)` where the
-    /// second element is the `detail` of the first `UserMessage` item in
-    /// the *first dropped* turn — i.e. the input the user typed to start
-    /// that turn — so the caller can pre-populate the composer with it.
-    /// `None` when no detail was recorded (defensive — every persisted
-    /// `UserMessage` since v0.6 carries a detail string).
-    ///
-    /// Counts user turns by iterating `list_turns_for_thread` (sorted
-    /// oldest → newest) backwards. A turn is counted as a "user turn"
-    /// when at least one of its items has `kind ==
-    /// TurnItemKind::UserMessage`. Steered turns (which append additional
-    /// `UserMessage` items) still count as one turn — backtrack rewinds
-    /// at the turn boundary, not at the steer boundary.
-    ///
-    /// Errors:
-    /// - `depth_from_tail` exceeds the number of user turns
-    /// - source thread not found
-    #[allow(dead_code)] // exposed for the runtime/HTTP fork-on-backtrack path; the in-TUI Esc-Esc flow trims `App` state directly. Issue #133.
-    pub async fn fork_at_user_message(
-        &self,
-        id: &str,
-        depth_from_tail: usize,
-    ) -> Result<(ThreadRecord, Option<String>)> {
-        let source = self.get_thread(id).await?;
-        let source_turns = self.store.list_turns_for_thread(&source.id)?;
-
-        // Walk turns from newest to oldest. For each turn, ask: does it
-        // contain a UserMessage item? If yes, it counts toward the depth.
-        let mut user_turn_indices: Vec<usize> = Vec::new();
-        for (idx, turn) in source_turns.iter().enumerate().rev() {
-            let items = self.store.list_items_for_turn(&turn.id)?;
-            if items
-                .iter()
-                .any(|item| item.kind == TurnItemKind::UserMessage)
-            {
-                user_turn_indices.push(idx);
-            }
-        }
-        if depth_from_tail >= user_turn_indices.len() {
-            bail!(
-                "fork_at_user_message: depth {} exceeds {} user turn(s)",
-                depth_from_tail,
-                user_turn_indices.len()
-            );
-        }
-        // `user_turn_indices` is newest-first because we iterated in
-        // reverse, so the Nth element is exactly the Nth-from-tail user
-        // turn in the original chronological list.
-        let target_turn_idx = user_turn_indices[depth_from_tail];
-        let target_turn_id = source_turns[target_turn_idx].id.clone();
-
-        // Pull the original user-message text out of the dropped turn so
-        // the caller can drop it back into the composer.
-        let target_items = self.store.list_items_for_turn(&target_turn_id)?;
-        let original_user_text = target_items
-            .iter()
-            .find(|item| item.kind == TurnItemKind::UserMessage)
-            .and_then(|item| item.detail.clone());
-
-        // Copy turns strictly before `target_turn_idx` into a new thread.
-        // Mirrors `fork_thread` but stops at the cutoff instead of copying
-        // every turn. Kept structurally close so future parity reviews
-        // can spot drift between the two paths.
-        let mut forked = source.clone();
-        let now = Utc::now();
-        forked.id = format!("thr_{}", &Uuid::new_v4().to_string()[..8]);
-        forked.created_at = now;
-        forked.updated_at = now;
-        forked.latest_turn_id = None;
-        forked.archived = false;
-        self.store.save_thread(&forked)?;
-
-        for source_turn in source_turns.iter().take(target_turn_idx) {
-            let mut cloned_turn = source_turn.clone();
-            cloned_turn.id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
-            cloned_turn.thread_id = forked.id.clone();
-            cloned_turn.item_ids.clear();
-            self.store.save_turn(&cloned_turn)?;
-
-            let items = self.store.list_items_for_turn(&source_turn.id)?;
-            for item in items {
-                let mut cloned_item = item.clone();
-                cloned_item.id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
-                cloned_item.turn_id = cloned_turn.id.clone();
-                self.store.save_item(&cloned_item)?;
-                cloned_turn.item_ids.push(cloned_item.id.clone());
-            }
-            self.store.save_turn(&cloned_turn)?;
-            forked.latest_turn_id = Some(cloned_turn.id.clone());
-            forked.updated_at = now;
-            self.store.save_thread(&forked)?;
-        }
-
-        self.emit_event(
-            &forked.id,
-            None,
-            None,
-            "thread.forked",
-            json!({
-                "thread": forked,
-                "source_thread_id": source.id,
-                "backtrack_depth_from_tail": depth_from_tail,
-                "dropped_turn_id": target_turn_id,
-            }),
-        )
-        .await?;
-        Ok((forked, original_user_text))
-    }
-
-    /// Seed a thread with messages from a saved session so subsequent turns
-    /// continue with the prior conversation context.
-    ///
-    /// Unlike the old text-only implementation, this preserves all content
-    /// block types (thinking, tool_use, tool_result, etc.) as separate turn
-    /// items so that `loadHistory` in the GUI can reconstruct the full
-    /// conversation including process information.
-    pub async fn seed_thread_from_messages(
-        &self,
-        thread_id: &str,
-        messages: &[Message],
-    ) -> Result<()> {
-        let mut thread = self.get_thread(thread_id).await?;
-        let now = Utc::now();
-
-        // Group messages into turns. A turn starts with a user message and
-        // includes all subsequent assistant messages (which may contain
-        // thinking, tool_use, tool_result blocks) until the next user message.
-        let mut turns: Vec<TurnSeed> = Vec::new();
-        let mut current_turn: Option<TurnSeed> = None;
-
-        for msg in messages {
-            match msg.role.as_str() {
-                "user" => {
-                    let mut user_text = String::new();
-                    let mut tool_results = Vec::new();
-
-                    for block in &msg.content {
-                        match block {
-                            ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
-                                if !user_text.is_empty() {
-                                    user_text.push('\n');
-                                }
-                                user_text.push_str(text);
-                            }
-                            ContentBlock::ToolResult {
-                                tool_use_id,
-                                content,
-                                is_error,
-                                content_blocks,
-                            } => {
-                                tool_results.push(SeedItem::ToolResult {
-                                    tool_use_id: tool_use_id.clone(),
-                                    content: content.clone(),
-                                    is_error: is_error.unwrap_or(false),
-                                    content_blocks: content_blocks.clone(),
-                                });
-                            }
-                            // Other block types in user messages are rare;
-                            // skip them gracefully.
-                            _ => {}
-                        }
-                    }
-
-                    if !user_text.is_empty() {
-                        // A real user prompt begins a new turn. Tool results
-                        // without text belong to the preceding assistant turn.
-                        if let Some(t) = current_turn.take() {
-                            turns.push(t);
-                        }
-                        current_turn = Some(TurnSeed {
-                            user_text,
-                            items: tool_results,
-                        });
-                    } else if !tool_results.is_empty() {
-                        let turn = current_turn.get_or_insert_with(|| TurnSeed {
-                            user_text: String::new(),
-                            items: Vec::new(),
-                        });
-                        turn.items.extend(tool_results);
-                    } else {
-                        if let Some(t) = current_turn.take() {
-                            turns.push(t);
-                        }
-                        current_turn = Some(TurnSeed {
-                            user_text: String::new(),
-                            items: Vec::new(),
-                        });
-                    }
-                }
-                "assistant" => {
-                    // If no current turn exists (e.g. session starts with
-                    // an assistant message), create a placeholder turn.
-                    let turn = current_turn.get_or_insert_with(|| TurnSeed {
-                        user_text: String::new(),
-                        items: Vec::new(),
-                    });
-                    for block in &msg.content {
-                        match block {
-                            ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
-                                turn.items.push(SeedItem::Text(text.clone()));
-                            }
-                            ContentBlock::Thinking { thinking, .. }
-                                if !thinking.trim().is_empty() =>
-                            {
-                                turn.items.push(SeedItem::Thinking(thinking.clone()));
-                            }
-                            ContentBlock::ToolUse {
-                                id, name, input, ..
-                            } => {
-                                turn.items.push(SeedItem::ToolUse {
-                                    id: id.clone(),
-                                    name: name.clone(),
-                                    input: input.clone(),
-                                });
-                            }
-                            ContentBlock::ServerToolUse {
-                                id, name, input, ..
-                            } => {
-                                turn.items.push(SeedItem::ToolUse {
-                                    id: id.clone(),
-                                    name: name.clone(),
-                                    input: input.clone(),
-                                });
-                            }
-                            // Skip other block types (image_url, etc.)
-                            _ => {}
-                        }
-                    }
-                }
-                // System messages and other roles are ignored for turn seeding.
-                _ => {}
-            }
-        }
-        // Flush the last turn.
-        if let Some(t) = current_turn.take() {
-            turns.push(t);
-        }
-
-        for turn_seed in turns {
-            let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
-            let summary =
-                crate::utils::truncate_with_ellipsis(&turn_seed.user_text, SUMMARY_LIMIT, "...");
-            let mut item_ids = Vec::new();
-
-            // Save user message item.
-            if !turn_seed.user_text.is_empty() {
-                let item_id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
-                self.store.save_item(&TurnItemRecord {
-                    schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-                    id: item_id.clone(),
-                    turn_id: turn_id.clone(),
-                    kind: TurnItemKind::UserMessage,
-                    status: TurnItemLifecycleStatus::Completed,
-                    summary: summary.clone(),
-                    detail: Some(turn_seed.user_text.clone()),
-                    metadata: None,
-                    artifact_refs: Vec::new(),
-                    started_at: Some(now),
-                    ended_at: Some(now),
-                })?;
-                item_ids.push(item_id);
-            }
-
-            // Save assistant content items in order.
-            for seed_item in &turn_seed.items {
-                let item_id = format!("item_{}", &Uuid::new_v4().to_string()[..8]);
-                match seed_item {
-                    SeedItem::Text(text) => {
-                        let asst_summary = if text.len() > SUMMARY_LIMIT {
-                            crate::utils::truncate_with_ellipsis(text, SUMMARY_LIMIT, "...")
-                        } else {
-                            text.clone()
-                        };
-                        self.store.save_item(&TurnItemRecord {
-                            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-                            id: item_id.clone(),
-                            turn_id: turn_id.clone(),
-                            kind: TurnItemKind::AgentMessage,
-                            status: TurnItemLifecycleStatus::Completed,
-                            summary: asst_summary,
-                            detail: Some(text.clone()),
-                            metadata: None,
-                            artifact_refs: Vec::new(),
-                            started_at: Some(now),
-                            ended_at: Some(now),
-                        })?;
-                    }
-                    SeedItem::Thinking(thinking) => {
-                        let thinking_summary = if thinking.len() > SUMMARY_LIMIT {
-                            crate::utils::truncate_with_ellipsis(thinking, SUMMARY_LIMIT, "...")
-                        } else {
-                            thinking.clone()
-                        };
-                        self.store.save_item(&TurnItemRecord {
-                            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-                            id: item_id.clone(),
-                            turn_id: turn_id.clone(),
-                            kind: TurnItemKind::AgentReasoning,
-                            status: TurnItemLifecycleStatus::Completed,
-                            summary: thinking_summary,
-                            detail: Some(thinking.clone()),
-                            metadata: None,
-                            artifact_refs: Vec::new(),
-                            started_at: Some(now),
-                            ended_at: Some(now),
-                        })?;
-                    }
-                    SeedItem::ToolUse {
-                        id: tool_id,
-                        name,
-                        input,
-                    } => {
-                        let input_str =
-                            serde_json::to_string(input).unwrap_or_else(|_| input.to_string());
-                        let tool_summary = format!("{name}({})", {
-                            let s = &input_str;
-                            if s.len() > 80 {
-                                crate::utils::truncate_with_ellipsis(s, 80, "...")
-                            } else {
-                                s.clone()
-                            }
-                        });
-                        self.store.save_item(&TurnItemRecord {
-                            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-                            id: item_id.clone(),
-                            turn_id: turn_id.clone(),
-                            kind: TurnItemKind::ToolCall,
-                            status: TurnItemLifecycleStatus::Completed,
-                            summary: tool_summary,
-                            detail: Some(input_str),
-                            metadata: Some(serde_json::Value::Object(
-                                serde_json::json!({
-                                    "tool_use_id": tool_id,
-                                    "tool_name": name,
-                                })
-                                .as_object()
-                                .unwrap()
-                                .clone(),
-                            )),
-                            artifact_refs: Vec::new(),
-                            started_at: Some(now),
-                            ended_at: Some(now),
-                        })?;
-                    }
-                    SeedItem::ToolResult {
-                        tool_use_id,
-                        content,
-                        is_error,
-                        content_blocks,
-                    } => {
-                        let result_summary = if content.len() > SUMMARY_LIMIT {
-                            crate::utils::truncate_with_ellipsis(content, SUMMARY_LIMIT, "...")
-                        } else {
-                            content.clone()
-                        };
-                        let mut metadata = serde_json::Map::new();
-                        metadata.insert("tool_result_for".to_string(), json!(tool_use_id));
-                        metadata.insert("is_error".to_string(), json!(is_error));
-                        if let Some(blocks) = content_blocks {
-                            metadata
-                                .insert("content_blocks".to_string(), Value::Array(blocks.clone()));
-                        }
-                        self.store.save_item(&TurnItemRecord {
-                            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-                            id: item_id.clone(),
-                            turn_id: turn_id.clone(),
-                            kind: TurnItemKind::ToolCall,
-                            status: if *is_error {
-                                TurnItemLifecycleStatus::Failed
-                            } else {
-                                TurnItemLifecycleStatus::Completed
-                            },
-                            summary: result_summary,
-                            detail: Some(content.clone()),
-                            metadata: Some(Value::Object(metadata)),
-                            artifact_refs: Vec::new(),
-                            started_at: Some(now),
-                            ended_at: Some(now),
-                        })?;
-                    }
-                }
-                item_ids.push(item_id);
-            }
-
-            // Only create a turn if there's content.
-            if !item_ids.is_empty() {
-                self.store.save_turn(&TurnRecord {
-                    schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-                    id: turn_id.clone(),
-                    thread_id: thread_id.to_string(),
-                    status: RuntimeTurnStatus::Completed,
-                    input_summary: summary,
-                    created_at: now,
-                    started_at: Some(now),
-                    ended_at: Some(now),
-                    duration_ms: Some(0),
-                    usage: None,
-                    effective_provider: None,
-                    effective_billing_surface: None,
-                    effective_model: None,
-                    error: None,
-                    item_ids,
-                    steer_count: 0,
-                })?;
-
-                thread.latest_turn_id = Some(turn_id);
-                thread.updated_at = now;
-            }
-        }
-
-        self.store.save_thread(&thread)?;
-        self.emit_event(
-            thread_id,
-            None,
-            None,
-            "thread.updated",
-            json!({ "thread": thread, "reason": "session_resume" }),
-        )
-        .await?;
-        Ok(())
     }
 
     pub async fn start_turn(&self, thread_id: &str, req: StartTurnRequest) -> Result<TurnRecord> {
@@ -2399,12 +1093,7 @@ impl RuntimeThreadManager {
         let thread_id_owned = thread_id.to_string();
         let turn_id_owned = turn_id.clone();
         let engine_clone = engine.clone();
-        let cancel_token = self.cancel_token.clone();
         tokio::spawn(async move {
-            if cancel_token.is_cancelled() {
-                tracing::debug!("Skipping turn monitor: shutdown requested");
-                return;
-            }
             use futures_util::FutureExt;
             let result = std::panic::AssertUnwindSafe(manager.monitor_turn(
                 thread_id_owned,
@@ -2462,206 +1151,6 @@ impl RuntimeThreadManager {
 
         self.store.load_turn(turn_id)
     }
-
-    pub async fn steer_turn(
-        &self,
-        thread_id: &str,
-        turn_id: &str,
-        req: SteerTurnRequest,
-    ) -> Result<TurnRecord> {
-        let prompt = req.prompt.trim().to_string();
-        if prompt.is_empty() {
-            bail!("prompt is required");
-        }
-
-        let engine = {
-            let mut active = self.active.lock().await;
-            let engine = {
-                let Some(active_thread) = active.engines.get_mut(thread_id) else {
-                    bail!("Thread is not loaded");
-                };
-                let Some(active_turn) = active_thread.active_turn.as_mut() else {
-                    bail!("No active turn on thread {thread_id}");
-                };
-                if active_turn.turn_id != turn_id {
-                    bail!("Turn {turn_id} is not active on thread {thread_id}");
-                }
-                active_thread.engine.clone()
-            };
-            touch_lru(&mut active.lru, thread_id);
-            engine
-        };
-
-        engine
-            .steer(prompt.clone())
-            .await
-            .map_err(|e| anyhow!("Failed to steer turn: {e}"))?;
-
-        let now = Utc::now();
-        let mut turn = self.store.load_turn(turn_id)?;
-        turn.steer_count = turn.steer_count.saturating_add(1);
-        self.store.save_turn(&turn)?;
-
-        let item = TurnItemRecord {
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-            id: format!("item_{}", &Uuid::new_v4().to_string()[..8]),
-            turn_id: turn_id.to_string(),
-            kind: TurnItemKind::UserMessage,
-            status: TurnItemLifecycleStatus::Completed,
-            summary: summarize_text(&prompt, SUMMARY_LIMIT),
-            detail: Some(prompt.clone()),
-            metadata: None,
-            artifact_refs: Vec::new(),
-            started_at: Some(now),
-            ended_at: Some(now),
-        };
-        turn.item_ids.push(item.id.clone());
-        self.store.save_item(&item)?;
-        self.store.save_turn(&turn)?;
-
-        self.emit_event(
-            thread_id,
-            Some(turn_id),
-            Some(&item.id),
-            "turn.steered",
-            json!({
-                "thread_id": thread_id,
-                "turn_id": turn_id,
-                "input": prompt,
-            }),
-        )
-        .await?;
-        self.emit_event(
-            thread_id,
-            Some(turn_id),
-            Some(&item.id),
-            "item.completed",
-            json!({ "item": item }),
-        )
-        .await?;
-
-        Ok(turn)
-    }
-
-    pub async fn compact_thread(
-        &self,
-        thread_id: &str,
-        req: CompactThreadRequest,
-    ) -> Result<TurnRecord> {
-        let mut thread = self.get_thread(thread_id).await?;
-        let engine = self.ensure_engine_loaded(&thread).await?;
-
-        let (route_provider, route_model) = {
-            let active = self.active.lock().await;
-            let Some(active_thread) = active.engines.get(thread_id) else {
-                bail!("Thread engine not loaded");
-            };
-            if active_thread.active_turn.is_some() {
-                bail!("Thread already has an active turn");
-            }
-            (
-                active_thread.route_provider,
-                active_thread.route_model.clone(),
-            )
-        };
-
-        let now = Utc::now();
-        let turn_id = format!("turn_{}", &Uuid::new_v4().to_string()[..8]);
-        let turn = TurnRecord {
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-            id: turn_id.clone(),
-            thread_id: thread_id.to_string(),
-            status: RuntimeTurnStatus::InProgress,
-            input_summary: req
-                .reason
-                .as_deref()
-                .map(|s| summarize_text(s, SUMMARY_LIMIT))
-                .unwrap_or_else(|| "Manual context compaction".to_string()),
-            created_at: now,
-            started_at: Some(now),
-            ended_at: None,
-            duration_ms: None,
-            usage: None,
-            effective_provider: Some(route_provider.as_str().to_string()),
-            effective_billing_surface: None,
-            effective_model: Some(route_model),
-            error: None,
-            item_ids: Vec::new(),
-            steer_count: 0,
-        };
-        self.store.save_turn(&turn)?;
-
-        thread.latest_turn_id = Some(turn_id.clone());
-        thread.updated_at = now;
-        self.store.save_thread(&thread)?;
-
-        {
-            let mut active = self.active.lock().await;
-            let Some(state) = active.engines.get_mut(thread_id) else {
-                bail!("Thread engine not loaded");
-            };
-            state.active_turn = Some(ActiveTurnState {
-                turn_id: turn_id.clone(),
-                interrupt_requested: false,
-                auto_approve: thread.auto_approve,
-                trust_mode: thread.trust_mode,
-            });
-            touch_lru(&mut active.lru, thread_id);
-        }
-
-        self.emit_event(
-            thread_id,
-            Some(&turn_id),
-            None,
-            "turn.started",
-            json!({ "turn": turn.clone(), "manual_compaction": true }),
-        )
-        .await?;
-
-        engine
-            .send(Op::CompactContext)
-            .await
-            .map_err(|e| anyhow!("Failed to trigger compaction: {e}"))?;
-
-        let manager = Arc::new(self.clone());
-        let thread_id_owned = thread_id.to_string();
-        let turn_id_owned = turn_id.clone();
-        let engine_clone = engine.clone();
-        let cancel_token = self.cancel_token.clone();
-        tokio::spawn(async move {
-            if cancel_token.is_cancelled() {
-                tracing::debug!("Skipping compaction monitor: shutdown requested");
-                return;
-            }
-            use futures_util::FutureExt;
-            let result = std::panic::AssertUnwindSafe(manager.monitor_turn(
-                thread_id_owned,
-                turn_id_owned,
-                engine_clone,
-            ))
-            .catch_unwind()
-            .await;
-            match result {
-                Ok(res) => {
-                    if let Err(err) = res {
-                        tracing::error!("Failed to monitor compaction turn: {err}");
-                    }
-                }
-                Err(panic_err) => {
-                    if let Some(msg) = panic_err.downcast_ref::<&str>() {
-                        tracing::error!("Compaction monitor panicked: {}", msg);
-                    } else if let Some(msg) = panic_err.downcast_ref::<String>() {
-                        tracing::error!("Compaction monitor panicked: {}", msg);
-                    } else {
-                        tracing::error!("Compaction monitor panicked with unknown error");
-                    }
-                }
-            }
-        });
-
-        Ok(turn)
-    }
-
     pub fn events_since(
         &self,
         thread_id: &str,
@@ -2755,11 +1244,11 @@ impl RuntimeThreadManager {
             lsp_config,
             runtime_services: crate::tools::spec::RuntimeToolServices {
                 task_manager: self.task_manager.lock().clone(),
-                automations: self.automations.lock().clone(),
+                automations: None,
                 task_data_dir: Some(self.manager_cfg.task_data_dir.clone()),
                 active_task_id: thread.task_id.clone(),
                 active_thread_id: Some(thread.id.clone()),
-                dynamic_tool_executor: Some(Arc::new(self.clone())),
+                dynamic_tool_executor: None,
                 shell_manager: None,
                 hook_executor: None,
                 handle_store: crate::tools::handle::new_shared_handle_store(),
@@ -2887,11 +1376,6 @@ impl RuntimeThreadManager {
 
     /// Get the engine handle for a thread, loading it if necessary.
     /// Public wrapper around the private `ensure_engine_loaded`.
-    pub async fn get_engine(&self, thread_id: &str) -> Result<EngineHandle> {
-        let thread = self.get_thread(thread_id).await?;
-        self.ensure_engine_loaded(&thread).await
-    }
-
     fn reconstruct_messages_from_turns(&self, turns: &[TurnRecord]) -> Result<Vec<Message>> {
         let mut messages = Vec::new();
         for turn in turns {
@@ -3533,11 +2017,8 @@ impl RuntimeThreadManager {
                             RuntimeApprovalDecision::DenyTool
                             | RuntimeApprovalDecision::RetryWithFullAccess => ("deny", false),
                         };
-                        // Emit approval.decided so external clients (GUI)
-                        // know the approval was resolved automatically and
-                        // can clear any pending approval UI.  Without this
-                        // event the GUI would show a frozen approval dialog
-                        // that never receives approval.decided.
+                        // Keep the persisted decision explicit for task status
+                        // consumers even when the host resolves it automatically.
                         self.emit_event(
                             &thread_id,
                             Some(&turn_id),
@@ -3560,79 +2041,21 @@ impl RuntimeThreadManager {
                         continue;
                     }
 
-                    let rx = self.register_pending_approval(&id);
-                    let approval_timeout = approval_decision_timeout();
-                    match tokio::time::timeout(approval_timeout, rx).await {
-                        Ok(Ok(ExternalApprovalDecision::Allow { remember })) => {
-                            if remember {
-                                self.remember_thread_auto_approve(&thread_id).await;
-                            }
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.decided",
-                                json!({
-                                    "approval_id": id,
-                                    "decision": "allow",
-                                    "remember": remember,
-                                }),
-                            )
-                            .await
-                            .ok();
-                            let _ = engine.approve_tool_call(id).await;
-                        }
-                        Ok(Ok(ExternalApprovalDecision::Deny { remember })) => {
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.decided",
-                                json!({
-                                    "approval_id": id,
-                                    "decision": "deny",
-                                    "remember": remember,
-                                }),
-                            )
-                            .await
-                            .ok();
-                            let _ = engine.deny_tool_call(id).await;
-                        }
-                        Ok(Err(_recv_err)) => {
-                            self.cancel_pending_approval(&id);
-                            let _ = engine.deny_tool_call(id).await;
-                        }
-                        Err(_timeout) => {
-                            self.cancel_pending_approval(&id);
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.timeout",
-                                json!({
-                                    "approval_id": id,
-                                    "timeout_secs": approval_timeout.as_secs(),
-                                }),
-                            )
-                            .await
-                            .ok();
-                            self.emit_event(
-                                &thread_id,
-                                Some(&turn_id),
-                                None,
-                                "approval.decided",
-                                json!({
-                                    "approval_id": id,
-                                    "decision": "deny",
-                                    "remember": false,
-                                    "timeout": true,
-                                }),
-                            )
-                            .await
-                            .ok();
-                            let _ = engine.deny_tool_call(id).await;
-                        }
-                    }
+                    self.emit_event(
+                        &thread_id,
+                        Some(&turn_id),
+                        None,
+                        "approval.decided",
+                        json!({
+                            "approval_id": id,
+                            "decision": "deny",
+                            "remember": false,
+                            "reason": "no interactive approval consumer",
+                        }),
+                    )
+                    .await
+                    .ok();
+                    let _ = engine.deny_tool_call(id).await;
                 }
                 EngineEvent::ElevationRequired {
                     tool_id,
@@ -3923,16 +2346,6 @@ impl RuntimeThreadManager {
         Some((turn.auto_approve, turn.trust_mode))
     }
 
-    async fn active_turn_id(&self, thread_id: &str) -> Option<String> {
-        let active = self.active.lock().await;
-        active
-            .engines
-            .get(thread_id)?
-            .active_turn
-            .as_ref()
-            .map(|turn| turn.turn_id.clone())
-    }
-
     fn approval_decision(
         auto_approve: bool,
         trust_mode: bool,
@@ -4011,113 +2424,6 @@ impl RuntimeThreadManager {
 
         Ok(())
     }
-
-    #[cfg(test)]
-    pub(crate) async fn install_test_engine(
-        &self,
-        thread_id: &str,
-        engine: EngineHandle,
-    ) -> Result<()> {
-        let thread = self.get_thread(thread_id).await?;
-        let config = self.read_config().clone();
-        let route = self.resolved_route_for_thread(&config, &thread)?;
-        let mut active = self.active.lock().await;
-        active.engines.insert(
-            thread_id.to_string(),
-            ActiveThreadState {
-                engine,
-                active_turn: None,
-                route_provider: route.provider,
-                route_model: route.model,
-            },
-        );
-        touch_lru(&mut active.lru, thread_id);
-        Ok(())
-    }
-}
-
-fn dynamic_tool_result_text(content: &[DynamicToolCallContent]) -> String {
-    content
-        .iter()
-        .map(|item| match item {
-            DynamicToolCallContent::InputText { text } => text.clone(),
-            DynamicToolCallContent::InputImage { image_url } => format!("[image] {image_url}"),
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-#[async_trait::async_trait]
-impl crate::tools::spec::DynamicToolExecutor for RuntimeThreadManager {
-    async fn execute_dynamic_tool(
-        &self,
-        thread_id: Option<String>,
-        namespace: Option<String>,
-        name: String,
-        input: Value,
-    ) -> std::result::Result<crate::tools::spec::ToolOutcome, crate::tools::spec::ToolError> {
-        let thread_id = thread_id.ok_or_else(|| {
-            crate::tools::spec::ToolError::not_available(format!(
-                "runtime dynamic tool '{name}' has no active thread"
-            ))
-        })?;
-        let turn_id = self.active_turn_id(&thread_id).await.ok_or_else(|| {
-            crate::tools::spec::ToolError::not_available(format!(
-                "runtime dynamic tool '{name}' has no active turn"
-            ))
-        })?;
-        let call_id = format!("call_{}", &Uuid::new_v4().to_string()[..8]);
-        let rx = self.register_pending_dynamic_tool(&call_id);
-
-        let params = DynamicToolCallParams {
-            thread_id: thread_id.clone(),
-            turn_id: turn_id.clone(),
-            call_id: call_id.clone(),
-            namespace,
-            tool: name.clone(),
-            arguments: input,
-        };
-        if let Err(err) = self
-            .emit_event(
-                &thread_id,
-                Some(&turn_id),
-                None,
-                "tool_call.requested",
-                json!(params),
-            )
-            .await
-        {
-            self.cancel_pending_dynamic_tool(&call_id);
-            return Err(crate::tools::spec::ToolError::execution_failed(format!(
-                "failed to emit runtime dynamic tool request for '{name}': {err}"
-            )));
-        }
-
-        let approval_timeout = approval_decision_timeout();
-        match tokio::time::timeout(approval_timeout, rx).await {
-            Ok(Ok(result)) => {
-                let text = dynamic_tool_result_text(&result.content);
-                if result.success {
-                    Ok(crate::tools::spec::ToolOutcome::success(text))
-                } else {
-                    Ok(crate::tools::spec::ToolOutcome::error(if text.is_empty() {
-                        "dynamic tool failed".to_string()
-                    } else {
-                        text
-                    }))
-                }
-            }
-            Ok(Err(_recv_err)) => Err(crate::tools::spec::ToolError::execution_failed(format!(
-                "runtime dynamic tool '{name}' result channel closed"
-            ))),
-            Err(_timeout) => {
-                self.cancel_pending_dynamic_tool(&call_id);
-                Err(crate::tools::spec::ToolError::Timeout {
-                    seconds: approval_timeout.as_secs(),
-                })
-            }
-        }
-    }
 }
 
 fn touch_lru(lru: &mut VecDeque<String>, thread_id: &str) {
@@ -4193,65 +2499,6 @@ fn tool_kind_for_name(name: &str) -> TurnItemKind {
         return TurnItemKind::FileChange;
     }
     TurnItemKind::ToolCall
-}
-
-/// One sub-agent rebind hint extracted from a thread's persisted event
-/// timeline (issue #128). When the TUI resumes a session that was
-/// mid-fanout, the in-transcript card stack is empty — these hints let the
-/// UI know which agent_ids were live (or recently terminal) so it can
-/// reconstruct the matching `DelegateCard` / `FanoutCard` placeholders
-/// before fresh mailbox envelopes arrive on a re-attached engine.
-///
-/// The helper is the testable contract here — actual TUI wire-up to the
-/// resume flow is a follow-up for the interactive TaskManager consumer.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // consumed by #128 follow-up TUI resume wiring; tested here.
-pub struct AgentRebindHint {
-    pub agent_id: String,
-    pub status: AgentRebindStatus,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum AgentRebindStatus {
-    Spawned,
-    InProgress,
-    Completed,
-}
-
-/// Collapse a chronologically ordered slice of `RuntimeEventRecord` into
-/// the latest known status per `agent_id`. Drops entries that aren't in
-/// the `agent.*` family. Cards built from these hints are immediately
-/// open to mutation by subsequent live mailbox envelopes (each envelope's
-/// `agent_id` matches one already in the rebind map).
-#[must_use]
-#[allow(dead_code)]
-pub fn collect_agent_rebind_hints(events: &[RuntimeEventRecord]) -> Vec<AgentRebindHint> {
-    use std::collections::BTreeMap;
-    let mut latest: BTreeMap<String, AgentRebindStatus> = BTreeMap::new();
-    for event in events {
-        let id = match event.payload.get("agent_id").and_then(|v| v.as_str()) {
-            Some(id) => id.to_string(),
-            None => continue,
-        };
-        let next_status = match event.event.as_str() {
-            "agent.spawned" => Some(AgentRebindStatus::Spawned),
-            "agent.progress" => Some(AgentRebindStatus::InProgress),
-            "agent.completed" => Some(AgentRebindStatus::Completed),
-            _ => None,
-        };
-        if let Some(status) = next_status {
-            // Don't downgrade Completed → InProgress on out-of-order events.
-            let entry = latest.entry(id).or_insert(status);
-            if !matches!(*entry, AgentRebindStatus::Completed) {
-                *entry = status;
-            }
-        }
-    }
-    latest
-        .into_iter()
-        .map(|(agent_id, status)| AgentRebindHint { agent_id, status })
-        .collect()
 }
 
 pub fn summarize_text(text: &str, limit: usize) -> String {

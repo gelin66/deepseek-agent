@@ -331,24 +331,6 @@ pub(crate) fn persist_subagents_integer_key(
     persist_table_value_key(config_path, "subagents", key, value.into())
 }
 
-pub(crate) fn persist_table_bool_key(
-    config_path: Option<&Path>,
-    table_name: &str,
-    key: &str,
-    value: bool,
-) -> anyhow::Result<PathBuf> {
-    persist_table_value_key(config_path, table_name, key, value.into())
-}
-
-pub(crate) fn persist_table_string_key(
-    config_path: Option<&Path>,
-    table_name: &str,
-    key: &str,
-    value: &str,
-) -> anyhow::Result<PathBuf> {
-    persist_table_value_key(config_path, table_name, key, value.into())
-}
-
 fn persist_table_value_key(
     config_path: Option<&Path>,
     table_name: &str,
@@ -826,58 +808,6 @@ mod tests {
     }
 
     #[test]
-    fn persist_table_bool_key_updates_existing_memory_enabled() {
-        let temp_root = temp_root("codewhale-persist-memory-update");
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-
-        let path = temp_root.join(".deepseek").join("config.toml");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(&path, "allow_shell = true\n\n[memory]\nenabled = true\n").unwrap();
-
-        let written = persist_table_bool_key(Some(&path), "memory", "enabled", false)
-            .expect("persist should succeed");
-        let body = fs::read_to_string(&written).expect("written file should be readable");
-        assert!(
-            body.contains("enabled = false"),
-            "memory enabled should be false: {body}"
-        );
-        assert!(
-            !body.contains("enabled = true"),
-            "memory enabled should not still be true: {body}"
-        );
-    }
-
-    #[test]
-    fn persist_memory_enabled_round_trips_through_config_load() {
-        let temp_root = temp_root("codewhale-persist-memory-roundtrip");
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-
-        let path = temp_root.join(".deepseek").join("config.toml");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        // Initial config has memory enabled = true
-        fs::write(&path, "allow_shell = true\n\n[memory]\nenabled = true\n").unwrap();
-
-        // Verify initial state
-        let cfg0 = crate::config::Config::load(Some(path.clone()), None)
-            .expect("initial config should load");
-        assert!(cfg0.memory_enabled(), "memory should be enabled initially");
-
-        // Persist memory.enabled = false (what the GUI's set_config endpoint does)
-        persist_table_bool_key(Some(&path), "memory", "enabled", false)
-            .expect("persist should succeed");
-
-        // Reload config from disk and verify memory_enabled() reflects the change
-        let cfg1 = crate::config::Config::load(Some(path.clone()), None)
-            .expect("reloaded config should load");
-        assert!(
-            !cfg1.memory_enabled(),
-            "memory should be disabled after persisting false"
-        );
-    }
-
-    #[test]
     fn persist_custom_provider_writes_named_openai_compatible_table() {
         let temp_root = temp_root("codewhale-custom-provider-persist");
         fs::create_dir_all(&temp_root).unwrap();
@@ -1137,7 +1067,6 @@ action = "mode.plan"
 
         persist_root_bool_key(Some(&path), "allow_shell", true).unwrap();
         persist_tui_integer_key(Some(&path), "scrollback_lines", 4000).unwrap();
-        persist_table_string_key(Some(&path), "memory", "backend", "sqlite").unwrap();
         persist_subagents_bool_key(Some(&path), "enabled", true).unwrap();
         persist_provider_base_url_key(
             Some(&path),

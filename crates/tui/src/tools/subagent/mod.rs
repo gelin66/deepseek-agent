@@ -2485,10 +2485,6 @@ impl SubAgentManager {
         self.prune_worker_records();
     }
 
-    pub fn list_worker_records(&self) -> Vec<AgentWorkerRecord> {
-        self.sorted_worker_records()
-    }
-
     pub fn get_worker_record(&self, worker_id: &str) -> Option<AgentWorkerRecord> {
         self.worker_records.get(worker_id).cloned()
     }
@@ -3807,13 +3803,6 @@ impl SubAgentManager {
 
 /// Thread-safe wrapper for `SubAgentManager`.
 pub type SharedSubAgentManager = Arc<RwLock<SubAgentManager>>;
-
-pub fn load_persisted_agent_worker_records(workspace: &Path) -> Result<Vec<AgentWorkerRecord>> {
-    let mut manager = SubAgentManager::new(workspace.to_path_buf(), 1)
-        .with_state_path(default_state_path(workspace)?);
-    manager.load_state()?;
-    Ok(manager.list_worker_records())
-}
 
 /// Model-facing session projection returned by the v0.8.33 sub-agent API.
 #[derive(Debug, Clone, Serialize, Deserialize)]

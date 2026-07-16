@@ -6397,8 +6397,8 @@ async fn direct_child_waits_for_delayed_grandchild_and_integrates_handoff_before
             "persisted runtime profile must match the enforced child budget"
         );
         let grandchild = manager
-            .list_worker_records()
-            .into_iter()
+            .worker_records
+            .values()
             .find(|record| record.parent_run_id.as_deref() == Some(parent.agent_id.as_str()))
             .expect("nested grandchild worker record");
         assert_eq!(grandchild.status, AgentWorkerStatus::Completed);

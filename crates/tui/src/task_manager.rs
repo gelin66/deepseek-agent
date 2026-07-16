@@ -266,16 +266,6 @@ impl From<&TaskRecord> for TaskSummary {
     }
 }
 
-/// Count totals by status for task dashboards.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
-pub struct TaskCounts {
-    pub queued: usize,
-    pub running: usize,
-    pub completed: usize,
-    pub failed: usize,
-    pub canceled: usize,
-}
-
 /// Request to enqueue a new task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NewTaskRequest {
@@ -976,22 +966,6 @@ impl TaskManager {
             .get(&id)
             .cloned()
             .ok_or_else(|| anyhow!("Task not found: {id}"))
-    }
-
-    /// Return aggregate status counters.
-    pub async fn counts(&self) -> TaskCounts {
-        let state = self.state.lock().await;
-        let mut counts = TaskCounts::default();
-        for task in state.tasks.values() {
-            match task.status {
-                TaskStatus::Queued => counts.queued += 1,
-                TaskStatus::Running => counts.running += 1,
-                TaskStatus::Completed => counts.completed += 1,
-                TaskStatus::Failed => counts.failed += 1,
-                TaskStatus::Canceled => counts.canceled += 1,
-            }
-        }
-        counts
     }
 
     /// Root directory for durable task state.

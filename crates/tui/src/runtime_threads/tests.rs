@@ -2,7 +2,6 @@ use super::*;
 use crate::core::engine::{MockApprovalEvent, mock_engine_handle};
 use crate::core::events::{Event as EngineEvent, TurnOutcomeStatus};
 use std::time::{Duration, Instant};
-use tokio::sync::oneshot;
 use tokio::time::sleep;
 use uuid::Uuid;
 
@@ -24,22 +23,6 @@ fn test_manager(data_dir: PathBuf) -> Result<RuntimeThreadManager> {
         PathBuf::from("."),
         test_manager_config(data_dir),
     )
-}
-
-struct ApprovalTimeoutGuard {
-    previous_ms: u64,
-}
-
-impl Drop for ApprovalTimeoutGuard {
-    fn drop(&mut self) {
-        set_test_approval_decision_timeout_ms(self.previous_ms);
-    }
-}
-
-fn test_approval_timeout_ms(ms: u64) -> ApprovalTimeoutGuard {
-    ApprovalTimeoutGuard {
-        previous_ms: set_test_approval_decision_timeout_ms(ms),
-    }
 }
 
 fn sample_thread(thread_id: &str) -> ThreadRecord {
@@ -137,128 +120,6 @@ fn turn_record_persists_billing_surface_without_raw_endpoint() {
     );
     assert!(value.get("base_url").is_none());
     assert!(value.get("effective_base_url").is_none());
-}
-
-#[tokio::test]
-async fn aggregate_usage_keeps_codex_tokens_without_api_dollar_pricing() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let mut thread = sample_thread("thr_mixed_routes");
-    thread.model = "auto".to_string();
-    manager.store.save_thread(&thread)?;
-
-    let usage = Usage {
-        input_tokens: 10_000,
-        output_tokens: 1_000,
-        ..Usage::default()
-    };
-    let mut deepseek = sample_turn(&thread.id, "turn_deepseek", RuntimeTurnStatus::Completed);
-    deepseek.usage = Some(usage.clone());
-    deepseek.effective_provider = Some(ApiProvider::Deepseek.as_str().to_string());
-    deepseek.effective_model = Some("deepseek-v4-flash".to_string());
-    manager.store.save_turn(&deepseek)?;
-
-    let mut codex = sample_turn(&thread.id, "turn_codex", RuntimeTurnStatus::Completed);
-    codex.usage = Some(usage);
-    codex.effective_provider = Some(ApiProvider::OpenaiCodex.as_str().to_string());
-    codex.effective_model = Some("gpt-5.5".to_string());
-    manager.store.save_turn(&codex)?;
-
-    let report = manager
-        .aggregate_usage(None, None, UsageGroupBy::Provider)
-        .await?;
-    assert_eq!(report.totals.turns, 2);
-    assert_eq!(report.totals.input_tokens, 20_000);
-    assert!(report.totals.cost_usd > 0.0);
-
-    let deepseek_bucket = report
-        .buckets
-        .iter()
-        .find(|bucket| bucket.key == ApiProvider::Deepseek.as_str())
-        .expect("DeepSeek bucket");
-    let codex_bucket = report
-        .buckets
-        .iter()
-        .find(|bucket| bucket.key == ApiProvider::OpenaiCodex.as_str())
-        .expect("Codex bucket");
-    assert!(deepseek_bucket.cost_usd > 0.0);
-    assert_eq!(codex_bucket.cost_usd, 0.0);
-    assert_eq!(codex_bucket.input_tokens, 10_000);
-    assert_eq!(report.totals.cost_usd, deepseek_bucket.cost_usd);
-    Ok(())
-}
-
-#[tokio::test]
-async fn aggregate_usage_prices_each_turn_at_its_recorded_time() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let mut thread = sample_thread("thr_historical_pricing");
-    thread.model = "claude-sonnet-5".to_string();
-    manager.store.save_thread(&thread)?;
-
-    let usage = Usage {
-        input_tokens: 1_000_000,
-        output_tokens: 0,
-        ..Usage::default()
-    };
-    for (turn_id, created_at) in [
-        ("turn_intro", "2026-08-31T23:59:59Z"),
-        ("turn_standard", "2026-09-01T00:00:00Z"),
-    ] {
-        let mut turn = sample_turn(&thread.id, turn_id, RuntimeTurnStatus::Completed);
-        turn.created_at = created_at.parse().expect("recorded turn time");
-        turn.usage = Some(usage.clone());
-        turn.effective_provider = Some(ApiProvider::Anthropic.as_str().to_string());
-        turn.effective_model = Some("claude-sonnet-5".to_string());
-        manager.store.save_turn(&turn)?;
-    }
-
-    let report = manager
-        .aggregate_usage(None, None, UsageGroupBy::Model)
-        .await?;
-
-    assert_eq!(report.totals.turns, 2);
-    assert!((report.totals.cost_usd - 5.0).abs() < f64::EPSILON);
-    assert_eq!(report.buckets.len(), 1);
-    assert!((report.buckets[0].cost_usd - 5.0).abs() < f64::EPSILON);
-    Ok(())
-}
-
-#[tokio::test]
-async fn aggregate_usage_prices_only_stepfun_payg_surface() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let mut thread = sample_thread("thr_stepfun_surfaces");
-    thread.model = "step-3.7-flash".to_string();
-    manager.store.save_thread(&thread)?;
-
-    let usage = Usage {
-        input_tokens: 1_000_000,
-        output_tokens: 500_000,
-        prompt_cache_hit_tokens: Some(250_000),
-        ..Usage::default()
-    };
-    for (turn_id, surface) in [
-        (
-            "turn_stepfun_payg",
-            crate::pricing::STEPFUN_PAYG_BILLING_SURFACE,
-        ),
-        (
-            "turn_stepfun_plan",
-            crate::pricing::STEPFUN_PLAN_BILLING_SURFACE,
-        ),
-    ] {
-        let mut turn = sample_turn(&thread.id, turn_id, RuntimeTurnStatus::Completed);
-        turn.usage = Some(usage.clone());
-        turn.effective_provider = Some(ApiProvider::Stepfun.as_str().to_string());
-        turn.effective_billing_surface = Some(surface.to_string());
-        turn.effective_model = Some("step-3.7-flash".to_string());
-        manager.store.save_turn(&turn)?;
-    }
-
-    let report = manager
-        .aggregate_usage(None, None, UsageGroupBy::Provider)
-        .await?;
-    assert_eq!(report.totals.turns, 2);
-    assert!((report.totals.cost_usd - 0.735).abs() < 1e-12);
-    Ok(())
 }
 
 fn sample_item(turn_id: &str, item_id: &str, status: TurnItemLifecycleStatus) -> TurnItemRecord {
@@ -460,125 +321,6 @@ fn store_load_thread_defaults_missing_session_id() {
     assert_eq!(loaded.session_id, None);
 
     let _ = std::fs::remove_dir_all(dir);
-}
-
-#[tokio::test]
-async fn seed_thread_keeps_tool_results_on_preceding_turn() -> Result<()> {
-    let dir = test_runtime_dir();
-    let manager = test_manager(dir.clone())?;
-    let thread = sample_thread("thr_seed_blocks");
-    manager.store.save_thread(&thread)?;
-    let messages = vec![
-        Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: "check the files".to_string(),
-                cache_control: None,
-            }],
-        },
-        Message {
-            role: "assistant".to_string(),
-            content: vec![
-                ContentBlock::Thinking {
-                    thinking: "need a tool".to_string(),
-                    signature: Some("sig-1".to_string()),
-                },
-                ContentBlock::ToolUse {
-                    id: "tool-1".to_string(),
-                    name: "shell".to_string(),
-                    input: json!({ "cmd": "one" }),
-                    raw_arguments: None,
-                    caller: None,
-                },
-                ContentBlock::ToolUse {
-                    id: "tool-2".to_string(),
-                    name: "shell".to_string(),
-                    input: json!({ "cmd": "two" }),
-                    raw_arguments: None,
-                    caller: None,
-                },
-            ],
-        },
-        Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::ToolResult {
-                tool_use_id: "tool-1".to_string(),
-                content: "one".to_string(),
-                is_error: None,
-                content_blocks: Some(vec![json!({
-                    "type": "text",
-                    "text": "structured one"
-                })]),
-            }],
-        },
-        Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::ToolResult {
-                tool_use_id: "tool-2".to_string(),
-                content: "two".to_string(),
-                is_error: Some(true),
-                content_blocks: None,
-            }],
-        },
-        Message {
-            role: "assistant".to_string(),
-            content: vec![ContentBlock::Text {
-                text: "done".to_string(),
-                cache_control: None,
-            }],
-        },
-    ];
-
-    manager
-        .seed_thread_from_messages(&thread.id, &messages)
-        .await?;
-    let turns = manager.store.list_turns_for_thread(&thread.id)?;
-    assert_eq!(turns.len(), 1);
-
-    let restored = manager.reconstruct_messages_from_turns(&turns)?;
-    let roles = restored
-        .iter()
-        .map(|message| message.role.as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(roles, vec!["user", "assistant", "user", "assistant"]);
-    assert_eq!(restored[2].content.len(), 2);
-
-    match &restored[2].content[0] {
-        ContentBlock::ToolResult {
-            tool_use_id,
-            content,
-            is_error,
-            content_blocks,
-        } => {
-            assert_eq!(tool_use_id, "tool-1");
-            assert_eq!(content, "one");
-            assert_eq!(*is_error, None);
-            assert_eq!(
-                content_blocks
-                    .as_ref()
-                    .and_then(|blocks| blocks[0].get("text")),
-                Some(&json!("structured one"))
-            );
-        }
-        other => panic!("expected first tool result, got {other:?}"),
-    }
-    match &restored[2].content[1] {
-        ContentBlock::ToolResult {
-            tool_use_id,
-            content,
-            is_error,
-            content_blocks,
-        } => {
-            assert_eq!(tool_use_id, "tool-2");
-            assert_eq!(content, "two");
-            assert_eq!(*is_error, Some(true));
-            assert!(content_blocks.is_none());
-        }
-        other => panic!("expected second tool result, got {other:?}"),
-    }
-
-    let _ = std::fs::remove_dir_all(dir);
-    Ok(())
 }
 
 #[test]
@@ -890,11 +632,11 @@ async fn thread_lifecycle_persists_across_restart() -> Result<()> {
     drop(manager);
 
     let reopened = test_manager(runtime_dir)?;
-    let detail = reopened.get_thread_detail(&thread.id).await?;
-    assert_eq!(detail.thread.id, thread.id);
-    assert_eq!(detail.turns.len(), 1);
-    assert!(detail.latest_seq >= 1);
-    assert!(!detail.items.is_empty());
+    let reopened_thread = reopened.get_thread(&thread.id).await?;
+    assert_eq!(reopened_thread.id, thread.id);
+    let turns = reopened.store.list_turns_for_thread(&thread.id)?;
+    assert_eq!(turns.len(), 1);
+    assert!(!reopened.store.list_items_for_turn(&turns[0].id)?.is_empty());
     let events = reopened.events_since(&thread.id, None)?;
     assert!(
         events.iter().any(|ev| ev.event == "turn.completed"),
@@ -1014,172 +756,6 @@ async fn create_thread_defaults_auto_approve_to_false() -> Result<()> {
 }
 
 #[tokio::test]
-async fn update_thread_workspace_persists_event_and_evicts_idle_engine() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let old_workspace = std::env::temp_dir().join("codewhale-runtime-old-workspace");
-    let new_workspace = std::env::temp_dir().join("codewhale-runtime-new-workspace");
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: Some(old_workspace.clone()),
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let harness = install_mock_engine(&manager, &thread.id).await;
-    let mut rx_op = harness.rx_op;
-
-    let updated = manager
-        .update_thread(
-            &thread.id,
-            UpdateThreadRequest {
-                workspace: Some(new_workspace.clone()),
-                ..UpdateThreadRequest::default()
-            },
-        )
-        .await?;
-
-    assert_eq!(updated.workspace, new_workspace);
-    assert_eq!(
-        manager.store.load_thread(&thread.id)?.workspace,
-        new_workspace
-    );
-    {
-        let active = manager.active.lock().await;
-        assert!(
-            !active.engines.contains_key(&thread.id),
-            "workspace changes must evict the stale cached engine"
-        );
-        assert!(!active.lru.iter().any(|id| id == &thread.id));
-    }
-
-    match tokio::time::timeout(Duration::from_secs(1), rx_op.recv()).await {
-        Ok(Some(Op::Shutdown)) => {}
-        other => panic!("expected cached engine shutdown, got {other:?}"),
-    }
-
-    let events = manager.events_since(&thread.id, None)?;
-    let event = events
-        .iter()
-        .rev()
-        .find(|event| event.event == "thread.updated")
-        .expect("thread.updated event");
-    let workspace_value = serde_json::to_value(&updated.workspace)?;
-    assert_eq!(
-        event
-            .payload
-            .get("changes")
-            .and_then(|changes| changes.get("workspace")),
-        Some(&workspace_value)
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn update_thread_workspace_rejects_empty_path() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let err = manager
-        .update_thread(
-            &thread.id,
-            UpdateThreadRequest {
-                workspace: Some(PathBuf::new()),
-                ..UpdateThreadRequest::default()
-            },
-        )
-        .await
-        .expect_err("empty workspace must be rejected");
-    assert!(format!("{err:#}").contains("workspace must not be empty"));
-    Ok(())
-}
-
-#[tokio::test]
-async fn update_thread_workspace_rejects_active_turn() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let old_workspace = std::env::temp_dir().join("codewhale-runtime-active-old");
-    let new_workspace = std::env::temp_dir().join("codewhale-runtime-active-new");
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: Some(old_workspace.clone()),
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let harness = install_mock_engine(&manager, &thread.id).await;
-    let mut rx_op = harness.rx_op;
-    {
-        let mut active = manager.active.lock().await;
-        let state = active.engines.get_mut(&thread.id).expect("mock engine");
-        state.active_turn = Some(ActiveTurnState {
-            turn_id: "turn_live".to_string(),
-            interrupt_requested: false,
-            auto_approve: false,
-            trust_mode: false,
-        });
-    }
-
-    let err = manager
-        .update_thread(
-            &thread.id,
-            UpdateThreadRequest {
-                workspace: Some(new_workspace),
-                ..UpdateThreadRequest::default()
-            },
-        )
-        .await
-        .expect_err("workspace update during active turn must fail");
-
-    assert!(format!("{err:#}").contains("active turn"));
-    assert_eq!(
-        manager.store.load_thread(&thread.id)?.workspace,
-        old_workspace
-    );
-    {
-        let active = manager.active.lock().await;
-        assert!(
-            active.engines.contains_key(&thread.id),
-            "active engine should stay cached after rejected update"
-        );
-    }
-    assert!(
-        tokio::time::timeout(Duration::from_millis(100), rx_op.recv())
-            .await
-            .is_err(),
-        "rejected workspace update must not shut down the active engine"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn start_turn_passes_effective_auto_approve_to_engine() -> Result<()> {
     let manager = test_manager(test_runtime_dir())?;
     let thread = manager
@@ -1266,91 +842,6 @@ async fn start_turn_can_override_thread_auto_approve_to_false() -> Result<()> {
         other => panic!("expected SendMessage op, got {other:?}"),
     }
 
-    Ok(())
-}
-
-#[tokio::test]
-async fn compact_thread_preserves_thread_auto_approve_policy() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: Some(false),
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let harness = install_mock_engine(&manager, &thread.id).await;
-    let mut rx_op = harness.rx_op;
-
-    let turn = manager
-        .compact_thread(&thread.id, CompactThreadRequest::default())
-        .await?;
-
-    assert!(matches!(rx_op.recv().await, Some(Op::CompactContext)));
-    assert_eq!(
-        manager.active_turn_flags(&thread.id, &turn.id).await,
-        Some((false, false))
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn compact_thread_with_real_engine_reaches_terminal_status() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let turn = manager
-        .compact_thread(&thread.id, CompactThreadRequest::default())
-        .await?;
-    let terminal = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
-
-    assert!(matches!(
-        terminal.status,
-        RuntimeTurnStatus::Completed | RuntimeTurnStatus::Failed
-    ));
-    assert!(
-        terminal.ended_at.is_some(),
-        "manual compaction should reach a terminal turn state"
-    );
-    assert_eq!(manager.active_turn_flags(&thread.id, &turn.id).await, None);
-
-    let expected_status = match terminal.status {
-        RuntimeTurnStatus::Completed => "completed",
-        RuntimeTurnStatus::Failed => "failed",
-        other => panic!("unexpected non-terminal compaction status: {other:?}"),
-    };
-    let events = manager.events_since(&thread.id, None)?;
-    assert!(events.iter().any(|ev| {
-        ev.event == "turn.completed"
-            && ev
-                .payload
-                .get("turn")
-                .and_then(|turn| turn.get("status"))
-                .and_then(Value::as_str)
-                == Some(expected_status)
-    }));
     Ok(())
 }
 
@@ -1456,16 +947,21 @@ async fn multi_turn_continuity_same_thread() -> Result<()> {
     let turn_2 = wait_for_terminal_turn(&manager, &turn_2.id, Duration::from_secs(2)).await?;
     assert_eq!(turn_2.status, RuntimeTurnStatus::Completed);
 
-    let detail = manager.get_thread_detail(&thread.id).await?;
+    let persisted_thread = manager.get_thread(&thread.id).await?;
     assert_eq!(
-        detail.thread.latest_turn_id.as_deref(),
+        persisted_thread.latest_turn_id.as_deref(),
         Some(turn_2.id.as_str())
     );
-    assert_eq!(detail.turns.len(), 2);
-    assert!(detail.items.iter().any(|item| {
+    let turns = manager.store.list_turns_for_thread(&thread.id)?;
+    assert_eq!(turns.len(), 2);
+    let mut items = Vec::new();
+    for turn in &turns {
+        items.extend(manager.store.list_items_for_turn(&turn.id)?);
+    }
+    assert!(items.iter().any(|item| {
         item.kind == TurnItemKind::UserMessage && item.detail.as_deref() == Some("first")
     }));
-    assert!(detail.items.iter().any(|item| {
+    assert!(items.iter().any(|item| {
         item.kind == TurnItemKind::UserMessage && item.detail.as_deref() == Some("second")
     }));
 
@@ -1480,82 +976,6 @@ async fn multi_turn_continuity_same_thread() -> Result<()> {
         .count();
     assert_eq!(started, 2);
     assert_eq!(completed, 2);
-    Ok(())
-}
-
-#[tokio::test]
-async fn get_thread_detail_batches_items_by_turn_without_losing_order() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let base = Utc::now();
-    let mut first_turn = sample_turn(
-        &thread.id,
-        "turn_detail_batch_first",
-        RuntimeTurnStatus::Completed,
-    );
-    first_turn.created_at = base;
-    let mut second_turn = sample_turn(
-        &thread.id,
-        "turn_detail_batch_second",
-        RuntimeTurnStatus::Completed,
-    );
-    second_turn.created_at = base + chrono::Duration::seconds(1);
-    manager.store.save_turn(&first_turn)?;
-    manager.store.save_turn(&second_turn)?;
-
-    let mut first_late = sample_item(
-        &first_turn.id,
-        "item_detail_first_late",
-        TurnItemLifecycleStatus::Completed,
-    );
-    first_late.started_at = Some(base + chrono::Duration::seconds(5));
-    let mut first_early = sample_item(
-        &first_turn.id,
-        "item_detail_first_early",
-        TurnItemLifecycleStatus::Completed,
-    );
-    first_early.started_at = Some(base + chrono::Duration::seconds(1));
-    let mut second_item = sample_item(
-        &second_turn.id,
-        "item_detail_second",
-        TurnItemLifecycleStatus::Completed,
-    );
-    second_item.started_at = Some(base + chrono::Duration::seconds(2));
-    let unrelated = sample_item(
-        "turn_detail_batch_unrelated",
-        "item_detail_unrelated",
-        TurnItemLifecycleStatus::Completed,
-    );
-
-    manager.store.save_item(&first_late)?;
-    manager.store.save_item(&second_item)?;
-    manager.store.save_item(&unrelated)?;
-    manager.store.save_item(&first_early)?;
-
-    let detail = manager.get_thread_detail(&thread.id).await?;
-    let item_ids: Vec<&str> = detail.items.iter().map(|item| item.id.as_str()).collect();
-    assert_eq!(
-        item_ids,
-        vec![
-            "item_detail_first_early",
-            "item_detail_first_late",
-            "item_detail_second"
-        ]
-    );
     Ok(())
 }
 
@@ -1656,6 +1076,77 @@ async fn interrupt_turn_marks_interrupted_after_cleanup() -> Result<()> {
 }
 
 #[tokio::test]
+async fn approval_required_without_consumer_is_denied_and_persisted() -> Result<()> {
+    let manager = test_manager(test_runtime_dir())?;
+    let thread = manager
+        .create_thread(CreateThreadRequest {
+            auto_approve: Some(false),
+            ..Default::default()
+        })
+        .await?;
+    let mut harness = install_mock_engine(&manager, &thread.id).await;
+    let turn = manager
+        .start_turn(
+            &thread.id,
+            StartTurnRequest {
+                prompt: "needs approval".to_string(),
+                auto_approve: Some(false),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(matches!(
+        harness.rx_op.recv().await,
+        Some(Op::SendMessage { .. })
+    ));
+
+    harness
+        .tx_event
+        .send(EngineEvent::ApprovalRequired {
+            approval_key: "test_key".to_string(),
+            approval_grouping_key: "test_key".to_string(),
+            id: "tool_without_consumer".to_string(),
+            tool_name: "exec_command".to_string(),
+            description: "host must decide".to_string(),
+            input: serde_json::json!({}),
+            intent_summary: None,
+            approval_force_prompt: false,
+        })
+        .await?;
+    assert_eq!(
+        harness.recv_approval_event().await,
+        Some(MockApprovalEvent::Denied {
+            id: "tool_without_consumer".to_string(),
+        })
+    );
+    harness
+        .tx_event
+        .send(EngineEvent::TurnComplete {
+            usage: Usage::default(),
+            status: TurnOutcomeStatus::Completed,
+            error: None,
+            tool_catalog: None,
+            base_url: None,
+        })
+        .await?;
+    wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
+
+    let events = manager.events_since(&thread.id, None)?;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event == "approval.required")
+    );
+    assert!(events.iter().any(|event| {
+        event.event == "approval.decided"
+            && event.payload.get("decision").and_then(Value::as_str) == Some("deny")
+            && event.payload.get("reason").and_then(Value::as_str)
+                == Some("no interactive approval consumer")
+    }));
+    Ok(())
+}
+
+#[tokio::test]
 async fn approval_required_with_stale_active_turn_is_denied() -> Result<()> {
     let manager = test_manager(test_runtime_dir())?;
     let thread = manager
@@ -1745,306 +1236,6 @@ async fn approval_required_with_stale_active_turn_is_denied() -> Result<()> {
 }
 
 #[tokio::test]
-async fn approval_required_awaits_external_decision_allow() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let mut harness = install_mock_engine(&manager, &thread.id).await;
-    let _turn = manager
-        .start_turn(
-            &thread.id,
-            StartTurnRequest {
-                prompt: "needs approval".to_string(),
-                input_summary: None,
-                model: None,
-                mode: None,
-                allow_shell: None,
-                trust_mode: None,
-                auto_approve: None,
-                ..Default::default()
-            },
-        )
-        .await?;
-    assert!(matches!(
-        harness.rx_op.recv().await,
-        Some(Op::SendMessage { .. })
-    ));
-
-    harness
-        .tx_event
-        .send(EngineEvent::ApprovalRequired {
-            approval_key: "key1".to_string(),
-            approval_grouping_key: "key1".to_string(),
-            id: "tool_external_allow".to_string(),
-            tool_name: "exec_command".to_string(),
-            description: "external allow".to_string(),
-            input: serde_json::json!({}),
-            intent_summary: Some("I will update the config file.".to_string()),
-            approval_force_prompt: false,
-        })
-        .await?;
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
-        sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(manager.pending_approvals_count(), 1);
-
-    let events = manager.events_since(&thread.id, None)?;
-    let approval_event = events
-        .iter()
-        .rev()
-        .find(|event| event.event == "approval.required")
-        .context("missing approval.required event")?;
-    assert_eq!(
-        approval_event
-            .payload
-            .get("intent_summary")
-            .and_then(Value::as_str),
-        Some("I will update the config file.")
-    );
-
-    assert!(manager.deliver_external_approval(
-        "tool_external_allow",
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
-    assert_eq!(
-        harness.recv_approval_event().await,
-        Some(MockApprovalEvent::Approved {
-            id: "tool_external_allow".to_string(),
-        })
-    );
-    assert_eq!(manager.pending_approvals_count(), 0);
-
-    harness
-        .tx_event
-        .send(EngineEvent::TurnComplete {
-            usage: Usage::default(),
-            status: TurnOutcomeStatus::Completed,
-            error: None,
-            tool_catalog: None,
-            base_url: None,
-        })
-        .await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn approval_required_external_deny_is_denied() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let mut harness = install_mock_engine(&manager, &thread.id).await;
-    let _turn = manager
-        .start_turn(
-            &thread.id,
-            StartTurnRequest {
-                prompt: "needs approval".to_string(),
-                input_summary: None,
-                model: None,
-                mode: None,
-                allow_shell: None,
-                trust_mode: None,
-                auto_approve: None,
-                ..Default::default()
-            },
-        )
-        .await?;
-    assert!(matches!(
-        harness.rx_op.recv().await,
-        Some(Op::SendMessage { .. })
-    ));
-
-    harness
-        .tx_event
-        .send(EngineEvent::ApprovalRequired {
-            approval_key: "key2".to_string(),
-            approval_grouping_key: "key2".to_string(),
-            id: "tool_external_deny".to_string(),
-            tool_name: "exec_command".to_string(),
-            description: "external deny".to_string(),
-            input: serde_json::json!({}),
-            intent_summary: None,
-            approval_force_prompt: false,
-        })
-        .await?;
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
-        sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(manager.pending_approvals_count(), 1);
-
-    assert!(manager.deliver_external_approval(
-        "tool_external_deny",
-        ExternalApprovalDecision::Deny { remember: false },
-    ));
-    assert_eq!(
-        harness.recv_approval_event().await,
-        Some(MockApprovalEvent::Denied {
-            id: "tool_external_deny".to_string(),
-        })
-    );
-
-    harness
-        .tx_event
-        .send(EngineEvent::TurnComplete {
-            usage: Usage::default(),
-            status: TurnOutcomeStatus::Completed,
-            error: None,
-            tool_catalog: None,
-            base_url: None,
-        })
-        .await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn approval_timeout_denies_clears_ui_and_next_turn_can_start() -> Result<()> {
-    let _timeout_guard = test_approval_timeout_ms(25);
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let mut harness = install_mock_engine(&manager, &thread.id).await;
-    let turn = manager
-        .start_turn(
-            &thread.id,
-            StartTurnRequest {
-                prompt: "needs approval".to_string(),
-                input_summary: None,
-                model: None,
-                mode: None,
-                allow_shell: None,
-                trust_mode: None,
-                auto_approve: None,
-                ..Default::default()
-            },
-        )
-        .await?;
-    assert!(matches!(
-        harness.rx_op.recv().await,
-        Some(Op::SendMessage { .. })
-    ));
-
-    harness
-        .tx_event
-        .send(EngineEvent::ApprovalRequired {
-            approval_key: "timeout_key".to_string(),
-            approval_grouping_key: "timeout_key".to_string(),
-            id: "tool_timeout".to_string(),
-            tool_name: "exec_command".to_string(),
-            description: "external timeout".to_string(),
-            input: serde_json::json!({}),
-            intent_summary: None,
-            approval_force_prompt: false,
-        })
-        .await?;
-
-    let decision = tokio::time::timeout(Duration::from_secs(2), harness.recv_approval_event())
-        .await
-        .context("approval timeout should deny the engine")?;
-    assert_eq!(
-        decision,
-        Some(MockApprovalEvent::Denied {
-            id: "tool_timeout".to_string(),
-        })
-    );
-    assert_eq!(manager.pending_approvals_count(), 0);
-
-    let events = manager.events_since(&thread.id, None)?;
-    assert!(
-        events.iter().any(|event| {
-            event.event == "approval.timeout"
-                && event.payload.get("approval_id").and_then(Value::as_str) == Some("tool_timeout")
-        }),
-        "timeout event should be persisted"
-    );
-    assert!(
-        events.iter().any(|event| {
-            event.event == "approval.decided"
-                && event.payload.get("approval_id").and_then(Value::as_str) == Some("tool_timeout")
-                && event.payload.get("decision").and_then(Value::as_str) == Some("deny")
-                && event.payload.get("timeout").and_then(Value::as_bool) == Some(true)
-        }),
-        "timeout should also emit approval.decided so clients can clear pending UI"
-    );
-
-    harness
-        .tx_event
-        .send(EngineEvent::TurnComplete {
-            usage: Usage::default(),
-            status: TurnOutcomeStatus::Completed,
-            error: None,
-            tool_catalog: None,
-            base_url: None,
-        })
-        .await?;
-    let terminal = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
-    assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
-
-    let _next = manager
-        .start_turn(
-            &thread.id,
-            StartTurnRequest {
-                prompt: "after timeout".to_string(),
-                input_summary: None,
-                model: None,
-                mode: None,
-                allow_shell: None,
-                trust_mode: None,
-                auto_approve: None,
-                ..Default::default()
-            },
-        )
-        .await?;
-    assert!(
-        matches!(harness.rx_op.recv().await, Some(Op::SendMessage { .. })),
-        "thread should accept a fresh turn after approval timeout cleanup"
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn thinking_delta_emits_agent_reasoning_item() -> Result<()> {
     let manager = test_manager(test_runtime_dir())?;
     let thread = manager
@@ -2062,8 +1253,7 @@ async fn thinking_delta_emits_agent_reasoning_item() -> Result<()> {
         })
         .await?;
     let mut harness = install_mock_engine(&manager, &thread.id).await;
-    let mut event_rx = manager.subscribe_events();
-    let _turn = manager
+    let turn = manager
         .start_turn(
             &thread.id,
             StartTurnRequest {
@@ -2109,142 +1299,29 @@ async fn thinking_delta_emits_agent_reasoning_item() -> Result<()> {
         })
         .await?;
 
-    // A busy or constrained runner can be quiet for more than one 200 ms poll
-    // even though the engine is still making progress. Keep polling until the
-    // actual deadline instead of treating the first quiet interval as failure.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let mut delta_seen = false;
-    let mut completed_seen = false;
-    while Instant::now() < deadline && (!delta_seen || !completed_seen) {
-        match tokio::time::timeout(Duration::from_millis(200), event_rx.recv()).await {
-            Ok(Ok(record)) => {
-                if record.event == "item.delta"
-                    && record.payload.get("kind").and_then(|v| v.as_str())
-                        == Some("agent_reasoning")
-                {
-                    delta_seen = true;
-                    assert_eq!(
-                        record.payload.get("delta").and_then(|v| v.as_str()),
-                        Some("Let me reason about this.")
-                    );
-                }
-                if record.event == "item.completed"
-                    && record
-                        .payload
-                        .get("item")
-                        .and_then(|v| v.get("kind"))
-                        .and_then(|v| v.as_str())
-                        == Some("agent_reasoning")
-                {
-                    completed_seen = true;
-                }
-            }
-            Ok(Err(_)) => break,
-            Err(_) => continue,
-        }
-    }
-    assert!(delta_seen, "expected item.delta with kind=agent_reasoning");
-    assert!(
-        completed_seen,
-        "expected item.completed for the reasoning item"
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn deliver_external_approval_for_unknown_id_returns_false() {
-    let manager = test_manager(test_runtime_dir()).expect("manager");
-    assert!(!manager.deliver_external_approval(
-        "no_such_approval",
-        ExternalApprovalDecision::Allow { remember: false },
-    ));
-    assert_eq!(manager.pending_approvals_count(), 0);
-}
-
-#[tokio::test]
-async fn approval_required_remember_flips_thread_auto_approve() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
+    let terminal = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(5)).await?;
+    assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
+    let events = manager.events_since(&thread.id, None)?;
+    let delta = events
+        .iter()
+        .find(|record| {
+            record.event == "item.delta"
+                && record.payload.get("kind").and_then(Value::as_str) == Some("agent_reasoning")
         })
-        .await?;
-    assert!(!manager.store.load_thread(&thread.id)?.auto_approve);
-
-    let mut harness = install_mock_engine(&manager, &thread.id).await;
-    let turn = manager
-        .start_turn(
-            &thread.id,
-            StartTurnRequest {
-                prompt: "needs approval".to_string(),
-                input_summary: None,
-                model: None,
-                mode: None,
-                allow_shell: None,
-                trust_mode: None,
-                auto_approve: None,
-                ..Default::default()
-            },
-        )
-        .await?;
-    assert!(matches!(
-        harness.rx_op.recv().await,
-        Some(Op::SendMessage { .. })
-    ));
-
-    harness
-        .tx_event
-        .send(EngineEvent::ApprovalRequired {
-            approval_key: "key3".to_string(),
-            approval_grouping_key: "key3".to_string(),
-            id: "tool_remember".to_string(),
-            tool_name: "exec_command".to_string(),
-            description: "remember=true".to_string(),
-            input: serde_json::json!({}),
-            intent_summary: None,
-            approval_force_prompt: false,
-        })
-        .await?;
-
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline && manager.pending_approvals_count() == 0 {
-        sleep(Duration::from_millis(20)).await;
-    }
-    assert!(manager.deliver_external_approval(
-        "tool_remember",
-        ExternalApprovalDecision::Allow { remember: true },
-    ));
-    let _ = harness.recv_approval_event().await;
-
-    assert!(
-        manager.store.load_thread(&thread.id)?.auto_approve,
-        "remember=true should flip thread auto_approve"
-    );
+        .expect("expected persisted reasoning delta");
     assert_eq!(
-        manager.active_turn_flags(&thread.id, &turn.id).await,
-        Some((true, false)),
-        "remember=true should update the active turn used by subsequent approvals"
+        delta.payload.get("delta").and_then(Value::as_str),
+        Some("Let me reason about this.")
     );
-
-    harness
-        .tx_event
-        .send(EngineEvent::TurnComplete {
-            usage: Usage::default(),
-            status: TurnOutcomeStatus::Completed,
-            error: None,
-            tool_catalog: None,
-            base_url: None,
-        })
-        .await?;
+    assert!(events.iter().any(|record| {
+        record.event == "item.completed"
+            && record
+                .payload
+                .get("item")
+                .and_then(|value| value.get("kind"))
+                .and_then(Value::as_str)
+                == Some("agent_reasoning")
+    }));
     Ok(())
 }
 
@@ -2332,306 +1409,6 @@ async fn elevation_required_with_stale_active_turn_is_denied() -> Result<()> {
 
     let terminal = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
     assert_eq!(terminal.status, RuntimeTurnStatus::Completed);
-    Ok(())
-}
-
-#[tokio::test]
-async fn steer_turn_on_active_turn_records_item_and_event() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let harness = install_mock_engine(&manager, &thread.id).await;
-    let mut rx_op = harness.rx_op;
-    let mut rx_steer = harness.rx_steer;
-    let tx_event = harness.tx_event;
-    let (steer_seen_tx, steer_seen_rx) = oneshot::channel::<String>();
-    tokio::spawn(async move {
-        if matches!(rx_op.recv().await, Some(Op::SendMessage { .. })) {
-            let _ = tx_event
-                .send(EngineEvent::TurnStarted {
-                    turn_id: "engine_turn_steer".to_string(),
-                    created_at: chrono::Utc::now(),
-                    route: None,
-                })
-                .await;
-            if let Some(steer) = rx_steer.recv().await {
-                let _ = steer_seen_tx.send(steer);
-            }
-            let _ = tx_event
-                .send(EngineEvent::MessageStarted { index: 0 })
-                .await;
-            let _ = tx_event
-                .send(EngineEvent::MessageDelta {
-                    index: 0,
-                    content: "steered response".to_string(),
-                })
-                .await;
-            let _ = tx_event
-                .send(EngineEvent::MessageComplete { index: 0 })
-                .await;
-            let _ = tx_event
-                .send(EngineEvent::TurnComplete {
-                    usage: Usage {
-                        input_tokens: 8,
-                        output_tokens: 9,
-                        ..Usage::default()
-                    },
-                    status: TurnOutcomeStatus::Completed,
-                    error: None,
-                    tool_catalog: None,
-                    base_url: None,
-                })
-                .await;
-        }
-    });
-
-    let turn = manager
-        .start_turn(
-            &thread.id,
-            StartTurnRequest {
-                prompt: "initial".to_string(),
-                input_summary: None,
-                model: None,
-                mode: None,
-                allow_shell: None,
-                trust_mode: None,
-                auto_approve: None,
-                ..Default::default()
-            },
-        )
-        .await?;
-
-    let steer_text = "add bullet list".to_string();
-    let steered_turn = manager
-        .steer_turn(
-            &thread.id,
-            &turn.id,
-            SteerTurnRequest {
-                prompt: steer_text.clone(),
-            },
-        )
-        .await?;
-    assert_eq!(steered_turn.steer_count, 1);
-    let observed_steer = steer_seen_rx
-        .await
-        .context("driver did not receive steer")?;
-    assert_eq!(observed_steer, steer_text);
-
-    let final_turn = wait_for_terminal_turn(&manager, &turn.id, Duration::from_secs(2)).await?;
-    assert_eq!(final_turn.status, RuntimeTurnStatus::Completed);
-    assert_eq!(final_turn.steer_count, 1);
-
-    let events = manager.events_since(&thread.id, None)?;
-    assert!(events.iter().any(|ev| ev.event == "turn.steered"));
-    assert!(events.iter().any(|ev| {
-        ev.event == "item.completed"
-            && ev
-                .payload
-                .get("item")
-                .and_then(|item| item.get("detail"))
-                .and_then(Value::as_str)
-                == Some("add bullet list")
-    }));
-    Ok(())
-}
-
-#[tokio::test]
-async fn compaction_lifecycle_emits_item_events_with_compaction_counts() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-
-    let harness = install_mock_engine(&manager, &thread.id).await;
-    let mut rx_op = harness.rx_op;
-    let tx_event = harness.tx_event;
-    tokio::spawn(async move {
-        let mut op_count = 0usize;
-        while let Some(op) = rx_op.recv().await {
-            match op {
-                Op::SendMessage { .. } => {
-                    op_count = op_count.saturating_add(1);
-                    let _ = tx_event
-                        .send(EngineEvent::TurnStarted {
-                            turn_id: "engine_turn_auto".to_string(),
-                            created_at: chrono::Utc::now(),
-                            route: None,
-                        })
-                        .await;
-                    let _ = tx_event
-                        .send(EngineEvent::CompactionStarted {
-                            id: "auto_compact_1".to_string(),
-                            auto: true,
-                            message: "auto compact begin".to_string(),
-                        })
-                        .await;
-                    let _ = tx_event
-                        .send(EngineEvent::CompactionCompleted {
-                            id: "auto_compact_1".to_string(),
-                            auto: true,
-                            message: "auto compact done".to_string(),
-                            messages_before: Some(7),
-                            messages_after: Some(3),
-                            summary_prompt: None,
-                        })
-                        .await;
-                    let _ = tx_event
-                        .send(EngineEvent::TurnComplete {
-                            usage: Usage {
-                                input_tokens: 3,
-                                output_tokens: 3,
-                                ..Usage::default()
-                            },
-                            status: TurnOutcomeStatus::Completed,
-                            error: None,
-                            tool_catalog: None,
-                            base_url: None,
-                        })
-                        .await;
-                }
-                Op::CompactContext => {
-                    op_count = op_count.saturating_add(1);
-                    let _ = tx_event
-                        .send(EngineEvent::CompactionStarted {
-                            id: "manual_compact_1".to_string(),
-                            auto: false,
-                            message: "manual compact begin".to_string(),
-                        })
-                        .await;
-                    let _ = tx_event
-                        .send(EngineEvent::CompactionCompleted {
-                            id: "manual_compact_1".to_string(),
-                            auto: false,
-                            message: "manual compact done".to_string(),
-                            messages_before: Some(5),
-                            messages_after: Some(2),
-                            summary_prompt: Some(
-                                "## 📋 Conversation Summary (Auto-Generated)\n\nkey facts."
-                                    .to_string(),
-                            ),
-                        })
-                        .await;
-                    let _ = tx_event
-                        .send(EngineEvent::TurnComplete {
-                            usage: Usage {
-                                input_tokens: 1,
-                                output_tokens: 1,
-                                ..Usage::default()
-                            },
-                            status: TurnOutcomeStatus::Completed,
-                            error: None,
-                            tool_catalog: None,
-                            base_url: None,
-                        })
-                        .await;
-                }
-                _ => {}
-            }
-            if op_count >= 2 {
-                break;
-            }
-        }
-    });
-
-    let auto_turn = manager
-        .start_turn(
-            &thread.id,
-            StartTurnRequest {
-                prompt: "trigger auto".to_string(),
-                input_summary: None,
-                model: None,
-                mode: None,
-                allow_shell: None,
-                trust_mode: None,
-                auto_approve: None,
-                ..Default::default()
-            },
-        )
-        .await?;
-    let auto_turn = wait_for_terminal_turn(&manager, &auto_turn.id, Duration::from_secs(2)).await?;
-    assert_eq!(auto_turn.status, RuntimeTurnStatus::Completed);
-
-    let manual_turn = manager
-        .compact_thread(
-            &thread.id,
-            CompactThreadRequest {
-                reason: Some("manual request".to_string()),
-            },
-        )
-        .await?;
-    let manual_turn =
-        wait_for_terminal_turn(&manager, &manual_turn.id, Duration::from_secs(2)).await?;
-    assert_eq!(manual_turn.status, RuntimeTurnStatus::Completed);
-
-    let events = manager.events_since(&thread.id, None)?;
-    assert!(events.iter().any(|ev| {
-        ev.event == "item.started"
-            && ev
-                .payload
-                .get("item")
-                .and_then(|item| item.get("kind"))
-                .and_then(Value::as_str)
-                == Some("context_compaction")
-            && ev.payload.get("auto").and_then(Value::as_bool) == Some(true)
-    }));
-    assert!(events.iter().any(|ev| {
-        ev.event == "item.completed"
-            && ev
-                .payload
-                .get("item")
-                .and_then(|item| item.get("kind"))
-                .and_then(Value::as_str)
-                == Some("context_compaction")
-            && ev.payload.get("auto").and_then(Value::as_bool) == Some(true)
-            && ev.payload.get("messages_before").and_then(Value::as_u64) == Some(7)
-            && ev.payload.get("messages_after").and_then(Value::as_u64) == Some(3)
-    }));
-    assert!(events.iter().any(|ev| {
-        ev.event == "item.completed"
-            && ev
-                .payload
-                .get("item")
-                .and_then(|item| item.get("kind"))
-                .and_then(Value::as_str)
-                == Some("context_compaction")
-            && ev.payload.get("auto").and_then(Value::as_bool) == Some(false)
-            && ev.payload.get("messages_before").and_then(Value::as_u64) == Some(5)
-            && ev.payload.get("messages_after").and_then(Value::as_u64) == Some(2)
-    }));
-
-    // The manual compact carried a summary_prompt → it must be persisted into
-    // the thread record so engine reloads restore it. The auto compact carried
-    // None → exactly one summary section, from the manual pass.
-    let record = manager.get_thread(&thread.id).await?;
-    let record_prompt = record.system_prompt.expect("record keeps a system prompt");
-    assert!(record_prompt.contains(COMPACTION_SUMMARY_BEGIN));
-    assert!(record_prompt.contains("Conversation Summary (Auto-Generated)"));
-    assert!(record_prompt.contains("key facts."));
-    assert_eq!(record_prompt.matches(COMPACTION_SUMMARY_BEGIN).count(), 1);
     Ok(())
 }
 
@@ -2866,300 +1643,6 @@ fn parse_mode_wrapper_defaults_and_resolves_numeric_aliases() {
     assert_eq!(parse_mode("3"), AppMode::Agent);
     assert_eq!(parse_mode("4"), AppMode::Yolo);
 }
-
-fn rebind_event(event: &str, agent_id: &str, seq: u64) -> RuntimeEventRecord {
-    RuntimeEventRecord {
-        schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-        seq,
-        timestamp: Utc::now(),
-        thread_id: "thr_test".to_string(),
-        turn_id: Some("turn_test".to_string()),
-        item_id: None,
-        event: event.to_string(),
-        payload: json!({ "agent_id": agent_id }),
-    }
-}
-
-#[test]
-fn collect_agent_rebind_hints_resumes_a_mid_fanout_session() {
-    // Mirror what runtime_threads persists during a real fanout: three
-    // workers spawned, two finished, one still running when the session
-    // was killed. The TUI re-attach must rebuild placeholders for the
-    // running worker AND the two completed workers (the fanout card
-    // tracks all of them so the dot-grid stays accurate post-resume).
-    let events = vec![
-        rebind_event("agent.spawned", "agent_a", 1),
-        rebind_event("agent.spawned", "agent_b", 2),
-        rebind_event("agent.spawned", "agent_c", 3),
-        rebind_event("agent.progress", "agent_a", 4),
-        rebind_event("agent.completed", "agent_a", 5),
-        rebind_event("agent.progress", "agent_b", 6),
-        rebind_event("agent.completed", "agent_b", 7),
-        rebind_event("agent.progress", "agent_c", 8),
-    ];
-    let hints = collect_agent_rebind_hints(&events);
-    assert_eq!(hints.len(), 3, "every fanout worker must be rebound");
-    let by_id: std::collections::BTreeMap<&str, AgentRebindStatus> = hints
-        .iter()
-        .map(|h| (h.agent_id.as_str(), h.status))
-        .collect();
-    assert_eq!(by_id.get("agent_a"), Some(&AgentRebindStatus::Completed));
-    assert_eq!(by_id.get("agent_b"), Some(&AgentRebindStatus::Completed));
-    assert_eq!(
-        by_id.get("agent_c"),
-        Some(&AgentRebindStatus::InProgress),
-        "in-flight worker must rebind in InProgress, not downgrade"
-    );
-}
-
-#[test]
-fn collect_agent_rebind_hints_ignores_unrelated_events() {
-    // Status / tool events should not produce phantom hints — only the
-    // agent.* family carries the contract we re-bind from.
-    let events = vec![
-        RuntimeEventRecord {
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-            seq: 1,
-            timestamp: Utc::now(),
-            thread_id: "thr".to_string(),
-            turn_id: None,
-            item_id: None,
-            event: "tool.completed".to_string(),
-            payload: json!({"name": "read_file"}),
-        },
-        rebind_event("agent.spawned", "agent_x", 2),
-        RuntimeEventRecord {
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-            seq: 3,
-            timestamp: Utc::now(),
-            thread_id: "thr".to_string(),
-            turn_id: None,
-            item_id: None,
-            event: "compaction.completed".to_string(),
-            payload: json!({"messages_after": 12}),
-        },
-    ];
-    let hints = collect_agent_rebind_hints(&events);
-    assert_eq!(hints.len(), 1);
-    assert_eq!(hints[0].agent_id, "agent_x");
-}
-
-#[test]
-fn collect_agent_rebind_hints_does_not_downgrade_completed_to_in_progress() {
-    // Out-of-order replay: a stale `agent.progress` arriving after the
-    // completed event must NOT clobber the terminal status. This matters
-    // when an event log is concatenated from interrupted segments.
-    let events = vec![
-        rebind_event("agent.spawned", "agent_y", 1),
-        rebind_event("agent.completed", "agent_y", 2),
-        rebind_event("agent.progress", "agent_y", 3),
-    ];
-    let hints = collect_agent_rebind_hints(&events);
-    assert_eq!(hints.len(), 1);
-    assert_eq!(hints[0].status, AgentRebindStatus::Completed);
-}
-
-/// Helper for the `fork_at_user_message` tests: write a sequence of
-/// (user, assistant) turns under the given thread id. Each turn gets
-/// one UserMessage item carrying `user_text` in `detail` plus one
-/// AgentMessage item. Turn `created_at` is monotonically increasing
-/// so the chronological sort in `list_turns_for_thread` is stable.
-fn seed_turns_with_user_messages(
-    manager: &RuntimeThreadManager,
-    thread_id: &str,
-    user_texts: &[&str],
-) -> Result<Vec<String>> {
-    let mut turn_ids = Vec::new();
-    let base = Utc::now();
-    for (offset, text) in user_texts.iter().enumerate() {
-        let created_at = base + chrono::Duration::milliseconds(offset as i64);
-        let turn_id = format!("turn_test_{offset}");
-        let user_item_id = format!("item_user_{offset}");
-        let asst_item_id = format!("item_asst_{offset}");
-        manager.store.save_item(&TurnItemRecord {
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-            id: user_item_id.clone(),
-            turn_id: turn_id.clone(),
-            kind: TurnItemKind::UserMessage,
-            status: TurnItemLifecycleStatus::Completed,
-            summary: (*text).to_string(),
-            detail: Some((*text).to_string()),
-            metadata: None,
-            artifact_refs: Vec::new(),
-            started_at: Some(created_at),
-            ended_at: Some(created_at),
-        })?;
-        manager.store.save_item(&TurnItemRecord {
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-            id: asst_item_id.clone(),
-            turn_id: turn_id.clone(),
-            kind: TurnItemKind::AgentMessage,
-            status: TurnItemLifecycleStatus::Completed,
-            summary: format!("reply {offset}"),
-            detail: Some(format!("reply {offset}")),
-            metadata: None,
-            artifact_refs: Vec::new(),
-            started_at: Some(created_at),
-            ended_at: Some(created_at),
-        })?;
-        manager.store.save_turn(&TurnRecord {
-            schema_version: CURRENT_RUNTIME_SCHEMA_VERSION,
-            id: turn_id.clone(),
-            thread_id: thread_id.to_string(),
-            status: RuntimeTurnStatus::Completed,
-            input_summary: (*text).to_string(),
-            created_at,
-            started_at: Some(created_at),
-            ended_at: Some(created_at),
-            duration_ms: Some(0),
-            usage: None,
-            effective_provider: None,
-            effective_billing_surface: None,
-            effective_model: None,
-            error: None,
-            item_ids: vec![user_item_id, asst_item_id],
-            steer_count: 0,
-        })?;
-        turn_ids.push(turn_id);
-    }
-    Ok(turn_ids)
-}
-
-#[tokio::test]
-async fn fork_at_user_message_drops_tail_and_returns_user_text() -> Result<()> {
-    // Seed three completed user/assistant turns. Backtracking with
-    // depth=0 should drop only the most recent turn ("third") and
-    // hand back its original text so the caller can refill the
-    // composer.
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-    seed_turns_with_user_messages(&manager, &thread.id, &["first", "second", "third"])?;
-
-    let (forked, original_text) = manager.fork_at_user_message(&thread.id, 0).await?;
-    assert_eq!(original_text.as_deref(), Some("third"));
-    assert_ne!(forked.id, thread.id);
-
-    let forked_turns = manager.store.list_turns_for_thread(&forked.id)?;
-    assert_eq!(
-        forked_turns.len(),
-        2,
-        "depth=0 should drop the most recent turn"
-    );
-    let summaries: Vec<&str> = forked_turns
-        .iter()
-        .map(|t| t.input_summary.as_str())
-        .collect();
-    assert_eq!(summaries, vec!["first", "second"]);
-    Ok(())
-}
-
-#[tokio::test]
-async fn fork_at_user_message_depth_one_drops_two_turns() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-    seed_turns_with_user_messages(&manager, &thread.id, &["a", "b", "c", "d"])?;
-
-    let (forked, original_text) = manager.fork_at_user_message(&thread.id, 1).await?;
-    assert_eq!(original_text.as_deref(), Some("c"));
-    let forked_turns = manager.store.list_turns_for_thread(&forked.id)?;
-    let summaries: Vec<&str> = forked_turns
-        .iter()
-        .map(|t| t.input_summary.as_str())
-        .collect();
-    assert_eq!(summaries, vec!["a", "b"]);
-    Ok(())
-}
-
-#[tokio::test]
-async fn fork_at_user_message_out_of_range_errors() -> Result<()> {
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-    seed_turns_with_user_messages(&manager, &thread.id, &["only"])?;
-
-    let err = manager.fork_at_user_message(&thread.id, 5).await.err();
-    assert!(err.is_some(), "depth past the end should bail out");
-    Ok(())
-}
-
-#[tokio::test]
-async fn fork_at_user_message_does_not_mutate_source() -> Result<()> {
-    // The source thread must be untouched: turns still present, items
-    // still present, latest_turn_id still pointing at the original
-    // tail. Backtrack creates a sibling, never edits in place.
-    let manager = test_manager(test_runtime_dir())?;
-    let thread = manager
-        .create_thread(CreateThreadRequest {
-            model: None,
-            workspace: None,
-            mode: None,
-            allow_shell: None,
-            trust_mode: None,
-            auto_approve: None,
-            archived: false,
-            system_prompt: None,
-            task_id: None,
-            ..Default::default()
-        })
-        .await?;
-    let turn_ids = seed_turns_with_user_messages(&manager, &thread.id, &["x", "y", "z"])?;
-
-    let _ = manager.fork_at_user_message(&thread.id, 0).await?;
-
-    let source_turns = manager.store.list_turns_for_thread(&thread.id)?;
-    assert_eq!(
-        source_turns.len(),
-        3,
-        "source thread must still hold every turn after fork"
-    );
-    for tid in &turn_ids {
-        assert!(
-            manager.store.load_turn(tid).is_ok(),
-            "turn {tid} must remain on disk"
-        );
-    }
-    Ok(())
-}
-
-// ── compaction summary persistence (merge_summary_into_prompt) ──
 
 #[test]
 fn summary_merge_appends_section_to_base_prompt() {
