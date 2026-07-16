@@ -1514,39 +1514,33 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
         assert!(matches!(response.result, RunCommandResult::Accepted { .. }));
-        tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                let (_, response) = get_command(
-                    &app,
-                    &format!("/v1/runs/{}/events?after_sequence=0", run.run_id.0),
-                    None,
-                )
-                .await;
-                if events_from_response(response)
-                    .iter()
-                    .any(|event| matches!(event.event, RuntimeEventKind::Steered { .. }))
-                {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("steer becomes durable");
+        let steered = wait_http_terminal(&app, &run.run_id, None).await;
+        assert!(matches!(
+            steered.terminal,
+            Some(TerminalState::RecoveryRequired { .. })
+        ));
+
+        let interrupt_run = envelope(RunCommand::Start(production_start(
+            temp.path(),
+            "HTTP 中断",
+        )));
+        let (_, response) = post_command(&app, "/v1/runs", &interrupt_run, None).await;
+        let interrupt_run = run_from_response(response);
+        fixture.wait_requests(2).await;
 
         let interrupt = envelope(RunCommand::Interrupt {
-            run_id: run.run_id.clone(),
+            run_id: interrupt_run.run_id.clone(),
         });
         let (status, response) = post_command(
             &app,
-            &format!("/v1/runs/{}/interrupt", run.run_id.0),
+            &format!("/v1/runs/{}/interrupt", interrupt_run.run_id.0),
             &interrupt,
             None,
         )
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
         assert!(matches!(response.result, RunCommandResult::Accepted { .. }));
-        let interrupted = wait_http_terminal(&app, &run.run_id, None).await;
+        let interrupted = wait_http_terminal(&app, &interrupt_run.run_id, None).await;
         assert_eq!(interrupted.terminal, Some(TerminalState::Interrupted));
 
         let cancel_terminal = envelope(RunCommand::Cancel {
@@ -1576,7 +1570,7 @@ mod tests {
         )));
         let (_, response) = post_command(&app, "/v1/runs", &second, None).await;
         let second = run_from_response(response);
-        fixture.wait_requests(2).await;
+        fixture.wait_requests(3).await;
         let cancel = envelope(RunCommand::Cancel {
             run_id: second.run_id.clone(),
         });
