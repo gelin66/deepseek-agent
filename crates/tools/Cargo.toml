@@ -18,11 +18,9 @@ ignore = "0.4"
 pdf-extract = { version = "0.12", optional = true }
 regex = "1.11"
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { version = "0.7.16", features = ["rt"] }
 uuid.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

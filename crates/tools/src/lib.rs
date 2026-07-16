@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
+mod apply_patch;
+mod atomic_write;
 mod file_search;
 mod git;
 mod grep_files;
@@ -18,6 +20,8 @@ mod list_dir;
 mod production_context;
 mod read_file;
 
+pub use apply_patch::{ApplyPatchPreflight, execute_apply_patch, preflight_apply_patch};
+pub use atomic_write::write_atomic;
 pub use file_search::execute_file_search;
 pub use git::{execute_git_diff, execute_git_status};
 pub use grep_files::execute_grep_files;

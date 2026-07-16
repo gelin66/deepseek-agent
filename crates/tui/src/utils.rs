@@ -228,43 +228,9 @@ pub fn project_tree(root: &Path, max_depth: usize, follow_symlinks: bool) -> Str
 
 // === Filesystem Helpers ===
 
-/// Atomically write `contents` to `path` using a temporary file + fsync + rename.
-///
-/// 1. Creates a `NamedTempFile` in the same directory as `path` (same filesystem).
-/// 2. Writes `contents` to the temp file.
-/// 3. Calls `sync_all()` on the temp file for durability.
-/// 4. Atomically renames (persists) the temp file over `path`.
-///
-/// On filesystems that support it (`ext4`, `apfs`, `ntfs`), the rename is
-/// atomic — a concurrent reader sees either the old content or the new, never
-/// a partial write. `sync_all` ensures the data is on stable storage before
-/// the metadata change so an OS crash mid-rename doesn't lose data.
-///
-/// # Errors
-/// Returns `io::Error` if the parent directory cannot be determined, the temp
-/// file cannot be created, the write fails, or the rename fails.
-pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("path has no parent directory: {}", path.display()),
-        )
-    })?;
-    // Use parent directory so the rename is on the same filesystem.
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    std::io::Write::write_all(&mut tmp, contents)?;
-    tmp.as_file().sync_all()?;
-    tmp.persist(path)?;
-    // Fsync the parent directory so the rename (the new directory entry) is
-    // itself durable — otherwise a power loss right after the rename can lose
-    // it even though the file data was synced, silently dropping a
-    // crash-recovery checkpoint. Best-effort: not all platforms permit
-    // opening a directory for sync, so a failure here is not fatal.
-    if let Ok(dir) = std::fs::File::open(parent) {
-        let _ = dir.sync_all();
-    }
-    Ok(())
-}
+// M4-C deletes this re-export after the remaining TUI-owned writers move to
+// their production owners. The implementation lives in the tools crate.
+pub use codewhale_tools::write_atomic;
 
 /// Open or create a file for appending at `path`, optionally syncing after
 /// every write. Use this for append-only logs like `audit.log`.
@@ -694,52 +660,10 @@ mod tests {
 }
 
 #[cfg(test)]
-mod atomic_write_tests {
+mod append_write_tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
-
-    #[test]
-    fn write_atomic_writes_content() {
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("test.json");
-        let content = b"hello atomic world";
-
-        write_atomic(&path, content).expect("write_atomic");
-        assert!(path.exists());
-        let read = fs::read_to_string(&path).expect("read");
-        assert_eq!(read.as_bytes(), content);
-    }
-
-    #[test]
-    fn write_atomic_replaces_existing_file() {
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("existing.json");
-        fs::write(&path, b"old content").expect("write old");
-        write_atomic(&path, b"new content").expect("write_atomic");
-        let read = fs::read_to_string(&path).expect("read");
-        assert_eq!(read, "new content");
-    }
-
-    #[test]
-    fn write_atomic_no_temp_left_behind_on_success() {
-        let tmp = tempdir().expect("tempdir");
-        let path = tmp.path().join("clean.json");
-        write_atomic(&path, b"clean").expect("write_atomic");
-        // List files in dir — there should be no .tmp files left
-        let entries: Vec<_> = fs::read_dir(tmp.path())
-            .expect("read_dir")
-            .filter_map(|e| e.ok())
-            .collect();
-        let tmp_files: Vec<_> = entries
-            .iter()
-            .filter(|e| e.file_name().to_str().is_some_and(|n| n.starts_with('.')))
-            .collect();
-        assert!(
-            tmp_files.is_empty(),
-            "temp files left behind: {tmp_files:?}"
-        );
-    }
 
     #[test]
     fn flush_and_sync_writes_and_syncs() {

@@ -1511,6 +1511,31 @@ mod tests {
         assert_eq!(read.transport, ToolTransportStatus::Succeeded);
         assert_eq!(read.operation, ToolOperationStatus::Succeeded);
 
+        let patched = executor
+            .execute(
+                ToolInvocation {
+                    run_id: RunId::from("run-1"),
+                    call_id: "patch".to_owned(),
+                    name: "apply_patch".to_owned(),
+                    arguments: ToolArguments::from_value(json!({
+                        "path": "visible.txt",
+                        "patch": "@@ -1 +1 @@\n-fixture\n+patched\n"
+                    })),
+                },
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(patched.is_success());
+        assert_eq!(patched.invocation, ToolInvocationStatus::Accepted);
+        assert_eq!(patched.transport, ToolTransportStatus::Succeeded);
+        assert_eq!(patched.operation, ToolOperationStatus::Succeeded);
+        assert_eq!(patched.side_effect, ToolSideEffectStatus::Applied);
+        assert_eq!(
+            std::fs::read(temp.path().join("visible.txt")).unwrap(),
+            b"patched"
+        );
+
         let malformed = executor
             .execute(
                 ToolInvocation {
