@@ -39,6 +39,30 @@ struct ActiveRun {
     control: AgentControl,
 }
 
+struct PendingActivation {
+    control: Option<AgentControl>,
+}
+
+impl PendingActivation {
+    fn new(control: AgentControl) -> Self {
+        Self {
+            control: Some(control),
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.control = None;
+    }
+}
+
+impl Drop for PendingActivation {
+    fn drop(&mut self) {
+        if let Some(control) = self.control.take() {
+            let _ = control.cancel();
+        }
+    }
+}
+
 /// Private composition boundary. A production implementation will move the
 /// existing DeepSeek model/tool/request wiring here; it must always construct
 /// the existing `AgentRuntime` with the Store and sink supplied by this
@@ -312,6 +336,11 @@ impl AgentApplication {
     }
 
     async fn activate(&self, run: RuntimeRun) -> Result<(), RunApiError> {
+        // Runtime execution is detached from the caller future. Keep a
+        // cancellation guard until its control handle is durably represented
+        // in the process-local active registry; otherwise an aborted HTTP or
+        // stdio request could leave an unregistered live run behind.
+        let mut pending = PendingActivation::new(run.control());
         let run = run.ready().await.map_err(ready_error)?;
         let run_id = run.run_id.clone();
         let control = run.control();
@@ -339,6 +368,7 @@ impl AgentApplication {
                 },
             );
         }
+        pending.disarm();
         spawn_monitor(run, launch_token, self.active.clone(), self.watch.clone());
         Ok(())
     }
@@ -538,7 +568,7 @@ fn error_result(error: RunApiError) -> RunCommandResult {
 #[cfg(test)]
 mod tests {
     use std::future::pending;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use codewhale_protocol::agent_runtime::{
@@ -639,6 +669,7 @@ mod tests {
         mode: ModelMode,
         starts: AtomicUsize,
         resumes: AtomicUsize,
+        ready_gate: Option<Arc<ReadyGate>>,
     }
 
     impl FixtureComposition {
@@ -647,6 +678,16 @@ mod tests {
                 mode,
                 starts: AtomicUsize::new(0),
                 resumes: AtomicUsize::new(0),
+                ready_gate: None,
+            }
+        }
+
+        fn gated(mode: ModelMode, ready_gate: Arc<ReadyGate>) -> Self {
+            Self {
+                mode,
+                starts: AtomicUsize::new(0),
+                resumes: AtomicUsize::new(0),
+                ready_gate: Some(ready_gate),
             }
         }
 
@@ -655,12 +696,52 @@ mod tests {
             store: Arc<dyn RunStore>,
             sink: Arc<dyn RuntimeEventSink>,
         ) -> Arc<AgentRuntime> {
+            let sink: Arc<dyn RuntimeEventSink> = match &self.ready_gate {
+                Some(gate) => Arc::new(GatedSink {
+                    inner: sink,
+                    gate: gate.clone(),
+                    blocked: AtomicBool::new(false),
+                }),
+                None => sink,
+            };
             Arc::new(AgentRuntime::new(
                 Arc::new(FixtureModel { mode: self.mode }),
                 Arc::new(FixtureTools),
                 sink,
                 store,
             ))
+        }
+    }
+
+    struct ReadyGate {
+        entered: tokio::sync::Semaphore,
+        release: tokio::sync::Semaphore,
+    }
+
+    impl Default for ReadyGate {
+        fn default() -> Self {
+            Self {
+                entered: tokio::sync::Semaphore::new(0),
+                release: tokio::sync::Semaphore::new(0),
+            }
+        }
+    }
+
+    struct GatedSink {
+        inner: Arc<dyn RuntimeEventSink>,
+        gate: Arc<ReadyGate>,
+        blocked: AtomicBool,
+    }
+
+    #[async_trait]
+    impl RuntimeEventSink for GatedSink {
+        async fn emit(&self, event: StoredRuntimeEvent) {
+            if !self.blocked.swap(true, Ordering::AcqRel) {
+                self.gate.entered.add_permits(1);
+                let permit = self.gate.release.acquire().await.expect("ready gate open");
+                permit.forget();
+            }
+            self.inner.emit(event).await;
         }
     }
 
@@ -1197,6 +1278,48 @@ mod tests {
         })
         .await
         .expect("active registry cleans up");
+    }
+
+    #[tokio::test]
+    async fn aborted_activation_cancels_run_before_control_registration() {
+        let store = Arc::new(InMemoryRunStore::default());
+        let ready_gate = Arc::new(ReadyGate::default());
+        let composition = Arc::new(FixtureComposition::gated(
+            ModelMode::Pending,
+            ready_gate.clone(),
+        ));
+        let app = Arc::new(AgentApplication::new(store.clone(), composition));
+        let run_id = seed_resumable(&store, "aborted-activation").await;
+
+        let task_app = app.clone();
+        let task_run_id = run_id.clone();
+        let activation = tokio::spawn(async move {
+            task_app
+                .execute(envelope(
+                    "resume-abort",
+                    RunCommand::Resume {
+                        run_id: task_run_id,
+                    },
+                ))
+                .await
+        });
+        let entered = ready_gate
+            .entered
+            .acquire()
+            .await
+            .expect("ready gate entered");
+        entered.forget();
+
+        activation.abort();
+        assert!(activation.await.is_err());
+        ready_gate.release.add_permits(1);
+
+        let replay = wait_terminal(&store, &run_id).await;
+        assert!(matches!(
+            replay.snapshot.terminal.map(|outcome| outcome.terminal),
+            Some(TerminalState::Cancelled)
+        ));
+        assert!(app.active.lock().await.is_empty());
     }
 
     #[test]
