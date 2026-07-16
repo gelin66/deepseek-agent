@@ -62,6 +62,7 @@ fn execution_fingerprint_sha256(
     model: &str,
     context: &ToolContext,
     tool_catalog_sha256: Option<&str>,
+    composition_build_revision: &str,
 ) -> String {
     let provider = config.api_provider();
     let provider_config = config.provider_config_for(provider);
@@ -107,8 +108,12 @@ fn execution_fingerprint_sha256(
         Some(crate::sandbox::backend::SandboxKind::None) | None => None,
     };
     let value = serde_json::json!({
-        "schema": 2,
-        "binary_sha256": current_binary_sha256(),
+        "schema": 3,
+        // Resume compatibility belongs to the shared application
+        // composition, not to one presentation binary. `codewhale exec` and
+        // app-server are different executables built from the same revision;
+        // their exact binary hashes remain diagnostic receipt fields only.
+        "composition_build_revision": composition_build_revision,
         "provider": provider.as_str(),
         "model": model,
         "base_url_sha256": format!(
@@ -237,12 +242,12 @@ pub(crate) async fn run_exec_runtime(
 ) -> Result<()> {
     let started = Instant::now();
     let deadline_origin = tokio::time::Instant::now();
-    // The exact executable hash is part of both the resume fingerprint and
-    // terminal receipt. In debug builds the binary is large and SHA-256 is
-    // deliberately unoptimized, so warm the process-wide cache on a blocking
-    // worker while route resolution performs network I/O. This preserves the
-    // absolute wall-clock deadline instead of serializing two independent
-    // startup costs on the async runtime thread.
+    // The exact executable hash is diagnostic receipt evidence only. In debug
+    // builds the binary is large and SHA-256 is deliberately unoptimized, so
+    // warm the process-wide cache on a blocking worker while route resolution
+    // performs network I/O. Resume compatibility uses the shared composition
+    // build revision instead, allowing exec and app-server to resume the same
+    // run even though they are different executables.
     let _binary_sha256_warmup = tokio::task::spawn_blocking(current_binary_sha256);
     let absolute_deadline_unix_ms =
         unix_ms_now().saturating_add(max_runtime_secs.max(1).saturating_mul(1_000));
@@ -503,6 +508,7 @@ pub(crate) async fn run_exec_runtime(
         &effective_model,
         &fingerprint_context,
         tool_catalog_sha256.as_deref(),
+        env!("DEEPSEEK_BUILD_VERSION"),
     );
 
     if let Some(replay) = resume_replay.as_ref()
@@ -1982,6 +1988,7 @@ mod tests {
             "deepseek-v4-pro",
             &ToolContext::new(std::env::temp_dir().join("codewhale-exec-fingerprint")),
             Some("sha256:test-tool-catalog"),
+            "0.8.68 (composition-a)",
         )
     }
 
@@ -2048,6 +2055,18 @@ mod tests {
         rotated_credentials.api_key = Some("deepseek-secret-b".to_owned());
         rotated_credentials.sandbox_api_key = Some("sandbox-secret-b".to_owned());
         assert_eq!(test_execution_fingerprint(&rotated_credentials), expected);
+
+        assert_ne!(
+            execution_fingerprint_sha256(
+                &rotated_credentials,
+                "deepseek-v4-pro",
+                &ToolContext::new(std::env::temp_dir().join("codewhale-exec-fingerprint")),
+                Some("sha256:test-tool-catalog"),
+                "0.8.68 (composition-b)",
+            ),
+            expected,
+            "a different application composition revision must require an explicit resume cutover"
+        );
     }
 
     #[test]
