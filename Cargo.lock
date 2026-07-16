@@ -820,6 +820,8 @@ dependencies = [
  "async-trait",
  "codewhale-protocol",
  "codewhale-runtime",
+ "codewhale-state",
+ "tempfile",
  "tokio",
 ]
 

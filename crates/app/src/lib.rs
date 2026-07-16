@@ -846,7 +846,7 @@ mod tests {
         (app, store, composition)
     }
 
-    async fn wait_terminal(store: &InMemoryRunStore, run_id: &RunId) -> RunReplay {
+    async fn wait_terminal(store: &dyn RunStore, run_id: &RunId) -> RunReplay {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 let replay = store
@@ -954,7 +954,7 @@ mod tests {
             ))
             .await,
         );
-        let terminal = wait_terminal(&store, &run.run_id).await;
+        let terminal = wait_terminal(store.as_ref(), &run.run_id).await;
         let before_events = terminal.events.clone();
         assert_eq!(composition.resumes.load(Ordering::Acquire), 0);
 
@@ -977,6 +977,87 @@ mod tests {
                 .expect("run")
                 .events,
             before_events
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_terminal_replay_survives_application_rebuild_without_composition() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let database = directory.path().join("state.db");
+        let first_store = Arc::new(
+            codewhale_state::StateStore::open(Some(database.clone())).expect("open first store"),
+        );
+        let first_composition = Arc::new(FixtureComposition::new(ModelMode::Complete));
+        let first_app = AgentApplication::new(first_store.clone(), first_composition.clone());
+
+        let run = run_result(
+            first_app
+                .execute(envelope(
+                    "start-persistent",
+                    RunCommand::Start(start_command("持久终态重放")),
+                ))
+                .await,
+        );
+        let terminal = wait_terminal(first_store.as_ref(), &run.run_id).await;
+        let frozen_events = terminal.events.clone();
+        assert_eq!(first_composition.starts.load(Ordering::Acquire), 1);
+        drop(first_app);
+        drop(first_store);
+
+        let reopened_store = Arc::new(
+            codewhale_state::StateStore::open(Some(database)).expect("reopen canonical store"),
+        );
+        let replay_only_composition = Arc::new(FixtureComposition::new(ModelMode::Pending));
+        let rebuilt_app =
+            AgentApplication::new(reopened_store.clone(), replay_only_composition.clone());
+
+        let fetched = run_result(
+            rebuilt_app
+                .execute(envelope(
+                    "get-persistent",
+                    RunCommand::Get {
+                        run_id: run.run_id.clone(),
+                    },
+                ))
+                .await,
+        );
+        assert_eq!(fetched.terminal, project_run(&terminal).terminal);
+
+        let events = rebuilt_app
+            .execute(envelope(
+                "events-persistent",
+                RunCommand::Events {
+                    run_id: run.run_id.clone(),
+                    after_sequence: 0,
+                },
+            ))
+            .await;
+        assert!(matches!(
+            events.result,
+            RunCommandResult::Events { ref events, .. } if events == &frozen_events
+        ));
+
+        let resumed = run_result(
+            rebuilt_app
+                .execute(envelope(
+                    "resume-persistent",
+                    RunCommand::Resume {
+                        run_id: run.run_id.clone(),
+                    },
+                ))
+                .await,
+        );
+        assert_eq!(resumed.terminal, fetched.terminal);
+        assert_eq!(replay_only_composition.starts.load(Ordering::Acquire), 0);
+        assert_eq!(replay_only_composition.resumes.load(Ordering::Acquire), 0);
+        assert_eq!(
+            reopened_store
+                .load(&run.run_id)
+                .await
+                .expect("load replayed run")
+                .expect("persistent run")
+                .events,
+            frozen_events
         );
     }
 
@@ -1006,7 +1087,7 @@ mod tests {
             ))
             .await;
         assert!(matches!(steer.result, RunCommandResult::Accepted { .. }));
-        wait_terminal(&store, &seeded).await;
+        wait_terminal(store.as_ref(), &seeded).await;
 
         let interrupt_run = run_result(
             app.execute(envelope(
@@ -1027,7 +1108,7 @@ mod tests {
             interrupted.result,
             RunCommandResult::Accepted { .. }
         ));
-        wait_terminal(&store, &interrupt_run.run_id).await;
+        wait_terminal(store.as_ref(), &interrupt_run.run_id).await;
 
         let cancel_run = run_result(
             app.execute(envelope(
@@ -1048,7 +1129,7 @@ mod tests {
             cancelled.result,
             RunCommandResult::Accepted { .. }
         ));
-        wait_terminal(&store, &cancel_run.run_id).await;
+        wait_terminal(store.as_ref(), &cancel_run.run_id).await;
 
         let events = app
             .execute(envelope(
@@ -1148,7 +1229,7 @@ mod tests {
                 },
             ))
             .await;
-        wait_terminal(&store, &active.run_id).await;
+        wait_terminal(store.as_ref(), &active.run_id).await;
         assert_eq!(
             error_code(
                 app.execute(envelope(
@@ -1174,7 +1255,7 @@ mod tests {
             ))
             .await,
         );
-        let replay = wait_terminal(&store, &run.run_id).await;
+        let replay = wait_terminal(store.as_ref(), &run.run_id).await;
         let after = replay.events[1].sequence;
         let response = app
             .execute(envelope(
@@ -1266,7 +1347,7 @@ mod tests {
             run_ids.push(start.await.expect("start task").run_id);
         }
         for run_id in run_ids {
-            wait_terminal(&store, &run_id).await;
+            wait_terminal(store.as_ref(), &run_id).await;
         }
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -1314,7 +1395,7 @@ mod tests {
         assert!(activation.await.is_err());
         ready_gate.release.add_permits(1);
 
-        let replay = wait_terminal(&store, &run_id).await;
+        let replay = wait_terminal(store.as_ref(), &run_id).await;
         assert!(matches!(
             replay.snapshot.terminal.map(|outcome| outcome.terminal),
             Some(TerminalState::Cancelled)

@@ -11,3 +11,7 @@ async-trait.workspace = true
 codewhale-protocol = { path = "../protocol" }
 codewhale-runtime = { path = "../runtime" }
 tokio.workspace = true
+
+[dev-dependencies]
+codewhale-state = { path = "../state" }
+tempfile.workspace = true
