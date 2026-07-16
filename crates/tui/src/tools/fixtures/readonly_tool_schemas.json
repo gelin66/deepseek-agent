@@ -1,0 +1,109 @@
+{
+  "list_dir": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Relative path (default: .)"
+      }
+    },
+    "required": []
+  },
+  "file_search": {
+    "type": "object",
+    "properties": {
+      "query": {
+        "type": "string",
+        "description": "Search query (file name or path fragment)."
+      },
+      "path": {
+        "type": "string",
+        "description": "Optional base path to search (relative to workspace)."
+      },
+      "limit": {
+        "type": "integer",
+        "description": "Maximum number of results to return (default: 20)."
+      },
+      "extensions": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional list of file extensions to include (e.g. [\"rs\", \"md\"])."
+      },
+      "exclude": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Optional glob patterns to exclude, matching grep_files' convention (e.g. [\"target/**\", \"*.lock\"])."
+      }
+    },
+    "required": ["query"]
+  },
+  "grep_files": {
+    "type": "object",
+    "properties": {
+      "pattern": {
+        "type": "string",
+        "description": "Regular expression pattern to search for"
+      },
+      "path": {
+        "type": "string",
+        "description": "Directory or file to search (relative to workspace, default: .)"
+      },
+      "include": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Glob patterns for files to include (e.g., ['*.rs', '*.ts'])"
+      },
+      "exclude": {
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "Glob patterns for files to exclude (e.g., ['*.min.js', 'node_modules/*'])"
+      },
+      "context_lines": {
+        "type": "integer",
+        "description": "Number of context lines before and after each match (default: 2)"
+      },
+      "case_insensitive": {
+        "type": "boolean",
+        "description": "Whether to perform case-insensitive matching (default: false)"
+      },
+      "max_results": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "Maximum number of results to return (default: 100, range: 1-100)"
+      }
+    },
+    "required": ["pattern"]
+  },
+  "git_status": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Optional subdirectory or file to scope the status to (must be within the workspace)."
+      }
+    },
+    "additionalProperties": false
+  },
+  "git_diff": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Optional subdirectory or file to scope the diff to (must be within the workspace)."
+      },
+      "cached": {
+        "type": "boolean",
+        "description": "When true, diff staged changes (`--cached`)."
+      },
+      "unified": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 50,
+        "default": 3,
+        "description": "Number of context lines to include around changes."
+      }
+    },
+    "additionalProperties": false
+  }
+}

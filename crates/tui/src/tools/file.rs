@@ -14,10 +14,8 @@ use serde_json::{Value, json};
 #[cfg(feature = "pdf")]
 use std::fmt::Display;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
-use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 
 // === ReadFileTool ===
 
@@ -990,15 +988,6 @@ fn punctuation_normalized_matches(contents: &str, search: &str) -> Vec<(usize, u
 /// Tool for listing directory contents.
 pub struct ListDirTool;
 
-const LIST_DIR_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Cap on entries returned by a single `list_dir` call so a huge directory
-/// (node_modules, build output, photo dumps) can't balloon the tool result.
-/// Mirrors the bounded-output idiom of `read_file`'s `HARD_MAX_READ_LINES`.
-/// Directories at or under the cap keep the historical plain-array response;
-/// larger ones return an object with truncation metadata.
-const LIST_DIR_MAX_ENTRIES: usize = 500;
-
 #[async_trait]
 impl ToolSpec for ListDirTool {
     fn name(&self) -> &'static str {
@@ -1031,126 +1020,8 @@ impl ToolSpec for ListDirTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
-        let path_str = optional_str(&input, "path").unwrap_or(".");
-        let dir_path = context.resolve_path(path_str)?;
-
-        let entries = list_dir_entries_async(
-            dir_path,
-            context.cancellation_token().cloned(),
-            LIST_DIR_TIMEOUT,
-        )
-        .await?;
-
-        ToolOutcome::json(&entries).map_err(|e| ToolError::execution_failed(e.to_string()))
-    }
-}
-
-async fn list_dir_entries_async(
-    dir_path: PathBuf,
-    cancel_token: Option<CancellationToken>,
-    timeout: Duration,
-) -> Result<Value, ToolError> {
-    let worker_cancel_token = cancel_token.clone();
-    run_blocking_list_dir(timeout, cancel_token, move || {
-        list_dir_entries(&dir_path, worker_cancel_token.as_ref())
-    })
-    .await
-}
-
-async fn run_blocking_list_dir<F>(
-    timeout: Duration,
-    cancel_token: Option<CancellationToken>,
-    list_dir: F,
-) -> Result<Value, ToolError>
-where
-    F: FnOnce() -> Result<Value, ToolError> + Send + 'static,
-{
-    if cancel_token
-        .as_ref()
-        .is_some_and(CancellationToken::is_cancelled)
-    {
-        return Err(list_dir_cancelled());
-    }
-
-    let task = tokio::task::spawn_blocking(list_dir);
-    let result = match cancel_token {
-        Some(token) => {
-            tokio::select! {
-                biased;
-                () = token.cancelled() => return Err(list_dir_cancelled()),
-                result = tokio::time::timeout(timeout, task) => result,
-            }
-        }
-        None => tokio::time::timeout(timeout, task).await,
-    };
-
-    let joined = result.map_err(|_| list_dir_timeout(timeout))?;
-    joined.map_err(|err| {
-        ToolError::execution_failed(format!("list_dir worker failed before completion: {err}"))
-    })?
-}
-
-fn list_dir_entries(
-    dir_path: &Path,
-    cancel_token: Option<&CancellationToken>,
-) -> Result<Value, ToolError> {
-    check_list_dir_cancelled(cancel_token)?;
-
-    let mut entries = Vec::new();
-    let mut total_entries = 0usize;
-
-    for entry in fs::read_dir(dir_path).map_err(|e| {
-        ToolError::execution_failed(format!(
-            "Failed to read directory {}: {}",
-            dir_path.display(),
-            e
-        ))
-    })? {
-        check_list_dir_cancelled(cancel_token)?;
-
-        let entry = entry.map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        total_entries += 1;
-        // Past the cap, keep counting for the truncation metadata but stop
-        // materializing entries.
-        if entries.len() >= LIST_DIR_MAX_ENTRIES {
-            continue;
-        }
-        let file_type = entry
-            .file_type()
-            .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-
-        entries.push(json!({
-            "name": entry.file_name().to_string_lossy().to_string(),
-            "is_dir": file_type.is_dir(),
-        }));
-    }
-
-    if total_entries > entries.len() {
-        Ok(json!({
-            "entries": entries,
-            "listed_entries": LIST_DIR_MAX_ENTRIES,
-            "total_entries": total_entries,
-            "truncated": true,
-        }))
-    } else {
-        Ok(Value::Array(entries))
-    }
-}
-
-fn check_list_dir_cancelled(cancel_token: Option<&CancellationToken>) -> Result<(), ToolError> {
-    if cancel_token.is_some_and(CancellationToken::is_cancelled) {
-        return Err(list_dir_cancelled());
-    }
-    Ok(())
-}
-
-fn list_dir_cancelled() -> ToolError {
-    ToolError::execution_failed("list_dir cancelled before completion")
-}
-
-fn list_dir_timeout(timeout: Duration) -> ToolError {
-    ToolError::Timeout {
-        seconds: timeout.as_secs().max(1),
+        // M4-C deletes this schema adapter when the fixed catalog moves out of TUI.
+        codewhale_tools::execute_list_dir(input, context.production_context()).await
     }
 }
 
@@ -2232,132 +2103,6 @@ mod tests {
         assert!(
             err.contains("Input provided:") || err.contains("provided:"),
             "error must list the fields the model did supply: {err}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_list_dir_tool() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf());
-
-        // Create some files and directories
-        fs::write(tmp.path().join("file1.txt"), "").expect("write");
-        fs::write(tmp.path().join("file2.txt"), "").expect("write");
-        fs::create_dir(tmp.path().join("subdir")).expect("mkdir");
-
-        let tool = ListDirTool;
-        let result = tool.execute(json!({}), &ctx).await.expect("execute");
-
-        assert!(result.is_success());
-        assert!(result.content.contains("file1.txt"));
-        assert!(result.content.contains("file2.txt"));
-        assert!(result.content.contains("subdir"));
-        let entries: Value = serde_json::from_str(&result.content).expect("list_dir json");
-        assert!(entries.as_array().expect("entries").iter().any(|entry| {
-            entry.get("name").and_then(Value::as_str) == Some("subdir")
-                && entry.get("is_dir").and_then(Value::as_bool) == Some(true)
-        }));
-    }
-
-    #[tokio::test]
-    async fn test_list_dir_with_path() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf());
-
-        // Create a subdirectory with files
-        let subdir = tmp.path().join("mydir");
-        fs::create_dir(&subdir).expect("mkdir");
-        fs::write(subdir.join("nested.txt"), "").expect("write");
-
-        let tool = ListDirTool;
-        let result = tool
-            .execute(json!({"path": "mydir"}), &ctx)
-            .await
-            .expect("execute");
-
-        assert!(result.is_success());
-        assert!(result.content.contains("nested.txt"));
-    }
-
-    #[tokio::test]
-    async fn test_list_dir_small_dir_keeps_plain_array_response() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf());
-        fs::write(tmp.path().join("only.txt"), "").expect("write");
-
-        let tool = ListDirTool;
-        let result = tool.execute(json!({}), &ctx).await.expect("execute");
-
-        let parsed: Value = serde_json::from_str(&result.content).expect("json");
-        assert!(
-            parsed.is_array(),
-            "small dirs must keep the historical array shape: {parsed}"
-        );
-        assert_eq!(parsed.as_array().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_list_dir_caps_entries_with_truncation_metadata() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf());
-        let extra = 7;
-        for i in 0..LIST_DIR_MAX_ENTRIES + extra {
-            fs::write(tmp.path().join(format!("f{i:04}.txt")), "").expect("write");
-        }
-
-        let tool = ListDirTool;
-        let result = tool.execute(json!({}), &ctx).await.expect("execute");
-
-        let parsed: Value = serde_json::from_str(&result.content).expect("json");
-        assert!(parsed.is_object(), "oversized dirs return an object");
-        assert_eq!(parsed["truncated"], json!(true));
-        assert_eq!(
-            parsed["listed_entries"].as_u64().unwrap() as usize,
-            LIST_DIR_MAX_ENTRIES
-        );
-        assert_eq!(
-            parsed["total_entries"].as_u64().unwrap() as usize,
-            LIST_DIR_MAX_ENTRIES + extra
-        );
-        assert_eq!(
-            parsed["entries"].as_array().unwrap().len(),
-            LIST_DIR_MAX_ENTRIES
-        );
-    }
-
-    #[tokio::test]
-    async fn test_list_dir_respects_cancel_token() {
-        let tmp = tempdir().expect("tempdir");
-        fs::write(tmp.path().join("file.txt"), "").expect("write");
-        let cancel_token = CancellationToken::new();
-        cancel_token.cancel();
-        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
-        ctx.set_invocation_cancellation(cancel_token);
-
-        let tool = ListDirTool;
-        let err = tool
-            .execute(json!({}), &ctx)
-            .await
-            .expect_err("cancelled list_dir should return an error");
-
-        assert!(
-            format!("{err:?}").contains("cancelled"),
-            "unexpected error: {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_list_dir_blocking_wrapper_reports_timeout() {
-        let err = run_blocking_list_dir(Duration::from_millis(1), None, || {
-            std::thread::sleep(Duration::from_millis(50));
-            Ok(Value::Array(Vec::new()))
-        })
-        .await
-        .expect_err("slow list_dir worker should time out");
-
-        assert!(
-            matches!(err, ToolError::Timeout { seconds: 1 }),
-            "unexpected error: {err:?}"
         );
     }
 

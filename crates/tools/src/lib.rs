@@ -11,8 +11,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
+mod file_search;
+mod git;
+mod grep_files;
+mod list_dir;
 mod production_context;
 
+pub use file_search::execute_file_search;
+pub use git::{execute_git_diff, execute_git_status};
+pub use grep_files::execute_grep_files;
+pub use list_dir::execute_list_dir;
 pub use production_context::ProductionToolContext;
 
 tokio::task_local! {

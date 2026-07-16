@@ -364,6 +364,12 @@ impl ToolContext {
         self.production.auto_approve()
     }
 
+    /// TUI-independent context used by production tool operations.
+    #[must_use]
+    pub(crate) fn production_context(&self) -> &ProductionToolContext {
+        &self.production
+    }
+
     /// Replace the invocation cancellation signal while preserving file-read
     /// freshness for the current workspace.
     pub fn set_invocation_cancellation(&mut self, cancellation: CancellationToken) {

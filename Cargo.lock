@@ -1050,6 +1050,8 @@ dependencies = [
  "anyhow",
  "async-trait",
  "codewhale-protocol",
+ "ignore",
+ "regex",
  "serde",
  "serde_json",
  "tempfile",

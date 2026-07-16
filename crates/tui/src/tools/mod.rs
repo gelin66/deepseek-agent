@@ -37,6 +37,8 @@ pub mod parallel;
 pub mod plan;
 pub mod plugin;
 pub mod project;
+#[cfg(test)]
+mod readonly_tool_parity;
 pub mod registry;
 pub mod remember;
 pub mod revert_turn;

@@ -10,6 +10,8 @@ description = "Tool invocation lifecycle, schema validation, and scheduler paral
 anyhow.workspace = true
 async-trait.workspace = true
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
+ignore = "0.4"
+regex = "1.11"
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
