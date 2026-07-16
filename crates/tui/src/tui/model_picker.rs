@@ -27,7 +27,7 @@ use crate::codex_model_cache::{
     self, CodexModelCacheFreshness, CodexModelMetadata, CodexModelRoster,
 };
 use crate::config::{ApiProvider, Config, DEEPSEEK_ALIAS_REPLACEMENT};
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::model_profile::{
     CapabilityOverride, SupportState, resolved_capability_profile_with_overrides,
 };
@@ -42,6 +42,7 @@ use crate::tui::views::{
     ActionHint, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_underwater_surface,
 };
+use codewhale_config::Locale;
 
 /// Thinking-effort rows shown for DeepSeek-style providers, in the order
 /// DeepSeek behaviorally distinguishes them.
@@ -1849,7 +1850,7 @@ mod tests {
         app.auto_model = false;
         app.reasoning_effort = ReasoningEffort::Max;
         app.api_provider = crate::config::ApiProvider::Deepseek;
-        app.ui_locale = crate::localization::Locale::En;
+        app.ui_locale = codewhale_config::Locale::En;
         app.model_ids_passthrough = false;
         app.provider_models.clear();
         (app, config, (env_guards, lock))

@@ -4,12 +4,12 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use codewhale_config::{
-    ConstitutionChoice, ConstitutionSource, ConstitutionValidity, RuntimePostureSource, SetupState,
-    SetupStep, UserConstitution, UserConstitutionLoad,
+    ConstitutionChoice, ConstitutionSource, ConstitutionValidity, Locale, RuntimePostureSource,
+    SetupState, SetupStep, UserConstitution, UserConstitutionLoad,
 };
 
 use crate::commands::traits::{CommandInfo, RegisterCommand};
-use crate::localization::{Locale, MessageId};
+use crate::localization::MessageId;
 use crate::tui::app::{App, AppAction};
 use crate::tui::pager::PagerView;
 
@@ -1096,7 +1096,7 @@ mod tests {
         std::fs::create_dir_all(&home).expect("home");
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
         let mut app = test_app();
-        app.ui_locale = crate::localization::Locale::ZhHans;
+        app.ui_locale = codewhale_config::Locale::ZhHans;
 
         let result = ConstitutionCmd::execute(&mut app, None);
 
@@ -1117,7 +1117,7 @@ mod tests {
         std::fs::create_dir_all(&home).expect("home");
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", home.as_os_str());
         let mut app = test_app();
-        app.ui_locale = crate::localization::Locale::ZhHans;
+        app.ui_locale = codewhale_config::Locale::ZhHans;
 
         let result = ConstitutionCmd::execute(&mut app, Some("preview"));
 
@@ -1131,7 +1131,7 @@ mod tests {
     #[test]
     fn constitution_explanation_uses_zh_hans_copy() {
         let mut app = test_app();
-        app.ui_locale = crate::localization::Locale::ZhHans;
+        app.ui_locale = codewhale_config::Locale::ZhHans;
 
         let result = ConstitutionCmd::execute(&mut app, Some("explain"));
 

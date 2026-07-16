@@ -168,7 +168,7 @@ const THINKING_CHOICES: &[Choice] = &[
 #[derive(Debug, Clone)]
 pub struct FleetSetupSnapshot {
     workspace: PathBuf,
-    locale: crate::localization::Locale,
+    locale: codewhale_config::Locale,
     /// Whether the active provider has a key or local runtime — gates the
     /// model-draft offer, mirroring the constitution card's `provider_ready`.
     provider_ready: bool,
@@ -1255,7 +1255,7 @@ mod tests {
     fn snapshot() -> FleetSetupSnapshot {
         FleetSetupSnapshot {
             workspace: PathBuf::from("/tmp/codewhale-test-workspace"),
-            locale: crate::localization::Locale::En,
+            locale: codewhale_config::Locale::En,
             provider_ready: true,
             provider: "DeepSeek".to_string(),
             model: "deepseek-v4-pro".to_string(),
@@ -1333,7 +1333,7 @@ mod tests {
         // concrete provider route.
         assert_eq!(provider, None);
         assert_eq!(reasoning_effort, None);
-        assert_eq!(locale, crate::localization::Locale::En);
+        assert_eq!(locale, codewhale_config::Locale::En);
     }
 
     #[test]

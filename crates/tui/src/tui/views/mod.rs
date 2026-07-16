@@ -13,7 +13,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::config::{ApiProvider, ApprovalPolicyControl, Config};
 use crate::features::{FEATURES, Stage};
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::settings::Settings;
 use crate::tools::UserInputResponse;
@@ -22,6 +22,7 @@ use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
 use crate::tui::widgets::agent_card::AgentLifecycle;
+use codewhale_config::Locale;
 
 pub mod fleet_roster;
 pub mod fleet_setup;
@@ -774,7 +775,7 @@ pub enum ViewEvent {
     SetupConstitutionModelDraftRequested {
         draft: crate::tui::setup::GuidedConstitutionDraft,
         freeform_note: Option<String>,
-        locale: crate::localization::Locale,
+        locale: codewhale_config::Locale,
     },
     /// Emitted by the fleet setup Review step (`m`) to ask the configured
     /// model to draft the agent profile the wizard describes. The host
@@ -796,7 +797,7 @@ pub enum ViewEvent {
         /// as `provider`: the ratified profile must preserve the operator's
         /// explicit choice, not whatever the model echoed.
         reasoning_effort: Option<String>,
-        locale: crate::localization::Locale,
+        locale: codewhale_config::Locale,
     },
     /// Emitted by the `/fleet` roster view (`s` / Enter) to hand off to the
     /// setup wizard for authoring or overriding a roster member. The roster
@@ -3721,7 +3722,7 @@ mod tests {
         truncate_view_text,
     };
     use crate::config::Config;
-    use crate::localization::{Locale, MessageId, tr};
+    use crate::localization::{MessageId, tr};
     use crate::palette;
     use crate::settings::Settings;
     use crate::tools::subagent::{
@@ -3731,6 +3732,7 @@ mod tests {
     use crate::tui::history::{HistoryCell, SubAgentCell};
     use crate::tui::views::{CommandPaletteAction, SubAgentsView};
     use crate::tui::widgets::agent_card::{AgentLifecycle, FanoutCard};
+    use codewhale_config::Locale;
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -5218,7 +5220,7 @@ base_url = "https://api.xiaomimimo.com/v1"
     #[test]
     fn default_modal_does_not_consume_paste() {
         let mut stack = ViewStack::new();
-        stack.push(HelpView::new_for_locale(crate::localization::Locale::En));
+        stack.push(HelpView::new_for_locale(codewhale_config::Locale::En));
         assert!(!stack.handle_paste("hello"));
         assert_eq!(stack.top_kind(), Some(ModalKind::Help));
     }

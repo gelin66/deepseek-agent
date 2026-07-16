@@ -19,10 +19,11 @@
 //! - **Drafting is not ratifying.** The caller shows the rendered preview and
 //!   still requires the explicit ratify keypress before anything persists.
 
-use codewhale_config::{UntrustedDraftParse, UserConstitution, user_constitution::MAX_NOTES_LEN};
+use codewhale_config::{
+    Locale, UntrustedDraftParse, UserConstitution, user_constitution::MAX_NOTES_LEN,
+};
 
 use crate::llm_client::LlmClient;
-use crate::localization::Locale;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
 use super::{GuidedConstitutionDraft, autonomy_label};

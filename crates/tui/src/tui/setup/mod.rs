@@ -18,7 +18,7 @@ use ratatui::{
 };
 
 use crate::config::{Config, has_api_key};
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::prompts::{
     BASE_PROMPT_OVERRIDE_OPT_IN_ENV, CONSTITUTION_OVERRIDE_FILE, base_prompt_override_opt_in,
@@ -29,11 +29,10 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_panel_scroll_rail, render_underwater_surface,
 };
-
 use codewhale_config::{
     AutonomyPreference, ConstitutionAuthoring, ConstitutionChoice, ConstitutionSource,
-    ConstitutionValidity, InheritedConfigFacts, RuntimePostureSource, SetupState, SetupStep,
-    StepEntry, StepStatus, UserConstitution, UserConstitutionLoad,
+    ConstitutionValidity, InheritedConfigFacts, Locale, RuntimePostureSource, SetupState,
+    SetupStep, StepEntry, StepStatus, UserConstitution, UserConstitutionLoad,
     user_constitution::MAX_NOTES_LEN,
 };
 

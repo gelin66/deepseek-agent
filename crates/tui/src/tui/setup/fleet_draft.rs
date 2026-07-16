@@ -25,8 +25,8 @@ use std::path::Path;
 
 use crate::fleet::profile::{FleetProfileDraft, UntrustedProfileParse};
 use crate::llm_client::LlmClient;
-use crate::localization::Locale;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
+use codewhale_config::Locale;
 
 /// Output budget for the one-shot profile draft. Profiles are small; this is
 /// a real ceiling on a misbehaving provider, not a target.

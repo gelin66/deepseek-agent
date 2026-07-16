@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn working_band_names_run_count_without_key_chorus() {
         let mut app = test_app();
-        app.ui_locale = crate::localization::Locale::En;
+        app.ui_locale = codewhale_config::Locale::En;
         app.is_loading = true;
         app.turn_started_at = Some(Instant::now() - Duration::from_secs(12));
         let mut active = ActiveCell::new();

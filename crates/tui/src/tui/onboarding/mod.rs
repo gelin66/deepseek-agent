@@ -371,8 +371,8 @@ pub fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::localization::Locale;
     use crate::tui::app::{App, TuiOptions};
+    use codewhale_config::Locale;
     use std::path::PathBuf;
 
     fn test_app_with_locale(locale: Locale) -> App {

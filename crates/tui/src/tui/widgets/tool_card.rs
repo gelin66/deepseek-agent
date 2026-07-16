@@ -23,7 +23,7 @@
 //! module is the vocabulary, not the layout engine. Keeping it small means
 //! a future visual refresh only has to touch the constants here.
 
-use crate::localization::Locale;
+use codewhale_config::Locale;
 
 /// Tool family — the verb the agent is performing. Used to pick a glyph
 /// and label for the card header.
@@ -336,7 +336,8 @@ mod tests {
         tool_display_label_for_name, tool_family_for_name, tool_family_for_title,
         tool_header_summary_for_name,
     };
-    use crate::localization::{Locale, MessageId, tr};
+    use crate::localization::{MessageId, tr};
+    use codewhale_config::Locale;
 
     #[test]
     fn legacy_titles_route_to_expected_families() {

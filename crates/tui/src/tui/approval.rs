@@ -27,11 +27,11 @@
 //! happen *before* the view is constructed (see `tui/ui.rs`); this
 //! module always assumes the user is being asked.
 
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::sandbox::SandboxPolicy;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, ElevationWidget, Renderable};
-use codewhale_config::ToolAskRule;
+use codewhale_config::{Locale, ToolAskRule};
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use serde_json::Value;

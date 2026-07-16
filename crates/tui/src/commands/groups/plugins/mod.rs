@@ -178,8 +178,8 @@ fn default_codewhale_tools_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::localization::Locale;
     use crate::tui::app::{App, TuiOptions};
+    use codewhale_config::Locale;
     use tempfile::TempDir;
 
     fn create_test_app_with_plugin_dir(plugin_dir: &std::path::Path) -> (App, TempDir) {

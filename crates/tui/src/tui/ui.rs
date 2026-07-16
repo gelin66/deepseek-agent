@@ -6146,7 +6146,7 @@ async fn handle_setup_constitution_model_draft(
     config: &Config,
     draft: crate::tui::setup::GuidedConstitutionDraft,
     freeform_note: Option<String>,
-    locale: crate::localization::Locale,
+    locale: codewhale_config::Locale,
 ) {
     // Spawn the draft off the event loop (same pattern as the fleet drafter,
     // #3757 review): awaiting it inline parked the whole TUI for up to the
@@ -6170,7 +6170,7 @@ async fn handle_setup_constitution_model_draft(
     let spawn_label = model_label.clone();
     let request_gen = app.next_draft_gen();
     app.status_message = Some(match locale {
-        crate::localization::Locale::ZhHans => {
+        codewhale_config::Locale::ZhHans => {
             format!(
                 "{model_label} 正在起草宪法……（最多 {}s）",
                 DRAFT_TIMEOUT.as_secs()
@@ -6211,7 +6211,7 @@ async fn handle_setup_constitution_model_draft(
 fn deliver_constitution_draft_result(
     app: &mut App,
     model_label: String,
-    locale: crate::localization::Locale,
+    locale: codewhale_config::Locale,
     outcome: Result<Box<codewhale_config::UserConstitution>, String>,
 ) {
     match outcome {
@@ -6253,7 +6253,7 @@ async fn handle_fleet_profile_model_draft(
     model: String,
     provider: Option<String>,
     reasoning_effort: Option<String>,
-    locale: crate::localization::Locale,
+    locale: codewhale_config::Locale,
 ) {
     // The route the operator actually picked at `m`-press time (#4093). A
     // model draft always comes back `provider: None` (the untrusted gate
@@ -6288,7 +6288,7 @@ async fn handle_fleet_profile_model_draft(
     let request_gen = app.next_draft_gen();
     let workspace = app.workspace.clone();
     app.status_message = Some(match locale {
-        crate::localization::Locale::ZhHans => {
+        codewhale_config::Locale::ZhHans => {
             format!(
                 "{model_label} 正在起草配置……（最多 {}s）",
                 DRAFT_TIMEOUT.as_secs()
@@ -6353,7 +6353,7 @@ fn deliver_fleet_draft_result(
     picked_route: Option<(String, String)>,
     reasoning_effort: Option<String>,
     outcome: Result<Box<crate::fleet::profile::FleetProfileDraft>, String>,
-    locale: crate::localization::Locale,
+    locale: codewhale_config::Locale,
 ) {
     match outcome {
         Ok(draft) => {
@@ -6375,7 +6375,7 @@ fn deliver_fleet_draft_result(
                 app.view_stack.push_boxed(boxed);
                 if installed {
                     app.status_message = Some(match locale {
-                        crate::localization::Locale::ZhHans => {
+                        codewhale_config::Locale::ZhHans => {
                             format!("{model_label} 已起草配置。请查看下方 TOML，然后按 g 批准。")
                         }
                         _ => format!(
@@ -6387,7 +6387,7 @@ fn deliver_fleet_draft_result(
         }
         Err(reason) => {
             app.status_message = Some(match locale {
-                crate::localization::Locale::ZhHans => {
+                codewhale_config::Locale::ZhHans => {
                     format!("{model_label} 未能起草配置（{reason}）。按 Enter 仍会插入编写提示。")
                 }
                 _ => format!(
@@ -11412,7 +11412,7 @@ async fn handle_view_events(
                 txn.stage(target.clone(), draft.render_toml().into_bytes());
                 match txn.commit() {
                     Ok(()) => {
-                        let zh = app.ui_locale == crate::localization::Locale::ZhHans;
+                        let zh = app.ui_locale == codewhale_config::Locale::ZhHans;
                         app.add_message(HistoryCell::System {
                             content: if zh {
                                 format!("已批准并保存 Fleet 配置：{}", target.display())
@@ -11428,7 +11428,7 @@ async fn handle_view_events(
                     }
                     Err(err) => {
                         app.status_message =
-                            Some(if app.ui_locale == crate::localization::Locale::ZhHans {
+                            Some(if app.ui_locale == codewhale_config::Locale::ZhHans {
                                 format!("无法保存 Fleet 配置：{err:#}")
                             } else {
                                 format!("Fleet profile could not be saved: {err:#}")

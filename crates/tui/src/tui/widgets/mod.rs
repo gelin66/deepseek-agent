@@ -30,7 +30,7 @@ use std::time::Duration;
 use crate::commands;
 #[cfg(test)]
 use crate::config::ApiProvider;
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::palette;
 #[cfg(test)]
 use crate::provider_lake::all_catalog_models_for_provider;
@@ -42,6 +42,7 @@ use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolS
 use crate::tui::scrolling::TranscriptLineMeta;
 use crate::tui::ui_text::{char_display_width, text_display_width};
 use crate::tui::underwater::ShellPhase;
+use codewhale_config::Locale;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -3344,7 +3345,7 @@ pub(crate) fn slash_completion_hints(
     input: &str,
     limit: usize,
     cached_skills: &[(String, String)],
-    locale: crate::localization::Locale,
+    locale: codewhale_config::Locale,
     workspace: Option<&std::path::Path>,
     api_provider: ApiProvider,
 ) -> Vec<SlashMenuEntry> {
@@ -3363,7 +3364,7 @@ pub(crate) fn slash_completion_hints_with_model_candidates(
     input: &str,
     limit: usize,
     cached_skills: &[(String, String)],
-    locale: crate::localization::Locale,
+    locale: codewhale_config::Locale,
     workspace: Option<&std::path::Path>,
     model_candidates: &[String],
 ) -> Vec<SlashMenuEntry> {
@@ -3734,7 +3735,7 @@ fn push_command_entry(
     name: &str,
     command_key: &str,
     prefix_lower: &str,
-    locale: crate::localization::Locale,
+    locale: codewhale_config::Locale,
     user_commands: &[&commands::user_registry::UserCommandMetadata],
 ) {
     let user_command = user_commands
@@ -4118,7 +4119,6 @@ mod tests {
         wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
     };
     use crate::config::{ApiProvider, Config};
-    use crate::localization::Locale;
     use crate::palette;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{
@@ -4128,6 +4128,7 @@ mod tests {
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus,
     };
     use crate::tui::scrolling::{TranscriptLineMeta, TranscriptScroll};
+    use codewhale_config::Locale;
     use ratatui::{
         buffer::Buffer,
         layout::Rect,

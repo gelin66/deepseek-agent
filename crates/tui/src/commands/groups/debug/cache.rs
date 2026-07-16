@@ -4,9 +4,10 @@ use std::time::Instant;
 
 use super::CommandResult;
 use crate::client::{CacheWarmupKey, PromptInspection, inspect_prompt_for_request};
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::models::MessageRequest;
 use crate::tui::app::{App, AppAction, TurnCacheRecord};
+use codewhale_config::Locale;
 
 /// Show per-turn DeepSeek prefix-cache telemetry for the last N turns (#263).
 ///

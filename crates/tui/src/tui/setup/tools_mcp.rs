@@ -8,11 +8,12 @@
 use std::path::{Path, PathBuf};
 
 use crate::config::Config;
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::mcp::{McpConfig, McpManagerSnapshot, McpServerConfig, McpServerSnapshot};
 use crate::tui::app::App;
 use crate::tui::hotbar::actions::HotbarActionCategory;
 use crate::utils::display_path;
+use codewhale_config::Locale;
 
 /// Per-surface readiness vocabulary shared with setup summaries and doctor-like
 /// copy. These never block first-run; they only describe optional power tools.
@@ -592,10 +593,10 @@ fn count_manifest_plugins(dir: &Path) -> (usize, usize) {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::localization::Locale;
     use crate::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
     use crate::tui::app::TuiOptions;
     use crate::tui::hotbar::actions::HotbarActionRegistry;
+    use codewhale_config::Locale;
     use tempfile::TempDir;
 
     fn test_app(

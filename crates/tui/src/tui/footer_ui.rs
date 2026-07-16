@@ -3,7 +3,7 @@ use std::time::Instant;
 #[cfg(test)]
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::{Locale, MessageId};
+use crate::localization::MessageId;
 use crate::palette;
 use crate::tools::subagent::SubAgentStatus;
 use crate::tui::app::{App, TaskPanelEntryKind};
@@ -21,6 +21,7 @@ use crate::tui::ui_text::{concise_shell_command_label, truncate_line_to_width};
 use crate::tui::widgets::tool_card::tool_activity_label_for_name;
 use crate::tui::widgets::{FooterProps, FooterToast, FooterWidget, Renderable};
 use crate::tui::workspace_context;
+use codewhale_config::Locale;
 
 pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     if area.width == 0 || area.height == 0 {

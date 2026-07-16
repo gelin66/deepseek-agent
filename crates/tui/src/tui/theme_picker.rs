@@ -24,7 +24,7 @@ use ratatui::{
     widgets::{Paragraph, Widget},
 };
 
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::palette::{SELECTABLE_THEMES, ThemeId, UiTheme};
 use crate::tui::settings_picker::{
     PickerNavResult, SettingAvailability, SettingOption, SettingValues, SettingsPickerController,
@@ -34,6 +34,7 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_panel_scroll_rail, render_underwater_surface,
 };
+use codewhale_config::Locale;
 
 pub struct ThemePickerView {
     controller: SettingsPickerController,

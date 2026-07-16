@@ -3,88 +3,9 @@
 //! This intentionally covers UI chrome only. It does not change model prompts,
 //! model output language, provider behavior, or media payload semantics.
 use std::borrow::Cow;
+
+use codewhale_config::Locale;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Locale {
-    En,
-    Ja,
-    ZhHans,
-    ZhHant,
-    PtBr,
-    Es419,
-    Vi,
-    Ko,
-}
-
-/// Human-facing product default used when the user has not selected a locale
-/// and no supported system locale can be resolved.
-pub const DEFAULT_LOCALE: Locale = Locale::ZhHans;
-
-impl Locale {
-    pub fn tag(self) -> &'static str {
-        match self {
-            Self::En => "en",
-            Self::Ja => "ja",
-            Self::ZhHans => "zh-Hans",
-            Self::ZhHant => "zh-Hant",
-            Self::PtBr => "pt-BR",
-            Self::Es419 => "es-419",
-            Self::Vi => "vi",
-            Self::Ko => "ko",
-        }
-    }
-
-    pub fn translation_target_name(self) -> &'static str {
-        match self {
-            Self::En => "English",
-            Self::Ja => "Japanese (日本語)",
-            Self::ZhHans => "Simplified Chinese (简体中文)",
-            Self::ZhHant => "Traditional Chinese (繁體中文)",
-            Self::PtBr => "Brazilian Portuguese (Português do Brasil)",
-            Self::Es419 => "Latin American Spanish (Español latinoamericano)",
-            Self::Vi => "Vietnamese (Tiếng Việt)",
-            Self::Ko => "Korean (한국어)",
-        }
-    }
-
-    /// Every locale the TUI exposes in pickers and runtime resolution.
-    #[allow(dead_code)]
-    pub fn shipped() -> &'static [Self] {
-        &[
-            Self::En,
-            Self::Ja,
-            Self::ZhHans,
-            Self::ZhHant,
-            Self::PtBr,
-            Self::Es419,
-            Self::Vi,
-            Self::Ko,
-        ]
-    }
-
-    /// Complete UI packs held to `en.json` parity. `zh-Hant` is intentionally
-    /// excluded — it remains selectable but falls back to English for missing
-    /// keys until the pack catches up (#4057).
-    #[allow(dead_code)]
-    pub fn shipped_complete() -> &'static [Self] {
-        &[
-            Self::En,
-            Self::Ja,
-            Self::ZhHans,
-            Self::PtBr,
-            Self::Es419,
-            Self::Vi,
-            Self::Ko,
-        ]
-    }
-
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn is_partial_pack(self) -> bool {
-        matches!(self, Self::ZhHant)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageId {
@@ -1945,14 +1866,6 @@ pub fn hidden_translation_failed(locale: Locale) -> &'static str {
     }
 }
 
-pub fn normalize_configured_locale(input: &str) -> Option<&'static str> {
-    let normalized = normalize_locale_input(input);
-    if matches!(normalized.as_str(), "" | "auto" | "system") {
-        return Some("auto");
-    }
-    parse_locale(&normalized).map(Locale::tag)
-}
-
 /// Human-facing list of accepted `locale` setting values, derived from the
 /// shipped packs so config hints and error messages cannot go stale as new
 /// locales land. `separator` is `", "` for prose and `" | "` for hints.
@@ -1964,30 +1877,6 @@ pub fn configured_locale_values(separator: &str) -> String {
         out.push_str(locale.tag());
     }
     out
-}
-
-pub fn resolve_locale(setting: &str) -> Locale {
-    resolve_locale_with_env(setting, |key| std::env::var(key).ok())
-}
-
-pub fn resolve_locale_with_env<F>(setting: &str, env: F) -> Locale
-where
-    F: Fn(&str) -> Option<String>,
-{
-    let normalized = normalize_locale_input(setting);
-    if !matches!(normalized.as_str(), "" | "auto" | "system") {
-        return parse_locale(&normalized).unwrap_or(DEFAULT_LOCALE);
-    }
-
-    for key in ["LC_ALL", "LC_MESSAGES", "LANG"] {
-        if let Some(value) = env(key)
-            && let Some(locale) = parse_locale(&normalize_locale_input(&value))
-        {
-            return locale;
-        }
-    }
-
-    DEFAULT_LOCALE
 }
 
 #[allow(dead_code)]
@@ -2019,51 +1908,6 @@ pub fn truncate_to_width(text: &str, max_width: usize) -> String {
     out
 }
 
-fn normalize_locale_input(input: &str) -> String {
-    input
-        .split('.')
-        .next()
-        .unwrap_or(input)
-        .split('@')
-        .next()
-        .unwrap_or(input)
-        .trim()
-        .replace('_', "-")
-        .to_lowercase()
-}
-
-fn parse_locale(value: &str) -> Option<Locale> {
-    if value == "c" || value == "posix" || value.starts_with("en") {
-        return Some(Locale::En);
-    }
-    if value.starts_with("ja") {
-        return Some(Locale::Ja);
-    }
-    if value.starts_with("zh") {
-        if value.contains("hant")
-            || value.contains("-tw")
-            || value.contains("-hk")
-            || value.contains("-mo")
-        {
-            return Some(Locale::ZhHant);
-        }
-        return Some(Locale::ZhHans);
-    }
-    if value.starts_with("pt") || value == "br" {
-        return Some(Locale::PtBr);
-    }
-    if value.starts_with("es") {
-        return Some(Locale::Es419);
-    }
-    if value.starts_with("vi") {
-        return Some(Locale::Vi);
-    }
-    if value.starts_with("ko") {
-        return Some(Locale::Ko);
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2072,51 +1916,6 @@ mod tests {
         layout::Rect,
         widgets::{Paragraph, Widget, Wrap},
     };
-
-    #[test]
-    fn locale_setting_normalizes_supported_tags() {
-        assert_eq!(normalize_configured_locale("auto"), Some("auto"));
-        assert_eq!(normalize_configured_locale("en_US.UTF-8"), Some("en"));
-        assert_eq!(normalize_configured_locale("ja_JP.UTF-8"), Some("ja"));
-        assert_eq!(normalize_configured_locale("zh-CN"), Some("zh-Hans"));
-        assert_eq!(normalize_configured_locale("zh-TW"), Some("zh-Hant"));
-        assert_eq!(normalize_configured_locale("zh_HK.UTF-8"), Some("zh-Hant"));
-        assert_eq!(normalize_configured_locale("pt"), Some("pt-BR"));
-        assert_eq!(normalize_configured_locale("pt-PT"), Some("pt-BR"));
-        assert_eq!(normalize_configured_locale("es"), Some("es-419"));
-        assert_eq!(normalize_configured_locale("es-MX"), Some("es-419"));
-    }
-
-    #[test]
-    fn locale_resolution_uses_config_then_environment_then_product_default() {
-        assert_eq!(
-            resolve_locale_with_env("ja", |_| Some("pt_BR.UTF-8".to_string())),
-            Locale::Ja
-        );
-        assert_eq!(
-            resolve_locale_with_env("en", |_| Some("zh_CN.UTF-8".to_string())),
-            Locale::En,
-            "an explicit user locale must win over the environment"
-        );
-        assert_eq!(
-            resolve_locale_with_env("auto", |key| {
-                (key == "LANG").then(|| "zh_CN.UTF-8".to_string())
-            }),
-            Locale::ZhHans
-        );
-        assert_eq!(
-            resolve_locale_with_env("auto", |key| {
-                (key == "LANG").then(|| "zh_TW.UTF-8".to_string())
-            }),
-            Locale::ZhHant
-        );
-        assert_eq!(resolve_locale_with_env("auto", |_| None), Locale::ZhHans);
-        assert_eq!(
-            resolve_locale_with_env("auto", |_| Some("ar_EG.UTF-8".to_string())),
-            Locale::ZhHans,
-            "unsupported environment locales fall back to the product default"
-        );
-    }
 
     pub fn missing_message_ids(locale: Locale) -> Vec<MessageId> {
         ALL_MESSAGE_IDS
@@ -2304,15 +2103,6 @@ mod tests {
                 "zh-Hant should translate {id:?}"
             );
         }
-    }
-
-    #[test]
-    fn unsupported_configured_locale_falls_back_to_product_default() {
-        assert_eq!(
-            resolve_locale_with_env("ar", |_| None),
-            Locale::ZhHans,
-            "unsupported configured locales must not reintroduce an English default"
-        );
     }
 
     #[test]

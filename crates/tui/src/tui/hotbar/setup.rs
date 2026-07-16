@@ -10,13 +10,14 @@ use ratatui::{
 };
 
 use crate::config::Config;
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::App;
 use crate::tui::views::{
     ActionHint, EmptyState, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface,
 };
+use codewhale_config::Locale;
 
 #[cfg(test)]
 use super::actions::HotbarRecommendation;
@@ -984,9 +985,10 @@ fn compact_action_id(action_id: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::{ApiProvider, Config};
-    use crate::localization::{Locale, MessageId, tr};
+    use crate::localization::{MessageId, tr};
     use crate::tui::app::TuiOptions;
     use crate::tui::hotbar::HotbarActionRegistry;
+    use codewhale_config::Locale;
     use crossterm::event::KeyModifiers;
     use std::path::PathBuf;
 

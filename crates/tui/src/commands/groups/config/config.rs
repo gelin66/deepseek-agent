@@ -16,7 +16,6 @@ use crate::config_persistence::{
     persist_unset_root_key,
 };
 use crate::config_ui::{ConfigUiMode, parse_mode};
-use crate::localization::resolve_locale;
 use crate::settings::Settings;
 use crate::tui::app::{
     App, AppAction, AppMode, OnboardingState, ReasoningEffort, SidebarFocus, VimMode,
@@ -24,6 +23,7 @@ use crate::tui::app::{
 use crate::tui::approval::ApprovalMode;
 use crate::tui::ui::{SidebarRenderState, sidebar_render_state};
 use anyhow::Result;
+use codewhale_config::resolve_locale;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -182,16 +182,16 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
     if let Some(subagent_key) = key.strip_prefix("subagents.") {
         return show_subagents_setting(app, subagent_key);
     }
-    fn locale_display(l: crate::localization::Locale) -> &'static str {
+    fn locale_display(l: codewhale_config::Locale) -> &'static str {
         match l {
-            crate::localization::Locale::En => "en",
-            crate::localization::Locale::ZhHans => "zh-Hans",
-            crate::localization::Locale::ZhHant => "zh-Hant",
-            crate::localization::Locale::Ja => "ja",
-            crate::localization::Locale::PtBr => "pt-BR",
-            crate::localization::Locale::Es419 => "es-419",
-            crate::localization::Locale::Vi => "vi",
-            crate::localization::Locale::Ko => "ko",
+            codewhale_config::Locale::En => "en",
+            codewhale_config::Locale::ZhHans => "zh-Hans",
+            codewhale_config::Locale::ZhHant => "zh-Hant",
+            codewhale_config::Locale::Ja => "ja",
+            codewhale_config::Locale::PtBr => "pt-BR",
+            codewhale_config::Locale::Es419 => "es-419",
+            codewhale_config::Locale::Vi => "vi",
+            codewhale_config::Locale::Ko => "ko",
         }
     }
     fn density_display(d: crate::tui::app::ComposerDensity) -> &'static str {

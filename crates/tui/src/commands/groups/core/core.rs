@@ -731,7 +731,7 @@ mod tests {
             initial_input: None,
         };
         let mut app = App::new(options, &Config::default());
-        app.ui_locale = crate::localization::Locale::En;
+        app.ui_locale = codewhale_config::Locale::En;
         app.api_provider = crate::config::ApiProvider::Deepseek;
         app.model = "deepseek-v4-pro".to_string();
         app.auto_model = false;
@@ -1481,7 +1481,7 @@ mod tests {
 
     #[test]
     fn home_dashboard_localizes_in_zh_hans() {
-        use crate::localization::Locale;
+        use codewhale_config::Locale;
         let mut app = create_test_app();
         app.ui_locale = Locale::ZhHans;
         let result = home_dashboard(&mut app);

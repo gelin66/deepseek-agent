@@ -27,7 +27,7 @@ use crate::config::Config;
 use crate::fleet::profile::AgentProfile;
 use crate::fleet::roster::{FleetRoster, ProfileOrigin};
 use crate::fleet::worker_runtime::roster_member_agent_type;
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::App;
 use crate::tui::views::{
@@ -35,6 +35,7 @@ use crate::tui::views::{
     truncate_view_text,
 };
 use crate::worker_profile::{ShellPolicy, WorkerRuntimeProfile};
+use codewhale_config::Locale;
 
 /// The live session route — the operator the roster works for. Read once at
 /// open, the same way [`super::fleet_setup::FleetSetupSnapshot`] snapshots it.

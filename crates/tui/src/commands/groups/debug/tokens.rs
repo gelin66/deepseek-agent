@@ -1,9 +1,10 @@
 //! Token/cost introspection and context commands.
 
 use crate::compaction::estimate_input_tokens_conservative;
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::models::SystemPrompt;
 use crate::tui::app::{App, AppAction};
+use codewhale_config::Locale;
 
 use super::CommandResult;
 

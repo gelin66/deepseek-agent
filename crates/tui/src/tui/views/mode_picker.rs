@@ -12,13 +12,13 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::Locale;
 use crate::palette;
 use crate::tui::app::AppMode;
 use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
     render_modal_footer, render_modal_surface,
 };
+use codewhale_config::Locale;
 
 // Operate remains parseable for restored sessions and explicit compatibility
 // inputs, but it is not a truthful interactive choice until Workflow dispatch

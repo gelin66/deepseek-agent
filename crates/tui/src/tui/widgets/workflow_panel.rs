@@ -21,10 +21,11 @@ use ratatui::widgets::{Paragraph, Widget};
 use serde_json::{Value, json};
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::widgets::Renderable;
+use codewhale_config::Locale;
 
 /// Maximum worker rows rendered under the selected phase.
 const MAX_VISIBLE_ROWS: usize = 8;

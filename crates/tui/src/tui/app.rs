@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use codewhale_config::{ProviderChain, route::RouteLimits};
+use codewhale_config::{Locale, ProviderChain, resolve_locale, route::RouteLimits};
 
 use crate::artifacts::ArtifactRecord;
 use crate::client::{CacheWarmupKey, PromptInspection};
@@ -24,7 +24,7 @@ use crate::config_ui::ConfigUiMode;
 use crate::core::authority::{ModeSessionPrefs, base_policy_for_mode};
 use crate::core::events::TurnRoute;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
-use crate::localization::{Locale, MessageId, resolve_locale, tr};
+use crate::localization::{MessageId, tr};
 use crate::models::{Message, SystemPrompt, Tool};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
@@ -2270,7 +2270,7 @@ pub struct App {
             Option<(
                 u64,
                 String,
-                crate::localization::Locale,
+                codewhale_config::Locale,
                 Result<Box<codewhale_config::UserConstitution>, String>,
             )>,
         >,
@@ -3330,7 +3330,7 @@ impl App {
         let mut settings = Settings::load_persisted().unwrap_or_else(|_| Settings::default());
         settings.set("locale", tag)?;
         settings.save()?;
-        self.ui_locale = crate::localization::resolve_locale(&settings.locale);
+        self.ui_locale = resolve_locale(&settings.locale);
         self.needs_redraw = true;
         Ok(())
     }

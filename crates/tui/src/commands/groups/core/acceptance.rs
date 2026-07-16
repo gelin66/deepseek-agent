@@ -45,7 +45,7 @@ impl std::fmt::Debug for CoreCommandWorld {
 fn core_command_workspace(world: &mut CoreCommandWorld) {
     let tmpdir = TempDir::new().expect("core command TempDir");
     let mut app = create_test_app_with_tmpdir(&tmpdir);
-    app.ui_locale = crate::localization::Locale::En;
+    app.ui_locale = codewhale_config::Locale::En;
     app.api_provider = ApiProvider::Deepseek;
     app.model = "deepseek-v4-pro".to_string();
     app.auto_model = false;

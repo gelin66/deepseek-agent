@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{ApiProvider, expand_path, normalize_model_name};
-use crate::localization::{DEFAULT_LOCALE, normalize_configured_locale};
 use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
+use codewhale_config::{DEFAULT_LOCALE, normalize_configured_locale};
 
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 const TUI_PREFS_FILE_NAME: &str = "tui.toml";
@@ -1030,7 +1030,7 @@ impl Settings {
     }
 
     /// Get all settings as a displayable string
-    pub fn display(&self, locale: crate::localization::Locale) -> String {
+    pub fn display(&self, locale: codewhale_config::Locale) -> String {
         use crate::localization::{MessageId, tr};
         let mut lines = Vec::new();
         lines.push(tr(locale, MessageId::SettingsTitle).to_string());
@@ -2129,14 +2129,14 @@ mod tests {
     #[test]
     fn display_localizes_header_and_config_file_label() {
         let settings = Settings::default();
-        let en = settings.display(crate::localization::Locale::En);
+        let en = settings.display(codewhale_config::Locale::En);
         assert!(en.contains("Settings:"), "english header missing:\n{en}");
         assert!(
             en.contains("Config file:"),
             "english config label missing:\n{en}"
         );
 
-        let zh = settings.display(crate::localization::Locale::ZhHans);
+        let zh = settings.display(codewhale_config::Locale::ZhHans);
         assert!(zh.contains("设置"), "chinese header missing:\n{zh}");
         assert!(
             zh.contains("配置文件"),
@@ -3111,7 +3111,7 @@ mod tests {
             primary.exists(),
             "settings load should migrate to primary path"
         );
-        let display = loaded.display(crate::localization::Locale::En);
+        let display = loaded.display(codewhale_config::Locale::En);
         assert!(
             display.contains(&format!("Config file: {}", primary.display())),
             "settings display should surface the canonical codewhale path:\n{display}"
@@ -3151,7 +3151,7 @@ mod tests {
             primary.exists(),
             "legacy fallback should be copied into primary"
         );
-        let display = loaded.display(crate::localization::Locale::En);
+        let display = loaded.display(codewhale_config::Locale::En);
         assert!(
             display.contains(&format!("Config file: {}", primary.display())),
             "settings display should surface the canonical codewhale path:\n{display}"

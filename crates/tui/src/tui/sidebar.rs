@@ -9,8 +9,8 @@ use std::fmt::Write;
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
-use crate::localization::Locale;
 use crate::tui::app::HuntVerdict;
+use codewhale_config::Locale;
 
 use ratatui::{
     Frame,
@@ -3549,7 +3549,6 @@ mod tests {
         work_panel_empty_hint, work_panel_hover_texts, work_panel_lines,
     };
     use crate::config::Config;
-    use crate::localization::Locale;
     use crate::palette;
     use crate::palette::PaletteMode;
     use crate::tools::plan::StepStatus;
@@ -3563,6 +3562,7 @@ mod tests {
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
     };
     use crate::tui::spinner::{BRAILLE_SPINNER_FRAME_MS, LIVE_MARKER_DELAY_MS, LIVE_STATIC_MARKER};
+    use codewhale_config::Locale;
     use ratatui::{Terminal, backend::TestBackend, text::Line};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};

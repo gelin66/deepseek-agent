@@ -305,10 +305,11 @@ fn suggest_command_names(input: &str, limit: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::{ApiProvider, Config};
-    use crate::localization::{Locale, MessageId};
+    use crate::localization::MessageId;
     use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
     use crate::tools::todo::TodoStatus;
     use crate::tui::app::{App, AppAction, SidebarFocus, TuiOptions};
+    use codewhale_config::Locale;
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
     use std::sync::MutexGuard;

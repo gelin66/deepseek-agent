@@ -15,7 +15,7 @@ use crate::tui::app::App;
 /// Locale options shown in the picker. Order matches the keyboard hotkeys.
 /// Each entry is `(hotkey, settings_tag, native_name, english_label)`.
 /// `settings_tag` is what `Settings::set("locale", …)` accepts and what
-/// `localization::Locale` resolves on next read.
+/// `codewhale_config::Locale` resolves on next read.
 pub const LANGUAGE_OPTIONS: &[(char, &str, &str, &str)] = &[
     ('1', "auto", "Auto-detect", "(LC_ALL / LANG)"),
     ('2', "en", "English", ""),
@@ -94,7 +94,7 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::localization::Locale;
+    use codewhale_config::Locale;
 
     /// Every locale we ship translations for must be offered in the picker,
     /// otherwise the footer advertises hotkeys that select nothing and users

@@ -15,7 +15,7 @@ use ratatui::{
 };
 
 use crate::compaction::estimate_input_tokens_conservative;
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::models::SystemPrompt;
 use crate::palette;
 use crate::session_manager::SessionContextReference;
@@ -26,6 +26,7 @@ use crate::tui::views::{
     render_underwater_surface,
 };
 use crate::utils::estimate_message_chars;
+use codewhale_config::Locale;
 
 /// Marker used by per-turn working-set metadata. Replicated here so the
 /// context inspector can distinguish stable prompt blocks from volatile
@@ -730,7 +731,7 @@ mod tests {
     use crate::tui::history::HistoryCell;
     use std::path::PathBuf;
 
-    use crate::localization::Locale;
+    use codewhale_config::Locale;
 
     fn test_app() -> App {
         let mut app = App::new(

@@ -3842,7 +3842,8 @@ fn status_classifier_does_not_paint_negated_success_green() {
 
 #[test]
 fn onboarding_provider_copy_is_provider_neutral_in_en() {
-    use crate::localization::{Locale, MessageId, tr};
+    use crate::localization::{MessageId, tr};
+    use codewhale_config::Locale;
 
     let title = tr(Locale::En, MessageId::OnboardProviderTitle);
     let blurb = tr(Locale::En, MessageId::OnboardProviderBlurb);

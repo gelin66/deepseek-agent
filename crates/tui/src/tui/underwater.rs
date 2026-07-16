@@ -18,12 +18,13 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::tui::{
     app::{App, AppMode},
     approval::ApprovalMode,
     views::ModalKind,
 };
+use codewhale_config::Locale;
 
 /// Responsive density tier. It changes how much truth is shown, never the
 /// underlying state grammar.

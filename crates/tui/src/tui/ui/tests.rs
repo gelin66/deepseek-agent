@@ -1972,7 +1972,7 @@ fn create_test_app() -> App {
     let mut app = App::new(options, &Config::default());
     // Pin locale and currency for deterministic tests regardless of host locale.
     app.cost_currency = crate::pricing::CostCurrency::Usd;
-    app.ui_locale = crate::localization::Locale::En;
+    app.ui_locale = codewhale_config::Locale::En;
     // Keep transcript tests independent of a concurrently swapped persisted
     // settings home. Tests for hidden reasoning opt out explicitly.
     app.show_thinking = true;
@@ -5291,7 +5291,7 @@ fn hotbar_dispatches_route_switch_slot() {
     let route_metadata = app
         .hotbar_actions
         .iter()
-        .map(|action| action.metadata(crate::localization::Locale::En))
+        .map(|action| action.metadata(codewhale_config::Locale::En))
         .find(|metadata| metadata.category == HotbarActionCategory::Route)
         .expect("test app should register at least the active provider route");
     let route_id = route_metadata.id.clone();
@@ -13478,7 +13478,7 @@ fn completed_turn_notification_truncates_long_text() {
 #[test]
 fn completed_turn_notification_leads_with_user_locale() {
     let mut app = create_test_app();
-    app.ui_locale = crate::localization::Locale::Ja;
+    app.ui_locale = codewhale_config::Locale::Ja;
     let msg = crate::tui::notifications::completed_turn_message(
         &app,
         "完了しました。",
@@ -13492,7 +13492,7 @@ fn completed_turn_notification_leads_with_user_locale() {
 #[test]
 fn subagent_completion_notification_uses_summary_line_not_sentinel() {
     let msg = crate::tui::notifications::subagent_completion_message(
-        crate::localization::Locale::En,
+        codewhale_config::Locale::En,
         "agent_live",
         "Finished the docs audit.\n<codewhale:subagent.done>{}</codewhale:subagent.done>",
         false,
@@ -13509,7 +13509,7 @@ fn subagent_completion_notification_uses_summary_line_not_sentinel() {
 #[test]
 fn subagent_completion_notification_can_include_elapsed_summary() {
     let msg = crate::tui::notifications::subagent_completion_message(
-        crate::localization::Locale::En,
+        codewhale_config::Locale::En,
         "agent_live",
         "",
         true,

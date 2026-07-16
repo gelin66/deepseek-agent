@@ -10,12 +10,12 @@ use serde_json::Value;
 
 use crate::commands;
 use crate::config::{Config, StatusItem, normalize_model_name};
-use crate::localization::{normalize_configured_locale, resolve_locale};
 use crate::settings::Settings;
 use crate::tui::app::{
     App, AppMode, ComposerDensity, ReasoningEffort, SidebarFocus, TranscriptSpacing,
 };
 use crate::tui::approval::ApprovalMode;
+use codewhale_config::{normalize_configured_locale, resolve_locale};
 
 #[cfg(feature = "web")]
 use schemaui::web::session::{ServeOptions, WebSessionBuilder, bind_session};

@@ -145,8 +145,8 @@ fn collapse_home_prefix(path: &std::path::Path) -> String {
 mod tests {
     use super::*;
     use crate::config::{ApiProvider, Config};
-    use crate::localization::Locale;
     use crate::tui::app::TuiOptions;
+    use codewhale_config::Locale;
     use std::path::PathBuf;
 
     fn test_app_with_locale(locale: Locale) -> App {

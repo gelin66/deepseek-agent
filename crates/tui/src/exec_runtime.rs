@@ -1035,7 +1035,7 @@ fn runtime_system_prompt(
     append_system_prompt: Option<String>,
     tool_mode: bool,
 ) -> RuntimeSystemPrompt {
-    let locale = crate::localization::resolve_locale(&settings.locale);
+    let locale = codewhale_config::resolve_locale(&settings.locale);
     let mut instructions = config
         .instructions_paths()
         .into_iter()

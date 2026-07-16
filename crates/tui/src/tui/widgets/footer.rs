@@ -32,9 +32,10 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::{Locale, MessageId, tr};
+use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, AppMode, SidebarFocus};
+use codewhale_config::Locale;
 
 use super::Renderable;
 
@@ -789,9 +790,9 @@ fn truncate_to_width(text: &str, max_width: usize) -> String {
 mod tests {
     use super::{FooterProps, FooterWidget, Renderable};
     use crate::config::Config;
-    use crate::localization::Locale;
     use crate::palette;
     use crate::tui::app::{App, AppMode, TuiOptions};
+    use codewhale_config::Locale;
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
@@ -908,7 +909,7 @@ mod tests {
         app.cumulative_turn_duration = std::time::Duration::from_secs(90);
 
         // Pin the locale to English so the assertion below is deterministic.
-        app.ui_locale = crate::localization::Locale::En;
+        app.ui_locale = codewhale_config::Locale::En;
         let props = idle_props_for(&app);
         let text: String = props
             .worked

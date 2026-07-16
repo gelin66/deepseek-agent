@@ -35,7 +35,7 @@ pub enum KeybindingSection {
 }
 
 impl KeybindingSection {
-    pub fn label(self, locale: crate::localization::Locale) -> Cow<'static, str> {
+    pub fn label(self, locale: codewhale_config::Locale) -> Cow<'static, str> {
         use crate::localization::{MessageId, tr};
         let id = match self {
             Self::Navigation => MessageId::HelpSectionNavigation,
@@ -408,7 +408,7 @@ mod tests {
             crate::localization::MessageId::KbThinkingPager
         );
         assert_eq!(
-            crate::localization::tr(crate::localization::Locale::En, ctrl_o.description_id,),
+            crate::localization::tr(codewhale_config::Locale::En, ctrl_o.description_id,),
             "Open Turn Inspector"
         );
     }
