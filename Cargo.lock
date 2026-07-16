@@ -929,6 +929,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-deepseek"
+version = "0.8.68"
+dependencies = [
+ "codewhale-runtime",
+ "serde_json",
+]
+
+[[package]]
 name = "codewhale-execpolicy"
 version = "0.8.68"
 dependencies = [
@@ -1078,6 +1086,7 @@ dependencies = [
  "clap_complete",
  "codewhale-build-support",
  "codewhale-config",
+ "codewhale-deepseek",
  "codewhale-execpolicy",
  "codewhale-lane",
  "codewhale-protocol",

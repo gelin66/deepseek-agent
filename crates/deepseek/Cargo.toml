@@ -1,0 +1,12 @@
+[package]
+name = "codewhale-deepseek"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Official DeepSeek request planning for CodeWhale"
+
+[dependencies]
+codewhale-runtime = { path = "../runtime", version = "0.8.68" }
+serde_json = { workspace = true, features = ["preserve_order"] }

@@ -1,17 +1,15 @@
 //! Pure request planning for the official DeepSeek OpenAI-format API.
 
 use std::collections::HashMap;
-use std::fmt;
 
-use codewhale_runtime::{
-    ModelMessage, ModelRequest, ReasoningEffort, SystemPrompt as RuntimeSystemPrompt,
+pub(crate) use codewhale_deepseek::{
+    ApiSurface, ChatPlanError, FimPlanError, RequestPlan, ResponseMode,
 };
-use serde_json::{Value, json};
+use codewhale_deepseek::{ChatPlanInput, PlannedTool, ReasoningMode, RuntimeChatPlanInput};
+use codewhale_runtime::ModelRequest;
 
 use crate::config::{ApiProvider, wire_model_for_provider};
 use crate::models::{ContentBlock, MessageRequest, Tool};
-
-pub(crate) const FIM_MODEL: &str = "deepseek-v4-pro";
 
 /// Resolve the official DeepSeek thinking switch for one request.
 ///
@@ -20,30 +18,7 @@ pub(crate) const FIM_MODEL: &str = "deepseek-v4-pro";
 /// provenance rule for tool calls: enabled responses must carry their original
 /// reasoning, while disabled responses legitimately omit it.
 pub(crate) fn thinking_enabled_for_request(effort: Option<&str>) -> bool {
-    DeepSeekReasoning::from_legacy(effort).thinking_enabled()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ApiSurface {
-    StandardChat,
-    StrictChat,
-    Fim,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ResponseMode {
-    NonStreaming,
-    Streaming,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct RequestPlan {
-    pub surface: ApiSurface,
-    pub url: String,
-    pub model: String,
-    pub body: Value,
-    pub response_mode: ResponseMode,
-    pub reasoning_replay_tokens: Option<u32>,
+    legacy_reasoning_mode(effort).thinking_enabled()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -56,115 +31,18 @@ pub(crate) struct ToolPlan {
     pub strict_fallback: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeepSeekReasoning {
-    Off,
-    Auto,
-    High,
-    Max,
-}
-
-impl DeepSeekReasoning {
-    fn from_legacy(effort: Option<&str>) -> Self {
-        match effort
-            .map(str::trim)
-            .map(str::to_ascii_lowercase)
-            .as_deref()
-        {
-            Some("off" | "disabled" | "none" | "false") => Self::Off,
-            Some("low" | "minimal" | "medium" | "mid" | "high" | "") => Self::High,
-            Some("xhigh" | "max" | "highest" | "ultracode") => Self::Max,
-            _ => Self::Auto,
-        }
-    }
-
-    fn from_runtime(effort: ReasoningEffort) -> Self {
-        match effort {
-            ReasoningEffort::Off => Self::Off,
-            ReasoningEffort::Auto => Self::Auto,
-            ReasoningEffort::Low | ReasoningEffort::Medium | ReasoningEffort::High => Self::High,
-            ReasoningEffort::Max => Self::Max,
-        }
-    }
-
-    fn thinking_enabled(self) -> bool {
-        self != Self::Off
+fn legacy_reasoning_mode(effort: Option<&str>) -> ReasoningMode {
+    match effort
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("off" | "disabled" | "none" | "false") => ReasoningMode::Off,
+        Some("low" | "minimal" | "medium" | "mid" | "high" | "") => ReasoningMode::High,
+        Some("xhigh" | "max" | "highest" | "ultracode") => ReasoningMode::Max,
+        _ => ReasoningMode::Auto,
     }
 }
-
-struct PlannedTool<'a> {
-    name: &'a str,
-    description: &'a str,
-    input_schema: &'a Value,
-}
-
-struct ChatPlanInput<'a> {
-    model: String,
-    messages: Vec<Value>,
-    max_tokens: u32,
-    response_mode: ResponseMode,
-    tools: Option<Vec<PlannedTool<'a>>>,
-    tool_choice: Option<Value>,
-    reasoning: DeepSeekReasoning,
-    temperature: Option<f32>,
-    top_p: Option<f32>,
-}
-
-/// A request cannot satisfy DeepSeek's exact history replay contract.
-///
-/// This is a local preflight error: callers must surface it without issuing an
-/// HTTP request or inventing replacement reasoning text.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ChatPlanError {
-    MissingReasoningContent {
-        message_index: usize,
-    },
-    AmbiguousReasoningContent {
-        message_index: usize,
-        block_count: usize,
-    },
-}
-
-impl fmt::Display for ChatPlanError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::MissingReasoningContent { message_index } => write!(
-                f,
-                "Invalid DeepSeek request: exact reasoning replay requires assistant message {message_index} to contain its original reasoning_content; HTTP request was not sent"
-            ),
-            Self::AmbiguousReasoningContent {
-                message_index,
-                block_count,
-            } => write!(
-                f,
-                "Invalid DeepSeek request: assistant message {message_index} contains {block_count} reasoning blocks, so the original single reasoning_content value cannot be reconstructed exactly; HTTP request was not sent"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ChatPlanError {}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FimPlanError {
-    RequiresOfficialDeepSeek,
-    InvalidMaxTokens,
-}
-
-impl fmt::Display for FimPlanError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::RequiresOfficialDeepSeek => {
-                f.write_str("FIM requires the official DeepSeek OpenAI-format API")
-            }
-            Self::InvalidMaxTokens => {
-                f.write_str("DeepSeek FIM max_tokens must be between 1 and 4096")
-            }
-        }
-    }
-}
-
-impl std::error::Error for FimPlanError {}
 
 /// Plan one official DeepSeek chat request and its exact wire tool catalog.
 ///
@@ -182,24 +60,21 @@ pub(crate) fn plan_tools(
         return None;
     }
 
-    let strict_requested = strict_enabled && tools.is_some_and(|tools| !tools.is_empty());
-    let strict_compatible = strict_requested
-        && tools.is_some_and(|tools| {
-            tools.iter().all(|tool| {
-                crate::tools::schema_sanitize::strict_schema_supported(&tool.input_schema)
-            })
-        });
+    let decision = codewhale_deepseek::plan_tool_surface(
+        strict_enabled,
+        tools.into_iter().flatten().map(|tool| &tool.input_schema),
+    );
     let mut planned_tools = tools.map(<[Tool]>::to_vec);
     if let Some(tools) = planned_tools.as_mut() {
         for tool in tools {
-            tool.strict = strict_compatible.then_some(true);
+            tool.strict = decision.strict_compatible.then_some(true);
         }
     }
 
     Some(ToolPlan {
-        surface: chat_surface(strict_compatible),
+        surface: decision.surface,
         tools: planned_tools,
-        strict_fallback: strict_requested && !strict_compatible,
+        strict_fallback: decision.strict_fallback,
     })
 }
 
@@ -237,9 +112,9 @@ pub(crate) fn plan_chat(
         tools
             .iter()
             .map(|tool| PlannedTool {
-                name: &tool.name,
-                description: &tool.description,
-                input_schema: &tool.input_schema,
+                name: super::to_api_tool_name(&tool.name),
+                description: tool.description.clone(),
+                input_schema: tool.input_schema.clone(),
             })
             .collect()
     });
@@ -247,7 +122,7 @@ pub(crate) fn plan_chat(
         .tool_choice
         .as_ref()
         .and_then(super::chat::map_tool_choice_for_chat);
-    plan_chat_core(
+    codewhale_deepseek::plan_chat(
         root,
         strict_enabled,
         ChatPlanInput {
@@ -257,7 +132,7 @@ pub(crate) fn plan_chat(
             response_mode,
             tools,
             tool_choice,
-            reasoning: DeepSeekReasoning::from_legacy(request.reasoning_effort.as_deref()),
+            reasoning: legacy_reasoning_mode(request.reasoning_effort.as_deref()),
             temperature: request.temperature,
             top_p: request.top_p,
         },
@@ -277,301 +152,35 @@ pub(crate) fn plan_runtime_chat(
     strict_enabled: bool,
     request: &ModelRequest,
 ) -> Result<Option<RequestPlan>, ChatPlanError> {
-    let Some(root) = official_root(provider, base_url) else {
+    let Some(root) = runtime_planner_root(provider, base_url, path_suffix) else {
         return Ok(None);
     };
-    if path_suffix.is_some() {
-        return Ok(None);
-    }
-
     let wire_model = wire_model_for_provider(provider, &request.model);
-    validate_runtime_reasoning_replay(request, &wire_model)?;
-    let response_mode = if request.streaming {
-        ResponseMode::Streaming
-    } else {
-        ResponseMode::NonStreaming
-    };
-    let messages = runtime_chat_messages(request, &wire_model);
-    let tools = (!request.tools.is_empty()).then(|| {
-        request
-            .tools
-            .iter()
-            .map(|tool| PlannedTool {
-                name: &tool.name,
-                description: &tool.description,
-                input_schema: &tool.input_schema,
-            })
-            .collect()
+    let max_tokens = request.max_output_tokens.unwrap_or_else(|| {
+        crate::models::max_output_tokens_for_model(&request.model).unwrap_or(4096)
     });
-    plan_chat_core(
-        root,
-        strict_enabled,
-        ChatPlanInput {
-            model: wire_model,
-            messages,
-            max_tokens: request.max_output_tokens.unwrap_or_else(|| {
-                crate::models::max_output_tokens_for_model(&request.model).unwrap_or(4096)
-            }),
-            response_mode,
-            tools,
-            tool_choice: None,
-            reasoning: DeepSeekReasoning::from_runtime(request.reasoning_effort),
-            temperature: None,
-            top_p: None,
+    let mut seen_tool_results: HashMap<String, super::chat::SeenToolResult> = HashMap::new();
+    codewhale_deepseek::plan_runtime_chat(
+        RuntimeChatPlanInput {
+            root: &root,
+            strict_enabled,
+            wire_model,
+            max_tokens,
+        },
+        request,
+        super::to_api_tool_name,
+        |tool_name, input, content, label| {
+            super::chat::compact_tool_result_for_wire(
+                tool_name,
+                input,
+                content,
+                label,
+                &mut seen_tool_results,
+            )
+            .content
         },
     )
     .map(Some)
-}
-
-fn plan_chat_core(
-    root: &str,
-    strict_enabled: bool,
-    input: ChatPlanInput<'_>,
-) -> Result<RequestPlan, ChatPlanError> {
-    let strict_requested =
-        strict_enabled && input.tools.as_ref().is_some_and(|tools| !tools.is_empty());
-    let strict_compatible = strict_requested
-        && input.tools.as_ref().is_some_and(|tools| {
-            tools.iter().all(|tool| {
-                crate::tools::schema_sanitize::strict_schema_supported(tool.input_schema)
-            })
-        });
-    let surface = chat_surface(strict_compatible);
-    let streaming = input.response_mode == ResponseMode::Streaming;
-    let mut body = json!({
-        "model": input.model,
-        "messages": input.messages,
-        "max_tokens": input.max_tokens,
-        "stream": streaming,
-    });
-    if streaming {
-        body["stream_options"] = json!({"include_usage": true});
-    }
-    if let Some(temperature) = input.temperature {
-        body["temperature"] = json!(temperature);
-    }
-    if let Some(top_p) = input.top_p {
-        body["top_p"] = json!(top_p);
-    }
-    if let Some(tools) = input.tools {
-        body["tools"] = Value::Array(
-            tools
-                .iter()
-                .map(|tool| planned_tool_to_chat(tool, strict_compatible))
-                .collect(),
-        );
-    }
-    if input.reasoning == DeepSeekReasoning::Off
-        && let Some(tool_choice) = input.tool_choice
-    {
-        body["tool_choice"] = tool_choice;
-    }
-    match input.reasoning {
-        DeepSeekReasoning::Off | DeepSeekReasoning::Auto => {}
-        DeepSeekReasoning::High => body["reasoning_effort"] = json!("high"),
-        DeepSeekReasoning::Max => body["reasoning_effort"] = json!("max"),
-    }
-    body["thinking"] = if input.reasoning.thinking_enabled() {
-        json!({ "type": "enabled" })
-    } else {
-        json!({ "type": "disabled" })
-    };
-    let model = body["model"]
-        .as_str()
-        .expect("planner model is a JSON string")
-        .to_owned();
-    validate_exact_reasoning_replay(&body, &model)?;
-    Ok(RequestPlan {
-        surface,
-        url: chat_url(root, surface),
-        model,
-        reasoning_replay_tokens: reasoning_replay_tokens(&body),
-        body,
-        response_mode: input.response_mode,
-    })
-}
-
-fn chat_surface(strict_compatible: bool) -> ApiSurface {
-    if strict_compatible {
-        ApiSurface::StrictChat
-    } else {
-        ApiSurface::StandardChat
-    }
-}
-
-fn planned_tool_to_chat(tool: &PlannedTool<'_>, strict: bool) -> Value {
-    let mut value = json!({
-        "type": "function",
-        "function": {
-            "name": super::to_api_tool_name(tool.name),
-            "description": tool.description,
-            "parameters": tool.input_schema,
-        }
-    });
-    if strict {
-        value["function"]["strict"] = json!(true);
-    }
-    value
-}
-
-fn runtime_chat_messages(request: &ModelRequest, wire_model: &str) -> Vec<Value> {
-    let mut messages = Vec::new();
-    let mut pending_tool_calls: HashMap<String, (String, Value)> = HashMap::new();
-    let mut seen_tool_results: HashMap<String, super::chat::SeenToolResult> = HashMap::new();
-    if let Some(system) = runtime_system_instructions(&request.system_prompt) {
-        messages.push(json!({
-            "role": "system",
-            "content": system,
-        }));
-    }
-
-    let replay_current_reasoning =
-        DeepSeekReasoning::from_runtime(request.reasoning_effort).thinking_enabled();
-    for (message_index, message) in request.messages.iter().enumerate() {
-        match message {
-            ModelMessage::User { content } => {
-                pending_tool_calls.clear();
-                messages.push(json!({
-                    "role": "user",
-                    "content": content,
-                }));
-            }
-            ModelMessage::Assistant {
-                content,
-                reasoning_content,
-                tool_calls,
-            } => {
-                let replay_tool_reasoning = !tool_calls.is_empty()
-                    && super::chat::requires_tool_call_reasoning_replay(wire_model);
-                let reasoning = reasoning_content
-                    .as_deref()
-                    .filter(|reasoning| !reasoning.is_empty())
-                    .filter(|_| replay_current_reasoning || replay_tool_reasoning);
-                if content.as_deref().is_none_or(str::is_empty)
-                    && reasoning.is_none()
-                    && tool_calls.is_empty()
-                {
-                    continue;
-                }
-
-                let mut wire = json!({
-                    "role": "assistant",
-                    "content": match content.as_deref().filter(|content| !content.is_empty()) {
-                        Some(content) => json!(content),
-                        None if reasoning.is_some() => json!(""),
-                        None => Value::Null,
-                    },
-                });
-                if let Some(reasoning) = reasoning {
-                    wire["reasoning_content"] = json!(reasoning);
-                }
-                if !tool_calls.is_empty() {
-                    wire["tool_calls"] = Value::Array(
-                        tool_calls
-                            .iter()
-                            .map(|call| {
-                                json!({
-                                    "id": call.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": super::to_api_tool_name(&call.name),
-                                        "arguments": call.arguments.raw,
-                                    }
-                                })
-                            })
-                            .collect(),
-                    );
-                    pending_tool_calls = tool_calls
-                        .iter()
-                        .map(|call| {
-                            (
-                                call.id.clone(),
-                                (
-                                    call.name.clone(),
-                                    call.arguments.parsed.clone().unwrap_or_else(|| {
-                                        Value::String(call.arguments.raw.clone())
-                                    }),
-                                ),
-                            )
-                        })
-                        .collect();
-                } else {
-                    pending_tool_calls.clear();
-                }
-                messages.push(wire);
-            }
-            ModelMessage::Tool {
-                call_id, content, ..
-            } => {
-                let Some((tool_name, input)) = pending_tool_calls.remove(call_id) else {
-                    crate::logging::warn(format!(
-                        "Dropping tool result for unknown tool_call_id: {call_id}"
-                    ));
-                    continue;
-                };
-                let wire_result = super::chat::compact_tool_result_for_wire(
-                    &tool_name,
-                    &input,
-                    content,
-                    &format!("Message #{message_index}"),
-                    &mut seen_tool_results,
-                );
-                messages.push(json!({
-                    "role": "tool",
-                    "tool_call_id": call_id,
-                    "content": wire_result.content,
-                }));
-            }
-        }
-    }
-    messages
-}
-
-fn runtime_system_instructions(system: &RuntimeSystemPrompt) -> Option<String> {
-    let joined = system
-        .blocks
-        .iter()
-        .map(|block| block.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n---\n\n");
-    (!joined.trim().is_empty()).then_some(joined)
-}
-
-fn validate_runtime_reasoning_replay(
-    request: &ModelRequest,
-    model: &str,
-) -> Result<(), ChatPlanError> {
-    if !super::chat::requires_tool_call_reasoning_replay(model) {
-        return Ok(());
-    }
-    for (message_index, message) in request.messages.iter().enumerate() {
-        let ModelMessage::Assistant {
-            reasoning_content,
-            tool_calls,
-            ..
-        } = message
-        else {
-            continue;
-        };
-        if !tool_calls.is_empty() && reasoning_content.as_deref() == Some("") {
-            return Err(ChatPlanError::MissingReasoningContent { message_index });
-        }
-    }
-    Ok(())
-}
-
-fn reasoning_replay_tokens(body: &Value) -> Option<u32> {
-    let replay_bytes = body
-        .get("messages")
-        .and_then(Value::as_array)?
-        .iter()
-        .filter(|message| message.get("role").and_then(Value::as_str) == Some("assistant"))
-        .filter_map(|message| message.get("reasoning_content").and_then(Value::as_str))
-        .filter(|reasoning| !reasoning.is_empty())
-        .fold(0_u64, |total, reasoning| {
-            total.saturating_add(reasoning.len() as u64)
-        });
-    (replay_bytes > 0).then(|| (replay_bytes / 4).min(u64::from(u32::MAX)) as u32)
 }
 
 pub(crate) fn plan_fim(
@@ -582,62 +191,10 @@ pub(crate) fn plan_fim(
     suffix: &str,
     max_tokens: u32,
 ) -> Result<RequestPlan, FimPlanError> {
-    if !(1..=4096).contains(&max_tokens) {
-        return Err(FimPlanError::InvalidMaxTokens);
-    }
-    let root = official_root(provider, base_url).ok_or(FimPlanError::RequiresOfficialDeepSeek)?;
-    if path_suffix.is_some() {
+    if official_root(provider, base_url).is_none() {
         return Err(FimPlanError::RequiresOfficialDeepSeek);
     }
-    Ok(RequestPlan {
-        surface: ApiSurface::Fim,
-        url: format!("{root}/beta/completions"),
-        model: FIM_MODEL.to_string(),
-        body: json!({
-            "model": FIM_MODEL,
-            "prompt": prompt,
-            "suffix": suffix,
-            "max_tokens": max_tokens,
-        }),
-        response_mode: ResponseMode::NonStreaming,
-        reasoning_replay_tokens: None,
-    })
-}
-
-fn chat_url(root: &str, surface: ApiSurface) -> String {
-    if surface == ApiSurface::StrictChat {
-        format!("{root}/beta/chat/completions")
-    } else {
-        format!("{root}/chat/completions")
-    }
-}
-
-fn validate_exact_reasoning_replay(body: &Value, model: &str) -> Result<(), ChatPlanError> {
-    if !super::chat::requires_tool_call_reasoning_replay(model) {
-        return Ok(());
-    }
-    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
-        return Ok(());
-    };
-    for (message_index, message) in messages.iter().enumerate() {
-        if message.get("role").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let has_tool_calls = message
-            .get("tool_calls")
-            .and_then(Value::as_array)
-            .is_some_and(|calls| !calls.is_empty());
-        let has_empty_reasoning = message
-            .get("reasoning_content")
-            .and_then(Value::as_str)
-            .is_some_and(str::is_empty);
-        // Absence is valid provenance for a non-thinking tool round. An
-        // explicitly present but empty value is not an exact replay.
-        if has_tool_calls && has_empty_reasoning {
-            return Err(ChatPlanError::MissingReasoningContent { message_index });
-        }
-    }
-    Ok(())
+    codewhale_deepseek::plan_fim(base_url, path_suffix, prompt, suffix, max_tokens)
 }
 
 fn validate_canonical_reasoning_replay(
@@ -685,21 +242,54 @@ fn official_root(provider: ApiProvider, base_url: &str) -> Option<&'static str> 
     if !matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
         return None;
     }
-    let base = base_url.trim_end_matches('/');
-    [
-        "https://api.deepseek.com",
-        "https://api.deepseek.com/v1",
-        "https://api.deepseek.com/beta",
-    ]
-    .iter()
-    .any(|candidate| base.eq_ignore_ascii_case(candidate))
-    .then_some("https://api.deepseek.com")
+    codewhale_deepseek::official_root(base_url)
+}
+
+/// Select the transport root for the canonical DeepSeek ModelPort.
+///
+/// Loopback is an offline protocol fixture, not a provider compatibility
+/// fallback: it still receives the exact official DeepSeek request plan. The
+/// interactive legacy route remains unclaimed for every custom base.
+fn runtime_planner_root(
+    provider: ApiProvider,
+    base_url: &str,
+    path_suffix: Option<&str>,
+) -> Option<String> {
+    if path_suffix.is_some() || !matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
+    {
+        return None;
+    }
+    if let Some(root) = codewhale_deepseek::official_root(base_url) {
+        return Some(root.to_owned());
+    }
+
+    let url = reqwest::Url::parse(base_url).ok()?;
+    let host = url.host_str()?;
+    let loopback = host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    let fixture_path = matches!(url.path(), "" | "/" | "/v1" | "/v1/");
+    if !loopback
+        || !fixture_path
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    Some(super::versioned_base_url(base_url))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use codewhale_runtime::{
+        AgentActor, ModelMessage, ModelToolCall, ReasoningEffort, RunId,
+        SystemPrompt as RuntimeSystemPrompt, ToolArguments, ToolDefinition,
+    };
+    use serde_json::{Value, json};
 
     use crate::models::{ContentBlock, Message};
 
@@ -824,6 +414,104 @@ mod tests {
 
         assert_eq!(plan.surface, ApiSurface::StandardChat);
         assert_eq!(plan.tools.unwrap()[0].strict, None);
+    }
+
+    #[test]
+    fn legacy_and_runtime_projections_freeze_the_same_wire_body() {
+        let raw_arguments = "{ \"value\" : \"history\", \"order\" : 1 }";
+        let mut legacy = request(Some(vec![compatible_tool("read-file")]));
+        legacy.temperature = None;
+        legacy.top_p = None;
+        legacy.messages = vec![
+            Message {
+                role: "assistant".to_owned(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: "原始推理".to_owned(),
+                        signature: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-1".to_owned(),
+                        name: "read-file".to_owned(),
+                        input: json!({"value": "history", "order": 1}),
+                        raw_arguments: Some(raw_arguments.to_owned()),
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_owned(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-1".to_owned(),
+                    content: "ok".to_owned(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+        let runtime = ModelRequest {
+            run_id: RunId::from("projection-equivalence"),
+            parent_run_id: None,
+            actor: AgentActor::default(),
+            model: legacy.model.clone(),
+            system_prompt: RuntimeSystemPrompt { blocks: Vec::new() },
+            messages: vec![
+                ModelMessage::Assistant {
+                    content: None,
+                    reasoning_content: Some("原始推理".to_owned()),
+                    tool_calls: vec![ModelToolCall {
+                        id: "call-1".to_owned(),
+                        name: "read-file".to_owned(),
+                        arguments: ToolArguments::parse(raw_arguments),
+                    }],
+                },
+                ModelMessage::Tool {
+                    call_id: "call-1".to_owned(),
+                    name: "read-file".to_owned(),
+                    content: "ok".to_owned(),
+                },
+            ],
+            tools: vec![ToolDefinition {
+                name: "read-file".to_owned(),
+                description: "read-file tool".to_owned(),
+                input_schema: legacy.tools.as_ref().unwrap()[0].input_schema.clone(),
+            }],
+            reasoning_effort: ReasoningEffort::High,
+            max_output_tokens: Some(legacy.max_tokens),
+            streaming: true,
+            request_number: 1,
+            attempt: 0,
+        };
+
+        let legacy_plan = plan_chat(
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com",
+            None,
+            false,
+            &legacy,
+            ResponseMode::Streaming,
+        )
+        .unwrap()
+        .unwrap();
+        let runtime_plan = plan_runtime_chat(
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com",
+            None,
+            false,
+            &runtime,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(legacy_plan.body, runtime_plan.body);
+        assert_eq!(
+            runtime_plan.body["messages"][0]["tool_calls"][0]["function"]["arguments"],
+            raw_arguments
+        );
+        assert_eq!(
+            runtime_plan.body["tools"][0]["function"]["name"],
+            "read--file"
+        );
     }
 
     #[test]
@@ -1178,6 +866,49 @@ mod tests {
     }
 
     #[test]
+    fn canonical_runtime_accepts_only_clean_loopback_protocol_fixtures() {
+        assert_eq!(
+            runtime_planner_root(ApiProvider::Deepseek, "http://127.0.0.1:43123", None),
+            Some("http://127.0.0.1:43123/v1".to_owned())
+        );
+        assert_eq!(
+            runtime_planner_root(ApiProvider::DeepseekCN, "http://localhost:43123/v1", None),
+            Some("http://localhost:43123/v1".to_owned())
+        );
+        for (provider, base, suffix) in [
+            (ApiProvider::Openrouter, "http://127.0.0.1:43123", None),
+            (ApiProvider::Deepseek, "https://gateway.example/v1", None),
+            (ApiProvider::Deepseek, "http://user@127.0.0.1:43123", None),
+            (
+                ApiProvider::Deepseek,
+                "http://127.0.0.1:43123?token=secret",
+                None,
+            ),
+            (
+                ApiProvider::Deepseek,
+                "http://127.0.0.1:43123",
+                Some("/tenant/chat/completions"),
+            ),
+        ] {
+            assert_eq!(runtime_planner_root(provider, base, suffix), None);
+        }
+
+        assert!(
+            plan_chat(
+                ApiProvider::Deepseek,
+                "http://127.0.0.1:43123",
+                None,
+                false,
+                &request(None),
+                ResponseMode::Streaming,
+            )
+            .unwrap()
+            .is_none(),
+            "loopback must not become a generic interactive compatibility route"
+        );
+    }
+
+    #[test]
     fn fim_is_fixed_to_official_beta_pro_and_validates_limits() {
         let plan = plan_fim(
             ApiProvider::Deepseek,
@@ -1190,8 +921,8 @@ mod tests {
         .expect("FIM plan");
         assert_eq!(plan.surface, ApiSurface::Fim);
         assert_eq!(plan.url, "https://api.deepseek.com/beta/completions");
-        assert_eq!(plan.model, FIM_MODEL);
-        assert_eq!(plan.body["model"], FIM_MODEL);
+        assert_eq!(plan.model, codewhale_deepseek::FIM_MODEL);
+        assert_eq!(plan.body["model"], codewhale_deepseek::FIM_MODEL);
         assert_eq!(plan.body["prompt"], "prefix");
         assert_eq!(plan.body["suffix"], "suffix");
         assert_eq!(plan.body["max_tokens"], 4096);
