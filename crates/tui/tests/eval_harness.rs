@@ -6,8 +6,6 @@ use tempfile::tempdir;
 
 #[path = "../src/eval.rs"]
 mod eval;
-#[path = "../src/shell_dispatcher.rs"]
-mod shell_dispatcher;
 
 use eval::{EvalHarness, EvalHarnessConfig, FixtureRecord, ScenarioStepKind};
 

@@ -3663,7 +3663,7 @@ impl RuntimeThreadManager {
                             let _ = engine
                                 .retry_tool_with_policy(
                                     tool_id,
-                                    crate::sandbox::SandboxPolicy::DangerFullAccess,
+                                    codewhale_tools::sandbox::SandboxPolicy::DangerFullAccess,
                                 )
                                 .await;
                         }

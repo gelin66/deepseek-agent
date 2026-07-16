@@ -1,4 +1,4 @@
-//! Output truncation and summarization helpers for shell tools.
+//! Output truncation and summarization helpers for production shell tools.
 
 /// Maximum output size before truncation (30KB like Claude Code).
 const MAX_OUTPUT_SIZE: usize = 30_000;
@@ -15,13 +15,13 @@ const SUMMARY_MAX_CHARS: usize = 240;
 const MAX_PRESERVED_SUMMARY_LINES: usize = 80;
 
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct TruncationMeta {
-    pub(crate) original_len: usize,
-    pub(crate) omitted: usize,
-    pub(crate) truncated: bool,
+pub struct TruncationMeta {
+    pub original_len: usize,
+    pub omitted: usize,
+    pub truncated: bool,
 }
 
-pub(crate) fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
+pub fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
     let original_len = output.len();
     if original_len <= MAX_OUTPUT_SIZE {
         return (
@@ -76,7 +76,7 @@ pub(crate) fn truncate_with_meta(output: &str) -> (String, TruncationMeta) {
 /// and `Finished`/`running ...` markers. Returns at most
 /// `MAX_PRESERVED_SUMMARY_LINES` lines, oldest-first within each match
 /// class so the most actionable signal is at the end.
-pub(crate) fn collect_summary_lines(text: &str) -> Vec<String> {
+pub fn collect_summary_lines(text: &str) -> Vec<String> {
     let mut preserved: Vec<String> = Vec::new();
     for line in text.lines() {
         if preserved.len() >= MAX_PRESERVED_SUMMARY_LINES {
@@ -194,7 +194,7 @@ fn truncate_chars(text: &str, max_chars: usize) -> String {
     format!("{}...", &text[..end])
 }
 
-pub(crate) fn summarize_output(text: &str) -> String {
+pub fn summarize_output(text: &str) -> String {
     let stripped = strip_truncation_note(text);
     let summary = stripped
         .lines()

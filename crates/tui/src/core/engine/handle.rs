@@ -99,7 +99,7 @@ impl EngineHandle {
     pub async fn retry_tool_with_policy(
         &self,
         id: impl Into<String>,
-        policy: crate::sandbox::SandboxPolicy,
+        policy: codewhale_tools::sandbox::SandboxPolicy,
     ) -> Result<()> {
         self.tx_approval
             .send(ApprovalDecision::RetryWithPolicy {

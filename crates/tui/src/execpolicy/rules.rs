@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use super::matcher::pattern_matches;
-use crate::command_safety::prefix_allow_matches;
+use codewhale_tools::command_safety::prefix_allow_matches;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecPolicyDecision {

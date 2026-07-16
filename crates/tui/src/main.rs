@@ -31,10 +31,8 @@ mod artifacts;
 mod audit;
 mod auto_reasoning;
 mod automation_manager;
-mod child_env;
 mod client;
 mod codex_model_cache;
-mod command_safety;
 mod commands;
 mod compaction;
 mod composer_history;
@@ -98,7 +96,7 @@ mod route_runtime;
 mod runtime_api;
 mod runtime_log;
 mod runtime_threads;
-mod sandbox;
+mod sandbox_backend;
 mod scorecard;
 mod seam_manager;
 #[allow(dead_code)]
@@ -106,7 +104,6 @@ mod session_diagnostics;
 #[allow(dead_code)]
 mod session_manager;
 mod settings;
-mod shell_dispatcher;
 mod skill_state;
 mod skills;
 mod slop_ledger;
@@ -1395,7 +1392,7 @@ fn main() -> Result<()> {
     // ── Process hardening (#2183) ─────────────────────────────────────────
     // MUST run before Tokio is booted and before any threads are spawned.
     // See crates/tui/src/sandbox/process_hardening.rs for ordering rationale.
-    crate::sandbox::process_hardening::apply_process_hardening();
+    codewhale_tools::sandbox::process_hardening::apply_process_hardening();
 
     // Set up process panic hook before anything else — writes crash dumps
     // to ~/.deepseek/crashes/ even if the panic happens before tokio is up,
@@ -2693,7 +2690,7 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
         println!("    Next: copy the example dir, edit PLUGIN.md, wire via skill/MCP.");
     }
 
-    let sandbox = crate::sandbox::get_platform_sandbox();
+    let sandbox = codewhale_tools::sandbox::get_platform_sandbox();
     if let Some(kind) = sandbox {
         println!("  ✓ Sandbox available: {kind}");
     } else {
@@ -2933,7 +2930,7 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
         crate::utils::display_path(&plugins_dir)
     );
 
-    let sandbox = crate::sandbox::get_platform_sandbox();
+    let sandbox = codewhale_tools::sandbox::get_platform_sandbox();
     match sandbox {
         Some(kind) => println!(
             "  {} sandbox: {kind}",
@@ -3888,7 +3885,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     println!("  OS: {}", std::env::consts::OS);
     println!("  Arch: {}", std::env::consts::ARCH);
 
-    let sandbox = crate::sandbox::get_platform_sandbox();
+    let sandbox = codewhale_tools::sandbox::get_platform_sandbox();
     if let Some(kind) = sandbox {
         println!(
             "  {} sandbox available: {}",
@@ -4893,7 +4890,7 @@ fn run_doctor_json(
                 "count": crate::composer_stash::load_stash().len(),
             },
         },
-        "sandbox": match crate::sandbox::get_platform_sandbox() {
+        "sandbox": match codewhale_tools::sandbox::get_platform_sandbox() {
             Some(kind) => json!({"available": true, "kind": kind.to_string()}),
             None => json!({"available": false, "kind": null}),
         },
@@ -6741,7 +6738,7 @@ fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
 }
 
 fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
-    use crate::sandbox::{CommandSpec, SandboxManager};
+    use codewhale_tools::sandbox::{CommandSpec, SandboxManager};
 
     let SandboxCommand::Run {
         policy,
@@ -6777,7 +6774,10 @@ fn run_sandbox_command(args: SandboxArgs) -> Result<()> {
         .current_dir(&exec_env.cwd)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
+    codewhale_tools::child_env::apply_to_command(
+        &mut cmd,
+        codewhale_tools::child_env::string_map_env(&exec_env.env),
+    );
 
     let mut child = cmd
         .spawn()
@@ -6843,8 +6843,8 @@ fn parse_sandbox_policy(
     writable_root: Vec<PathBuf>,
     exclude_tmpdir: bool,
     exclude_slash_tmp: bool,
-) -> Result<crate::sandbox::SandboxPolicy> {
-    use crate::sandbox::SandboxPolicy;
+) -> Result<codewhale_tools::sandbox::SandboxPolicy> {
+    use codewhale_tools::sandbox::SandboxPolicy;
 
     match policy {
         "danger-full-access" => Ok(SandboxPolicy::DangerFullAccess),
@@ -8207,7 +8207,7 @@ async fn build_direct_workflow_tool(
         .search
         .as_ref()
         .and_then(|search| search.base_url.clone());
-    if let Some(backend) = crate::sandbox::backend::create_backend(config)? {
+    if let Some(backend) = crate::sandbox_backend::create_backend(config)? {
         context = context.with_sandbox_backend(Arc::from(backend));
     }
 
@@ -8289,8 +8289,8 @@ fn workflow_host_sandbox_policy(
     config: &Config,
     mode: crate::tui::app::AppMode,
     workspace: &Path,
-) -> crate::sandbox::SandboxPolicy {
-    use crate::sandbox::SandboxPolicy;
+) -> codewhale_tools::sandbox::SandboxPolicy {
+    use codewhale_tools::sandbox::SandboxPolicy;
 
     match config.sandbox_mode.as_deref() {
         Some("read-only") => SandboxPolicy::ReadOnly,
@@ -9466,7 +9466,7 @@ mod terminal_mode_tests {
         );
         assert!(matches!(
             context.elevated_sandbox_policy,
-            Some(crate::sandbox::SandboxPolicy::WorkspaceWrite { .. })
+            Some(codewhale_tools::sandbox::SandboxPolicy::WorkspaceWrite { .. })
         ));
         let mut event_types = Vec::new();
         while let Ok(event) = event_rx.try_recv() {

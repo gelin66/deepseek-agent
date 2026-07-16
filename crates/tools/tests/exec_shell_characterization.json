@@ -1,0 +1,5 @@
+{
+  "success_content_template": "cwd={cwd}\n\n\nSTDERR:\nwarn\n",
+  "readonly_error": "Shell command blocked by read-only shell policy. Use a non-mutating, non-background inspection command, or switch to Act mode (`/mode act`) for write-capable shell work.",
+  "cancel_before_start_error": "Shell execution failed: foreground command canceled before start"
+}

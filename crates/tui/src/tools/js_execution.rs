@@ -81,7 +81,7 @@ fn node_proxy_env_overrides() -> Vec<(&'static str, OsString)> {
 }
 
 fn apply_node_execution_env(cmd: &mut tokio::process::Command) {
-    crate::child_env::apply_to_tokio_command(cmd, node_proxy_env_overrides());
+    codewhale_tools::child_env::apply_to_tokio_command(cmd, node_proxy_env_overrides());
 }
 
 /// Build the `Tool` definition the catalog should advertise when

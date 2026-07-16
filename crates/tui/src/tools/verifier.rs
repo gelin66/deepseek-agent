@@ -17,7 +17,8 @@ use serde_json::{Value, json};
 use shlex::try_join;
 
 use crate::dependencies::ExternalTool;
-use crate::tools::shell::{ShellStatus, execute_managed_program};
+use crate::tools::shell::execute_managed_program;
+use codewhale_tools::shell::ShellStatus;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
@@ -1345,9 +1346,9 @@ mod tests {
     }
 
     fn wait_for_completed_shell(
-        manager: &mut crate::tools::shell::ShellManager,
+        manager: &mut codewhale_tools::shell::ShellManager,
         task_id: &str,
-    ) -> crate::tools::shell::ShellResult {
+    ) -> codewhale_tools::shell::ShellResult {
         let deadline = Instant::now() + Duration::from_millis(BACKGROUND_COMPLETION_WAIT_MS);
 
         loop {

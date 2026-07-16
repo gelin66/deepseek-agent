@@ -17,6 +17,7 @@
 #![allow(dead_code)] // foundation: consumers are wired in a follow-up (#3217).
 
 use crate::tools::subagent::SubAgentType;
+pub use codewhale_tools::shell::ShellPolicy;
 use serde::{Deserialize, Serialize};
 
 /// Coarse capability classes a worker may exercise, beyond read access (reads
@@ -56,42 +57,6 @@ impl PermissionSet {
             write: self.write && other.write,
             network: self.network && other.network,
         }
-    }
-}
-
-/// Shell access policy — the replacement for the legacy per-worker shell boolean
-/// (#3217). Ordered from most to least restrictive so `min` yields the safer of
-/// two policies.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-pub enum ShellPolicy {
-    /// No shell access.
-    None,
-    /// Read-only / non-mutating commands only (the policy enforcement lives in
-    /// the exec/sandbox layer; this is the declared intent).
-    ReadOnly,
-    /// Full shell access.
-    Full,
-}
-
-impl ShellPolicy {
-    /// Convert the legacy top-level shell opt-in into the typed shell policy.
-    #[must_use]
-    pub const fn from_legacy_allow_shell(allow_shell: bool) -> Self {
-        if allow_shell { Self::Full } else { Self::None }
-    }
-
-    /// Whether any shell tools should be exposed under this policy.
-    #[must_use]
-    pub const fn allows_shell(self) -> bool {
-        !matches!(self, Self::None)
-    }
-
-    /// The more restrictive (safer) of two policies. A child can never exceed
-    /// its parent's shell policy.
-    #[must_use]
-    pub fn min_with(self, other: Self) -> Self {
-        if self <= other { self } else { other }
     }
 }
 

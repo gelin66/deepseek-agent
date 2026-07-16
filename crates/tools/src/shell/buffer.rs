@@ -1,3 +1,5 @@
+//! Bounded background-shell buffer reads owned by `codewhale-tools`.
+
 use std::sync::{Arc, Mutex};
 
 pub(super) fn take_delta_from_buffer(

@@ -451,6 +451,7 @@ mod tests {
 
     #[test]
     fn test_generate_params() {
+        let _guard = crate::test_support::lock_test_env();
         let policy = SandboxPolicy::default();
         let cwd = Path::new("/tmp/test");
         let params = generate_params(&policy, cwd);

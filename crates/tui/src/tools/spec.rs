@@ -18,11 +18,11 @@ use crate::lsp::LspManager;
 use crate::network_policy::NetworkPolicyDecider;
 use crate::rlm::session::SessionObjectSnapshot;
 use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
-use crate::sandbox::backend::SandboxBackend;
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
-use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::worker_profile::ShellPolicy;
 use codewhale_tools::ProductionToolContext;
+use codewhale_tools::sandbox::backend::SandboxBackend;
+use codewhale_tools::shell::{SharedShellManager, new_shared_shell_manager};
 #[allow(unused_imports)]
 pub use codewhale_tools::{
     ApprovalRequirement, ToolCapability, ToolError, ToolOutcome, optional_bool, optional_str,
@@ -141,7 +141,7 @@ pub struct ToolContext {
     pub skills_scan_codewhale_only: bool,
     /// Elevated sandbox policy override (used when retrying after sandbox denial).
     /// This overrides the default sandbox behavior for shell commands.
-    pub elevated_sandbox_policy: Option<crate::sandbox::SandboxPolicy>,
+    pub elevated_sandbox_policy: Option<codewhale_tools::sandbox::SandboxPolicy>,
     /// Optional user-facing hint for shell commands that fail because the
     /// active sandbox policy intentionally denies outbound network access.
     pub shell_network_denied_hint: Option<String>,
@@ -514,7 +514,10 @@ impl ToolContext {
     ///
     /// This is used when retrying a tool after a sandbox denial, to run
     /// with elevated permissions.
-    pub fn with_elevated_sandbox_policy(mut self, policy: crate::sandbox::SandboxPolicy) -> Self {
+    pub fn with_elevated_sandbox_policy(
+        mut self,
+        policy: codewhale_tools::sandbox::SandboxPolicy,
+    ) -> Self {
         self.elevated_sandbox_policy = Some(policy);
         self
     }

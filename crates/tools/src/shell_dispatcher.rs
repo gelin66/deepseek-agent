@@ -1,4 +1,4 @@
-//! Shell abstraction layer for DeepSeek TUI.
+//! Cross-platform shell selection and command construction for production tools.
 //!
 //! Detects the user's shell at startup and provides a single entry point for
 //! all command execution. DeepSeek TUI never calls `Command::new("cmd")` (or
@@ -89,7 +89,6 @@ impl ShellKind {
         matches!(self, ShellKind::Pwsh | ShellKind::WindowsPowerShell)
     }
 
-    #[cfg(test)]
     /// Returns true when this is a PowerShell-family shell.
     pub fn is_powershell(&self) -> bool {
         matches!(self, ShellKind::Pwsh | ShellKind::WindowsPowerShell)
@@ -228,66 +227,6 @@ impl ShellDispatcher {
         let mut cmd = Command::new(program);
         cmd.args(args);
         cmd
-    }
-
-    /// Execute a foreground command with raw-mode save/restore.
-    ///
-    /// A scope guard ensures raw mode is restored even if the command fails
-    /// to spawn or returns early (review feedback, issue #1690).
-    pub fn run_foreground(
-        &self,
-        shell_command: &str,
-        cwd: &std::path::Path,
-    ) -> Result<String, anyhow::Error> {
-        use anyhow::Context;
-
-        // Log the execution
-        {
-            let _lock = LOG_MUTEX.lock();
-            if let Ok(path) = std::env::var("SHELL_DISPATCHER_LOG") {
-                let kind = self.kind();
-                let line = format!("[{}] exec via {kind:?}: {shell_command}\n", now_iso());
-                let _ = Self::append_log(&path, &line);
-            }
-        }
-
-        // Disable raw mode; guard restores it only if it was already enabled.
-        let raw_mode_was_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
-        if raw_mode_was_enabled {
-            let _ = crossterm::terminal::disable_raw_mode();
-        }
-        struct FgRawModeGuard {
-            restore: bool,
-        }
-        impl Drop for FgRawModeGuard {
-            fn drop(&mut self) {
-                if self.restore {
-                    let _ = crossterm::terminal::enable_raw_mode();
-                }
-            }
-        }
-        let _guard = FgRawModeGuard {
-            restore: raw_mode_was_enabled,
-        };
-
-        let mut cmd = self.build_command(shell_command);
-        cmd.current_dir(cwd);
-
-        let output = cmd
-            .output()
-            .with_context(|| format!("failed to execute shell command: {shell_command}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!(
-                "shell command failed (status={}): {}",
-                output.status,
-                stderr.trim()
-            );
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        Ok(stdout)
     }
 
     // -- Detection --------------------------------------------------------

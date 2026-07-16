@@ -285,7 +285,7 @@ fn thinking_tool_call_reasoning_error(
 }
 
 impl Engine {
-    fn drain_shell_completion_events(&self) -> Vec<crate::tools::shell::ShellCompletionEvent> {
+    fn drain_shell_completion_events(&self) -> Vec<codewhale_tools::shell::ShellCompletionEvent> {
         self.shell_manager
             .lock()
             .map(|mut manager| manager.drain_finished_jobs())
@@ -3030,7 +3030,7 @@ fn runtime_event_turn_metadata_block(provenance: UserInputProvenance) -> Content
 }
 
 fn shell_completion_status_text(
-    events: &[crate::tools::shell::ShellCompletionEvent],
+    events: &[codewhale_tools::shell::ShellCompletionEvent],
     timing: &str,
 ) -> Option<String> {
     if events.is_empty() {
@@ -3040,7 +3040,7 @@ fn shell_completion_status_text(
     let count = events.len();
     let failed = events
         .iter()
-        .filter(|event| event.status != crate::tools::shell::ShellStatus::Completed)
+        .filter(|event| event.status != codewhale_tools::shell::ShellStatus::Completed)
         .count();
     let noun = if count == 1 { "job" } else { "jobs" };
     let prefix = if timing.trim().is_empty() {
@@ -3558,10 +3558,10 @@ mod tests {
     #[test]
     fn shell_completion_status_does_not_create_runtime_handoff() {
         let status = shell_completion_status_text(
-            &[crate::tools::shell::ShellCompletionEvent {
+            &[codewhale_tools::shell::ShellCompletionEvent {
                 task_id: "shell_abc".to_string(),
                 command: "cargo test -p codewhale-tui".to_string(),
-                status: crate::tools::shell::ShellStatus::Failed,
+                status: codewhale_tools::shell::ShellStatus::Failed,
                 exit_code: Some(101),
                 duration_ms: 1234,
                 stdout_tail: "running tests".to_string(),

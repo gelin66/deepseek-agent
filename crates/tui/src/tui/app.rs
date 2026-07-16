@@ -32,7 +32,6 @@ use crate::resource_telemetry::TokenThroughput;
 use crate::session_manager::{SessionContextReference, SessionMetadata, SessionWorkState};
 use crate::settings::Settings;
 use crate::tools::plan::{PlanState, SharedPlanState, new_shared_plan_state};
-use crate::tools::shell::new_shared_shell_manager;
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::todo::{SharedTodoList, TodoList, new_shared_todo_list};
@@ -49,6 +48,7 @@ use crate::tui::sidebar::SidebarWorkSummary;
 use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
+use codewhale_tools::shell::new_shared_shell_manager;
 
 // === Types ===
 

@@ -4,7 +4,7 @@
 //! approval and elevation views can render the decision without owning the
 //! policy itself.
 
-use crate::command_safety::is_parallel_readonly_command;
+use codewhale_tools::command_safety::is_parallel_readonly_command;
 use serde_json::Value;
 
 /// Categorizes tools by cost/risk level.

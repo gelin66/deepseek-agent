@@ -6,10 +6,10 @@
 
 use std::path::Path;
 
-use crate::sandbox::SandboxPolicy;
 use crate::tui::app::AppMode;
 use crate::tui::approval::ApprovalMode;
 use crate::worker_profile::ShellPolicy;
+use codewhale_tools::sandbox::SandboxPolicy;
 
 use super::ops::UserInputProvenance;
 

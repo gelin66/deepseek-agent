@@ -8,8 +8,10 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::Mutex as TokioMutex;
 
 use super::{McpServerConfig, McpTransport};
-use crate::child_env;
-use crate::tools::shell::{ProcessTreeOwner, configure_process_tree, shutdown_tokio_process_tree};
+use codewhale_tools::child_env;
+use codewhale_tools::shell::{
+    ProcessTreeOwner, configure_process_tree, shutdown_tokio_process_tree,
+};
 
 pub(super) struct StdioTransport {
     pub(super) process_tree: ProcessTreeOwner,

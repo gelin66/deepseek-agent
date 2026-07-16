@@ -90,7 +90,7 @@ impl ToolSpec for DiagnosticsTool {
         };
 
         let git = probe_git(context.workspace());
-        let sandbox_type = crate::sandbox::get_platform_sandbox().map(|s| s.to_string());
+        let sandbox_type = codewhale_tools::sandbox::get_platform_sandbox().map(|s| s.to_string());
         let sandbox_available = sandbox_type.is_some();
 
         // Bubblewrap availability (#2184).
@@ -161,7 +161,7 @@ fn probe_git(workspace: &Path) -> GitProbe {
 fn probe_bwrap_available() -> bool {
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     {
-        crate::sandbox::bwrap::is_available()
+        codewhale_tools::sandbox::bwrap::is_available()
     }
     #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
     {

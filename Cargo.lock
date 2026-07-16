@@ -1084,18 +1084,26 @@ version = "0.8.68"
 dependencies = [
  "anyhow",
  "async-trait",
+ "chrono",
  "codewhale-protocol",
+ "crossterm",
  "ignore",
+ "libc",
  "pdf-extract",
+ "portable-pty",
  "regex",
  "serde",
  "serde_json",
+ "shlex",
  "similar",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
+ "tracing",
  "uuid",
+ "wait-timeout",
+ "windows",
 ]
 
 [[package]]

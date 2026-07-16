@@ -1,4 +1,4 @@
-//! Sanitized environment handling for child processes.
+//! Sanitized environment handling for production tool child processes.
 
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};

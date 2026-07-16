@@ -75,7 +75,6 @@ use crate::task_manager::{
     NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
 };
 use crate::tools::goal::{GoalSnapshot, GoalStatus};
-use crate::tools::shell::{ShellJobSnapshot, ShellStatus};
 use crate::tools::spec::{RuntimeToolServices, ToolOutcome};
 use crate::tools::subagent::{MailboxMessage, SubAgentStatus};
 use crate::tui::auto_router;
@@ -103,6 +102,7 @@ use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::plan_todo_bridge::{PlanAcceptance, project_accepted_plan};
 use crate::tui::scrolling::TranscriptScroll;
+use codewhale_tools::shell::{ShellJobSnapshot, ShellStatus};
 // SelectionAutoscroll unused
 use crate::tui::motion::{FrameRequester, MotionPolicy};
 use crate::tui::session_picker::SessionPickerView;
@@ -1008,7 +1008,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         .runtime_services
         .shell_manager
         .clone()
-        .unwrap_or_else(|| crate::tools::shell::new_shared_shell_manager(app.workspace.clone()));
+        .unwrap_or_else(|| codewhale_tools::shell::new_shared_shell_manager(app.workspace.clone()));
     // #2511: ensure hook_executor is initialized for fresh sessions — it is
     // only set by apply_workspace_runtime_state (session resume / workspace
     // switch), so a brand-new session would otherwise leave it None and both
@@ -1636,7 +1636,9 @@ fn build_app_system_prompt(app: &App, config: &Config) -> SystemPrompt {
             show_thinking: app.show_thinking,
             verbosity: app.verbosity.as_deref(),
             skills_scan_codewhale_only: app.skills_scan_codewhale_only,
-            shell_binary: crate::shell_dispatcher::global_dispatcher().kind().binary(),
+            shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()
+                .kind()
+                .binary(),
         },
     )
     .into()
@@ -1725,7 +1727,7 @@ async fn refresh_active_task_panel(app: &mut App, task_manager: &SharedTaskManag
             Ok(mut mgr) => mgr
                 .list_jobs()
                 .into_iter()
-                .filter(|job| matches!(job.status, crate::tools::shell::ShellStatus::Running))
+                .filter(|job| matches!(job.status, codewhale_tools::shell::ShellStatus::Running))
                 .map(|job| TaskPanelEntry {
                     id: job.id,
                     status: "running".to_string(),
@@ -3535,7 +3537,7 @@ async fn run_event_loop(
                                 ),
                             });
                             // Auto-elevate to full access (no sandbox)
-                            let policy = crate::sandbox::SandboxPolicy::DangerFullAccess;
+                            let policy = codewhale_tools::sandbox::SandboxPolicy::DangerFullAccess;
                             let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
                         } else {
                             log_sensitive_event(
@@ -9414,7 +9416,7 @@ fn apply_workspace_runtime_state(app: &mut App, config: &Config, workspace: Path
     app.workspace_context_refreshed_at = None;
     app.file_tree = None;
 
-    let shell_manager = crate::tools::shell::new_shared_shell_manager(workspace);
+    let shell_manager = codewhale_tools::shell::new_shared_shell_manager(workspace);
     app.runtime_services.shell_manager = Some(shell_manager);
     app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
 }

@@ -13864,7 +13864,7 @@ mod work_sidebar_projection_tests {
             std::process::id()
         ));
         let _ = std::fs::create_dir_all(&temp_dir);
-        let mut manager = crate::tools::shell::ShellManager::new(temp_dir.clone());
+        let mut manager = codewhale_tools::shell::ShellManager::new(temp_dir.clone());
 
         // We can't easily spawn a real background process in a unit test
         // without a Tokio runtime, but we can verify that kill_running /
@@ -13873,7 +13873,7 @@ mod work_sidebar_projection_tests {
         let jobs = manager.list_jobs();
         let running = jobs
             .iter()
-            .filter(|j| matches!(j.status, crate::tools::shell::ShellStatus::Running))
+            .filter(|j| matches!(j.status, codewhale_tools::shell::ShellStatus::Running))
             .count();
         assert_eq!(running, 0, "empty manager should have zero running jobs");
 

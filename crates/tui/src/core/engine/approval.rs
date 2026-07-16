@@ -26,7 +26,7 @@ pub(super) enum ApprovalDecision {
     /// Retry a tool with an elevated sandbox policy.
     RetryWithPolicy {
         id: String,
-        policy: crate::sandbox::SandboxPolicy,
+        policy: codewhale_tools::sandbox::SandboxPolicy,
     },
 }
 
@@ -49,7 +49,7 @@ pub(super) enum ApprovalResult {
     /// User denied the tool execution.
     Denied,
     /// User requested retry with an elevated sandbox policy.
-    RetryWithPolicy(crate::sandbox::SandboxPolicy),
+    RetryWithPolicy(codewhale_tools::sandbox::SandboxPolicy),
 }
 
 impl Engine {

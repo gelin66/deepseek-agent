@@ -405,6 +405,35 @@ mod tests {
         assert_eq!(read.transport, ToolTransportStatus::Succeeded);
         assert_eq!(read.operation, ToolOperationStatus::Succeeded);
 
+        let shell = executor
+            .execute(
+                ToolInvocation {
+                    run_id: RunId::from("run-1"),
+                    call_id: "shell".to_owned(),
+                    name: "exec_shell".to_owned(),
+                    arguments: ToolArguments::from_value(json!({
+                        "command": "echo production-shell"
+                    })),
+                },
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(shell.is_success(), "{}", shell.content);
+        assert_eq!(shell.invocation, ToolInvocationStatus::Accepted);
+        assert_eq!(shell.transport, ToolTransportStatus::Succeeded);
+        assert_eq!(shell.operation, ToolOperationStatus::Succeeded);
+        assert_eq!(shell.side_effect, ToolSideEffectStatus::Indeterminate);
+        assert_eq!(shell.content.trim(), "production-shell");
+        assert_eq!(
+            shell
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("status"))
+                .and_then(Value::as_str),
+            Some("Completed")
+        );
+
         let patched = executor
             .execute(
                 ToolInvocation {

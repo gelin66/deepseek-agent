@@ -28,8 +28,8 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use uuid::Uuid;
 
-use crate::child_env;
 use crate::dependencies::ExternalTool;
+use codewhale_tools::child_env;
 
 // ---------------------------------------------------------------------------
 // Public types

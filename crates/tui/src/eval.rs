@@ -737,7 +737,34 @@ fn apply_patch(root: &Path, patch: &str) -> Result<()> {
 }
 
 fn exec_shell(root: &Path, command: &str) -> Result<String> {
-    crate::shell_dispatcher::global_dispatcher().run_foreground(command, root)
+    let raw_mode_was_enabled = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    if raw_mode_was_enabled {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+    struct RawModeGuard(bool);
+    impl Drop for RawModeGuard {
+        fn drop(&mut self) {
+            if self.0 {
+                let _ = crossterm::terminal::enable_raw_mode();
+            }
+        }
+    }
+    let _raw_mode = RawModeGuard(raw_mode_was_enabled);
+
+    let mut child = codewhale_tools::shell_dispatcher::global_dispatcher().build_command(command);
+    child.current_dir(root);
+    let output = child
+        .output()
+        .with_context(|| format!("failed to execute shell command: {command}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "shell command failed (status={}): {}",
+            output.status,
+            stderr.trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn truncate_output(value: &str, max_chars: usize) -> String {

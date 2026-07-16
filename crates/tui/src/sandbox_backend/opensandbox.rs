@@ -1,4 +1,4 @@
-//! Alibaba OpenSandbox backend adapter.
+//! Alibaba OpenSandbox transport adapter for the tools sandbox port.
 //!
 //! Sends shell commands to an OpenSandbox-compatible HTTP API for remote
 //! execution.  The API endpoint is `POST {base_url}/v1/sandbox/run` with
@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde::Serialize;
 
-use super::backend::{SandboxBackend, SandboxOutput};
+use codewhale_tools::sandbox::backend::{SandboxBackend, SandboxOutput};
 
 /// Request body sent to the OpenSandbox `/v1/sandbox/run` endpoint.
 #[derive(Debug, Serialize)]
@@ -42,7 +42,6 @@ struct SandboxRunResponse {
 pub struct OpenSandboxBackend {
     base_url: String,
     api_key: Option<String>,
-    timeout_secs: u64,
     client: reqwest::Client,
 }
 
@@ -62,7 +61,6 @@ impl OpenSandboxBackend {
         Ok(Self {
             base_url,
             api_key,
-            timeout_secs,
             client,
         })
     }

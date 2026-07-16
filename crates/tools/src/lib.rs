@@ -13,6 +13,8 @@ use tokio::sync::{OwnedRwLockReadGuard, OwnedRwLockWriteGuard, RwLock};
 
 mod apply_patch;
 mod atomic_write;
+pub mod child_env;
+pub mod command_safety;
 mod edit_file;
 mod file_search;
 mod git;
@@ -20,6 +22,9 @@ mod grep_files;
 mod list_dir;
 mod production_context;
 mod read_file;
+pub mod sandbox;
+pub mod shell;
+pub mod shell_dispatcher;
 mod unified_diff;
 
 pub use apply_patch::{ApplyPatchPreflight, execute_apply_patch, preflight_apply_patch};
@@ -32,6 +37,19 @@ pub use list_dir::execute_list_dir;
 pub use production_context::ProductionToolContext;
 pub use read_file::{ReadFileHost, execute_read_file};
 pub use unified_diff::make_unified_diff;
+
+#[cfg(test)]
+mod test_support {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    pub fn lock_test_env() -> MutexGuard<'static, ()> {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
 
 tokio::task_local! {
     static TOOL_EXECUTION_LOCK_HELD: ();

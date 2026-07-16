@@ -1,9 +1,9 @@
 //! Background shell job-center helpers for slash commands and pagers.
 
-use crate::tools::shell::{ShellJobDetail, ShellJobSnapshot, ShellResult, ShellStatus};
 use crate::tui::app::App;
 use crate::tui::history::HistoryCell;
 use crate::tui::pager::PagerView;
+use codewhale_tools::shell::{ShellJobDetail, ShellJobSnapshot, ShellResult, ShellStatus};
 
 fn status_label(status: &ShellStatus, stale: bool) -> &'static str {
     if stale {

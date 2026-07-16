@@ -48,7 +48,6 @@ use crate::route_runtime::resolve_runtime_route;
 use crate::seam_manager::{SeamConfig, SeamManager};
 use crate::tools::goal::{GoalSnapshot, GoalStatus, SharedGoalState, new_shared_goal_state};
 use crate::tools::plan::{PlanSnapshot, SharedPlanState, new_shared_plan_state};
-use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::spec::{ApprovalRequirement, ToolError, ToolOutcome};
 use crate::tools::subagent::{
@@ -66,6 +65,7 @@ use crate::utils::spawn_supervised;
 use crate::worker_profile::{ModelRoute, WorkerRuntimeProfile};
 use crate::working_set::WorkingSet;
 use codewhale_deepseek::SharedApiRequestBudget;
+use codewhale_tools::shell::{SharedShellManager, new_shared_shell_manager};
 
 #[cfg(test)]
 use super::authority::agent_approval_mode_for_turn;
@@ -920,7 +920,7 @@ pub struct Engine {
     >,
     /// External sandbox backend (#516). When `Some`, exec_shell routes commands
     /// through this instead of spawning a local process.
-    sandbox_backend: Option<std::sync::Arc<dyn crate::sandbox::backend::SandboxBackend>>,
+    sandbox_backend: Option<std::sync::Arc<dyn codewhale_tools::sandbox::backend::SandboxBackend>>,
     /// Diagnostics collected during the current step's tool calls. Drained
     /// and forwarded as a synthetic user message before the next API call.
     pending_lsp_blocks: Vec<crate::lsp::DiagnosticBlock>,
@@ -1306,7 +1306,9 @@ impl Engine {
                     show_thinking: config.show_thinking,
                     verbosity: config.verbosity.as_deref(),
                     skills_scan_codewhale_only: config.skills_scan_codewhale_only,
-                    shell_binary: crate::shell_dispatcher::global_dispatcher().kind().binary(),
+                    shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()
+                        .kind()
+                        .binary(),
                 },
             )
             .into();
@@ -1393,7 +1395,7 @@ impl Engine {
         // External sandbox backend (#516). Logged but non-fatal: if the
         // backend fails to construct, the engine continues with local
         // execution as the fallback.
-        let sandbox_backend = crate::sandbox::backend::create_backend(api_config)
+        let sandbox_backend = crate::sandbox_backend::create_backend(api_config)
             .unwrap_or_else(|e| {
                 tracing::warn!("Failed to create sandbox backend: {e}");
                 None
@@ -4236,7 +4238,9 @@ impl Engine {
                     show_thinking: self.config.show_thinking,
                     verbosity: self.config.verbosity.as_deref(),
                     skills_scan_codewhale_only: self.config.skills_scan_codewhale_only,
-                    shell_binary: crate::shell_dispatcher::global_dispatcher().kind().binary(),
+                    shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()
+                        .kind()
+                        .binary(),
                 },
             )
             .into();
@@ -4663,7 +4667,7 @@ pub(crate) enum MockApprovalEvent {
     },
     RetryWithPolicy {
         id: String,
-        policy: crate::sandbox::SandboxPolicy,
+        policy: codewhale_tools::sandbox::SandboxPolicy,
     },
 }
 

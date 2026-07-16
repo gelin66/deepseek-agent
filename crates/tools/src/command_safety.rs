@@ -1,4 +1,4 @@
-//! Command safety analysis for shell execution
+//! Command safety analysis for production shell execution.
 //!
 //! This module provides pre-execution analysis of shell commands to detect
 //! potentially dangerous patterns and prevent accidental damage.
@@ -261,7 +261,7 @@ pub static COMMAND_ARITY: &[(&str, u8)] = &[
 /// # Examples
 ///
 /// ```
-/// # use codewhale_tui::command_safety::classify_command;
+/// # use codewhale_tools::command_safety::classify_command;
 /// assert_eq!(classify_command(&["git", "status", "-s"]),            "git status");
 /// assert_eq!(classify_command(&["git", "push", "origin"]),          "git push");
 /// assert_eq!(classify_command(&["cargo", "check", "--workspace"]),  "cargo check");
@@ -322,7 +322,7 @@ pub fn classify_command(tokens: &[&str]) -> String {
 /// # Examples
 ///
 /// ```
-/// # use codewhale_tui::command_safety::prefix_allow_matches;
+/// # use codewhale_tools::command_safety::prefix_allow_matches;
 /// assert!( prefix_allow_matches("git status",    "git status --porcelain"));
 /// assert!(!prefix_allow_matches("git status",    "git push origin main"));
 /// assert!( prefix_allow_matches("cargo check",   "cargo check --workspace"));

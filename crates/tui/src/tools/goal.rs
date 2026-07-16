@@ -22,11 +22,11 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use wait_timeout::ChildExt;
 
-use crate::tools::shell::{ProcessTreeOwner, configure_process_tree};
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     required_str,
 };
+use codewhale_tools::shell::{ProcessTreeOwner, configure_process_tree};
 
 /// Maximum number of automatic goal-continuation prompt injections in one
 /// engine turn. This is intra-turn granularity only — it prevents a stuck spin

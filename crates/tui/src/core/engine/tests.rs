@@ -5011,9 +5011,9 @@ fn plan_mode_registry_can_expose_agent_launcher_without_shell_tools() {
 
 #[test]
 fn mode_invariant_matrix_covers_context_catalog_subagents_and_prompt_metadata() {
-    use crate::sandbox::SandboxPolicy;
     use crate::tui::approval::ApprovalMode;
     use crate::worker_profile::ShellPolicy;
+    use codewhale_tools::sandbox::SandboxPolicy;
 
     #[derive(Clone, Copy)]
     enum ExpectedSandbox {
@@ -5404,7 +5404,10 @@ fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
     // already enables trust mode + auto-approve; the sandbox was the
     // last guardrail and contradicts the contract.
     assert!(
-        matches!(yolo_policy, crate::sandbox::SandboxPolicy::DangerFullAccess),
+        matches!(
+            yolo_policy,
+            codewhale_tools::sandbox::SandboxPolicy::DangerFullAccess
+        ),
         "Yolo mode must use DangerFullAccess (no sandbox); got {yolo_policy:?}",
     );
 
@@ -5421,7 +5424,10 @@ fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
         .as_ref()
         .expect("Plan mode should make the shell sandbox policy explicit");
     assert!(
-        matches!(plan_policy, crate::sandbox::SandboxPolicy::ReadOnly),
+        matches!(
+            plan_policy,
+            codewhale_tools::sandbox::SandboxPolicy::ReadOnly
+        ),
         "Plan mode must use ReadOnly sandbox to deny workspace writes (#1077); got {plan_policy:?}",
     );
     assert!(!plan_policy.has_network_access());
@@ -5443,7 +5449,7 @@ fn agent_and_yolo_modes_elevate_shell_sandbox_to_allow_network() {
 #[test]
 fn sandbox_policy_for_mode_returns_correct_policy_per_mode() {
     use crate::core::authority::sandbox_policy_for_mode;
-    use crate::sandbox::SandboxPolicy;
+    use codewhale_tools::sandbox::SandboxPolicy;
 
     let workspace = PathBuf::from("/tmp/example-workspace");
 

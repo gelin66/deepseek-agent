@@ -90,9 +90,9 @@ fn execution_fingerprint_sha256(
     let sandbox_backend = match config
         .sandbox_backend
         .as_deref()
-        .and_then(crate::sandbox::backend::SandboxKind::parse)
+        .and_then(codewhale_tools::sandbox::backend::SandboxKind::parse)
     {
-        Some(crate::sandbox::backend::SandboxKind::OpenSandbox) => {
+        Some(codewhale_tools::sandbox::backend::SandboxKind::OpenSandbox) => {
             let endpoint = config
                 .sandbox_url
                 .as_deref()
@@ -105,7 +105,7 @@ fn execution_fingerprint_sha256(
                 ),
             }))
         }
-        Some(crate::sandbox::backend::SandboxKind::None) | None => None,
+        Some(codewhale_tools::sandbox::backend::SandboxKind::None) | None => None,
     };
     let value = serde_json::json!({
         "schema": 3,
@@ -1055,7 +1055,9 @@ fn runtime_system_prompt(
         project_context_pack_enabled: config.project_context_pack_enabled(),
         verbosity: config.verbosity.as_deref(),
         skills_scan_codewhale_only: config.skills_config().scan_codewhale_only(),
-        shell_binary: crate::shell_dispatcher::global_dispatcher().kind().binary(),
+        shell_binary: codewhale_tools::shell_dispatcher::global_dispatcher()
+            .kind()
+            .binary(),
         tool_mode,
     })
 }
@@ -1100,7 +1102,7 @@ fn production_tool_context(
     .with_shell_policy(shell_policy)
     .with_elevated_sandbox_policy(
         if exec_sandbox_elevation_authorized(allow_sandbox_elevation, explicit_sandbox) {
-            crate::sandbox::SandboxPolicy::DangerFullAccess
+            codewhale_tools::sandbox::SandboxPolicy::DangerFullAccess
         } else {
             effective_sandbox_policy(config, mode, workspace)
         },
@@ -1112,7 +1114,7 @@ fn production_tool_context(
             crate::network_policy::NetworkPolicyDecider::with_default_audit(network.into_runtime()),
         );
     }
-    if let Some(backend) = crate::sandbox::backend::create_backend(config)? {
+    if let Some(backend) = crate::sandbox_backend::create_backend(config)? {
         context = context.with_sandbox_backend(Arc::from(backend));
     }
     context.search_provider = config.search_provider();
@@ -1131,17 +1133,17 @@ fn effective_sandbox_policy(
     config: &Config,
     mode: AppMode,
     workspace: &Path,
-) -> crate::sandbox::SandboxPolicy {
+) -> codewhale_tools::sandbox::SandboxPolicy {
     match config.sandbox_mode.as_deref() {
-        Some("read-only") => crate::sandbox::SandboxPolicy::ReadOnly,
-        Some("workspace-write") => crate::sandbox::SandboxPolicy::WorkspaceWrite {
+        Some("read-only") => codewhale_tools::sandbox::SandboxPolicy::ReadOnly,
+        Some("workspace-write") => codewhale_tools::sandbox::SandboxPolicy::WorkspaceWrite {
             writable_roots: vec![workspace.to_path_buf()],
             network_access: true,
             exclude_tmpdir: false,
             exclude_slash_tmp: false,
         },
-        Some("danger-full-access") => crate::sandbox::SandboxPolicy::DangerFullAccess,
-        Some("external-sandbox") => crate::sandbox::SandboxPolicy::ExternalSandbox {
+        Some("danger-full-access") => codewhale_tools::sandbox::SandboxPolicy::DangerFullAccess,
+        Some("external-sandbox") => codewhale_tools::sandbox::SandboxPolicy::ExternalSandbox {
             network_access: true,
         },
         _ => crate::core::authority::sandbox_policy_for_mode(mode, workspace),

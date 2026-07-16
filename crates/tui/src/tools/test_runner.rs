@@ -13,14 +13,15 @@ use codewhale_protocol::agent_runtime::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::cargo_failure_summary::summarize_cargo_failure;
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_str,
 };
+use codewhale_tools::shell::cargo_failure_summary::summarize_cargo_failure;
 
 use crate::dependencies::ExternalTool;
-use crate::tools::shell::{ShellResult, ShellStatus, execute_managed_program};
+use crate::tools::shell::execute_managed_program;
+use codewhale_tools::shell::{ShellResult, ShellStatus};
 
 const MAX_OUTPUT_CHARS: usize = 40_000;
 const RUN_TESTS_TIMEOUT_MS: u64 = 600_000;

@@ -417,8 +417,8 @@ fn shell_params_are_destructive_like(params: &Value) -> bool {
     split_shell_segments_for_review(command)
         .iter()
         .any(|segment| {
-            crate::command_safety::analyze_command(segment).level
-                == crate::command_safety::SafetyLevel::Dangerous
+            codewhale_tools::command_safety::analyze_command(segment).level
+                == codewhale_tools::command_safety::SafetyLevel::Dangerous
                 || segment_is_device_or_filesystem_destroyer(segment)
         })
 }
@@ -564,7 +564,7 @@ fn shell_tokens_are_publish_like(tokens: &[&str]) -> bool {
         return true;
     }
 
-    let canonical = crate::command_safety::classify_command(tokens);
+    let canonical = codewhale_tools::command_safety::classify_command(tokens);
     matches!(
         canonical.as_str(),
         "git push" | "gh release" | "npm publish" | "cargo publish"

@@ -1,4 +1,4 @@
-//! Compact summaries for Cargo failures.
+//! Compact summaries for Cargo failures emitted by shell tools.
 //!
 //! Cargo output can be large and noisy. This module extracts stable failure
 //! signals for tool metadata so context compaction can preserve the actionable
@@ -12,7 +12,7 @@ const MAX_SUMMARY_CHARS: usize = 1_200;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum CargoFailureKind {
+pub enum CargoFailureKind {
     TestFailure,
     CompileError,
     CargoFailure,
@@ -29,30 +29,30 @@ impl CargoFailureKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CargoFailureSummary {
-    pub(crate) kind: CargoFailureKind,
-    pub(crate) summary: String,
+pub struct CargoFailureSummary {
+    pub kind: CargoFailureKind,
+    pub summary: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) failing_tests: Vec<String>,
+    pub failing_tests: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) error_codes: Vec<String>,
+    pub error_codes: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) primary_errors: Vec<String>,
+    pub primary_errors: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub(crate) panic_locations: Vec<String>,
+    pub panic_locations: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) test_result: Option<String>,
+    pub test_result: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) final_error: Option<String>,
+    pub final_error: Option<String>,
 }
 
 impl CargoFailureSummary {
-    pub(crate) fn to_metadata_value(&self) -> Value {
+    pub fn to_metadata_value(&self) -> Value {
         json!(self)
     }
 }
 
-pub(crate) fn summarize_cargo_failure(
+pub fn summarize_cargo_failure(
     command: &str,
     stdout: &str,
     stderr: &str,

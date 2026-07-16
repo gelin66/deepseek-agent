@@ -40,8 +40,10 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 
 use super::diagnostics::{Diagnostic, Severity};
-use crate::tools::shell::{ProcessTreeOwner, configure_process_tree, shutdown_tokio_process_tree};
 use crate::utils::spawn_supervised;
+use codewhale_tools::shell::{
+    ProcessTreeOwner, configure_process_tree, shutdown_tokio_process_tree,
+};
 
 const LSP_SHUTDOWN_GRACE: Duration = Duration::from_millis(1_000);
 const LSP_TASK_JOIN_GRACE: Duration = Duration::from_millis(250);

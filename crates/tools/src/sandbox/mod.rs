@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-//! Sandbox module for secure command execution.
+//! Sandbox preparation for production tool execution.
 //!
 //! This module provides sandboxing capabilities for shell commands executed by
 //! CodeWhale. Sandboxing restricts what system resources a command can access,
@@ -28,7 +28,6 @@
 //! ```
 
 pub mod backend;
-pub mod opensandbox;
 pub mod policy;
 pub mod process_hardening;
 
@@ -852,7 +851,11 @@ mod tests {
     #[cfg(target_os = "macos")]
     fn test_parity_macos_seatbelt_available() {
         let st = get_platform_sandbox();
-        assert!(matches!(st, Some(SandboxType::MacosSeatbelt)));
+        if seatbelt::is_available() {
+            assert!(matches!(st, Some(SandboxType::MacosSeatbelt)));
+        } else {
+            assert_eq!(st, None, "unusable sandbox-exec must not be selected");
+        }
     }
 
     #[test]
