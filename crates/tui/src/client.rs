@@ -1147,6 +1147,23 @@ impl DeepSeekClient {
         )
     }
 
+    /// Freeze one canonical AgentRuntime request into the official DeepSeek
+    /// wire plan. The caller sends this exact plan through the existing single
+    /// HTTP/SSE implementation; the sender must not infer the surface or
+    /// rebuild the body.
+    pub(crate) fn plan_runtime_chat(
+        &self,
+        request: &codewhale_runtime::ModelRequest,
+    ) -> std::result::Result<Option<deepseek::RequestPlan>, deepseek::ChatPlanError> {
+        deepseek::plan_runtime_chat(
+            self.api_provider,
+            &self.base_url,
+            self.path_suffix.as_deref(),
+            self.strict_tool_mode,
+            request,
+        )
+    }
+
     /// Legacy strict-schema capability for routes not owned by the official
     /// DeepSeek planner. Remove with the remaining provider compatibility path.
     pub(crate) fn supports_legacy_strict_tool_schemas(&self) -> bool {
@@ -3157,6 +3174,74 @@ mod tests {
                 .iter()
                 .all(|request| request.url.path() != "/v1/models"),
             "budget exhaustion must not trigger an uncounted recovery probe"
+        );
+    }
+
+    #[tokio::test]
+    async fn planned_deepseek_sender_transmits_frozen_url_surface_and_body_without_replanning() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/frozen-plan"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-frozen",
+                "model": "deepseek-v4-pro",
+                "choices": [{
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 1,
+                    "total_tokens": 3,
+                    "prompt_cache_hit_tokens": 0,
+                    "prompt_cache_miss_tokens": 2
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = DeepSeekClient::new(&Config {
+            provider: Some("deepseek".to_owned()),
+            api_key: Some("ds-test".to_owned()),
+            base_url: Some(server.uri()),
+            retry: Some(RetryConfig {
+                enabled: Some(false),
+                max_retries: Some(0),
+                initial_delay: Some(0.0),
+                max_delay: Some(0.0),
+                exponential_base: Some(1.0),
+            }),
+            ..Config::default()
+        })
+        .expect("local sender client");
+        let frozen_body = json!({
+            "model": "deepseek-v4-pro",
+            "messages": [{"role": "user", "content": "frozen"}],
+            "max_tokens": 17,
+            "stream": false,
+            "thinking": {"type": "disabled"},
+            "sentinel": "must-survive"
+        });
+        let plan = deepseek::RequestPlan {
+            surface: deepseek::ApiSurface::StrictChat,
+            url: format!("{}/frozen-plan", server.uri()),
+            model: "deepseek-v4-pro".to_owned(),
+            body: frozen_body.clone(),
+            response_mode: deepseek::ResponseMode::NonStreaming,
+            reasoning_replay_tokens: None,
+        };
+
+        let response = client
+            .create_planned_deepseek_message(plan)
+            .await
+            .expect("frozen plan sender succeeds");
+        assert_eq!(response.stop_reason.as_deref(), Some("stop"));
+        let requests = server.received_requests().await.expect("request journal");
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/frozen-plan");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
+            frozen_body
         );
     }
 

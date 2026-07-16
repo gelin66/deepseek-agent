@@ -12,11 +12,11 @@ use async_trait::async_trait;
 use codewhale_runtime::{
     ActorRequestAccounting, AgentActorKind, ApiSurface as RuntimeApiSurface, CancellationToken,
     ModelAccounting, ModelErrorCategory, ModelFinishReason, ModelOutput, ModelPort, ModelPortError,
-    ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, PromptCacheControl,
-    ReasoningEffort, SurfaceUsage, SystemPrompt as RuntimeSystemPrompt,
-    SystemPromptBlock as RuntimeSystemPromptBlock, ToolArguments, ToolDefinition,
-    ToolExecutionError, ToolExecutor, ToolInvocation, ToolOperationStatus, ToolOutcome,
-    ToolRetryDisposition, ToolSideEffectStatus, Usage as RuntimeUsage,
+    ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, PromptCacheControl, SurfaceUsage,
+    SystemPrompt as RuntimeSystemPrompt, SystemPromptBlock as RuntimeSystemPromptBlock,
+    ToolArguments, ToolDefinition, ToolExecutionError, ToolExecutor, ToolInvocation,
+    ToolOperationStatus, ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus,
+    Usage as RuntimeUsage,
 };
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -28,10 +28,9 @@ use crate::client::request_budget::{
     ApiRequestActorSnapshot, ApiRequestBudgetSnapshot, ApiUsageSnapshot, SharedApiRequestBudget,
 };
 use crate::error_taxonomy::StreamError;
-use crate::llm_client::{LlmClient, LlmError, StreamEventBox};
+use crate::llm_client::{LlmError, StreamEventBox};
 use crate::models::{
-    CacheControl, ContentBlock, ContentBlockStart, Delta, Message, MessageRequest, MessageResponse,
-    StreamEvent, SystemBlock, SystemPrompt, Tool, Usage,
+    ContentBlock, ContentBlockStart, Delta, MessageResponse, StreamEvent, SystemPrompt, Usage,
 };
 use crate::tools::apply_patch::ApplyPatchTool;
 use crate::tools::file::{EditFileTool, ListDirTool, ReadFileTool};
@@ -166,19 +165,28 @@ impl DeepSeekModelPort {
 impl ModelPort for DeepSeekModelPort {
     async fn stream(&self, request: ModelRequest) -> Result<Box<dyn ModelStream>, ModelPortError> {
         let client = self.client_for(request.actor.kind);
-        let streaming = request.streaming;
-        let wire_request = runtime_request_to_message_request(&request);
+        let plan = client
+            .plan_runtime_chat(&request)
+            .map_err(|error| model_port_error(error.into()))?
+            .ok_or_else(|| {
+                ModelPortError::new(
+                    "deepseek_official_route_required",
+                    ModelErrorCategory::Protocol,
+                    "AgentRuntime requires the official DeepSeek Chat route",
+                    false,
+                )
+            })?;
 
-        if !streaming {
+        if !request.streaming {
             let response = client
-                .create_message(wire_request)
+                .create_planned_deepseek_message(plan)
                 .await
                 .map_err(model_port_error)?;
             return Ok(Box::new(BufferedModelStream::from_response(response)?));
         }
 
         let source = client
-            .create_message_stream(wire_request)
+            .handle_planned_chat_completion_stream(plan)
             .await
             .map_err(model_port_error)?;
         Ok(Box::new(DeepSeekStreamingAdapter::new(source)))
@@ -359,155 +367,6 @@ impl ToolExecutor for ProductionToolExecutor {
             }
         }
     }
-}
-
-fn runtime_request_to_message_request(request: &ModelRequest) -> MessageRequest {
-    MessageRequest {
-        model: request.model.clone(),
-        messages: runtime_messages(&request.messages),
-        max_tokens: request.max_output_tokens.unwrap_or_else(|| {
-            crate::models::max_output_tokens_for_model(&request.model).unwrap_or(4096)
-        }),
-        system: runtime_system_prompt(&request.system_prompt),
-        tools: (!request.tools.is_empty()).then(|| {
-            request
-                .tools
-                .iter()
-                .map(|tool| Tool {
-                    tool_type: None,
-                    name: tool.name.clone(),
-                    description: tool.description.clone(),
-                    input_schema: tool.input_schema.clone(),
-                    allowed_callers: Some(vec!["direct".to_owned()]),
-                    defer_loading: Some(false),
-                    input_examples: None,
-                    strict: None,
-                    cache_control: None,
-                })
-                .collect()
-        }),
-        tool_choice: None,
-        metadata: None,
-        thinking: None,
-        reasoning_effort: runtime_reasoning_effort(request.reasoning_effort),
-        stream: Some(request.streaming),
-        temperature: None,
-        top_p: None,
-    }
-}
-
-fn runtime_system_prompt(prompt: &RuntimeSystemPrompt) -> Option<SystemPrompt> {
-    if prompt.blocks.is_empty() {
-        return None;
-    }
-    Some(SystemPrompt::Blocks(
-        prompt
-            .blocks
-            .iter()
-            .map(|block| SystemBlock {
-                block_type: "text".to_owned(),
-                text: block.text.clone(),
-                cache_control: matches!(block.cache_control, PromptCacheControl::Stable).then(
-                    || CacheControl {
-                        cache_type: "ephemeral".to_owned(),
-                    },
-                ),
-            })
-            .collect(),
-    ))
-}
-
-fn runtime_reasoning_effort(effort: ReasoningEffort) -> Option<String> {
-    match effort {
-        ReasoningEffort::Off => Some("off".to_owned()),
-        ReasoningEffort::Auto => None,
-        ReasoningEffort::Low => Some("low".to_owned()),
-        ReasoningEffort::Medium => Some("medium".to_owned()),
-        ReasoningEffort::High => Some("high".to_owned()),
-        ReasoningEffort::Max => Some("max".to_owned()),
-    }
-}
-
-fn runtime_messages(messages: &[codewhale_runtime::ModelMessage]) -> Vec<Message> {
-    use codewhale_runtime::ModelMessage;
-
-    let mut projected = Vec::new();
-    let mut tool_results = Vec::new();
-
-    let flush_tool_results = |projected: &mut Vec<Message>,
-                              tool_results: &mut Vec<ContentBlock>| {
-        if !tool_results.is_empty() {
-            projected.push(Message {
-                role: "user".to_owned(),
-                content: std::mem::take(tool_results),
-            });
-        }
-    };
-
-    for message in messages {
-        if let ModelMessage::Tool {
-            call_id, content, ..
-        } = message
-        {
-            tool_results.push(ContentBlock::ToolResult {
-                tool_use_id: call_id.clone(),
-                content: content.clone(),
-                is_error: None,
-                content_blocks: None,
-            });
-            continue;
-        }
-
-        flush_tool_results(&mut projected, &mut tool_results);
-        match message {
-            ModelMessage::User { content } => projected.push(Message {
-                role: "user".to_owned(),
-                content: vec![ContentBlock::Text {
-                    text: content.clone(),
-                    cache_control: None,
-                }],
-            }),
-            ModelMessage::Assistant {
-                content,
-                reasoning_content,
-                tool_calls,
-            } => {
-                let mut blocks = Vec::new();
-                if let Some(reasoning) = reasoning_content {
-                    blocks.push(ContentBlock::Thinking {
-                        thinking: reasoning.clone(),
-                        signature: None,
-                    });
-                }
-                if let Some(content) = content {
-                    blocks.push(ContentBlock::Text {
-                        text: content.clone(),
-                        cache_control: None,
-                    });
-                }
-                blocks.extend(tool_calls.iter().map(|call| {
-                    ContentBlock::ToolUse {
-                        id: call.id.clone(),
-                        name: call.name.clone(),
-                        input: call
-                            .arguments
-                            .parsed
-                            .clone()
-                            .unwrap_or_else(|| Value::String(call.arguments.raw.clone())),
-                        raw_arguments: Some(call.arguments.raw.clone()),
-                        caller: None,
-                    }
-                }));
-                projected.push(Message {
-                    role: "assistant".to_owned(),
-                    content: blocks,
-                });
-            }
-            ModelMessage::Tool { .. } => unreachable!("tool messages are grouped above"),
-        }
-    }
-    flush_tool_results(&mut projected, &mut tool_results);
-    projected
 }
 
 fn runtime_usage(usage: &Usage) -> RuntimeUsage {
@@ -995,10 +854,10 @@ mod tests {
     use super::*;
     use crate::client::deepseek::ResponseMode;
     use crate::config::{ApiProvider, Config, RetryConfig};
-    use crate::models::MessageDelta;
+    use crate::models::{CacheControl, MessageDelta, SystemBlock};
     use crate::tools::spec::{ToolCapability, ToolSpec};
     use codewhale_runtime::{
-        AgentActor, ModelMessage, RunId, ToolInvocationStatus, ToolTransportStatus,
+        AgentActor, ModelMessage, ReasoningEffort, RunId, ToolInvocationStatus, ToolTransportStatus,
     };
 
     struct TypedListDirTool;
@@ -1162,27 +1021,31 @@ mod tests {
     }
 
     #[test]
-    fn request_projection_preserves_reasoning_and_stable_tool_catalog() {
-        let request = runtime_request(true);
-        let projected = runtime_request_to_message_request(&request);
-        assert_eq!(projected.reasoning_effort.as_deref(), Some("max"));
-        assert_eq!(projected.stream, Some(true));
-        assert_eq!(projected.tools.as_ref().unwrap()[0].name, "read_file");
-        assert!(matches!(
-            &projected.messages[0].content[0],
-            ContentBlock::Thinking { thinking, .. } if thinking == "原始推理"
-        ));
-
-        let plan = crate::client::deepseek::plan_chat(
+    fn canonical_request_plan_preserves_reasoning_raw_arguments_and_stable_body() {
+        let mut request = runtime_request(true);
+        request.system_prompt.blocks.push(RuntimeSystemPromptBlock {
+            text: "动态尾部".to_owned(),
+            cache_control: PromptCacheControl::Volatile,
+        });
+        let plan = crate::client::deepseek::plan_runtime_chat(
             ApiProvider::Deepseek,
             "https://api.deepseek.com",
             None,
             false,
-            &projected,
-            ResponseMode::Streaming,
+            &request,
         )
         .unwrap()
         .unwrap();
+        assert_eq!(plan.response_mode, ResponseMode::Streaming);
+        assert_eq!(plan.surface, ApiSurface::StandardChat);
+        assert_eq!(plan.url, "https://api.deepseek.com/chat/completions");
+        assert_eq!(plan.body["stream"], true);
+        assert_eq!(plan.body["reasoning_effort"], "max");
+        assert_eq!(
+            plan.body["messages"][0]["content"],
+            "稳定系统提示\n\n---\n\n动态尾部"
+        );
+        assert_eq!(plan.body["tools"][0]["function"]["name"], "read_file");
         let assistant = plan.body["messages"]
             .as_array()
             .unwrap()
@@ -1194,17 +1057,41 @@ mod tests {
             assistant["tool_calls"][0]["function"]["arguments"],
             json!("{ \"z\" : 1, \"path\" : \"src/lib.rs\", \"a\" : 2 }")
         );
-        let repeated = crate::client::deepseek::plan_chat(
+        let repeated = crate::client::deepseek::plan_runtime_chat(
             ApiProvider::Deepseek,
             "https://api.deepseek.com",
             None,
             false,
-            &runtime_request_to_message_request(&request),
-            ResponseMode::Streaming,
+            &request,
         )
         .unwrap()
         .unwrap();
-        assert_eq!(plan.body, repeated.body);
+        assert_eq!(plan, repeated);
+    }
+
+    #[test]
+    fn canonical_request_plan_rejects_empty_reasoning_before_transport() {
+        let mut request = runtime_request(true);
+        let ModelMessage::Assistant {
+            reasoning_content, ..
+        } = &mut request.messages[0]
+        else {
+            unreachable!()
+        };
+        *reasoning_content = Some(String::new());
+
+        let error = crate::client::deepseek::plan_runtime_chat(
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com",
+            None,
+            false,
+            &request,
+        )
+        .expect_err("empty reasoning provenance must fail before sender");
+        assert_eq!(
+            error,
+            ChatPlanError::MissingReasoningContent { message_index: 0 }
+        );
     }
 
     #[test]
@@ -1255,14 +1142,12 @@ mod tests {
                 unreachable!()
             };
             tool_calls[0].arguments = ToolArguments::parse(raw);
-            let projected = runtime_request_to_message_request(&request);
-            let plan = crate::client::deepseek::plan_chat(
+            let plan = crate::client::deepseek::plan_runtime_chat(
                 ApiProvider::Deepseek,
                 "https://api.deepseek.com",
                 None,
                 false,
-                &projected,
-                ResponseMode::NonStreaming,
+                &request,
             )
             .unwrap()
             .unwrap();
@@ -1282,13 +1167,12 @@ mod tests {
     #[test]
     fn strict_planning_is_beta_only_and_falls_back_without_dropping_tools() {
         let request = runtime_request(true);
-        let strict = crate::client::deepseek::plan_chat(
+        let strict = crate::client::deepseek::plan_runtime_chat(
             ApiProvider::Deepseek,
             "https://api.deepseek.com",
             None,
             true,
-            &runtime_request_to_message_request(&request),
-            ResponseMode::Streaming,
+            &request,
         )
         .unwrap()
         .unwrap();
@@ -1306,19 +1190,25 @@ mod tests {
                 "additionalProperties": false
             }),
         });
-        let standard = crate::client::deepseek::plan_chat(
+        let standard = crate::client::deepseek::plan_runtime_chat(
             ApiProvider::Deepseek,
             "https://api.deepseek.com",
             None,
             true,
-            &runtime_request_to_message_request(&incompatible),
-            ResponseMode::Streaming,
+            &incompatible,
         )
         .unwrap()
         .unwrap();
         assert_eq!(standard.surface, ApiSurface::StandardChat);
         assert_eq!(standard.url, "https://api.deepseek.com/chat/completions");
         assert_eq!(standard.body["tools"].as_array().unwrap().len(), 2);
+        assert!(
+            standard.body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|tool| tool["function"].get("strict").is_none())
+        );
     }
 
     #[test]
@@ -1487,7 +1377,7 @@ mod tests {
             let client = DeepSeekClient::new(&Config {
                 provider: Some("deepseek".to_owned()),
                 api_key: Some("test-key-not-sent".to_owned()),
-                base_url: Some(base_url),
+                base_url: Some(base_url.clone()),
                 retry: Some(RetryConfig {
                     enabled: Some(false),
                     max_retries: Some(0),
@@ -1498,11 +1388,20 @@ mod tests {
                 ..Config::default()
             })
             .expect("local DeepSeek client");
-            let port = DeepSeekModelPort::new(client, SharedApiRequestBudget::tracking_only());
+            let mut plan = crate::client::deepseek::plan_runtime_chat(
+                ApiProvider::Deepseek,
+                "https://api.deepseek.com",
+                None,
+                false,
+                &runtime_request(false),
+            )
+            .unwrap()
+            .unwrap();
+            plan.url = format!("{base_url}/chat/completions");
 
-            let error = match port.stream(runtime_request(false)).await {
+            let error = match client.create_planned_deepseek_message(plan).await {
                 Ok(_) => panic!("truncated 200 response must not be accepted"),
-                Err(error) => error,
+                Err(error) => model_port_error(error),
             };
             server.await.expect("truncated response fixture");
 

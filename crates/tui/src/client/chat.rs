@@ -295,30 +295,32 @@ impl DeepSeekClient {
         request: &MessageRequest,
     ) -> Result<MessageResponse> {
         let cacheable = crate::llm_response_cache::request_is_cacheable(request);
-        let (body, url, model, surface, reasoning_replay_tokens, official_plan) =
-            if let Some(plan) =
-                official_deepseek_request_plan(self, request, ResponseMode::NonStreaming)?
-            {
-                debug_assert_eq!(plan.response_mode, ResponseMode::NonStreaming);
-                (
-                    plan.body,
-                    plan.url,
-                    plan.model,
-                    plan.surface,
-                    plan.reasoning_replay_tokens,
-                    true,
-                )
-            } else {
-                let (body, url, model, replay) =
-                    legacy_chat_request(self, request, ResponseMode::NonStreaming);
-                (body, url, model, ApiSurface::StandardChat, replay, false)
-            };
+        let (plan, official_plan) = if let Some(plan) =
+            official_deepseek_request_plan(self, request, ResponseMode::NonStreaming)?
+        {
+            debug_assert_eq!(plan.response_mode, ResponseMode::NonStreaming);
+            (plan, true)
+        } else {
+            let (body, url, model, replay) =
+                legacy_chat_request(self, request, ResponseMode::NonStreaming);
+            (
+                RequestPlan {
+                    surface: ApiSurface::StandardChat,
+                    url,
+                    model,
+                    body,
+                    response_mode: ResponseMode::NonStreaming,
+                    reasoning_replay_tokens: replay,
+                },
+                false,
+            )
+        };
 
         let response_cache_key = if cacheable {
             let wire_body =
-                serde_json::to_vec(&body).context("Failed to serialize Chat API cache key")?;
+                serde_json::to_vec(&plan.body).context("Failed to serialize Chat API cache key")?;
             let (cache_base_url, cache_path_suffix) = if official_plan {
-                (url.as_str(), None)
+                (plan.url.as_str(), None)
             } else {
                 (self.base_url.as_str(), self.path_suffix.as_deref())
             };
@@ -336,6 +338,38 @@ impl DeepSeekClient {
         } else {
             None
         };
+
+        self.send_planned_chat_message(plan, response_cache_key)
+            .await
+    }
+
+    /// Send one already-frozen official DeepSeek non-streaming plan.
+    ///
+    /// AgentRuntime calls this method after `plan_runtime_chat`; no provider,
+    /// surface, strict-tool or body decision is repeated here.
+    pub(crate) async fn create_planned_deepseek_message(
+        &self,
+        plan: RequestPlan,
+    ) -> Result<MessageResponse> {
+        if plan.response_mode != ResponseMode::NonStreaming {
+            anyhow::bail!("DeepSeek non-streaming sender received a streaming RequestPlan");
+        }
+        self.send_planned_chat_message(plan, None).await
+    }
+
+    async fn send_planned_chat_message(
+        &self,
+        plan: RequestPlan,
+        response_cache_key: Option<[u8; 32]>,
+    ) -> Result<MessageResponse> {
+        let RequestPlan {
+            surface,
+            url,
+            model,
+            body,
+            reasoning_replay_tokens,
+            ..
+        } = plan;
 
         let open_timeout = stream_open_timeout();
         let (response, request_lease) = match tokio_timeout(
@@ -397,22 +431,43 @@ impl DeepSeekClient {
         &self,
         request: MessageRequest,
     ) -> Result<StreamEventBox> {
-        let (body, url, model, surface, replay_input_tokens) = if let Some(plan) =
+        let plan = if let Some(plan) =
             official_deepseek_request_plan(self, &request, ResponseMode::Streaming)?
         {
             debug_assert_eq!(plan.response_mode, ResponseMode::Streaming);
-            (
-                plan.body,
-                plan.url,
-                plan.model,
-                plan.surface,
-                plan.reasoning_replay_tokens,
-            )
+            plan
         } else {
             let (body, url, model, replay) =
                 legacy_chat_request(self, &request, ResponseMode::Streaming);
-            (body, url, model, ApiSurface::StandardChat, replay)
+            RequestPlan {
+                surface: ApiSurface::StandardChat,
+                url,
+                model,
+                body,
+                response_mode: ResponseMode::Streaming,
+                reasoning_replay_tokens: replay,
+            }
         };
+        self.handle_planned_chat_completion_stream(plan).await
+    }
+
+    /// Send one already-frozen official DeepSeek streaming plan through the
+    /// existing production HTTP/SSE implementation.
+    pub(crate) async fn handle_planned_chat_completion_stream(
+        &self,
+        plan: RequestPlan,
+    ) -> Result<StreamEventBox> {
+        if plan.response_mode != ResponseMode::Streaming {
+            anyhow::bail!("DeepSeek streaming sender received a non-streaming RequestPlan");
+        }
+        let RequestPlan {
+            surface,
+            url,
+            model,
+            body,
+            reasoning_replay_tokens: replay_input_tokens,
+            ..
+        } = plan;
         let (response, request_lease) = self.send_json_with_retry(&url, &body).await?;
 
         let status = response.status();
@@ -1490,13 +1545,13 @@ struct PendingToolCallInfo {
     input: Value,
 }
 
-struct SeenToolResult {
+pub(super) struct SeenToolResult {
     message_label: String,
     original_chars: usize,
 }
 
-struct WireToolResult {
-    content: String,
+pub(super) struct WireToolResult {
+    pub(super) content: String,
     original_chars: usize,
     sent_chars: usize,
     truncated: bool,
@@ -1577,7 +1632,7 @@ fn is_mutation_tool(tool_name: &str) -> bool {
     matches!(tool_name, "write_file" | "edit_file" | "apply_patch")
 }
 
-fn compact_tool_result_for_wire(
+pub(super) fn compact_tool_result_for_wire(
     tool_name: &str,
     input: &Value,
     content: &str,

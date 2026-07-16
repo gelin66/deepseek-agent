@@ -100,7 +100,7 @@ pub fn sanitize_for_responses(schema: &mut Value) -> Option<String> {
     constraint_note
 }
 
-fn strict_schema_supported(schema: &Value) -> bool {
+pub(crate) fn strict_schema_supported(schema: &Value) -> bool {
     schema.get("type").and_then(Value::as_str) == Some("object")
         && strict_schema_node_supported(schema)
 }
