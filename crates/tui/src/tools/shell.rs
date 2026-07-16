@@ -2,11 +2,10 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::path::Path;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
 use async_trait::async_trait;
+#[cfg(test)]
 use codewhale_tools::sandbox::SandboxPolicy as ExecutionSandboxPolicy;
 use codewhale_tools::shell::output::{summarize_output, truncate_with_meta};
 use codewhale_tools::shell::{
@@ -62,7 +61,7 @@ fn shell_network_restricted_hint<'a>(
     )
 }
 
-fn exec_shell_options(context: &ToolContext) -> ExecShellOptions {
+pub(crate) fn exec_shell_options(context: &ToolContext) -> ExecShellOptions {
     let mut options = ExecShellOptions::new(context.shell_manager.clone(), context.shell_policy);
     options.elevated_sandbox_policy = context.elevated_sandbox_policy.clone();
     options.shell_network_denied_hint = context.shell_network_denied_hint.clone();
@@ -108,33 +107,6 @@ impl ExecShellHost for TuiExecShellHost<'_> {
     }
 }
 
-/// Retain the existing verifier/test ToolSpec boundary while delegating its
-/// process lifecycle to the single tools-owned implementation.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn execute_managed_program(
-    context: &ToolContext,
-    display_command: &str,
-    program: &str,
-    args: &[String],
-    working_dir: &Path,
-    timeout_ms: u64,
-    policy_override: Option<ExecutionSandboxPolicy>,
-    extra_env: HashMap<String, String>,
-) -> Result<ShellResult> {
-    codewhale_tools::shell::execute_managed_program(
-        context.production_context(),
-        &context.shell_manager,
-        shell_job_owner_from_context(context),
-        display_command,
-        program,
-        args,
-        working_dir,
-        timeout_ms,
-        policy_override,
-        extra_env,
-    )
-    .await
-}
 pub struct ExecShellTool;
 
 #[async_trait]

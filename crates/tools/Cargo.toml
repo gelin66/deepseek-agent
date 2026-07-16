@@ -15,6 +15,7 @@ anyhow.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
+codewhale-runtime = { path = "../runtime", version = "0.8.68" }
 crossterm = "0.29"
 futures-util = "0.3.31"
 ignore = "0.4"

@@ -31,6 +31,24 @@ pub struct RuleSet {
 }
 
 impl ExecPolicyConfig {
+    pub fn production_snapshot(&self) -> codewhale_tools::ProductionExecPolicySnapshot {
+        codewhale_tools::ProductionExecPolicySnapshot {
+            rules: self
+                .rules
+                .iter()
+                .map(|(name, rules)| {
+                    (
+                        name.clone(),
+                        codewhale_tools::ProductionExecPolicyRuleSet {
+                            allow: rules.allow.clone(),
+                            deny: rules.deny.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+
     pub fn from_str(contents: &str) -> Result<Self> {
         toml::from_str(contents).context("failed to parse execpolicy.toml")
     }

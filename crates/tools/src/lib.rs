@@ -21,6 +21,7 @@ mod git;
 mod grep_files;
 mod image_ocr;
 mod list_dir;
+mod production;
 mod production_context;
 mod read_file;
 mod run_tests;
@@ -39,6 +40,11 @@ pub use git::{execute_git_diff, execute_git_status};
 pub use grep_files::execute_grep_files;
 pub use image_ocr::{ocr_available, ocr_image_path, resolve_tesseract};
 pub use list_dir::execute_list_dir;
+pub use production::{
+    PRODUCTION_TOOL_NAMES, ProductionExecPolicyRuleSet, ProductionExecPolicySnapshot,
+    ProductionToolConfig, ProductionToolExecutionIdentity, ProductionToolExecutor,
+    production_tool_catalog_sha256, production_tool_definitions,
+};
 pub use production_context::ProductionToolContext;
 pub use read_file::execute_read_file;
 pub use run_tests::{CargoTestEvidence, RunTestsOutput, execute_run_tests};

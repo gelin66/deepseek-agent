@@ -17,14 +17,13 @@ use serde_json::{Value, json};
 use shlex::try_join;
 
 use crate::dependencies::ExternalTool;
-use crate::tools::shell::execute_managed_program;
+#[cfg(test)]
 use codewhale_tools::shell::ShellStatus;
 
 use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
-const MAX_GATE_OUTPUT_CHARS: usize = 16_000;
 const DEFAULT_MAX_PYTHON_FILES: usize = 200;
 const MAX_CUSTOM_GATES: usize = 12;
 const VERIFIER_GATE_TIMEOUT_MS: u64 = 600_000;
@@ -133,83 +132,6 @@ struct VerifierGate {
     args: Vec<String>,
     env: Vec<(String, String)>,
     skipped_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct GateResult {
-    name: String,
-    ecosystem: String,
-    status: GateStatus,
-    command: String,
-    cwd: String,
-    exit_code: Option<i32>,
-    duration_ms: u64,
-    stdout: String,
-    stderr: String,
-    stdout_truncated: bool,
-    stderr_truncated: bool,
-    skipped_reason: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum GateStatus {
-    Passed,
-    Failed,
-    Skipped,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum VerifierVerdict {
-    Pass,
-    Partial,
-    Fail,
-}
-
-impl VerifierVerdict {
-    fn from_counts(gate_count: usize, failed: usize, skipped: usize) -> Self {
-        if failed > 0 {
-            Self::Fail
-        } else if skipped > 0 || gate_count == 0 {
-            Self::Partial
-        } else {
-            Self::Pass
-        }
-    }
-
-    fn hunt_verdict(self) -> &'static str {
-        match self {
-            Self::Pass => "hunted",
-            Self::Partial => "wounded",
-            Self::Fail => "escaped",
-        }
-    }
-
-    fn goal_status(self) -> &'static str {
-        match self {
-            Self::Pass => "complete",
-            Self::Partial => "paused",
-            Self::Fail => "blocked",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RunVerifiersOutput {
-    success: bool,
-    profile: String,
-    level: String,
-    workspace: String,
-    gate_count: usize,
-    passed: usize,
-    failed: usize,
-    skipped: usize,
-    verifier_verdict: VerifierVerdict,
-    hunt_verdict: String,
-    goal_status: String,
-    summary: String,
-    gates: Vec<GateResult>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,98 +262,51 @@ impl ToolSpec for RunVerifiersTool {
                 "commands may contain at most {MAX_CUSTOM_GATES} custom gates"
             )));
         }
-
-        let gates = build_gate_plan(
-            context,
-            profile,
-            level,
-            input.max_python_files,
-            &input.commands,
-        )?;
-        if gates.is_empty() {
-            let verifier_verdict = VerifierVerdict::from_counts(0, 0, 0);
-            let output = RunVerifiersOutput {
-                success: false,
-                profile: profile.as_str().to_string(),
-                level: level.as_str().to_string(),
-                workspace: context.workspace().display().to_string(),
-                gate_count: 0,
-                passed: 0,
-                failed: 0,
-                skipped: 0,
-                verifier_verdict,
-                hunt_verdict: verifier_verdict.hunt_verdict().to_string(),
-                goal_status: verifier_verdict.goal_status().to_string(),
-                summary: "No verifier gates were detected. Provide custom commands or choose a profile that matches this workspace.".to_string(),
-                gates: Vec::new(),
-            };
-            let mut result = verifier_tool_result(&output)?;
-            crate::tools::goal::reject_goal_evidence_artifact(&mut result);
-            return Ok(result);
-        }
-
         if input.background {
+            // M4-C deletion point: the interactive TUI is the only remaining
+            // consumer of detached verifier jobs. The production runtime
+            // rejects background and always returns an observable result.
+            let gates = build_gate_plan(
+                context,
+                profile,
+                level,
+                input.max_python_files,
+                &input.commands,
+            )?;
             return start_background_gates(context, profile, level, gates);
         }
 
         let revision_before =
             crate::tools::goal::capture_workspace_revision(context.workspace()).await;
-
-        let mut results = futures_util::future::join_all(
-            gates
-                .into_iter()
-                .map(|gate| run_gate_with_timeout(context, gate, VERIFIER_GATE_TIMEOUT_MS)),
+        let shell = crate::tools::shell::exec_shell_options(context);
+        let production_input = json!({
+            "commands": input.commands,
+            "level": level.as_str(),
+            "max_python_files": input.max_python_files,
+            "profile": profile.as_str(),
+        });
+        let mut result = codewhale_tools::execute_run_verifiers(
+            production_input,
+            context.production_context(),
+            &shell,
         )
-        .await;
-        results.sort_by(|a, b| a.name.cmp(&b.name));
-
-        let passed = results
-            .iter()
-            .filter(|result| result.status == GateStatus::Passed)
-            .count();
-        let failed = results
-            .iter()
-            .filter(|result| result.status == GateStatus::Failed)
-            .count();
-        let skipped = results
-            .iter()
-            .filter(|result| result.status == GateStatus::Skipped)
-            .count();
-        let success = failed == 0 && skipped == 0;
-        let verifier_verdict = VerifierVerdict::from_counts(results.len(), failed, skipped);
-        let summary = if success {
-            format!("All {passed} verifier gates passed.")
-        } else {
-            format!("{passed} passed, {failed} failed, {skipped} skipped.")
-        };
-
-        let output = RunVerifiersOutput {
-            success,
-            profile: profile.as_str().to_string(),
-            level: level.as_str().to_string(),
-            workspace: context.workspace().display().to_string(),
-            gate_count: results.len(),
-            passed,
-            failed,
-            skipped,
-            verifier_verdict,
-            hunt_verdict: verifier_verdict.hunt_verdict().to_string(),
-            goal_status: verifier_verdict.goal_status().to_string(),
-            summary,
-            gates: results,
-        };
-
+        .await?;
+        let output = serde_json::from_str::<codewhale_tools::RunVerifiersOutput>(&result.content)
+            .map_err(|error| {
+            ToolError::execution_failed(format!(
+                "tools-owned verifier returned invalid structured output: {error}"
+            ))
+        })?;
+        attach_interactive_goal_projection(&mut result, output.verifier_verdict)?;
         let check = format!(
             "run_verifiers profile={} level={} gates={}",
             output.profile, output.level, output.gate_count
         );
         let summary = output.summary.clone();
-        let mut result = verifier_tool_result(&output)?;
         if result.is_success() {
-            let built_in_passed = output
-                .gates
-                .iter()
-                .any(|gate| gate.ecosystem != "custom" && gate.status == GateStatus::Passed);
+            let built_in_passed = output.gates.iter().any(|gate| {
+                gate.ecosystem != "custom" && gate.status == codewhale_tools::GateStatus::Passed
+            });
             let revision_after =
                 crate::tools::goal::capture_workspace_revision(context.workspace()).await;
             crate::tools::goal::attach_goal_evidence_artifact(
@@ -478,6 +353,44 @@ impl ToolSpec for RunVerifiersTool {
     }
 }
 
+fn attach_interactive_goal_projection(
+    result: &mut ToolOutcome,
+    verdict: codewhale_tools::VerifierVerdict,
+) -> Result<(), ToolError> {
+    // M4-C/M5 deletion point: these fields belong to the unmigrated
+    // interactive Goal/task consumer. The tools-owned production result stays
+    // neutral and contains only verifier facts and revision-bound evidence.
+    let (hunt_verdict, goal_status) = match verdict {
+        codewhale_tools::VerifierVerdict::Pass => ("hunted", "complete"),
+        codewhale_tools::VerifierVerdict::Partial => ("wounded", "paused"),
+        codewhale_tools::VerifierVerdict::Fail => ("escaped", "blocked"),
+    };
+    let verifier_verdict = serde_json::to_value(verdict)
+        .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+    let mut content: Value = serde_json::from_str(&result.content)
+        .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+    let object = content.as_object_mut().ok_or_else(|| {
+        ToolError::execution_failed("tools-owned verifier output is not a JSON object")
+    })?;
+    object.insert("hunt_verdict".to_string(), json!(hunt_verdict));
+    object.insert("goal_status".to_string(), json!(goal_status));
+    result.content = serde_json::to_string(&content)
+        .map_err(|error| ToolError::execution_failed(error.to_string()))?;
+
+    let metadata = result.metadata.get_or_insert_with(|| json!({}));
+    let metadata = metadata.as_object_mut().ok_or_else(|| {
+        ToolError::execution_failed("tools-owned verifier metadata is not a JSON object")
+    })?;
+    metadata.insert("verifier_verdict".to_string(), verifier_verdict);
+    metadata.insert("hunt_verdict".to_string(), json!(hunt_verdict));
+    metadata.insert("goal_status".to_string(), json!(goal_status));
+    metadata.insert(
+        "task_updates".to_string(),
+        json!({"hunt_verdict": hunt_verdict}),
+    );
+    Ok(())
+}
+
 fn normalized_goal_verifier_params(
     input: &RunVerifiersInput,
     profile: VerifierProfile,
@@ -496,81 +409,29 @@ fn normalized_goal_verifier_params(
 pub(crate) async fn run_workflow_completion_gates(
     context: &ToolContext,
 ) -> Result<Value, ToolError> {
-    let gates = build_gate_plan(
-        context,
-        VerifierProfile::Auto,
-        VerifierLevel::Quick,
-        DEFAULT_MAX_PYTHON_FILES,
-        &[],
-    )?;
-    if gates.is_empty() {
-        return Ok(json!({
-            "success": false,
+    let shell = crate::tools::shell::exec_shell_options(context);
+    let outcome = codewhale_tools::execute_run_verifiers(
+        json!({
             "profile": "auto",
             "level": "quick",
-            "gate_count": 0,
-            "summary": "No verifier gates detected for this workspace.",
-            "gates": [],
-        }));
-    }
-
-    let mut results = futures_util::future::join_all(
-        gates
-            .into_iter()
-            .map(|gate| run_gate_with_timeout(context, gate, VERIFIER_GATE_TIMEOUT_MS)),
+            "max_python_files": DEFAULT_MAX_PYTHON_FILES,
+            "commands": [],
+        }),
+        context.production_context(),
+        &shell,
     )
-    .await;
-    results.sort_by(|a, b| a.name.cmp(&b.name));
-
-    let passed = results
-        .iter()
-        .filter(|result| result.status == GateStatus::Passed)
-        .count();
-    let failed = results
-        .iter()
-        .filter(|result| result.status == GateStatus::Failed)
-        .count();
-    let skipped = results
-        .iter()
-        .filter(|result| result.status == GateStatus::Skipped)
-        .count();
-    let success = failed == 0 && skipped == 0;
-    if !success {
+    .await?;
+    if !outcome.is_success() {
         return Err(ToolError::execution_failed(format!(
-            "{passed} passed, {failed} failed, {skipped} skipped"
+            "workflow verifier gates did not pass: {}",
+            outcome.content
         )));
     }
-    Ok(json!({
-        "success": true,
-        "profile": "auto",
-        "level": "quick",
-        "gate_count": results.len(),
-        "passed": passed,
-        "failed": failed,
-        "skipped": skipped,
-        "summary": format!("All {passed} verifier gates passed."),
-        "gates": results,
-    }))
-}
-
-fn verifier_tool_result(output: &RunVerifiersOutput) -> Result<ToolOutcome, ToolError> {
-    ToolOutcome::json(output)
-        .map_err(|err| ToolError::execution_failed(err.to_string()))
-        .map(|mut result| {
-            result.side_effect = ToolSideEffectStatus::Indeterminate;
-            if !output.success {
-                result.operation = ToolOperationStatus::Failed;
-                result.retry = ToolRetryDisposition::Unsafe;
-            }
-            result.with_metadata(json!({
-                "verifier_verdict": output.verifier_verdict,
-                "hunt_verdict": output.hunt_verdict,
-                "goal_status": output.goal_status,
-                "task_updates": {
-                    "hunt_verdict": output.hunt_verdict
-                }
-            }))
-        })
+    serde_json::from_str(&outcome.content).map_err(|error| {
+        ToolError::execution_failed(format!(
+            "tools-owned verifier returned invalid workflow output: {error}"
+        ))
+    })
 }
 
 fn start_background_gates(
@@ -1159,169 +1020,6 @@ fn should_skip_dir_name(name: &str) -> bool {
     )
 }
 
-async fn run_gate_with_timeout(
-    context: &ToolContext,
-    gate: VerifierGate,
-    timeout_ms: u64,
-) -> GateResult {
-    let command = render_command(gate.program.as_deref(), &gate.args);
-    if let Some(reason) = gate.skipped_reason {
-        return GateResult {
-            name: gate.name,
-            ecosystem: gate.ecosystem,
-            status: GateStatus::Skipped,
-            command,
-            cwd: gate.cwd.display().to_string(),
-            exit_code: None,
-            duration_ms: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
-            skipped_reason: Some(reason),
-        };
-    }
-
-    let Some(program) = gate.program else {
-        return GateResult {
-            name: gate.name,
-            ecosystem: gate.ecosystem,
-            status: GateStatus::Skipped,
-            command,
-            cwd: gate.cwd.display().to_string(),
-            exit_code: None,
-            duration_ms: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-            stdout_truncated: false,
-            stderr_truncated: false,
-            skipped_reason: Some("verifier has no executable program".to_string()),
-        };
-    };
-
-    let env = gate.env.iter().cloned().collect::<HashMap<_, _>>();
-    let output = match execute_managed_program(
-        context,
-        &command,
-        &program,
-        &gate.args,
-        &gate.cwd,
-        timeout_ms,
-        context.elevated_sandbox_policy.clone(),
-        env,
-    )
-    .await
-    {
-        Ok(output) => output,
-        Err(err)
-            if err.chain().any(|cause| {
-                cause
-                    .downcast_ref::<std::io::Error>()
-                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
-            }) =>
-        {
-            return GateResult {
-                name: gate.name,
-                ecosystem: gate.ecosystem,
-                status: GateStatus::Skipped,
-                command,
-                cwd: gate.cwd.display().to_string(),
-                exit_code: None,
-                duration_ms: 0,
-                stdout: String::new(),
-                stderr: String::new(),
-                stdout_truncated: false,
-                stderr_truncated: false,
-                skipped_reason: Some(format!("{program} is not installed or not in PATH")),
-            };
-        }
-        Err(err) => {
-            return GateResult {
-                name: gate.name,
-                ecosystem: gate.ecosystem,
-                status: GateStatus::Failed,
-                command,
-                cwd: gate.cwd.display().to_string(),
-                exit_code: None,
-                duration_ms: 0,
-                stdout: String::new(),
-                stderr: format!("Failed to spawn verifier: {err}"),
-                stdout_truncated: false,
-                stderr_truncated: false,
-                skipped_reason: None,
-            };
-        }
-    };
-
-    let mut stderr_raw = output.stderr;
-    if output.status == ShellStatus::TimedOut {
-        stderr_raw.push_str("\nVerifier timed out; managed process tree was killed.");
-    } else if output.status == ShellStatus::Killed
-        && context
-            .cancellation_token()
-            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
-    {
-        stderr_raw.push_str("\nVerifier canceled; managed process tree was killed.");
-    }
-    let (stdout, stdout_truncated) = truncate_with_note(&output.stdout, MAX_GATE_OUTPUT_CHARS);
-    let (stderr, stderr_truncated) = truncate_with_note(&stderr_raw, MAX_GATE_OUTPUT_CHARS);
-    GateResult {
-        name: gate.name,
-        ecosystem: gate.ecosystem,
-        status: if output.status == ShellStatus::Completed {
-            GateStatus::Passed
-        } else {
-            GateStatus::Failed
-        },
-        command,
-        cwd: gate.cwd.display().to_string(),
-        exit_code: output.exit_code,
-        duration_ms: output.duration_ms,
-        stdout,
-        stderr,
-        stdout_truncated,
-        stderr_truncated,
-        skipped_reason: None,
-    }
-}
-
-fn render_command(program: Option<&str>, args: &[String]) -> String {
-    let mut parts = Vec::new();
-    parts.push(program.unwrap_or("<unavailable>").to_string());
-    parts.extend(args.iter().cloned());
-    parts.join(" ")
-}
-
-fn truncate_with_note(text: &str, max_chars: usize) -> (String, bool) {
-    if text.chars().count() <= max_chars {
-        return (text.to_string(), false);
-    }
-    let end = char_boundary_index(text, max_chars);
-    let truncated = &text[..end];
-    let omitted_chars = text
-        .chars()
-        .count()
-        .saturating_sub(truncated.chars().count());
-    (
-        format!(
-            "{truncated}\n\n[output truncated to {max_chars} characters; {omitted_chars} characters omitted]"
-        ),
-        true,
-    )
-}
-
-fn char_boundary_index(text: &str, max_chars: usize) -> usize {
-    if max_chars == 0 {
-        return 0;
-    }
-    for (count, (idx, _)) in text.char_indices().enumerate() {
-        if count == max_chars {
-            return idx;
-        }
-    }
-    text.len()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1476,7 +1174,7 @@ mod tests {
             .await
             .expect("execute");
 
-        let parsed: RunVerifiersOutput =
+        let parsed: codewhale_tools::RunVerifiersOutput =
             serde_json::from_str(&result.content).expect("verifier output json");
         assert!(parsed.success, "result: {}", result.content);
         assert_eq!(parsed.passed, 1);
@@ -1639,7 +1337,7 @@ mod tests {
             "a canceled gate must fail: {}",
             result.content
         );
-        let parsed: RunVerifiersOutput =
+        let parsed: codewhale_tools::RunVerifiersOutput =
             serde_json::from_str(&result.content).expect("verifier output");
         assert!(
             parsed.gates[0].stderr.contains("Verifier canceled"),
@@ -1655,49 +1353,6 @@ mod tests {
                 .iter()
                 .all(|job| job.status != ShellStatus::Running),
             "canceled foreground verifier left a managed job running"
-        );
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn foreground_verifier_timeout_kills_descendant_process_tree() {
-        let tmp = tempdir().expect("tempdir");
-        let pid_path = tmp.path().join("verifier-timeout-child.pid");
-        let ctx = ToolContext::new(tmp.path());
-        let gate = gate(
-            "timeout-custom-gate",
-            "custom",
-            tmp.path(),
-            "/bin/sh",
-            [
-                "-c",
-                "sleep 60 & child=$!; echo $child > verifier-timeout-child.pid; wait",
-            ],
-        );
-
-        let started = Instant::now();
-        let result = run_gate_with_timeout(&ctx, gate, 1_000).await;
-        assert_eq!(result.status, GateStatus::Failed);
-        assert!(
-            result.stderr.contains("Verifier timed out"),
-            "stderr: {:?}",
-            result.stderr
-        );
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "timeout did not settle promptly: {:?}",
-            started.elapsed()
-        );
-        let child_pid = wait_for_pid_file(&pid_path, Duration::from_secs(1)).await;
-        assert_process_exited(child_pid, Duration::from_secs(2)).await;
-        assert!(
-            ctx.shell_manager
-                .lock()
-                .expect("shell manager")
-                .list_jobs()
-                .iter()
-                .all(|job| job.status != ShellStatus::Running),
-            "timed out foreground verifier left a managed job running"
         );
     }
 

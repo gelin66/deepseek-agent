@@ -1087,6 +1087,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "codewhale-protocol",
+ "codewhale-runtime",
  "crossterm",
  "futures-util",
  "ignore",

@@ -416,8 +416,10 @@ impl ExternalTool for RustC {
 }
 
 /// Rust build tool — used by the `run_tests` tool.
+#[cfg(test)]
 pub struct Cargo;
 
+#[cfg(test)]
 impl ExternalTool for Cargo {
     fn candidates() -> &'static [&'static str] {
         &["cargo"]

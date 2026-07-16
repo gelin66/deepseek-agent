@@ -23,11 +23,11 @@ use codewhale_runtime::{
     ToolPolicy, TranscriptEntry,
 };
 use codewhale_state::StateStore;
+use codewhale_tools::{ProductionToolConfig, ProductionToolExecutor};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
-use crate::agent_runtime_adapter::ProductionToolExecutor;
 use crate::client::DeepSeekClient;
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::core::termination::RunTerminationReason;
@@ -474,6 +474,13 @@ pub(crate) async fn run_exec_runtime(
             return Err(error);
         }
     };
+    let tool_config = match production_tool_config(&tool_context, &settings) {
+        Ok(config) => config,
+        Err(error) => {
+            stop_exec_signal_controller(&mut signal_task).await;
+            return Err(error);
+        }
+    };
     let fingerprint_context = tool_context.clone();
     let accounting_baseline = if resume_replay.is_none() {
         model_accounting_snapshot(&api_request_budget)
@@ -501,7 +508,7 @@ pub(crate) async fn run_exec_runtime(
         };
         Arc::new(DeepSeekModelPort::new(transport, api_request_budget))
     };
-    let tool_executor: Arc<dyn ToolExecutor> = Arc::new(ProductionToolExecutor::new(tool_context));
+    let tool_executor: Arc<dyn ToolExecutor> = Arc::new(ProductionToolExecutor::new(tool_config));
     let (event_tx, mut event_rx) = mpsc::channel(RUNTIME_EVENT_CHANNEL_CAPACITY);
     let sink = Arc::new(ChannelEventSink { sender: event_tx });
     let runtime = Arc::new(AgentRuntime::new(
@@ -1140,6 +1147,35 @@ fn production_tool_context(
         .as_ref()
         .and_then(|search| search.base_url.clone());
     Ok(context)
+}
+
+fn production_tool_config(
+    context: &ToolContext,
+    settings: &crate::settings::Settings,
+) -> Result<ProductionToolConfig> {
+    let mut config = ProductionToolConfig::new(context.workspace().to_path_buf())
+        .with_trust_mode(context.trust_mode())
+        .with_trusted_external_paths(context.trusted_external_paths().to_vec())
+        .with_follow_symlinks(context.follow_symlinks())
+        .with_auto_approve(context.auto_approve())
+        .with_shell_policy(context.shell_policy)
+        .with_shell_network_denied_hint(context.shell_network_denied_hint.clone())
+        .with_prefer_external_pdftotext(settings.prefer_external_pdftotext);
+    if let Some(policy) = context.elevated_sandbox_policy.clone() {
+        config = config.with_elevated_sandbox_policy(policy);
+    }
+    if let Some(backend) = context.sandbox_backend.clone() {
+        config = config.with_sandbox_backend(backend);
+    }
+    let exec_policy = if context
+        .features
+        .enabled(crate::features::Feature::ExecPolicy)
+    {
+        crate::execpolicy::load_default_policy()?.map(|policy| policy.production_snapshot())
+    } else {
+        None
+    };
+    Ok(config.with_exec_policy(exec_policy))
 }
 
 fn effective_sandbox_policy(
@@ -2036,6 +2072,32 @@ mod tests {
         assert_eq!(limits.max_concurrent_children, 0);
         assert_eq!(limits.max_model_requests, 10);
         assert_eq!(limits.max_tool_calls, 40);
+    }
+
+    #[test]
+    fn fixed_catalog_strict_request_falls_back_atomically_without_tool_loss() {
+        let definitions = codewhale_tools::production_tool_definitions();
+        assert_eq!(definitions.len(), 11);
+        assert!(definitions[0].input_schema.get("oneOf").is_some());
+        let decision = codewhale_deepseek::plan_tool_surface(
+            true,
+            definitions
+                .iter()
+                .map(|definition| &definition.input_schema),
+        );
+        assert_eq!(
+            decision.surface,
+            codewhale_deepseek::ApiSurface::StandardChat
+        );
+        assert!(!decision.strict_compatible);
+        assert!(decision.strict_fallback);
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>(),
+            codewhale_tools::PRODUCTION_TOOL_NAMES
+        );
     }
 
     #[test]

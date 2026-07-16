@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde::Serialize;
 
-use codewhale_tools::sandbox::backend::{SandboxBackend, SandboxOutput};
+use codewhale_tools::sandbox::backend::{SandboxBackend, SandboxBackendIdentity, SandboxOutput};
 
 /// Request body sent to the OpenSandbox `/v1/sandbox/run` endpoint.
 #[derive(Debug, Serialize)]
@@ -42,6 +42,7 @@ struct SandboxRunResponse {
 pub struct OpenSandboxBackend {
     base_url: String,
     api_key: Option<String>,
+    timeout_secs: u64,
     client: reqwest::Client,
 }
 
@@ -61,6 +62,7 @@ impl OpenSandboxBackend {
         Ok(Self {
             base_url,
             api_key,
+            timeout_secs,
             client,
         })
     }
@@ -73,6 +75,15 @@ impl OpenSandboxBackend {
 
 #[async_trait]
 impl SandboxBackend for OpenSandboxBackend {
+    fn identity(&self) -> SandboxBackendIdentity {
+        SandboxBackendIdentity::remote(
+            "opensandbox",
+            &self.base_url,
+            self.timeout_secs.saturating_mul(1_000),
+            self.api_key.is_some(),
+        )
+    }
+
     async fn exec(&self, cmd: &str, env: &HashMap<String, String>) -> Result<SandboxOutput> {
         let request_body = SandboxRunRequest {
             cmd: cmd.to_string(),
