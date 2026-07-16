@@ -450,6 +450,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - Model accounting snapshot、resume 物理请求余量进入 `crates/deepseek`；纯重放端口与是否需要
   live model 的恢复门进入 `crates/app`。读 run/events/terminal replay 可只持有无凭据的
   `DeepSeekConnectionConfig`，Key 与每 run budget 仅在 live start/resume 时绑定。
+- `exec_shell` 的命令解析、安全分类、子进程环境、shell dispatch、沙箱策略与本地 backend、
+  进程树、超时/取消、输出边界和结构化结果已从 TUI 迁入 `crates/tools`；TUI 只保留尚被交互
+  入口使用的策略、hook、外部 OpenSandbox transport 和 `ToolSpec` 投影。固定 11 工具的
+  catalog/schema/executor 仍待同一生产调用方切换后收口，不能把当前薄投影误报为完成。
+- DeepSeek `auto` 模型路由仍由 TUI 发起一次真实请求；在它迁入 DeepSeek lower owner 并与
+  root/child 共享同一 physical request budget 前，不能把“先路由、再把显式模型交给 app”
+  当作 application composition 完成，否则 hard budget 与 accounting 会漏记路由请求。
 
 #### 同切片删除/替代
 
