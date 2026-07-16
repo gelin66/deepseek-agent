@@ -205,14 +205,7 @@ impl AgentApplication {
                 };
             }
             if !self.active.lock().await.contains_key(run_id) {
-                return error_result(api_error(
-                    RunApiErrorCode::RunRecoveryRequired,
-                    format!(
-                        "run {run_id} is durable but inactive; resume it before waiting for new events"
-                    ),
-                    Some(run_id.clone()),
-                    None,
-                ));
+                return error_result(recovery_required(run_id));
             }
             notified.await;
         }
@@ -259,13 +252,20 @@ impl AgentApplication {
                 replay.snapshot.last_sequence,
             ));
         }
-        match self.store.events_after(run_id, after_sequence).await {
-            Ok(events) => RunCommandResult::Events {
-                run_id: run_id.clone(),
-                after_sequence,
-                events: strictly_after(events, after_sequence),
-            },
-            Err(error) => error_result(store_error(error)),
+        let events = match self.store.events_after(run_id, after_sequence).await {
+            Ok(events) => strictly_after(events, after_sequence),
+            Err(error) => return error_result(store_error(error)),
+        };
+        if events.is_empty()
+            && replay.snapshot.terminal.is_none()
+            && !self.active.lock().await.contains_key(run_id)
+        {
+            return error_result(recovery_required(run_id));
+        }
+        RunCommandResult::Events {
+            run_id: run_id.clone(),
+            after_sequence,
+            events,
         }
     }
 
@@ -494,6 +494,15 @@ fn terminal_error(run_id: &RunId, terminal: TerminalState) -> RunApiError {
         format!("run {run_id} is terminal"),
         Some(run_id.clone()),
         Some(terminal),
+    )
+}
+
+fn recovery_required(run_id: &RunId) -> RunApiError {
+    api_error(
+        RunApiErrorCode::RunRecoveryRequired,
+        format!("run {run_id} is durable but inactive; resume it before requesting new events"),
+        Some(run_id.clone()),
+        None,
     )
 }
 
@@ -1359,6 +1368,17 @@ mod tests {
                 if error.code == RunApiErrorCode::RunRecoveryRequired
                     && error.run_id.as_ref() == Some(&run_id)
         ));
+
+        let polled = app
+            .execute(envelope(
+                "poll-recovery-required",
+                RunCommand::Events {
+                    run_id: run_id.clone(),
+                    after_sequence: replay.snapshot.last_sequence,
+                },
+            ))
+            .await;
+        assert_eq!(error_code(polled), RunApiErrorCode::RunRecoveryRequired);
     }
 
     #[tokio::test]
