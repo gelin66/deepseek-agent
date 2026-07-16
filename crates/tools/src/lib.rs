@@ -23,10 +23,13 @@ mod image_ocr;
 mod list_dir;
 mod production_context;
 mod read_file;
+mod run_tests;
+mod run_verifiers;
 pub mod sandbox;
 pub mod shell;
 pub mod shell_dispatcher;
 mod unified_diff;
+mod verification_artifact;
 
 pub use apply_patch::{ApplyPatchPreflight, execute_apply_patch, preflight_apply_patch};
 pub use atomic_write::write_atomic;
@@ -38,7 +41,15 @@ pub use image_ocr::{ocr_available, ocr_image_path, resolve_tesseract};
 pub use list_dir::execute_list_dir;
 pub use production_context::ProductionToolContext;
 pub use read_file::execute_read_file;
+pub use run_tests::{CargoTestEvidence, RunTestsOutput, execute_run_tests};
+pub use run_verifiers::{
+    GateResult, GateStatus, RunVerifiersOutput, VerifierVerdict, execute_run_verifiers,
+};
 pub use unified_diff::make_unified_diff;
+pub use verification_artifact::{
+    VerificationArtifact, attach_verification_artifact, capture_workspace_revision,
+    reject_verification_artifact,
+};
 
 #[cfg(test)]
 mod test_support {
