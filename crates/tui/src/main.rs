@@ -7558,7 +7558,7 @@ async fn resolve_cli_auto_route(
     config: &Config,
     model: &str,
     prompt: &str,
-    api_request_budget: Option<&crate::client::request_budget::SharedApiRequestBudget>,
+    api_request_budget: Option<&codewhale_deepseek::SharedApiRequestBudget>,
 ) -> Result<CliAutoRoute> {
     if model.trim().eq_ignore_ascii_case("auto") {
         let selection = model_routing::resolve_auto_route_with_inventory(

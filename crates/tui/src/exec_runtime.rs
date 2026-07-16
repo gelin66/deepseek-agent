@@ -30,13 +30,13 @@ use crate::agent_runtime_adapter::{
     DeepSeekModelPort, ProductionToolExecutor, canonical_system_prompt, model_accounting_snapshot,
 };
 use crate::client::DeepSeekClient;
-use crate::client::request_budget::SharedApiRequestBudget;
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::core::termination::RunTerminationReason;
 use crate::exec_output::ExecTerminalReceipt;
 use crate::prompts::{InstructionSource, PromptSessionContext};
 use crate::tools::spec::ToolContext;
 use crate::tui::app::AppMode;
+use codewhale_deepseek::SharedApiRequestBudget;
 
 use super::{
     EXEC_OUTPUT_CLOSE_TIMEOUT_SECS, EXEC_OUTPUT_QUEUE_CAPACITY, EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS,

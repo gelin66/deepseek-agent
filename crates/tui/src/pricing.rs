@@ -9,8 +9,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use codewhale_config::pricing::{Currency, OfferingPricing, TokenUsage};
 
 use crate::config::{
-    ApiProvider, DEEPSEEK_ALIAS_REPLACEMENT, DEEPSEEK_ALIAS_RETIREMENT_UTC,
-    DEFAULT_STEPFUN_BASE_URL, DEFAULT_STEPFUN_MODEL, canonical_model_id_for_provider,
+    ApiProvider, DEFAULT_STEPFUN_BASE_URL, DEFAULT_STEPFUN_MODEL, canonical_model_id_for_provider,
 };
 use crate::models::Usage;
 
@@ -223,25 +222,29 @@ fn pricing_for_model_at(model: &str, now: DateTime<Utc>) -> Option<ModelPricing>
     }
     if lower == "claude-sonnet-5" {
         // Time-aware introductory pricing; resolved ahead of the catalog so
-        // the intro rate is honored while it lasts (same pattern as
-        // deepseek_v4_pro_pricing() / #2489).
+        // the intro rate is honored while it lasts.
         return Some(claude_sonnet_5_pricing(now));
+    }
+    if let Some(pricing) = codewhale_deepseek::pricing_for_official_model(&lower) {
+        return Some(ModelPricing {
+            usd: CurrencyPricing {
+                input_cache_hit_per_million: pricing.usd.cache_hit_per_million,
+                input_cache_miss_per_million: pricing.usd.cache_miss_per_million,
+                output_per_million: pricing.usd.output_per_million,
+                cache_write_per_million: None,
+            },
+            cny: Some(CurrencyPricing {
+                input_cache_hit_per_million: pricing.cny.cache_hit_per_million,
+                input_cache_miss_per_million: pricing.cny.cache_miss_per_million,
+                output_per_million: pricing.cny.output_per_million,
+                cache_write_per_million: None,
+            }),
+        });
     }
     if let Some(pricing) = known_pricing_for_model(&lower) {
         return Some(pricing);
     }
-    if lower.contains("deepseek") {
-        if lower.contains("v4-pro") || lower.contains("v4pro") {
-            // DeepSeek's pricing page says the V4-Pro promotional 75% discount
-            // becomes the official one-quarter base price after 2026-05-31 15:59
-            // UTC. Keep using the adjusted rate after that cutoff (#2489).
-            Some(deepseek_v4_pro_pricing())
-        } else {
-            Some(deepseek_v4_flash_pricing())
-        }
-    } else {
-        None
-    }
+    None
 }
 
 fn known_pricing_for_model(model_lower: &str) -> Option<ModelPricing> {
@@ -409,40 +412,6 @@ fn claude_sonnet_5_pricing(now: DateTime<Utc>) -> ModelPricing {
     }
 }
 
-fn deepseek_v4_pro_pricing() -> ModelPricing {
-    ModelPricing {
-        usd: CurrencyPricing {
-            input_cache_hit_per_million: 0.003625,
-            input_cache_miss_per_million: 0.435,
-            output_per_million: 0.87,
-            cache_write_per_million: None,
-        },
-        cny: Some(CurrencyPricing {
-            input_cache_hit_per_million: 0.025,
-            input_cache_miss_per_million: 3.0,
-            output_per_million: 6.0,
-            cache_write_per_million: None,
-        }),
-    }
-}
-
-fn deepseek_v4_flash_pricing() -> ModelPricing {
-    ModelPricing {
-        usd: CurrencyPricing {
-            input_cache_hit_per_million: 0.0028,
-            input_cache_miss_per_million: 0.14,
-            output_per_million: 0.28,
-            cache_write_per_million: None,
-        },
-        cny: Some(CurrencyPricing {
-            input_cache_hit_per_million: 0.02,
-            input_cache_miss_per_million: 1.0,
-            output_per_million: 2.0,
-            cache_write_per_million: None,
-        }),
-    }
-}
-
 /// Calculate cost from provider usage, honoring DeepSeek context-cache fields.
 #[must_use]
 #[cfg(test)]
@@ -523,25 +492,20 @@ pub(crate) fn calculate_turn_cost_estimate_for_provider_at(
         return None;
     }
     let normalized_model = model.trim();
-    let model_lower = normalized_model.to_ascii_lowercase();
     let direct_deepseek = matches!(
         provider,
         ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic
     );
+    if direct_deepseek {
+        let usage = crate::client::deepseek_accounting_usage(usage);
+        let estimate = codewhale_deepseek::calculate_turn_cost_estimate(normalized_model, &usage)?;
+        return Some(CostEstimate {
+            usd: estimate.usd,
+            cny: estimate.cny,
+        });
+    }
     let canonical_model = canonical_model_id_for_provider(provider, normalized_model)?;
-    let catalog_model = if direct_deepseek
-        && matches!(model_lower.as_str(), "deepseek-chat" | "deepseek-reasoner")
-    {
-        let retirement = DateTime::parse_from_rfc3339(DEEPSEEK_ALIAS_RETIREMENT_UTC)
-            .ok()?
-            .with_timezone(&Utc);
-        if recorded_at >= retirement {
-            return None;
-        }
-        DEEPSEEK_ALIAS_REPLACEMENT.to_string()
-    } else {
-        canonical_model
-    };
+    let catalog_model = canonical_model;
 
     // MiniMax-M3 doubles its published rates above 512K total input. The
     // catalog row is necessarily static, so retain the usage-aware first-party
@@ -556,14 +520,10 @@ pub(crate) fn calculate_turn_cost_estimate_for_provider_at(
         return Some(cost_estimate_with_pricing(pricing, usage));
     }
 
-    // Direct DeepSeek pricing carries an authoritative CNY row, and Sonnet 5
-    // has a recorded-time introductory window that a static catalog row cannot
-    // represent. These exact first-party routes intentionally override the
-    // catalog; no other provider/model text match is allowed to do so.
-    if direct_deepseek
-        || (provider == ApiProvider::Anthropic
-            && catalog_model.eq_ignore_ascii_case("claude-sonnet-5"))
-    {
+    // Sonnet 5 has a recorded-time introductory window that a static catalog
+    // row cannot represent. Official DeepSeek pricing already returned above
+    // from its owning crate.
+    if provider == ApiProvider::Anthropic && catalog_model.eq_ignore_ascii_case("claude-sonnet-5") {
         let pricing = provider_owned_hand_pricing_at(provider, &catalog_model, recorded_at)?;
         return Some(cost_estimate_with_pricing(pricing, usage));
     }
@@ -618,12 +578,6 @@ fn provider_owned_hand_pricing_at(
 ) -> Option<ModelPricing> {
     let model_lower = model.trim().to_ascii_lowercase();
     let provider_owns_row = match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic => {
-            matches!(
-                model_lower.as_str(),
-                "deepseek-v4-pro" | "deepseek-v4-flash"
-            )
-        }
         ApiProvider::Openai => matches!(
             model_lower.as_str(),
             "gpt-5-codex"
@@ -1386,36 +1340,23 @@ mod tests {
     }
 
     #[test]
-    fn recorded_time_provider_cost_bounds_deepseek_compatibility_aliases() {
+    fn direct_deepseek_pricing_rejects_legacy_compatibility_aliases() {
         let usage = Usage {
             input_tokens: 1_000,
             output_tokens: 100,
             ..Default::default()
         };
-        let before_retirement: DateTime<Utc> =
-            "2026-07-24T15:58:59Z".parse().expect("pre-retirement time");
-        let at_retirement: DateTime<Utc> = DEEPSEEK_ALIAS_RETIREMENT_UTC
-            .parse()
-            .expect("retirement time");
-
-        assert!(
-            calculate_turn_cost_estimate_for_provider_at(
-                ApiProvider::Deepseek,
-                "deepseek-chat",
-                &usage,
-                before_retirement,
-            )
-            .is_some()
-        );
-        assert!(
-            calculate_turn_cost_estimate_for_provider_at(
-                ApiProvider::Deepseek,
-                "deepseek-reasoner",
-                &usage,
-                at_retirement,
-            )
-            .is_none()
-        );
+        for model in ["deepseek-chat", "deepseek-reasoner"] {
+            assert!(
+                calculate_turn_cost_estimate_for_provider_at(
+                    ApiProvider::Deepseek,
+                    model,
+                    &usage,
+                    Utc::now(),
+                )
+                .is_none()
+            );
+        }
     }
 
     #[test]

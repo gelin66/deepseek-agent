@@ -5440,9 +5440,8 @@ fn budgeted_deepseek_runtime() -> SubAgentRuntime {
         .expect("providers")
         .deepseek
         .base_url = Some("https://api.deepseek.com".to_string());
-    let budget = crate::client::request_budget::SharedApiRequestBudget::new(
-        std::num::NonZeroU32::new(3).unwrap(),
-    );
+    let budget =
+        codewhale_deepseek::SharedApiRequestBudget::new(std::num::NonZeroU32::new(3).unwrap());
     let client = DeepSeekClient::new(&config)
         .expect("official DeepSeek session client builds")
         .with_api_request_budget(budget);
@@ -5614,7 +5613,7 @@ fn budgeted_same_provider_subagent_shares_parent_counter() {
         .expect("child budget")
         .try_reserve()
         .expect("first shared reservation");
-    assert_eq!(parent_budget.snapshot().started, 1);
+    assert_eq!(parent_budget.accounting_snapshot().0.started, 1);
 }
 
 #[test]
@@ -5632,8 +5631,7 @@ fn child_runtime_attributes_requests_without_splitting_the_shared_budget() {
             .expect("child request uses shared admission"),
     );
 
-    let total = shared.snapshot();
-    let actors = shared.actor_snapshot();
+    let (total, actors, _) = shared.accounting_snapshot();
     assert_eq!(total.started, 1);
     assert_eq!(actors.root_started, 0);
     assert_eq!(actors.child_started, 1);

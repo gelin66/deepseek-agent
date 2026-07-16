@@ -22,7 +22,9 @@ Current boundary note:
 - `codewhale exec` runs through the UI-independent
   `crates/runtime::AgentRuntime`. Its concrete DeepSeek, tool, persistence, and
   output composition remains in `crates/tui` while that production entry is
-  migrated vertically.
+  migrated vertically. Official request planning plus physical request/usage
+  accounting already live in `crates/deepseek`; HTTP/SSE and the concrete
+  `DeepSeekModelPort` still live in `crates/tui`.
 - Production `exec` persists schema-v3 canonical runtime events through the
   schema-v6 `crates/state::StateStore` SQLite `RunStore`.
 - The interactive TUI, runtime API, app-server, and task manager have not
@@ -44,7 +46,8 @@ Current boundary note:
 codewhale exec
   -> crates/tui exec composition + output projection
   -> crates/runtime::AgentRuntime
-       -> DeepSeekModelPort -> existing production DeepSeek client
+       -> TUI DeepSeekModelPort -> TUI HTTP/SSE client
+            -> crates/deepseek request plan + shared physical accounting
        -> ProductionToolExecutor -> fixed 11-tool catalog
        -> crates/state::StateStore as SQLite RunStore
             -> canonical events -> reducer/snapshot -> terminal replay
@@ -100,6 +103,10 @@ runtime or state truth is accepted as the final design.
 - **`crates/runtime`** - The one UI/HTTP/database-independent root/child Agent
   execution kernel, canonical reducer, small ports, and test-only in-memory
   `RunStore`.
+- **`crates/deepseek`** - Official Standard/Strict/FIM request planning plus
+  the shared physical request budget, root/child attribution, exact usage
+  completeness ledger, surface buckets, and official V4 first-party pricing.
+  It has no TUI/config/tool dependency; HTTP/SSE has not migrated into it yet.
 - **`crates/secrets`** - OS keyring integration for API key storage.
 - **`crates/state`** - Schema-v6 SQLite state database. It implements the
   production canonical `RunStore` for `exec` alongside still-unmigrated legacy
@@ -113,10 +120,13 @@ runtime or state truth is accepted as the final design.
 
 ### LLM Integration
 
-- **`client.rs`** - Production HTTP client and transport used by the
-  `AgentRuntime` DeepSeek adapter
-- **`client/deepseek.rs`** - Pure official DeepSeek request planner for
-  Standard Chat, Beta Strict Chat, and Beta FIM
+- **`crates/deepseek`** - Pure official DeepSeek planner and physical
+  request/usage accounting owner for Standard Chat, Beta Strict Chat, and
+  Beta FIM
+- **`client.rs` / `client/chat.rs`** - Still-owning production HTTP/SSE client
+  and response parser used by the `AgentRuntime` DeepSeek adapter
+- **`client/deepseek.rs`** - Temporary TUI projection adapter into
+  `crates/deepseek`; it is not a second planner
 - **`llm_client.rs`** - Abstract LLM client trait with retry logic
 - **`models.rs`** - Data structures for API requests/responses
 

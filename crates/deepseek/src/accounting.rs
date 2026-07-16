@@ -2,15 +2,13 @@ use std::fmt;
 use std::num::NonZeroU32;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use codewhale_runtime::Usage;
 use serde_json::Value;
 
-use crate::config::ApiProvider;
-use crate::models::Usage;
-
-use super::deepseek::ApiSurface;
+use crate::ApiSurface;
 
 #[derive(Clone, Debug)]
-pub(crate) struct SharedApiRequestBudget {
+pub struct SharedApiRequestBudget {
     state: Arc<Mutex<ApiRequestBudgetState>>,
     actor: ApiRequestActor,
 }
@@ -51,78 +49,78 @@ struct ApiRequestActorCounters {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ApiRequestActor {
+pub enum ApiRequestActor {
     Root,
     Child,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ApiRequestKind {
+pub enum ApiRequestKind {
     Inference,
     Control,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ApiRequestBudgetSnapshot {
-    pub(crate) limit: u32,
-    pub(crate) started: u32,
-    pub(crate) in_flight: u32,
-    pub(crate) completed: u32,
-    pub(crate) retry_attempts: u32,
-    pub(crate) exhausted_denied: u32,
-    pub(crate) sealed_denied: u32,
-    pub(crate) sealed: bool,
+pub struct ApiRequestBudgetSnapshot {
+    pub limit: u32,
+    pub started: u32,
+    pub in_flight: u32,
+    pub completed: u32,
+    pub retry_attempts: u32,
+    pub exhausted_denied: u32,
+    pub sealed_denied: u32,
+    pub sealed: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ApiRequestActorSnapshot {
-    pub(crate) root_started: u32,
-    pub(crate) root_in_flight: u32,
-    pub(crate) root_completed: u32,
-    pub(crate) root_retries: u32,
-    pub(crate) child_started: u32,
-    pub(crate) child_in_flight: u32,
-    pub(crate) child_completed: u32,
-    pub(crate) child_retries: u32,
+pub struct ApiRequestActorSnapshot {
+    pub root_started: u32,
+    pub root_in_flight: u32,
+    pub root_completed: u32,
+    pub root_retries: u32,
+    pub child_started: u32,
+    pub child_in_flight: u32,
+    pub child_completed: u32,
+    pub child_retries: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct ApiUsageBucket {
-    pub(crate) model: String,
-    pub(crate) surface: ApiSurface,
-    pub(crate) response_count: u32,
-    pub(crate) usage_responses: u32,
-    pub(crate) usage: Usage,
-    pub(crate) cost_usd: f64,
-    pub(crate) cost_cny: f64,
+pub struct ApiUsageBucket {
+    pub model: String,
+    pub surface: ApiSurface,
+    pub response_count: u32,
+    pub usage_responses: u32,
+    pub usage: Usage,
+    pub cost_usd: f64,
+    pub cost_cny: f64,
 }
 
 /// Immutable projection of all provider-reported usage observed through the
 /// shared request budget. Root, child, nested-child, background, and FIM
 /// clients all clone the same owner.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct ApiUsageSnapshot {
-    pub(crate) usage: Usage,
-    pub(crate) usage_responses: u32,
-    pub(crate) standard_chat_responses: u32,
-    pub(crate) strict_chat_responses: u32,
-    pub(crate) fim_responses: u32,
-    pub(crate) usage_buckets: Vec<ApiUsageBucket>,
-    pub(crate) responses_missing_usage: u32,
-    pub(crate) incomplete_responses: u32,
-    pub(crate) billing_unknown_attempts: u32,
-    pub(crate) unpriced_usage_responses: u32,
-    pub(crate) usage_records_after_seal: u32,
-    pub(crate) cost_usd: f64,
-    pub(crate) cost_cny: f64,
+pub struct ApiUsageSnapshot {
+    pub usage: Usage,
+    pub usage_responses: u32,
+    pub standard_chat_responses: u32,
+    pub strict_chat_responses: u32,
+    pub fim_responses: u32,
+    pub usage_buckets: Vec<ApiUsageBucket>,
+    pub responses_missing_usage: u32,
+    pub incomplete_responses: u32,
+    pub billing_unknown_attempts: u32,
+    pub unpriced_usage_responses: u32,
+    pub usage_records_after_seal: u32,
+    pub cost_usd: f64,
+    pub cost_cny: f64,
 }
 
 impl ApiUsageSnapshot {
-    pub(crate) fn usage_complete(&self) -> bool {
+    pub fn usage_complete(&self) -> bool {
         self.responses_missing_usage == 0 && self.incomplete_responses == 0
     }
 
-    pub(crate) fn cost_complete(&self) -> bool {
+    pub fn cost_complete(&self) -> bool {
         self.usage_complete()
             && self.billing_unknown_attempts == 0
             && self.unpriced_usage_responses == 0
@@ -130,7 +128,7 @@ impl ApiUsageSnapshot {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ApiRequestBudgetError {
+pub enum ApiRequestBudgetError {
     Exhausted { limit: u32, started: u32 },
     Sealed { limit: u32, started: u32 },
 }
@@ -139,7 +137,7 @@ pub(crate) enum ApiRequestBudgetError {
 /// future returned (success or failure), allowing Headless settlement to prove
 /// that no admitted send is still in flight before sealing the budget.
 #[derive(Debug)]
-pub(crate) struct ApiRequestLease {
+pub struct ApiRequestLease {
     budget: SharedApiRequestBudget,
     actor: ApiRequestActor,
     kind: ApiRequestKind,
@@ -153,9 +151,8 @@ pub(crate) struct ApiRequestLease {
 /// headers have been accepted, every exit path must either commit the exact
 /// provider usage or explicitly mark the body/stream incomplete. `Drop`
 /// covers cancellation, consumer drop, and early `?` returns.
-pub(crate) struct ApiResponseAccountingGuard {
+pub struct ApiResponseAccountingGuard {
     request_lease: Option<ApiRequestLease>,
-    provider: ApiProvider,
     model: String,
     surface: ApiSurface,
     observed_usage: Option<Usage>,
@@ -164,15 +161,13 @@ pub(crate) struct ApiResponseAccountingGuard {
 }
 
 impl ApiResponseAccountingGuard {
-    pub(crate) fn new(
+    pub fn new(
         request_lease: Option<ApiRequestLease>,
-        provider: ApiProvider,
         model: impl Into<String>,
         surface: ApiSurface,
     ) -> Self {
         Self {
             request_lease,
-            provider,
             model: model.into(),
             surface,
             observed_usage: None,
@@ -181,12 +176,12 @@ impl ApiResponseAccountingGuard {
         }
     }
 
-    pub(crate) fn observe(&mut self, usage: &Usage, wire_usage: Option<&Value>) {
-        self.observed_usage = Some(usage.clone());
+    pub fn observe(&mut self, usage: &Usage, wire_usage: Option<&Value>) {
+        self.observed_usage = Some(*usage);
         self.observed_wire_usage = wire_usage.cloned();
     }
 
-    pub(crate) fn complete(&mut self, usage: Option<&Usage>, wire_usage: Option<&Value>) {
+    pub fn complete(&mut self, usage: Option<&Usage>, wire_usage: Option<&Value>) {
         if self.settled {
             return;
         }
@@ -195,7 +190,6 @@ impl ApiResponseAccountingGuard {
         }
         if let Some(lease) = self.request_lease.as_mut() {
             lease.settle_inference_response(
-                self.provider,
                 &self.model,
                 self.surface,
                 self.observed_usage.as_ref(),
@@ -206,17 +200,16 @@ impl ApiResponseAccountingGuard {
         self.settled = true;
     }
 
-    pub(crate) fn set_model(&mut self, model: impl Into<String>) {
+    pub fn set_model(&mut self, model: impl Into<String>) {
         self.model = model.into();
     }
 
-    pub(crate) fn incomplete(&mut self) {
+    pub fn incomplete(&mut self) {
         if self.settled {
             return;
         }
         if let Some(lease) = self.request_lease.as_mut() {
             lease.settle_inference_response(
-                self.provider,
                 &self.model,
                 self.surface,
                 self.observed_usage.as_ref(),
@@ -238,24 +231,24 @@ impl ApiRequestLease {
     /// Mark that the HTTP server returned response headers. Transport futures
     /// dropped before this point may have reached the provider but expose no
     /// billable usage, so they remain explicitly unknown.
-    pub(crate) fn mark_response_received(&mut self) {
+    pub fn mark_response_received(&mut self) {
         self.response_received = true;
     }
 
-    pub(crate) fn mark_billing_unknown(&mut self) {
+    pub fn mark_billing_unknown(&mut self) {
         self.billing_unknown = true;
     }
 
     /// A successful inference response must be handed to an accounting guard.
     /// Keeping this bit on the lease makes a forgotten handoff fail closed
     /// instead of silently looking like a zero-token response.
-    pub(crate) fn mark_usage_expected(&mut self) {
+    pub fn mark_usage_expected(&mut self) {
         if self.kind == ApiRequestKind::Inference {
             self.usage_expected = true;
         }
     }
 
-    pub(crate) fn mark_retry_attempt(&mut self) {
+    pub fn mark_retry_attempt(&mut self) {
         let mut state = self.budget.lock_state();
         state.retry_attempts = state.retry_attempts.saturating_add(1);
         let actor = actor_counters_mut(&mut state, self.actor);
@@ -264,7 +257,6 @@ impl ApiRequestLease {
 
     fn settle_inference_response(
         &mut self,
-        provider: ApiProvider,
         model: &str,
         surface: ApiSurface,
         usage: Option<&Usage>,
@@ -274,7 +266,7 @@ impl ApiRequestLease {
         if self.settled {
             return;
         }
-        let cost = response_cost(provider, model, usage);
+        let cost = crate::pricing::response_cost(model, usage);
         {
             let mut state = self.budget.lock_state();
             settle_request_lease_locked(&mut state, self);
@@ -284,7 +276,7 @@ impl ApiRequestLease {
                 record_surface_response_locked(&mut state, model, surface);
                 if usage.is_some() || !incomplete {
                     record_usage_response_locked(
-                        &mut state, provider, model, surface, usage, wire_usage, cost,
+                        &mut state, model, surface, usage, wire_usage, cost,
                     );
                 }
                 if incomplete {
@@ -351,7 +343,7 @@ impl fmt::Display for ApiRequestBudgetError {
 impl std::error::Error for ApiRequestBudgetError {}
 
 impl SharedApiRequestBudget {
-    pub(crate) fn new(limit: NonZeroU32) -> Self {
+    pub fn new(limit: NonZeroU32) -> Self {
         Self {
             state: Arc::new(Mutex::new(ApiRequestBudgetState {
                 limit,
@@ -386,25 +378,25 @@ impl SharedApiRequestBudget {
     /// practical request cap. Headless uses the same owner in capped and
     /// uncapped runs so child-Agent/FIM accounting never disappears merely
     /// because the operator omitted `--max-api-requests`.
-    pub(crate) fn tracking_only() -> Self {
+    pub fn tracking_only() -> Self {
         Self::new(NonZeroU32::MAX)
     }
 
     /// Return a child-Agent accounting view over the same admission owner.
     /// This changes attribution only; the request limit and admission policy
     /// remain shared with the root Agent.
-    pub(crate) fn for_child(&self) -> Self {
+    pub fn for_child(&self) -> Self {
         Self {
             state: Arc::clone(&self.state),
             actor: ApiRequestActor::Child,
         }
     }
 
-    pub(crate) fn try_reserve(&self) -> Result<ApiRequestLease, ApiRequestBudgetError> {
+    pub fn try_reserve(&self) -> Result<ApiRequestLease, ApiRequestBudgetError> {
         self.try_reserve_kind(ApiRequestKind::Inference)
     }
 
-    pub(crate) fn try_reserve_control(&self) -> Result<ApiRequestLease, ApiRequestBudgetError> {
+    pub fn try_reserve_control(&self) -> Result<ApiRequestLease, ApiRequestBudgetError> {
         self.try_reserve_kind(ApiRequestKind::Control)
     }
 
@@ -448,7 +440,7 @@ impl SharedApiRequestBudget {
     }
 
     #[cfg(test)]
-    pub(crate) fn seal_and_snapshot(&self) -> ApiRequestBudgetSnapshot {
+    pub fn seal_and_snapshot(&self) -> ApiRequestBudgetSnapshot {
         let mut state = self.lock_state();
         state.sealed = true;
         snapshot_of(&state)
@@ -457,7 +449,7 @@ impl SharedApiRequestBudget {
     /// Seal request admission and capture request plus usage accounting under
     /// one lock. Headless calls this only after the Engine settlement barrier.
     #[cfg(test)]
-    pub(crate) fn seal_and_full_snapshot(&self) -> (ApiRequestBudgetSnapshot, ApiUsageSnapshot) {
+    pub fn seal_and_full_snapshot(&self) -> (ApiRequestBudgetSnapshot, ApiUsageSnapshot) {
         let mut state = self.lock_state();
         state.sealed = true;
         (snapshot_of(&state), usage_snapshot_of(&state))
@@ -465,7 +457,7 @@ impl SharedApiRequestBudget {
 
     /// Seal admission and capture total requests, actor attribution, and
     /// provider usage atomically for the terminal execution receipt.
-    pub(crate) fn seal_and_accounting_snapshot(
+    pub fn seal_and_accounting_snapshot(
         &self,
     ) -> (
         ApiRequestBudgetSnapshot,
@@ -484,7 +476,7 @@ impl SharedApiRequestBudget {
     /// Capture request, actor, and usage accounting without sealing admission.
     /// Child runtimes use this read-only projection; the settled root runtime
     /// is the only caller allowed to use [`Self::seal_and_accounting_snapshot`].
-    pub(crate) fn accounting_snapshot(
+    pub fn accounting_snapshot(
         &self,
     ) -> (
         ApiRequestBudgetSnapshot,
@@ -503,31 +495,28 @@ impl SharedApiRequestBudget {
     /// retained as an explicit completeness failure rather than silently
     /// becoming a zero-token response.
     #[cfg(test)]
-    pub(crate) fn record_usage_response(
+    pub fn record_usage_response(
         &self,
-        provider: ApiProvider,
         model: &str,
         surface: ApiSurface,
         usage: Option<&Usage>,
         wire_usage: Option<&Value>,
     ) {
-        let cost = response_cost(provider, model, usage);
+        let cost = crate::pricing::response_cost(model, usage);
         let mut state = self.lock_state();
         if state.sealed {
             state.usage_records_after_seal = state.usage_records_after_seal.saturating_add(1);
             return;
         }
         record_surface_response_locked(&mut state, model, surface);
-        record_usage_response_locked(
-            &mut state, provider, model, surface, usage, wire_usage, cost,
-        );
+        record_usage_response_locked(&mut state, model, surface, usage, wire_usage, cost);
     }
 
     /// Record an HTTP-success stream that never reached a valid provider
     /// terminal. Its billable usage is unknowable, so successful Headless
     /// receipts must treat the run as incomplete.
     #[cfg(test)]
-    pub(crate) fn record_incomplete_response(&self) {
+    pub fn record_incomplete_response(&self) {
         let mut state = self.lock_state();
         if state.sealed {
             state.usage_records_after_seal = state.usage_records_after_seal.saturating_add(1);
@@ -537,16 +526,16 @@ impl SharedApiRequestBudget {
     }
 
     #[cfg(test)]
-    pub(crate) fn snapshot(&self) -> ApiRequestBudgetSnapshot {
+    pub fn snapshot(&self) -> ApiRequestBudgetSnapshot {
         snapshot_of(&self.lock_state())
     }
 
     #[cfg(test)]
-    pub(crate) fn actor_snapshot(&self) -> ApiRequestActorSnapshot {
+    pub fn actor_snapshot(&self) -> ApiRequestActorSnapshot {
         actor_snapshot_of(&self.lock_state())
     }
 
-    pub(crate) fn usage_snapshot(&self) -> ApiUsageSnapshot {
+    pub fn usage_snapshot(&self) -> ApiUsageSnapshot {
         usage_snapshot_of(&self.lock_state())
     }
 
@@ -555,17 +544,8 @@ impl SharedApiRequestBudget {
     }
 }
 
-fn response_cost(provider: ApiProvider, model: &str, usage: Option<&Usage>) -> Option<(f64, f64)> {
-    usage
-        .and_then(|usage| {
-            crate::pricing::calculate_turn_cost_estimate_for_provider(provider, model, usage)
-        })
-        .map(|cost| (cost.usd, cost.cny))
-}
-
 fn record_usage_response_locked(
     state: &mut ApiRequestBudgetState,
-    provider: ApiProvider,
     model: &str,
     surface: ApiSurface,
     usage: Option<&Usage>,
@@ -574,8 +554,8 @@ fn record_usage_response_locked(
 ) {
     if let Some(usage) = usage {
         state.usage_responses = state.usage_responses.saturating_add(1);
-        state.usage.accumulate(usage);
-        if !usage_contract_complete(provider, usage, wire_usage) {
+        state.usage.add_assign(*usage);
+        if !usage_contract_complete(usage, wire_usage) {
             state.responses_missing_usage = state.responses_missing_usage.saturating_add(1);
         }
         if let Some((usd, cny)) = cost {
@@ -587,7 +567,7 @@ fn record_usage_response_locked(
 
         let bucket = usage_bucket_mut(state, model, surface);
         bucket.usage_responses = bucket.usage_responses.saturating_add(1);
-        bucket.usage.accumulate(usage);
+        bucket.usage.add_assign(*usage);
         if let Some((usd, cny)) = cost {
             bucket.cost_usd += usd;
             bucket.cost_cny += cny;
@@ -644,14 +624,7 @@ fn usage_bucket_mut<'a>(
         .expect("usage bucket was just inserted")
 }
 
-fn usage_contract_complete(
-    provider: ApiProvider,
-    usage: &Usage,
-    wire_usage: Option<&Value>,
-) -> bool {
-    if !matches!(provider, ApiProvider::Deepseek) {
-        return true;
-    }
+fn usage_contract_complete(usage: &Usage, wire_usage: Option<&Value>) -> bool {
     let Some(wire) = wire_usage.and_then(Value::as_object) else {
         return false;
     };
@@ -674,11 +647,11 @@ fn usage_contract_complete(
     prompt.checked_add(completion) == Some(total)
         && hit.checked_add(miss) == Some(prompt)
         && reasoning.is_none_or(|tokens| tokens <= completion)
-        && u64::from(usage.input_tokens) == prompt
-        && u64::from(usage.output_tokens) == completion
-        && usage.prompt_cache_hit_tokens.map(u64::from) == Some(hit)
-        && usage.prompt_cache_miss_tokens.map(u64::from) == Some(miss)
-        && usage.reasoning_tokens.map(u64::from) == reasoning
+        && usage.input_tokens == prompt
+        && usage.output_tokens == completion
+        && usage.cache_hit_tokens == hit
+        && usage.cache_miss_tokens == miss
+        && usage.reasoning_tokens == reasoning.unwrap_or(0)
 }
 
 fn snapshot_of(state: &ApiRequestBudgetState) -> ApiRequestBudgetSnapshot {
@@ -733,7 +706,7 @@ fn debug_assert_actor_totals(state: &ApiRequestBudgetState) {
 
 fn usage_snapshot_of(state: &ApiRequestBudgetState) -> ApiUsageSnapshot {
     ApiUsageSnapshot {
-        usage: state.usage.clone(),
+        usage: state.usage,
         usage_responses: state.usage_responses,
         standard_chat_responses: state.standard_chat_responses,
         strict_chat_responses: state.strict_chat_responses,
@@ -770,7 +743,6 @@ mod tests {
 
         let mut guard = ApiResponseAccountingGuard::new(
             Some(lease),
-            ApiProvider::Deepseek,
             "deepseek-v4-flash",
             ApiSurface::StandardChat,
         );
@@ -997,16 +969,16 @@ mod tests {
         let chat = Usage {
             input_tokens: 1_000,
             output_tokens: 100,
-            prompt_cache_hit_tokens: Some(250),
-            prompt_cache_miss_tokens: Some(750),
-            reasoning_tokens: Some(50),
+            cache_hit_tokens: 250,
+            cache_miss_tokens: 750,
+            reasoning_tokens: 50,
             ..Usage::default()
         };
         let fim = Usage {
             input_tokens: 500,
             output_tokens: 50,
-            prompt_cache_hit_tokens: Some(0),
-            prompt_cache_miss_tokens: Some(500),
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 500,
             ..Usage::default()
         };
         let chat_wire = serde_json::json!({
@@ -1025,14 +997,12 @@ mod tests {
             "prompt_cache_miss_tokens": 500
         });
         budget.record_usage_response(
-            ApiProvider::Deepseek,
             "deepseek-v4-flash",
             ApiSurface::StandardChat,
             Some(&chat),
             Some(&chat_wire),
         );
         budget.record_usage_response(
-            ApiProvider::Deepseek,
             "deepseek-v4-pro",
             ApiSurface::Fim,
             Some(&fim),
@@ -1042,7 +1012,7 @@ mod tests {
         let (_, usage) = budget.seal_and_full_snapshot();
         assert_eq!(usage.usage.input_tokens, 1_500);
         assert_eq!(usage.usage.output_tokens, 150);
-        assert_eq!(usage.usage.reasoning_tokens, Some(50));
+        assert_eq!(usage.usage.reasoning_tokens, 50);
         assert_eq!(usage.usage_responses, 2);
         assert_eq!(usage.standard_chat_responses, 1);
         assert_eq!(usage.strict_chat_responses, 0);
@@ -1050,59 +1020,42 @@ mod tests {
         assert_eq!(usage.usage_buckets.len(), 2);
         assert!(usage.usage_complete());
         assert!(usage.cost_complete());
-        let expected = crate::pricing::calculate_turn_cost_estimate_for_provider(
-            ApiProvider::Deepseek,
-            "deepseek-v4-flash",
-            &chat,
-        )
-        .unwrap();
-        let expected_fim = crate::pricing::calculate_turn_cost_estimate_for_provider(
-            ApiProvider::Deepseek,
-            "deepseek-v4-pro",
-            &fim,
-        )
-        .unwrap();
+        let expected =
+            crate::pricing::calculate_turn_cost_estimate("deepseek-v4-flash", &chat).unwrap();
+        let expected_fim =
+            crate::pricing::calculate_turn_cost_estimate("deepseek-v4-pro", &fim).unwrap();
         assert!((usage.cost_usd - expected.usd - expected_fim.usd).abs() < 1e-12);
         assert!((usage.cost_cny - expected.cny - expected_fim.cny).abs() < 1e-12);
     }
 
     #[test]
     fn official_request_plan_surface_drives_exact_accounting_bucket() {
-        use crate::client::deepseek::{ResponseMode, plan_chat};
-        use crate::models::MessageRequest;
+        use crate::{ChatPlanInput, ReasoningMode, ResponseMode, plan_chat};
 
-        let request = MessageRequest {
-            model: "deepseek-v4-flash".to_string(),
-            messages: Vec::new(),
-            max_tokens: 32,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            metadata: None,
-            thinking: None,
-            reasoning_effort: Some("off".to_string()),
-            stream: Some(true),
-            temperature: None,
-            top_p: None,
-        };
         let plan = plan_chat(
-            ApiProvider::Deepseek,
             "https://api.deepseek.com",
-            None,
             false,
-            &request,
-            ResponseMode::Streaming,
+            ChatPlanInput {
+                model: "deepseek-v4-flash".to_string(),
+                messages: Vec::new(),
+                max_tokens: 32,
+                tools: None,
+                tool_choice: None,
+                reasoning: ReasoningMode::Off,
+                response_mode: ResponseMode::Streaming,
+                temperature: None,
+                top_p: None,
+            },
         )
-        .expect("valid exact replay history")
-        .expect("official DeepSeek RequestPlan");
+        .expect("valid exact replay history");
         assert_eq!(plan.url, "https://api.deepseek.com/chat/completions");
         assert_eq!(plan.surface, ApiSurface::StandardChat);
 
         let usage = Usage {
             input_tokens: 12,
             output_tokens: 3,
-            prompt_cache_hit_tokens: Some(2),
-            prompt_cache_miss_tokens: Some(10),
+            cache_hit_tokens: 2,
+            cache_miss_tokens: 10,
             ..Usage::default()
         };
         let wire = serde_json::json!({
@@ -1113,13 +1066,7 @@ mod tests {
             "prompt_cache_miss_tokens": 10
         });
         let budget = SharedApiRequestBudget::new(NonZeroU32::new(1).unwrap());
-        budget.record_usage_response(
-            ApiProvider::Deepseek,
-            &plan.model,
-            plan.surface,
-            Some(&usage),
-            Some(&wire),
-        );
+        budget.record_usage_response(&plan.model, plan.surface, Some(&usage), Some(&wire));
 
         let snapshot = budget.usage_snapshot();
         assert!(snapshot.usage_complete());
@@ -1136,13 +1083,7 @@ mod tests {
     fn missing_incomplete_and_post_seal_usage_are_never_silent() {
         let budget = SharedApiRequestBudget::new(NonZeroU32::new(3).unwrap());
         drop(budget.try_reserve().unwrap());
-        budget.record_usage_response(
-            ApiProvider::Deepseek,
-            "deepseek-v4-flash",
-            ApiSurface::StandardChat,
-            None,
-            None,
-        );
+        budget.record_usage_response("deepseek-v4-flash", ApiSurface::StandardChat, None, None);
         budget.record_incomplete_response();
         let (_, before) = budget.seal_and_full_snapshot();
         assert!(!before.usage_complete());
@@ -1156,7 +1097,6 @@ mod tests {
         assert_eq!(before.usage_buckets[0].usage_responses, 0);
 
         budget.record_usage_response(
-            ApiProvider::Deepseek,
             "deepseek-v4-flash",
             ApiSurface::StandardChat,
             Some(&Usage::default()),
@@ -1174,8 +1114,8 @@ mod tests {
         let normalized = Usage {
             input_tokens: 100,
             output_tokens: 20,
-            prompt_cache_hit_tokens: Some(25),
-            prompt_cache_miss_tokens: Some(75),
+            cache_hit_tokens: 25,
+            cache_miss_tokens: 75,
             ..Usage::default()
         };
         let missing_official_fields = serde_json::json!({
@@ -1185,7 +1125,6 @@ mod tests {
         });
 
         budget.record_usage_response(
-            ApiProvider::Deepseek,
             "deepseek-v4-pro",
             ApiSurface::StandardChat,
             Some(&normalized),
@@ -1198,12 +1137,42 @@ mod tests {
     }
 
     #[test]
+    fn unknown_model_is_explicitly_unpriced_even_with_complete_wire_usage() {
+        let budget = SharedApiRequestBudget::new(NonZeroU32::new(1).unwrap());
+        let usage = Usage {
+            input_tokens: 100,
+            output_tokens: 20,
+            cache_hit_tokens: 25,
+            cache_miss_tokens: 75,
+            ..Usage::default()
+        };
+        let wire = serde_json::json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "prompt_cache_hit_tokens": 25,
+            "prompt_cache_miss_tokens": 75
+        });
+
+        budget.record_usage_response(
+            "deepseek-future-unknown",
+            ApiSurface::StandardChat,
+            Some(&usage),
+            Some(&wire),
+        );
+
+        let snapshot = budget.usage_snapshot();
+        assert!(snapshot.usage_complete());
+        assert_eq!(snapshot.unpriced_usage_responses, 1);
+        assert!(!snapshot.cost_complete());
+    }
+
+    #[test]
     fn response_guard_marks_consumer_drop_incomplete_exactly_once() {
         let budget = SharedApiRequestBudget::new(NonZeroU32::new(2).unwrap());
         {
             let _guard = ApiResponseAccountingGuard::new(
                 Some(successful_inference_lease(&budget)),
-                ApiProvider::Deepseek,
                 "deepseek-v4-pro",
                 ApiSurface::StandardChat,
             );
@@ -1214,15 +1183,14 @@ mod tests {
 
         let mut completed = ApiResponseAccountingGuard::new(
             Some(successful_inference_lease(&budget)),
-            ApiProvider::Deepseek,
             "deepseek-v4-pro",
             ApiSurface::StrictChat,
         );
         let usage = Usage {
             input_tokens: 10,
             output_tokens: 2,
-            prompt_cache_hit_tokens: Some(0),
-            prompt_cache_miss_tokens: Some(10),
+            cache_hit_tokens: 0,
+            cache_miss_tokens: 10,
             ..Usage::default()
         };
         let wire = serde_json::json!({
@@ -1248,8 +1216,8 @@ mod tests {
         let usage = Usage {
             input_tokens: 12,
             output_tokens: 4,
-            prompt_cache_hit_tokens: Some(2),
-            prompt_cache_miss_tokens: Some(10),
+            cache_hit_tokens: 2,
+            cache_miss_tokens: 10,
             ..Usage::default()
         };
         let wire = serde_json::json!({
@@ -1262,7 +1230,6 @@ mod tests {
         {
             let mut guard = ApiResponseAccountingGuard::new(
                 Some(successful_inference_lease(&budget)),
-                ApiProvider::Deepseek,
                 "deepseek-v4-flash",
                 ApiSurface::StandardChat,
             );

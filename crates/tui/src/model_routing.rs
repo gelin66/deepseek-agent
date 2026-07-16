@@ -290,7 +290,7 @@ pub(crate) async fn resolve_auto_route_with_inventory(
     recent_context: &str,
     selected_model_mode: &str,
     selected_thinking_mode: &str,
-    api_request_budget: Option<&crate::client::request_budget::SharedApiRequestBudget>,
+    api_request_budget: Option<&codewhale_deepseek::SharedApiRequestBudget>,
 ) -> Result<AutoRouteSelection> {
     resolve_auto_route_with_inventory_for_session(
         config,
@@ -311,7 +311,7 @@ pub(crate) async fn resolve_auto_route_with_inventory_for_session(
     session_mode: &str,
     selected_model_mode: &str,
     selected_thinking_mode: &str,
-    api_request_budget: Option<&crate::client::request_budget::SharedApiRequestBudget>,
+    api_request_budget: Option<&codewhale_deepseek::SharedApiRequestBudget>,
 ) -> Result<AutoRouteSelection> {
     let inventory = ModelInventory::from_config(config);
     if !inventory.router_available {
@@ -477,7 +477,7 @@ async fn auto_route_inventory_recommendation(
     config: &Config,
     inventory: &ModelInventory,
     prompt_input: AutoRoutePromptInput<'_>,
-    api_request_budget: Option<&crate::client::request_budget::SharedApiRequestBudget>,
+    api_request_budget: Option<&codewhale_deepseek::SharedApiRequestBudget>,
 ) -> Result<Option<InventoryAutoRouteRecommendation>> {
     let mut router_config = config.clone();
     router_config.provider = Some(ApiProvider::Deepseek.as_str().to_string());

@@ -4,8 +4,10 @@
 
 - 状态：执行中
 - 当前阶段：M4-A `ToolOutcome + SQLite RunStore + crash/resume` 已严格完成；被测代码提交为
-  `0a5b76a8627fe8ae108a0a7688c0dd39ce5601a3`。下一阶段是 M4-B app-server 单一
-  Runtime/RunStore 垂直迁移，尚未启动。M1 的导入基线 A/B 与 M2 的完整官方 surface
+  `0a5b76a8627fe8ae108a0a7688c0dd39ce5601a3`。M4-B 已启动依赖收敛：官方 DeepSeek 的
+  request planner、物理请求预算、usage ledger 与精确 first-party pricing 已进入
+  `crates/deepseek`；HTTP/SSE parser、`ModelPort` 与 app-server 纵切仍待完成。M1 的导入基线
+  A/B 与 M2 的完整官方 surface
   canary 仍是独立证据债务
 - 上次更新：2026-07-16
 
@@ -27,7 +29,8 @@
   `exec` acceptance 22/22，TUI crate 6,888 passed、3 ignored，完整 workspace 回归 0 失败。
 - 已完成冻结的 pre-M3 候选与 M3 候选之间的真实单 Agent 编码 A/B；这证明 M3 整体切片
   在该任务上成功率不退化且 Token/成本下降，但不是导入基线 A/B，不能据此关闭 M1。
-- M2-A 已让官方 DeepSeek `RequestPlan` 接入现有 production Client 并通过单元回归；
+- M2-A 已让官方 DeepSeek `RequestPlan` 接入现有 production Client；planner 与物理请求账本
+  已有独立 `crates/deepseek` owner，旧 TUI request-budget owner 已删除；
   当前候选的 credentialed official live canary 尚未重跑，不能把本地门禁写成官方 API 验收通过。
 - 当前已有一组 DeepSeek 协议、Agent 可靠性和独立 verify 实验 WIP。
 - WIP 保存提交：`2ccccdd4`。
@@ -190,8 +193,9 @@ credentialed official live canary 与真实编码 A/B 完成前，M1-C 仍不得
 
 已完成的代码事实：
 
-- 未新建 crate；最小 `ApiSurface::{StandardChat, StrictChat, Fim}` 与 `RequestPlan` 位于现有
-  `crates/tui/src/client/`。
+- `crates/deepseek` 已成为 `ApiSurface::{StandardChat, StrictChat, Fim}`、`RequestPlan`、物理
+  请求预算、usage ledger 与官方 V4 pricing 的唯一 owner；TUI wrapper 只做尚未迁移的交互
+  DTO/wire projection。
 - 官方 DeepSeek streaming/non-streaming Client 已消费同一 planner；`RequestPlan` 一次性决定
   surface、endpoint、wire model、streaming、reasoning replay、工具/strict 状态和 body。
 - Strict 在整组 schema 兼容时走 Beta；任一不兼容时整组原子回退 Standard，并保留全部工具。
@@ -212,9 +216,8 @@ credentialed official live canary 与真实编码 A/B 完成前，M1-C 仍不得
 
 - 生产路径切换时删除它原有的 DeepSeek URL、Beta route、strict flag 保留/剥离和 FIM
   endpoint 决策分支；不能让新旧 planner 并存。
-- 保留仍被未迁移调用方或其他 Provider 使用的通用 transport；不得为了目录纯度扩大删除范围。
-- 不新增独立 `deepseek` crate。只有当生产调用方已经迁移、旧分支已经删除且依赖方向明确后，
-  才评估物理抽取。
+- 保留仍被未迁移调用方使用的通用 transport；不得为了目录纯度扩大删除范围。DeepSeek
+  owner 的每次物理抽取必须同时迁移真实调用方并删除对应 TUI owner，不能复制实现。
 
 ### 后续工作
 
@@ -392,7 +395,7 @@ Headless Task
 - M4-A 到此严格关闭；后续不得借 M4-B 重开第二个 Runtime/Store 或给旧 app-server 加长期
   bridge。M4-B 只迁移并删除 app-server 自己的旧生产路径。
 
-### M4-B：本地 API 单一 Runtime/RunStore 纵向切换（下一阶段）
+### M4-B：本地 API 单一 Runtime/RunStore 纵向切换（进行中）
 
 真实问题不是“缺一个 HTTP 接口”，而是当前本地 API 有三条互相冲突的执行/状态路径：
 
@@ -427,6 +430,16 @@ application composition root；HTTP/SSE/stdio 只提交命令和投影 canonical
 worktree Orchestrator、Provider 全仓清理、提示词调优或全面汉化。也不把旧
 request-user-input、approval、fork/undo/retry、task/fleet/session/automation/mobile API 用
 compat bridge 包装成新能力；未进入 canonical command/event 的能力直接不对外宣称。
+
+#### 当前执行进度（2026-07-16）
+
+- 第一依赖纵切已完成源码迁移：`crates/deepseek` 成为 physical request admission、root/child
+  attribution、usage completeness、surface buckets 和官方 V4 first-party pricing 的唯一 owner；
+  exec 与未迁移交互 DeepSeek sender 已切到同一 owner。
+- `crates/tui/src/client/request_budget.rs` 已物理删除；TUI 只保留一个待 response parser
+  迁移时删除的 presentation `Usage -> runtime::Usage` 窄映射。
+- 本进度不表示 transport 已迁移：HTTP/SSE parser、typed transport error 和
+  `DeepSeekModelPort` 仍由 TUI 生产路径持有，必须在后续两个 move-and-delete 纵切完成。
 
 #### 同切片删除/替代
 

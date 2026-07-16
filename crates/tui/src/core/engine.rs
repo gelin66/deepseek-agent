@@ -26,7 +26,6 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::DeepSeekClient;
-use crate::client::request_budget::SharedApiRequestBudget;
 use crate::compaction::{
     CompactionConfig, compact_messages_safe, merge_system_prompts, should_compact,
 };
@@ -66,6 +65,7 @@ use crate::tui::app::AppMode;
 use crate::utils::spawn_supervised;
 use crate::worker_profile::{ModelRoute, WorkerRuntimeProfile};
 use crate::working_set::WorkingSet;
+use codewhale_deepseek::SharedApiRequestBudget;
 
 #[cfg(test)]
 use super::authority::agent_approval_mode_for_turn;
@@ -2396,8 +2396,7 @@ impl Engine {
     ) {
         let (token_delta, ledger_total) = if let Some(budget) = self.api_request_budget.as_ref() {
             let observed = budget.usage_snapshot().usage;
-            let total =
-                u64::from(observed.input_tokens).saturating_add(u64::from(observed.output_tokens));
+            let total = observed.input_tokens.saturating_add(observed.output_tokens);
             let delta = total.saturating_sub(self.goal_accounted_api_tokens);
             (delta, Some(total))
         } else {

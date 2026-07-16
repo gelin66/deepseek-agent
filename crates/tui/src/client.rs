@@ -21,6 +21,10 @@ use codewhale_config::catalog::{
     ProviderCatalogCache, ProviderCatalogDelta, base_url_fingerprint, now_unix,
 };
 use codewhale_config::route::ReadyRouteCandidate;
+use codewhale_deepseek::{
+    ApiRequestBudgetError, ApiRequestKind, ApiRequestLease, ApiResponseAccountingGuard,
+    SharedApiRequestBudget,
+};
 
 use crate::config::{ApiProvider, Config, RetryPolicy, wire_model_for_provider};
 use crate::llm_client::{
@@ -31,11 +35,6 @@ use crate::logging;
 use crate::models::{
     ContentBlock, Message, MessageRequest, MessageResponse, ServerToolUsage, SystemPrompt, Tool,
     Usage,
-};
-
-use self::request_budget::{
-    ApiRequestBudgetError, ApiRequestKind, ApiRequestLease, ApiResponseAccountingGuard,
-    SharedApiRequestBudget,
 };
 
 pub(super) fn to_api_tool_name(name: &str) -> String {
@@ -2463,6 +2462,22 @@ pub(super) fn parse_usage(usage: Option<&Value>) -> Usage {
     }
 }
 
+/// Temporary presentation-boundary projection while the interactive TUI
+/// still consumes its legacy response DTO. DeepSeek accounting owns the
+/// canonical `u64` usage ledger; this adapter is deleted when the official
+/// response parser moves into `codewhale-deepseek`.
+pub(super) fn deepseek_accounting_usage(usage: &Usage) -> codewhale_runtime::Usage {
+    codewhale_runtime::Usage {
+        input_tokens: u64::from(usage.input_tokens),
+        output_tokens: u64::from(usage.output_tokens),
+        cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
+        cache_miss_tokens: u64::from(usage.prompt_cache_miss_tokens.unwrap_or(0)),
+        cache_write_tokens: u64::from(usage.prompt_cache_write_tokens.unwrap_or(0)),
+        reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
+        reasoning_replay_tokens: u64::from(usage.reasoning_replay_tokens.unwrap_or(0)),
+    }
+}
+
 impl DeepSeekClient {
     /// Call the DeepSeek `/beta/completions` FIM endpoint.
     pub async fn fim_completion(
@@ -2490,12 +2505,8 @@ impl DeepSeekClient {
             );
             anyhow::bail!("FIM API error: HTTP {status}: {error_text}");
         }
-        let mut response_accounting = ApiResponseAccountingGuard::new(
-            request_lease,
-            self.api_provider,
-            plan.model.clone(),
-            plan.surface,
-        );
+        let mut response_accounting =
+            ApiResponseAccountingGuard::new(request_lease, plan.model.clone(), plan.surface);
         let response_text = response
             .text()
             .await
@@ -2509,7 +2520,8 @@ impl DeepSeekClient {
             .and_then(Value::as_str)
             .unwrap_or(&plan.model);
         response_accounting.set_model(response_model);
-        response_accounting.complete(usage.as_ref(), wire_usage);
+        let accounting_usage = usage.as_ref().map(deepseek_accounting_usage);
+        response_accounting.complete(accounting_usage.as_ref(), wire_usage);
         parse_fim_completion(&value)
     }
 }
@@ -2547,7 +2559,6 @@ fn parse_fim_completion(value: &Value) -> Result<String> {
 mod anthropic;
 mod chat;
 pub(crate) mod deepseek;
-pub(crate) mod request_budget;
 mod responses;
 
 /// Encode one tool with the exact JSON projection used by the chat sender.
@@ -2973,7 +2984,7 @@ mod tests {
         )
         .await;
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let (requests, usage) = budget.seal_and_full_snapshot();
+        let (requests, _, usage) = budget.seal_and_accounting_snapshot();
 
         match outcome {
             Err(_) => panic!("DeepSeek production sender canary failed: suite_timeout"),
@@ -3029,8 +3040,8 @@ mod tests {
                 "usage": {
                     "input_tokens": usage.usage.input_tokens,
                     "output_tokens": usage.usage.output_tokens,
-                    "cache_hit_tokens": usage.usage.prompt_cache_hit_tokens,
-                    "cache_miss_tokens": usage.usage.prompt_cache_miss_tokens,
+                    "cache_hit_tokens": usage.usage.cache_hit_tokens,
+                    "cache_miss_tokens": usage.usage.cache_miss_tokens,
                     "reasoning_tokens": usage.usage.reasoning_tokens,
                     "reasoning_replay_tokens": usage.usage.reasoning_replay_tokens,
                     "responses": usage.usage_responses,
@@ -3145,8 +3156,8 @@ mod tests {
             })
         ));
         assert_eq!(
-            budget.snapshot(),
-            request_budget::ApiRequestBudgetSnapshot {
+            budget.accounting_snapshot().0,
+            codewhale_deepseek::ApiRequestBudgetSnapshot {
                 limit: 2,
                 started: 2,
                 in_flight: 0,
@@ -3317,11 +3328,11 @@ mod tests {
         assert_eq!(accounting.fim_responses, 0);
         assert_eq!(accounting.usage.input_tokens, 12);
         assert_eq!(accounting.usage.output_tokens, 4);
-        assert_eq!(accounting.usage.reasoning_tokens, Some(1));
+        assert_eq!(accounting.usage.reasoning_tokens, 1);
         assert!(accounting.usage_complete());
         assert!(accounting.cost_complete());
         assert!(accounting.cost_usd > 0.0);
-        assert_eq!(budget.snapshot().started, 1);
+        assert_eq!(budget.accounting_snapshot().0.started, 1);
     }
 
     fn streaming_ledger_request() -> MessageRequest {

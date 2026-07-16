@@ -24,9 +24,6 @@ use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
 use crate::client::DeepSeekClient;
 use crate::client::deepseek::{ApiSurface, ChatPlanError};
-use crate::client::request_budget::{
-    ApiRequestActorSnapshot, ApiRequestBudgetSnapshot, ApiUsageSnapshot, SharedApiRequestBudget,
-};
 use crate::error_taxonomy::StreamError;
 use crate::llm_client::{LlmError, StreamEventBox};
 use crate::models::{
@@ -42,6 +39,9 @@ use crate::tools::spec::{ToolContext, ToolError};
 use crate::tools::test_runner::RunTestsTool;
 use crate::tools::verifier::RunVerifiersTool;
 use crate::tools::{ToolRegistry, ToolRegistryBuilder};
+use codewhale_deepseek::{
+    ApiRequestActorSnapshot, ApiRequestBudgetSnapshot, ApiUsageSnapshot, SharedApiRequestBudget,
+};
 
 const MINIMAL_PRODUCTION_TOOL_NAMES: [&str; 11] = [
     "apply_patch",
@@ -804,7 +804,7 @@ fn runtime_accounting(
         billing_unknown_attempts: u64::from(usage.billing_unknown_attempts),
         unpriced_usage_responses: u64::from(usage.unpriced_usage_responses),
         records_after_seal: u64::from(usage.usage_records_after_seal),
-        usage: runtime_usage(&usage.usage),
+        usage: usage.usage,
         surface_usage: usage
             .usage_buckets
             .into_iter()
@@ -817,7 +817,7 @@ fn runtime_accounting(
                 model: bucket.model,
                 response_count: u64::from(bucket.response_count),
                 usage_response_count: u64::from(bucket.usage_responses),
-                usage: runtime_usage(&bucket.usage),
+                usage: bucket.usage,
                 cost_nanousd: to_nano_units(bucket.cost_usd),
                 cost_nanocny: to_nano_units(bucket.cost_cny),
             })
@@ -1676,7 +1676,7 @@ mod tests {
 
     #[test]
     fn accounting_projection_keeps_every_ledger_counter_and_nano_cost() {
-        use crate::client::request_budget::ApiUsageBucket;
+        use codewhale_deepseek::ApiUsageBucket;
 
         let accounting = runtime_accounting(
             ApiRequestBudgetSnapshot {
@@ -1700,15 +1700,14 @@ mod tests {
                 child_retries: 1,
             },
             ApiUsageSnapshot {
-                usage: Usage {
+                usage: RuntimeUsage {
                     input_tokens: 101,
                     output_tokens: 29,
-                    prompt_cache_hit_tokens: Some(80),
-                    prompt_cache_miss_tokens: Some(21),
-                    prompt_cache_write_tokens: Some(4),
-                    reasoning_tokens: Some(9),
-                    reasoning_replay_tokens: Some(7),
-                    server_tool_use: None,
+                    cache_hit_tokens: 80,
+                    cache_miss_tokens: 21,
+                    cache_write_tokens: 4,
+                    reasoning_tokens: 9,
+                    reasoning_replay_tokens: 7,
                 },
                 usage_responses: 4,
                 standard_chat_responses: 3,
@@ -1719,10 +1718,10 @@ mod tests {
                     surface: ApiSurface::StrictChat,
                     response_count: 1,
                     usage_responses: 1,
-                    usage: Usage {
+                    usage: RuntimeUsage {
                         input_tokens: 31,
                         output_tokens: 11,
-                        ..Usage::default()
+                        ..RuntimeUsage::default()
                     },
                     cost_usd: 0.000_000_123_4,
                     cost_cny: 0.000_000_987_6,

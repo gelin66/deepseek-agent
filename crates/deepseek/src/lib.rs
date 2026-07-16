@@ -1,10 +1,8 @@
 //! Deterministic request planning for the official DeepSeek API.
 //!
-//! This crate is intentionally transport-free for the current migration
-//! slice. It owns the official wire decision and canonical `ModelRequest`
-//! projection; the existing sender consumes the frozen [`RequestPlan`]
-//! without re-planning. HTTP/SSE/accounting move only when their complete
-//! production closure can move without copying the transport.
+//! It owns the official wire decision, canonical `ModelRequest` projection,
+//! physical request admission, and provider-reported usage ledger. The HTTP
+//! sender and SSE decoder migrate in the next vertical slice.
 //!
 //! The next deletion point is the TUI legacy `MessageRequest` projection and
 //! its local replay preflight, after the interactive loop emits canonical
@@ -15,6 +13,19 @@ use std::fmt;
 
 use codewhale_runtime::{ModelMessage, ModelRequest, ReasoningEffort, SystemPrompt};
 use serde_json::{Map, Value, json};
+
+mod accounting;
+mod pricing;
+
+pub use accounting::{
+    ApiRequestActor, ApiRequestActorSnapshot, ApiRequestBudgetError, ApiRequestBudgetSnapshot,
+    ApiRequestKind, ApiRequestLease, ApiResponseAccountingGuard, ApiUsageBucket, ApiUsageSnapshot,
+    SharedApiRequestBudget,
+};
+pub use pricing::{
+    CostEstimate, CurrencyPricing, ModelPricing, calculate_turn_cost_estimate,
+    pricing_for_official_model,
+};
 
 pub const FIM_MODEL: &str = "deepseek-v4-pro";
 

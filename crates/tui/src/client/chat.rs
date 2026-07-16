@@ -90,13 +90,13 @@ use crate::models::{
 
 use super::deepseek::ApiSurface;
 use super::deepseek::{self, RequestPlan, ResponseMode};
-use super::request_budget::ApiResponseAccountingGuard;
 use super::{
     DeepSeekClient, ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK,
     SSE_BACKPRESSURE_SLEEP_MS, SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, api_url_with_suffix,
-    apply_reasoning_effort, bounded_error_text, from_api_tool_name, parse_usage,
-    release_stream_buffer, system_to_instructions, to_api_tool_name,
+    apply_reasoning_effort, bounded_error_text, deepseek_accounting_usage, from_api_tool_name,
+    parse_usage, release_stream_buffer, system_to_instructions, to_api_tool_name,
 };
+use codewhale_deepseek::ApiResponseAccountingGuard;
 
 fn apply_provider_token_limit(
     body: &mut Value,
@@ -402,7 +402,7 @@ impl DeepSeekClient {
         }
 
         let mut response_accounting =
-            ApiResponseAccountingGuard::new(request_lease, self.api_provider, model, surface);
+            ApiResponseAccountingGuard::new(request_lease, model, surface);
         let response_text = response
             .text()
             .await
@@ -411,14 +411,18 @@ impl DeepSeekClient {
             serde_json::from_str(&response_text).context("Failed to parse Chat API JSON")?;
         let observed_usage = value.get("usage").filter(|usage| usage.is_object());
         if let Some(wire_usage) = observed_usage {
-            response_accounting.observe(&parse_usage(Some(wire_usage)), Some(wire_usage));
+            response_accounting.observe(
+                &deepseek_accounting_usage(&parse_usage(Some(wire_usage))),
+                Some(wire_usage),
+            );
         }
         let mut parsed = parse_chat_message(&value)?;
         if let Some(tokens) = reasoning_replay_tokens {
             parsed.usage.reasoning_replay_tokens = Some(tokens);
         }
         response_accounting.set_model(parsed.model.clone());
-        response_accounting.complete(observed_usage.map(|_| &parsed.usage), observed_usage);
+        let accounting_usage = observed_usage.map(|_| deepseek_accounting_usage(&parsed.usage));
+        response_accounting.complete(accounting_usage.as_ref(), observed_usage);
         if let Some(key) = response_cache_key {
             crate::llm_response_cache::response_cache().put(key, parsed.clone());
         }
@@ -498,7 +502,7 @@ impl DeepSeekClient {
         let stream_idle_timeout = self.stream_idle_timeout;
         let configured_reasoning_stream_style = self.reasoning_stream_style.clone();
         let response_accounting =
-            ApiResponseAccountingGuard::new(request_lease, api_provider, model.clone(), surface);
+            ApiResponseAccountingGuard::new(request_lease, model.clone(), surface);
 
         let stream = async_stream::stream! {
             use futures_util::StreamExt;
@@ -675,7 +679,7 @@ impl DeepSeekClient {
                                         );
                                         if let Some(usage) = observed_usage.as_ref() {
                                             response_accounting.observe(
-                                                usage,
+                                                &deepseek_accounting_usage(usage),
                                                 observed_wire_usage.as_ref(),
                                             );
                                         }
@@ -772,8 +776,10 @@ impl DeepSeekClient {
                                     &mut observed_usage,
                                 );
                                 if let Some(usage) = observed_usage.as_ref() {
-                                    response_accounting
-                                        .observe(usage, observed_wire_usage.as_ref());
+                                    response_accounting.observe(
+                                        &deepseek_accounting_usage(usage),
+                                        observed_wire_usage.as_ref(),
+                                    );
                                 }
                                 if saw_terminal_signal {
                                     pending_terminal_events.push(event);
@@ -808,10 +814,8 @@ impl DeepSeekClient {
                 return;
             }
 
-            response_accounting.complete(
-                observed_usage.as_ref(),
-                observed_wire_usage.as_ref(),
-            );
+            let accounting_usage = observed_usage.as_ref().map(deepseek_accounting_usage);
+            response_accounting.complete(accounting_usage.as_ref(), observed_wire_usage.as_ref());
 
             // Accounting is now atomically settled, so consumers may safely
             // treat the buffered stop_reason as the response terminal and
