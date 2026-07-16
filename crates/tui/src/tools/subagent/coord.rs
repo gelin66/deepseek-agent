@@ -575,7 +575,7 @@ async fn wait_for_activity(
 
     let started = Instant::now();
     let cancelled = async {
-        match &context.cancel_token {
+        match context.cancellation_token() {
             Some(token) => token.cancelled().await,
             None => std::future::pending().await,
         }

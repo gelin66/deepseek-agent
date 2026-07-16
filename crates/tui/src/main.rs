@@ -8190,8 +8190,8 @@ async fn build_direct_workflow_tool(
         config.skills_config().scan_codewhale_only(),
     )
     .with_shell_policy(shell_policy)
-    .with_trusted_external_paths(trusted.paths().to_vec())
     .with_elevated_sandbox_policy(workflow_host_sandbox_policy(config, mode, workspace));
+    context.set_trusted_external_paths(trusted.paths().to_vec());
     let network_policy = config.network.clone().map(|network| {
         crate::network_policy::NetworkPolicyDecider::with_default_audit(network.into_runtime())
     });
@@ -9461,8 +9461,8 @@ mod terminal_mode_tests {
             payload["plan_approval"]["decision"],
             "approved_explicit_cli_command"
         );
-        assert!(!context.auto_approve);
-        assert!(!context.trust_mode);
+        assert!(!context.auto_approve());
+        assert!(!context.trust_mode());
         assert_eq!(
             context.shell_policy,
             crate::worker_profile::ShellPolicy::None

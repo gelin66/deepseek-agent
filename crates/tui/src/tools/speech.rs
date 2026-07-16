@@ -378,7 +378,7 @@ fn resolve_speech_output_path(
         return Ok(output_dir.join(filename));
     }
 
-    Ok(context.workspace.join(filename))
+    Ok(context.workspace().join(filename))
 }
 
 async fn encode_voice_clone_data_uri(path: &Path) -> Result<String, ToolError> {

@@ -602,7 +602,7 @@ impl ToolSpec for TerminalRunTool {
             let command = required_str(&input, "command")?.to_string();
             let name = session_name(&input, false)?.to_string();
             let session =
-                get_or_create(&name, &context.workspace).map_err(ToolError::execution_failed)?;
+                get_or_create(&name, context.workspace()).map_err(ToolError::execution_failed)?;
             let timeout = timeout_secs(&input, "timeout_secs");
             return tokio::task::spawn_blocking(move || {
                 {
@@ -648,7 +648,7 @@ impl ToolSpec for TerminalSendTool {
         {
             let name = session_name(&input, true)?.to_string();
             let text = required_str(&input, "text")?.as_bytes().to_vec();
-            let session = find(&name, &context.workspace).map_err(ToolError::execution_failed)?;
+            let session = find(&name, context.workspace()).map_err(ToolError::execution_failed)?;
             let wait = Duration::from_millis(optional_u64(&input, "wait_ms", 250).min(60_000));
             return tokio::task::spawn_blocking(move || {
                 let mut session = session
@@ -689,7 +689,7 @@ impl ToolSpec for TerminalWaitTool {
         #[cfg(unix)]
         {
             let name = session_name(&input, true)?.to_string();
-            let session = find(&name, &context.workspace).map_err(ToolError::execution_failed)?;
+            let session = find(&name, context.workspace()).map_err(ToolError::execution_failed)?;
             let timeout = timeout_secs(&input, "timeout_secs");
             return tokio::task::spawn_blocking(move || {
                 let (done, timed_out) = wait_shared_session(&session, timeout)?;
@@ -728,7 +728,7 @@ impl ToolSpec for TerminalCancelTool {
         #[cfg(unix)]
         {
             let name = session_name(&input, true)?.to_string();
-            let session = find(&name, &context.workspace).map_err(ToolError::execution_failed)?;
+            let session = find(&name, context.workspace()).map_err(ToolError::execution_failed)?;
             return tokio::task::spawn_blocking(move || {
                 let marker = {
                     let session = session.lock().map_err(|_| {
@@ -803,8 +803,8 @@ impl ToolSpec for TerminalResetTool {
         #[cfg(unix)]
         {
             let name = session_name(&input, true)?.to_string();
-            let old = find(&name, &context.workspace).map_err(ToolError::execution_failed)?;
-            let workspace = context.workspace.clone();
+            let old = find(&name, context.workspace()).map_err(ToolError::execution_failed)?;
+            let workspace = context.workspace().to_path_buf();
             return tokio::task::spawn_blocking(move || {
                 if let Ok(mut old) = old.lock() { let _ = old.child.kill(); }
                 if let Ok(mut old) = old.lock() {

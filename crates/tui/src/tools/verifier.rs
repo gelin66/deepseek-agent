@@ -353,7 +353,7 @@ impl ToolSpec for RunVerifiersTool {
                 success: false,
                 profile: profile.as_str().to_string(),
                 level: level.as_str().to_string(),
-                workspace: context.workspace.display().to_string(),
+                workspace: context.workspace().display().to_string(),
                 gate_count: 0,
                 passed: 0,
                 failed: 0,
@@ -374,7 +374,7 @@ impl ToolSpec for RunVerifiersTool {
         }
 
         let revision_before =
-            crate::tools::goal::capture_workspace_revision(&context.workspace).await;
+            crate::tools::goal::capture_workspace_revision(context.workspace()).await;
 
         let mut results = futures_util::future::join_all(
             gates
@@ -408,7 +408,7 @@ impl ToolSpec for RunVerifiersTool {
             success,
             profile: profile.as_str().to_string(),
             level: level.as_str().to_string(),
-            workspace: context.workspace.display().to_string(),
+            workspace: context.workspace().display().to_string(),
             gate_count: results.len(),
             passed,
             failed,
@@ -432,7 +432,7 @@ impl ToolSpec for RunVerifiersTool {
                 .iter()
                 .any(|gate| gate.ecosystem != "custom" && gate.status == GateStatus::Passed);
             let revision_after =
-                crate::tools::goal::capture_workspace_revision(&context.workspace).await;
+                crate::tools::goal::capture_workspace_revision(context.workspace()).await;
             crate::tools::goal::attach_goal_evidence_artifact(
                 &mut result,
                 self.name(),
@@ -668,7 +668,7 @@ fn start_background_gates(
         success,
         profile: profile.as_str().to_string(),
         level: level.as_str().to_string(),
-        workspace: context.workspace.display().to_string(),
+        workspace: context.workspace().display().to_string(),
         background: true,
         gate_count: jobs.len(),
         started,
@@ -709,7 +709,7 @@ fn build_gate_plan(
     max_python_files: usize,
     custom_commands: &[CustomVerifierInput],
 ) -> Result<Vec<VerifierGate>, ToolError> {
-    let workspace = &context.workspace;
+    let workspace = context.workspace();
     let mut gates = Vec::new();
 
     if profile == VerifierProfile::Auto && workspace.join(".git").exists() {
@@ -926,7 +926,7 @@ fn custom_gate(
     }
     let cwd = match custom.cwd.as_deref() {
         Some(raw) if !raw.trim().is_empty() => context.resolve_path(raw)?,
-        _ => context.workspace.clone(),
+        _ => context.workspace().to_path_buf(),
     };
     Ok(VerifierGate {
         name: custom.name.clone(),
@@ -1257,8 +1257,7 @@ async fn run_gate_with_timeout(
         stderr_raw.push_str("\nVerifier timed out; managed process tree was killed.");
     } else if output.status == ShellStatus::Killed
         && context
-            .cancel_token
-            .as_ref()
+            .cancellation_token()
             .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
     {
         stderr_raw.push_str("\nVerifier canceled; managed process tree was killed.");
@@ -1604,7 +1603,8 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let pid_path = tmp.path().join("verifier-cancel-child.pid");
         let cancel = tokio_util::sync::CancellationToken::new();
-        let ctx = ToolContext::new(tmp.path()).with_cancel_token(cancel.clone());
+        let mut ctx = ToolContext::new(tmp.path());
+        ctx.set_invocation_cancellation(cancel.clone());
         let task_ctx = ctx.clone();
         let task = tokio::spawn(async move {
             RunVerifiersTool

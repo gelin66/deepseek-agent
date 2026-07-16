@@ -331,7 +331,7 @@ impl ToolExecutor for ProductionToolExecutor {
 
         let tool_cancellation = TokioCancellationToken::new();
         let mut context = self.registry.context().clone();
-        context.cancel_token = Some(tool_cancellation.clone());
+        context.set_invocation_cancellation(tool_cancellation.clone());
         let execution =
             self.registry
                 .execute_full_with_context(&invocation.name, input, Some(&context));

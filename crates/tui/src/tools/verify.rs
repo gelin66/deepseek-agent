@@ -476,9 +476,8 @@ self-check of whether what you just did is actually correct and complete."
         // committed diff to starve current worktree evidence.
         let mut evidence = gather_files(&files, context);
         if gather_diff_scope {
-            evidence.extend(
-                gather_diff_evidence(context.workspace.as_path(), staged, base.as_deref()).await?,
-            );
+            evidence
+                .extend(gather_diff_evidence(context.workspace(), staged, base.as_deref()).await?);
         }
 
         let no_code_evidence = evidence.is_empty();
@@ -1031,7 +1030,7 @@ fn gather_files(files: &[String], context: &ToolContext) -> Vec<EvidenceBlock> {
             Ok(path) => match read_text_prefix(&path) {
                 Ok((content, read_truncated)) => {
                     let display = path
-                        .strip_prefix(&context.workspace)
+                        .strip_prefix(context.workspace())
                         .unwrap_or(&path)
                         .to_string_lossy()
                         .to_string();

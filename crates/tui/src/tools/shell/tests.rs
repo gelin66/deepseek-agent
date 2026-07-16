@@ -1120,7 +1120,8 @@ fn test_exec_shell_schema_guides_gt_five_second_work_to_background() {
 async fn test_exec_shell_foreground_cancel_kills_process() {
     let tmp = tempdir().expect("tempdir");
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let ctx = ToolContext::new(tmp.path()).with_cancel_token(cancel_token.clone());
+    let mut ctx = ToolContext::new(tmp.path());
+    ctx.set_invocation_cancellation(cancel_token.clone());
     let command = sleep_command(30);
 
     let task = tokio::spawn(async move {
@@ -1216,7 +1217,8 @@ async fn test_exec_shell_foreground_can_move_to_background() {
 async fn test_exec_shell_wait_cancel_leaves_background_process_running() {
     let tmp = tempdir().expect("tempdir");
     let cancel_token = tokio_util::sync::CancellationToken::new();
-    let ctx = ToolContext::new(tmp.path()).with_cancel_token(cancel_token.clone());
+    let mut ctx = ToolContext::new(tmp.path());
+    ctx.set_invocation_cancellation(cancel_token.clone());
     let shell_manager = ctx.shell_manager.clone();
     let started = shell_manager
         .lock()

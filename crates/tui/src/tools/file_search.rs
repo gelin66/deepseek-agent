@@ -86,7 +86,7 @@ impl ToolSpec for FileSearchTool {
         let limit = optional_u64(&input, "limit", 20).clamp(1, 200) as usize;
         let base_path = match optional_str(&input, "path") {
             Some(path) if !path.trim().is_empty() => context.resolve_path(path)?,
-            _ => context.workspace.clone(),
+            _ => context.workspace().to_path_buf(),
         };
 
         let extensions = parse_extensions(&input);
@@ -97,9 +97,9 @@ impl ToolSpec for FileSearchTool {
             extensions,
             exclude_patterns,
             limit,
-            context.cancel_token.clone(),
+            context.cancellation_token().cloned(),
             FILE_SEARCH_TIMEOUT,
-            context.follow_symlinks,
+            context.follow_symlinks(),
         )
         .await?;
         ToolOutcome::json(&matches).map_err(|e| ToolError::execution_failed(e.to_string()))
@@ -530,7 +530,8 @@ mod tests {
         std::fs::write(root.join("needle.txt"), "yes\n").expect("write");
         let cancel_token = CancellationToken::new();
         cancel_token.cancel();
-        let ctx = ToolContext::new(root.to_path_buf()).with_cancel_token(cancel_token);
+        let mut ctx = ToolContext::new(root.to_path_buf());
+        ctx.set_invocation_cancellation(cancel_token);
 
         let tool = FileSearchTool;
         let err = tool

@@ -5125,8 +5125,8 @@ fn mode_invariant_matrix_covers_context_catalog_subagents_and_prompt_metadata() 
 
         let context = engine.build_tool_context(case.mode, false);
         assert_eq!(context.shell_policy, case.shell_policy, "{}", case.name);
-        assert_eq!(context.trust_mode, case.trust_mode, "{}", case.name);
-        assert_eq!(context.auto_approve, case.auto_approve, "{}", case.name);
+        assert_eq!(context.trust_mode(), case.trust_mode, "{}", case.name);
+        assert_eq!(context.auto_approve(), case.auto_approve, "{}", case.name);
         assert_eq!(
             context.shell_network_denied_hint.is_some(),
             case.plan_hint,
@@ -5324,10 +5324,18 @@ fn agent_mode_can_build_auto_approved_tool_context() {
     assert!(
         !engine
             .build_tool_context(AppMode::Agent, false)
-            .auto_approve
+            .auto_approve()
     );
-    assert!(engine.build_tool_context(AppMode::Agent, true).auto_approve);
-    assert!(engine.build_tool_context(AppMode::Yolo, false).auto_approve);
+    assert!(
+        engine
+            .build_tool_context(AppMode::Agent, true)
+            .auto_approve()
+    );
+    assert!(
+        engine
+            .build_tool_context(AppMode::Yolo, false)
+            .auto_approve()
+    );
 }
 
 #[test]

@@ -2455,8 +2455,7 @@ async fn execute_foreground_via_background(
 ) -> Result<ShellResult> {
     let timeout_ms = request.timeout_ms.clamp(1000, 600_000);
     if context
-        .cancel_token
-        .as_ref()
+        .cancellation_token()
         .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
     {
         return Err(anyhow!("foreground command canceled before start"));
@@ -2498,8 +2497,7 @@ pub(crate) async fn execute_managed_program(
 ) -> Result<ShellResult> {
     let timeout_ms = timeout_ms.clamp(1_000, 600_000);
     if context
-        .cancel_token
-        .as_ref()
+        .cancellation_token()
         .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
     {
         return Err(anyhow!("managed verifier command canceled before start"));
@@ -2547,8 +2545,7 @@ async fn wait_for_managed_foreground(
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     loop {
         if context
-            .cancel_token
-            .as_ref()
+            .cancellation_token()
             .is_some_and(|token| token.is_cancelled())
         {
             let mut manager = context
@@ -2751,7 +2748,7 @@ impl ToolSpec for ExecShellTool {
 
         // Safety analysis (always run for metadata, but only block when not in YOLO mode)
         let safety = analyze_command(command);
-        if !context.auto_approve {
+        if !context.auto_approve() {
             match safety.level {
                 SafetyLevel::Dangerous => {
                     let reasons = safety.reasons.join("; ");
@@ -2976,8 +2973,7 @@ impl ToolSpec for ExecShellTool {
                 }
 
                 let was_cancelled = context
-                    .cancel_token
-                    .as_ref()
+                    .cancellation_token()
                     .is_some_and(|token| token.is_cancelled());
                 let task_id_str = result.task_id.clone().unwrap_or_default();
                 let stdout_summary = summarize_output(&result.stdout);
@@ -3250,8 +3246,7 @@ async fn wait_for_shell_delta_cancellable(
 
     let (command, result, stdout_total_len, stderr_total_len) = loop {
         if context
-            .cancel_token
-            .as_ref()
+            .cancellation_token()
             .is_some_and(|token| token.is_cancelled())
         {
             let mut manager = context
@@ -3630,8 +3625,7 @@ impl ToolSpec for ShellInteractTool {
         let mut elapsed = 0u64;
         loop {
             if context
-                .cancel_token
-                .as_ref()
+                .cancellation_token()
                 .is_some_and(|token| token.is_cancelled())
             {
                 let mut manager = context

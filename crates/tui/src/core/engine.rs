@@ -1555,7 +1555,7 @@ impl Engine {
         } else if let Some(spec) = registry.get(&tool_name) {
             let mut approval_required = spec.approval_requirement_for(&tool_input)
                 != ApprovalRequirement::Auto
-                && !registry.context().auto_approve;
+                && !registry.context().auto_approve();
             let mut approval_description = spec.description().to_string();
             let mut approval_force_prompt = false;
             let ask_rule_decision = exec_shell_ask_rule_decision(
@@ -4001,10 +4001,10 @@ impl Engine {
             self.session.system_prompt.clone(),
             self.session.messages.clone().into(),
         ))
-        .with_cancel_token(self.cancel_token.clone())
-        .with_shell_policy(authority.shell_policy())
-        .with_trusted_external_paths(trusted_external_paths)
-        .with_follow_symlinks(self.config.workspace_follow_symlinks);
+        .with_shell_policy(authority.shell_policy());
+        ctx.set_invocation_cancellation(self.cancel_token.clone());
+        ctx.set_trusted_external_paths(trusted_external_paths);
+        ctx.set_follow_symlinks(self.config.workspace_follow_symlinks);
 
         // Hand the user-memory path to tools so the model-callable
         // `remember` tool can append entries (#489). `None` when the

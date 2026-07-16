@@ -172,9 +172,9 @@ impl ToolSpec for GrepFilesTool {
         // Resolve search path
         let search_path = context.resolve_path(path_str)?;
 
-        let workspace = context.workspace.clone();
-        let cancel_token = context.cancel_token.clone();
-        let follow_symlinks = context.follow_symlinks;
+        let workspace = context.workspace().to_path_buf();
+        let cancel_token = context.cancellation_token().cloned();
+        let follow_symlinks = context.follow_symlinks();
 
         // The directory walk and per-file regex are synchronous blocking work.
         // Run them on a blocking worker bounded by a hard timeout so a huge tree
@@ -916,7 +916,8 @@ mod tests {
         fs::write(real_dir.join("needle.txt"), "NEEDLE\n").expect("write");
         std::os::unix::fs::symlink(&workspace, real_dir.join("loop")).expect("symlink loop");
 
-        let ctx = ToolContext::new(workspace).with_follow_symlinks(true);
+        let mut ctx = ToolContext::new(workspace);
+        ctx.set_follow_symlinks(true);
         let tool = GrepFilesTool;
         let result = tool
             .execute(json!({"pattern": "NEEDLE"}), &ctx)
@@ -948,7 +949,8 @@ mod tests {
         fs::write(tmp.path().join("test.txt"), "needle\n").expect("write");
         let cancel_token = CancellationToken::new();
         cancel_token.cancel();
-        let ctx = ToolContext::new(tmp.path().to_path_buf()).with_cancel_token(cancel_token);
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.set_invocation_cancellation(cancel_token);
 
         let tool = GrepFilesTool;
         let err = tool

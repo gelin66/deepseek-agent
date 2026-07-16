@@ -406,7 +406,7 @@ fn gh_bin() -> String {
 fn run_gh_text(context: &ToolContext, args: &[&str]) -> Result<String, ToolError> {
     let out = Command::new(gh_bin())
         .args(args)
-        .current_dir(&context.workspace)
+        .current_dir(context.workspace())
         .output()
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -433,7 +433,7 @@ fn run_gh_json(context: &ToolContext, args: &[&str]) -> Result<Value, ToolError>
 fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError> {
     let out = crate::dependencies::Git::output(
         &["rev-parse", "--is-inside-work-tree"],
-        &context.workspace,
+        context.workspace(),
     )
     .map_err(|e| ToolError::execution_failed(format!("failed to run git: {e}")))?;
     if out.status.success() {
@@ -446,7 +446,7 @@ fn ensure_github_repo(context: &ToolContext) -> Result<(), ToolError> {
 }
 
 fn git_status_porcelain(context: &ToolContext) -> Result<String, ToolError> {
-    let out = crate::dependencies::Git::output(&["status", "--porcelain"], &context.workspace)
+    let out = crate::dependencies::Git::output(&["status", "--porcelain"], context.workspace())
         .map_err(|e| ToolError::execution_failed(format!("failed to run git status: {e}")))?;
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }

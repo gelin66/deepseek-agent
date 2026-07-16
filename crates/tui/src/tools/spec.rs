@@ -6,11 +6,8 @@
 //! - `ToolOutcome`: Unified result type for tool execution
 //! - `ToolCapability`: Capabilities and requirements of tools
 
-use std::collections::HashMap;
-use std::fs;
-use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -25,6 +22,7 @@ use crate::sandbox::backend::SandboxBackend;
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::worker_profile::ShellPolicy;
+use codewhale_tools::ProductionToolContext;
 #[allow(unused_imports)]
 pub use codewhale_tools::{
     ApprovalRequirement, ToolCapability, ToolError, ToolOutcome, optional_bool, optional_str,
@@ -105,33 +103,6 @@ impl std::fmt::Debug for RuntimeToolServices {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct FileReadSnapshot {
-    len: u64,
-    modified: Option<SystemTime>,
-}
-
-#[derive(Debug, Default)]
-pub struct FileReadTracker {
-    reads: HashMap<PathBuf, FileReadSnapshot>,
-}
-
-pub type SharedFileReadTracker = Arc<Mutex<FileReadTracker>>;
-
-fn new_shared_file_read_tracker() -> SharedFileReadTracker {
-    Arc::new(Mutex::new(FileReadTracker::default()))
-}
-
-fn file_read_snapshot(path: &Path) -> Result<FileReadSnapshot, ToolError> {
-    let metadata = fs::metadata(path).map_err(|e| {
-        ToolError::execution_failed(format!("Failed to inspect {}: {e}", path.display()))
-    })?;
-    Ok(FileReadSnapshot {
-        len: metadata.len(),
-        modified: metadata.modified().ok(),
-    })
-}
-
 /// Sandbox policy for command execution.
 #[derive(Debug, Clone, Default)]
 pub enum SandboxPolicy {
@@ -143,25 +114,19 @@ pub enum SandboxPolicy {
 /// Context passed to tools during execution.
 #[derive(Clone)]
 pub struct ToolContext {
-    /// The workspace root directory
-    pub workspace: PathBuf,
+    /// TUI-independent state owned by the production tools crate.
+    production: ProductionToolContext,
     /// Read-only snapshot of the active Goal acceptance contract at the start
     /// of this tool-execution context. Verifiers bind receipts to this exact
     /// generation; a later Goal can never inherit an earlier result.
     pub goal_contract: Option<crate::tools::goal::TaskContract>,
     /// Shared shell manager for background tasks and streaming IO.
     pub shell_manager: SharedShellManager,
-    /// Per-session snapshots for files successfully observed by `read_file`.
-    /// Mutation tools use this to reject narrow edits against unread or stale
-    /// content.
-    pub file_read_tracker: SharedFileReadTracker,
     /// Sub-agent that owns tool work started through this context. Root user
     /// turns leave this unset; child contexts stamp it so long-running shell
     /// jobs can be attributed in UI surfaces.
     pub owner_agent_id: Option<String>,
     pub owner_agent_name: Option<String>,
-    /// Whether to allow paths outside workspace
-    pub trust_mode: bool,
     /// Current sandbox policy
     #[allow(dead_code)]
     pub sandbox_policy: SandboxPolicy,
@@ -180,26 +145,12 @@ pub struct ToolContext {
     /// Optional user-facing hint for shell commands that fail because the
     /// active sandbox policy intentionally denies outbound network access.
     pub shell_network_denied_hint: Option<String>,
-    /// Whether tools should auto-approve without safety checks (YOLO mode).
-    /// When true, command safety analysis is skipped for shell execution.
-    pub auto_approve: bool,
     /// Effective shell policy for this execution context.
     pub shell_policy: ShellPolicy,
     /// Effective feature flag set for the running session.
     pub features: Features,
     /// Namespace for tool state that should be scoped to the current session/thread.
     pub state_namespace: String,
-    /// User-trusted external paths the agent may read/write even when they
-    /// fall outside `workspace`. Loaded from `~/.deepseek/workspace-trust.json`
-    /// and refreshed when the user runs `/trust add <path>`. Distinct from
-    /// `trust_mode`, which is the all-or-nothing legacy switch (#29).
-    pub trusted_external_paths: Vec<PathBuf>,
-    /// Whether to follow symbolic links during file discovery and tool
-    /// operations. When `true`, symlinked directories are traversed and
-    /// symlinked paths that resolve outside the workspace are still allowed
-    /// (the symlink itself must be inside the workspace). Mirrors the
-    /// `workspace_follow_symlinks` setting.
-    pub follow_symlinks: bool,
     /// Per-domain network policy (#135). When `None`, network tools fall back
     /// to a permissive default that mirrors pre-v0.7.0 behavior so tests and
     /// other contexts that don't construct a real policy keep working.
@@ -211,9 +162,6 @@ pub struct ToolContext {
     /// objects. Tools only receive compact cards unless explicitly opening a
     /// bounded object through `rlm_open`.
     pub session_objects: Option<SessionObjectSnapshot>,
-    /// Cancellation token for the active engine turn. Tools that may wait on
-    /// external work should observe this so UI cancel can interrupt them.
-    pub cancel_token: Option<CancellationToken>,
     /// Optional external sandbox backend for shell execution.
     /// When set, exec_shell routes commands through this instead of spawning
     /// a local process.
@@ -267,13 +215,11 @@ impl ToolContext {
             .expect("hardcoded project MCP state path is valid")
             .1;
         Self {
-            workspace,
+            production: ProductionToolContext::new(workspace),
             goal_contract: None,
             shell_manager,
-            file_read_tracker: new_shared_file_read_tracker(),
             owner_agent_id: None,
             owner_agent_name: None,
-            trust_mode: false,
             sandbox_policy: SandboxPolicy::None,
             notes_path,
             mcp_config_path,
@@ -281,16 +227,12 @@ impl ToolContext {
             skills_scan_codewhale_only: false,
             elevated_sandbox_policy: None,
             shell_network_denied_hint: None,
-            auto_approve: false,
             shell_policy: ShellPolicy::Full,
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
-            trusted_external_paths: Vec::new(),
-            follow_symlinks: false,
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             session_objects: None,
-            cancel_token: None,
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
@@ -312,14 +254,13 @@ impl ToolContext {
     ) -> Self {
         let workspace = workspace.into();
         let shell_manager = new_shared_shell_manager(workspace.clone());
+        let production = ProductionToolContext::new(workspace).with_trust_mode(trust_mode);
         Self {
-            workspace,
+            production,
             goal_contract: None,
             shell_manager,
-            file_read_tracker: new_shared_file_read_tracker(),
             owner_agent_id: None,
             owner_agent_name: None,
-            trust_mode,
             sandbox_policy: SandboxPolicy::None,
             notes_path: notes_path.into(),
             mcp_config_path: mcp_config_path.into(),
@@ -327,16 +268,12 @@ impl ToolContext {
             skills_scan_codewhale_only: false,
             elevated_sandbox_policy: None,
             shell_network_denied_hint: None,
-            auto_approve: false,
             shell_policy: ShellPolicy::Full,
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
-            trusted_external_paths: Vec::new(),
-            follow_symlinks: false,
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             session_objects: None,
-            cancel_token: None,
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
@@ -358,14 +295,15 @@ impl ToolContext {
     ) -> Self {
         let workspace = workspace.into();
         let shell_manager = new_shared_shell_manager(workspace.clone());
+        let production = ProductionToolContext::new(workspace)
+            .with_trust_mode(trust_mode)
+            .with_auto_approve(auto_approve);
         Self {
-            workspace,
+            production,
             goal_contract: None,
             shell_manager,
-            file_read_tracker: new_shared_file_read_tracker(),
             owner_agent_id: None,
             owner_agent_name: None,
-            trust_mode,
             sandbox_policy: SandboxPolicy::None,
             notes_path: notes_path.into(),
             mcp_config_path: mcp_config_path.into(),
@@ -373,16 +311,12 @@ impl ToolContext {
             skills_scan_codewhale_only: false,
             elevated_sandbox_policy: None,
             shell_network_denied_hint: None,
-            auto_approve,
             shell_policy: ShellPolicy::Full,
             features: Features::with_defaults(),
             state_namespace: "workspace".to_string(),
-            trusted_external_paths: Vec::new(),
-            follow_symlinks: false,
             network_policy: None,
             runtime: RuntimeToolServices::default(),
             session_objects: None,
-            cancel_token: None,
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
@@ -392,6 +326,91 @@ impl ToolContext {
             search_base_url: None,
             workshop_vars: None,
         }
+    }
+
+    /// Workspace root owned by the TUI-independent production context.
+    #[must_use]
+    pub fn workspace(&self) -> &Path {
+        self.production.workspace()
+    }
+
+    /// Whether unrestricted path access is active.
+    #[must_use]
+    pub fn trust_mode(&self) -> bool {
+        self.production.trust_mode()
+    }
+
+    /// User-approved roots outside the workspace.
+    #[must_use]
+    pub fn trusted_external_paths(&self) -> &[PathBuf] {
+        self.production.trusted_external_paths()
+    }
+
+    /// Whether workspace symlinks may resolve outside the workspace.
+    #[must_use]
+    pub fn follow_symlinks(&self) -> bool {
+        self.production.follow_symlinks()
+    }
+
+    /// Cancellation signal for the current tool invocation.
+    #[must_use]
+    pub fn cancellation_token(&self) -> Option<&CancellationToken> {
+        self.production.cancellation_token()
+    }
+
+    /// Whether eligible operations may bypass approval prompts.
+    #[must_use]
+    pub fn auto_approve(&self) -> bool {
+        self.production.auto_approve()
+    }
+
+    /// Replace the invocation cancellation signal while preserving file-read
+    /// freshness for the current workspace.
+    pub fn set_invocation_cancellation(&mut self, cancellation: CancellationToken) {
+        self.production = self.production.for_invocation(cancellation);
+    }
+
+    /// Replace the approval posture in the production context snapshot.
+    pub fn set_auto_approve(&mut self, auto_approve: bool) {
+        self.production = self.production.clone().with_auto_approve(auto_approve);
+    }
+
+    /// Replace the explicit external roots in the production context snapshot.
+    pub fn set_trusted_external_paths(&mut self, paths: Vec<PathBuf>) {
+        self.production = self.production.clone().with_trusted_external_paths(paths);
+    }
+
+    /// Replace workspace symlink traversal policy.
+    pub fn set_follow_symlinks(&mut self, follow_symlinks: bool) {
+        self.production = self
+            .production
+            .clone()
+            .with_follow_symlinks(follow_symlinks);
+    }
+
+    /// Rebind a child context to its worktree and discard parent read evidence.
+    pub fn rebind_workspace(&mut self, workspace: impl Into<PathBuf>) {
+        self.production.rebind_workspace(workspace);
+    }
+
+    /// Resolve and validate a tool path through the production context.
+    pub fn resolve_path(&self, raw: &str) -> Result<PathBuf, ToolError> {
+        self.production.resolve_path(raw)
+    }
+
+    /// Record a successful file read in the production freshness tracker.
+    pub fn note_file_read(&self, path: &Path) {
+        self.production.note_file_read(path);
+    }
+
+    /// Require a still-current read before a narrow file edit.
+    pub fn require_fresh_file_read(
+        &self,
+        path: &Path,
+        requested_path: &str,
+    ) -> Result<(), ToolError> {
+        self.production
+            .require_fresh_file_read(path, requested_path)
     }
 
     /// Attach a per-domain network policy to this context (#135).
@@ -452,13 +471,6 @@ impl ToolContext {
         self
     }
 
-    /// Attach the active engine cancellation token.
-    #[must_use]
-    pub fn with_cancel_token(mut self, cancel_token: CancellationToken) -> Self {
-        self.cancel_token = Some(cancel_token);
-        self
-    }
-
     /// Attach the effective shell policy for this turn.
     #[must_use]
     pub fn with_shell_policy(mut self, policy: ShellPolicy) -> Self {
@@ -474,272 +486,12 @@ impl ToolContext {
         self
     }
 
-    /// Set the user's trusted external paths (loaded from
-    /// `~/.deepseek/workspace-trust.json`). See [`Self::resolve_path`] for
-    /// how the list is consulted.
-    #[must_use]
-    pub fn with_trusted_external_paths(mut self, paths: Vec<PathBuf>) -> Self {
-        self.trusted_external_paths = paths;
-        self
-    }
-
-    /// Set whether tools should follow symbolic links. When `true`,
-    /// `resolve_path` allows symlinked paths that resolve outside the
-    /// workspace, and walk-based tools traverse symlinked directories.
-    /// Mirrors the `workspace_follow_symlinks` setting.
-    #[must_use]
-    pub fn with_follow_symlinks(mut self, follow: bool) -> Self {
-        self.follow_symlinks = follow;
-        self
-    }
-
     /// Attach an LSP manager so that edit tools can auto-inject diagnostics
     /// into their results after a successful file modification (#428).
     #[must_use]
     #[allow(dead_code)]
     pub fn with_lsp_manager(mut self, manager: Arc<LspManager>) -> Self {
         self.lsp_manager = Some(manager);
-        self
-    }
-
-    /// Remember that the caller has observed the current on-disk state of a
-    /// file. This is intentionally best-effort so successful reads/writes do
-    /// not fail after completing only because a post-operation metadata lookup
-    /// raced with filesystem changes.
-    pub fn note_file_read(&self, path: &Path) {
-        let Ok(snapshot) = file_read_snapshot(path) else {
-            return;
-        };
-        let Ok(mut tracker) = self.file_read_tracker.lock() else {
-            return;
-        };
-        tracker.reads.insert(path.to_path_buf(), snapshot);
-    }
-
-    /// Require a successful, still-fresh `read_file` snapshot before a narrow
-    /// in-place edit. This catches model edits made against guessed or stale
-    /// content while leaving transactional patch preflight separate.
-    pub fn require_fresh_file_read(
-        &self,
-        path: &Path,
-        requested_path: &str,
-    ) -> Result<(), ToolError> {
-        let prior = {
-            let tracker = self.file_read_tracker.lock().map_err(|_| {
-                ToolError::execution_failed(
-                    "Failed to check read-before-edit state: tracker lock poisoned".to_string(),
-                )
-            })?;
-            tracker.reads.get(path).cloned()
-        };
-
-        let Some(prior) = prior else {
-            return Err(ToolError::execution_failed(format!(
-                "Refusing edit_file for {} because it has not been read in this session. \
-                 Recovery: call read_file with path=\"{requested_path}\" to inspect the current contents, \
-                 then retry edit_file with a unique search string.",
-                path.display()
-            )));
-        };
-
-        let current = file_read_snapshot(path).map_err(|e| {
-            ToolError::execution_failed(format!(
-                "Refusing edit_file for {} because the file could not be checked for staleness ({e}). \
-                 Recovery: call read_file with path=\"{requested_path}\" again, then retry edit_file.",
-                path.display()
-            ))
-        })?;
-
-        if current != prior {
-            return Err(ToolError::execution_failed(format!(
-                "Refusing edit_file for {} because it changed since the last read_file call. \
-                 Recovery: call read_file with path=\"{requested_path}\" again and retry with the current contents.",
-                path.display()
-            )));
-        }
-
-        Ok(())
-    }
-
-    /// Resolve a path relative to workspace, validating it doesn't escape.
-    ///
-    /// This handles both existing files (using canonicalize) and non-existent files
-    /// (for write operations) by canonicalizing the parent directory and appending
-    /// the filename.
-    /// Resolve a path relative to workspace, validating it doesn't escape.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// # use crate::tools::spec::ToolContext;
-    /// let ctx = ToolContext::new(".");
-    /// let path = ctx.resolve_path("README.md")?;
-    /// # Ok::<(), crate::tools::spec::ToolError>(())
-    /// ```
-    pub fn resolve_path(&self, raw: &str) -> Result<PathBuf, ToolError> {
-        let candidate = if std::path::Path::new(raw).is_absolute() {
-            PathBuf::from(raw)
-        } else {
-            self.workspace.join(raw)
-        };
-
-        // In trust mode, allow any path without validation
-        if self.trust_mode {
-            // Still try to canonicalize for consistency, but don't require it
-            return Ok(candidate.canonicalize().unwrap_or(candidate));
-        }
-
-        // Try to canonicalize the workspace
-        let workspace_canonical = self
-            .workspace
-            .canonicalize()
-            .unwrap_or_else(|_| self.workspace.clone());
-
-        // When follow_symlinks is enabled, check the non-canonical (symlink)
-        // path against the workspace first. A symlink inside the workspace
-        // that resolves outside is allowed — the symlink itself is the gate.
-        if self.follow_symlinks {
-            let candidate_normalized = normalize_path(&candidate);
-            let workspace_normalized = normalize_path(&self.workspace);
-            let workspace_canonical_normalized = normalize_path(&workspace_canonical);
-
-            if candidate_normalized.starts_with(&workspace_normalized)
-                || candidate_normalized.starts_with(&workspace_canonical_normalized)
-            {
-                // The symlink (or plain path) is inside the workspace.
-                // Return the canonicalized target so file I/O works correctly.
-                if candidate.exists() {
-                    return Ok(candidate.canonicalize().unwrap_or(candidate));
-                }
-                // Non-existent path: canonicalize the deepest existing ancestor
-                return self.resolve_nonexistent_path(candidate, &workspace_canonical);
-            }
-
-            // Path is outside workspace even before resolving symlinks.
-            // Fall through to the standard escape check.
-        }
-
-        // For the initial check, also try to canonicalize the candidate if possible
-        // This handles symlinks like /var -> /private/var on macOS
-        let candidate_canonical = candidate
-            .canonicalize()
-            .unwrap_or_else(|_| normalize_path(&candidate));
-        let workspace_normalized = normalize_path(&workspace_canonical);
-
-        // Check if the candidate is under the workspace (comparing canonical paths)
-        if !candidate_canonical.starts_with(&workspace_normalized) {
-            // Also try with non-canonical workspace for cases where workspace itself
-            // hasn't been canonicalized yet
-            let workspace_plain = normalize_path(&self.workspace);
-            let candidate_normalized = normalize_path(&candidate);
-            if !candidate_normalized.starts_with(&workspace_plain)
-                && !self.is_trusted_external_path(&candidate_canonical)
-                && !self.is_trusted_external_path(&candidate_normalized)
-            {
-                return Err(ToolError::PathEscape {
-                    path: candidate_canonical,
-                });
-            }
-        }
-
-        // For existing paths, use canonicalize directly
-        if candidate.exists() {
-            let canonical = candidate.canonicalize().map_err(|e| {
-                ToolError::execution_failed(format!(
-                    "Failed to canonicalize {}: {}",
-                    candidate.display(),
-                    e
-                ))
-            })?;
-
-            if !canonical.starts_with(&workspace_canonical)
-                && !self.is_trusted_external_path(&canonical)
-            {
-                return Err(ToolError::PathEscape { path: canonical });
-            }
-
-            return Ok(canonical);
-        }
-
-        self.resolve_nonexistent_path(candidate, &workspace_canonical)
-    }
-
-    /// Resolve a non-existent path by canonicalizing its deepest existing
-    /// ancestor and validating the result is under the workspace or a
-    /// trusted external path.
-    fn resolve_nonexistent_path(
-        &self,
-        candidate: PathBuf,
-        workspace_canonical: &Path,
-    ) -> Result<PathBuf, ToolError> {
-        let workspace_normalized = normalize_path(workspace_canonical);
-        let workspace_plain = normalize_path(&self.workspace);
-        let mut existing_ancestor = candidate.clone();
-        let mut suffix_parts: Vec<std::ffi::OsString> = Vec::new();
-
-        while !existing_ancestor.exists() {
-            if let Some(file_name) = existing_ancestor.file_name() {
-                suffix_parts.push(file_name.to_owned());
-            }
-            match existing_ancestor.parent() {
-                Some(parent) if !parent.as_os_str().is_empty() => {
-                    existing_ancestor = parent.to_path_buf();
-                }
-                _ => {
-                    // No existing parent found; fall back to simple check
-                    break;
-                }
-            }
-        }
-        let ancestor_normalized = normalize_path(&existing_ancestor);
-
-        let canonical_ancestor = if existing_ancestor.exists() {
-            existing_ancestor
-                .canonicalize()
-                .unwrap_or(existing_ancestor)
-        } else {
-            existing_ancestor
-        };
-
-        // Rebuild the full path from canonicalized ancestor
-        let mut canonical = canonical_ancestor;
-        for part in suffix_parts.into_iter().rev() {
-            canonical.push(part);
-        }
-        let canonical = normalize_path(&canonical);
-
-        if self.follow_symlinks
-            && (ancestor_normalized.starts_with(&workspace_plain)
-                || ancestor_normalized.starts_with(&workspace_normalized))
-        {
-            return Ok(canonical);
-        }
-
-        // Validate it's under workspace, OR is under a user-trusted external
-        // path (`/trust add <path>` from the slash command, persisted in
-        // `~/.deepseek/workspace-trust.json`).
-        if !canonical.starts_with(workspace_canonical)
-            && !canonical.starts_with(&workspace_normalized)
-            && !self.is_trusted_external_path(&canonical)
-        {
-            return Err(ToolError::PathEscape { path: canonical });
-        }
-
-        Ok(canonical)
-    }
-
-    /// Whether `path` is under any of the user-trusted external roots. The
-    /// caller should pass an already-canonicalized (or normalized) path.
-    fn is_trusted_external_path(&self, path: &Path) -> bool {
-        self.trusted_external_paths
-            .iter()
-            .any(|trusted| path.starts_with(trusted))
-    }
-
-    /// Set the trust mode.
-    #[allow(dead_code)]
-    pub fn with_trust_mode(mut self, trust: bool) -> Self {
-        self.trust_mode = trust;
         self
     }
 
@@ -827,50 +579,6 @@ pub async fn lsp_diagnostics_for_paths(context: &ToolContext, paths: &[PathBuf])
     }
 
     render_blocks(&blocks)
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut prefix: Option<std::ffi::OsString> = None;
-    let mut is_root = false;
-    let mut stack: Vec<std::ffi::OsString> = Vec::new();
-
-    for component in path.components() {
-        match component {
-            Component::Prefix(prefix_component) => {
-                prefix = Some(prefix_component.as_os_str().to_owned());
-            }
-            Component::RootDir => {
-                is_root = true;
-            }
-            Component::CurDir => {}
-            Component::ParentDir => {
-                let parent = Component::ParentDir.as_os_str();
-                if let Some(last) = stack.pop() {
-                    if last == parent {
-                        stack.push(last);
-                        stack.push(parent.to_owned());
-                    }
-                } else if !is_root {
-                    stack.push(parent.to_owned());
-                }
-            }
-            Component::Normal(part) => {
-                stack.push(part.to_owned());
-            }
-        }
-    }
-
-    let mut normalized = PathBuf::new();
-    if let Some(prefix) = prefix {
-        normalized.push(prefix);
-    }
-    if is_root {
-        normalized.push(Path::new(std::path::MAIN_SEPARATOR_STR));
-    }
-    for part in stack {
-        normalized.push(part);
-    }
-    normalized
 }
 
 /// The core trait that all tools must implement.
@@ -966,9 +674,6 @@ pub trait ToolSpec: Send + Sync {
 mod tests {
     use super::*;
     use serde_json::json;
-    #[cfg(unix)]
-    use std::os::unix::fs::symlink;
-    use tempfile::tempdir;
 
     #[test]
     fn test_tool_outcome_success() {
@@ -1000,128 +705,16 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_context_resolve_path_relative() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf());
+    fn tool_context_has_one_mutable_production_state() {
+        let cancellation = CancellationToken::new();
+        let mut context = ToolContext::new(".");
+        context.set_auto_approve(true);
+        context.set_invocation_cancellation(cancellation.clone());
 
-        // Create a test file
-        let test_file = tmp.path().join("test.txt");
-        std::fs::write(&test_file, "test").expect("write");
-
-        let resolved = ctx.resolve_path("test.txt").expect("resolve");
-        assert!(resolved.ends_with("test.txt"));
-    }
-
-    #[test]
-    fn test_tool_context_resolve_path_escape() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf());
-
-        // Try to escape workspace
-        let result = ctx.resolve_path("/etc/passwd");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_tool_context_resolve_path_parent_traversal() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf());
-
-        let result = ctx.resolve_path("../escape.txt");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_tool_context_resolve_path_normalizes_parent() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf());
-
-        let result = ctx.resolve_path("new/../safe.txt");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_tool_context_trust_mode() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf()).with_trust_mode(true);
-
-        // In trust mode, absolute paths should work
-        let result = ctx.resolve_path("/tmp");
-        assert!(result.is_ok());
-    }
-
-    /// Issue #29: paths under a user-trusted external directory resolve
-    /// successfully even though they fall outside the workspace, while
-    /// untrusted external paths still error with `PathEscape`.
-    #[test]
-    fn test_tool_context_trusted_external_path_allows_escape() {
-        let workspace = tempdir().expect("workspace tempdir");
-        let trusted_root = tempdir().expect("trusted tempdir");
-        let trusted_file = trusted_root.path().join("notes.md");
-        std::fs::write(&trusted_file, "shared notes").unwrap();
-
-        let ctx =
-            ToolContext::new(workspace.path().to_path_buf()).with_trusted_external_paths(vec![
-                trusted_root
-                    .path()
-                    .canonicalize()
-                    .unwrap_or_else(|_| trusted_root.path().to_path_buf()),
-            ]);
-
-        let resolved = ctx
-            .resolve_path(trusted_file.to_str().unwrap())
-            .expect("trusted path should resolve");
-        assert!(resolved.ends_with("notes.md"));
-
-        // Path outside workspace AND outside the trust list should still fail.
-        let other = tempdir().expect("untrusted tempdir");
-        let other_file = other.path().join("secret.md");
-        std::fs::write(&other_file, "x").unwrap();
-        let err = ctx
-            .resolve_path(other_file.to_str().unwrap())
-            .expect_err("untrusted path must error");
-        assert!(matches!(err, ToolError::PathEscape { .. }));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_tool_context_follow_symlinks_allows_nonexistent_path_under_workspace_symlink() {
-        let tmp = tempdir().expect("tempdir");
-        let workspace = tmp.path().join("workspace");
-        let outside = tmp.path().join("outside");
-        std::fs::create_dir_all(&workspace).expect("mkdir workspace");
-        std::fs::create_dir_all(outside.join("target")).expect("mkdir outside target");
-        symlink(outside.join("target"), workspace.join("linked")).expect("symlink");
-
-        let ctx = ToolContext::new(workspace).with_follow_symlinks(true);
-        let resolved = ctx
-            .resolve_path("linked/new.txt")
-            .expect("path under workspace symlink should resolve");
-
-        let expected = outside
-            .join("target")
-            .canonicalize()
-            .expect("canonical target")
-            .join("new.txt");
-        assert_eq!(resolved, normalize_path(&expected));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn test_tool_context_default_mode_rejects_nonexistent_path_under_workspace_symlink() {
-        let tmp = tempdir().expect("tempdir");
-        let workspace = tmp.path().join("workspace");
-        let outside = tmp.path().join("outside");
-        std::fs::create_dir_all(&workspace).expect("mkdir workspace");
-        std::fs::create_dir_all(outside.join("target")).expect("mkdir outside target");
-        symlink(outside.join("target"), workspace.join("linked")).expect("symlink");
-
-        let ctx = ToolContext::new(workspace);
-        let err = ctx
-            .resolve_path("linked/new.txt")
-            .expect_err("default mode should still reject workspace symlink escapes");
-
-        assert!(matches!(err, ToolError::PathEscape { .. }));
+        assert!(context.auto_approve());
+        assert!(!context.trust_mode());
+        cancellation.cancel();
+        assert!(context.cancellation_token().unwrap().is_cancelled());
     }
 
     #[test]

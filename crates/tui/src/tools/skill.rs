@@ -98,9 +98,13 @@ impl ToolSpec for LoadSkillTool {
         let discovery_mode =
             SkillDiscoveryMode::from_codewhale_only(context.skills_scan_codewhale_only);
         let registry = if let Some(skills_dir) = context.skills_dir.as_deref() {
-            discover_for_workspace_and_dir_with_mode(&context.workspace, skills_dir, discovery_mode)
+            discover_for_workspace_and_dir_with_mode(
+                context.workspace(),
+                skills_dir,
+                discovery_mode,
+            )
         } else {
-            discover_in_workspace_with_mode(&context.workspace, discovery_mode)
+            discover_in_workspace_with_mode(context.workspace(), discovery_mode)
         };
         let Some(skill) = registry.get(name) else {
             let available: Vec<&str> = registry.list().iter().map(|s| s.name.as_str()).collect();
@@ -110,13 +114,13 @@ impl ToolSpec for LoadSkillTool {
                     .as_deref()
                     .map(|skills_dir| {
                         skill_directories_for_workspace_and_dir(
-                            &context.workspace,
+                            context.workspace(),
                             skills_dir,
                             discovery_mode,
                         )
                     })
                     .unwrap_or_else(|| {
-                        skills_directories_for_mode(&context.workspace, discovery_mode)
+                        skills_directories_for_mode(context.workspace(), discovery_mode)
                     })
                     .iter()
                     .map(|p| p.display().to_string())
@@ -334,7 +338,7 @@ mod tests {
         // The skill tool reads $HOME for the global default; pin it to a
         // tempdir so the test is hermetic regardless of the host's
         // ~/.deepseek/skills.
-        context.workspace = tmp.path().to_path_buf();
+        context.rebind_workspace(tmp.path());
 
         let tool = LoadSkillTool;
         let result = tool

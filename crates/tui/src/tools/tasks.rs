@@ -97,7 +97,7 @@ impl ToolSpec for TaskCreateTool {
             .ok_or_else(|| ToolError::not_available("TaskManager is not attached"))?;
         let workspace = optional_str(&input, "workspace")
             .map(PathBuf::from)
-            .unwrap_or_else(|| context.workspace.clone());
+            .unwrap_or_else(|| context.workspace().to_path_buf());
         let req = NewTaskRequest {
             prompt: required_str(&input, "prompt")?.to_string(),
             model: optional_str(&input, "model").map(ToString::to_string),
@@ -292,7 +292,7 @@ impl ToolSpec for TaskGateRunTool {
         let cwd = resolve_cwd(context, optional_str(&input, "cwd"))?;
 
         let safety = analyze_command(&command);
-        if !context.auto_approve && matches!(safety.level, SafetyLevel::Dangerous) {
+        if !context.auto_approve() && matches!(safety.level, SafetyLevel::Dangerous) {
             return Ok(ToolOutcome::error(format!(
                 "BLOCKED: gate command classified dangerous: {}",
                 safety.reasons.join("; ")
@@ -533,7 +533,7 @@ impl ToolSpec for TaskShellWaitTool {
             id: format!("gate_{}", &Uuid::new_v4().to_string()[..8]),
             gate: gate.to_string(),
             command: command.to_string(),
-            cwd: context.workspace.clone(),
+            cwd: context.workspace().to_path_buf(),
             exit_code,
             status: gate_status.to_string(),
             classification: classify_gate_failure(
@@ -594,20 +594,20 @@ impl ToolSpec for PrAttemptRecordTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let task_id = task_id_from_input_or_context(&input, context)?;
-        let base_sha = git_output(&context.workspace, &["rev-parse", "HEAD"])
+        let base_sha = git_output(context.workspace(), &["rev-parse", "HEAD"])
             .await
             .ok();
         let head_sha = base_sha.clone();
-        let branch = git_output(&context.workspace, &["rev-parse", "--abbrev-ref", "HEAD"])
+        let branch = git_output(context.workspace(), &["rev-parse", "--abbrev-ref", "HEAD"])
             .await
             .ok();
-        let diff = git_output(&context.workspace, &["diff", "--binary", "--no-color"]).await?;
+        let diff = git_output(context.workspace(), &["diff", "--binary", "--no-color"]).await?;
         if diff.trim().is_empty() {
             return Ok(ToolOutcome::error(
                 "No working-tree diff to record as an attempt.",
             ));
         }
-        let changed_files = git_output(&context.workspace, &["diff", "--name-only"])
+        let changed_files = git_output(context.workspace(), &["diff", "--name-only"])
             .await?
             .lines()
             .filter(|line| !line.trim().is_empty())
@@ -770,7 +770,7 @@ impl ToolSpec for PrAttemptPreflightTool {
             .as_ref()
             .ok_or_else(|| ToolError::invalid_input("Attempt has no patch artifact"))?;
         let patch_path = manager.artifact_absolute_path(patch_ref);
-        let workspace = context.workspace.clone();
+        let workspace = context.workspace().to_path_buf();
         let out = tokio::task::spawn_blocking(move || {
             crate::dependencies::Git::command()
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "git not found"))?
@@ -822,7 +822,7 @@ fn resolve_cwd(context: &ToolContext, raw: Option<&str>) -> Result<PathBuf, Tool
                 )))
             }
         }
-        None => Ok(context.workspace.clone()),
+        None => Ok(context.workspace().to_path_buf()),
     }
 }
 

@@ -52,7 +52,7 @@ impl ToolSpec for ProjectMapTool {
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let max_depth = optional_u64(&input, "max_depth", 3) as usize;
-        let map = generate_project_map(&context.workspace, max_depth, context.follow_symlinks)?;
+        let map = generate_project_map(context.workspace(), max_depth, context.follow_symlinks())?;
         ToolOutcome::json(&map).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }

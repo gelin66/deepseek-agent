@@ -14,4 +14,8 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util = { version = "0.7.16", features = ["rt"] }
 uuid.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

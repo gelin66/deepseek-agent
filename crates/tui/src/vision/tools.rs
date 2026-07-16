@@ -191,7 +191,7 @@ impl ToolSpec for ImageAnalyzeTool {
             .and_then(|v| v.as_str())
             .unwrap_or("Describe this image in detail.");
 
-        let resolved_path = Self::resolve_image_path(&context.workspace, image_path)?;
+        let resolved_path = Self::resolve_image_path(context.workspace(), image_path)?;
         let (image_data, mime_type) = Self::read_image_file(&resolved_path).await?;
 
         let payload = self.request_payload(prompt, &image_data, &mime_type);

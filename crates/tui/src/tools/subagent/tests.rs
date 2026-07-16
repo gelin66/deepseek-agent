@@ -2844,7 +2844,7 @@ fn explore_catalog_inherits_web_but_hides_write_shell_and_fim_tools() {
     let mut runtime =
         stub_runtime().with_agent_tool_surface_options(enabled_agent_surface_options());
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
-    runtime.context.auto_approve = true;
+    runtime.context.set_auto_approve(true);
     let registry = SubAgentToolRegistry::new(
         runtime,
         SubAgentType::Explore,
@@ -2899,7 +2899,7 @@ async fn plan_parent_profile_narrows_even_implementer_child_to_read_only() {
     let mut runtime =
         stub_runtime().with_agent_tool_surface_options(enabled_agent_surface_options());
     runtime.context = ToolContext::new(workspace.clone());
-    runtime.context.auto_approve = true;
+    runtime.context.set_auto_approve(true);
     runtime.allow_shell = false;
     runtime.worker_profile = WorkerRuntimeProfile::for_role(SubAgentType::Plan);
     runtime.agent_tool_surface_options.shell_policy = ShellPolicy::None;
@@ -2950,7 +2950,7 @@ async fn declared_read_only_hides_and_rejects_shell_and_descendants_cannot_resto
     let mut child_runtime =
         stub_runtime().with_agent_tool_surface_options(enabled_agent_surface_options());
     child_runtime.context = ToolContext::new(workspace.clone());
-    child_runtime.context.auto_approve = true;
+    child_runtime.context.set_auto_approve(true);
     child_runtime.spawn_depth = 1;
 
     apply_spawn_write_authority(&mut child_runtime, Some(SpawnWriteAuthority::ReadOnly));
@@ -4654,20 +4654,20 @@ async fn rate_limit_pause_blocks_subagent_spawn() {
 fn child_runtime_increments_depth_and_preserves_auto_approve() {
     let mut parent = stub_runtime();
     parent.spawn_depth = 1;
-    parent.context.auto_approve = false; // parent in suggest mode
+    parent.context.set_auto_approve(false); // parent in suggest mode
     let child = parent.child_runtime();
     assert_eq!(child.spawn_depth, 2, "child depth = parent + 1");
     assert_eq!(child.step_api_timeout, DEFAULT_STEP_API_TIMEOUT);
     assert!(
-        !child.context.auto_approve,
+        !child.context.auto_approve(),
         "child must inherit parent approval state"
     );
-    assert!(!parent.context.auto_approve);
+    assert!(!parent.context.auto_approve());
 
-    parent.context.auto_approve = true;
+    parent.context.set_auto_approve(true);
     let auto_child = parent.child_runtime();
     assert!(
-        auto_child.context.auto_approve,
+        auto_child.context.auto_approve(),
         "auto-approved parents should still create auto-approved children"
     );
 }
@@ -4687,7 +4687,7 @@ fn child_and_background_runtimes_preserve_step_api_timeout() {
 #[tokio::test]
 async fn subagent_registry_blocks_approval_tools_without_parent_auto_approve() {
     let mut runtime = stub_runtime();
-    runtime.context.auto_approve = false;
+    runtime.context.set_auto_approve(false);
     let registry = SubAgentToolRegistry::new(
         runtime,
         SubAgentType::General,
@@ -4718,7 +4718,7 @@ async fn implementer_delegation_allows_suggest_write_without_parent_auto_approve
     let workspace = tmp.path().to_path_buf();
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(workspace.clone());
-    runtime.context.auto_approve = false;
+    runtime.context.set_auto_approve(false);
     let registry = SubAgentToolRegistry::new(
         runtime,
         SubAgentType::Implementer,
@@ -4754,7 +4754,7 @@ async fn workflow_accept_edits_allows_general_file_write_without_parent_auto_app
     let workspace = tmp.path().to_path_buf();
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(workspace.clone());
-    runtime.context.auto_approve = false;
+    runtime.context.set_auto_approve(false);
     runtime.accept_edits = true;
     let registry = SubAgentToolRegistry::new(
         runtime,
@@ -4798,7 +4798,7 @@ async fn general_delegation_still_blocks_suggest_write_without_parent_auto_appro
     let workspace = tmp.path().to_path_buf();
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(workspace.clone());
-    runtime.context.auto_approve = false;
+    runtime.context.set_auto_approve(false);
     let registry = SubAgentToolRegistry::new(
         runtime,
         SubAgentType::General,
@@ -4835,7 +4835,7 @@ async fn explore_role_still_blocks_suggest_writes_without_parent_auto_approve() 
     let tmp = tempdir().expect("tempdir");
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
-    runtime.context.auto_approve = false;
+    runtime.context.set_auto_approve(false);
     let registry = SubAgentToolRegistry::new(
         runtime,
         SubAgentType::Explore,
@@ -4871,7 +4871,7 @@ async fn explore_role_blocks_writes_even_under_parent_auto_approve() {
     let tmp = tempdir().expect("tempdir");
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
-    runtime.context.auto_approve = true;
+    runtime.context.set_auto_approve(true);
     let registry = SubAgentToolRegistry::new(
         runtime,
         SubAgentType::Explore,
@@ -4906,7 +4906,7 @@ async fn delegated_write_role_still_blocks_required_tools() {
     let tmp = tempdir().expect("tempdir");
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
-    runtime.context.auto_approve = false;
+    runtime.context.set_auto_approve(false);
     let registry = SubAgentToolRegistry::new(
         runtime,
         SubAgentType::Implementer,
@@ -4934,7 +4934,7 @@ async fn auto_approved_parent_runs_required_tools_in_subagent() {
     let tmp = tempdir().expect("tempdir");
     let mut runtime = stub_runtime();
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
-    runtime.context.auto_approve = true;
+    runtime.context.set_auto_approve(true);
     let registry = SubAgentToolRegistry::new(
         runtime,
         SubAgentType::General,
@@ -6337,7 +6337,7 @@ async fn direct_child_waits_for_delayed_grandchild_and_integrates_handoff_before
     runtime.client = client;
     runtime.manager = Arc::clone(&manager);
     runtime.context = ToolContext::new(tmp.path().to_path_buf());
-    runtime.context.auto_approve = true;
+    runtime.context.set_auto_approve(true);
     runtime.max_spawn_depth = 3;
 
     let (parent, _, _) = spawn_subagent_from_input(

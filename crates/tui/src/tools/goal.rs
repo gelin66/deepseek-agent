@@ -1827,7 +1827,7 @@ impl ToolSpec for UpdateGoalTool {
                     )
                 })?
             };
-            let current_revision = capture_workspace_revision(&context.workspace)
+            let current_revision = capture_workspace_revision(context.workspace())
                 .await
                 .map_err(|err| {
                     ToolError::execution_failed(format!(

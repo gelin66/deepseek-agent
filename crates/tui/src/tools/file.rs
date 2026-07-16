@@ -1034,9 +1034,12 @@ impl ToolSpec for ListDirTool {
         let path_str = optional_str(&input, "path").unwrap_or(".");
         let dir_path = context.resolve_path(path_str)?;
 
-        let entries =
-            list_dir_entries_async(dir_path, context.cancel_token.clone(), LIST_DIR_TIMEOUT)
-                .await?;
+        let entries = list_dir_entries_async(
+            dir_path,
+            context.cancellation_token().cloned(),
+            LIST_DIR_TIMEOUT,
+        )
+        .await?;
 
         ToolOutcome::json(&entries).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
@@ -2328,7 +2331,8 @@ mod tests {
         fs::write(tmp.path().join("file.txt"), "").expect("write");
         let cancel_token = CancellationToken::new();
         cancel_token.cancel();
-        let ctx = ToolContext::new(tmp.path().to_path_buf()).with_cancel_token(cancel_token);
+        let mut ctx = ToolContext::new(tmp.path().to_path_buf());
+        ctx.set_invocation_cancellation(cancel_token);
 
         let tool = ListDirTool;
         let err = tool

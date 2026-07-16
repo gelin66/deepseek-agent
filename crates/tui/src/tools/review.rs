@@ -559,7 +559,7 @@ async fn resolve_review_source(
         return match kind {
             "file" => resolve_file_target(target, context),
             "diff" => {
-                let diff = resolve_diff_target(context.workspace.as_path(), staged, base).await?;
+                let diff = resolve_diff_target(context.workspace(), staged, base).await?;
                 Ok(ReviewSource::Diff {
                     label: "git diff".to_string(),
                     diff,
@@ -568,7 +568,7 @@ async fn resolve_review_source(
             "pr" | "pull" | "pull_request" => {
                 let pr = parse_pr_url(target)
                     .ok_or_else(|| ToolError::invalid_input("Invalid pull request URL"))?;
-                let diff = gh_pr_diff(&pr, &context.workspace).await?;
+                let diff = gh_pr_diff(&pr, context.workspace()).await?;
                 Ok(ReviewSource::PullRequest {
                     label: pr.label(),
                     diff,
@@ -581,7 +581,7 @@ async fn resolve_review_source(
     }
 
     if let Some(pr) = parse_pr_url(target) {
-        let diff = gh_pr_diff(&pr, &context.workspace).await?;
+        let diff = gh_pr_diff(&pr, context.workspace()).await?;
         return Ok(ReviewSource::PullRequest {
             label: pr.label(),
             diff,
@@ -590,7 +590,7 @@ async fn resolve_review_source(
 
     if let Some(staged_override) = diff_mode_from_target(target) {
         let staged = staged || staged_override;
-        let diff = resolve_diff_target(context.workspace.as_path(), staged, base).await?;
+        let diff = resolve_diff_target(context.workspace(), staged, base).await?;
         return Ok(ReviewSource::Diff {
             label: if staged {
                 "git diff --cached"
@@ -617,7 +617,7 @@ fn resolve_file_target(target: &str, context: &ToolContext) -> Result<ReviewSour
         ToolError::execution_failed(format!("Failed to read file {}: {e}", path.display()))
     })?;
     let display = path
-        .strip_prefix(&context.workspace)
+        .strip_prefix(context.workspace())
         .unwrap_or(&path)
         .to_string_lossy()
         .to_string();

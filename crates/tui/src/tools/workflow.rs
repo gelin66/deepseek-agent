@@ -508,7 +508,7 @@ impl ToolSpec for WorkflowTool {
     }
 
     async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
-        let state = shared_workflow_state(&context.workspace);
+        let state = shared_workflow_state(context.workspace());
         match parse_workflow_action(&input)? {
             WorkflowAction::Start => {
                 let wait = optional_bool(&input, "wait", false);
@@ -746,7 +746,7 @@ fn workflow_fleet_roles(
     let Some(name) = workflow_fleet_name(input) else {
         return Ok((None, None));
     };
-    let roots = workflow_fleet_search_roots(&context.workspace);
+    let roots = workflow_fleet_search_roots(context.workspace());
     let fleet = load_named_fleet(&name, &roots).map_err(|err| {
         ToolError::invalid_input(format!(
             "Failed to load workflow fleet '{name}' from {}: {err}",
@@ -1306,18 +1306,18 @@ fn read_workflow_source_path(
     let joined = if raw.is_absolute() {
         raw.to_path_buf()
     } else {
-        context.workspace.join(raw)
+        context.workspace().join(raw)
     };
     let canonical = joined.canonicalize().map_err(|err| {
         ToolError::invalid_input(format!(
             "Failed to resolve workflow source_path '{path}': {err}"
         ))
     })?;
-    if !context.trust_mode {
+    if !context.trust_mode() {
         let workspace = context
-            .workspace
+            .workspace()
             .canonicalize()
-            .unwrap_or_else(|_| context.workspace.clone());
+            .unwrap_or_else(|_| context.workspace().to_path_buf());
         if !canonical.starts_with(&workspace) {
             return Err(ToolError::permission_denied(format!(
                 "workflow source_path must stay inside the workspace: {}",

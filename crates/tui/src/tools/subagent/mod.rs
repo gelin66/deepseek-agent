@@ -1853,7 +1853,7 @@ impl SubAgentRuntime {
         let mut runtime = self.child_runtime();
         let token = CancellationToken::new();
         runtime.cancel_token = token.clone();
-        runtime.context.cancel_token = Some(token);
+        runtime.context.set_invocation_cancellation(token);
         runtime
     }
 
@@ -1868,7 +1868,7 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn child_runtime(&self) -> Self {
         let mut child_context = self.context.clone();
-        child_context.auto_approve = self.context.auto_approve;
+        child_context.set_auto_approve(self.context.auto_approve());
         Self {
             client: child_attributed_client(self.client.clone()),
             api_config: self.api_config.clone(),
@@ -3307,7 +3307,7 @@ impl SubAgentManager {
             nickname,
             tools.clone(),
             input_tx,
-            runtime.context.workspace.clone(),
+            runtime.context.workspace().to_path_buf(),
             self.current_session_boot_id.clone(),
         );
         agent.cancel_token = runtime.cancel_token.clone();
@@ -4755,7 +4755,7 @@ async fn wait_for_subagents_from_input(
 
     let started = Instant::now();
     let cancelled = async {
-        match &context.cancel_token {
+        match context.cancellation_token() {
             Some(token) => token.cancelled().await,
             None => std::future::pending().await,
         }
@@ -4952,7 +4952,7 @@ async fn spawn_subagent_from_input(
             .check_admission_capacity()
             .map_err(|err| ToolError::execution_failed(err.to_string()))?;
     }
-    let child_workspace = prepare_child_workspace(&runtime.context.workspace, &spawn_request)?;
+    let child_workspace = prepare_child_workspace(runtime.context.workspace(), &spawn_request)?;
 
     let mut child_runtime = runtime.background_runtime();
     // #4193 seam 3 (the substantive fix): if the resolved roster member's
@@ -4973,7 +4973,7 @@ async fn spawn_subagent_from_input(
             .and_then(|member| member.profile.delegation.max_spawn_depth),
     );
     if let Some(workspace) = child_workspace {
-        child_runtime.context.workspace = workspace;
+        child_runtime.context.rebind_workspace(workspace);
     }
     // Parent deny rules are structural and always inherited. Focused child
     // narrowing has one model-facing mechanism: `allowed_tools`.
@@ -4993,7 +4993,7 @@ async fn spawn_subagent_from_input(
         let abs_path = if std::path::Path::new(file_path).is_absolute() {
             std::path::PathBuf::from(file_path)
         } else {
-            runtime.context.workspace.join(file_path)
+            runtime.context.workspace().join(file_path)
         };
         let file_contents = std::fs::read_to_string(&abs_path)
             .unwrap_or_else(|e| format!("<!-- resident_file read error: {e} -->"));
@@ -6435,8 +6435,8 @@ async fn run_subagent(
                 }
                 .to_string(),
                 fork_context: fork_context_enabled,
-                workspace: Some(runtime.context.workspace.clone()),
-                git_branch: current_git_branch(&runtime.context.workspace),
+                workspace: Some(runtime.context.workspace().to_path_buf()),
+                git_branch: current_git_branch(runtime.context.workspace()),
                 agent_type: agent_type.clone(),
                 assignment: assignment.clone(),
                 model: runtime.model.clone(),
@@ -6575,8 +6575,8 @@ async fn run_subagent(
                     agent_id: agent_id.clone(),
                     context_mode: if fork_context_enabled { "forked" } else { "fresh" }.to_string(),
                     fork_context: fork_context_enabled,
-                    workspace: Some(runtime.context.workspace.clone()),
-                    git_branch: current_git_branch(&runtime.context.workspace),
+                    workspace: Some(runtime.context.workspace().to_path_buf()),
+                    git_branch: current_git_branch(runtime.context.workspace()),
                     agent_type: agent_type.clone(),
                     assignment: assignment.clone(),
                     model: runtime.model.clone(),
@@ -6746,8 +6746,8 @@ async fn run_subagent(
                 }
                 .to_string(),
                 fork_context: fork_context_enabled,
-                workspace: Some(runtime.context.workspace.clone()),
-                git_branch: current_git_branch(&runtime.context.workspace),
+                workspace: Some(runtime.context.workspace().to_path_buf()),
+                git_branch: current_git_branch(runtime.context.workspace()),
                 agent_type: agent_type.clone(),
                 assignment: assignment.clone(),
                 model: runtime.model.clone(),
@@ -7116,8 +7116,8 @@ async fn run_subagent(
         }
         .to_string(),
         fork_context: fork_context_enabled,
-        workspace: Some(runtime.context.workspace.clone()),
-        git_branch: current_git_branch(&runtime.context.workspace),
+        workspace: Some(runtime.context.workspace().to_path_buf()),
+        git_branch: current_git_branch(runtime.context.workspace()),
         agent_type,
         assignment,
         model: runtime.model.clone(),
@@ -8864,7 +8864,7 @@ impl SubAgentToolRegistry {
         Self {
             allowed_tools: explicit_allowed_tools,
             disallowed_tools: runtime.worker_profile.denied_tools.clone(),
-            auto_approve: runtime.context.auto_approve,
+            auto_approve: runtime.context.auto_approve(),
             accept_edits: runtime.accept_edits,
             agent_type,
             runtime_profile: runtime.worker_profile,

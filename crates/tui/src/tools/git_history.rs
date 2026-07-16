@@ -396,7 +396,7 @@ struct GitContext {
 }
 
 fn resolve_git_context(context: &ToolContext, path: Option<&str>) -> Result<GitContext, ToolError> {
-    let workspace = canonical_or_workspace(&context.workspace);
+    let workspace = canonical_or_workspace(context.workspace());
     let mut working_dir = workspace.clone();
     let mut pathspec = None;
 

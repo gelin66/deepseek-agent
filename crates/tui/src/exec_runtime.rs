@@ -66,7 +66,7 @@ fn execution_fingerprint_sha256(
     let provider = config.api_provider();
     let provider_config = config.provider_config_for(provider);
     let mut trusted_external_paths = context
-        .trusted_external_paths
+        .trusted_external_paths()
         .iter()
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>();
@@ -124,14 +124,14 @@ fn execution_fingerprint_sha256(
                 .and_then(|provider| provider.reasoning_stream_style.as_deref()),
             "idle_timeout_secs": config.stream_chunk_timeout_secs(),
         },
-        "workspace": context.workspace.display().to_string(),
-        "auto_approve": context.auto_approve,
-        "trust_mode": context.trust_mode,
+        "workspace": context.workspace().display().to_string(),
+        "auto_approve": context.auto_approve(),
+        "trust_mode": context.trust_mode(),
         "shell_policy": context.shell_policy,
         "sandbox_policy": format!("{:?}", context.sandbox_policy),
         "elevated_sandbox_policy": &context.elevated_sandbox_policy,
         "sandbox_backend": sandbox_backend,
-        "follow_symlinks": context.follow_symlinks,
+        "follow_symlinks": context.follow_symlinks(),
         "trusted_external_paths": trusted_external_paths,
         "enabled_features": enabled_features,
         "network": network,
@@ -1109,8 +1109,6 @@ fn production_tool_context(
     )
     .with_features(config.features())
     .with_shell_policy(shell_policy)
-    .with_trusted_external_paths(trusted.paths().to_vec())
-    .with_follow_symlinks(settings.workspace_follow_symlinks)
     .with_elevated_sandbox_policy(
         if exec_sandbox_elevation_authorized(allow_sandbox_elevation, explicit_sandbox) {
             crate::sandbox::SandboxPolicy::DangerFullAccess
@@ -1118,6 +1116,8 @@ fn production_tool_context(
             effective_sandbox_policy(config, mode, workspace)
         },
     );
+    context.set_trusted_external_paths(trusted.paths().to_vec());
+    context.set_follow_symlinks(settings.workspace_follow_symlinks);
     if let Some(network) = config.network.clone() {
         context = context.with_network_policy(
             crate::network_policy::NetworkPolicyDecider::with_default_audit(network.into_runtime()),

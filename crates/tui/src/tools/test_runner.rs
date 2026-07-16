@@ -109,16 +109,15 @@ impl ToolSpec for RunTestsTool {
         }
 
         let revision_before =
-            crate::tools::goal::capture_workspace_revision(&context.workspace).await;
-        let command_str = format_command(&context.workspace, &args);
+            crate::tools::goal::capture_workspace_revision(context.workspace()).await;
+        let command_str = format_command(context.workspace(), &args);
         let output = run_cargo(context, &args, RUN_TESTS_TIMEOUT_MS).await?;
 
         let exit_code = output.exit_code.unwrap_or(-1);
         let mut stderr_raw = output.stderr;
         let canceled = output.status == ShellStatus::Killed
             && context
-                .cancel_token
-                .as_ref()
+                .cancellation_token()
                 .is_some_and(tokio_util::sync::CancellationToken::is_cancelled);
         if output.status == ShellStatus::TimedOut {
             stderr_raw.push_str("\ncargo test timed out; managed process tree was killed.");
@@ -189,7 +188,7 @@ impl ToolSpec for RunTestsTool {
                 };
                 crate::tools::goal::reject_host_verification(&mut tool_result, rejection);
                 let revision_after =
-                    crate::tools::goal::capture_workspace_revision(&context.workspace).await;
+                    crate::tools::goal::capture_workspace_revision(context.workspace()).await;
                 crate::tools::goal::attach_goal_evidence_artifact(
                     &mut tool_result,
                     self.name(),
@@ -227,13 +226,13 @@ async fn run_cargo(
     };
     let (program, mut command_args) = crate::dependencies::split_interpreter_spec(&spec);
     command_args.extend(args.iter().cloned());
-    let display = format_command(&context.workspace, args);
+    let display = format_command(context.workspace(), args);
     execute_managed_program(
         context,
         &display,
         &program,
         &command_args,
-        &context.workspace,
+        context.workspace(),
         timeout_ms,
         context.elevated_sandbox_policy.clone(),
         HashMap::new(),
@@ -581,7 +580,8 @@ mod tests {
 
         let pid_path = project_dir.join("run-tests-child.pid");
         let cancel = tokio_util::sync::CancellationToken::new();
-        let ctx = ToolContext::new(&project_dir).with_cancel_token(cancel.clone());
+        let mut ctx = ToolContext::new(&project_dir);
+        ctx.set_invocation_cancellation(cancel.clone());
         let task_ctx = ctx.clone();
         let task = tokio::spawn(async move { RunTestsTool.execute(json!({}), &task_ctx).await });
 

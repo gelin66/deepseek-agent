@@ -73,7 +73,7 @@ impl ToolSpec for RevertTurnTool {
             )));
         }
 
-        let workspace = context.workspace.clone();
+        let workspace = context.workspace().to_path_buf();
         let label = format!("revert_turn(offset={offset})");
         let result = tokio::task::spawn_blocking(move || -> Result<String, String> {
             let repo = SnapshotRepo::open_or_init(&workspace)

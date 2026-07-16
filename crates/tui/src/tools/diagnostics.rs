@@ -82,14 +82,14 @@ impl ToolSpec for DiagnosticsTool {
         _input: Value,
         context: &ToolContext,
     ) -> Result<ToolOutcome, ToolError> {
-        let workspace_root = context.workspace.display().to_string();
+        let workspace_root = context.workspace().display().to_string();
 
         let (current_dir, current_dir_error) = match env::current_dir() {
             Ok(dir) => (Some(dir.display().to_string()), None),
             Err(err) => (None, Some(err.to_string())),
         };
 
-        let git = probe_git(&context.workspace);
+        let git = probe_git(context.workspace());
         let sandbox_type = crate::sandbox::get_platform_sandbox().map(|s| s.to_string());
         let sandbox_available = sandbox_type.is_some();
 
@@ -100,7 +100,7 @@ impl ToolSpec for DiagnosticsTool {
         let cgroup_version = probe_cgroup_version();
 
         let trusted_external_paths = context
-            .trusted_external_paths
+            .trusted_external_paths()
             .iter()
             .map(|p| p.display().to_string())
             .collect();
@@ -115,8 +115,8 @@ impl ToolSpec for DiagnosticsTool {
             sandbox_type,
             bwrap_available,
             cgroup_version,
-            rustc_version: probe_version("rustc", &["--version"], &context.workspace),
-            cargo_version: probe_version("cargo", &["--version"], &context.workspace),
+            rustc_version: probe_version("rustc", &["--version"], context.workspace()),
+            cargo_version: probe_version("cargo", &["--version"], context.workspace()),
             trusted_external_paths,
         };
 

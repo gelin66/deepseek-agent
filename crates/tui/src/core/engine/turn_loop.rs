@@ -1853,7 +1853,7 @@ impl Engine {
                     approval_required = registered_tool_approval_required(
                         &tool_name,
                         spec.approval_requirement_for(&tool_input),
-                        registry.context().auto_approve,
+                        registry.context().auto_approve(),
                     );
                     approval_description = spec.description().to_string();
                     supports_parallel = spec.supports_parallel_for(&tool_input);
