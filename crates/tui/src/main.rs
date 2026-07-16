@@ -3731,7 +3731,7 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         }
     }
 
-    match crate::dependencies::resolve_tesseract() {
+    match codewhale_tools::resolve_tesseract() {
         Some(_) => {
             if cfg!(target_os = "macos") {
                 println!(

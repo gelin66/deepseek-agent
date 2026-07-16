@@ -66,16 +66,9 @@ impl ToolSpec for ReadFileTool {
         codewhale_tools::execute_read_file(
             input,
             context.production_context(),
-            production_read_file_host(),
+            prefer_external_pdftotext(),
         )
     }
-}
-
-fn production_read_file_host() -> codewhale_tools::ReadFileHost {
-    codewhale_tools::ReadFileHost::new(
-        prefer_external_pdftotext,
-        crate::tools::image_ocr::ocr_image_path,
-    )
 }
 
 fn prefer_external_pdftotext() -> bool {
@@ -351,7 +344,7 @@ mod tests {
         let direct = codewhale_tools::execute_read_file(
             input.clone(),
             ctx.production_context(),
-            production_read_file_host(),
+            prefer_external_pdftotext(),
         )
         .expect("direct owner");
         let adapter = ReadFileTool
@@ -365,7 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn read_file_ocr_extracts_text_from_image_when_backend_exists() {
-        if !crate::tools::image_ocr::ocr_available() {
+        if !codewhale_tools::ocr_available() {
             return;
         }
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -376,7 +369,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let copied = tmp.path().join("ocr_hello.png");
         fs::copy(&fixture, &copied).expect("copy fixture");
-        if crate::tools::image_ocr::ocr_image_path(&copied).is_err() {
+        if codewhale_tools::ocr_image_path(&copied).is_err() {
             // The backend can be installed yet unavailable to the current
             // process (for example, macOS Vision in a restricted runner).
             return;

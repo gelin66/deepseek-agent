@@ -8,49 +8,21 @@ use serde_json::{Value, json};
 
 use crate::{ProductionToolContext, ToolError, ToolOutcome, optional_str, required_str};
 
-/// Host-owned capabilities needed by `read_file` without importing UI state.
-#[derive(Clone, Copy)]
-pub struct ReadFileHost {
-    prefer_external_pdftotext: fn() -> bool,
-    image_ocr: fn(&Path) -> Result<String, ToolError>,
-}
-
-impl ReadFileHost {
-    #[must_use]
-    pub const fn new(
-        prefer_external_pdftotext: fn() -> bool,
-        image_ocr: fn(&Path) -> Result<String, ToolError>,
-    ) -> Self {
-        Self {
-            prefer_external_pdftotext,
-            image_ocr,
-        }
-    }
-
-    fn prefers_external_pdftotext(self) -> bool {
-        (self.prefer_external_pdftotext)()
-    }
-
-    fn extract_image_text(self, path: &Path) -> Result<String, ToolError> {
-        (self.image_ocr)(path)
-    }
-}
-
 /// Execute the production `read_file` operation against a workspace context.
 pub fn execute_read_file(
     input: Value,
     context: &ProductionToolContext,
-    host: ReadFileHost,
+    prefer_external_pdftotext: bool,
 ) -> Result<ToolOutcome, ToolError> {
     let requested_path = required_str(&input, "path")?;
     let file_path = context.resolve_path(requested_path)?;
     let pages = optional_str(&input, "pages");
 
     if is_pdf(&file_path)? {
-        return read_pdf(&file_path, pages, host);
+        return read_pdf(&file_path, pages, prefer_external_pdftotext);
     }
     if is_image_for_ocr(&file_path) {
-        return read_image_via_ocr(&file_path, requested_path, host);
+        return read_image_via_ocr(&file_path, requested_path);
     }
 
     // Open before parameter parsing so a missing file keeps the historical
@@ -254,15 +226,15 @@ fn render_line_window(
     ToolOutcome::success(output)
 }
 
-fn read_image_via_ocr(
-    path: &Path,
-    requested_path: &str,
-    host: ReadFileHost,
-) -> Result<ToolOutcome, ToolError> {
-    let text = host.extract_image_text(path)?;
-    Ok(ToolOutcome::success(format!(
+fn read_image_via_ocr(path: &Path, requested_path: &str) -> Result<ToolOutcome, ToolError> {
+    let text = crate::ocr_image_path(path)?;
+    Ok(render_image_ocr(requested_path, &text))
+}
+
+fn render_image_ocr(requested_path: &str, text: &str) -> ToolOutcome {
+    ToolOutcome::success(format!(
         "<image_ocr path=\"{requested_path}\">\n{text}\n</image_ocr>"
-    )))
+    ))
 }
 
 fn is_pdf(path: &Path) -> Result<bool, ToolError> {
@@ -358,7 +330,7 @@ fn clean_pdf_text(raw: &str) -> String {
 fn read_pdf(
     path: &Path,
     pages: Option<&str>,
-    host: ReadFileHost,
+    prefer_external_pdftotext: bool,
 ) -> Result<ToolOutcome, ToolError> {
     let page_range = match pages {
         Some(spec) => match parse_pages_arg(spec) {
@@ -372,7 +344,7 @@ fn read_pdf(
         None => None,
     };
 
-    if host.prefers_external_pdftotext() {
+    if prefer_external_pdftotext {
         read_pdf_via_pdftotext(path, page_range)
     } else {
         #[cfg(feature = "pdf")]
@@ -509,30 +481,8 @@ mod tests {
     use serde_json::Value;
     use tempfile::tempdir;
 
-    fn prefer_bundled() -> bool {
-        false
-    }
-
-    fn prefer_external() -> bool {
-        true
-    }
-
-    fn fixture_ocr(_path: &Path) -> Result<String, ToolError> {
-        Ok("HELLO OCR".to_string())
-    }
-
-    fn unavailable_ocr(_path: &Path) -> Result<String, ToolError> {
-        Err(ToolError::execution_failed(
-            "image_ocr: no local OCR backend is available. On macOS, update to a version with the Vision framework; on Linux/Windows install tesseract and restart codewhale.",
-        ))
-    }
-
-    fn bundled_host() -> ReadFileHost {
-        ReadFileHost::new(prefer_bundled, unavailable_ocr)
-    }
-
     fn outcome(context: &ProductionToolContext, input: Value) -> Result<ToolOutcome, ToolError> {
-        execute_read_file(input, context, bundled_host())
+        execute_read_file(input, context, false)
     }
 
     #[test]
@@ -566,13 +516,7 @@ mod tests {
             .expect("past-end read");
         assert_eq!(past_end.content, expected["past_end"]);
 
-        fs::write(workspace.path().join("ocr.png"), b"fake image bytes").expect("image fixture");
-        let ocr = execute_read_file(
-            json!({"path": "ocr.png"}),
-            &context,
-            ReadFileHost::new(prefer_bundled, fixture_ocr),
-        )
-        .expect("OCR route");
+        let ocr = render_image_ocr("ocr.png", "HELLO OCR");
         assert_eq!(ocr.content, expected["ocr"]);
 
         fs::write(workspace.path().join("document.pdf"), b"not a PDF")
@@ -728,27 +672,20 @@ mod tests {
     }
 
     #[test]
-    fn image_route_preserves_host_success_and_unavailable_semantics() {
+    fn image_route_matches_the_tools_owned_ocr_backend() {
         let workspace = tempdir().expect("workspace");
         fs::write(workspace.path().join("image.png"), b"fake image").expect("write");
         let context = ProductionToolContext::new(workspace.path());
 
-        let success = execute_read_file(
-            json!({"path": "image.png"}),
-            &context,
-            ReadFileHost::new(prefer_bundled, fixture_ocr),
-        )
-        .expect("OCR success");
+        let direct = crate::ocr_image_path(&workspace.path().join("image.png"));
+        let dispatched = execute_read_file(json!({"path": "image.png"}), &context, false);
         assert_eq!(
-            success.content,
-            "<image_ocr path=\"image.png\">\nHELLO OCR\n</image_ocr>"
-        );
-
-        let error = outcome(&context, json!({"path": "image.png"})).expect_err("OCR unavailable");
-        assert!(
-            error
-                .to_string()
-                .contains("no local OCR backend is available")
+            dispatched
+                .map(|outcome| outcome.content)
+                .map_err(|error| error.to_string()),
+            direct
+                .map(|text| render_image_ocr("image.png", &text).content)
+                .map_err(|error| error.to_string())
         );
     }
 
@@ -808,11 +745,7 @@ mod tests {
         let workspace = tempdir().expect("workspace");
         fs::write(workspace.path().join("document.pdf"), b"%PDF-1.7\n%%EOF").expect("write");
         let context = ProductionToolContext::new(workspace.path());
-        let result = execute_read_file(
-            json!({"path": "document.pdf"}),
-            &context,
-            ReadFileHost::new(prefer_external, unavailable_ocr),
-        );
+        let result = execute_read_file(json!({"path": "document.pdf"}), &context, true);
 
         let pdftotext_present = Command::new("pdftotext")
             .arg("-v")

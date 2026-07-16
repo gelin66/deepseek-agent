@@ -245,29 +245,12 @@ fn punctuation_normalized_matches(contents: &str, search: &str) -> Vec<(usize, u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
-
-    use crate::{ReadFileHost, execute_read_file};
+    use crate::execute_read_file;
     use serde_json::json;
     use tempfile::tempdir;
 
-    fn prefer_bundled_pdf() -> bool {
-        false
-    }
-
-    fn unavailable_ocr(_path: &Path) -> Result<String, ToolError> {
-        Err(ToolError::not_available(
-            "OCR is not used by edit_file tests",
-        ))
-    }
-
-    fn read_file_host() -> ReadFileHost {
-        ReadFileHost::new(prefer_bundled_pdf, unavailable_ocr)
-    }
-
     async fn read_before_edit(context: &ProductionToolContext, path: &str) {
-        execute_read_file(json!({"path": path}), context, read_file_host())
-            .expect("read before edit");
+        execute_read_file(json!({"path": path}), context, false).expect("read before edit");
     }
 
     struct TestEditFileTool;
