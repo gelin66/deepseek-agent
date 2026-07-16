@@ -719,6 +719,7 @@ mod tests {
             model: Some("deepseek-v4-flash".to_owned()),
             reasoning_effort: ReasoningEffort::High,
             max_output_tokens: Some(4_096),
+            max_api_requests: std::num::NonZeroU32::new(6),
             streaming: true,
             tool_policy: ToolPolicy::default(),
             limits: RunLimits {

@@ -5,6 +5,8 @@
 //! fields are composed by the application service rather than accepted from a
 //! transport client.
 
+use std::num::NonZeroU32;
+
 use serde::{Deserialize, Serialize};
 
 use crate::agent_runtime::{
@@ -48,6 +50,11 @@ pub struct StartRunCommand {
     pub reasoning_effort: ReasoningEffort,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    /// Maximum physical DeepSeek HTTP requests started by route selection,
+    /// transport retries, the root run, and all of its child runs. The hard
+    /// limit becomes durable through canonical model accounting at RunCreated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_api_requests: Option<NonZeroU32>,
     /// Whether the model response uses the streaming DeepSeek surface. Plain
     /// one-shot CLI execution is non-streaming; Agent/SSE execution streams.
     pub streaming: bool,
@@ -190,6 +197,7 @@ mod tests {
             model: Some("deepseek-v4-flash".to_owned()),
             reasoning_effort: ReasoningEffort::High,
             max_output_tokens: Some(8_192),
+            max_api_requests: NonZeroU32::new(9),
             streaming: true,
             tool_policy: ToolPolicy {
                 enabled: true,
@@ -199,7 +207,6 @@ mod tests {
             limits: RunLimits {
                 max_turns: 12,
                 max_model_requests: 10,
-                max_api_requests: std::num::NonZeroU32::new(9),
                 max_model_retries: 1,
                 max_tool_calls: 32,
                 max_depth: 2,
@@ -261,6 +268,7 @@ mod tests {
                     "model": "deepseek-v4-flash",
                     "reasoning_effort": "high",
                     "max_output_tokens": 8192,
+                    "max_api_requests": 9,
                     "streaming": true,
                     "tool_policy": {
                         "enabled": true,
@@ -270,7 +278,6 @@ mod tests {
                     "limits": {
                         "max_turns": 12,
                         "max_model_requests": 10,
-                        "max_api_requests": 9,
                         "max_model_retries": 1,
                         "max_tool_calls": 32,
                         "max_depth": 2,
@@ -462,7 +469,7 @@ mod tests {
 
         let mut zero_physical_budget =
             serde_json::to_value(RunCommand::Start(start_command())).unwrap();
-        zero_physical_budget["limits"]["max_api_requests"] = json!(0);
+        zero_physical_budget["max_api_requests"] = json!(0);
         assert!(
             serde_json::from_value::<RunCommand>(zero_physical_budget).is_err(),
             "a physical HTTP budget of zero is not a runnable request"

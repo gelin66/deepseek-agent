@@ -1007,7 +1007,6 @@ fn runtime_limits(
         max_model_requests: hard_requests
             .map(NonZeroU32::get)
             .unwrap_or_else(|| max_turns.saturating_mul(tree_width).max(max_turns)),
-        max_api_requests: hard_requests,
         max_model_retries: 2,
         max_tool_calls: max_turns.saturating_mul(tree_width).saturating_mul(4),
         max_depth: if subagents_enabled {

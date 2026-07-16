@@ -4,7 +4,6 @@
 //! depending on a UI, an HTTP transport, or a database representation.
 
 use std::fmt;
-use std::num::NonZeroU32;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -173,15 +172,10 @@ impl ToolPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunLimits {
     pub max_turns: u32,
-    /// Maximum canonical model requests admitted by the AgentRuntime. This is
-    /// a logical runtime limit and does not include pre-runtime routing or
-    /// transport retry attempts.
+    /// Canonical model requests admitted by the AgentRuntime. Physical HTTP
+    /// admission, including route selection and transport retries, is an
+    /// application/model-accounting concern rather than a runtime limit.
     pub max_model_requests: u32,
-    /// Maximum physical DeepSeek HTTP requests started across auto-routing,
-    /// transport retries, the root run, and every child sharing this model
-    /// budget. `None` keeps accounting enabled without a hard physical cap.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_api_requests: Option<NonZeroU32>,
     pub max_model_retries: u32,
     pub max_tool_calls: u32,
     pub max_depth: u8,
@@ -211,7 +205,6 @@ impl Default for RunLimits {
         Self {
             max_turns: 64,
             max_model_requests: 64,
-            max_api_requests: None,
             max_model_retries: 2,
             max_tool_calls: 256,
             max_depth: 4,
