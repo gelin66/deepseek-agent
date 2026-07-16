@@ -49,8 +49,9 @@ run_focused_tests() {
     cargo test "${test_args[@]}" "$filter"
   done
 
-  cargo test -p codewhale-app-server --locked \
-    upstream_url_beta_base_preserves_deepseek_strict_chat_route
+  cargo test -p codewhale-app --locked
+  cargo test -p codewhale-app-server --lib --locked
+  cargo test -p codewhale-tui --test exec_terminal_acceptance --locked
 }
 
 case "$mode" in
