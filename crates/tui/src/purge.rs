@@ -621,6 +621,7 @@ mod tests {
                 id: id.to_string(),
                 name: name.to_string(),
                 input,
+                raw_arguments: None,
                 caller: None,
             }],
         }
@@ -811,6 +812,7 @@ mod tests {
                 id: "call_purge".to_string(),
                 name: "purge_context".to_string(),
                 input: json!({"operations": operations}),
+                raw_arguments: None,
                 caller: None,
             }],
             model: "mock-model".to_string(),

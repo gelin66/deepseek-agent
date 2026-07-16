@@ -3,7 +3,7 @@ use codewhale_protocol::runtime::DynamicToolSpec;
 use serde_json::Value;
 
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 pub struct RuntimeDynamicTool {
@@ -46,7 +46,7 @@ impl ToolSpec for RuntimeDynamicTool {
         self.spec.defer_loading
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let executor = context
             .runtime
             .dynamic_tool_executor
@@ -88,8 +88,8 @@ mod tests {
             namespace: Option<String>,
             name: String,
             input: Value,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success(
+        ) -> Result<ToolOutcome, ToolError> {
+            Ok(ToolOutcome::success(
                 json!({
                     "thread_id": thread_id,
                     "namespace": namespace,
@@ -118,7 +118,7 @@ mod tests {
 
         let result = tool.execute(json!({"id": "123"}), &ctx).await.unwrap();
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("\"thread_id\":\"thr_1\""));
         assert!(result.content.contains("\"namespace\":\"bench\""));
         assert!(result.content.contains("\"name\":\"lookup\""));

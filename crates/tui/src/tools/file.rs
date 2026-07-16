@@ -5,10 +5,11 @@
 
 use super::diff_format::make_unified_diff;
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     lsp_diagnostics_for_paths, optional_bool, optional_str, required_str,
 };
 use async_trait::async_trait;
+use codewhale_protocol::agent_runtime::ToolSideEffectStatus;
 use serde_json::{Value, json};
 #[cfg(feature = "pdf")]
 use std::fmt::Display;
@@ -66,7 +67,7 @@ impl ToolSpec for ReadFileTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let path_str = required_str(&input, "path")?;
         let file_path = context.resolve_path(path_str)?;
         let pages = optional_str(&input, "pages");
@@ -107,7 +108,7 @@ impl ToolSpec for ReadFileTool {
 
             let total_lines = contents.lines().count();
             if total_lines <= SMALL_FILE_LINES {
-                return Ok(ToolResult::success(contents));
+                return Ok(ToolOutcome::success(contents));
             }
 
             // Small in bytes but too many lines: render the default window
@@ -181,7 +182,7 @@ impl ToolSpec for ReadFileTool {
                  [NO CONTENT] start_line {start_line} is beyond total_lines {total_lines}.\n\
                  </file>"
             );
-            return Ok(ToolResult::success(output));
+            return Ok(ToolOutcome::success(output));
         }
 
         Ok(render_line_window(
@@ -266,7 +267,7 @@ fn render_line_window(
     total_lines: usize,
     start_line: usize,
     max_lines: usize,
-) -> ToolResult {
+) -> ToolOutcome {
     let zero_based_start = start_line - 1;
     let zero_based_end = std::cmp::min(zero_based_start + max_lines, total_lines);
     let shown_first = start_line;
@@ -314,12 +315,12 @@ fn render_line_window(
     }
     output.push_str("</file>");
 
-    ToolResult::success(output)
+    ToolOutcome::success(output)
 }
 
-fn read_image_via_ocr(path: &Path, requested_path: &str) -> Result<ToolResult, ToolError> {
+fn read_image_via_ocr(path: &Path, requested_path: &str) -> Result<ToolOutcome, ToolError> {
     let text = crate::tools::image_ocr::ocr_image_path(path)?;
-    Ok(ToolResult::success(format!(
+    Ok(ToolOutcome::success(format!(
         "<image_ocr path=\"{requested_path}\">\n{text}\n</image_ocr>"
     )))
 }
@@ -425,7 +426,7 @@ fn clean_pdf_text(raw: &str) -> String {
     }
 }
 
-fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
+fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolOutcome, ToolError> {
     // Validate the `pages` spec once, up front, so both extractor paths
     // surface the same error shape on bad input.
     let page_range = match pages {
@@ -470,7 +471,7 @@ fn read_pdf(path: &Path, pages: Option<&str>) -> Result<ToolResult, ToolError> {
 fn read_pdf_via_pdf_extract(
     path: &Path,
     page_range: Option<(u32, u32)>,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let text = if let Some((start, end)) = page_range {
         // Page-by-page extraction so we can slice the requested window
         // without dragging every page through the caller's context.
@@ -509,7 +510,7 @@ fn read_pdf_via_pdf_extract(
                 ))
             })?
     };
-    Ok(ToolResult::success(clean_pdf_text(&text)))
+    Ok(ToolOutcome::success(clean_pdf_text(&text)))
 }
 
 fn guard_pdf_extract<T, E, F>(extract: F) -> Result<T, String>
@@ -540,7 +541,7 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> String {
 fn read_pdf_via_pdftotext(
     path: &Path,
     page_range: Option<(u32, u32)>,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let mut cmd = Command::new("pdftotext");
     cmd.arg("-layout");
 
@@ -560,16 +561,14 @@ fn read_pdf_via_pdftotext(
             // Structured "binary unavailable" — only reachable when the
             // user explicitly opted into the external path. Hints back at
             // both the install command and the in-tree default.
-            return ToolResult::json(&json!({
+            let payload = json!({
                 "type": "binary_unavailable",
                 "path": path.display().to_string(),
                 "kind": "pdf",
                 "reason": "pdftotext not installed (prefer_external_pdftotext = true in settings)",
                 "hint": "install poppler (macOS: `brew install poppler`; Debian/Ubuntu: `apt install poppler-utils`) — or unset `prefer_external_pdftotext` to use the bundled pure-Rust extractor"
-            }))
-            .map_err(|e| {
-                ToolError::execution_failed(format!("failed to serialize response: {e}"))
             });
+            return Ok(ToolOutcome::error(payload.to_string()).with_metadata(payload));
         }
         Err(e) => {
             return Err(ToolError::execution_failed(format!(
@@ -591,7 +590,7 @@ fn read_pdf_via_pdftotext(
     }
 
     let text = String::from_utf8_lossy(&output.stdout).to_string();
-    Ok(ToolResult::success(clean_pdf_text(&text)))
+    Ok(ToolOutcome::success(clean_pdf_text(&text)))
 }
 
 // === WriteFileTool ===
@@ -638,7 +637,7 @@ impl ToolSpec for WriteFileTool {
         ApprovalRequirement::Suggest
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let path_str = required_str(&input, "path")?;
         let file_content = required_str(&input, "content")?;
 
@@ -690,7 +689,7 @@ impl ToolSpec for WriteFileTool {
             format!("{body}\n{diag_block}")
         };
 
-        Ok(ToolResult::success(full_body))
+        Ok(ToolOutcome::success(full_body).with_side_effect(ToolSideEffectStatus::Applied))
     }
 }
 
@@ -746,7 +745,7 @@ impl ToolSpec for EditFileTool {
         ApprovalRequirement::Suggest
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let path_str = required_str(&input, "path")?;
         let search = required_str(&input, "search")?;
         let replace = required_str(&input, "replace")?;
@@ -784,7 +783,7 @@ impl ToolSpec for EditFileTool {
                     let punct_matches = punctuation_normalized_matches(&contents, search);
                     match punct_matches.as_slice() {
                         [] => {
-                            return Err(ToolError::execution_failed(format!(
+                            return Err(ToolError::invalid_input(format!(
                                 "Search string not found in {}. Recovery: call read_file with path=\"{path_str}\" to inspect the current contents, then retry with a search string copied from the file.",
                                 file_path.display(),
                             )));
@@ -795,7 +794,7 @@ impl ToolSpec for EditFileTool {
                             (updated, 1, Some("punctuation"))
                         }
                         _ => {
-                            return Err(ToolError::execution_failed(format!(
+                            return Err(ToolError::invalid_input(format!(
                                 "edit_file search is non-unique after punctuation normalization: matched {} locations in {}. Recovery: call read_file with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
                                 punct_matches.len(),
                                 file_path.display()
@@ -804,7 +803,7 @@ impl ToolSpec for EditFileTool {
                     }
                 }
                 _ => {
-                    return Err(ToolError::execution_failed(format!(
+                    return Err(ToolError::invalid_input(format!(
                         "edit_file search is non-unique after indentation normalization: matched {} locations in {}. Recovery: call read_file with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
                         indent_matches.len(),
                         file_path.display()
@@ -812,7 +811,7 @@ impl ToolSpec for EditFileTool {
                 }
             }
         } else if count > 1 {
-            return Err(ToolError::execution_failed(format!(
+            return Err(ToolError::invalid_input(format!(
                 "edit_file search is non-unique: matched {count} locations in {}. \
                  Recovery: call read_file with path=\"{path_str}\" and retry with surrounding lines that make the search unique.",
                 file_path.display()
@@ -851,7 +850,7 @@ impl ToolSpec for EditFileTool {
             format!("{body}\n{diag_block}")
         };
 
-        Ok(ToolResult::success(full_body))
+        Ok(ToolOutcome::success(full_body).with_side_effect(ToolSideEffectStatus::Applied))
     }
 }
 
@@ -1031,7 +1030,7 @@ impl ToolSpec for ListDirTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let path_str = optional_str(&input, "path").unwrap_or(".");
         let dir_path = context.resolve_path(path_str)?;
 
@@ -1039,7 +1038,7 @@ impl ToolSpec for ListDirTool {
             list_dir_entries_async(dir_path, context.cancel_token.clone(), LIST_DIR_TIMEOUT)
                 .await?;
 
-        ToolResult::json(&entries).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&entries).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -1181,7 +1180,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert_eq!(result.content, "hello world");
     }
 
@@ -1204,7 +1203,7 @@ mod tests {
             .await
             .expect("read image through OCR");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("<image_ocr"));
         let normalized = result.content.to_uppercase();
         assert!(
@@ -1292,7 +1291,7 @@ mod tests {
             .execute(json!({ "path": "small.txt" }), &ctx)
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         assert_eq!(result.content, "line 1\nline 2\nline 3\n");
         assert!(
             !result.content.contains("<file"),
@@ -1315,7 +1314,7 @@ mod tests {
             )
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(
             result.content.contains("shown_lines=\"3-6\""),
             "1-based inclusive range must be reflected in shown_lines: {}",
@@ -1353,7 +1352,7 @@ mod tests {
             .await
             .expect("execute");
         assert!(
-            result.success,
+            result.is_success(),
             "out-of-range must not raise — it's a sentinel"
         );
         assert!(result.content.contains("[NO CONTENT]"));
@@ -1451,7 +1450,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("total_lines=\"2000\""));
         assert!(result.content.contains("shown_lines=\"1500-1509\""));
         assert!(result.content.contains("next_start_line=\"1510\""));
@@ -1612,7 +1611,7 @@ mod tests {
         }
         let path = std::path::PathBuf::from(SAMPLE_PDF_PATH);
         let result = read_pdf_via_pdf_extract(&path, None).expect("extract whole PDF");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(
             result.content.contains("Recursive Language Models"),
             "pdf-extract should recover the document title; got prefix {:?}",
@@ -1630,8 +1629,8 @@ mod tests {
         let path = std::path::PathBuf::from(SAMPLE_PDF_PATH);
         let single = read_pdf_via_pdf_extract(&path, Some((1, 1))).expect("single page");
         let two = read_pdf_via_pdf_extract(&path, Some((1, 2))).expect("two pages");
-        assert!(single.success);
-        assert!(two.success);
+        assert!(single.is_success());
+        assert!(two.is_success());
         // A two-page slice must be at least as long as the one-page slice
         // (most documents have non-trivial body text past page 1).
         assert!(
@@ -1672,7 +1671,7 @@ mod tests {
             .execute(json!({"path": "docs/2512.24601v2.pdf", "pages": "1"}), &ctx)
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(
             result.content.contains("Recursive Language Models"),
             "page-1 extraction must surface the title"
@@ -1754,8 +1753,8 @@ mod tests {
                 "error message must reference pdftotext; got {msg}"
             );
         } else {
-            let result = outcome.expect("binary_unavailable is a structured success, not an Err");
-            assert!(result.success);
+            let result = outcome.expect("binary_unavailable is a structured tool outcome");
+            assert!(!result.is_success());
             assert!(result.content.contains("binary_unavailable"));
             assert!(result.content.contains("pdftotext"));
             assert!(
@@ -1779,7 +1778,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         // New file → "Created …" summary; the unified diff above the summary
         // primes the TUI's diff-aware renderer (#505).
         assert!(result.content.contains("Created"), "{}", result.content);
@@ -1809,7 +1808,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
 
         // Verify nested file was created
         let written = fs::read_to_string(tmp.path().join("subdir/nested/file.txt")).expect("read");
@@ -1835,7 +1834,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("Replaced 1 occurrence"));
         // Inline diff (#505) — the unified diff lands above the summary
         // line so the TUI's diff-aware renderer kicks in.
@@ -1954,7 +1953,7 @@ mod tests {
                 .await
                 .expect("execute");
 
-            assert!(result.success, "{file_name}: {}", result.content);
+            assert!(result.is_success(), "{file_name}: {}", result.content);
             assert!(result.content.contains("Replaced 1 occurrence"));
             let edited = fs::read_to_string(&test_file).expect("read");
             assert_eq!(edited, "hi world");
@@ -1979,7 +1978,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("Replaced 1 occurrence"));
         assert!(!result.content.contains("multiple matches were replaced"));
     }
@@ -2011,7 +2010,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("fuzzy indentation match"));
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(
@@ -2043,7 +2042,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success, "{}", result.content);
+        assert!(result.is_success(), "{}", result.content);
         assert!(result.content.contains("fuzzy indentation match"));
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(edited, "记录\n");
@@ -2076,7 +2075,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success, "fuzzy punctuation edit should succeed");
+        assert!(result.is_success(), "fuzzy punctuation edit should succeed");
         assert!(
             result.content.contains("fuzzy punctuation match"),
             "expected punctuation-fuzz note, got: {}",
@@ -2109,7 +2108,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success, "{}", result.content);
+        assert!(result.is_success(), "{}", result.content);
         assert!(result.content.contains("fuzzy punctuation match"));
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(edited, "数据 y\n");
@@ -2141,7 +2140,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let edited = fs::read_to_string(&test_file).expect("read");
         assert_eq!(edited, "alpha - gamma\n");
     }
@@ -2246,7 +2245,7 @@ mod tests {
         let tool = ListDirTool;
         let result = tool.execute(json!({}), &ctx).await.expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("file1.txt"));
         assert!(result.content.contains("file2.txt"));
         assert!(result.content.contains("subdir"));
@@ -2273,7 +2272,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("nested.txt"));
     }
 

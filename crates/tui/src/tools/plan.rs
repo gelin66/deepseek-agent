@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 // === Types ===
@@ -581,7 +581,7 @@ impl ToolSpec for UpdatePlanTool {
         &self,
         input: serde_json::Value,
         _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let empty_plan = Vec::new();
         let plan_items = match input.get("plan") {
             Some(value) => value
@@ -635,7 +635,7 @@ impl ToolSpec for UpdatePlanTool {
 
         let result = serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string());
 
-        Ok(ToolResult::success(format!(
+        Ok(ToolOutcome::success(format!(
             "Plan updated: {pending} pending, {in_progress} in progress, {completed} completed ({progress}% done)\n{result}"
         )))
     }

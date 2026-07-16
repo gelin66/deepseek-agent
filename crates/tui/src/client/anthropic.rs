@@ -799,6 +799,7 @@ mod tests {
                         id: "toolu_1".to_string(),
                         name: "read_file".to_string(),
                         input: json!({"path": "a.txt"}),
+                        raw_arguments: None,
                         caller: None,
                     },
                 ],

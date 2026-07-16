@@ -76,7 +76,7 @@ use crate::task_manager::{
 };
 use crate::tools::goal::{GoalSnapshot, GoalStatus};
 use crate::tools::shell::{ShellJobSnapshot, ShellStatus};
-use crate::tools::spec::{RuntimeToolServices, ToolResult};
+use crate::tools::spec::{RuntimeToolServices, ToolOutcome};
 use crate::tools::subagent::{MailboxMessage, SubAgentStatus};
 use crate::tui::auto_router;
 use crate::tui::color_compat::ColorCompatBackend;
@@ -3033,6 +3033,7 @@ async fn run_event_loop(
                             transcript_batch_updated = true;
                         }
                     }
+                    EngineEvent::GoalContinuationScheduled | EngineEvent::RunTerminalCandidate => {}
                     EngineEvent::SessionUpdated {
                         session_id,
                         messages,
@@ -7139,6 +7140,7 @@ fn push_assistant_message(
             id,
             name,
             input,
+            raw_arguments: None,
             caller: None,
         });
     }
@@ -7161,7 +7163,7 @@ async fn tool_result_content_for_api_message(
     app: &App,
     id: &str,
     name: &str,
-    output: &ToolResult,
+    output: &ToolOutcome,
 ) -> String {
     let raw = output.content.trim();
     if raw.is_empty() {
@@ -7179,7 +7181,7 @@ async fn tool_result_content_for_api_message(
     }
 
     if raw.chars().count() > crate::tool_output_receipts::RAW_TOOL_OUTPUT_RECEIPT_THRESHOLD_CHARS {
-        let messages = live_tool_receipt_messages(app, id, raw, output.success);
+        let messages = live_tool_receipt_messages(app, id, raw, output.is_success());
         let artifacts = app.session_artifacts.clone();
         let raw = raw.to_string();
         match tokio::task::spawn_blocking(move || {

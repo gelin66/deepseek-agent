@@ -18,7 +18,7 @@
 use serde_json::json;
 
 use crate::models::{Tool, ToolCaller};
-use crate::tools::spec::{ToolError, ToolResult};
+use crate::tools::spec::{ToolError, ToolOutcome};
 use crate::tui::app::AppMode;
 
 use super::ToolUseState;
@@ -32,7 +32,7 @@ pub(super) struct ToolExecOutcome {
     pub(super) name: String,
     pub(super) input: serde_json::Value,
     pub(super) started_at: std::time::Instant,
-    pub(super) result: Result<ToolResult, ToolError>,
+    pub(super) result: Result<ToolOutcome, ToolError>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,7 +50,7 @@ pub(super) struct ToolExecutionPlan {
     pub(super) read_only: bool,
     pub(super) detached_start: bool,
     pub(super) blocked_error: Option<ToolError>,
-    pub(super) guard_result: Option<ToolResult>,
+    pub(super) guard_result: Option<ToolOutcome>,
 }
 
 pub(super) enum ToolExecutionBatch {
@@ -98,7 +98,7 @@ impl ToolApprovalStamp {
     }
 }
 
-pub(super) fn stamp_tool_result_approval(result: &mut ToolResult, approval: ToolApprovalStamp) {
+pub(super) fn stamp_tool_result_approval(result: &mut ToolOutcome, approval: ToolApprovalStamp) {
     let approval_metadata = json!({
         "required": true,
         "decision": approval.decision(),
@@ -538,7 +538,7 @@ pub(super) fn plan_tool_execution_batches(
 pub(super) fn should_stop_after_plan_tool(
     mode: AppMode,
     tool_name: &str,
-    result: &Result<ToolResult, ToolError>,
+    result: &Result<ToolOutcome, ToolError>,
 ) -> bool {
     mode == AppMode::Plan && tool_name == "update_plan" && result.is_ok()
 }

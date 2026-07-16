@@ -3089,7 +3089,8 @@ mod tests {
     fn agent_mode_tool_guidance_avoids_defensive_tool_suppression() {
         let prompt = compose_prompt(Personality::Calm);
         assert!(!prompt.contains("Tool Selection Guide"));
-        assert!(AGENT_MODE.contains("Delegate only independent, fire-and-forget work"));
+        assert!(AGENT_MODE.contains("只在委派能缩短关键路径或提供独立证据时使用多 Agent"));
+        assert!(AGENT_MODE.contains("agents_wait"));
         assert!(AGENT_MODE.contains("Use `rlm_open`"));
         assert!(
             !AGENT_MODE.contains("When NOT to use certain tools"),
@@ -3261,12 +3262,11 @@ mod tests {
     #[test]
     fn prompt_documents_fork_context_prefix_cache_contract() {
         let source = include_str!("tools/subagent/mod.rs");
-        for haystack in [AGENT_MODE, source] {
-            assert!(haystack.contains("fork_context"));
-            assert!(haystack.contains("byte-identical"));
-            assert!(haystack.contains("DeepSeek prefix-cache reuse"));
-        }
-        assert!(AGENT_MODE.contains("Fresh sessions are the default"));
+        assert!(AGENT_MODE.contains("fork_context: true"));
+        assert!(AGENT_MODE.contains("DeepSeek 前缀缓存"));
+        assert!(AGENT_MODE.contains("子 Agent 默认使用新会话"));
+        assert!(source.contains("fork_context"));
+        assert!(source.contains("byte-identical"));
     }
 
     #[test]
@@ -3276,16 +3276,15 @@ mod tests {
         assert!(prompt.contains("model_strength: \"faster\""));
         assert!(prompt.contains("type: \"explore\""));
         assert!(include_str!("tools/subagent/mod.rs").contains("Overrides model_strength"));
-        assert!(prompt.contains("defaults to `model_strength: \"faster\"`"));
-        assert!(prompt.contains("2-4 `type: \"explore\"` sub-agents"));
-        assert!(prompt.contains("self-reports"));
+        assert!(prompt.contains("低风险查找"));
+        assert!(prompt.contains("2–4 个"));
+        assert!(prompt.contains("自报成功"));
     }
 
     #[test]
     fn prompt_documents_structured_subagent_briefs() {
         let prompt = AGENT_MODE;
         for field in [
-            "Subagent Brief",
             "QUESTION",
             "SCOPE",
             "ALREADY_KNOWN",
@@ -3301,44 +3300,39 @@ mod tests {
                 "main prompt should include Subagent Brief field `{field}`"
             );
         }
-        assert!(prompt.contains("Brief sub-agents with a compact Subagent Brief"));
+        assert!(prompt.contains("子任务说明保持紧凑"));
     }
 
     #[test]
     fn prompt_bounds_explore_without_tiny_cap_for_implementers() {
         let prompt = AGENT_MODE;
-        assert!(prompt.contains("Explore briefs default to `quick`"));
-        assert!(prompt.contains("read-only"));
-        assert!(prompt.contains("3-5 tool calls"));
-        assert!(prompt.contains("Review/verifier children stop after decisive evidence"));
-        assert!(prompt.contains("No fan-out without a fan-in owner"));
+        assert!(prompt.contains("read_only"));
+        assert!(prompt.contains("3–5 次工具调用"));
+        assert!(prompt.contains("最多 8 个模型回合"));
+        assert!(prompt.contains("Review/Verifier 获得决定性证据后立即停止"));
+        assert!(prompt.contains("根 Agent 始终负责"));
     }
 
     #[test]
-    fn agent_mode_prompt_teaches_automatic_workflow_use() {
-        // #4125: parent decides Workflow without the user saying the word;
-        // indicates the shape and may ask setup questions before launch.
+    fn agent_mode_prompt_teaches_native_multi_agent_fan_in() {
         let prompt = AGENT_MODE;
         for phrase in [
-            "You decide when to use Workflow",
-            "need **not** say \"workflow\"",
-            "broad, independent, or staged",
-            "This looks set up for a Workflow",
-            "`request_user_input`",
-            "TUI question modal",
-            "Pass **paths**, not file contents",
-            "Prefer `responseSchema`",
-            "one compact summary",
+            "`agent` 只负责启动子 Agent",
+            "`agents_wait`",
+            "同一 `agent_id`",
+            "已结算 handoff",
+            "不要轮询 `agents_list`",
+            "不要用 `sleep`",
+            "统一验证、综合",
         ] {
             assert!(
                 prompt.contains(phrase),
-                "AGENT_MODE missing automatic-workflow phrase {phrase:?}"
+                "AGENT_MODE missing native multi-Agent phrase {phrase:?}"
             );
         }
-        // Explicitly not the old opt-in-only framing.
         assert!(
-            !prompt.contains("The `workflow` tool is opt-in"),
-            "AGENT_MODE must not describe Workflow as opt-in only"
+            !prompt.contains("This looks set up for a Workflow"),
+            "Agent mode should teach one native orchestrator protocol"
         );
     }
 

@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
 use crate::dependencies::ExternalTool;
@@ -82,7 +82,7 @@ impl ToolSpec for GitLogTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let git_ctx = resolve_git_context(context, optional_str(&input, "path"))?;
         let max_count =
             optional_u64(&input, "max_count", DEFAULT_LOG_MAX_COUNT).clamp(1, MAX_LOG_MAX_COUNT);
@@ -116,7 +116,7 @@ impl ToolSpec for GitLogTool {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Ok(
-                ToolResult::error(format!("git log failed: {}", stderr.trim())).with_metadata(
+                ToolOutcome::error(format!("git log failed: {}", stderr.trim())).with_metadata(
                     json!({
                         "command": command_str,
                         "exit_code": output.status.code(),
@@ -128,7 +128,7 @@ impl ToolSpec for GitLogTool {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let (content, truncated, omitted_chars) = truncate_with_note(&stdout, MAX_OUTPUT_CHARS);
-        Ok(ToolResult::success(content).with_metadata(json!({
+        Ok(ToolOutcome::success(content).with_metadata(json!({
             "command": command_str,
             "working_dir": git_ctx.working_dir,
             "pathspec": git_ctx.pathspec,
@@ -202,7 +202,7 @@ impl ToolSpec for GitShowTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let rev = required_str(&input, "rev")?;
         validate_git_rev(rev)?;
         let git_ctx = resolve_git_context(context, optional_str(&input, "path"))?;
@@ -233,7 +233,7 @@ impl ToolSpec for GitShowTool {
         let output = run_git_command_async(git_ctx.working_dir.clone(), args).await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Ok(ToolResult::error(format!(
+            return Ok(ToolOutcome::error(format!(
                 "git show failed for '{rev}': {}",
                 stderr.trim()
             ))
@@ -246,7 +246,7 @@ impl ToolSpec for GitShowTool {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let (content, truncated, omitted_chars) = truncate_with_note(&stdout, MAX_OUTPUT_CHARS);
-        Ok(ToolResult::success(content).with_metadata(json!({
+        Ok(ToolOutcome::success(content).with_metadata(json!({
             "command": command_str,
             "working_dir": git_ctx.working_dir,
             "pathspec": git_ctx.pathspec,
@@ -321,7 +321,7 @@ impl ToolSpec for GitBlameTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let path_str = required_str(&input, "path")?;
         let resolved_path = context.resolve_path(path_str)?;
         let metadata = fs::metadata(&resolved_path).map_err(|e| {
@@ -363,7 +363,7 @@ impl ToolSpec for GitBlameTool {
         let output = run_git_command_async(working_dir.to_path_buf(), args).await?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Ok(ToolResult::error(format!(
+            return Ok(ToolOutcome::error(format!(
                 "git blame failed for '{path_str}' at '{rev}': {}",
                 stderr.trim()
             ))
@@ -376,7 +376,7 @@ impl ToolSpec for GitBlameTool {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let (content, truncated, omitted_chars) = truncate_with_note(&stdout, MAX_OUTPUT_CHARS);
-        Ok(ToolResult::success(content).with_metadata(json!({
+        Ok(ToolOutcome::success(content).with_metadata(json!({
             "command": command_str,
             "working_dir": working_dir,
             "pathspec": pathspec,
@@ -587,7 +587,7 @@ mod tests {
             .execute(json!({ "max_count": 1 }), &ctx)
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("Subject: second"));
     }
 
@@ -609,7 +609,7 @@ mod tests {
             .execute(json!({ "rev": "HEAD", "stat": false }), &ctx)
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("diff --git"));
         assert!(result.content.contains("+two"));
     }
@@ -669,7 +669,7 @@ mod tests {
             )
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("Test User"));
     }
 

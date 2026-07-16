@@ -2240,6 +2240,7 @@ impl RuntimeThreadManager {
                     "",
                     "auto",
                     "auto",
+                    None,
                 )
                 .await?;
                 (
@@ -3013,6 +3014,7 @@ impl RuntimeThreadManager {
                                 id: tool_use_id,
                                 name: tool_name,
                                 input,
+                                raw_arguments: None,
                                 caller: None,
                             });
                         }
@@ -3228,7 +3230,7 @@ impl RuntimeThreadManager {
                         item.ended_at = Some(now);
                         match result {
                             Ok(output) => {
-                                item.status = if output.success {
+                                item.status = if output.is_success() {
                                     TurnItemLifecycleStatus::Completed
                                 } else {
                                     TurnItemLifecycleStatus::Failed
@@ -4055,7 +4057,7 @@ impl crate::tools::spec::DynamicToolExecutor for RuntimeThreadManager {
         namespace: Option<String>,
         name: String,
         input: Value,
-    ) -> std::result::Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError> {
+    ) -> std::result::Result<crate::tools::spec::ToolOutcome, crate::tools::spec::ToolError> {
         let thread_id = thread_id.ok_or_else(|| {
             crate::tools::spec::ToolError::not_available(format!(
                 "runtime dynamic tool '{name}' has no active thread"
@@ -4098,9 +4100,9 @@ impl crate::tools::spec::DynamicToolExecutor for RuntimeThreadManager {
             Ok(Ok(result)) => {
                 let text = dynamic_tool_result_text(&result.content);
                 if result.success {
-                    Ok(crate::tools::spec::ToolResult::success(text))
+                    Ok(crate::tools::spec::ToolOutcome::success(text))
                 } else {
-                    Ok(crate::tools::spec::ToolResult::error(if text.is_empty() {
+                    Ok(crate::tools::spec::ToolOutcome::error(if text.is_empty() {
                         "dynamic tool failed".to_string()
                     } else {
                         text

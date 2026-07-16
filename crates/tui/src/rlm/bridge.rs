@@ -145,7 +145,7 @@ impl RlmBridge {
 
         {
             let mut u = self.usage.lock().await;
-            super::add_usage_with_prompt_cache(&mut u, &response.usage);
+            super::accumulate_usage(&mut u, &response.usage);
         }
 
         SingleResp { text, error: None }
@@ -213,7 +213,7 @@ impl RlmBridge {
 
         {
             let mut u = self.usage.lock().await;
-            super::add_usage_with_prompt_cache(&mut u, &result.usage);
+            super::accumulate_usage(&mut u, &result.usage);
         }
 
         SingleResp {

@@ -3,7 +3,7 @@
 //! This module defines the core abstractions for tools:
 //! - `ToolSpec`: The main trait that all tools must implement
 //! - `ToolContext`: Execution context passed to tools
-//! - `ToolResult`: Unified result type for tool execution
+//! - `ToolOutcome`: Unified result type for tool execution
 //! - `ToolCapability`: Capabilities and requirements of tools
 
 use std::collections::HashMap;
@@ -27,7 +27,7 @@ use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::worker_profile::ShellPolicy;
 #[allow(unused_imports)]
 pub use codewhale_tools::{
-    ApprovalRequirement, ToolCapability, ToolError, ToolResult, optional_bool, optional_str,
+    ApprovalRequirement, ToolCapability, ToolError, ToolOutcome, optional_bool, optional_str,
     optional_u64, required_str, required_u64,
 };
 
@@ -39,7 +39,7 @@ pub trait DynamicToolExecutor: Send + Sync {
         namespace: Option<String>,
         name: String,
         input: Value,
-    ) -> Result<ToolResult, ToolError>;
+    ) -> Result<ToolOutcome, ToolError>;
 }
 
 /// Optional durable runtime services made available to model-visible tools.
@@ -145,6 +145,10 @@ pub enum SandboxPolicy {
 pub struct ToolContext {
     /// The workspace root directory
     pub workspace: PathBuf,
+    /// Read-only snapshot of the active Goal acceptance contract at the start
+    /// of this tool-execution context. Verifiers bind receipts to this exact
+    /// generation; a later Goal can never inherit an earlier result.
+    pub goal_contract: Option<crate::tools::goal::TaskContract>,
     /// Shared shell manager for background tasks and streaming IO.
     pub shell_manager: SharedShellManager,
     /// Per-session snapshots for files successfully observed by `read_file`.
@@ -264,6 +268,7 @@ impl ToolContext {
             .1;
         Self {
             workspace,
+            goal_contract: None,
             shell_manager,
             file_read_tracker: new_shared_file_read_tracker(),
             owner_agent_id: None,
@@ -309,6 +314,7 @@ impl ToolContext {
         let shell_manager = new_shared_shell_manager(workspace.clone());
         Self {
             workspace,
+            goal_contract: None,
             shell_manager,
             file_read_tracker: new_shared_file_read_tracker(),
             owner_agent_id: None,
@@ -354,6 +360,7 @@ impl ToolContext {
         let shell_manager = new_shared_shell_manager(workspace.clone());
         Self {
             workspace,
+            goal_contract: None,
             shell_manager,
             file_read_tracker: new_shared_file_read_tracker(),
             owner_agent_id: None,
@@ -398,6 +405,16 @@ impl ToolContext {
     #[must_use]
     pub fn with_runtime_services(mut self, runtime: RuntimeToolServices) -> Self {
         self.runtime = runtime;
+        self
+    }
+
+    /// Bind tool execution to one active Goal acceptance contract.
+    #[must_use]
+    pub fn with_goal_contract(
+        mut self,
+        contract: Option<crate::tools::goal::TaskContract>,
+    ) -> Self {
+        self.goal_contract = contract;
         self
     }
 
@@ -940,7 +957,7 @@ pub trait ToolSpec: Send + Sync {
     }
 
     /// Execute the tool with the given input and context.
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError>;
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError>;
 }
 
 // === Unit Tests ===
@@ -954,31 +971,31 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn test_tool_result_success() {
-        let result = ToolResult::success("hello");
-        assert!(result.success);
+    fn test_tool_outcome_success() {
+        let result = ToolOutcome::success("hello");
+        assert!(result.is_success());
         assert_eq!(result.content, "hello");
         assert!(result.metadata.is_none());
     }
 
     #[test]
-    fn test_tool_result_error() {
-        let result = ToolResult::error("something failed");
-        assert!(!result.success);
+    fn test_tool_outcome_error() {
+        let result = ToolOutcome::error("something failed");
+        assert!(!result.is_success());
         assert_eq!(result.content, "something failed");
     }
 
     #[test]
-    fn test_tool_result_json() {
+    fn test_tool_outcome_json() {
         let data = json!({"key": "value"});
-        let result = ToolResult::json(&data).unwrap();
-        assert!(result.success);
+        let result = ToolOutcome::json(&data).unwrap();
+        assert!(result.is_success());
         assert!(result.content.contains("key"));
     }
 
     #[test]
-    fn test_tool_result_with_metadata() {
-        let result = ToolResult::success("content").with_metadata(json!({"extra": true}));
+    fn test_tool_outcome_with_metadata() {
+        let result = ToolOutcome::success("content").with_metadata(json!({"extra": true}));
         assert!(result.metadata.is_some());
     }
 

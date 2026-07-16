@@ -26,7 +26,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 #[cfg(unix)]
 use super::spec::{optional_u64, required_str};
@@ -476,7 +476,7 @@ fn session_result(
     session: &mut TerminalSession,
     done: Option<(i32, String)>,
     timed_out: bool,
-) -> ToolResult {
+) -> ToolOutcome {
     let output = prune_output(&take_output(session));
     let finished = done.is_some();
     let (exit_code, cwd) = done.map_or((None, String::new()), |(code, cwd)| (Some(code), cwd));
@@ -509,25 +509,26 @@ fn session_result(
             "updated_at": record.updated_at,
         })
     });
-    ToolResult {
-        content: output,
-        // A successful send while the command is still running is itself a
-        // successful tool operation. Completed commands still report their
-        // real exit status, and timeouts remain unsuccessful.
-        success: !timed_out && (!finished || exit_code == Some(0)),
-        metadata: Some(json!({
-            "status": status,
-            "exit_code": exit_code,
-            "cwd": cwd,
-            "session_persistent": true,
-            "durability": "live shell is process-local; identity and last-known summary persist",
-            "terminal_session_id": session.durable.session_id,
-            "terminal_state": session.durable.state,
-            "state_path": session.durable_path,
-            "previous_session": previous,
-            "persistence_error": persistence_error,
-        })),
-    }
+    // A successful send while the command is still running is itself a
+    // successful tool operation. Completed commands still report their real
+    // exit status, and timeouts remain unsuccessful.
+    let outcome = if !timed_out && (!finished || exit_code == Some(0)) {
+        ToolOutcome::success(output)
+    } else {
+        ToolOutcome::error(output)
+    };
+    outcome.with_metadata(json!({
+        "status": status,
+        "exit_code": exit_code,
+        "cwd": cwd,
+        "session_persistent": true,
+        "durability": "live shell is process-local; identity and last-known summary persist",
+        "terminal_session_id": session.durable.session_id,
+        "terminal_state": session.durable.state,
+        "state_path": session.durable_path,
+        "previous_session": previous,
+        "persistence_error": persistence_error,
+    }))
 }
 
 #[cfg(unix)]
@@ -556,8 +557,8 @@ fn shell_allowed(context: &ToolContext) -> Result<(), ToolError> {
 }
 
 #[cfg(not(unix))]
-fn unsupported() -> ToolResult {
-    ToolResult::error("Stateful terminal sessions are currently supported on Unix only.")
+fn unsupported() -> ToolOutcome {
+    ToolOutcome::error("Stateful terminal sessions are currently supported on Unix only.")
 }
 
 macro_rules! terminal_tool_common {
@@ -594,7 +595,7 @@ impl ToolSpec for TerminalRunTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         shell_allowed(context)?;
         #[cfg(unix)]
         {
@@ -641,7 +642,7 @@ impl ToolSpec for TerminalSendTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         shell_allowed(context)?;
         #[cfg(unix)]
         {
@@ -683,7 +684,7 @@ impl ToolSpec for TerminalWaitTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         shell_allowed(context)?;
         #[cfg(unix)]
         {
@@ -722,7 +723,7 @@ impl ToolSpec for TerminalCancelTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         shell_allowed(context)?;
         #[cfg(unix)]
         {
@@ -763,7 +764,9 @@ impl ToolSpec for TerminalCancelTool {
                     .lock()
                     .map_err(|_| ToolError::execution_failed("terminal session lock poisoned"))?;
                 let mut result = session_result(&mut session, done, false);
-                result.success = true;
+                let content = std::mem::take(&mut result.content);
+                let metadata = result.metadata.take().unwrap_or_else(|| json!({}));
+                result = ToolOutcome::success(content).with_metadata(metadata);
                 if let Some(metadata) = result.metadata.as_mut() {
                     metadata["status"] = json!("canceled");
                     metadata["canceled"] = json!(true);
@@ -795,7 +798,7 @@ impl ToolSpec for TerminalResetTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         shell_allowed(context)?;
         #[cfg(unix)]
         {
@@ -811,7 +814,7 @@ impl ToolSpec for TerminalResetTool {
                 }
                 let fresh = create_session(&name, &workspace).map_err(ToolError::execution_failed)?;
                 sessions().lock().map_err(|_| ToolError::execution_failed("terminal session registry lock poisoned"))?.insert(session_key(&name, &workspace), fresh);
-                Ok(ToolResult { content: format!("Reset terminal session '{name}'. Lost shell state and any running command."), success: true, metadata: Some(json!({"session":name,"reset":true,"lost_state":["cwd","environment","functions","activated environments","running command"]})) })
+                Ok(ToolOutcome::success(format!("Reset terminal session '{name}'. Lost shell state and any running command.")).with_metadata(json!({"session":name,"reset":true,"lost_state":["cwd","environment","functions","activated environments","running command"]})))
             }).await.map_err(|e| ToolError::execution_failed(e.to_string()))?;
         }
         #[cfg(not(unix))]
@@ -839,7 +842,7 @@ mod tests {
         replacement
     }
 
-    fn run(session: &SharedSession, command: &str, timeout: Duration) -> ToolResult {
+    fn run(session: &SharedSession, command: &str, timeout: Duration) -> ToolOutcome {
         let mut session = session.lock().unwrap();
         start_command(&mut session, command).unwrap();
         let (done, timed_out) = wait_session(&mut session, timeout);

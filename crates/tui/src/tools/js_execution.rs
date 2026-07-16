@@ -22,7 +22,7 @@ use crate::dependencies::ExternalTool;
 use serde_json::{Value, json};
 
 use crate::models::Tool;
-use crate::tools::spec::{ToolError, ToolResult, required_str};
+use crate::tools::spec::{ToolError, ToolOutcome, required_str};
 
 /// Tool name surfaced to the model. Held alongside `code_execution`
 /// in the deferred-tool dispatcher.
@@ -124,7 +124,7 @@ pub fn js_execution_tool_definition() -> Tool {
 pub async fn execute_js_execution_tool(
     input: &Value,
     workspace: &Path,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let code = required_str(input, "code")?;
 
     // Resolve the Node runtime via ExternalTool. If it's absent now
@@ -173,11 +173,13 @@ pub async fn execute_js_execution_tool(
         "content": [],
     });
 
-    Ok(ToolResult {
-        content: serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string()),
-        success,
-        metadata: Some(payload),
-    })
+    let content = serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string());
+    let outcome = if success {
+        ToolOutcome::success(content)
+    } else {
+        ToolOutcome::error(content)
+    };
+    Ok(outcome.with_metadata(payload))
 }
 
 #[cfg(test)]
@@ -262,7 +264,10 @@ mod tests {
         )
         .await
         .expect("execute");
-        assert!(result.success, "successful node run must report success");
+        assert!(
+            result.is_success(),
+            "successful node run must report success"
+        );
         assert!(
             result.content.contains("hello from node"),
             "stdout payload must surface the printed text; got {}",
@@ -283,7 +288,7 @@ mod tests {
         .await
         .expect("execute should not Err — runtime errors land in stderr/exit code");
         assert!(
-            !result.success,
+            !result.is_success(),
             "non-zero exit must report success=false in the result payload"
         );
         assert!(
@@ -313,7 +318,7 @@ mod tests {
         .await
         .expect("execute");
         assert!(
-            result.success,
+            result.is_success(),
             "node run should succeed: {}",
             result.content
         );

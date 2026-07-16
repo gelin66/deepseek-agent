@@ -106,6 +106,13 @@ pub enum ContentBlock {
         id: String,
         name: String,
         input: serde_json::Value,
+        /// Exact `function.arguments` string returned by the model.
+        ///
+        /// `input` is the parsed execution projection. This optional raw form
+        /// is the replay truth: DeepSeek reasoning/tool history must retain
+        /// whitespace, key order, and malformed model output verbatim.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        raw_arguments: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         caller: Option<ToolCaller>,
     },
@@ -268,6 +275,52 @@ pub struct Usage {
     pub reasoning_replay_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_tool_use: Option<ServerToolUsage>,
+}
+
+impl Usage {
+    /// Saturating aggregation for one provider-reported usage record.
+    ///
+    /// Keeping this in the canonical model prevents root turns, sub-agents,
+    /// FIM, scorecards, and Headless receipts from each maintaining a subtly
+    /// different definition of "total usage".
+    pub fn accumulate(&mut self, other: &Self) {
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
+        accumulate_optional_u32(
+            &mut self.prompt_cache_hit_tokens,
+            other.prompt_cache_hit_tokens,
+        );
+        accumulate_optional_u32(
+            &mut self.prompt_cache_miss_tokens,
+            other.prompt_cache_miss_tokens,
+        );
+        accumulate_optional_u32(
+            &mut self.prompt_cache_write_tokens,
+            other.prompt_cache_write_tokens,
+        );
+        accumulate_optional_u32(&mut self.reasoning_tokens, other.reasoning_tokens);
+        accumulate_optional_u32(
+            &mut self.reasoning_replay_tokens,
+            other.reasoning_replay_tokens,
+        );
+        if let Some(other_tools) = other.server_tool_use.as_ref() {
+            let tools = self.server_tool_use.get_or_insert_default();
+            accumulate_optional_u32(
+                &mut tools.code_execution_requests,
+                other_tools.code_execution_requests,
+            );
+            accumulate_optional_u32(
+                &mut tools.tool_search_requests,
+                other_tools.tool_search_requests,
+            );
+        }
+    }
+}
+
+fn accumulate_optional_u32(total: &mut Option<u32>, delta: Option<u32>) {
+    if let Some(delta) = delta {
+        *total = Some(total.unwrap_or(0).saturating_add(delta));
+    }
 }
 
 /// Map known models to their approximate context window sizes.
@@ -1102,5 +1155,48 @@ mod tests {
         assert!(auto_compact_default_for_model("deepseek-v4-pro"));
         assert!(auto_compact_default_for_model("mimo-v2.5-pro"));
         assert!(!auto_compact_default_for_model("unknown-model"));
+    }
+
+    #[test]
+    fn usage_accumulate_preserves_every_observed_usage_class() {
+        let mut total = Usage {
+            input_tokens: u32::MAX - 1,
+            output_tokens: 10,
+            prompt_cache_hit_tokens: Some(4),
+            reasoning_tokens: Some(2),
+            server_tool_use: Some(ServerToolUsage {
+                code_execution_requests: Some(1),
+                tool_search_requests: None,
+            }),
+            ..Usage::default()
+        };
+        total.accumulate(&Usage {
+            input_tokens: 10,
+            output_tokens: 5,
+            prompt_cache_hit_tokens: Some(3),
+            prompt_cache_miss_tokens: Some(7),
+            prompt_cache_write_tokens: Some(2),
+            reasoning_tokens: Some(3),
+            reasoning_replay_tokens: Some(6),
+            server_tool_use: Some(ServerToolUsage {
+                code_execution_requests: Some(2),
+                tool_search_requests: Some(4),
+            }),
+        });
+
+        assert_eq!(total.input_tokens, u32::MAX);
+        assert_eq!(total.output_tokens, 15);
+        assert_eq!(total.prompt_cache_hit_tokens, Some(7));
+        assert_eq!(total.prompt_cache_miss_tokens, Some(7));
+        assert_eq!(total.prompt_cache_write_tokens, Some(2));
+        assert_eq!(total.reasoning_tokens, Some(5));
+        assert_eq!(total.reasoning_replay_tokens, Some(6));
+        assert_eq!(
+            total.server_tool_use,
+            Some(ServerToolUsage {
+                code_execution_requests: Some(3),
+                tool_search_requests: Some(4),
+            })
+        );
     }
 }

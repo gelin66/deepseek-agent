@@ -166,14 +166,14 @@ impl Engine {
         pool: Arc<AsyncMutex<McpPool>>,
         name: &str,
         input: serde_json::Value,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let mut pool = pool.lock().await;
         let result = pool
             .call_tool(name, input)
             .await
             .map_err(|e| ToolError::execution_failed(format!("MCP tool failed: {e}")))?;
         let content = serde_json::to_string(&result).unwrap_or_else(|_| result.to_string());
-        Ok(ToolResult::success(content))
+        Ok(ToolOutcome::success(content))
     }
 
     pub(super) async fn execute_parallel_tool(
@@ -181,7 +181,7 @@ impl Engine {
         input: serde_json::Value,
         tool_registry: Option<&crate::tools::ToolRegistry>,
         tool_exec_lock: Arc<RwLock<()>>,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let calls = parse_parallel_tool_calls(&input)?;
         let mcp_pool = if calls.iter().any(|(tool, _)| McpPool::is_mcp_tool(tool)) {
             Some(self.ensure_mcp_pool().await?)
@@ -269,12 +269,12 @@ impl Engine {
             let entry = match result {
                 Ok(output) => {
                     let mut error = None;
-                    if !output.success {
+                    if !output.is_success() {
                         error = Some(output.content.clone());
                     }
                     ParallelToolResultEntry {
                         tool_name,
-                        success: output.success,
+                        success: output.is_success(),
                         content: output.content,
                         error,
                     }
@@ -293,7 +293,7 @@ impl Engine {
         }
         let results = results.into_iter().flatten().collect();
 
-        ToolResult::json(&ParallelToolResult { results })
+        ToolOutcome::json(&ParallelToolResult { results })
             .map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 
@@ -309,7 +309,7 @@ impl Engine {
         registry: Option<&crate::tools::ToolRegistry>,
         mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
         context_override: Option<crate::tools::ToolContext>,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let started_at = std::time::Instant::now();
         let dispatch = if McpPool::is_mcp_tool(&tool_name) {
             "mcp"
@@ -379,7 +379,7 @@ impl Engine {
                     tool = %tool_name,
                     dispatch,
                     duration_ms,
-                    success = result.success,
+                    success = result.is_success(),
                     output_bytes = result.content.len(),
                     "tool.exec.end",
                 );

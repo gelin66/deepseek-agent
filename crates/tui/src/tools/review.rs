@@ -15,7 +15,7 @@ use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt, Usage};
 use crate::utils::truncate_with_ellipsis;
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
 
@@ -468,7 +468,7 @@ impl ToolSpec for ReviewTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let Some(client) = self.client.clone() else {
             return Err(ToolError::not_available(
                 "Review tool requires an active DeepSeek client".to_string(),
@@ -523,7 +523,7 @@ impl ToolSpec for ReviewTool {
         let output = ReviewOutput::from_str(&response_text);
         let metadata = review_usage_metadata(&response.model, &response.usage);
         let result =
-            ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+            ToolOutcome::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))?;
         Ok(result.with_metadata(metadata))
     }
 }

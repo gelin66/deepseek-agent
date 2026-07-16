@@ -4,7 +4,7 @@
 //! client now routes all normal traffic through that surface.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -33,7 +33,10 @@ use crate::models::{
     Usage,
 };
 
-use self::request_budget::{ApiRequestBudgetError, SharedApiRequestBudget};
+use self::request_budget::{
+    ApiRequestBudgetError, ApiRequestKind, ApiRequestLease, ApiResponseAccountingGuard,
+    SharedApiRequestBudget,
+};
 
 pub(super) fn to_api_tool_name(name: &str) -> String {
     let mut out = String::new();
@@ -179,6 +182,7 @@ pub struct DeepSeekClient {
     pub(super) reasoning_stream_style: Option<String>,
     pub(super) stream_idle_timeout: Duration,
     api_request_budget: Option<SharedApiRequestBudget>,
+    recovery_probe_enabled: bool,
 }
 
 const CONNECTION_FAILURE_THRESHOLD: u32 = 2;
@@ -403,6 +407,7 @@ impl Clone for DeepSeekClient {
             reasoning_stream_style: self.reasoning_stream_style.clone(),
             stream_idle_timeout: self.stream_idle_timeout,
             api_request_budget: self.api_request_budget.clone(),
+            recovery_probe_enabled: self.recovery_probe_enabled,
         }
     }
 }
@@ -811,12 +816,28 @@ impl DeepSeekClient {
             reasoning_stream_style,
             stream_idle_timeout,
             api_request_budget: None,
+            recovery_probe_enabled: true,
         })
     }
 
     /// Bind a runtime-only hard request budget to this client and every clone.
     pub(crate) fn with_api_request_budget(mut self, budget: SharedApiRequestBudget) -> Self {
         self.api_request_budget = Some(budget);
+        self
+    }
+
+    /// Give the UI-independent AgentRuntime sole ownership of turn-level
+    /// retries while preserving this client's HTTP transport, RequestPlan,
+    /// SSE parser, and accounting hooks.
+    ///
+    /// Legacy TUI callers retain their configured transparent transport retry
+    /// policy. Runtime requests use a fresh clone with exactly one physical
+    /// attempt so actionable-output and first-failure retry decisions cannot
+    /// be duplicated below the Runtime boundary.
+    pub(crate) fn with_transport_retries_disabled_for_runtime(mut self) -> Self {
+        self.retry.enabled = false;
+        self.retry.max_retries = 0;
+        self.recovery_probe_enabled = false;
         self
     }
 
@@ -1222,7 +1243,7 @@ impl DeepSeekClient {
         });
         apply_reasoning_effort(&mut body, Some("off"), self.api_provider);
 
-        let response = self.send_json_with_retry(&url, &body).await?;
+        let (response, _request_lease) = self.send_json_with_retry(&url, &body).await?;
         let value: serde_json::Value = response.json().await?;
         let translated = value["choices"][0]["message"]["content"]
             .as_str()
@@ -1235,7 +1256,9 @@ impl DeepSeekClient {
     /// List available models from the provider.
     pub async fn list_models(&self) -> Result<Vec<AvailableModel>> {
         let url = api_url(&self.base_url, "models");
-        let response = self.send_with_retry(|| self.http_client.get(&url)).await?;
+        let (response, _request_lease) = self
+            .send_control_with_retry(|| self.http_client.get(&url))
+            .await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -1284,7 +1307,8 @@ impl DeepSeekClient {
         // non-retryable auth failures, neither of which suits a typed refresh.
         // Auth headers are baked into `http_client` (the key is used but never
         // persisted into the delta or cache).
-        self.reserve_api_request()
+        let mut request_lease = self
+            .reserve_api_request(ApiRequestKind::Control)
             .map_err(|_| CatalogRefreshError::Network)?;
         let response = self
             .http_client
@@ -1292,6 +1316,9 @@ impl DeepSeekClient {
             .send()
             .await
             .map_err(|_| CatalogRefreshError::Network)?;
+        if let Some(lease) = request_lease.as_mut() {
+            lease.mark_response_received();
+        }
 
         let status = response.status();
         if !status.is_success() {
@@ -1455,7 +1482,7 @@ impl DeepSeekClient {
         let body = build_speech_synthesis_body(&model, &text, instruction, audio);
 
         let url = api_url(&self.base_url, "chat/completions");
-        let response = self.send_json_with_retry(&url, &body).await?;
+        let (response, _request_lease) = self.send_json_with_retry(&url, &body).await?;
         let status = response.status();
         if !status.is_success() {
             let raw_error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
@@ -1494,21 +1521,25 @@ impl DeepSeekClient {
         }
     }
 
-    fn reserve_api_request(&self) -> std::result::Result<(), LlmError> {
+    fn reserve_api_request(
+        &self,
+        kind: ApiRequestKind,
+    ) -> std::result::Result<Option<ApiRequestLease>, LlmError> {
         let Some(budget) = &self.api_request_budget else {
-            return Ok(());
+            return Ok(None);
         };
-        budget
-            .try_reserve()
-            .map(|_| ())
-            .map_err(|error| match error {
-                ApiRequestBudgetError::Exhausted { limit, started } => {
-                    LlmError::ApiRequestBudgetExhausted { limit, started }
-                }
-                ApiRequestBudgetError::Sealed { limit, started } => {
-                    LlmError::ApiRequestBudgetSealed { limit, started }
-                }
-            })
+        let reservation = match kind {
+            ApiRequestKind::Inference => budget.try_reserve(),
+            ApiRequestKind::Control => budget.try_reserve_control(),
+        };
+        reservation.map(Some).map_err(|error| match error {
+            ApiRequestBudgetError::Exhausted { limit, started } => {
+                LlmError::ApiRequestBudgetExhausted { limit, started }
+            }
+            ApiRequestBudgetError::Sealed { limit, started } => {
+                LlmError::ApiRequestBudgetSealed { limit, started }
+            }
+        })
     }
 
     async fn mark_request_success(&self) {
@@ -1528,6 +1559,9 @@ impl DeepSeekClient {
     }
 
     async fn maybe_probe_recovery(&self) {
+        if !self.recovery_probe_enabled {
+            return;
+        }
         let should_probe = {
             let mut health = self.connection_health.lock().await;
             mark_recovery_probe_if_due(&mut health, Instant::now())
@@ -1541,11 +1575,22 @@ impl DeepSeekClient {
             return;
         }
         let health_url = api_url(&self.base_url, "models");
-        if let Err(error) = self.reserve_api_request() {
-            logging::info(format!("跳过恢复探测：{error}"));
-            return;
-        }
+        let mut request_lease = match self.reserve_api_request(ApiRequestKind::Control) {
+            Ok(lease) => lease,
+            Err(error) => {
+                logging::info(format!("跳过恢复探测：{error}"));
+                return;
+            }
+        };
         let probe = self.http_client.get(health_url).send().await;
+        if let Ok(response) = probe.as_ref()
+            && let Some(lease) = request_lease.as_mut()
+        {
+            lease.mark_response_received();
+            if response.status().is_server_error() {
+                lease.mark_billing_unknown();
+            }
+        }
         match probe {
             Ok(resp) if resp.status().is_success() => {
                 // Consume the response body so the connection can be returned to the pool.
@@ -1564,15 +1609,43 @@ impl DeepSeekClient {
         }
     }
 
-    pub(super) async fn send_with_retry<F>(&self, mut build: F) -> Result<reqwest::Response>
+    pub(super) async fn send_with_retry<F>(
+        &self,
+        build: F,
+    ) -> Result<(reqwest::Response, Option<ApiRequestLease>)>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        self.send_with_retry_kind(ApiRequestKind::Inference, build)
+            .await
+    }
+
+    async fn send_control_with_retry<F>(
+        &self,
+        build: F,
+    ) -> Result<(reqwest::Response, Option<ApiRequestLease>)>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        self.send_with_retry_kind(ApiRequestKind::Control, build)
+            .await
+    }
+
+    async fn send_with_retry_kind<F>(
+        &self,
+        kind: ApiRequestKind,
+        mut build: F,
+    ) -> Result<(reqwest::Response, Option<ApiRequestLease>)>
     where
         F: FnMut() -> reqwest::RequestBuilder,
     {
         let retry_cfg: LlmRetryConfig = self.retry.clone().into();
+        let physical_attempt_started = Arc::new(AtomicBool::new(false));
         let request_result = with_retry(
             &retry_cfg,
             || {
                 let request = build();
+                let physical_attempt_started = Arc::clone(&physical_attempt_started);
                 async move {
                     // Sleep in bounded slices rather than the full remaining
                     // window: the pause is process-global, so a concurrent
@@ -1583,14 +1656,29 @@ impl DeepSeekClient {
                         tokio::time::sleep(delay.min(RATE_LIMIT_PAUSE_RECHECK_INTERVAL)).await;
                     }
                     self.wait_for_rate_limit().await;
-                    self.reserve_api_request()?;
+                    let mut request_lease = self.reserve_api_request(kind)?;
+                    let is_retry = physical_attempt_started.swap(true, Ordering::AcqRel);
+                    if is_retry && let Some(lease) = request_lease.as_mut() {
+                        lease.mark_retry_attempt();
+                    }
                     let response = request
                         .send()
                         .await
                         .map_err(|err| LlmError::from_reqwest(&err))?;
+                    if let Some(lease) = request_lease.as_mut() {
+                        lease.mark_response_received();
+                        if response.status().is_server_error() {
+                            lease.mark_billing_unknown();
+                        }
+                    }
                     let status = response.status();
                     if status.is_success() {
-                        return Ok(response);
+                        if matches!(self.api_provider, ApiProvider::Deepseek)
+                            && let Some(lease) = request_lease.as_mut()
+                        {
+                            lease.mark_usage_expected();
+                        }
+                        return Ok((response, request_lease));
                     }
                     let retry_after = extract_retry_after(response.headers());
                     let body = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
@@ -1623,10 +1711,10 @@ impl DeepSeekClient {
         .await;
 
         match request_result {
-            Ok(response) => {
+            Ok((response, request_lease)) => {
                 crate::retry_status::succeeded();
                 self.mark_request_success().await;
-                Ok(response)
+                Ok((response, request_lease))
             }
             Err(err) => {
                 let budget_blocked = matches!(
@@ -1664,7 +1752,7 @@ impl DeepSeekClient {
         &self,
         url: &str,
         body: &serde_json::Value,
-    ) -> Result<reqwest::Response> {
+    ) -> Result<(reqwest::Response, Option<ApiRequestLease>)> {
         let request_body =
             serde_json::to_vec(body).context("Failed to serialize JSON request body")?;
         self.send_with_retry(|| {
@@ -1722,8 +1810,15 @@ impl LlmClient for DeepSeekClient {
         }
         let health_url = api_url(&self.base_url, "models");
         self.wait_for_rate_limit().await;
-        self.reserve_api_request().map_err(anyhow::Error::new)?;
+        let mut request_lease = self
+            .reserve_api_request(ApiRequestKind::Control)
+            .map_err(anyhow::Error::new)?;
         let response = self.http_client.get(health_url).send().await;
+        if response.is_ok()
+            && let Some(lease) = request_lease.as_mut()
+        {
+            lease.mark_response_received();
+        }
         match response {
             Ok(resp) if resp.status().is_success() => {
                 // Consume the response body so the connection can be returned to the pool.
@@ -2367,7 +2462,7 @@ impl DeepSeekClient {
             suffix,
             max_tokens,
         )?;
-        let response = self.send_json_with_retry(&plan.url, &plan.body).await?;
+        let (response, request_lease) = self.send_json_with_retry(&plan.url, &plan.body).await?;
         let status = response.status();
         if !status.is_success() {
             let raw_error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
@@ -2378,12 +2473,26 @@ impl DeepSeekClient {
             );
             anyhow::bail!("FIM API error: HTTP {status}: {error_text}");
         }
+        let mut response_accounting = ApiResponseAccountingGuard::new(
+            request_lease,
+            self.api_provider,
+            plan.model.clone(),
+            plan.surface,
+        );
         let response_text = response
             .text()
             .await
             .context("Failed to read FIM API response body")?;
         let value: serde_json::Value =
             serde_json::from_str(&response_text).context("Failed to parse FIM API response")?;
+        let wire_usage = value.get("usage").filter(|usage| usage.is_object());
+        let usage = wire_usage.map(|usage| parse_usage(Some(usage)));
+        let response_model = value
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(&plan.model);
+        response_accounting.set_model(response_model);
+        response_accounting.complete(usage.as_ref(), wire_usage);
         parse_fim_completion(&value)
     }
 }
@@ -2465,7 +2574,7 @@ mod tests {
     use crate::client::chat::{
         build_chat_messages, build_chat_messages_for_request,
         build_chat_messages_for_request_and_provider, count_reasoning_replay_chars,
-        parse_chat_message, parse_sse_chunk, sanitize_thinking_mode_messages, tool_to_chat,
+        parse_chat_message, parse_sse_chunk, reasoning_replay_tokens_for_messages, tool_to_chat,
         tool_to_chat_for_legacy_base_url, tool_to_chat_for_legacy_route,
     };
     use crate::config::{ProviderConfig, ProvidersConfig, RetryConfig};
@@ -2493,6 +2602,437 @@ mod tests {
             strict: Some(true),
             cache_control: None,
         }
+    }
+
+    const DEEPSEEK_LIVE_CANARY_ENABLE_ENV: &str = "CODEWHALE_RUN_DEEPSEEK_LIVE_CANARY";
+    const DEEPSEEK_LIVE_CANARY_KEY_FILE_ENV: &str = "CODEWHALE_DEEPSEEK_CANARY_KEY_FILE";
+    const DEEPSEEK_LIVE_CANARY_REQUESTS: u32 = 6;
+    const DEEPSEEK_LIVE_CANARY_TIMEOUT: Duration = Duration::from_secs(225);
+    const DEEPSEEK_LIVE_CANARY_MAX_COST_USD: f64 = 0.01;
+    const DEEPSEEK_LIVE_CANARY_MODEL: &str = "deepseek-v4-flash";
+
+    type LiveCanaryResult<T> = std::result::Result<T, &'static str>;
+
+    fn deepseek_live_canary_key() -> LiveCanaryResult<String> {
+        let key_path =
+            std::env::var_os(DEEPSEEK_LIVE_CANARY_KEY_FILE_ENV).ok_or("key_file_env_missing")?;
+        let raw =
+            std::fs::read(std::path::PathBuf::from(key_path)).map_err(|_| "key_file_unreadable")?;
+        if raw.len() > 4096 {
+            return Err("key_file_too_large");
+        }
+        let decoded = std::str::from_utf8(&raw).map_err(|_| "key_file_not_utf8")?;
+        let key = decoded.trim().to_string();
+        if key.is_empty() {
+            return Err("key_empty");
+        }
+        if key
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
+        {
+            return Err("key_invalid_format");
+        }
+        Ok(key)
+    }
+
+    fn deepseek_live_canary_client(
+        key: &str,
+        strict_tool_mode: bool,
+        budget: SharedApiRequestBudget,
+    ) -> LiveCanaryResult<DeepSeekClient> {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        DeepSeekClient::new(&Config {
+            provider: Some("deepseek".to_string()),
+            api_key: Some(key.to_string()),
+            base_url: Some("https://api.deepseek.com".to_string()),
+            default_text_model: Some(DEEPSEEK_LIVE_CANARY_MODEL.to_string()),
+            strict_tool_mode: Some(strict_tool_mode),
+            retry: Some(RetryConfig {
+                enabled: Some(false),
+                max_retries: Some(0),
+                initial_delay: Some(0.0),
+                max_delay: Some(0.0),
+                exponential_base: Some(1.0),
+            }),
+            ..Config::default()
+        })
+        .map(|client| client.with_api_request_budget(budget))
+        .map_err(|_| "client_initialization_failed")
+    }
+
+    fn deepseek_live_canary_tool(name: &str, property: &str, property_type: &str) -> Tool {
+        let mut properties = serde_json::Map::new();
+        properties.insert(property.to_string(), json!({ "type": property_type }));
+        Tool {
+            tool_type: None,
+            name: name.to_string(),
+            description: format!("DeepSeek production sender canary tool {name}."),
+            input_schema: json!({
+                "type": "object",
+                "properties": properties,
+                "required": [property],
+                "additionalProperties": false,
+            }),
+            allowed_callers: None,
+            defer_loading: Some(false),
+            input_examples: None,
+            strict: Some(true),
+            cache_control: None,
+        }
+    }
+
+    fn deepseek_live_canary_user(text: &str) -> Message {
+        Message {
+            role: "user".to_string(),
+            content: vec![ContentBlock::Text {
+                text: text.to_string(),
+                cache_control: None,
+            }],
+        }
+    }
+
+    fn deepseek_live_canary_request(
+        messages: Vec<Message>,
+        tools: Option<Vec<Tool>>,
+        tool_choice: Option<Value>,
+        reasoning_effort: &str,
+        max_tokens: u32,
+    ) -> MessageRequest {
+        MessageRequest {
+            model: DEEPSEEK_LIVE_CANARY_MODEL.to_string(),
+            messages,
+            max_tokens,
+            system: None,
+            tools,
+            tool_choice,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some(reasoning_effort.to_string()),
+            stream: Some(false),
+            // Keep the production response cache out of a physical-request
+            // canary even if the prompt is repeated in one test process.
+            temperature: None,
+            top_p: None,
+        }
+    }
+
+    fn deepseek_live_canary_text(response: &MessageResponse) -> String {
+        response
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+            .trim()
+            .to_string()
+    }
+
+    fn deepseek_live_canary_tool_call(
+        response: &MessageResponse,
+        expected_name: &str,
+        expected_input: &Value,
+        thinking_required: bool,
+    ) -> LiveCanaryResult<String> {
+        if response.role != "assistant" || response.stop_reason.as_deref() != Some("tool_calls") {
+            return Err("tool_call_terminal_invalid");
+        }
+        let thinking = response
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Thinking { thinking, .. } => Some(thinking),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if thinking_required {
+            if thinking.len() != 1 || thinking[0].trim().is_empty() {
+                return Err("thinking_provenance_missing");
+            }
+        } else if !thinking.is_empty() {
+            return Err("non_thinking_response_contains_reasoning");
+        }
+
+        let calls = response
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => Some((id, name, input)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if calls.len() != 1 {
+            return Err("tool_call_count_invalid");
+        }
+        let (id, name, input) = calls[0];
+        if id.is_empty() || name != expected_name || input != expected_input {
+            return Err("tool_call_payload_invalid");
+        }
+        Ok(id.clone())
+    }
+
+    async fn run_deepseek_production_sender_live_canary(
+        standard_client: &DeepSeekClient,
+        strict_client: &DeepSeekClient,
+    ) -> LiveCanaryResult<()> {
+        let standard = standard_client
+            .create_message(deepseek_live_canary_request(
+                vec![deepseek_live_canary_user(
+                    "Return one short non-empty canary response.",
+                )],
+                None,
+                None,
+                "off",
+                32,
+            ))
+            .await
+            .map_err(|_| "standard_chat_request_failed")?;
+        if standard.stop_reason.as_deref() != Some("stop")
+            || deepseek_live_canary_text(&standard).is_empty()
+            || standard
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Thinking { .. }))
+        {
+            return Err("standard_chat_response_invalid");
+        }
+
+        let echo_tool = deepseek_live_canary_tool("canary_echo", "value", "string");
+        let thinking_user = deepseek_live_canary_user(
+            "Call canary_echo once with value CANARY. After its result, answer with that result only.",
+        );
+        let thinking_first = standard_client
+            .create_message(deepseek_live_canary_request(
+                vec![thinking_user.clone()],
+                Some(vec![echo_tool.clone()]),
+                None,
+                "high",
+                128,
+            ))
+            .await
+            .map_err(|_| "thinking_tool_request_failed")?;
+        let thinking_call_id = deepseek_live_canary_tool_call(
+            &thinking_first,
+            "canary_echo",
+            &json!({"value": "CANARY"}),
+            true,
+        )?;
+        let thinking_replay = standard_client
+            .create_message(deepseek_live_canary_request(
+                vec![
+                    thinking_user,
+                    Message {
+                        role: thinking_first.role.clone(),
+                        content: thinking_first.content.clone(),
+                    },
+                    Message {
+                        role: "user".to_string(),
+                        content: vec![ContentBlock::ToolResult {
+                            tool_use_id: thinking_call_id,
+                            content: "REPLAY_OK".to_string(),
+                            is_error: None,
+                            content_blocks: None,
+                        }],
+                    },
+                ],
+                Some(vec![echo_tool]),
+                None,
+                "high",
+                128,
+            ))
+            .await
+            .map_err(|_| "thinking_replay_request_failed")?;
+        if thinking_replay.stop_reason.as_deref() != Some("stop")
+            || deepseek_live_canary_text(&thinking_replay) != "REPLAY_OK"
+        {
+            return Err("thinking_replay_response_invalid");
+        }
+
+        let strict_tools = vec![
+            deepseek_live_canary_tool("canary_flag", "enabled", "boolean"),
+            deepseek_live_canary_tool("canary_note", "note", "string"),
+        ];
+        let strict_user = deepseek_live_canary_user(
+            "Call canary_flag with enabled true. After its tool result, answer with that result only.",
+        );
+        let strict_first = strict_client
+            .create_message(deepseek_live_canary_request(
+                vec![strict_user.clone()],
+                Some(strict_tools.clone()),
+                Some(json!({
+                    "type": "function",
+                    "function": { "name": "canary_flag" },
+                })),
+                "off",
+                64,
+            ))
+            .await
+            .map_err(|_| "strict_tool_request_failed")?;
+        let strict_call_id = deepseek_live_canary_tool_call(
+            &strict_first,
+            "canary_flag",
+            &json!({"enabled": true}),
+            false,
+        )?;
+        let strict_replay = strict_client
+            .create_message(deepseek_live_canary_request(
+                vec![
+                    strict_user,
+                    Message {
+                        role: strict_first.role.clone(),
+                        // A non-thinking tool response is replayed exactly as
+                        // received: no fabricated Thinking block is inserted.
+                        content: strict_first.content.clone(),
+                    },
+                    Message {
+                        role: "user".to_string(),
+                        content: vec![ContentBlock::ToolResult {
+                            tool_use_id: strict_call_id,
+                            content: "STRICT_OK".to_string(),
+                            is_error: None,
+                            content_blocks: None,
+                        }],
+                    },
+                ],
+                Some(strict_tools),
+                Some(json!("none")),
+                "off",
+                64,
+            ))
+            .await
+            .map_err(|_| "strict_replay_request_failed")?;
+        if strict_replay.stop_reason.as_deref() != Some("stop")
+            || deepseek_live_canary_text(&strict_replay) != "STRICT_OK"
+        {
+            return Err("strict_replay_response_invalid");
+        }
+
+        let fim = standard_client
+            .fim_completion("def deepseek_canary() -> str:\n    return ", "\n", 64)
+            .await
+            .map_err(|_| "fim_request_failed")?;
+        if fim.trim().is_empty() {
+            return Err("fim_response_empty");
+        }
+        Ok(())
+    }
+
+    /// Cost-bounded official API evidence for the production Rust sender.
+    ///
+    /// This stays ignored and additionally requires an exact opt-in flag so an
+    /// ordinary `cargo test -- --ignored` cannot read credentials or spend API
+    /// credit. The only emitted payload is the redacted accounting receipt.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires explicit cost-bearing official DeepSeek opt-in"]
+    async fn official_deepseek_production_sender_live_canary() {
+        if std::env::var(DEEPSEEK_LIVE_CANARY_ENABLE_ENV).as_deref() != Ok("1") {
+            panic!("DeepSeek production sender canary is not explicitly enabled");
+        }
+        let key = deepseek_live_canary_key().unwrap_or_else(|code| {
+            panic!("DeepSeek production sender canary preflight failed: {code}")
+        });
+        let budget = SharedApiRequestBudget::new(
+            std::num::NonZeroU32::new(DEEPSEEK_LIVE_CANARY_REQUESTS)
+                .expect("live canary request cap is non-zero"),
+        );
+        let standard_client = deepseek_live_canary_client(&key, false, budget.clone())
+            .unwrap_or_else(|code| {
+                panic!("DeepSeek production sender canary preflight failed: {code}")
+            });
+        let strict_client =
+            deepseek_live_canary_client(&key, true, budget.clone()).unwrap_or_else(|code| {
+                panic!("DeepSeek production sender canary preflight failed: {code}")
+            });
+        drop(key);
+
+        let started = Instant::now();
+        let outcome = tokio::time::timeout(
+            DEEPSEEK_LIVE_CANARY_TIMEOUT,
+            run_deepseek_production_sender_live_canary(&standard_client, &strict_client),
+        )
+        .await;
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let (requests, usage) = budget.seal_and_full_snapshot();
+
+        match outcome {
+            Err(_) => panic!("DeepSeek production sender canary failed: suite_timeout"),
+            Ok(Err(code)) => panic!("DeepSeek production sender canary failed: {code}"),
+            Ok(Ok(())) => {}
+        }
+        let accounting_valid = requests.limit == DEEPSEEK_LIVE_CANARY_REQUESTS
+            && requests.started == DEEPSEEK_LIVE_CANARY_REQUESTS
+            && requests.completed == DEEPSEEK_LIVE_CANARY_REQUESTS
+            && requests.in_flight == 0
+            && requests.retry_attempts == 0
+            && requests.exhausted_denied == 0
+            && requests.sealed_denied == 0
+            && requests.sealed
+            && usage.usage_responses == DEEPSEEK_LIVE_CANARY_REQUESTS
+            && usage.standard_chat_responses == 3
+            && usage.strict_chat_responses == 2
+            && usage.fim_responses == 1
+            && usage.responses_missing_usage == 0
+            && usage.incomplete_responses == 0
+            && usage.billing_unknown_attempts == 0
+            && usage.unpriced_usage_responses == 0
+            && usage.usage_records_after_seal == 0
+            && usage.usage_complete()
+            && usage.cost_complete()
+            && usage.cost_usd.is_finite()
+            && usage.cost_usd > 0.0
+            && usage.cost_usd <= DEEPSEEK_LIVE_CANARY_MAX_COST_USD;
+        if !accounting_valid {
+            panic!("DeepSeek production sender canary failed: accounting_contract");
+        }
+
+        println!(
+            "{}",
+            json!({
+                "schema": "codewhale.eval.deepseek-production-sender-live.v1",
+                "record_class": "production_sender_canary",
+                "product_metric_eligible": false,
+                "status": "passed",
+                "requests": {
+                    "limit": requests.limit,
+                    "started": requests.started,
+                    "completed": requests.completed,
+                    "in_flight": requests.in_flight,
+                    "transport_retries": requests.retry_attempts,
+                    "sealed": requests.sealed,
+                },
+                "surfaces": {
+                    "standard_chat": usage.standard_chat_responses,
+                    "strict_chat": usage.strict_chat_responses,
+                    "fim": usage.fim_responses,
+                },
+                "usage": {
+                    "input_tokens": usage.usage.input_tokens,
+                    "output_tokens": usage.usage.output_tokens,
+                    "cache_hit_tokens": usage.usage.prompt_cache_hit_tokens,
+                    "cache_miss_tokens": usage.usage.prompt_cache_miss_tokens,
+                    "reasoning_tokens": usage.usage.reasoning_tokens,
+                    "reasoning_replay_tokens": usage.usage.reasoning_replay_tokens,
+                    "responses": usage.usage_responses,
+                    "complete": usage.usage_complete(),
+                    "records_after_seal": usage.usage_records_after_seal,
+                },
+                "cost": {
+                    "usd": usage.cost_usd,
+                    "cny": usage.cost_cny,
+                    "complete": usage.cost_complete(),
+                    "max_usd": DEEPSEEK_LIVE_CANARY_MAX_COST_USD,
+                },
+                "duration_ms": elapsed_ms,
+                "credential": {
+                    "source": "CODEWHALE_DEEPSEEK_CANARY_KEY_FILE",
+                    "printed": false,
+                },
+            })
+        );
     }
 
     fn deepseek_anthropic_client(server: &MockServer) -> DeepSeekClient {
@@ -2592,10 +3132,18 @@ mod tests {
             request_budget::ApiRequestBudgetSnapshot {
                 limit: 2,
                 started: 2,
-                denied: 1,
+                in_flight: 0,
+                completed: 2,
+                retry_attempts: 1,
+                exhausted_denied: 1,
+                sealed_denied: 0,
                 sealed: false,
             }
         );
+        let usage = budget.usage_snapshot();
+        assert_eq!(usage.billing_unknown_attempts, 2);
+        assert!(usage.usage_complete());
+        assert!(!usage.cost_complete());
 
         let requests = server.received_requests().await.expect("request journal");
         assert_eq!(requests.len(), 2, "no request may start beyond the limit");
@@ -2610,6 +3158,227 @@ mod tests {
                 .all(|request| request.url.path() != "/v1/models"),
             "budget exhaustion must not trigger an uncounted recovery probe"
         );
+    }
+
+    #[tokio::test]
+    async fn nonstream_chat_commits_provider_usage_to_shared_ledger_once() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "chatcmpl-ledger",
+                "model": "deepseek-v4-flash",
+                "choices": [{
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 12,
+                    "completion_tokens": 4,
+                    "total_tokens": 16,
+                    "prompt_cache_hit_tokens": 2,
+                    "prompt_cache_miss_tokens": 10,
+                    "completion_tokens_details": {"reasoning_tokens": 1}
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let budget = SharedApiRequestBudget::new(std::num::NonZeroU32::new(2).unwrap());
+        let client = DeepSeekClient::new(&Config {
+            provider: Some("deepseek".to_string()),
+            api_key: Some("ds-test".to_string()),
+            base_url: Some(server.uri()),
+            retry: Some(RetryConfig {
+                enabled: Some(false),
+                max_retries: None,
+                initial_delay: None,
+                max_delay: None,
+                exponential_base: None,
+            }),
+            ..Config::default()
+        })
+        .expect("mock client")
+        .with_api_request_budget(budget.clone());
+
+        let response = client
+            .create_message_chat(&MessageRequest {
+                model: "deepseek-v4-flash".to_string(),
+                messages: vec![Message {
+                    role: "user".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "reply with ok".to_string(),
+                        cache_control: None,
+                    }],
+                }],
+                max_tokens: 16,
+                system: None,
+                tools: None,
+                tool_choice: None,
+                metadata: None,
+                thinking: None,
+                reasoning_effort: Some("off".to_string()),
+                stream: Some(false),
+                temperature: None,
+                top_p: None,
+            })
+            .await
+            .expect("chat succeeds");
+        assert_eq!(response.usage.input_tokens, 12);
+
+        let accounting = budget.usage_snapshot();
+        assert_eq!(accounting.usage_responses, 1);
+        assert_eq!(accounting.standard_chat_responses, 1);
+        assert_eq!(accounting.strict_chat_responses, 0);
+        assert_eq!(accounting.fim_responses, 0);
+        assert_eq!(accounting.usage.input_tokens, 12);
+        assert_eq!(accounting.usage.output_tokens, 4);
+        assert_eq!(accounting.usage.reasoning_tokens, Some(1));
+        assert!(accounting.usage_complete());
+        assert!(accounting.cost_complete());
+        assert!(accounting.cost_usd > 0.0);
+        assert_eq!(budget.snapshot().started, 1);
+    }
+
+    fn streaming_ledger_request() -> MessageRequest {
+        MessageRequest {
+            model: "deepseek-v4-flash".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::Text {
+                    text: "reply with ok".to_string(),
+                    cache_control: None,
+                }],
+            }],
+            max_tokens: 16,
+            system: None,
+            tools: None,
+            tool_choice: None,
+            metadata: None,
+            thinking: None,
+            reasoning_effort: Some("off".to_string()),
+            stream: Some(true),
+            temperature: None,
+            top_p: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn dropped_chat_stream_marks_provider_response_incomplete() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(
+                        "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n\
+                         data: [DONE]\n\n",
+                    ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let budget = SharedApiRequestBudget::new(std::num::NonZeroU32::new(2).unwrap());
+        let client = DeepSeekClient::new(&Config {
+            provider: Some("deepseek".to_string()),
+            api_key: Some("ds-test".to_string()),
+            base_url: Some(server.uri()),
+            retry: Some(RetryConfig {
+                enabled: Some(false),
+                max_retries: None,
+                initial_delay: None,
+                max_delay: None,
+                exponential_base: None,
+            }),
+            ..Config::default()
+        })
+        .expect("mock client")
+        .with_api_request_budget(budget.clone());
+
+        let mut stream = client
+            .create_message_stream(streaming_ledger_request())
+            .await
+            .expect("stream opens");
+        assert!(stream.next().await.is_some(), "synthetic MessageStart");
+        drop(stream);
+
+        let accounting = budget.usage_snapshot();
+        assert_eq!(accounting.incomplete_responses, 1);
+        assert_eq!(accounting.usage_responses, 0);
+        assert_eq!(accounting.standard_chat_responses, 1);
+        assert_eq!(accounting.usage_buckets[0].response_count, 1);
+        assert_eq!(accounting.usage_buckets[0].usage_responses, 0);
+        assert!(!accounting.usage_complete());
+    }
+
+    #[tokio::test]
+    async fn terminal_chat_stream_is_accounted_before_consumer_stops_polling() {
+        let server = MockServer::start().await;
+        let body = concat!(
+            "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\n",
+            "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+            "data: {\"model\":\"deepseek-v4-pro\",\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":4,\"total_tokens\":16,\"prompt_cache_hit_tokens\":2,\"prompt_cache_miss_tokens\":10,\"completion_tokens_details\":{\"reasoning_tokens\":1}}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(body),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let budget = SharedApiRequestBudget::new(std::num::NonZeroU32::new(2).unwrap());
+        let client = DeepSeekClient::new(&Config {
+            provider: Some("deepseek".to_string()),
+            api_key: Some("ds-test".to_string()),
+            base_url: Some(server.uri()),
+            retry: Some(RetryConfig {
+                enabled: Some(false),
+                max_retries: None,
+                initial_delay: None,
+                max_delay: None,
+                exponential_base: None,
+            }),
+            ..Config::default()
+        })
+        .expect("mock client")
+        .with_api_request_budget(budget.clone());
+
+        let mut stream = client
+            .create_message_stream(streaming_ledger_request())
+            .await
+            .expect("stream opens");
+        let mut saw_terminal = false;
+        while let Some(event) = stream.next().await {
+            let event = event.expect("valid stream event");
+            if matches!(
+                event,
+                StreamEvent::MessageDelta { ref delta, .. }
+                    if delta.stop_reason.is_some()
+            ) {
+                saw_terminal = true;
+                break;
+            }
+        }
+        assert!(saw_terminal, "stream must expose the provider terminal");
+        // Engine callers stop polling at stop_reason. The response guard must
+        // already be settled at that point, including a trailing usage-only
+        // frame that arrived after finish_reason.
+        drop(stream);
+
+        let accounting = budget.usage_snapshot();
+        assert_eq!(accounting.incomplete_responses, 0);
+        assert_eq!(accounting.usage_responses, 1);
+        assert_eq!(accounting.usage.input_tokens, 12);
+        assert_eq!(accounting.usage.output_tokens, 4);
+        assert_eq!(accounting.standard_chat_responses, 1);
+        assert_eq!(accounting.usage_buckets.len(), 1);
+        assert_eq!(accounting.usage_buckets[0].model, "deepseek-v4-pro");
+        assert_eq!(accounting.usage_buckets[0].response_count, 1);
+        assert_eq!(accounting.usage_buckets[0].usage_responses, 1);
+        assert!(accounting.usage_complete());
+        assert!(accounting.cost_complete());
     }
 
     #[tokio::test]
@@ -2742,6 +3511,24 @@ mod tests {
         assert_eq!(encoded, "multi_tool_use-x00002E-parallel");
         let decoded = from_api_tool_name(&encoded);
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn agent_coordination_names_are_native_deepseek_function_names() {
+        for name in [
+            "agent",
+            "agents_list",
+            "agents_message",
+            "agents_followup",
+            "agents_interrupt",
+            "agents_wait",
+        ] {
+            assert_eq!(
+                to_api_tool_name(name),
+                name,
+                "core Agent tools must not rely on wire-name mangling"
+            );
+        }
     }
 
     #[test]
@@ -2924,6 +3711,90 @@ mod tests {
         .expect("client");
 
         assert_eq!(client.stream_idle_timeout, Duration::from_secs(777));
+    }
+
+    #[test]
+    fn agent_runtime_clone_disables_client_owned_transport_retries() {
+        let client = DeepSeekClient::new(&Config {
+            provider: Some("deepseek".to_owned()),
+            api_key: Some("test-key-not-sent".to_owned()),
+            base_url: Some("https://api.deepseek.com".to_owned()),
+            default_text_model: Some("deepseek-v4-flash".to_owned()),
+            retry: Some(RetryConfig {
+                enabled: Some(true),
+                max_retries: Some(7),
+                initial_delay: Some(0.0),
+                max_delay: Some(0.0),
+                exponential_base: Some(1.0),
+            }),
+            ..Config::default()
+        })
+        .expect("test client should build");
+        assert!(client.retry.enabled);
+        assert_eq!(client.retry.max_retries, 7);
+        assert!(client.recovery_probe_enabled);
+
+        let runtime_client = client.with_transport_retries_disabled_for_runtime();
+        assert!(!runtime_client.retry.enabled);
+        assert_eq!(runtime_client.retry.max_retries, 0);
+        assert!(!runtime_client.recovery_probe_enabled);
+    }
+
+    #[tokio::test]
+    async fn agent_runtime_failures_never_start_an_unowned_models_probe() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("temporary failure"))
+            .expect(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/models"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": []})))
+            .mount(&server)
+            .await;
+
+        let budget = SharedApiRequestBudget::new(std::num::NonZeroU32::new(8).unwrap());
+        let client = DeepSeekClient::new(&Config {
+            provider: Some("deepseek".to_owned()),
+            api_key: Some("test-key-not-sent".to_owned()),
+            base_url: Some(server.uri()),
+            retry: Some(RetryConfig {
+                enabled: Some(true),
+                max_retries: Some(7),
+                initial_delay: Some(0.0),
+                max_delay: Some(0.0),
+                exponential_base: Some(1.0),
+            }),
+            ..Config::default()
+        })
+        .expect("mock runtime client")
+        .with_transport_retries_disabled_for_runtime()
+        .with_api_request_budget(budget.clone());
+        let url = format!("{}/v1/chat/completions", server.uri());
+
+        for _ in 0..2 {
+            client
+                .send_with_retry(|| client.http_client.post(&url).body("{}"))
+                .await
+                .expect_err("fixture returns 500");
+        }
+
+        let requests = server.received_requests().await.expect("request journal");
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.url.path() != "/v1/models")
+        );
+        let (requests, actors, _) = budget.accounting_snapshot();
+        assert_eq!(requests.started, 2);
+        assert_eq!(requests.completed, 2);
+        assert_eq!(requests.retry_attempts, 0);
+        assert_eq!(actors.root_started, 2);
+        assert_eq!(actors.root_completed, 2);
+        assert_eq!(actors.root_retries, 0);
     }
 
     #[test]
@@ -3471,6 +4342,7 @@ mod tests {
                         id: "tool-1".to_string(),
                         name: "get_date".to_string(),
                         input: json!({}),
+                        raw_arguments: None,
                         caller: None,
                     },
                 ],
@@ -3523,6 +4395,7 @@ mod tests {
                         id: "tool-1".to_string(),
                         name: "get_date".to_string(),
                         input: json!({}),
+                        raw_arguments: None,
                         caller: None,
                     },
                 ],
@@ -3692,6 +4565,7 @@ mod tests {
                         id: "call-no-thinking".to_string(),
                         name: "read_file".to_string(),
                         input: json!({"path": "Cargo.toml"}),
+                        raw_arguments: None,
                         caller: None,
                     }],
                 },
@@ -4749,6 +5623,7 @@ mod tests {
                         id: "tool-1".to_string(),
                         name: "list_dir".to_string(),
                         input: json!({}),
+                        raw_arguments: None,
                         caller: None,
                     },
                 ],
@@ -4790,6 +5665,7 @@ mod tests {
                         id: "tool-1".to_string(),
                         name: "web.run".to_string(),
                         input: json!({}),
+                        raw_arguments: None,
                         caller: None,
                     },
                 ],
@@ -4835,6 +5711,7 @@ mod tests {
                     id: "tool-orphan".to_string(),
                     name: "read_file".to_string(),
                     input: json!({"path": "src/main.rs"}),
+                    raw_arguments: None,
                     caller: None,
                 }],
             },
@@ -4880,6 +5757,7 @@ mod tests {
                         id: "tool-ok".to_string(),
                         name: "list_dir".to_string(),
                         input: json!({}),
+                        raw_arguments: None,
                         caller: None,
                     },
                 ],
@@ -4921,18 +5799,21 @@ mod tests {
                         id: "t1".to_string(),
                         name: "read_file".to_string(),
                         input: json!({"path": "a.rs"}),
+                        raw_arguments: None,
                         caller: None,
                     },
                     ContentBlock::ToolUse {
                         id: "t2".to_string(),
                         name: "read_file".to_string(),
                         input: json!({"path": "b.rs"}),
+                        raw_arguments: None,
                         caller: None,
                     },
                     ContentBlock::ToolUse {
                         id: "t3".to_string(),
                         name: "shell".to_string(),
                         input: json!({"cmd": "ls"}),
+                        raw_arguments: None,
                         caller: None,
                     },
                 ],
@@ -5380,12 +6261,12 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_thinking_mode_counts_reasoning_replay_across_assistant_turns() {
+    fn reasoning_replay_counts_exact_history_across_assistant_turns() {
         // Multi-turn body that mimics two prior tool-calling rounds: each
-        // assistant message carries its `reasoning_content`. The sanitizer
+        // assistant message carries its `reasoning_content`. Replay accounting
         // should keep all of them and the count helper should tally bytes
         // across every assistant message.
-        let mut body = json!({
+        let body = json!({
             "model": "deepseek-v4-pro",
             "messages": [
                 { "role": "system", "content": "you are helpful" },
@@ -5408,8 +6289,8 @@ mod tests {
             ]
         });
 
-        let approx_tokens = sanitize_thinking_mode_messages(
-            &mut body,
+        let approx_tokens = reasoning_replay_tokens_for_messages(
+            &body,
             "deepseek-v4-pro",
             Some("max"),
             ApiProvider::Deepseek,
@@ -5437,18 +6318,18 @@ mod tests {
     }
 
     /// Issue #30: when no thinking-mode replay applies (non-thinking model or
-    /// empty conversation), the sanitizer returns `None` so the footer chip
+    /// empty conversation), replay accounting returns `None` so the footer chip
     /// stays hidden.
     #[test]
-    fn sanitize_thinking_mode_returns_none_for_non_thinking_model() {
-        let mut body = json!({
+    fn reasoning_replay_returns_none_for_non_thinking_model() {
+        let body = json!({
             "model": "deepseek-v4-flash",
             "messages": [
                 { "role": "user", "content": "hi" }
             ]
         });
-        let result = sanitize_thinking_mode_messages(
-            &mut body,
+        let result = reasoning_replay_tokens_for_messages(
+            &body,
             "deepseek-v4-flash",
             None,
             ApiProvider::Deepseek,
@@ -5458,12 +6339,8 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_thinking_mode_counts_substituted_placeholder() {
-        // An assistant tool-call message is missing reasoning_content; the
-        // sanitizer must inject the placeholder, and the count helper must
-        // include the placeholder in the total (since it's in the wire
-        // payload that ships to DeepSeek).
-        let mut body = json!({
+    fn reasoning_replay_never_fabricates_missing_history() {
+        let body = json!({
             "model": "deepseek-v4-pro",
             "messages": [
                 { "role": "user", "content": "hi" },
@@ -5475,25 +6352,25 @@ mod tests {
             ]
         });
 
-        sanitize_thinking_mode_messages(
-            &mut body,
+        let replay_tokens = reasoning_replay_tokens_for_messages(
+            &body,
             "deepseek-v4-pro",
             Some("max"),
             ApiProvider::Deepseek,
         );
 
-        let chars = count_reasoning_replay_chars(&body);
-        // "(reasoning omitted)" is 19 bytes.
-        assert_eq!(chars, 19);
+        assert_eq!(replay_tokens, None);
+        assert_eq!(count_reasoning_replay_chars(&body), 0);
+        assert!(body.pointer("/messages/1/reasoning_content").is_none());
     }
 
     #[test]
-    fn sanitize_thinking_mode_skips_generic_openai_provider() {
-        // #1542 intent (narrowed by #1739/#1694): the sanitizer only skips for
+    fn reasoning_replay_skips_generic_openai_provider() {
+        // #1542 intent (narrowed by #1739/#1694): replay only skips for
         // a *genuine non-DeepSeek* model on the generic openai provider. A
-        // DeepSeek reasoning model on the openai provider still gets sanitized
+        // DeepSeek reasoning model on the openai provider still gets replayed
         // (see chat.rs `deepseek_model_on_openai_provider_still_replays_*`).
-        let mut body = json!({
+        let body = json!({
             "model": "qwen3-coder",
             "messages": [
                 { "role": "user", "content": "hi" },
@@ -5505,8 +6382,8 @@ mod tests {
             ]
         });
 
-        let result = sanitize_thinking_mode_messages(
-            &mut body,
+        let result = reasoning_replay_tokens_for_messages(
+            &body,
             "qwen3-coder",
             Some("max"),
             ApiProvider::Openai,
@@ -5528,8 +6405,8 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_thinking_mode_keeps_tool_call_placeholder_after_new_user_turn() {
-        let mut body = json!({
+    fn reasoning_replay_does_not_invent_history_after_new_user_turn() {
+        let body = json!({
             "model": "deepseek-v4-pro",
             "messages": [
                 { "role": "user", "content": "step 1" },
@@ -5543,8 +6420,8 @@ mod tests {
             ]
         });
 
-        sanitize_thinking_mode_messages(
-            &mut body,
+        let replay_tokens = reasoning_replay_tokens_for_messages(
+            &body,
             "deepseek-v4-pro",
             Some("max"),
             ApiProvider::Deepseek,
@@ -5555,10 +6432,8 @@ mod tests {
             .iter()
             .find(|m| m["role"] == "assistant")
             .expect("assistant tool-call message");
-        assert_eq!(
-            assistant.get("reasoning_content").and_then(Value::as_str),
-            Some("(reasoning omitted)")
-        );
+        assert_eq!(replay_tokens, None);
+        assert!(assistant.get("reasoning_content").is_none());
     }
 
     #[test]

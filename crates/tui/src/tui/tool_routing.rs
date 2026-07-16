@@ -6,7 +6,7 @@ use std::time::Instant;
 use crate::hooks::HookEvent;
 use crate::tools::ReviewOutput;
 use crate::tools::plan::PlanSnapshot;
-use crate::tools::spec::{ToolError, ToolResult};
+use crate::tools::spec::{ToolError, ToolOutcome};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::app::{App, ToolDetailRecord, ToolEvidence};
 use crate::tui::history::{
@@ -341,7 +341,7 @@ fn store_tool_detail_output(
     app: &mut App,
     tool_id: &str,
     cell_index: usize,
-    result: &Result<ToolResult, ToolError>,
+    result: &Result<ToolOutcome, ToolError>,
 ) {
     let payload = Some(match result {
         Ok(tool_result) => tool_result.content.clone(),
@@ -372,7 +372,7 @@ fn store_tool_detail_output(
 /// real spend because the parent turn's `Usage` only counts the
 /// orchestrator's tokens, not the dozens of `deepseek-v4-flash` child
 /// rounds RLM fans out under the hood (#524).
-fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolResult, ToolError>) {
+fn accrue_child_token_cost_if_any(app: &mut App, result: &Result<ToolOutcome, ToolError>) {
     let Ok(tool_result) = result else { return };
     let Some(metadata) = tool_result.metadata.as_ref() else {
         return;
@@ -431,10 +431,10 @@ fn record_spillover_artifact_if_any(
     app: &mut App,
     id: &str,
     name: &str,
-    result: &Result<ToolResult, ToolError>,
+    result: &Result<ToolOutcome, ToolError>,
 ) {
     let Ok(tool_result) = result else { return };
-    if !tool_result.success {
+    if !tool_result.is_success() {
         return;
     }
     let Some(path) = tool_result
@@ -488,7 +488,7 @@ fn record_spillover_artifact_if_any(
 }
 
 /// #3031: shell/tasks tools embed the literal `"(no output)"` into successful
-/// `ToolResult` content (the model-facing transcript needs a non-empty tool
+/// `ToolOutcome` content (the model-facing transcript needs a non-empty tool
 /// result). Treat it as no output on the TUI side so the compact-mode
 /// suppression gate in `history.rs` actually fires; the raw content remains
 /// available through the tool-detail store.
@@ -504,7 +504,7 @@ pub(super) fn handle_tool_call_complete(
     app: &mut App,
     id: &str,
     name: &str,
-    result: &Result<ToolResult, ToolError>,
+    result: &Result<ToolOutcome, ToolError>,
 ) {
     if app.ignored_tool_calls.remove(id) {
         return;
@@ -661,7 +661,7 @@ pub(super) fn handle_tool_call_complete(
                 review.status = status;
                 match result.as_ref() {
                     Ok(tool_result) => {
-                        if tool_result.success {
+                        if tool_result.is_success() {
                             review.output = Some(ReviewOutput::from_str(&tool_result.content));
                         } else {
                             review.error = Some(tool_result.content.clone());
@@ -762,7 +762,7 @@ pub(super) fn handle_tool_call_complete(
     // hooks are configured.
     if app.hooks.has_hooks_for_event(HookEvent::ToolCallAfter) {
         let (result_text, success): (String, bool) = match result.as_ref() {
-            Ok(tool_result) => (tool_result.content.clone(), tool_result.success),
+            Ok(tool_result) => (tool_result.content.clone(), tool_result.is_success()),
             Err(err) => (err.to_string(), false),
         };
         let context = app
@@ -775,7 +775,7 @@ pub(super) fn handle_tool_call_complete(
     // Collect evidence for the post-turn receipt.
     let evidence_summary = match result.as_ref() {
         Ok(tool_result) => {
-            if tool_result.success {
+            if tool_result.is_success() {
                 summarize_tool_output(&tool_result.content)
             } else {
                 format!("failed: {}", summarize_tool_output(&tool_result.content))
@@ -1093,7 +1093,7 @@ fn push_orphan_tool_completion(
     app: &mut App,
     tool_id: &str,
     name: &str,
-    result: &Result<ToolResult, ToolError>,
+    result: &Result<ToolOutcome, ToolError>,
 ) {
     let status = tool_status_from_result(result);
     let output = match result.as_ref() {
@@ -1158,7 +1158,7 @@ fn push_orphan_tool_completion(
     }
 }
 
-fn tool_status_from_result(result: &Result<ToolResult, ToolError>) -> ToolStatus {
+fn tool_status_from_result(result: &Result<ToolOutcome, ToolError>) -> ToolStatus {
     match result.as_ref() {
         Ok(tool_result) if is_deferred_schema_hydration(tool_result) => ToolStatus::Hydrated,
         Ok(tool_result) => match tool_result.metadata.as_ref() {
@@ -1171,7 +1171,7 @@ fn tool_status_from_result(result: &Result<ToolResult, ToolError>) -> ToolStatus
                 ToolStatus::Running
             }
             _ => {
-                if tool_result.success {
+                if tool_result.is_success() {
                     ToolStatus::Success
                 } else {
                     ToolStatus::Failed
@@ -1182,8 +1182,8 @@ fn tool_status_from_result(result: &Result<ToolResult, ToolError>) -> ToolStatus
     }
 }
 
-fn is_deferred_schema_hydration(tool_result: &ToolResult) -> bool {
-    if !tool_result.success {
+fn is_deferred_schema_hydration(tool_result: &ToolOutcome) -> bool {
+    if !tool_result.is_success() {
         return false;
     }
     let Some(metadata) = tool_result.metadata.as_ref() else {

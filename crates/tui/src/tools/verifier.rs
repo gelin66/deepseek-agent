@@ -7,24 +7,26 @@
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::Instant;
 
 use async_trait::async_trait;
+use codewhale_protocol::agent_runtime::{
+    ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use shlex::try_join;
 
 use crate::dependencies::ExternalTool;
+use crate::tools::shell::{ShellStatus, execute_managed_program};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 const MAX_GATE_OUTPUT_CHARS: usize = 16_000;
 const DEFAULT_MAX_PYTHON_FILES: usize = 200;
 const MAX_CUSTOM_GATES: usize = 12;
-const BACKGROUND_GATE_TIMEOUT_MS: u64 = 600_000;
+const VERIFIER_GATE_TIMEOUT_MS: u64 = 600_000;
 
 /// Tool for running independent verifier gates concurrently.
 pub struct RunVerifiersTool;
@@ -90,7 +92,7 @@ impl VerifierLevel {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RunVerifiersInput {
     profile: String,
@@ -112,7 +114,7 @@ impl Default for RunVerifiersInput {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct CustomVerifierInput {
     name: String,
@@ -321,11 +323,12 @@ impl ToolSpec for RunVerifiersTool {
         input.get("background").and_then(Value::as_bool) == Some(true)
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let input: RunVerifiersInput = serde_json::from_value(input)
             .map_err(|err| ToolError::invalid_input(err.to_string()))?;
         let profile = VerifierProfile::parse(input.profile.as_str())?;
         let level = VerifierLevel::parse(input.level.as_str())?;
+        let verifier_params = normalized_goal_verifier_params(&input, profile, level);
         if input.max_python_files == 0 || input.max_python_files > 1000 {
             return Err(ToolError::invalid_input(
                 "max_python_files must be between 1 and 1000",
@@ -361,38 +364,24 @@ impl ToolSpec for RunVerifiersTool {
                 summary: "No verifier gates were detected. Provide custom commands or choose a profile that matches this workspace.".to_string(),
                 gates: Vec::new(),
             };
-            return verifier_tool_result(&output);
+            let mut result = verifier_tool_result(&output)?;
+            crate::tools::goal::reject_goal_evidence_artifact(&mut result);
+            return Ok(result);
         }
 
         if input.background {
             return start_background_gates(context, profile, level, gates);
         }
 
-        let mut handles = Vec::with_capacity(gates.len());
-        for gate in gates {
-            handles.push(tokio::task::spawn_blocking(move || run_gate(gate)));
-        }
+        let revision_before =
+            crate::tools::goal::capture_workspace_revision(&context.workspace).await;
 
-        let mut results = Vec::with_capacity(handles.len());
-        for handle in handles {
-            match handle.await {
-                Ok(result) => results.push(result),
-                Err(err) => results.push(GateResult {
-                    name: "internal-join".to_string(),
-                    ecosystem: "internal".to_string(),
-                    status: GateStatus::Failed,
-                    command: "tokio::task::spawn_blocking".to_string(),
-                    cwd: context.workspace.display().to_string(),
-                    exit_code: None,
-                    duration_ms: 0,
-                    stdout: String::new(),
-                    stderr: format!("Verifier task join failed: {err}"),
-                    stdout_truncated: false,
-                    stderr_truncated: false,
-                    skipped_reason: None,
-                }),
-            }
-        }
+        let mut results = futures_util::future::join_all(
+            gates
+                .into_iter()
+                .map(|gate| run_gate_with_timeout(context, gate, VERIFIER_GATE_TIMEOUT_MS)),
+        )
+        .await;
         results.sort_by(|a, b| a.name.cmp(&b.name));
 
         let passed = results
@@ -431,8 +420,75 @@ impl ToolSpec for RunVerifiersTool {
             gates: results,
         };
 
-        verifier_tool_result(&output)
+        let check = format!(
+            "run_verifiers profile={} level={} gates={}",
+            output.profile, output.level, output.gate_count
+        );
+        let summary = output.summary.clone();
+        let mut result = verifier_tool_result(&output)?;
+        if result.is_success() {
+            let built_in_passed = output
+                .gates
+                .iter()
+                .any(|gate| gate.ecosystem != "custom" && gate.status == GateStatus::Passed);
+            let revision_after =
+                crate::tools::goal::capture_workspace_revision(&context.workspace).await;
+            crate::tools::goal::attach_goal_evidence_artifact(
+                &mut result,
+                self.name(),
+                &verifier_params,
+                check.clone(),
+                summary.clone(),
+                revision_before.clone(),
+                revision_after.clone(),
+            );
+            if level == VerifierLevel::Full && built_in_passed {
+                if let Some(contract) = context.goal_contract.as_ref() {
+                    crate::tools::goal::attach_host_verification(
+                        &mut result,
+                        self.name(),
+                        contract,
+                        &verifier_params,
+                        crate::tools::goal::HostVerifierObservation {
+                            check,
+                            summary,
+                            revision_before,
+                            revision_after,
+                        },
+                    );
+                } else {
+                    crate::tools::goal::reject_host_verification(
+                        &mut result,
+                        "run_verifiers produced an evidence artifact, but no active Goal task contract was bound when it started",
+                    );
+                }
+            } else {
+                let reason = if level != VerifierLevel::Full {
+                    "run_verifiers completed successfully, but Goal completion evidence requires level=full"
+                } else {
+                    "run_verifiers completed successfully, but no framework-defined verifier gate passed; custom commands alone cannot complete a Goal"
+                };
+                crate::tools::goal::reject_host_verification(&mut result, reason);
+            }
+        } else {
+            crate::tools::goal::reject_goal_evidence_artifact(&mut result);
+        }
+        Ok(result)
     }
+}
+
+fn normalized_goal_verifier_params(
+    input: &RunVerifiersInput,
+    profile: VerifierProfile,
+    level: VerifierLevel,
+) -> Value {
+    json!({
+        "background": input.background,
+        "commands": input.commands,
+        "level": level.as_str(),
+        "max_python_files": input.max_python_files,
+        "profile": profile.as_str(),
+    })
 }
 
 /// Run quick auto verifier gates after a successful workflow completion (#4013).
@@ -457,32 +513,12 @@ pub(crate) async fn run_workflow_completion_gates(
         }));
     }
 
-    let workspace = context.workspace.display().to_string();
-    let mut handles = Vec::with_capacity(gates.len());
-    for gate in gates {
-        handles.push(tokio::task::spawn_blocking(move || run_gate(gate)));
-    }
-
-    let mut results = Vec::with_capacity(handles.len());
-    for handle in handles {
-        match handle.await {
-            Ok(result) => results.push(result),
-            Err(err) => results.push(GateResult {
-                name: "internal-join".to_string(),
-                ecosystem: "internal".to_string(),
-                status: GateStatus::Failed,
-                command: "tokio::task::spawn_blocking".to_string(),
-                cwd: workspace.clone(),
-                exit_code: None,
-                duration_ms: 0,
-                stdout: String::new(),
-                stderr: format!("Verifier task join failed: {err}"),
-                stdout_truncated: false,
-                stderr_truncated: false,
-                skipped_reason: None,
-            }),
-        }
-    }
+    let mut results = futures_util::future::join_all(
+        gates
+            .into_iter()
+            .map(|gate| run_gate_with_timeout(context, gate, VERIFIER_GATE_TIMEOUT_MS)),
+    )
+    .await;
     results.sort_by(|a, b| a.name.cmp(&b.name));
 
     let passed = results
@@ -516,11 +552,15 @@ pub(crate) async fn run_workflow_completion_gates(
     }))
 }
 
-fn verifier_tool_result(output: &RunVerifiersOutput) -> Result<ToolResult, ToolError> {
-    ToolResult::json(output)
+fn verifier_tool_result(output: &RunVerifiersOutput) -> Result<ToolOutcome, ToolError> {
+    ToolOutcome::json(output)
         .map_err(|err| ToolError::execution_failed(err.to_string()))
         .map(|mut result| {
-            result.success = output.success;
+            result.side_effect = ToolSideEffectStatus::Indeterminate;
+            if !output.success {
+                result.operation = ToolOperationStatus::Failed;
+                result.retry = ToolRetryDisposition::Unsafe;
+            }
             result.with_metadata(json!({
                 "verifier_verdict": output.verifier_verdict,
                 "hunt_verdict": output.hunt_verdict,
@@ -537,7 +577,7 @@ fn start_background_gates(
     profile: VerifierProfile,
     level: VerifierLevel,
     gates: Vec<VerifierGate>,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let mut jobs = Vec::with_capacity(gates.len());
     let mut started = 0usize;
     let mut skipped = 0usize;
@@ -570,7 +610,7 @@ fn start_background_gates(
             manager.execute_with_options_env(
                 &command,
                 Some(&cwd),
-                BACKGROUND_GATE_TIMEOUT_MS,
+                VERIFIER_GATE_TIMEOUT_MS,
                 true,
                 None,
                 false,
@@ -639,8 +679,12 @@ fn start_background_gates(
     };
 
     let mut result =
-        ToolResult::json(&output).map_err(|err| ToolError::execution_failed(err.to_string()))?;
-    result.success = success;
+        ToolOutcome::json(&output).map_err(|err| ToolError::execution_failed(err.to_string()))?;
+    result.side_effect = ToolSideEffectStatus::Indeterminate;
+    if !success {
+        result.operation = ToolOperationStatus::Failed;
+        result.retry = ToolRetryDisposition::Unsafe;
+    }
     Ok(result.with_metadata(json!({
         "backgrounded": true,
         "detached_start": true,
@@ -1114,7 +1158,11 @@ fn should_skip_dir_name(name: &str) -> bool {
     )
 }
 
-fn run_gate(gate: VerifierGate) -> GateResult {
+async fn run_gate_with_timeout(
+    context: &ToolContext,
+    gate: VerifierGate,
+    timeout_ms: u64,
+) -> GateResult {
     let command = render_command(gate.program.as_deref(), &gate.args);
     if let Some(reason) = gate.skipped_reason {
         return GateResult {
@@ -1150,19 +1198,27 @@ fn run_gate(gate: VerifierGate) -> GateResult {
         };
     };
 
-    let started = Instant::now();
-    let mut cmd = Command::new(&program);
-    cmd.args(&gate.args)
-        .current_dir(&gate.cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    for (key, value) in &gate.env {
-        cmd.env(key, value);
-    }
-
-    let output = match cmd.output() {
+    let env = gate.env.iter().cloned().collect::<HashMap<_, _>>();
+    let output = match execute_managed_program(
+        context,
+        &command,
+        &program,
+        &gate.args,
+        &gate.cwd,
+        timeout_ms,
+        context.elevated_sandbox_policy.clone(),
+        env,
+    )
+    .await
+    {
         Ok(output) => output,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+        Err(err)
+            if err.chain().any(|cause| {
+                cause
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound)
+            }) =>
+        {
             return GateResult {
                 name: gate.name,
                 ecosystem: gate.ecosystem,
@@ -1170,7 +1226,7 @@ fn run_gate(gate: VerifierGate) -> GateResult {
                 command,
                 cwd: gate.cwd.display().to_string(),
                 exit_code: None,
-                duration_ms: started.elapsed().as_millis() as u64,
+                duration_ms: 0,
                 stdout: String::new(),
                 stderr: String::new(),
                 stdout_truncated: false,
@@ -1186,7 +1242,7 @@ fn run_gate(gate: VerifierGate) -> GateResult {
                 command,
                 cwd: gate.cwd.display().to_string(),
                 exit_code: None,
-                duration_ms: started.elapsed().as_millis() as u64,
+                duration_ms: 0,
                 stdout: String::new(),
                 stderr: format!("Failed to spawn verifier: {err}"),
                 stdout_truncated: false,
@@ -1196,26 +1252,31 @@ fn run_gate(gate: VerifierGate) -> GateResult {
         }
     };
 
-    let (stdout, stdout_truncated) = truncate_with_note(
-        &String::from_utf8_lossy(&output.stdout),
-        MAX_GATE_OUTPUT_CHARS,
-    );
-    let (stderr, stderr_truncated) = truncate_with_note(
-        &String::from_utf8_lossy(&output.stderr),
-        MAX_GATE_OUTPUT_CHARS,
-    );
+    let mut stderr_raw = output.stderr;
+    if output.status == ShellStatus::TimedOut {
+        stderr_raw.push_str("\nVerifier timed out; managed process tree was killed.");
+    } else if output.status == ShellStatus::Killed
+        && context
+            .cancel_token
+            .as_ref()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    {
+        stderr_raw.push_str("\nVerifier canceled; managed process tree was killed.");
+    }
+    let (stdout, stdout_truncated) = truncate_with_note(&output.stdout, MAX_GATE_OUTPUT_CHARS);
+    let (stderr, stderr_truncated) = truncate_with_note(&stderr_raw, MAX_GATE_OUTPUT_CHARS);
     GateResult {
         name: gate.name,
         ecosystem: gate.ecosystem,
-        status: if output.status.success() {
+        status: if output.status == ShellStatus::Completed {
             GateStatus::Passed
         } else {
             GateStatus::Failed
         },
         command,
         cwd: gate.cwd.display().to_string(),
-        exit_code: output.status.code(),
-        duration_ms: started.elapsed().as_millis() as u64,
+        exit_code: output.exit_code,
+        duration_ms: output.duration_ms,
         stdout,
         stderr,
         stdout_truncated,
@@ -1264,11 +1325,25 @@ fn char_boundary_index(text: &str, max_chars: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::shell::ShellStatus;
-    use std::time::Duration;
+    use codewhale_protocol::agent_runtime::{ToolArtifactStatus, ToolEvidenceStatus};
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     const BACKGROUND_COMPLETION_WAIT_MS: u64 = 30_000;
+
+    fn explicit_goal_contract(objective: &str) -> crate::tools::goal::TaskContract {
+        let mut goal = crate::tools::goal::GoalState::default();
+        goal.create_with_contract(
+            objective.to_string(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            crate::tools::goal::default_run_verifiers_contract_params(),
+        );
+        goal.active_task_contract()
+            .expect("active task contract")
+            .clone()
+    }
 
     fn wait_for_completed_shell(
         manager: &mut crate::tools::shell::ShellManager,
@@ -1387,6 +1462,7 @@ mod tests {
             .execute(
                 json!({
                     "profile": "auto",
+                    "level": "full",
                     "commands": [
                         {
                             "name": "rustc-version",
@@ -1411,6 +1487,256 @@ mod tests {
             "stdout should include rustc version: {:?}",
             parsed.gates[0].stdout
         );
+        assert_eq!(result.evidence.status, ToolEvidenceStatus::Missing);
+        assert!(result.evidence.references.is_empty());
+        assert!(result.artifacts.is_empty());
+        assert!(result.workspace_revision.is_none());
+        let metadata = result.metadata.expect("verifier metadata");
+        assert!(
+            metadata.get("goal_host_verification").is_none(),
+            "a pure custom verifier must never mint Goal completion evidence"
+        );
+        assert!(
+            metadata["goal_host_verification_rejected"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("custom commands alone")),
+            "metadata: {metadata}"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_full_framework_gate_mints_goal_evidence() {
+        if !crate::dependencies::Git::available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let status = crate::dependencies::Git::command()
+            .expect("git")
+            .args(["init", "-q"])
+            .current_dir(tmp.path())
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init failed");
+
+        let contract = explicit_goal_contract("verify this workspace");
+        let ctx = ToolContext::new(tmp.path()).with_goal_contract(Some(contract));
+        let tool = RunVerifiersTool;
+        let full = tool
+            .execute(json!({"profile": "auto", "level": "full"}), &ctx)
+            .await
+            .expect("full verifier");
+        assert!(full.is_success(), "result: {}", full.content);
+        assert_produced_evidence(&full);
+        let full_metadata = full.metadata.expect("full verifier metadata");
+        assert!(
+            full_metadata.get("goal_host_verification").is_some(),
+            "an exact contract-matching full framework gate should mint a receipt: {full_metadata}"
+        );
+        assert!(full_metadata.get("goal_evidence_artifact").is_some());
+        assert!(
+            full_metadata
+                .get("goal_host_verification_rejected")
+                .is_none(),
+            "metadata: {full_metadata}"
+        );
+
+        let quick = tool
+            .execute(json!({"profile": "auto", "level": "quick"}), &ctx)
+            .await
+            .expect("quick verifier");
+        assert!(quick.is_success(), "result: {}", quick.content);
+        let quick_metadata = quick.metadata.expect("quick verifier metadata");
+        assert!(
+            quick_metadata.get("goal_host_verification").is_none(),
+            "quick gates are useful feedback, not Goal completion evidence"
+        );
+        assert!(
+            quick_metadata["goal_host_verification_rejected"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("level=full")),
+            "metadata: {quick_metadata}"
+        );
+        assert!(quick_metadata.get("goal_evidence_artifact").is_some());
+    }
+
+    #[tokio::test]
+    async fn nondefault_verifier_params_are_artifact_only() {
+        if !crate::dependencies::Git::available() {
+            return;
+        }
+        let tmp = tempdir().expect("tempdir");
+        let status = crate::dependencies::Git::command()
+            .expect("git")
+            .args(["init", "-q"])
+            .current_dir(tmp.path())
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init failed");
+        let contract = explicit_goal_contract("verify exact parameters");
+        let ctx = ToolContext::new(tmp.path()).with_goal_contract(Some(contract));
+
+        let result = RunVerifiersTool
+            .execute(
+                json!({
+                    "profile": "auto",
+                    "level": "full",
+                    "max_python_files": DEFAULT_MAX_PYTHON_FILES + 1
+                }),
+                &ctx,
+            )
+            .await
+            .expect("nondefault verifier run");
+        assert!(result.is_success(), "result: {}", result.content);
+        let metadata = result.metadata.expect("metadata");
+        assert!(metadata.get("goal_evidence_artifact").is_some());
+        assert!(metadata.get("goal_host_verification").is_none());
+        assert!(
+            metadata["goal_host_verification_rejected"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("does not exactly match")),
+            "metadata: {metadata}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_verifier_cancel_kills_descendant_process_tree() {
+        let tmp = tempdir().expect("tempdir");
+        let pid_path = tmp.path().join("verifier-cancel-child.pid");
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let ctx = ToolContext::new(tmp.path()).with_cancel_token(cancel.clone());
+        let task_ctx = ctx.clone();
+        let task = tokio::spawn(async move {
+            RunVerifiersTool
+                .execute(
+                    json!({
+                        "profile": "auto",
+                        "level": "full",
+                        "commands": [{
+                            "name": "long-custom-gate",
+                            "program": "/bin/sh",
+                            "args": [
+                                "-c",
+                                "sleep 60 & child=$!; echo $child > verifier-cancel-child.pid; wait"
+                            ]
+                        }]
+                    }),
+                    &task_ctx,
+                )
+                .await
+        });
+
+        let child_pid = wait_for_pid_file(&pid_path, Duration::from_secs(5)).await;
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("cancel should settle the verifier promptly")
+            .expect("verifier task join")
+            .expect("verifier result");
+        assert!(
+            !result.is_success(),
+            "a canceled gate must fail: {}",
+            result.content
+        );
+        let parsed: RunVerifiersOutput =
+            serde_json::from_str(&result.content).expect("verifier output");
+        assert!(
+            parsed.gates[0].stderr.contains("Verifier canceled"),
+            "stderr: {:?}",
+            parsed.gates[0].stderr
+        );
+        assert_process_exited(child_pid, Duration::from_secs(2)).await;
+        assert!(
+            ctx.shell_manager
+                .lock()
+                .expect("shell manager")
+                .list_jobs()
+                .iter()
+                .all(|job| job.status != ShellStatus::Running),
+            "canceled foreground verifier left a managed job running"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn foreground_verifier_timeout_kills_descendant_process_tree() {
+        let tmp = tempdir().expect("tempdir");
+        let pid_path = tmp.path().join("verifier-timeout-child.pid");
+        let ctx = ToolContext::new(tmp.path());
+        let gate = gate(
+            "timeout-custom-gate",
+            "custom",
+            tmp.path(),
+            "/bin/sh",
+            [
+                "-c",
+                "sleep 60 & child=$!; echo $child > verifier-timeout-child.pid; wait",
+            ],
+        );
+
+        let started = Instant::now();
+        let result = run_gate_with_timeout(&ctx, gate, 1_000).await;
+        assert_eq!(result.status, GateStatus::Failed);
+        assert!(
+            result.stderr.contains("Verifier timed out"),
+            "stderr: {:?}",
+            result.stderr
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timeout did not settle promptly: {:?}",
+            started.elapsed()
+        );
+        let child_pid = wait_for_pid_file(&pid_path, Duration::from_secs(1)).await;
+        assert_process_exited(child_pid, Duration::from_secs(2)).await;
+        assert!(
+            ctx.shell_manager
+                .lock()
+                .expect("shell manager")
+                .list_jobs()
+                .iter()
+                .all(|job| job.status != ShellStatus::Running),
+            "timed out foreground verifier left a managed job running"
+        );
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_pid_file(path: &Path, timeout: Duration) -> libc::pid_t {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(raw) = fs::read_to_string(path)
+                && let Ok(pid) = raw.trim().parse::<libc::pid_t>()
+            {
+                return pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "process did not publish pid at {}",
+                path.display()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    async fn assert_process_exited(pid: libc::pid_t, timeout: Duration) {
+        let deadline = Instant::now() + timeout;
+        while process_exists(pid) && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        if process_exists(pid) {
+            // Keep a failing lifecycle test from leaking its own fixture.
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+            panic!("descendant process {pid} survived managed kill+reap");
+        }
+    }
+
+    #[cfg(unix)]
+    fn process_exists(pid: libc::pid_t) -> bool {
+        let status = unsafe { libc::kill(pid, 0) };
+        status == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
     }
 
     #[tokio::test]
@@ -1424,9 +1750,10 @@ mod tests {
             .await
             .expect("execute partial verifier");
         assert!(
-            !partial.success,
+            !partial.is_success(),
             "a verifier with no runnable gates must not report tool success"
         );
+        assert_rejected_evidence(&partial);
         assert_hunt_mapping(&partial.content, "partial", "wounded", "paused");
         assert_hunt_metadata(&partial, "partial", "wounded", "paused");
 
@@ -1450,7 +1777,10 @@ mod tests {
             )
             .await
             .expect("execute passing verifier");
-        assert!(pass.success, "all passing gates should report tool success");
+        assert!(
+            pass.is_success(),
+            "all passing gates should report tool success"
+        );
         assert_hunt_mapping(&pass.content, "pass", "hunted", "complete");
         assert_hunt_metadata(&pass, "pass", "hunted", "complete");
 
@@ -1471,9 +1801,10 @@ mod tests {
             .await
             .expect("execute failing verifier");
         assert!(
-            !fail.success,
+            !fail.is_success(),
             "a failed verifier gate must be a failed tool result"
         );
+        assert_rejected_evidence(&fail);
         assert_hunt_mapping(&fail.content, "fail", "escaped", "blocked");
         assert_hunt_metadata(&fail, "fail", "escaped", "blocked");
     }
@@ -1485,12 +1816,37 @@ mod tests {
         assert_eq!(parsed["goal_status"], goal, "{content}");
     }
 
-    fn assert_hunt_metadata(result: &ToolResult, verifier: &str, hunt: &str, goal: &str) {
+    fn assert_hunt_metadata(result: &ToolOutcome, verifier: &str, hunt: &str, goal: &str) {
         let metadata = result.metadata.as_ref().expect("hunt metadata");
         assert_eq!(metadata["verifier_verdict"], verifier, "{metadata}");
         assert_eq!(metadata["hunt_verdict"], hunt, "{metadata}");
         assert_eq!(metadata["goal_status"], goal, "{metadata}");
         assert_eq!(metadata["task_updates"]["hunt_verdict"], hunt, "{metadata}");
+    }
+
+    fn assert_produced_evidence(result: &ToolOutcome) {
+        assert_eq!(result.evidence.status, ToolEvidenceStatus::Produced);
+        assert_eq!(result.artifacts.len(), 1);
+        let artifact = &result.artifacts[0];
+        assert_eq!(result.evidence.references, vec![artifact.id.clone()]);
+        assert_eq!(artifact.status, ToolArtifactStatus::Available);
+        assert!(
+            artifact
+                .sha256
+                .as_deref()
+                .is_some_and(|digest| digest.starts_with("sha256:"))
+        );
+        assert_eq!(artifact.media_type.as_deref(), Some("application/json"));
+        assert!(artifact.byte_len.is_some_and(|len| len > 0));
+        assert!(result.workspace_revision.is_some());
+        result.validate().expect("typed evidence must be valid");
+    }
+
+    fn assert_rejected_evidence(result: &ToolOutcome) {
+        assert_eq!(result.evidence.status, ToolEvidenceStatus::Rejected);
+        assert!(result.evidence.references.is_empty());
+        assert!(result.artifacts.is_empty());
+        assert!(result.workspace_revision.is_none());
     }
 
     #[tokio::test]
@@ -1525,7 +1881,7 @@ mod tests {
             .expect("execute");
 
         assert!(
-            result.success,
+            result.is_success(),
             "starting every background gate should succeed"
         );
         let parsed: RunVerifiersBackgroundOutput =
@@ -1606,7 +1962,7 @@ mod tests {
         .expect("structured background verifier result");
 
         assert!(
-            !result.success,
+            !result.is_success(),
             "a background gate start failure must not report tool success"
         );
         let parsed: RunVerifiersBackgroundOutput =

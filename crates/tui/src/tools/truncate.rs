@@ -38,7 +38,7 @@ use std::io;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
-use crate::tools::spec::ToolResult;
+use crate::tools::spec::ToolOutcome;
 
 // `Path` is only referenced from helpers gated to test builds.
 #[cfg(test)]
@@ -289,7 +289,7 @@ fn retained_tail(content: &str, max_bytes: usize) -> &str {
 /// are typically short, and turning them into a "see file" pointer
 /// would just hide the error from the model's reasoning.
 #[allow(dead_code)]
-pub fn apply_spillover(result: &mut ToolResult, tool_id: &str) -> Option<PathBuf> {
+pub fn apply_spillover(result: &mut ToolOutcome, tool_id: &str) -> Option<PathBuf> {
     apply_spillover_inner(result, tool_id, None)
 }
 
@@ -301,7 +301,7 @@ pub fn apply_spillover(result: &mut ToolResult, tool_id: &str) -> Option<PathBuf
 /// `~/.codewhale/sessions/<session-id>/artifacts/`, and the inline tool result
 /// becomes a fixed-format artifact reference block.
 pub fn apply_spillover_with_artifact(
-    result: &mut ToolResult,
+    result: &mut ToolOutcome,
     tool_id: &str,
     tool_name: &str,
     session_id: &str,
@@ -322,11 +322,11 @@ struct ArtifactSpilloverContext<'a> {
 }
 
 fn apply_spillover_inner(
-    result: &mut ToolResult,
+    result: &mut ToolOutcome,
     tool_id: &str,
     artifact_context: Option<ArtifactSpilloverContext<'_>>,
 ) -> Option<PathBuf> {
-    if !result.success {
+    if !result.is_success() {
         return None;
     }
     if result.content.len() <= SPILLOVER_THRESHOLD_BYTES {
@@ -801,7 +801,7 @@ mod tests {
         let _g = setup();
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
-            let mut result = ToolResult::success("small payload");
+            let mut result = ToolOutcome::success("small payload");
             let path = apply_spillover(&mut result, "call-small");
             assert!(path.is_none());
             assert_eq!(result.content, "small payload");
@@ -817,7 +817,7 @@ mod tests {
             // Even very large error messages are passed through —
             // truncating an error would hide it from the model.
             let big_err = "boom\n".repeat(50_000);
-            let mut result = ToolResult::error(big_err.clone());
+            let mut result = ToolOutcome::error(big_err.clone());
             let path = apply_spillover(&mut result, "call-err");
             assert!(path.is_none());
             assert_eq!(result.content, big_err);
@@ -831,7 +831,7 @@ mod tests {
         with_test_home(tmp.path(), || {
             // 200 KiB body — well above the 100 KiB threshold.
             let big = "X".repeat(200 * 1024);
-            let mut result = ToolResult::success(big.clone());
+            let mut result = ToolOutcome::success(big.clone());
             let path = apply_spillover(&mut result, "call-big").expect("should spill");
 
             // Inline content shrunk to head + footer.
@@ -873,7 +873,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
             let big = "checking crate ... error[E0425]: cannot find value\n".repeat(4_000);
-            let mut result = ToolResult::success(big.clone());
+            let mut result = ToolOutcome::success(big.clone());
             let path =
                 apply_spillover_with_artifact(&mut result, "call-big", "exec_shell", "session-123")
                     .expect("should spill");
@@ -937,7 +937,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
             let big = "Y".repeat(200 * 1024);
-            let mut result = ToolResult::success(big)
+            let mut result = ToolOutcome::success(big)
                 .with_metadata(serde_json::json!({"prior_key": "prior_value"}));
             let path = apply_spillover(&mut result, "call-meta").expect("should spill");
 
@@ -970,7 +970,7 @@ mod tests {
         let tmp = tempdir().unwrap();
         with_test_home(tmp.path(), || {
             let big = "Z".repeat(200 * 1024);
-            let mut result = ToolResult::success(big).with_metadata(serde_json::json!([
+            let mut result = ToolOutcome::success(big).with_metadata(serde_json::json!([
                 "unexpected",
                 "array",
                 "payload"

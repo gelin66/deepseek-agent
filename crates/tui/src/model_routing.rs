@@ -290,6 +290,7 @@ pub(crate) async fn resolve_auto_route_with_inventory(
     recent_context: &str,
     selected_model_mode: &str,
     selected_thinking_mode: &str,
+    api_request_budget: Option<&crate::client::request_budget::SharedApiRequestBudget>,
 ) -> Result<AutoRouteSelection> {
     resolve_auto_route_with_inventory_for_session(
         config,
@@ -298,6 +299,7 @@ pub(crate) async fn resolve_auto_route_with_inventory(
         "agent",
         selected_model_mode,
         selected_thinking_mode,
+        api_request_budget,
     )
     .await
 }
@@ -309,6 +311,7 @@ pub(crate) async fn resolve_auto_route_with_inventory_for_session(
     session_mode: &str,
     selected_model_mode: &str,
     selected_thinking_mode: &str,
+    api_request_budget: Option<&crate::client::request_budget::SharedApiRequestBudget>,
 ) -> Result<AutoRouteSelection> {
     let inventory = ModelInventory::from_config(config);
     if !inventory.router_available {
@@ -329,11 +332,14 @@ pub(crate) async fn resolve_auto_route_with_inventory_for_session(
     match auto_route_inventory_recommendation(
         config,
         &inventory,
-        latest_request,
-        recent_context,
-        session_mode,
-        selected_model_mode,
-        selected_thinking_mode,
+        AutoRoutePromptInput {
+            latest_request,
+            recent_context,
+            session_mode,
+            selected_model_mode,
+            selected_thinking_mode,
+        },
+        api_request_budget,
     )
     .await
     {
@@ -458,33 +464,36 @@ fn auto_route_from_inventory_heuristic(
     }
 }
 
+#[derive(Clone, Copy)]
+struct AutoRoutePromptInput<'a> {
+    latest_request: &'a str,
+    recent_context: &'a str,
+    session_mode: &'a str,
+    selected_model_mode: &'a str,
+    selected_thinking_mode: &'a str,
+}
+
 async fn auto_route_inventory_recommendation(
     config: &Config,
     inventory: &ModelInventory,
-    latest_request: &str,
-    recent_context: &str,
-    session_mode: &str,
-    selected_model_mode: &str,
-    selected_thinking_mode: &str,
+    prompt_input: AutoRoutePromptInput<'_>,
+    api_request_budget: Option<&crate::client::request_budget::SharedApiRequestBudget>,
 ) -> Result<Option<InventoryAutoRouteRecommendation>> {
     let mut router_config = config.clone();
     router_config.provider = Some(ApiProvider::Deepseek.as_str().to_string());
     router_config.default_text_model = Some(inventory.router_model.to_string());
 
-    let client = DeepSeekClient::new(&router_config)?;
+    let mut client = DeepSeekClient::new(&router_config)?;
+    if let Some(budget) = api_request_budget {
+        client = client.with_api_request_budget(budget.clone());
+    }
     let router_system = inventory_auto_router_system_prompt(inventory);
     let request = MessageRequest {
         model: inventory.router_model.to_string(),
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
-                text: auto_route_prompt(
-                    latest_request,
-                    recent_context,
-                    session_mode,
-                    selected_model_mode,
-                    selected_thinking_mode,
-                ),
+                text: auto_route_prompt(prompt_input),
                 cache_control: None,
             }],
         }],
@@ -546,24 +555,18 @@ fn parse_inventory_auto_route_recommendation(
     })
 }
 
-fn auto_route_prompt(
-    latest_request: &str,
-    recent_context: &str,
-    session_mode: &str,
-    selected_model_mode: &str,
-    selected_thinking_mode: &str,
-) -> String {
+fn auto_route_prompt(input: AutoRoutePromptInput<'_>) -> String {
     format!(
         "Session mode: {}\nSelected model mode: {}\nSelected thinking mode: {}\n\nRecent context:\n{}\n\nLatest user request:\n{}\n\nReturn JSON only.",
-        session_mode,
-        selected_model_mode,
-        selected_thinking_mode,
-        if recent_context.trim().is_empty() {
+        input.session_mode,
+        input.selected_model_mode,
+        input.selected_thinking_mode,
+        if input.recent_context.trim().is_empty() {
             "No prior context."
         } else {
-            recent_context
+            input.recent_context
         },
-        truncate_for_auto_router(latest_request, 4_000)
+        truncate_for_auto_router(input.latest_request, 4_000)
     )
 }
 
@@ -656,13 +659,13 @@ mod tests {
 
     #[test]
     fn auto_route_prompt_uses_current_session_mode() {
-        let prompt = auto_route_prompt(
-            "Please explain the change before editing files.",
-            "No prior context.",
-            "plan",
-            "auto",
-            "auto",
-        );
+        let prompt = auto_route_prompt(AutoRoutePromptInput {
+            latest_request: "Please explain the change before editing files.",
+            recent_context: "No prior context.",
+            session_mode: "plan",
+            selected_model_mode: "auto",
+            selected_thinking_mode: "auto",
+        });
 
         assert!(
             prompt.starts_with("Session mode: plan\n"),
@@ -816,10 +819,16 @@ mod tests {
             ..Default::default()
         };
 
-        let route =
-            resolve_auto_route_with_inventory(&config, "quick status check", "", "auto", "auto")
-                .await
-                .expect("inventory route should resolve with authenticated active provider");
+        let route = resolve_auto_route_with_inventory(
+            &config,
+            "quick status check",
+            "",
+            "auto",
+            "auto",
+            None,
+        )
+        .await
+        .expect("inventory route should resolve with authenticated active provider");
 
         assert_eq!(route.provider, ApiProvider::Zai);
         assert_eq!(route.model, crate::config::ZAI_GLM_5_TURBO_MODEL);
@@ -838,10 +847,16 @@ mod tests {
             ..Default::default()
         };
 
-        let route =
-            resolve_auto_route_with_inventory(&config, "quick status check", "", "auto", "auto")
-                .await
-                .expect("heuristic-only Wanjie route should resolve");
+        let route = resolve_auto_route_with_inventory(
+            &config,
+            "quick status check",
+            "",
+            "auto",
+            "auto",
+            None,
+        )
+        .await
+        .expect("heuristic-only Wanjie route should resolve");
         assert_eq!(route.provider, ApiProvider::WanjieArk);
         assert_eq!(route.model, "deepseek-v4-flash");
         assert_eq!(route.source, AutoRouteSource::Heuristic);
@@ -852,6 +867,7 @@ mod tests {
             "",
             "auto",
             "auto",
+            None,
         )
         .await
         .expect("complex Wanjie route should resolve");
@@ -873,10 +889,16 @@ mod tests {
             ..Default::default()
         };
 
-        let route =
-            resolve_auto_route_with_inventory(&config, "quick status check", "", "auto", "auto")
-                .await
-                .expect("heuristic-only Volcengine route should resolve");
+        let route = resolve_auto_route_with_inventory(
+            &config,
+            "quick status check",
+            "",
+            "auto",
+            "auto",
+            None,
+        )
+        .await
+        .expect("heuristic-only Volcengine route should resolve");
         assert_eq!(route.provider, ApiProvider::Volcengine);
         assert_eq!(route.model, "DeepSeek-V4-Flash");
         assert_eq!(route.source, AutoRouteSource::Heuristic);
@@ -887,6 +909,7 @@ mod tests {
             "",
             "auto",
             "auto",
+            None,
         )
         .await
         .expect("complex Volcengine route should resolve");

@@ -272,6 +272,19 @@ fn install_parent_death_signal(_cmd: &mut Command) {
     // leak children on those platforms — tracked as a follow-up.
 }
 
+/// Put a spawned command in its own process tree before `spawn`.
+///
+/// Shell jobs, MCP stdio servers, and LSP servers all use this exact setup so
+/// their descendants can be terminated as one owned unit. The Linux
+/// parent-death signal remains a fallback for abnormal host termination.
+pub(crate) fn configure_process_tree(command: &mut Command) {
+    #[cfg(unix)]
+    {
+        command.process_group(0);
+    }
+    install_parent_death_signal(command);
+}
+
 #[cfg(windows)]
 #[derive(Debug)]
 struct WindowsJob {
@@ -291,6 +304,10 @@ unsafe impl Sync for WindowsJob {}
 #[cfg(windows)]
 impl WindowsJob {
     fn attach_to_child(child: &Child) -> std::io::Result<Self> {
+        Self::attach_to_process_handle(HANDLE(child.as_raw_handle()))
+    }
+
+    fn attach_to_process_handle(process_handle: HANDLE) -> std::io::Result<Self> {
         let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()).map_err(windows_io_error)? };
         let job = Self { handle };
 
@@ -306,7 +323,6 @@ impl WindowsJob {
             )
             .map_err(windows_io_error)?;
 
-            let process_handle = HANDLE(child.as_raw_handle());
             AssignProcessToJobObject(job.handle, process_handle).map_err(windows_io_error)?;
         }
 
@@ -384,6 +400,215 @@ fn attach_windows_job(child: &Child, command: &str) -> Option<WindowsJob> {
             None
         }
     }
+}
+
+/// Cross-platform owner for one directly spawned Tokio process and every
+/// descendant it creates. Unix uses a dedicated process group; Windows reuses
+/// the same kill-on-close Job Object implementation as shell jobs.
+#[derive(Debug)]
+pub(crate) struct ProcessTreeOwner {
+    #[cfg(unix)]
+    process_group_id: Option<libc::pid_t>,
+    #[cfg(windows)]
+    windows_job: Option<WindowsJob>,
+}
+
+impl ProcessTreeOwner {
+    /// Attach lifecycle ownership to a standard-library child spawned from a
+    /// command prepared with [`configure_process_tree`].
+    pub(crate) fn attach_std(child: &Child, label: &str) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            let _ = label;
+            Self::from_process_id(child.id())
+        }
+
+        #[cfg(windows)]
+        {
+            return Self::from_windows_handle(HANDLE(child.as_raw_handle()), label);
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (child, label);
+            Ok(Self {})
+        }
+    }
+
+    /// Attach lifecycle ownership immediately after spawning a command that
+    /// was prepared with [`configure_process_tree`].
+    pub(crate) fn attach_tokio(
+        child: &tokio::process::Child,
+        label: &str,
+    ) -> std::io::Result<Self> {
+        #[cfg(unix)]
+        {
+            let _ = label;
+            let pid = child.id().ok_or_else(|| {
+                std::io::Error::other("spawned process has no live process identifier")
+            })?;
+            Self::from_process_id(pid)
+        }
+
+        #[cfg(windows)]
+        {
+            let raw_handle = child.raw_handle().ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "spawned process {label} has no live Windows process handle"
+                ))
+            })?;
+            return Self::from_windows_handle(HANDLE(raw_handle), label);
+        }
+
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = (child, label);
+            Ok(Self {})
+        }
+    }
+
+    #[cfg(unix)]
+    fn from_process_id(pid: u32) -> std::io::Result<Self> {
+        let process_group_id = libc::pid_t::try_from(pid)
+            .map_err(|_| std::io::Error::other("process identifier exceeds pid_t"))?;
+        Ok(Self {
+            process_group_id: Some(process_group_id),
+        })
+    }
+
+    #[cfg(windows)]
+    fn from_windows_handle(process_handle: HANDLE, label: &str) -> std::io::Result<Self> {
+        WindowsJob::attach_to_process_handle(process_handle)
+            .map(|windows_job| Self {
+                windows_job: Some(windows_job),
+            })
+            .map_err(|error| {
+                std::io::Error::new(
+                    error.kind(),
+                    format!("failed to attach {label} to Windows job object: {error}"),
+                )
+            })
+    }
+
+    /// Ask the whole owned tree to stop. Windows has no SIGTERM equivalent,
+    /// so terminating the Job Object is necessarily immediate there.
+    pub(crate) fn terminate(&self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            self.signal_unix_group(libc::SIGTERM)
+        }
+        #[cfg(windows)]
+        {
+            if let Some(job) = self.windows_job.as_ref() {
+                return job.terminate();
+            }
+            Ok(())
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Ok(())
+        }
+    }
+
+    /// Force the whole owned tree to stop.
+    pub(crate) fn kill(&self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            self.signal_unix_group(libc::SIGKILL)
+        }
+        #[cfg(windows)]
+        {
+            if let Some(job) = self.windows_job.as_ref() {
+                return job.terminate();
+            }
+            Ok(())
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Ok(())
+        }
+    }
+
+    #[cfg(unix)]
+    fn signal_unix_group(&self, signal: libc::c_int) -> std::io::Result<()> {
+        let Some(process_group_id) = self.process_group_id else {
+            return Ok(());
+        };
+        if process_group_id <= 0 {
+            return Ok(());
+        }
+        let result = unsafe { libc::kill(-process_group_id, signal) };
+        if result == 0 {
+            return Ok(());
+        }
+        let error = std::io::Error::last_os_error();
+        if error.raw_os_error() == Some(libc::ESRCH) {
+            Ok(())
+        } else {
+            Err(error)
+        }
+    }
+
+    pub(crate) fn disarm(&mut self) {
+        #[cfg(unix)]
+        {
+            self.process_group_id = None;
+        }
+        #[cfg(windows)]
+        {
+            self.windows_job = None;
+        }
+    }
+}
+
+impl Drop for ProcessTreeOwner {
+    fn drop(&mut self) {
+        let _ = self.kill();
+    }
+}
+
+/// Gracefully stop, force-kill, and reap one Tokio child process tree within
+/// two bounded grace windows. Returns `true` only when the direct child was
+/// reaped; the owner remains armed as a Drop fallback otherwise.
+pub(crate) async fn shutdown_tokio_process_tree(
+    child: &mut tokio::process::Child,
+    owner: &mut ProcessTreeOwner,
+    grace: Duration,
+) -> bool {
+    if child.id().is_none() {
+        // The direct child may already be reaped while one of its descendants
+        // still owns the process group / Job. Sweep the retained tree before
+        // releasing its identity.
+        let tree_settled = owner.kill().is_ok();
+        if tree_settled {
+            owner.disarm();
+        }
+        return tree_settled;
+    }
+
+    #[cfg(any(unix, windows))]
+    let _ = owner.terminate();
+    #[cfg(not(any(unix, windows)))]
+    let _ = child.start_kill();
+
+    if matches!(tokio::time::timeout(grace, child.wait()).await, Ok(Ok(_))) {
+        // The direct server can exit while a descendant ignores SIGTERM.
+        // Sweep the still-owned group/job before releasing its identity.
+        let tree_settled = owner.kill().is_ok();
+        if tree_settled {
+            owner.disarm();
+        }
+        return tree_settled;
+    }
+
+    let tree_settled = owner.kill().is_ok();
+    let _ = child.start_kill();
+    let reaped = matches!(tokio::time::timeout(grace, child.wait()).await, Ok(Ok(_)));
+    let settled = tree_settled && reaped;
+    if settled {
+        owner.disarm();
+    }
+    settled
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -852,6 +1077,11 @@ impl Drop for BackgroundShell {
 }
 
 /// Manages background shell processes with optional sandboxing.
+struct ShellKillReport {
+    results: Vec<ShellResult>,
+    failures: Vec<String>,
+}
+
 pub struct ShellManager {
     processes: HashMap<String, BackgroundShell>,
     stale_jobs: HashMap<String, ShellJobSnapshot>,
@@ -1087,6 +1317,44 @@ impl ShellManager {
         }
     }
 
+    /// Spawn a directly-addressed program under the same process-tree owner
+    /// used by shell jobs. Verifier/test tools use this instead of
+    /// `Command::output` so cancellation, timeout, sandboxing, output capture,
+    /// Windows Job Objects, and Unix process groups all have one owner.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_managed_program(
+        &mut self,
+        display_command: &str,
+        program: &str,
+        args: &[String],
+        working_dir: &Path,
+        timeout_ms: u64,
+        policy_override: Option<ExecutionSandboxPolicy>,
+        extra_env: HashMap<String, String>,
+        owner_agent: Option<ShellJobOwner>,
+    ) -> Result<ShellResult> {
+        crate::shell_dispatcher::ShellDispatcher::log_exec(display_command);
+        let timeout_ms = timeout_ms.clamp(1_000, 600_000);
+        let policy = policy_override.unwrap_or_else(|| self.sandbox_policy.clone());
+        let spec = CommandSpec::program(
+            program,
+            args.to_vec(),
+            working_dir.to_path_buf(),
+            Duration::from_millis(timeout_ms),
+        )
+        .with_policy(policy)
+        .with_env(extra_env);
+        let exec_env = self.sandbox_manager.prepare(&spec);
+        self.spawn_background_sandboxed(
+            display_command,
+            working_dir,
+            &exec_env,
+            None,
+            false,
+            owner_agent,
+        )
+    }
+
     /// Execute a shell command interactively (stdin/stdout/stderr inherit from terminal).
     #[allow(dead_code)]
     pub fn execute_interactive(
@@ -1162,11 +1430,7 @@ impl ShellManager {
         cmd.current_dir(working_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        #[cfg(unix)]
-        {
-            cmd.process_group(0);
-        }
-        install_parent_death_signal(&mut cmd);
+        configure_process_tree(&mut cmd);
 
         if stdin_data.is_some() {
             cmd.stdin(Stdio::piped());
@@ -1322,11 +1586,7 @@ impl ShellManager {
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit());
-        #[cfg(unix)]
-        {
-            cmd.process_group(0);
-        }
-        install_parent_death_signal(&mut cmd);
+        configure_process_tree(&mut cmd);
 
         // Disable raw mode before spawn; restore only if raw mode was active
         // on entry (issue #1690).
@@ -1507,10 +1767,7 @@ impl ShellManager {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
-            #[cfg(unix)]
-            {
-                cmd.process_group(0);
-            }
+            configure_process_tree(&mut cmd);
 
             child_env::apply_to_command(&mut cmd, child_env::string_map_env(&exec_env.env));
 
@@ -1723,6 +1980,20 @@ impl ShellManager {
 
     /// Kill every currently running background shell process.
     pub fn kill_running(&mut self) -> Result<Vec<ShellResult>> {
+        let report = self.kill_running_best_effort();
+        if report.failures.is_empty() {
+            Ok(report.results)
+        } else {
+            Err(anyhow!(
+                "Failed to stop {} background shell process(es): {}",
+                report.failures.len(),
+                report.failures.join("; ")
+            ))
+        }
+    }
+
+    /// Attempt every running process even when an earlier kill fails.
+    fn kill_running_best_effort(&mut self) -> ShellKillReport {
         let ids = self
             .processes
             .iter()
@@ -1731,10 +2002,14 @@ impl ShellManager {
             .collect::<Vec<_>>();
 
         let mut results = Vec::with_capacity(ids.len());
+        let mut failures = Vec::new();
         for id in ids {
-            results.push(self.kill(&id)?);
+            match self.kill(&id) {
+                Ok(result) => results.push(result),
+                Err(error) => failures.push(format!("{id}: {error}")),
+            }
         }
-        Ok(results)
+        ShellKillReport { results, failures }
     }
 
     /// Poll a background process and return incremental output.
@@ -1886,10 +2161,11 @@ use crate::execpolicy::{ExecPolicyDecision, load_default_policy};
 use crate::features::Feature;
 use crate::tools::cargo_failure_summary::summarize_cargo_failure;
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_u64, required_str,
 };
 use async_trait::async_trait;
+use codewhale_protocol::agent_runtime::{ToolRetryDisposition, ToolSideEffectStatus};
 use serde_json::json;
 
 const FOREGROUND_TIMEOUT_RECOVERY_HINT: &str = "Foreground exec_shell is for bounded commands. \
@@ -2163,16 +2439,28 @@ fn exec_shell_input_starts_detached(input: &serde_json::Value) -> bool {
             || input.get("tty").and_then(serde_json::Value::as_bool) == Some(true))
 }
 
-async fn execute_foreground_via_background(
-    context: &ToolContext,
-    command: &str,
+struct ForegroundShellRequest<'a> {
+    command: &'a str,
+    working_dir: Option<&'a str>,
     timeout_ms: u64,
-    stdin_data: Option<&str>,
+    stdin_data: Option<&'a str>,
     tty: bool,
     policy_override: Option<ExecutionSandboxPolicy>,
     extra_env: HashMap<String, String>,
+}
+
+async fn execute_foreground_via_background(
+    context: &ToolContext,
+    request: ForegroundShellRequest<'_>,
 ) -> Result<ShellResult> {
-    let timeout_ms = timeout_ms.clamp(1000, 600_000);
+    let timeout_ms = request.timeout_ms.clamp(1000, 600_000);
+    if context
+        .cancel_token
+        .as_ref()
+        .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    {
+        return Err(anyhow!("foreground command canceled before start"));
+    }
     let spawned = {
         let mut manager = context
             .shell_manager
@@ -2180,21 +2468,75 @@ async fn execute_foreground_via_background(
             .map_err(|_| anyhow!("shell manager lock poisoned"))?;
         manager.clear_foreground_background_request();
         manager.execute_with_options_env(
-            command,
-            None,
+            request.command,
+            request.working_dir,
             timeout_ms,
             true,
-            stdin_data,
-            tty,
-            policy_override,
-            extra_env,
+            request.stdin_data,
+            request.tty,
+            request.policy_override,
+            request.extra_env,
         )?
     };
+    wait_for_managed_foreground(context, spawned, timeout_ms, true, true).await
+}
+
+/// Execute one program directly while retaining it in the shared shell owner
+/// until completion. This is intentionally narrower than `exec_shell`: it is
+/// an internal lifecycle primitive for host verifier commands, not a second
+/// model-visible tool surface.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn execute_managed_program(
+    context: &ToolContext,
+    display_command: &str,
+    program: &str,
+    args: &[String],
+    working_dir: &Path,
+    timeout_ms: u64,
+    policy_override: Option<ExecutionSandboxPolicy>,
+    extra_env: HashMap<String, String>,
+) -> Result<ShellResult> {
+    let timeout_ms = timeout_ms.clamp(1_000, 600_000);
+    if context
+        .cancel_token
+        .as_ref()
+        .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
+    {
+        return Err(anyhow!("managed verifier command canceled before start"));
+    }
+
+    let spawned = {
+        let mut manager = context
+            .shell_manager
+            .lock()
+            .map_err(|_| anyhow!("shell manager lock poisoned"))?;
+        manager.clear_foreground_background_request();
+        manager.spawn_managed_program(
+            display_command,
+            program,
+            args,
+            working_dir,
+            timeout_ms,
+            policy_override,
+            extra_env,
+            shell_job_owner_from_context(context),
+        )?
+    };
+    wait_for_managed_foreground(context, spawned, timeout_ms, true, false).await
+}
+
+async fn wait_for_managed_foreground(
+    context: &ToolContext,
+    spawned: ShellResult,
+    timeout_ms: u64,
+    close_stdin: bool,
+    allow_background_request: bool,
+) -> Result<ShellResult> {
     let task_id = spawned
         .task_id
         .ok_or_else(|| anyhow!("foreground shell did not return a process id"))?;
 
-    if stdin_data.is_some() {
+    if close_stdin {
         let mut manager = context
             .shell_manager
             .lock()
@@ -2221,7 +2563,8 @@ async fn execute_foreground_via_background(
                 .shell_manager
                 .lock()
                 .map_err(|_| anyhow!("shell manager lock poisoned"))?;
-            if manager.take_foreground_background_request() {
+            let background_requested = manager.take_foreground_background_request();
+            if allow_background_request && background_requested {
                 return manager.get_output(&task_id, false, 0);
             }
             manager.get_output(&task_id, false, 0)?
@@ -2335,17 +2678,19 @@ impl ToolSpec for ExecShellTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let command = required_str(&input, "command")?;
         match context.shell_policy {
             ShellPolicy::None => {
-                return Ok(ToolResult::error(
+                return Ok(ToolOutcome::rejected(
                     "Shell tools are disabled by the active permission profile.",
+                    ToolRetryDisposition::NotRetryable,
                 ));
             }
             ShellPolicy::ReadOnly if !exec_shell_input_is_parallel_readonly(&input) => {
-                return Ok(ToolResult::error(
+                return Ok(ToolOutcome::rejected(
                     "Shell command blocked by read-only shell policy. Use a non-mutating, non-background inspection command, or switch to Act mode (`/mode act`) for write-capable shell work.",
+                    ToolRetryDisposition::NotRetryable,
                 ));
             }
             ShellPolicy::ReadOnly | ShellPolicy::Full => {}
@@ -2363,18 +2708,21 @@ impl ToolSpec for ExecShellTool {
             .map(str::to_string);
 
         if interactive && background {
-            return Ok(ToolResult::error(
+            return Ok(ToolOutcome::rejected(
                 "Interactive commands cannot run in background mode.",
+                ToolRetryDisposition::AfterCorrection,
             ));
         }
         if interactive && (tty || combined_output) {
-            return Ok(ToolResult::error(
+            return Ok(ToolOutcome::rejected(
                 "Interactive mode cannot be combined with TTY or combined_output sessions.",
+                ToolRetryDisposition::AfterCorrection,
             ));
         }
         if interactive && stdin_data.is_some() {
-            return Ok(ToolResult::error(
+            return Ok(ToolOutcome::rejected(
                 "Interactive mode cannot be combined with stdin data.",
+                ToolRetryDisposition::AfterCorrection,
             ));
         }
 
@@ -2388,16 +2736,16 @@ impl ToolSpec for ExecShellTool {
             let decision = policy.evaluate(command);
             execpolicy_decision = Some(decision.clone());
             if let ExecPolicyDecision::Deny(reason) = decision {
-                return Ok(ToolResult {
-                    content: format!("BLOCKED: {reason}"),
-                    success: false,
-                    metadata: Some(json!({
-                        "execpolicy": {
-                            "decision": "deny",
-                            "reason": reason,
-                        }
-                    })),
-                });
+                return Ok(ToolOutcome::rejected(
+                    format!("BLOCKED: {reason}"),
+                    ToolRetryDisposition::NotRetryable,
+                )
+                .with_metadata(json!({
+                    "execpolicy": {
+                        "decision": "deny",
+                        "reason": reason,
+                    }
+                })));
             }
         }
 
@@ -2412,18 +2760,18 @@ impl ToolSpec for ExecShellTool {
                     } else {
                         format!("\nSuggestions: {}", safety.suggestions.join("; "))
                     };
-                    return Ok(ToolResult {
-                        content: format!(
+                    return Ok(ToolOutcome::rejected(
+                        format!(
                             "BLOCKED: This command was blocked for safety reasons.\n\nReasons: {reasons}{suggestions}\n\nNote: allow_shell=true exposes shell tools, but it does not disable built-in shell safety validation."
                         ),
-                        success: false,
-                        metadata: Some(json!({
+                        ToolRetryDisposition::AfterCorrection,
+                    )
+                    .with_metadata(json!({
                             "safety_level": "dangerous",
                             "blocked": true,
                             "reasons": safety.reasons,
                             "suggestions": safety.suggestions,
-                        })),
-                    });
+                        })));
                 }
                 SafetyLevel::RequiresApproval | SafetyLevel::Safe | SafetyLevel::WorkspaceSafe => {
                     // Proceed normally
@@ -2461,18 +2809,21 @@ impl ToolSpec for ExecShellTool {
         // Route through external sandbox backend when configured.
         if let Some(backend) = &context.sandbox_backend {
             if interactive {
-                return Ok(ToolResult::error(
+                return Ok(ToolOutcome::rejected(
                     "Interactive mode is not supported with external sandbox backends.",
+                    ToolRetryDisposition::AfterCorrection,
                 ));
             }
             if background {
-                return Ok(ToolResult::error(
+                return Ok(ToolOutcome::rejected(
                     "Background mode is not supported with external sandbox backends.",
+                    ToolRetryDisposition::AfterCorrection,
                 ));
             }
             if tty {
-                return Ok(ToolResult::error(
+                return Ok(ToolOutcome::rejected(
                     "TTY mode is not supported with external sandbox backends.",
+                    ToolRetryDisposition::AfterCorrection,
                 ));
             }
 
@@ -2507,7 +2858,7 @@ impl ToolSpec for ExecShellTool {
                     }
                 }
                 Err(e) => {
-                    return Ok(ToolResult::error(format!("Sandbox backend error: {e}")));
+                    return Ok(ToolOutcome::error(format!("Sandbox backend error: {e}")));
                 }
             };
 
@@ -2557,11 +2908,13 @@ impl ToolSpec for ExecShellTool {
             attach_cargo_failure_summary(&mut metadata, command, &result);
             attach_python_build_dependency_hint(&mut metadata, python_dependency_hint);
 
-            return Ok(ToolResult {
-                content: output,
-                success: result.status == ShellStatus::Completed,
-                metadata: Some(metadata),
-            });
+            let outcome = if result.status == ShellStatus::Completed {
+                ToolOutcome::success(output)
+            } else {
+                ToolOutcome::error(output)
+            }
+            .with_side_effect(ToolSideEffectStatus::Indeterminate);
+            return Ok(outcome.with_metadata(metadata));
         }
 
         let result = if interactive {
@@ -2595,12 +2948,15 @@ impl ToolSpec for ExecShellTool {
         } else {
             execute_foreground_via_background(
                 context,
-                command,
-                timeout_ms,
-                stdin_data.as_deref(),
-                combined_output,
-                policy_override,
-                extra_env,
+                ForegroundShellRequest {
+                    command,
+                    working_dir: working_dir.as_deref(),
+                    timeout_ms,
+                    stdin_data: stdin_data.as_deref(),
+                    tty: combined_output,
+                    policy_override,
+                    extra_env,
+                },
             )
             .await
         };
@@ -2752,14 +3108,16 @@ impl ToolSpec for ExecShellTool {
                 attach_cargo_failure_summary(&mut metadata, command, &result);
                 attach_python_build_dependency_hint(&mut metadata, python_dependency_hint);
 
-                Ok(ToolResult {
-                    content: output,
-                    success: result.status == ShellStatus::Completed
-                        || result.status == ShellStatus::Running,
-                    metadata: Some(metadata),
-                })
+                let outcome =
+                    if matches!(result.status, ShellStatus::Completed | ShellStatus::Running) {
+                        ToolOutcome::success(output)
+                    } else {
+                        ToolOutcome::error(output)
+                    }
+                    .with_side_effect(ToolSideEffectStatus::Indeterminate);
+                Ok(outcome.with_metadata(metadata))
             }
-            Err(e) => Ok(ToolResult::error(format!("Shell execution failed: {e}"))),
+            Err(e) => Ok(ToolOutcome::error(format!("Shell execution failed: {e}"))),
         }
     }
 }
@@ -2792,7 +3150,7 @@ fn required_task_id(input: &serde_json::Value) -> Result<&str, ToolError> {
         .ok_or_else(|| ToolError::missing_field("task_id"))
 }
 
-fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext) -> ToolResult {
+fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext) -> ToolOutcome {
     let result = delta.result;
     let network_restricted_hint =
         shell_network_restricted_hint(context, &delta.command, &result).map(str::to_string);
@@ -2857,11 +3215,13 @@ fn build_shell_delta_tool_result(delta: ShellDeltaResult, context: &ToolContext)
     attach_cargo_failure_summary(&mut metadata, &delta.command, &result);
     attach_python_build_dependency_hint(&mut metadata, python_dependency_hint);
 
-    let mut tool_result = ToolResult {
-        content: output,
-        success: matches!(result.status, ShellStatus::Completed | ShellStatus::Running),
-        metadata: Some(metadata),
-    };
+    let mut tool_result = if matches!(result.status, ShellStatus::Completed | ShellStatus::Running)
+    {
+        ToolOutcome::success(output)
+    } else {
+        ToolOutcome::error(output)
+    }
+    .with_metadata(metadata);
     if let Some(hint) = network_restricted_hint
         && let Some(metadata) = tool_result.metadata.as_mut()
         && let Some(object) = metadata.as_object_mut()
@@ -3035,7 +3395,7 @@ impl ToolSpec for ShellCancelTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let cancel_all = optional_bool(&input, "all", false);
         let mut manager = context
             .shell_manager
@@ -3047,35 +3407,30 @@ impl ToolSpec for ShellCancelTool {
                 .kill_running()
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?;
             if results.is_empty() {
-                return Ok(ToolResult {
-                    content: "No running background commands.".to_string(),
-                    success: true,
-                    metadata: Some(json!({
+                return Ok(
+                    ToolOutcome::success("No running background commands.").with_metadata(json!({
                         "status": "Noop",
                         "canceled": 0,
                         "task_ids": [],
                     })),
-                });
+                );
             }
 
             let task_ids = results
                 .iter()
                 .filter_map(|result| result.task_id.clone())
                 .collect::<Vec<_>>();
-            return Ok(ToolResult {
-                content: format!(
-                    "Canceled {} background command{}: {}",
-                    task_ids.len(),
-                    if task_ids.len() == 1 { "" } else { "s" },
-                    task_ids.join(", ")
-                ),
-                success: true,
-                metadata: Some(json!({
-                    "status": "Killed",
-                    "canceled": task_ids.len(),
-                    "task_ids": task_ids,
-                })),
-            });
+            return Ok(ToolOutcome::success(format!(
+                "Canceled {} background command{}: {}",
+                task_ids.len(),
+                if task_ids.len() == 1 { "" } else { "s" },
+                task_ids.join(", ")
+            ))
+            .with_metadata(json!({
+                "status": "Killed",
+                "canceled": task_ids.len(),
+                "task_ids": task_ids,
+            })));
         }
 
         let task_id = required_task_id(&input)?;
@@ -3086,16 +3441,16 @@ impl ToolSpec for ShellCancelTool {
             .task_id
             .clone()
             .unwrap_or_else(|| task_id.to_string());
-        Ok(ToolResult {
-            content: format!("Canceled background command: {task_id}"),
-            success: true,
-            metadata: Some(json!({
-                "status": format!("{:?}", result.status),
-                "task_id": task_id,
-                "exit_code": result.exit_code,
-                "duration_ms": result.duration_ms,
-            })),
-        })
+        Ok(
+            ToolOutcome::success(format!("Canceled background command: {task_id}")).with_metadata(
+                json!({
+                    "status": format!("{:?}", result.status),
+                    "task_id": task_id,
+                    "exit_code": result.exit_code,
+                    "duration_ms": result.duration_ms,
+                }),
+            ),
+        )
     }
 }
 
@@ -3148,7 +3503,7 @@ impl ToolSpec for ShellWaitTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let task_id = required_task_id(&input)?;
         let wait = optional_bool(&input, "wait", false);
         let timeout_ms = optional_u64(&input, "timeout_ms", 30_000);
@@ -3249,7 +3604,7 @@ impl ToolSpec for ShellInteractTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let task_id = required_task_id(&input)?;
         let close_stdin = optional_bool(&input, "close_stdin", false);
         let timeout_ms = optional_u64(&input, "timeout_ms", 1_000);
@@ -3357,7 +3712,7 @@ impl ToolSpec for NoteTool {
         &self,
         input: serde_json::Value,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let note_content = required_str(&input, "content")?;
 
         // Ensure parent directory exists
@@ -3377,7 +3732,7 @@ impl ToolSpec for NoteTool {
         writeln!(file, "\n---\n{note_content}")
             .map_err(|e| ToolError::execution_failed(format!("Failed to write note: {e}")))?;
 
-        Ok(ToolResult::success(format!(
+        Ok(ToolOutcome::success(format!(
             "Note appended to {}",
             context.notes_path.display()
         )))

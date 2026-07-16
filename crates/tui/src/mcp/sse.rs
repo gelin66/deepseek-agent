@@ -9,6 +9,12 @@ use super::{
     find_sse_event_separator_bytes, is_mcp_stale_session_body, mask_url_secrets, sse_field_value,
 };
 
+/// Maximum time to wait for the SSE receive loop after cancellation before
+/// aborting it. Cancellation normally closes the response stream immediately;
+/// the bound covers a request or auth provider that does not wake promptly.
+const SSE_SHUTDOWN_GRACE: Duration = Duration::from_secs(1);
+const SSE_ABORT_JOIN_GRACE: Duration = Duration::from_millis(250);
+
 pub(super) struct SseTransport {
     pub(super) client: reqwest::Client,
     pub(super) base_url: String,
@@ -16,8 +22,8 @@ pub(super) struct SseTransport {
     pub(super) endpoint_url: Option<String>,
     pub(super) receiver: tokio::sync::mpsc::UnboundedReceiver<SseInbound>,
     pub(super) pending_messages: VecDeque<Vec<u8>>,
-    #[allow(dead_code)]
-    pub(super) sse_task: tokio::task::JoinHandle<()>,
+    pub(super) cancel_token: tokio_util::sync::CancellationToken,
+    pub(super) sse_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 pub(super) enum SseInbound {
@@ -78,12 +84,41 @@ impl SseTransport {
             endpoint_url: None,
             receiver: rx,
             pending_messages: VecDeque::new(),
-            sse_task,
+            cancel_token: wait_cancel_token.clone(),
+            sse_task: Some(sse_task),
         };
-        transport
+        if let Err(err) = transport
             .wait_for_endpoint(&wait_cancel_token, endpoint_timeout)
-            .await?;
+            .await
+        {
+            // `CancellationToken` does not cancel when its last external
+            // owner is dropped. Explicitly settle the spawned receive loop so
+            // an endpoint timeout or malformed endpoint cannot leave it
+            // detached in the runtime.
+            let _ = transport.shutdown_receive_loop().await;
+            return Err(err);
+        }
         Ok(transport)
+    }
+
+    async fn shutdown_receive_loop(&mut self) -> bool {
+        self.cancel_token.cancel();
+        let Some(mut task) = self.sse_task.take() else {
+            return true;
+        };
+
+        match tokio::time::timeout(SSE_SHUTDOWN_GRACE, &mut task).await {
+            Ok(Ok(())) => true,
+            Ok(Err(error)) => error.is_cancelled(),
+            Err(_) => {
+                task.abort();
+                match tokio::time::timeout(SSE_ABORT_JOIN_GRACE, &mut task).await {
+                    Ok(Ok(())) => true,
+                    Ok(Err(error)) => error.is_cancelled(),
+                    Err(_) => false,
+                }
+            }
+        }
     }
 
     async fn run_sse_loop(
@@ -306,6 +341,21 @@ impl McpTransport for SseTransport {
                 }
                 SseInbound::Message(msg) => return Ok(msg),
             }
+        }
+    }
+
+    async fn shutdown(&mut self) -> bool {
+        self.shutdown_receive_loop().await
+    }
+}
+
+impl Drop for SseTransport {
+    fn drop(&mut self) {
+        // Async owners should call `shutdown`; this is the process-local
+        // backstop for synchronous pool eviction or construction failure.
+        self.cancel_token.cancel();
+        if let Some(task) = self.sse_task.take() {
+            task.abort();
         }
     }
 }

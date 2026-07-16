@@ -1,7 +1,7 @@
 //! Build unified-diff strings for tool results.
 //!
 //! `edit_file` and `write_file` capture the file contents before and after
-//! the mutation and emit a unified diff at the head of their `ToolResult`
+//! the mutation and emit a unified diff at the head of their `ToolOutcome`
 //! output. The TUI's `output_looks_like_diff` detector then routes the
 //! payload through `diff_render::render_diff`, which renders it with line
 //! numbers and coloured `+`/`-` gutters (#505).

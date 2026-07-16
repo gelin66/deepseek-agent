@@ -14,7 +14,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::tools::spec::ToolResult;
+use crate::tools::spec::ToolOutcome;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -112,8 +112,8 @@ impl LargeOutputRouter {
     ///
     /// Pass `raw_bypass = true` when the tool call included `raw = true`.
     #[must_use]
-    pub fn route(&self, tool_name: &str, result: &ToolResult, raw_bypass: bool) -> RouteDecision {
-        if raw_bypass || !result.success {
+    pub fn route(&self, tool_name: &str, result: &ToolOutcome, raw_bypass: bool) -> RouteDecision {
+        if raw_bypass || !result.is_success() {
             return RouteDecision::PassThrough;
         }
         let threshold = self.config.threshold_for(tool_name);
@@ -212,8 +212,8 @@ impl WorkshopVariables {
 mod tests {
     use super::*;
 
-    fn make_result(content: &str) -> ToolResult {
-        ToolResult::success(content.to_string())
+    fn make_result(content: &str) -> ToolOutcome {
+        ToolOutcome::success(content.to_string())
     }
 
     #[test]
@@ -255,7 +255,7 @@ mod tests {
     fn error_results_always_pass_through() {
         let router = LargeOutputRouter::default();
         let big = "error: ".repeat(2_000);
-        let result = ToolResult::error(big);
+        let result = ToolOutcome::error(big);
         assert_eq!(
             router.route("exec_shell", &result, false),
             RouteDecision::PassThrough

@@ -444,6 +444,24 @@ pub enum ConnectionState {
     Disconnected,
 }
 
+/// Host-visible evidence from every MCP transport settled by one pool.
+/// Counts include connections evicted earlier by reload/reconnect as well as
+/// the connections still present at final Engine shutdown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct McpShutdownReport {
+    pub(crate) connections: usize,
+    pub(crate) failures: usize,
+}
+
+impl McpShutdownReport {
+    fn record(&mut self, settled: bool) {
+        self.connections = self.connections.saturating_add(1);
+        if !settled {
+            self.failures = self.failures.saturating_add(1);
+        }
+    }
+}
+
 // === McpConnection - Async Connection Management ===
 
 // === Transport Trait ===
@@ -453,11 +471,13 @@ pub trait McpTransport: Send + Sync {
     async fn send(&mut self, msg: Vec<u8>) -> Result<()>;
     async fn recv(&mut self) -> Result<Vec<u8>>;
 
-    /// Graceful shutdown — stdio transports send SIGTERM to the child and
-    /// give it a brief window to exit before tokio's `kill_on_drop` fires
-    /// SIGKILL as the backstop. Default is a no-op for non-stdio transports
-    /// that have no child process. Whalescale#420.
-    async fn shutdown(&mut self) {}
+    /// Graceful shutdown for any transport-owned processes or async tasks.
+    /// Returns `true` only when every owned process/task was settled within
+    /// its bounded shutdown budget. The default is a successful no-op for
+    /// transports with no owned lifecycle.
+    async fn shutdown(&mut self) -> bool {
+        true
+    }
 }
 
 struct HttpTransport {
@@ -549,7 +569,7 @@ impl HttpTransport {
     }
 
     async fn switch_to_sse_and_send(&mut self, msg: Vec<u8>) -> Result<()> {
-        let mut sse = SseTransport::connect(
+        let sse = SseTransport::connect(
             self.client.clone(),
             self.base_url.clone(),
             self.auth.clone(),
@@ -557,9 +577,11 @@ impl HttpTransport {
             self.endpoint_timeout,
         )
         .await?;
-        sse.send(msg).await?;
         self.mode = HttpTransportMode::Sse(sse);
-        Ok(())
+        match &mut self.mode {
+            HttpTransportMode::Sse(transport) => transport.send(msg).await,
+            HttpTransportMode::Streamable(_) => unreachable!("SSE mode was just installed"),
+        }
     }
 
     /// Best-effort session-establishment GET preflight.
@@ -667,10 +689,12 @@ impl McpTransport for HttpTransport {
         }
     }
 
-    async fn shutdown(&mut self) {
+    async fn shutdown(&mut self) -> bool {
+        self.cancel_token.cancel();
         if let HttpTransportMode::Sse(transport) = &mut self.mode {
-            transport.shutdown().await;
+            return transport.shutdown().await;
         }
+        true
     }
 }
 
@@ -986,18 +1010,26 @@ impl McpConnection {
             cancel_token,
         };
 
-        // Initialize with timeout
-        tokio::time::timeout(Duration::from_secs(connect_timeout_secs), conn.initialize())
-            .await
-            .with_context(|| format!("MCP server '{name}' initialization timed out"))??;
+        let startup_result: Result<()> = async {
+            // Initialize with timeout
+            tokio::time::timeout(Duration::from_secs(connect_timeout_secs), conn.initialize())
+                .await
+                .with_context(|| format!("MCP server '{name}' initialization timed out"))??;
 
-        // Discover tools, resources, and prompts with timeout
-        tokio::time::timeout(
-            Duration::from_secs(connect_timeout_secs),
-            conn.discover_all(),
-        )
-        .await
-        .with_context(|| format!("MCP server '{name}' discovery timed out"))??;
+            // Discover tools, resources, and prompts with timeout
+            tokio::time::timeout(
+                Duration::from_secs(connect_timeout_secs),
+                conn.discover_all(),
+            )
+            .await
+            .with_context(|| format!("MCP server '{name}' discovery timed out"))??;
+            Ok(())
+        }
+        .await;
+        if let Err(err) = startup_result {
+            conn.shutdown().await;
+            return Err(err);
+        }
 
         conn.state = ConnectionState::Ready;
         Ok(conn)
@@ -1436,11 +1468,11 @@ impl McpConnection {
         }
     }
 
-    /// Gracefully close the connection
-    #[allow(dead_code)] // Public API for MCP consumers
-    pub fn close(&mut self) {
+    async fn shutdown(&mut self) -> bool {
         self.cancel_token.cancel();
+        let settled = self.transport.shutdown().await;
         self.state = ConnectionState::Disconnected;
+        settled
     }
 }
 
@@ -1472,6 +1504,9 @@ pub struct McpPool {
     /// Dynamically added MCP servers (from tool calls at runtime).
     /// These are not persisted to disk and live for the process lifetime.
     pub(crate) dynamic_servers: Arc<RwLock<HashMap<String, McpServerConfig>>>,
+    /// Cumulative shutdown evidence, including runtime eviction paths whose
+    /// transports no longer exist by final Engine settlement.
+    shutdown_report: McpShutdownReport,
 }
 
 impl McpPool {
@@ -1487,6 +1522,7 @@ impl McpPool {
             config_hash,
             last_mtimes: Vec::new(),
             dynamic_servers: Arc::new(RwLock::new(HashMap::new())),
+            shutdown_report: McpShutdownReport::default(),
         }
     }
 
@@ -1532,38 +1568,49 @@ impl McpPool {
         self
     }
 
-    fn drop_connection(&mut self, server_name: &str, reason: &str) {
-        if self.connections.remove(server_name).is_some() {
+    async fn shutdown_connection(&mut self, server_name: &str, reason: &str) {
+        if let Some(mut connection) = self.connections.remove(server_name) {
             tracing::debug!(
                 target: "mcp",
                 server = %server_name,
                 reason = %reason,
-                "dropped MCP connection"
+                "shutting down MCP connection"
             );
+            let settled = connection.shutdown().await;
+            self.shutdown_report.record(settled);
         }
     }
 
-    fn drop_all_connections(&mut self, reason: &str) {
+    async fn shutdown_all_connections(&mut self, reason: &str) {
         if self.connections.is_empty() {
             return;
         }
-        let count = self.connections.len();
+        let connections = std::mem::take(&mut self.connections);
+        let count = connections.len();
         tracing::debug!(
             target: "mcp",
             count,
             reason = %reason,
-            "dropping MCP connections"
+            "shutting down MCP connections"
         );
-        self.connections.clear();
+        let results = futures_util::future::join_all(
+            connections
+                .into_values()
+                .map(|mut connection| async move { connection.shutdown().await }),
+        )
+        .await;
+        for settled in results {
+            self.shutdown_report.record(settled);
+        }
     }
 
     /// If the source config file's mtime has changed since the last check,
-    /// re-read it and (only when the content hash also changed) drop all
+    /// re-read it and (only when the content hash also changed) shut down all
     /// existing connections so the next `get_or_connect` reattaches under
     /// the new config. No-op when the pool was constructed via [`McpPool::new`]
     /// (no source path), when stat fails, or when the file content is
     /// byte-identical to what we last loaded. Returns `Ok(true)` if any
-    /// connections were dropped, `Ok(false)` otherwise.
+    /// connections were replaced, `Ok(false)` otherwise.
     ///
     /// This is the lazy half of the auto-reload story for #1267: instead of a
     /// long-lived file watcher, the next tool invocation pays a single `stat`
@@ -1599,9 +1646,9 @@ impl McpPool {
         if new_hash == self.config_hash {
             return Ok(false);
         }
-        // Real content change — drop all live connections so the next
+        // Real content change — settle all live connections so the next
         // get_or_connect picks up the new config (sandbox flags, env, args).
-        self.drop_all_connections("config reload");
+        self.shutdown_all_connections("config reload").await;
         self.config = new_config;
         self.config_hash = new_hash;
         Ok(true)
@@ -1628,7 +1675,7 @@ impl McpPool {
                 .ok_or_else(|| anyhow::anyhow!("MCP connection disappeared for {server_name}"));
         }
 
-        self.drop_connection(server_name, "reconnect");
+        self.shutdown_connection(server_name, "reconnect").await;
 
         // Check static config first, then dynamic servers
         let server_config = self
@@ -2123,7 +2170,8 @@ impl McpPool {
                     error = %err,
                     "retrying MCP tool call after stale session"
                 );
-                self.drop_connection(server_name, "stale session retry");
+                self.shutdown_connection(server_name, "stale session retry")
+                    .await;
                 let conn = self.get_or_connect(server_name).await?;
                 if !conn.config().is_tool_enabled(tool_name) {
                     anyhow::bail!("MCP tool '{tool_name}' is disabled for server '{server_name}'");
@@ -2191,27 +2239,18 @@ impl McpPool {
 
     /// Disconnect all connections
     #[allow(dead_code)] // Public API for MCP lifecycle management
-    pub fn disconnect_all(&mut self) {
-        self.drop_all_connections("disconnect all");
+    pub async fn disconnect_all(&mut self) -> McpShutdownReport {
+        self.shutdown_all_connections("disconnect all").await;
+        self.shutdown_report
     }
 
-    /// Graceful shutdown of every connection in the pool: send SIGTERM to
-    /// each stdio child and give them a short grace period before drop
-    /// fires SIGKILL. Whalescale#420.
-    ///
-    /// Call from the TUI exit path *before* dropping the pool to give
-    /// MCP servers a chance to flush state. The fallback Drop on
-    /// `StdioTransport` still sends SIGTERM if this never runs, so even
-    /// abnormal exits avoid leaking PIDs without a signal.
+    /// Concurrently settle every connection in the pool. Stdio transports
+    /// receive a bounded graceful process-tree stop followed by hard kill and
+    /// reap; network transports cancel and join their receive tasks.
     #[allow(dead_code)] // Wired in by callers that want graceful shutdown
-    pub async fn shutdown_all(&mut self) {
-        let names: Vec<String> = self.connections.keys().cloned().collect();
-        for name in names {
-            if let Some(conn) = self.connections.get_mut(&name) {
-                conn.transport.shutdown().await;
-            }
-        }
-        self.connections.clear();
+    pub async fn shutdown_all(&mut self) -> McpShutdownReport {
+        self.shutdown_all_connections("pool shutdown").await;
+        self.shutdown_report
     }
 
     /// Get the underlying configuration

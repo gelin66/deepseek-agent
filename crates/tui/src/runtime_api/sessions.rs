@@ -398,6 +398,7 @@ pub(super) fn messages_from_thread_detail(detail: &ThreadDetail) -> Vec<Message>
                             id: tool_use_id,
                             name: tool_name,
                             input,
+                            raw_arguments: None,
                             caller: None,
                         });
                     }
@@ -594,6 +595,7 @@ pub(super) fn session_to_detail(session: SavedSession) -> SessionDetailResponse 
                         name,
                         input,
                         caller,
+                        ..
                     } => {
                         let mut obj =
                             json!({ "type": "tool_use", "id": id, "name": name, "input": input });

@@ -9,7 +9,7 @@ use crate::automation_manager::{
     AutomationStatus, CreateAutomationRequest, UpdateAutomationRequest, run_now_shared,
 };
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_str, optional_u64, required_str,
 };
 
@@ -62,7 +62,7 @@ impl ToolSpec for AutomationCreateTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .automations
@@ -96,7 +96,7 @@ impl ToolSpec for AutomationCreateTool {
         let automation = manager
             .create_automation(req)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        ToolResult::json(&automation).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&automation).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -124,7 +124,7 @@ impl ToolSpec for AutomationListTool {
         vec![ToolCapability::ReadOnly]
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .automations
@@ -135,7 +135,7 @@ impl ToolSpec for AutomationListTool {
             .list_automations()
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         automations.truncate(optional_u64(&input, "limit", 50).clamp(1, 100) as usize);
-        ToolResult::json(&automations).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&automations).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -161,7 +161,7 @@ impl ToolSpec for AutomationReadTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .automations
@@ -175,7 +175,7 @@ impl ToolSpec for AutomationReadTool {
         let runs = manager
             .list_runs(id, Some(20))
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        ToolResult::json(&json!({ "automation": automation, "recent_runs": runs }))
+        ToolOutcome::json(&json!({ "automation": automation, "recent_runs": runs }))
             .map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
@@ -218,7 +218,7 @@ impl ToolSpec for AutomationUpdateTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .automations
@@ -252,7 +252,7 @@ impl ToolSpec for AutomationUpdateTool {
         let automation = manager
             .update_automation(required_str(&input, "automation_id")?, req)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        ToolResult::json(&automation).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&automation).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -279,7 +279,7 @@ macro_rules! write_automation_tool {
                 &self,
                 input: Value,
                 context: &ToolContext,
-            ) -> Result<ToolResult, ToolError> {
+            ) -> Result<ToolOutcome, ToolError> {
                 let manager =
                     context.runtime.automations.as_ref().ok_or_else(|| {
                         ToolError::not_available("AutomationManager is not attached")
@@ -288,7 +288,7 @@ macro_rules! write_automation_tool {
                 let automation = manager
                     .$method(required_str(&input, "automation_id")?)
                     .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-                ToolResult::json(&automation)
+                ToolOutcome::json(&automation)
                     .map_err(|e| ToolError::execution_failed(e.to_string()))
             }
         }
@@ -336,7 +336,7 @@ impl ToolSpec for AutomationRunTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .automations
@@ -356,7 +356,7 @@ impl ToolSpec for AutomationRunTool {
         )
         .await
         .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        ToolResult::json(&run).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&run).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 

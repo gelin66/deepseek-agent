@@ -9,7 +9,7 @@
 //! still resolve it cleanly.
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -59,7 +59,7 @@ impl ToolSpec for MultiToolUseParallelTool {
         &self,
         _input: Value,
         _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         Err(ToolError::execution_failed(
             "multi_tool_use.parallel must be handled by the engine",
         ))

@@ -98,31 +98,7 @@ impl TurnContext {
 
     /// Add usage from an API response
     pub fn add_usage(&mut self, usage: &Usage) {
-        self.usage.input_tokens += usage.input_tokens;
-        self.usage.output_tokens += usage.output_tokens;
-        self.usage.prompt_cache_hit_tokens = add_optional_usage(
-            self.usage.prompt_cache_hit_tokens,
-            usage.prompt_cache_hit_tokens,
-        );
-        self.usage.prompt_cache_miss_tokens = add_optional_usage(
-            self.usage.prompt_cache_miss_tokens,
-            usage.prompt_cache_miss_tokens,
-        );
-        self.usage.prompt_cache_write_tokens = add_optional_usage(
-            self.usage.prompt_cache_write_tokens,
-            usage.prompt_cache_write_tokens,
-        );
-        self.usage.reasoning_tokens =
-            add_optional_usage(self.usage.reasoning_tokens, usage.reasoning_tokens);
-    }
-}
-
-fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
-    match (total, delta) {
-        (Some(total), Some(delta)) => Some(total.saturating_add(delta)),
-        (None, Some(delta)) => Some(delta),
-        (Some(total), None) => Some(total),
-        (None, None) => None,
+        self.usage.accumulate(usage);
     }
 }
 

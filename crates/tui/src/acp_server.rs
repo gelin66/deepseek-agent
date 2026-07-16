@@ -537,7 +537,7 @@ impl AcpServer {
             })
             .unwrap_or("");
         let route =
-            crate::resolve_cli_auto_route(&self.config, &self.model, last_user_text).await?;
+            crate::resolve_cli_auto_route(&self.config, &self.model, last_user_text, None).await?;
         let execution_config = crate::config_for_cli_route(&self.config, &route);
         let client = DeepSeekClient::new(&execution_config)?;
         let reasoning_effort = route

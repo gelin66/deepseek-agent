@@ -1,0 +1,18 @@
+[package]
+name = "codewhale-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "UI-independent single Agent runtime for CodeWhale"
+
+[dependencies]
+async-trait.workspace = true
+codewhale-protocol = { path = "../protocol", version = "0.8.68" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "sync", "time"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

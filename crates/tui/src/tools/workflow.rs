@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 use crate::core::events::Event;
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_str, optional_u64,
 };
 use crate::tools::subagent::{
@@ -507,7 +507,7 @@ impl ToolSpec for WorkflowTool {
         matches!(parse_workflow_action(input), Ok(WorkflowAction::Status))
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let state = shared_workflow_state(&context.workspace);
         match parse_workflow_action(&input)? {
             WorkflowAction::Start => {
@@ -550,7 +550,7 @@ async fn start_workflow(
     state: Arc<WorkflowWorkspaceState>,
     wait: bool,
     approval_decision: &str,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let source = workflow_source(&input, context)?;
     let args = input.get("args").cloned().unwrap_or(Value::Null);
     let token_budget = optional_u64(&input, "token_budget", 0);
@@ -659,7 +659,7 @@ async fn start_workflow(
 fn status_workflow(
     input: Value,
     state: Arc<WorkflowWorkspaceState>,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     if let Some(run_id) = optional_str(&input, "run_id") {
         return workflow_result_for(run_id, state);
     }
@@ -671,7 +671,7 @@ fn status_workflow(
             .collect::<Vec<_>>()
     };
     summaries.sort_by_key(|record| record.started_at_ms);
-    ToolResult::json(&json!({
+    ToolOutcome::json(&json!({
         "action": "status",
         "count": summaries.len(),
         "runs": summaries,
@@ -682,7 +682,7 @@ fn status_workflow(
 async fn cancel_workflow(
     input: Value,
     state: Arc<WorkflowWorkspaceState>,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let run_id =
         optional_str(&input, "run_id").ok_or_else(|| ToolError::missing_field("run_id"))?;
     let controller = {
@@ -897,7 +897,7 @@ async fn run_workflow_vm(
 fn workflow_result_for(
     run_id: &str,
     state: Arc<WorkflowWorkspaceState>,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let record = {
         let runs_guard = lock_mutex(&state.runs)?;
         runs_guard.get(run_id).cloned().ok_or_else(|| {
@@ -905,7 +905,7 @@ fn workflow_result_for(
         })?
     };
     let mut result =
-        ToolResult::json(&record).map_err(|err| ToolError::execution_failed(err.to_string()))?;
+        ToolOutcome::json(&record).map_err(|err| ToolError::execution_failed(err.to_string()))?;
     let summary = record.summary();
     result.metadata = Some(json!({
         "run_id": summary.run_id,
@@ -3603,11 +3603,11 @@ export default workflow({
 
         assert!(registry.contains("workflow"));
         assert!(registry.contains("agent"));
-        assert!(registry.contains("agents/list"));
-        assert!(registry.contains("agents/message"));
-        assert!(registry.contains("agents/followup"));
-        assert!(registry.contains("agents/interrupt"));
-        assert!(registry.contains("agents/wait"));
+        assert!(registry.contains("agents_list"));
+        assert!(registry.contains("agents_message"));
+        assert!(registry.contains("agents_followup"));
+        assert!(registry.contains("agents_interrupt"));
+        assert!(registry.contains("agents_wait"));
         assert!(
             registry
                 .to_api_tools()
@@ -3638,7 +3638,7 @@ export default workflow({
             .execute(
                 json!({
                     "action": "run",
-                    "script": "phase('dispatch'); log('starting child'); const out = await task({ description: 'say done', type: 'explore', allowedTools: [], label: 'inspect-child', model: 'deepseek-v4-flash', modelStrength: 'same', thinking: 'low' }); return { out };"
+                    "script": "phase('dispatch'); log('starting child'); const out = await task({ description: 'say done', type: 'explore', label: 'inspect-child', model: 'deepseek-v4-flash', modelStrength: 'same', thinking: 'low' }); return { out };"
                 }),
                 &ctx,
             )
@@ -3821,7 +3821,7 @@ reviewer = "reviewer"
             .execute(
                 json!({
                     "action": "run",
-                    "script": "phase('alpha'); await task({ description: 'first', type: 'explore', allowedTools: [], label: 'one' }); phase('beta'); await task({ description: 'second', type: 'explore', allowedTools: [], label: 'two', phase: 'beta-explicit' }); return { ok: true };"
+                    "script": "phase('alpha'); await task({ description: 'first', type: 'explore', label: 'one' }); phase('beta'); await task({ description: 'second', type: 'explore', label: 'two', phase: 'beta-explicit' }); return { ok: true };"
                 }),
                 &ctx,
             )
@@ -4456,7 +4456,7 @@ reviewer = "reviewer"
                     "script": r#"
                         let n = 0;
                         while (n < 20) {
-                            await task({ description: `task ${n}`, type: 'explore', allowedTools: [] });
+                            await task({ description: `task ${n}`, type: 'explore' });
                             n++;
                         }
                         return n;
@@ -4565,7 +4565,7 @@ reviewer = "reviewer"
                     "action": "run",
                     "token_budget": 1000,
                     "script": r#"
-                        await task({ description: 'budgeted work', type: 'explore', allowedTools: [] });
+                        await task({ description: 'budgeted work', type: 'explore' });
                         return { spent: budget.spent(), total: budget.total, remaining: budget.remaining() };
                     "#
                 }),

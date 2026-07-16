@@ -33,28 +33,8 @@ pub use bridge::RlmBridge;
 pub use prompt::rlm_system_prompt;
 pub use turn::{RlmTermination, RlmTurnResult, run_rlm_turn, run_rlm_turn_with_root};
 
-fn add_usage_with_prompt_cache(total: &mut Usage, delta: &Usage) {
-    total.input_tokens = total.input_tokens.saturating_add(delta.input_tokens);
-    total.output_tokens = total.output_tokens.saturating_add(delta.output_tokens);
-    total.prompt_cache_hit_tokens =
-        add_optional_usage(total.prompt_cache_hit_tokens, delta.prompt_cache_hit_tokens);
-    total.prompt_cache_miss_tokens = add_optional_usage(
-        total.prompt_cache_miss_tokens,
-        delta.prompt_cache_miss_tokens,
-    );
-    total.prompt_cache_write_tokens = add_optional_usage(
-        total.prompt_cache_write_tokens,
-        delta.prompt_cache_write_tokens,
-    );
-}
-
-fn add_optional_usage(total: Option<u32>, delta: Option<u32>) -> Option<u32> {
-    match (total, delta) {
-        (Some(total), Some(delta)) => Some(total.saturating_add(delta)),
-        (None, Some(delta)) => Some(delta),
-        (Some(total), None) => Some(total),
-        (None, None) => None,
-    }
+fn accumulate_usage(total: &mut Usage, delta: &Usage) {
+    total.accumulate(delta);
 }
 
 #[cfg(test)]
@@ -62,7 +42,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_usage_with_prompt_cache_preserves_cache_counts() {
+    fn accumulate_usage_preserves_all_observed_classes() {
         let mut total = Usage {
             input_tokens: 100,
             output_tokens: 10,
@@ -78,7 +58,7 @@ mod tests {
             ..Usage::default()
         };
 
-        add_usage_with_prompt_cache(&mut total, &delta);
+        accumulate_usage(&mut total, &delta);
 
         assert_eq!(total.input_tokens, 150);
         assert_eq!(total.output_tokens, 15);

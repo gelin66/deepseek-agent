@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use tokio::sync::Mutex;
 
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 const DEFAULT_MAX_CHARS: usize = 12_000;
@@ -264,7 +264,7 @@ impl ToolSpec for HandleReadTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let handle = parse_handle(
             input
                 .get("handle")
@@ -302,7 +302,7 @@ impl ToolSpec for HandleReadTool {
             Projection::Introspect => introspect_projection(record),
         };
 
-        ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 

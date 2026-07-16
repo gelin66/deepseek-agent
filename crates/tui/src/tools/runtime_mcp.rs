@@ -13,7 +13,7 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::mcp::{McpPool, McpServerConfig, McpTool};
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 // === Parsing Functions ===
@@ -246,7 +246,11 @@ impl ToolSpec for StartRuntimeMcpServer {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let server = input
             .get("server")
             .and_then(|v| v.as_str())
@@ -372,7 +376,7 @@ impl ToolSpec for StartRuntimeMcpServer {
         }))
         .unwrap_or_else(|_| "{}".to_string());
 
-        Ok(ToolResult::success(result))
+        Ok(ToolOutcome::success(result))
     }
 }
 

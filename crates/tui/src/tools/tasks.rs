@@ -17,7 +17,7 @@ use crate::task_manager::{
 };
 use crate::tools::shell::{ExecShellTool, ShellWaitTool};
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_str, optional_u64, required_str,
 };
 
@@ -89,7 +89,7 @@ impl ToolSpec for TaskCreateTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .task_manager
@@ -143,7 +143,7 @@ impl ToolSpec for TaskListTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .task_manager
@@ -151,7 +151,7 @@ impl ToolSpec for TaskListTool {
             .ok_or_else(|| ToolError::not_available("TaskManager is not attached"))?;
         let limit = optional_u64(&input, "limit", 20).clamp(1, 100) as usize;
         let tasks = manager.list_tasks(Some(limit)).await;
-        ToolResult::json(&json!({
+        ToolOutcome::json(&json!({
             "summary": format!("{} durable task(s)", tasks.len()),
             "tasks": tasks,
         }))
@@ -188,7 +188,7 @@ impl ToolSpec for TaskReadTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .task_manager
@@ -231,7 +231,7 @@ impl ToolSpec for TaskCancelTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .task_manager
@@ -284,7 +284,7 @@ impl ToolSpec for TaskGateRunTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let gate = required_str(&input, "gate")?.to_string();
         let command = required_str(&input, "command")?.to_string();
         let timeout_ms = optional_u64(&input, "timeout_ms", DEFAULT_GATE_TIMEOUT_MS)
@@ -293,7 +293,7 @@ impl ToolSpec for TaskGateRunTool {
 
         let safety = analyze_command(&command);
         if !context.auto_approve && matches!(safety.level, SafetyLevel::Dangerous) {
-            return Ok(ToolResult::error(format!(
+            return Ok(ToolOutcome::error(format!(
                 "BLOCKED: gate command classified dangerous: {}",
                 safety.reasons.join("; ")
             ))
@@ -387,7 +387,7 @@ impl ToolSpec for TaskGateRunTool {
         if let Some(path) = log_path {
             metadata["artifact_path"] = json!(path);
         }
-        Ok(ToolResult::json(&content)
+        Ok(ToolOutcome::json(&content)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?
             .with_metadata(metadata))
     }
@@ -433,7 +433,7 @@ impl ToolSpec for TaskShellStartTool {
         input.get("command").and_then(Value::as_str).is_some()
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let mut shell_input = json!({
             "command": required_str(&input, "command")?,
             "background": true,
@@ -492,7 +492,7 @@ impl ToolSpec for TaskShellWaitTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let result = ShellWaitTool::new("exec_shell_wait")
             .execute(input.clone(), context)
             .await?;
@@ -592,7 +592,7 @@ impl ToolSpec for PrAttemptRecordTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let task_id = task_id_from_input_or_context(&input, context)?;
         let base_sha = git_output(&context.workspace, &["rev-parse", "HEAD"])
             .await
@@ -603,7 +603,7 @@ impl ToolSpec for PrAttemptRecordTool {
             .ok();
         let diff = git_output(&context.workspace, &["diff", "--binary", "--no-color"]).await?;
         if diff.trim().is_empty() {
-            return Ok(ToolResult::error(
+            return Ok(ToolOutcome::error(
                 "No working-tree diff to record as an attempt.",
             ));
         }
@@ -657,7 +657,7 @@ impl ToolSpec for PrAttemptRecordTool {
                 .await
                 .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         }
-        Ok(ToolResult::json(&metadata)
+        Ok(ToolOutcome::json(&metadata)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?
             .with_metadata(metadata))
     }
@@ -681,9 +681,9 @@ impl ToolSpec for PrAttemptListTool {
         vec![ToolCapability::ReadOnly]
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let task = read_task_for_input(&input, context).await?;
-        ToolResult::json(&json!({ "task_id": task.id, "attempts": task.attempts }))
+        ToolOutcome::json(&json!({ "task_id": task.id, "attempts": task.attempts }))
             .map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
@@ -714,7 +714,7 @@ impl ToolSpec for PrAttemptReadTool {
         vec![ToolCapability::ReadOnly]
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let task = read_task_for_input(&input, context).await?;
         let attempt_id = required_str(&input, "attempt_id")?;
         let attempt = task
@@ -722,7 +722,7 @@ impl ToolSpec for PrAttemptReadTool {
             .iter()
             .find(|attempt| attempt.id == attempt_id)
             .ok_or_else(|| ToolError::invalid_input(format!("Attempt not found: {attempt_id}")))?;
-        ToolResult::json(attempt).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(attempt).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -752,7 +752,7 @@ impl ToolSpec for PrAttemptPreflightTool {
         vec![ToolCapability::ReadOnly]
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let manager = context
             .runtime
             .task_manager
@@ -789,7 +789,7 @@ impl ToolSpec for PrAttemptPreflightTool {
         .map_err(|e| ToolError::execution_failed(format!("git apply --check failed: {e}")))?;
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        Ok(ToolResult::json(&json!({
+        Ok(ToolOutcome::json(&json!({
             "attempt_id": attempt_id,
             "patch_path": patch_ref,
             "would_apply": out.status.success(),
@@ -802,8 +802,8 @@ impl ToolSpec for PrAttemptPreflightTool {
     }
 }
 
-fn task_result(label: &str, task: &TaskRecord) -> Result<ToolResult, ToolError> {
-    ToolResult::json(&json!({
+fn task_result(label: &str, task: &TaskRecord) -> Result<ToolOutcome, ToolError> {
+    ToolOutcome::json(&json!({
         "summary": format!("{label}: {} ({:?})", task.id, task.status),
         "task": task,
     }))

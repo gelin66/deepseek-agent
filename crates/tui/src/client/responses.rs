@@ -93,7 +93,7 @@ impl DeepSeekClient {
         let account_id = crate::oauth::codex_account_id();
         let request_body =
             serde_json::to_vec(&body).context("Failed to serialize Responses API request body")?;
-        let response = self
+        let (response, request_lease) = self
             .send_with_retry(|| {
                 let mut builder = self
                     .http_client
@@ -121,6 +121,11 @@ impl DeepSeekClient {
 
         let stream = async_stream::stream! {
             use futures_util::StreamExt;
+
+            // Keep the admitted physical request in flight until the response
+            // stream itself is consumed or dropped; response headers are not
+            // a lifecycle terminal.
+            let _request_lease = request_lease;
 
             // Emit synthetic MessageStart.
             yield Ok(StreamEvent::MessageStart {
@@ -412,6 +417,7 @@ impl DeepSeekClient {
                             id,
                             name,
                             input,
+                            raw_arguments: None,
                             caller,
                         },
                         ContentBlockStart::ServerToolUse { id, name, input } => {
@@ -453,12 +459,19 @@ impl DeepSeekClient {
                 StreamEvent::ContentBlockStop { index } => {
                     let i = index as usize;
                     if let Some(buf) = tool_args.get(i)
-                        && !buf.trim().is_empty()
-                        && let Ok(parsed) = serde_json::from_str::<Value>(buf)
-                        && let Some(ContentBlock::ToolUse { input, .. }) =
-                            response.content.get_mut(i)
+                        && !buf.is_empty()
+                        && let Some(ContentBlock::ToolUse {
+                            input,
+                            raw_arguments,
+                            ..
+                        }) = response.content.get_mut(i)
                     {
-                        *input = parsed;
+                        *raw_arguments = Some(buf.clone());
+                        if let Ok(parsed) = serde_json::from_str::<Value>(buf) {
+                            *input = parsed;
+                        } else {
+                            *input = Value::String(buf.clone());
+                        }
                     }
                 }
                 StreamEvent::MessageDelta { delta, usage } => {
@@ -1064,6 +1077,7 @@ mod tests {
                         id: "call_abc|fc_123".to_string(),
                         name: "checklist_write".to_string(),
                         input: json!({"items": []}),
+                        raw_arguments: None,
                         caller: None,
                     }],
                 },
@@ -1109,6 +1123,7 @@ mod tests {
                     id: "call_abc|fc_123".to_string(),
                     name: "web.run".to_string(),
                     input: json!({}),
+                    raw_arguments: None,
                     caller: None,
                 }],
             }],

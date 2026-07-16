@@ -28,7 +28,8 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
+    required_str,
 };
 
 // ── Enums ──────────────────────────────────────────────────────────────────
@@ -580,7 +581,7 @@ impl ToolSpec for SlopLedgerAppendTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let entries_val = input
             .get("entries")
             .and_then(|v| v.as_array())
@@ -639,7 +640,7 @@ impl ToolSpec for SlopLedgerAppendTool {
             .save()
             .map_err(|e| ToolError::execution_failed(format!("failed to save debt ledger: {e}")))?;
 
-        Ok(ToolResult::success(format!(
+        Ok(ToolOutcome::success(format!(
             "Appended {} debt ledger entr{} ({} total): {}",
             appended_count,
             if appended_count == 1 { "y" } else { "ies" },
@@ -699,7 +700,11 @@ impl ToolSpec for SlopLedgerQueryTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let filter = SlopLedgerFilter {
             bucket: input
                 .get("bucket")
@@ -728,7 +733,7 @@ impl ToolSpec for SlopLedgerQueryTool {
             .map_err(|e| ToolError::execution_failed(format!("failed to load debt ledger: {e}")))?;
 
         if ledger.is_empty() {
-            return Ok(ToolResult::success("Debt ledger is empty."));
+            return Ok(ToolOutcome::success("Debt ledger is empty."));
         }
 
         let results = ledger.query(&filter);
@@ -747,7 +752,7 @@ impl ToolSpec for SlopLedgerQueryTool {
                 out.push_str(&format!("  {desc}\n"));
             }
         }
-        Ok(ToolResult::success(out))
+        Ok(ToolOutcome::success(out))
     }
 }
 
@@ -793,7 +798,11 @@ impl ToolSpec for SlopLedgerUpdateTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let id = required_str(&input, "id")?;
         let status =
             SlopEntryStatus::from_str(required_str(&input, "status")?).ok_or_else(|| {
@@ -811,13 +820,13 @@ impl ToolSpec for SlopLedgerUpdateTool {
             .map_err(|e| ToolError::execution_failed(format!("failed to load debt ledger: {e}")))?;
 
         match ledger.update_status(id, status, cleanup) {
-            Ok(Some(entry)) => Ok(ToolResult::success(format!(
+            Ok(Some(entry)) => Ok(ToolOutcome::success(format!(
                 "Updated debt ledger entry {} ({}) → {:?}",
                 short_id(&entry.id),
                 entry.title,
                 entry.status
             ))),
-            Ok(None) => Ok(ToolResult::success(format!(
+            Ok(None) => Ok(ToolOutcome::success(format!(
                 "No debt ledger entry found matching '{id}'. Use slop_ledger_query to list entries."
             ))),
             Err(e) => Err(ToolError::execution_failed(format!(
@@ -874,7 +883,11 @@ impl ToolSpec for SlopLedgerExportTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let title = input.get("title").and_then(|v| v.as_str());
 
         let filter = if input.get("bucket").is_some()
@@ -904,7 +917,7 @@ impl ToolSpec for SlopLedgerExportTool {
             .map_err(|e| ToolError::execution_failed(format!("failed to load debt ledger: {e}")))?;
 
         let markdown = ledger.export_markdown(title, filter.as_ref());
-        Ok(ToolResult::success(markdown))
+        Ok(ToolOutcome::success(markdown))
     }
 }
 

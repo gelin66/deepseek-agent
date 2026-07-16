@@ -1,8 +1,8 @@
 //! Streaming response state and guardrails.
 //!
 //! This module owns the local state used while decoding one model stream:
-//! content block kind tracking, streamed tool-use buffers, transparent retry
-//! policy, and scrubbers for text that looks like a forged tool-call wrapper.
+//! content block kind tracking, streamed tool-use buffers, retry policy, and
+//! scrubbers for text that looks like a forged tool-call wrapper.
 
 use crate::models::ToolCaller;
 use std::time::Duration;
@@ -38,39 +38,9 @@ pub(super) const STREAM_MAX_CONTENT_BYTES: usize = 10 * 1024 * 1024; // 10 MB
 /// per-chunk idle of 300s with no wall-clock cap; we keep both layers but
 /// give the wall-clock a generous window so it never fires in practice.
 pub(super) const STREAM_MAX_DURATION_SECS: u64 = 1800; // 30 minutes (was 300s; #103/#1)
-/// Hard cap on consecutive recoverable stream errors before we surface a turn
-/// failure. Bumped 3 → 5 in v0.6.7 along with the HTTP/2 keepalive defaults
-/// (#103) — keepalive should make spurious decode errors rarer, so we can
-/// tolerate a longer streak before giving up on the turn.
-pub(super) const MAX_STREAM_ERRORS_BEFORE_FAIL: u32 = 5;
-/// Cap on transparent stream-level retries — these only happen when the wire
-/// dies before any content was streamed, so DeepSeek hasn't billed us and
-/// the user hasn't seen anything. Two attempts is enough to ride out a
-/// flaky edge node without amplifying real outages (#103).
-pub(super) const MAX_TRANSPARENT_STREAM_RETRIES: u32 = 2;
-
-/// Decide whether a stream error is eligible for a transparent retry.
-///
-/// True only when ALL three conditions hold:
-/// 1. No content has been received on the current attempt — otherwise DeepSeek
-///    has already billed us for output tokens and the user has seen partial
-///    deltas; resending would double-bill and desync the UI.
-/// 2. We still have transparent-retry budget remaining.
-/// 3. The turn has not been cancelled.
-///
-/// Extracted as a pure function so the four #103 retry cases can be exercised
-/// in unit tests without booting the full engine state machine.
-pub(super) fn should_transparently_retry_stream(
-    any_content_received: bool,
-    transparent_attempts: u32,
-    cancelled: bool,
-) -> bool {
-    !any_content_received && transparent_attempts < MAX_TRANSPARENT_STREAM_RETRIES && !cancelled
-}
-
-/// Budget for re-issuing the whole request after a dead stream. Shared by the
-/// nothing-streamed outer retry (#103 Phase 3) and the sleep-resume retry
-/// (#2990).
+/// Budget for re-issuing the whole request after a dead stream. One outer
+/// state machine owns ordinary empty-stream recovery and sleep-resume recovery;
+/// there is no nested retry loop to multiply attempts.
 pub(super) const MAX_STREAM_RETRIES: u32 = 3;
 
 /// Wall-clock vs monotonic divergence above which we conclude the host slept
@@ -90,7 +60,7 @@ pub(super) fn sleep_gap_detected(monotonic_elapsed: Duration, wallclock_elapsed:
 /// Decide whether a failed stream should be silently re-issued because the
 /// host slept mid-turn (#2990).
 ///
-/// Unlike the transparent retry (#103), this fires even after content has
+/// Unlike ordinary empty-stream recovery (#103), this fires even after content has
 /// streamed: the partial output predates the sleep, the user was not
 /// watching, and re-running the identical request is the correct
 /// user-visible behavior. The double-billing concern that blocks ordinary

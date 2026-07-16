@@ -357,6 +357,7 @@ fn compact_content_block(block: &ContentBlock) -> Value {
             name,
             input,
             caller,
+            ..
         } => json!({
             "type": "tool_use",
             "id": id,

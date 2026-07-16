@@ -12,6 +12,7 @@ members = [
     "crates/mcp",
     "crates/protocol",
     "crates/release",
+    "crates/runtime",
     "crates/secrets",
     "crates/state",
     "crates/tools",

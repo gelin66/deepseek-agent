@@ -43,9 +43,44 @@ fn stream_open_timeout_from_env(value: Option<&str>) -> Duration {
     Duration::from_secs(secs)
 }
 
+fn stream_idle_error(idle: Duration) -> anyhow::Error {
+    anyhow::Error::new(StreamError::Stall {
+        timeout_secs: idle.as_secs(),
+    })
+}
+
+fn stream_read_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut chain = error.to_string();
+    let mut current = error.source();
+    while let Some(source) = current {
+        chain.push_str(&format!(" -> {source}"));
+        current = source.source();
+    }
+    chain
+}
+
+fn stream_read_error(error: &reqwest::Error) -> anyhow::Error {
+    anyhow::Error::new(LlmError::NetworkError(format!(
+        "Stream read error: {}",
+        stream_read_error_chain(error)
+    )))
+}
+
+fn response_header_timeout_error(timeout: Duration) -> anyhow::Error {
+    anyhow::Error::new(LlmError::Timeout(timeout))
+}
+
+fn response_body_read_error(error: &reqwest::Error) -> anyhow::Error {
+    anyhow::Error::new(LlmError::NetworkError(format!(
+        "Failed to read Chat API response body: {}",
+        stream_read_error_chain(error)
+    )))
+}
+
 use crate::config::ApiProvider;
-use crate::llm_client::StreamEventBox;
+use crate::error_taxonomy::StreamError;
 use crate::llm_client::sanitize_http_error_body;
+use crate::llm_client::{LlmError, StreamEventBox};
 use crate::logging;
 use crate::models::{
     ContentBlock, ContentBlockStart, Delta, Message, MessageDelta, MessageRequest, MessageResponse,
@@ -53,7 +88,9 @@ use crate::models::{
     model_is_openai_reasoning_family, model_supports_reasoning,
 };
 
+use super::deepseek::ApiSurface;
 use super::deepseek::{self, RequestPlan, ResponseMode};
+use super::request_budget::ApiResponseAccountingGuard;
 use super::{
     DeepSeekClient, ERROR_BODY_MAX_BYTES, SSE_BACKPRESSURE_HIGH_WATERMARK,
     SSE_BACKPRESSURE_SLEEP_MS, SSE_MAX_LINES_PER_CHUNK, acquire_stream_buffer, api_url_with_suffix,
@@ -160,15 +197,16 @@ fn official_deepseek_request_plan(
     client: &DeepSeekClient,
     request: &MessageRequest,
     response_mode: ResponseMode,
-) -> Option<RequestPlan> {
-    deepseek::plan_chat(
+) -> Result<Option<RequestPlan>> {
+    let plan = deepseek::plan_chat(
         client.api_provider,
         &client.base_url,
         client.path_suffix.as_deref(),
         client.strict_tool_mode,
         request,
         response_mode,
-    )
+    )?;
+    Ok(plan)
 }
 
 fn legacy_chat_request(
@@ -234,8 +272,8 @@ fn legacy_chat_request(
     );
     let reasoning_replay_tokens = streaming
         .then(|| {
-            sanitize_thinking_mode_messages(
-                &mut body,
+            reasoning_replay_tokens_for_messages(
+                &body,
                 &model,
                 request.reasoning_effort.as_deref(),
                 client.api_provider,
@@ -257,16 +295,24 @@ impl DeepSeekClient {
         request: &MessageRequest,
     ) -> Result<MessageResponse> {
         let cacheable = crate::llm_response_cache::request_is_cacheable(request);
-        let (body, url, reasoning_replay_tokens, official_plan) = if let Some(plan) =
-            official_deepseek_request_plan(self, request, ResponseMode::NonStreaming)
-        {
-            debug_assert_eq!(plan.response_mode, ResponseMode::NonStreaming);
-            (plan.body, plan.url, plan.reasoning_replay_tokens, true)
-        } else {
-            let (body, url, _model, replay) =
-                legacy_chat_request(self, request, ResponseMode::NonStreaming);
-            (body, url, replay, false)
-        };
+        let (body, url, model, surface, reasoning_replay_tokens, official_plan) =
+            if let Some(plan) =
+                official_deepseek_request_plan(self, request, ResponseMode::NonStreaming)?
+            {
+                debug_assert_eq!(plan.response_mode, ResponseMode::NonStreaming);
+                (
+                    plan.body,
+                    plan.url,
+                    plan.model,
+                    plan.surface,
+                    plan.reasoning_replay_tokens,
+                    true,
+                )
+            } else {
+                let (body, url, model, replay) =
+                    legacy_chat_request(self, request, ResponseMode::NonStreaming);
+                (body, url, model, ApiSurface::StandardChat, replay, false)
+            };
 
         let response_cache_key = if cacheable {
             let wire_body =
@@ -292,17 +338,21 @@ impl DeepSeekClient {
         };
 
         let open_timeout = stream_open_timeout();
-        let response = match tokio_timeout(open_timeout, self.send_json_with_retry(&url, &body))
-            .await
+        let (response, request_lease) = match tokio_timeout(
+            open_timeout,
+            self.send_json_with_retry(&url, &body),
+        )
+        .await
         {
             Ok(result) => result?,
             Err(_elapsed) => {
-                anyhow::bail!(
+                logging::warn(format!(
                     "SSE stream request did not receive response headers after {}s. \
                      `codewhale doctor` can still pass when non-streaming requests work; \
                      on Windows or proxy networks, try `DEEPSEEK_FORCE_HTTP1=1` and rerun `codewhale`.",
                     open_timeout.as_secs()
-                );
+                ));
+                return Err(response_header_timeout_error(open_timeout));
             }
         };
 
@@ -317,16 +367,24 @@ impl DeepSeekClient {
             anyhow::bail!("Failed to call DeepSeek Chat API: HTTP {status}: {error_text}");
         }
 
+        let mut response_accounting =
+            ApiResponseAccountingGuard::new(request_lease, self.api_provider, model, surface);
         let response_text = response
             .text()
             .await
-            .context("Failed to read Chat API response body")?;
+            .map_err(|error| response_body_read_error(&error))?;
         let value: Value =
             serde_json::from_str(&response_text).context("Failed to parse Chat API JSON")?;
+        let observed_usage = value.get("usage").filter(|usage| usage.is_object());
+        if let Some(wire_usage) = observed_usage {
+            response_accounting.observe(&parse_usage(Some(wire_usage)), Some(wire_usage));
+        }
         let mut parsed = parse_chat_message(&value)?;
         if let Some(tokens) = reasoning_replay_tokens {
             parsed.usage.reasoning_replay_tokens = Some(tokens);
         }
+        response_accounting.set_model(parsed.model.clone());
+        response_accounting.complete(observed_usage.map(|_| &parsed.usage), observed_usage);
         if let Some(key) = response_cache_key {
             crate::llm_response_cache::response_cache().put(key, parsed.clone());
         }
@@ -339,20 +397,23 @@ impl DeepSeekClient {
         &self,
         request: MessageRequest,
     ) -> Result<StreamEventBox> {
-        let (body, url, model, replay_input_tokens) = if let Some(plan) =
-            official_deepseek_request_plan(self, &request, ResponseMode::Streaming)
+        let (body, url, model, surface, replay_input_tokens) = if let Some(plan) =
+            official_deepseek_request_plan(self, &request, ResponseMode::Streaming)?
         {
             debug_assert_eq!(plan.response_mode, ResponseMode::Streaming);
             (
                 plan.body,
                 plan.url,
                 plan.model,
+                plan.surface,
                 plan.reasoning_replay_tokens,
             )
         } else {
-            legacy_chat_request(self, &request, ResponseMode::Streaming)
+            let (body, url, model, replay) =
+                legacy_chat_request(self, &request, ResponseMode::Streaming);
+            (body, url, model, ApiSurface::StandardChat, replay)
         };
-        let response = self.send_json_with_retry(&url, &body).await?;
+        let (response, request_lease) = self.send_json_with_retry(&url, &body).await?;
 
         let status = response.status();
         if !status.is_success() {
@@ -362,9 +423,9 @@ impl DeepSeekClient {
                 status.as_u16(),
                 &raw_error_text,
             );
-            // If DeepSeek rejected for missing reasoning_content despite the
-            // sanitizer, dump the offending indices so we can diagnose where
-            // they came from on the next failure.
+            // If DeepSeek rejects `reasoning_content`, dump the outgoing
+            // indices so an unowned legacy route or provider protocol change
+            // remains diagnosable.
             if error_text.contains("reasoning_content") {
                 log_thinking_mode_violations(&body);
             }
@@ -381,9 +442,13 @@ impl DeepSeekClient {
         let byte_stream = response.bytes_stream();
         let stream_idle_timeout = self.stream_idle_timeout;
         let configured_reasoning_stream_style = self.reasoning_stream_style.clone();
+        let response_accounting =
+            ApiResponseAccountingGuard::new(request_lease, api_provider, model.clone(), surface);
 
         let stream = async_stream::stream! {
             use futures_util::StreamExt;
+
+            let mut response_accounting = response_accounting;
 
             // Emit a synthetic MessageStart
             yield Ok(StreamEvent::MessageStart {
@@ -432,16 +497,32 @@ impl DeepSeekClient {
             // Set when a `[DONE]` sentinel was seen, so the post-loop flush does
             // not re-process trailing post-DONE bytes.
             let mut saw_done = false;
+            // A clean HTTP EOF is not a model terminal. DeepSeek may terminate
+            // with `[DONE]` or a choice `finish_reason`; without either, any
+            // partial content is untrusted and the turn must fail closed.
+            let mut saw_terminal_signal = false;
+            let mut stream_failed = false;
+            let mut observed_usage: Option<Usage> = None;
+            let mut observed_wire_usage: Option<Value> = None;
+            // Do not expose a model terminal to the consumer until the HTTP
+            // response has itself reached a trusted terminal and accounting
+            // has been settled. Engine callers legitimately stop polling as
+            // soon as they see `stop_reason`; yielding it here used to drop
+            // the guard before a trailing usage frame / `[DONE]` was consumed,
+            // producing a false incomplete response on the final agent turn.
+            let mut pending_terminal_events: Vec<StreamEvent> = Vec::new();
 
             'stream: loop {
                 let chunk_result = match tokio_timeout(idle, byte_stream.next()).await {
                     Ok(Some(result)) => result,
                     Ok(None) => break, // Stream ended normally
                     Err(_elapsed) => {
-                        yield Err(anyhow::anyhow!(
-                            "SSE stream idle timeout after {}s — no data received",
-                            idle.as_secs(),
-                        ));
+                        // Keep the transport-layer idle guard typed. The
+                        // Engine has a second, event-progress guard with the
+                        // same budget; whichever timer wins must converge on
+                        // the same `stream_stall` terminal cause.
+                        yield Err(stream_idle_error(idle));
+                        stream_failed = true;
                         break;
                     }
                 };
@@ -452,13 +533,7 @@ impl DeepSeekClient {
                         // hyper / h2 / io error is visible — without this the
                         // outer "error decoding response body" message tells
                         // us nothing about WHY the stream died.
-                        let mut error_chain = format!("{e}");
-                        let mut current: Option<&(dyn std::error::Error + 'static)> =
-                            std::error::Error::source(&e);
-                        while let Some(source) = current {
-                            error_chain.push_str(&format!(" -> {source}"));
-                            current = std::error::Error::source(source);
-                        }
+                        let error_chain = stream_read_error_chain(&e);
                         crate::logging::warn(format!(
                             "Stream read error: {error_chain} \
                              (elapsed: {}ms, bytes_received: {}, ms_since_last_event: {}, headers: {})",
@@ -467,7 +542,8 @@ impl DeepSeekClient {
                             last_event_at.elapsed().as_millis(),
                             response_headers,
                         ));
-                        yield Err(anyhow::anyhow!("Stream read error: {e}"));
+                        yield Err(stream_read_error(&e));
+                        stream_failed = true;
                         break;
                     }
                 };
@@ -479,6 +555,7 @@ impl DeepSeekClient {
                 // Guard against unbounded buffer growth (e.g., malformed stream without newlines)
                 const MAX_SSE_BUF: usize = 10 * 1024 * 1024; // 10 MB
                 if byte_buf.len() > MAX_SSE_BUF {
+                    stream_failed = true;
                     yield Err(anyhow::anyhow!("SSE buffer exceeded {MAX_SSE_BUF} bytes — aborting stream"));
                     break;
                 }
@@ -513,28 +590,50 @@ impl DeepSeekClient {
                             ) {
                                 SseDataFrame::Done => {
                                     saw_done = true;
+                                    saw_terminal_signal = true;
                                     break 'stream;
                                 }
-                                SseDataFrame::Events(events) => {
+                                SseDataFrame::Events {
+                                    events,
+                                    wire_usage,
+                                    response_model,
+                                } => {
+                                    if let Some(response_model) = response_model {
+                                        response_accounting.set_model(response_model);
+                                    }
+                                    if wire_usage.is_some() {
+                                        observed_wire_usage = wire_usage;
+                                    }
                                     for mut event in events {
+                                        let event_is_terminal =
+                                            stream_event_has_stop_reason(&event);
+                                        saw_terminal_signal |= event_is_terminal;
                                         // Stamp the client-side replay-token estimate
                                         // onto the final usage so the UI can surface
                                         // it (#30). We compute it pre-request and
                                         // overlay it on the server-reported usage at
                                         // stream completion.
-                                        if let Some(tokens) = replay_input_tokens
-                                            && let StreamEvent::MessageDelta {
-                                                usage: Some(usage),
-                                                ..
-                                            } = &mut event
-                                        {
-                                            usage.reasoning_replay_tokens = Some(tokens);
+                                        observe_stream_usage(
+                                            &mut event,
+                                            replay_input_tokens,
+                                            &mut observed_usage,
+                                        );
+                                        if let Some(usage) = observed_usage.as_ref() {
+                                            response_accounting.observe(
+                                                usage,
+                                                observed_wire_usage.as_ref(),
+                                            );
                                         }
-                                        yield Ok(event);
+                                        if saw_terminal_signal {
+                                            pending_terminal_events.push(event);
+                                        } else {
+                                            yield Ok(event);
+                                        }
                                     }
                                 }
                                 SseDataFrame::Invalid(error) => {
                                     yield Err(anyhow::anyhow!(error));
+                                    stream_failed = true;
                                     break 'stream;
                                 }
                             }
@@ -572,7 +671,7 @@ impl DeepSeekClient {
             // that line lacked a trailing newline). Without this the final delta
             // — last tokens, finish_reason, and usage — is silently dropped.
             // Skipped after `[DONE]`, whose frame was already processed.
-            if !saw_done {
+            if !saw_done && !stream_failed {
                 if !byte_buf.is_empty() {
                     let mut end = byte_buf.len();
                     if end > 0 && byte_buf[end - 1] == b'\r' {
@@ -598,22 +697,73 @@ impl DeepSeekClient {
                         &mut inline_reasoning_tags,
                         reasoning_stream_style,
                     ) {
-                        SseDataFrame::Events(events) => {
+                        SseDataFrame::Events {
+                            events,
+                            wire_usage,
+                            response_model,
+                        } => {
+                            if let Some(response_model) = response_model {
+                                response_accounting.set_model(response_model);
+                            }
+                            if wire_usage.is_some() {
+                                observed_wire_usage = wire_usage;
+                            }
                             for mut event in events {
-                                if let Some(tokens) = replay_input_tokens
-                                    && let StreamEvent::MessageDelta {
-                                        usage: Some(usage), ..
-                                    } = &mut event
-                                {
-                                    usage.reasoning_replay_tokens = Some(tokens);
+                                let event_is_terminal = stream_event_has_stop_reason(&event);
+                                saw_terminal_signal |= event_is_terminal;
+                                observe_stream_usage(
+                                    &mut event,
+                                    replay_input_tokens,
+                                    &mut observed_usage,
+                                );
+                                if let Some(usage) = observed_usage.as_ref() {
+                                    response_accounting
+                                        .observe(usage, observed_wire_usage.as_ref());
                                 }
-                                yield Ok(event);
+                                if saw_terminal_signal {
+                                    pending_terminal_events.push(event);
+                                } else {
+                                    yield Ok(event);
+                                }
                             }
                         }
-                        SseDataFrame::Invalid(error) => yield Err(anyhow::anyhow!(error)),
-                        SseDataFrame::Done => {}
+                        SseDataFrame::Invalid(error) => {
+                            yield Err(anyhow::anyhow!(error));
+                            stream_failed = true;
+                        }
+                        SseDataFrame::Done => {
+                            saw_terminal_signal = true;
+                        }
                     }
                 }
+            }
+
+            if stream_failed {
+                response_accounting.incomplete();
+                release_stream_buffer(byte_buf);
+                return;
+            }
+
+            if !saw_terminal_signal {
+                response_accounting.incomplete();
+                release_stream_buffer(byte_buf);
+                yield Err(anyhow::anyhow!(
+                    "DeepSeek SSE stream ended before [DONE] or finish_reason; partial output was not accepted"
+                ));
+                return;
+            }
+
+            response_accounting.complete(
+                observed_usage.as_ref(),
+                observed_wire_usage.as_ref(),
+            );
+
+            // Accounting is now atomically settled, so consumers may safely
+            // treat the buffered stop_reason as the response terminal and
+            // stop polling without turning a complete response into an
+            // incomplete one.
+            for event in pending_terminal_events {
+                yield Ok(event);
             }
 
             // Close any open blocks — content_index points to the
@@ -632,6 +782,35 @@ impl DeepSeekClient {
                 dyn futures_util::Stream<Item = Result<StreamEvent>> + Send,
             >))
     }
+}
+
+fn observe_stream_usage(
+    event: &mut StreamEvent,
+    replay_input_tokens: Option<u32>,
+    observed_usage: &mut Option<Usage>,
+) {
+    if let StreamEvent::MessageDelta {
+        usage: Some(usage), ..
+    } = event
+    {
+        if let Some(tokens) = replay_input_tokens {
+            usage.reasoning_replay_tokens = Some(tokens);
+        }
+        *observed_usage = Some(usage.clone());
+    }
+}
+
+fn stream_event_has_stop_reason(event: &StreamEvent) -> bool {
+    matches!(
+        event,
+        StreamEvent::MessageDelta {
+            delta: MessageDelta {
+                stop_reason: Some(_),
+                ..
+            },
+            ..
+        }
+    )
 }
 
 // === Chat Completions Helpers ===
@@ -1626,10 +1805,13 @@ fn build_chat_messages_with_reasoning(
                     id,
                     name,
                     input,
+                    raw_arguments,
                     caller,
                     ..
                 } => {
-                    let args = serde_json::to_string(input).unwrap_or_else(|_| input.to_string());
+                    let args = raw_arguments.clone().unwrap_or_else(|| {
+                        serde_json::to_string(input).unwrap_or_else(|_| input.to_string())
+                    });
                     let mut call = json!({
                         "id": id,
                         "type": "function",
@@ -1669,7 +1851,7 @@ fn build_chat_messages_with_reasoning(
 
         if role == "assistant" {
             let content = text_parts.join("\n");
-            let mut reasoning_content = thinking_parts.join("\n");
+            let reasoning_content = thinking_parts.join("\n");
             let has_text = !content.trim().is_empty();
             let has_tool_calls = !tool_calls.is_empty();
             // The current request's effort controls newly generated thinking,
@@ -1687,17 +1869,11 @@ fn build_chat_messages_with_reasoning(
             // historical message between turns and busts the cache from that
             // point onwards. Always emit `reasoning_content` when the model
             // requires replay AND the stored message carries thinking text.
-            // Tool-call messages with empty thinking still need a placeholder
-            // (DeepSeek 400s without it), but text-only assistant messages
-            // simply omit the field when there's nothing to replay.
-            let mut has_reasoning = replay_reasoning && !reasoning_content.trim().is_empty();
-            if replay_reasoning && has_tool_calls && !has_reasoning {
-                logging::warn(
-                    "Substituting placeholder reasoning_content for DeepSeek tool-call assistant message",
-                );
-                reasoning_content = String::from("(reasoning omitted)");
-                has_reasoning = true;
-            }
+            // Never invent reasoning for a historical tool round. The official
+            // RequestPlan validates required history and fails before transport
+            // when the canonical transcript does not contain the original
+            // `reasoning_content`.
+            let has_reasoning = replay_reasoning && !reasoning_content.is_empty();
 
             // DeepSeek rejects assistant messages where both `content` and
             // `tool_calls` are missing/null. Skip such entries even if they
@@ -2017,32 +2193,19 @@ pub(super) fn should_send_tool_choice_for_chat(
     if !matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
         return true;
     }
-    !reasoning_effort_enables_thinking(effort)
+    !deepseek::thinking_enabled_for_request(effort)
 }
 
-fn reasoning_effort_enables_thinking(effort: Option<&str>) -> bool {
-    let Some(effort) = effort else {
-        return false;
-    };
-    !matches!(
-        effort.trim().to_ascii_lowercase().as_str(),
-        "off" | "disabled" | "none" | "false"
-    )
-}
-
-/// Final-pass sanitizer over the outgoing chat-completions JSON payload.
-/// Forces a non-empty `reasoning_content` onto assistant messages that carry
-/// `tool_calls` whenever the model protocol requires historical replay.
-/// DeepSeek's thinking-mode API rejects such messages with a 400 error;
-/// substituting a placeholder keeps the conversation chain intact even when
-/// the current completion has thinking disabled. Non-tool assistant reasoning
-/// can stay omitted once a later user text turn begins.
+/// Tallies the exact stored `reasoning_content` replayed in an outgoing
+/// chat-completions payload. This function never inserts or rewrites history.
+/// The official DeepSeek RequestPlan separately fails closed when a historical
+/// tool-call message is missing protocol-required reasoning.
 ///
-/// Also tallies the size of all replayed `reasoning_content` and logs it, so
+/// Logs the replay size so
 /// users on `RUST_LOG=codewhale_tui=debug` can see how much of their input
 /// budget is being spent re-sending prior thinking traces.
-pub(super) fn sanitize_thinking_mode_messages(
-    body: &mut Value,
+pub(super) fn reasoning_replay_tokens_for_messages(
+    body: &Value,
     model: &str,
     effort: Option<&str>,
     provider: ApiProvider,
@@ -2052,25 +2215,12 @@ pub(super) fn sanitize_thinking_mode_messages(
     if !replay_reasoning && !replay_tool_call_reasoning {
         return None;
     }
-    let messages = body.get_mut("messages").and_then(Value::as_array_mut)?;
-    let mut substitutions: u32 = 0;
+    let messages = body.get("messages").and_then(Value::as_array)?;
     let mut replay_chars: u64 = 0;
     let mut replay_messages: u32 = 0;
-    for (idx, msg) in messages.iter_mut().enumerate() {
+    for msg in messages {
         if msg.get("role").and_then(Value::as_str) != Some("assistant") {
             continue;
-        }
-        let has_tool_calls = msg.get("tool_calls").is_some();
-        let needs_placeholder = msg
-            .get("reasoning_content")
-            .and_then(Value::as_str)
-            .is_none_or(|s| s.trim().is_empty());
-        if has_tool_calls && (replay_reasoning || replay_tool_call_reasoning) && needs_placeholder {
-            msg["reasoning_content"] = json!("(reasoning omitted)");
-            substitutions = substitutions.saturating_add(1);
-            logging::warn(format!(
-                "Final sanitizer: forced reasoning_content placeholder on assistant[{idx}]",
-            ));
         }
         if let Some(reasoning) = msg.get("reasoning_content").and_then(Value::as_str) {
             let len = reasoning.len() as u64;
@@ -2079,11 +2229,6 @@ pub(super) fn sanitize_thinking_mode_messages(
                 replay_messages = replay_messages.saturating_add(1);
             }
         }
-    }
-    if substitutions > 0 {
-        logging::warn(format!(
-            "Final sanitizer: {substitutions} assistant message(s) needed reasoning_content placeholder",
-        ));
     }
     if replay_messages == 0 {
         return None;
@@ -2098,8 +2243,8 @@ pub(super) fn sanitize_thinking_mode_messages(
 }
 
 /// Sums the byte length of `reasoning_content` across all assistant messages in
-/// an outgoing chat-completions body. Used by tests; the production sanitizer
-/// computes the same number inline and logs it.
+/// an outgoing chat-completions body. Used by tests; production replay
+/// accounting computes the same number inline and logs it.
 #[cfg(test)]
 pub(super) fn count_reasoning_replay_chars(body: &Value) -> u64 {
     let Some(messages) = body.get("messages").and_then(Value::as_array) else {
@@ -2134,13 +2279,12 @@ fn format_stream_headers(headers: &reqwest::header::HeaderMap) -> String {
     parts.join(", ")
 }
 
-/// Diagnostic logger fired when DeepSeek rejects the request despite the
-/// sanitizer. Walks the body and logs which assistant messages have tool_calls
-/// but no `reasoning_content` — useful to track down a code path that bypasses
-/// the sanitizer entirely.
+/// Diagnostic logger for provider-side `reasoning_content` rejection. Official
+/// RequestPlan traffic has already passed local exact-replay preflight; this
+/// also makes legacy-route and upstream protocol drift visible.
 fn log_thinking_mode_violations(body: &Value) {
     let Some(messages) = body.get("messages").and_then(Value::as_array) else {
-        logging::warn("400-after-sanitizer: body has no `messages` array");
+        logging::warn("reasoning-rejection: body has no `messages` array");
         return;
     };
     let mut violations: Vec<String> = Vec::new();
@@ -2161,11 +2305,11 @@ fn log_thinking_mode_violations(body: &Value) {
     }
     if violations.is_empty() {
         logging::warn(
-            "400-after-sanitizer: all assistant messages have reasoning_content — DeepSeek rejected for a different reason",
+            "reasoning-rejection: all assistant messages have reasoning_content — DeepSeek rejected for a different reason",
         );
     } else {
         logging::warn(format!(
-            "400-after-sanitizer: {} assistant message(s) lack reasoning_content despite sanitizer: {}",
+            "reasoning-rejection: {} assistant message(s) lack reasoning_content: {}",
             violations.len(),
             violations.join(", ")
         ));
@@ -2195,7 +2339,7 @@ fn requires_reasoning_content(model: &str) -> bool {
 /// This is intentionally independent of the current request's reasoning
 /// effort: disabling thinking affects the next completion, while DeepSeek's
 /// wire protocol still requires prior tool-call reasoning to be replayed.
-fn requires_tool_call_reasoning_replay(model: &str) -> bool {
+pub(super) fn requires_tool_call_reasoning_replay(model: &str) -> bool {
     requires_reasoning_content(model)
 }
 
@@ -2448,9 +2592,12 @@ pub(super) fn parse_chat_message(payload: &Value) -> Result<MessageResponse> {
                 &id,
                 "Non-streaming response",
             );
-            let arguments = function
+            let raw_arguments = function
                 .and_then(|f| f.get("arguments"))
                 .and_then(Value::as_str)
+                .map(str::to_string);
+            let arguments = raw_arguments
+                .as_deref()
                 .map(|raw| serde_json::from_str(raw).unwrap_or(Value::String(raw.to_string())))
                 .unwrap_or(Value::Null);
             let caller = call.get("caller").and_then(|v| {
@@ -2469,6 +2616,7 @@ pub(super) fn parse_chat_message(payload: &Value) -> Result<MessageResponse> {
                 id,
                 name: from_api_tool_name(&name),
                 input: arguments,
+                raw_arguments,
                 caller,
             });
         }
@@ -2653,7 +2801,11 @@ fn push_thinking_delta(
 
 enum SseDataFrame {
     Done,
-    Events(Vec<StreamEvent>),
+    Events {
+        events: Vec<StreamEvent>,
+        wire_usage: Option<Value>,
+        response_model: Option<String>,
+    },
     Invalid(String),
 }
 
@@ -2675,16 +2827,30 @@ fn parse_sse_data_frame(
         return SseDataFrame::Done;
     }
     match serde_json::from_str::<Value>(data) {
-        Ok(chunk_json) => SseDataFrame::Events(parse_sse_chunk_with_reasoning_style(
-            &chunk_json,
-            content_index,
-            text_started,
-            thinking_started,
-            tool_indices,
-            reasoning_detail_buffers,
-            inline_reasoning_tags,
-            reasoning_stream_style,
-        )),
+        Ok(chunk_json) => {
+            let wire_usage = chunk_json
+                .get("usage")
+                .filter(|usage| usage.is_object())
+                .cloned();
+            let response_model = chunk_json
+                .get("model")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            SseDataFrame::Events {
+                events: parse_sse_chunk_with_reasoning_style(
+                    &chunk_json,
+                    content_index,
+                    text_started,
+                    thinking_started,
+                    tool_indices,
+                    reasoning_detail_buffers,
+                    inline_reasoning_tags,
+                    reasoning_stream_style,
+                ),
+                wire_usage,
+                response_model,
+            }
+        }
         Err(error) => SseDataFrame::Invalid(format!(
             "DeepSeek SSE contained an invalid JSON data frame: {error}"
         )),
@@ -2916,7 +3082,6 @@ fn parse_sse_chunk_with_reasoning_style(
                         .get("function")
                         .and_then(|f| f.get("arguments"))
                         .and_then(Value::as_str)
-                        && !args.is_empty()
                     {
                         events.push(StreamEvent::ContentBlockDelta {
                             index: tool_block_index,
@@ -3030,8 +3195,17 @@ mod stream_diagnostics_tests {
     }
 
     #[test]
+    fn non_streaming_header_timeout_remains_typed() {
+        let error = response_header_timeout_error(Duration::from_secs(5));
+        assert!(matches!(
+            error.downcast_ref::<LlmError>(),
+            Some(LlmError::Timeout(timeout)) if *timeout == Duration::from_secs(5)
+        ));
+    }
+
+    #[test]
     fn deepseek_thinking_omits_tool_choice() {
-        for effort in [Some("high"), Some("max"), Some("medium"), Some("")] {
+        for effort in [None, Some("high"), Some("max"), Some("medium"), Some("")] {
             assert!(
                 !should_send_tool_choice_for_chat(ApiProvider::Deepseek, effort),
                 "DeepSeek thinking rejects explicit tool_choice for {effort:?}"
@@ -3042,13 +3216,7 @@ mod stream_diagnostics_tests {
             );
         }
 
-        for effort in [
-            None,
-            Some("off"),
-            Some("disabled"),
-            Some("none"),
-            Some("false"),
-        ] {
+        for effort in [Some("off"), Some("disabled"), Some("none"), Some("false")] {
             assert!(should_send_tool_choice_for_chat(
                 ApiProvider::Deepseek,
                 effort
@@ -3274,6 +3442,65 @@ mod stream_decoder_tests {
     //! directly to verify each "class of stream failure" the engine relies on.
     use super::*;
     use crate::models::{ContentBlockStart, Delta, StreamEvent};
+    use futures_util::StreamExt as _;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn transport_idle_failure_remains_a_typed_stream_stall() {
+        let error = stream_idle_error(Duration::from_secs(17));
+        let stall = error
+            .downcast_ref::<StreamError>()
+            .expect("transport idle must remain downcastable");
+
+        assert!(matches!(stall, StreamError::Stall { timeout_secs: 17 }));
+        let envelope = stall.clone().into_envelope();
+        assert_eq!(envelope.code, "stream_stall");
+    }
+
+    #[tokio::test]
+    async fn truncated_chunked_body_remains_a_typed_network_error() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind reset fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept fixture request");
+            let mut request = [0_u8; 2048];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n40\r\ndata: {\"choices\":[",
+                )
+                .await
+                .expect("write truncated chunk");
+            // Dropping the socket before the declared 0x40-byte chunk is
+            // complete reproduces reqwest/hyper's real body-read failure.
+        });
+
+        let response = crate::tls::reqwest_client_builder()
+            .build()
+            .expect("fixture HTTP client")
+            .get(format!("http://{address}/chat"))
+            .send()
+            .await
+            .expect("headers arrive before reset");
+        let mut body = response.bytes_stream();
+        let reset = loop {
+            match body.next().await {
+                Some(Ok(_)) => continue,
+                Some(Err(error)) => break error,
+                None => panic!("truncated chunk must fail rather than look complete"),
+            }
+        };
+        server.await.expect("reset fixture task");
+
+        let typed = stream_read_error(&reset);
+        let network = typed
+            .downcast_ref::<LlmError>()
+            .expect("stream reset must remain typed for AgentRuntime");
+        assert!(matches!(network, LlmError::NetworkError(message) if
+            message.contains("Stream read error") && message.contains("response body")));
+    }
 
     /// Decode a raw SSE-data JSON chunk into our internal events, mirroring
     /// the per-event call shape used by `handle_chat_completion_stream`.
@@ -3772,6 +3999,26 @@ mod stream_decoder_tests {
     }
 
     #[test]
+    fn decoder_finish_reason_is_a_terminal_signal() {
+        let events = decode_chunk(r#"{"choices":[{"finish_reason":"stop"}]}"#);
+
+        assert!(
+            events.iter().any(stream_event_has_stop_reason),
+            "finish_reason must make a stream terminal: {events:?}"
+        );
+    }
+
+    #[test]
+    fn decoder_partial_content_is_not_a_terminal_signal() {
+        let events = decode_chunk(r#"{"choices":[{"delta":{"content":"partial"}}]}"#);
+
+        assert!(
+            !events.iter().any(stream_event_has_stop_reason),
+            "content without finish_reason must not be accepted as a terminal: {events:?}"
+        );
+    }
+
+    #[test]
     fn decoder_rejects_malformed_deepseek_sse_json() {
         let mut content_index = 0u32;
         let mut text_started = false;
@@ -3828,6 +4075,21 @@ mod stream_decoder_tests {
     }
 
     #[test]
+    fn decoder_emits_an_explicit_empty_tool_argument_delta() {
+        let events = decode_chunk(
+            r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_empty_args","function":{"name":"read_file","arguments":""}}]}}]}"#,
+        );
+
+        assert!(events.iter().any(|event| matches!(
+            event,
+            StreamEvent::ContentBlockDelta {
+                delta: Delta::InputJsonDelta { partial_json },
+                ..
+            } if partial_json.is_empty()
+        )));
+    }
+
+    #[test]
     fn decoder_uses_fallback_name_for_empty_streaming_tool_name() {
         let events = decode_chunk(
             r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_empty","function":{"name":"","arguments":"{}"}}]}}]}"#,
@@ -3872,6 +4134,109 @@ mod stream_decoder_tests {
         });
 
         assert_eq!(tool_name, Some("unknown_tool"));
+    }
+
+    #[test]
+    fn non_streaming_response_preserves_exact_tool_argument_string() {
+        let raw = "{ \"z\" : 1, \"path\" : \"src/lib.rs\", \"a\" : 2 }";
+        let payload = json!({
+            "id": "chatcmpl_raw",
+            "model": "deepseek-v4-pro",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_raw",
+                        "function": { "name": "read_file", "arguments": raw }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let parsed = parse_chat_message(&payload).expect("message parses");
+        let (input, raw_arguments) = parsed
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::ToolUse {
+                    input,
+                    raw_arguments,
+                    ..
+                } => Some((input, raw_arguments)),
+                _ => None,
+            })
+            .expect("tool call present");
+        assert_eq!(raw_arguments.as_deref(), Some(raw));
+        assert_eq!(input, &json!({"z": 1, "path": "src/lib.rs", "a": 2}));
+    }
+
+    #[test]
+    fn non_streaming_empty_tool_arguments_remain_explicit_and_unparsed() {
+        let payload = json!({
+            "id": "chatcmpl_empty",
+            "model": "deepseek-v4-pro",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_empty",
+                        "function": { "name": "read_file", "arguments": "" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let parsed = parse_chat_message(&payload).expect("message parses");
+        let (input, raw_arguments) = parsed
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::ToolUse {
+                    input,
+                    raw_arguments,
+                    ..
+                } => Some((input, raw_arguments)),
+                _ => None,
+            })
+            .expect("tool call present");
+        assert_eq!(raw_arguments.as_deref(), Some(""));
+        assert_eq!(input, &Value::String(String::new()));
+    }
+
+    #[test]
+    fn non_streaming_malformed_tool_arguments_keep_raw_failure_input() {
+        let payload = json!({
+            "id": "chatcmpl_malformed",
+            "model": "deepseek-v4-pro",
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [{
+                        "id": "call_bad",
+                        "function": { "name": "read_file", "arguments": "{not-json" }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        });
+
+        let parsed = parse_chat_message(&payload).expect("message parses");
+        let (input, raw_arguments) = parsed
+            .content
+            .iter()
+            .find_map(|block| match block {
+                ContentBlock::ToolUse {
+                    input,
+                    raw_arguments,
+                    ..
+                } => Some((input, raw_arguments)),
+                _ => None,
+            })
+            .expect("tool call present");
+        assert_eq!(raw_arguments.as_deref(), Some("{not-json"));
+        assert_eq!(input, &Value::String("{not-json".to_owned()));
     }
 
     /// Regression for the parallel-tool-calls-without-id collision (audit
@@ -3958,6 +4323,7 @@ mod stream_decoder_tests {
                 id: id.to_string(),
                 name: name.to_string(),
                 input,
+                raw_arguments: None,
                 caller: None,
             }],
         }
@@ -4528,7 +4894,9 @@ mod stream_decoder_tests {
 
 #[cfg(test)]
 mod deepseek_tool_reasoning_replay_tests {
-    use super::{build_chat_messages_for_request_and_provider, sanitize_thinking_mode_messages};
+    use super::{
+        build_chat_messages_for_request_and_provider, reasoning_replay_tokens_for_messages,
+    };
     use crate::config::ApiProvider;
     use crate::models::{ContentBlock, Message, MessageRequest};
     use serde_json::{Value, json};
@@ -4571,6 +4939,7 @@ mod deepseek_tool_reasoning_replay_tests {
             id: "call-1".to_string(),
             name: "shell_command".to_string(),
             input: json!({"command": "cargo test"}),
+            raw_arguments: None,
             caller: None,
         }
     }
@@ -4604,21 +4973,21 @@ mod deepseek_tool_reasoning_replay_tests {
     }
 
     #[test]
-    fn thinking_off_uses_stable_placeholder_for_tool_round_without_reasoning() {
+    fn missing_tool_round_reasoning_is_never_fabricated() {
         let request = request_with_history(vec![tool_call()]);
 
         let messages =
             build_chat_messages_for_request_and_provider(&request, ApiProvider::Deepseek);
         let assistant = assistant_message(&messages);
 
-        assert_eq!(
-            assistant.get("reasoning_content").and_then(Value::as_str),
-            Some("(reasoning omitted)")
+        assert!(
+            assistant.get("reasoning_content").is_none(),
+            "message projection must not invent canonical reasoning history"
         );
 
-        // The final wire sanitizer must enforce the same invariant for any
-        // restored/cached payload that bypasses the normal message builder.
-        let mut body = json!({
+        // Replay accounting must likewise remain read-only for restored or
+        // cached payloads that bypass the normal message builder.
+        let body = json!({
             "messages": [{
                 "role": "assistant",
                 "content": null,
@@ -4629,16 +4998,16 @@ mod deepseek_tool_reasoning_replay_tests {
                 }]
             }]
         });
-        sanitize_thinking_mode_messages(
-            &mut body,
+        let replay_tokens = reasoning_replay_tokens_for_messages(
+            &body,
             "deepseek-v4-pro",
             Some("off"),
             ApiProvider::Deepseek,
         );
-        assert_eq!(
-            body.pointer("/messages/0/reasoning_content")
-                .and_then(Value::as_str),
-            Some("(reasoning omitted)")
+        assert_eq!(replay_tokens, None);
+        assert!(
+            body.pointer("/messages/0/reasoning_content").is_none(),
+            "replay accounting must not mutate history"
         );
     }
 
@@ -4680,7 +5049,7 @@ mod alias_thinking_detection_tests {
     //! published in DeepSeek's API docs. Server-side they resolve to V4-flash
     //! and V4-pro respectively, both of which have thinking mode enabled by
     //! default. If the TUI does not classify those aliases as reasoning
-    //! models, the sanitizer skips replaying `reasoning_content` on tool-call
+    //! models, projection skips replaying `reasoning_content` on tool-call
     //! assistant messages and DeepSeek returns a 400 ("the `reasoning_content`
     //! in the thinking mode must be passed back to the API") on the second
     //! turn. See upstream API docs:
@@ -4715,8 +5084,8 @@ mod alias_thinking_detection_tests {
     #[test]
     fn non_thinking_aliases_remain_excluded() {
         // Legacy non-thinking IDs and unrelated provider models must not be
-        // misclassified, otherwise we would force a placeholder
-        // `reasoning_content` on providers that reject the field.
+        // misclassified, otherwise we would emit a provider-specific
+        // `reasoning_content` field on providers that reject it.
         assert!(!requires_reasoning_content("deepseek-v3"));
         assert!(!requires_reasoning_content("deepseek-coder"));
         assert!(!requires_reasoning_content("qwen3-coder"));

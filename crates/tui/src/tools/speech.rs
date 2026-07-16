@@ -16,7 +16,7 @@ use crate::config::{ApiProvider, normalize_model_name_for_provider};
 use crate::network_policy::{Decision, host_from_url};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_str, required_str,
 };
 
@@ -135,7 +135,7 @@ impl ToolSpec for SpeechTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let text = required_str(&input, "text")?.trim().to_string();
         if text.is_empty() {
             return Err(ToolError::invalid_input("speech text cannot be empty"));
@@ -293,7 +293,7 @@ impl ToolSpec for SpeechTool {
             "supported_formats": SUPPORTED_SPEECH_FORMATS,
             "supported_xiaomi_mimo_models": SUPPORTED_XIAOMI_MIMO_SPEECH_MODELS,
         });
-        ToolResult::json(&result).map_err(|err| {
+        ToolOutcome::json(&result).map_err(|err| {
             ToolError::execution_failed(format!("failed to serialize result: {err}"))
         })
     }

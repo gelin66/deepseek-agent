@@ -225,11 +225,11 @@ Examples:
 Common forwarded flags:
   --auto                           Enable tool-backed agent mode with auto-approvals
   --json                           Emit summary JSON
-  --resume <SESSION_ID>            Resume a previous session by ID or prefix
-  --session-id <SESSION_ID>        Resume a previous session by ID or prefix
-  --continue                       Continue the most recent session for this workspace
+  --resume <RUN_ID>                Resume one canonical Agent run
+  --continue                       Continue the latest root run for this workspace
   --output-format <FORMAT>         Output format: text or stream-json
   --max-api-requests <COUNT>       Hard cap on real DeepSeek HTTP requests
+  --max-runtime-secs <SECONDS>     Hard wall-clock cap for the Headless Agent
 
 Plain `codewhale exec` is a one-shot model response. Use `--auto` for
 non-interactive filesystem/shell tool use, matching the supported automation
@@ -1548,7 +1548,7 @@ fn run() -> Result<()> {
         Some(Commands::Exec(args)) => {
             reject_exec_global_flags(&args.args)?;
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("exec", args))
+            delegate_exec_to_tui(&cli, &resolved_runtime, tui_args("exec", args))
         }
         Some(Commands::Fleet(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
@@ -2672,6 +2672,36 @@ fn delegate_to_tui(
         .status()
         .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
     exit_with_tui_status(status)
+}
+
+/// Replace the Unix dispatcher process with the Headless runtime so an
+/// orchestrator-visible PID is the actual Agent owner. Signals, process-group
+/// control, and exit status therefore cannot stop at an intermediate parent
+/// while the model/tool child continues running.
+fn delegate_exec_to_tui(
+    cli: &Cli,
+    resolved_runtime: &ResolvedRuntimeOptions,
+    passthrough: Vec<String>,
+) -> Result<()> {
+    let mut cmd = build_tui_command(cli, resolved_runtime, passthrough)?;
+    let tui = PathBuf::from(cmd.get_program());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        let error = cmd.exec();
+        Err(anyhow!("{}", tui_spawn_error(&tui, &error)))
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows has no exec(2). Keep the existing synchronous delegation;
+        // the TUI process owns Ctrl+C handling and the dispatcher propagates
+        // its final status. The Windows job-object migration remains isolated
+        // to this platform-specific branch.
+        let status = cmd
+            .status()
+            .map_err(|error| anyhow!("{}", tui_spawn_error(&tui, &error)))?;
+        exit_with_tui_status(status)
+    }
 }
 
 /// Delegate a long-running server command (`serve --http`/`--mobile`,
@@ -5719,7 +5749,6 @@ mod tests {
                     "--auto",
                     "--json",
                     "--resume",
-                    "--session-id",
                     "--continue",
                     "--output-format",
                     "stream-json",

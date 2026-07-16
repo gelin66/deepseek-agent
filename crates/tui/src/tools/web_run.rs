@@ -4,7 +4,7 @@
 //! tool call to perform multiple web actions and cite sources with ref_ids.
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_u64, required_str,
 };
 use crate::network_policy::{Decision, host_from_url};
@@ -439,7 +439,7 @@ impl ToolSpec for WebRunTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let response_length = ResponseLength::from_input(input.get("response_length"));
         let mut output = WebRunOutput::default();
         let scope = scoped_ref_prefix(&context.state_namespace);
@@ -649,7 +649,7 @@ impl ToolSpec for WebRunTool {
             }
         }
 
-        ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 

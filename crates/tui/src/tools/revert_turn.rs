@@ -12,7 +12,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
+    optional_u64,
 };
 use crate::snapshot::SnapshotRepo;
 
@@ -64,7 +65,7 @@ impl ToolSpec for RevertTurnTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let offset = optional_u64(&input, "turn_offset", DEFAULT_OFFSET);
         if offset == 0 || offset > MAX_OFFSET {
             return Err(ToolError::invalid_input(format!(
@@ -120,8 +121,8 @@ impl ToolSpec for RevertTurnTool {
         .map_err(|e| ToolError::execution_failed(format!("revert_turn join failed: {e}")))?;
 
         match result {
-            Ok(msg) => Ok(ToolResult::success(msg)),
-            Err(e) => Ok(ToolResult::error(e)),
+            Ok(msg) => Ok(ToolOutcome::success(msg)),
+            Err(e) => Ok(ToolOutcome::error(e)),
         }
     }
 }
@@ -181,7 +182,7 @@ mod tests {
         let tool = RevertTurnTool;
         let ctx = ToolContext::new(workspace.clone());
         let r = tool.execute(json!({}), &ctx).await.expect("execute");
-        assert!(r.success, "expected success: {r:?}");
+        assert!(r.is_success(), "expected success: {r:?}");
 
         let content = std::fs::read_to_string(workspace.join("a.txt")).unwrap();
         assert_eq!(content, "original");
@@ -214,7 +215,7 @@ mod tests {
         let tool = RevertTurnTool;
         let ctx = ToolContext::new(workspace);
         let r = tool.execute(json!({}), &ctx).await.expect("execute");
-        assert!(!r.success);
+        assert!(!r.is_success());
         assert!(r.content.contains("NoSnapshotForTurn"), "{}", r.content);
     }
 
@@ -228,7 +229,7 @@ mod tests {
         let tool = RevertTurnTool;
         let ctx = ToolContext::new(workspace);
         let r = tool.execute(json!({}), &ctx).await.expect("execute");
-        assert!(!r.success);
+        assert!(!r.is_success());
         assert!(r.content.contains("out of range"));
     }
 }

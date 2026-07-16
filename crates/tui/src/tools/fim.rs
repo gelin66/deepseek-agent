@@ -13,7 +13,7 @@ use thiserror::Error;
 use crate::client::DeepSeekClient;
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_u64, required_str,
 };
 
@@ -106,7 +106,7 @@ impl ToolSpec for FimEditTool {
         ApprovalRequirement::Suggest
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let path = required_str(&input, "path")?;
         let prefix_anchor = required_str(&input, "prefix_anchor")?;
         let suffix_anchor = required_str(&input, "suffix_anchor")?;
@@ -200,7 +200,7 @@ impl ToolSpec for FimEditTool {
             ),
         };
 
-        ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 

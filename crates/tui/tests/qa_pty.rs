@@ -40,7 +40,7 @@ fn boot_minimal() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harne
 fn boot_minimal_without_retry() -> anyhow::Result<(qa_harness::harness::SealedWorkspace, Harness)> {
     let ws = make_sealed_workspace()?;
     std::fs::write(
-        ws.home().join(".deepseek").join("config.toml"),
+        ws.home().join(".codewhale").join("config.toml"),
         "[retry]\nenabled = false\n",
     )?;
     spawn_minimal(ws)
@@ -632,7 +632,7 @@ fn work_and_permission_are_visible_at_release_terminal_sizes() -> anyhow::Result
         std::fs::write(codewhale_home.join("config.toml"), "allow_shell = true\n")?;
         std::fs::write(
             codewhale_home.join("settings.toml"),
-            "permission_posture = \"full-access\"\n",
+            "permission_posture = \"full-access\"\nlocale = \"en\"\n",
         )?;
         std::fs::write(
             codex_home.join("models_cache.json"),
@@ -687,10 +687,6 @@ fn work_and_permission_are_visible_at_release_terminal_sizes() -> anyhow::Result
             .clear_env()
             .seal_home(ws.home())
             .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
-            .env(
-                "DEEPSEEK_CONFIG_PATH",
-                codewhale_home.join("config.toml").to_string_lossy(),
-            )
             .env("CODEX_HOME", codex_home.to_string_lossy())
             .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
             .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")

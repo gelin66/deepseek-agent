@@ -12,7 +12,7 @@ use crate::config::ApiProvider;
 use crate::error_taxonomy::ErrorEnvelope;
 use crate::models::{Message, SystemPrompt, Tool, Usage};
 use crate::tools::goal::GoalSnapshot;
-use crate::tools::spec::{ToolError, ToolResult};
+use crate::tools::spec::{ToolError, ToolOutcome};
 use crate::tools::subagent::SubAgentResult;
 use crate::tools::user_input::UserInputRequest;
 
@@ -90,7 +90,7 @@ pub enum Event {
     ToolCallComplete {
         id: String,
         name: String,
-        result: Result<ToolResult, ToolError>,
+        result: Result<ToolOutcome, ToolError>,
     },
 
     // === Turn Lifecycle ===
@@ -112,9 +112,20 @@ pub enum Event {
         base_url: Option<String>,
     },
 
+    /// The next `TurnComplete` is also a run-level terminal candidate: no
+    /// direct child is running or claiming completion, no child completion is
+    /// queued for parent integration, and no Goal continuation is scheduled.
+    /// Interactive hosts ignore this marker; Headless requires it before
+    /// sealing request accounting and publishing `Done`.
+    RunTerminalCandidate,
+
+    /// The completed turn is not the run terminal: an active Goal has queued
+    /// another canonical Engine turn. Headless hosts must keep consuming.
+    GoalContinuationScheduled,
+
     /// Runtime goal state changed inside the engine, usually from model-visible
     /// `create_goal` or `update_goal` tool calls.
-    GoalUpdated { snapshot: GoalSnapshot },
+    GoalUpdated { snapshot: Box<GoalSnapshot> },
 
     /// Context compaction started.
     CompactionStarted {

@@ -14,12 +14,17 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+mod run_store;
+
+const STATE_SCHEMA_VERSION: u32 = 6;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -275,8 +280,7 @@ pub struct StateStore {
 impl StateStore {
     /// Open (or create) a state store at the given database path.
     ///
-    /// If `path` is `None`, the default location (`~/.codewhale/state.db`, with
-    /// `~/.deepseek/state.db` as a legacy fallback) is used.
+    /// If `path` is `None`, the default location (`~/.codewhale/state.db`) is used.
     /// The database schema is created automatically if it does not exist.
     pub fn open(path: Option<PathBuf>) -> Result<Self> {
         let db_path = path.unwrap_or_else(default_state_db_path);
@@ -289,11 +293,24 @@ impl StateStore {
                 format!("failed to create state directory {}", parent.display())
             })?;
         }
-        let conn = Connection::open(&db_path)
+        let mut conn = Connection::open(&db_path)
             .with_context(|| format!("failed to open state db {}", db_path.display()))?;
+        let user_version: u32 = conn
+            .query_row("PRAGMA user_version;", [], |row| row.get(0))
+            .with_context(|| format!("failed to read schema version for {}", db_path.display()))?;
+        if user_version > STATE_SCHEMA_VERSION {
+            anyhow::bail!(
+                "state db schema version {user_version} is newer than supported version {STATE_SCHEMA_VERSION}"
+            );
+        }
+        conn.busy_timeout(std::time::Duration::from_secs(5))
+            .with_context(|| format!("failed to set busy timeout for {}", db_path.display()))?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .with_context(|| format!("failed to enable foreign keys for {}", db_path.display()))?;
-        Self::init_schema(&conn)?;
+        Self::init_schema(&mut conn)?;
+        Self::enable_wal(&conn, &db_path)?;
+        conn.pragma_update(None, "synchronous", "NORMAL")
+            .with_context(|| format!("failed to set synchronous mode for {}", db_path.display()))?;
         Ok(Self {
             db_path,
             session_index_path,
@@ -315,12 +332,22 @@ impl StateStore {
             .map_err(|_| anyhow::anyhow!("state db connection mutex poisoned"))
     }
 
-    fn init_schema(conn: &Connection) -> Result<()> {
-        let mut user_version: u32 = conn.query_row("PRAGMA user_version;", [], |row| row.get(0))?;
+    fn init_schema(conn: &mut Connection) -> Result<()> {
+        // Acquire the database-wide writer lock before reading user_version.
+        // Concurrent first-open callers must observe the migration committed by
+        // the winner instead of both planning the same ALTER TABLE statements.
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("failed to acquire state schema migration lock")?;
+        let mut user_version: u32 = tx.query_row("PRAGMA user_version;", [], |row| row.get(0))?;
+        if user_version > STATE_SCHEMA_VERSION {
+            anyhow::bail!(
+                "state db schema version {user_version} is newer than supported version {STATE_SCHEMA_VERSION}"
+            );
+        }
         if user_version == 0 {
-            conn.execute_batch(
+            tx.execute_batch(
                 r#"
-                BEGIN;
                 CREATE TABLE IF NOT EXISTS threads (
                     id TEXT PRIMARY KEY,
                     rollout_path TEXT,
@@ -421,16 +448,14 @@ impl StateStore {
                     );
 
                 PRAGMA user_version = 1;
-                COMMIT;
                 "#,
             )
             .context("failed to initialize thread schema")?;
             user_version = 1;
         }
         if user_version < 2 {
-            conn.execute_batch(
+            tx.execute_batch(
                 r#"
-                BEGIN;
                 CREATE TABLE IF NOT EXISTS workflow_runs (
                     id TEXT PRIMARY KEY,
                     workflow_id TEXT NOT NULL,
@@ -519,16 +544,14 @@ impl StateStore {
                     ON teacher_candidates(control_node_run_id);
 
                 PRAGMA user_version = 2;
-                COMMIT;
                 "#,
             )
             .context("failed to initialize workflow trace schema")?;
             user_version = 2;
         }
         if user_version < 3 {
-            conn.execute_batch(
+            tx.execute_batch(
                 r#"
-                BEGIN;
                 CREATE TABLE IF NOT EXISTS thread_goals (
                     thread_id TEXT PRIMARY KEY NOT NULL,
                     goal_id TEXT NOT NULL,
@@ -550,26 +573,124 @@ impl StateStore {
                 );
 
                 PRAGMA user_version = 3;
-                COMMIT;
                 "#,
             )
             .context("failed to initialize thread goal schema")?;
             user_version = 3;
         }
         if user_version < 4 {
-            conn.execute_batch(
+            tx.execute_batch(
                 r#"
-                BEGIN;
                 ALTER TABLE thread_goals
                     ADD COLUMN continuation_count INTEGER NOT NULL DEFAULT 0;
 
                 PRAGMA user_version = 4;
-                COMMIT;
                 "#,
             )
             .context("failed to initialize thread goal continuation schema")?;
+            user_version = 4;
         }
+        if user_version < 5 {
+            tx.execute_batch(
+                r#"
+                CREATE TABLE agent_runs (
+                    run_id TEXT PRIMARY KEY NOT NULL,
+                    parent_run_id TEXT,
+                    workspace TEXT NOT NULL,
+                    last_sequence INTEGER NOT NULL CHECK(last_sequence >= 1),
+                    terminal INTEGER NOT NULL DEFAULT 0 CHECK(terminal IN (0, 1)),
+                    execution_epoch INTEGER NOT NULL CHECK(execution_epoch >= 1),
+                    lease_owner_id TEXT,
+                    lease_owner_pid INTEGER,
+                    created_at_unix_ms INTEGER NOT NULL,
+                    updated_at_unix_ms INTEGER NOT NULL,
+                    CHECK((lease_owner_id IS NULL) = (lease_owner_pid IS NULL)),
+                    CHECK(lease_owner_pid IS NULL OR lease_owner_pid > 0),
+                    CHECK(terminal = 0 OR lease_owner_id IS NULL)
+                );
+                CREATE INDEX idx_agent_runs_workspace_updated
+                    ON agent_runs(workspace, terminal, updated_at_unix_ms DESC);
+
+                CREATE TABLE agent_run_events (
+                    run_id TEXT NOT NULL,
+                    sequence INTEGER NOT NULL CHECK(sequence >= 1),
+                    event_id TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL,
+                    occurred_at_unix_ms INTEGER NOT NULL,
+                    terminal INTEGER NOT NULL DEFAULT 0 CHECK(terminal IN (0, 1)),
+                    event_json TEXT NOT NULL,
+                    PRIMARY KEY(run_id, sequence),
+                    UNIQUE(run_id, event_id),
+                    FOREIGN KEY(run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX idx_agent_run_one_terminal
+                    ON agent_run_events(run_id) WHERE terminal = 1;
+
+                CREATE TABLE agent_run_snapshots (
+                    run_id TEXT PRIMARY KEY NOT NULL,
+                    last_sequence INTEGER NOT NULL CHECK(last_sequence >= 1),
+                    snapshot_json TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE
+                );
+
+                PRAGMA user_version = 5;
+                "#,
+            )
+            .context("failed to initialize AgentRuntime run store schema")?;
+            user_version = 5;
+        }
+        if user_version < 6 {
+            tx.execute_batch(
+                r#"
+                ALTER TABLE agent_runs
+                    ADD COLUMN pending_model_attempt_id TEXT;
+                ALTER TABLE agent_runs
+                    ADD COLUMN pending_model_in_flight INTEGER NOT NULL DEFAULT 0
+                    CHECK(pending_model_in_flight IN (0, 1));
+                "#,
+            )
+            .context("failed to initialize AgentRuntime fast projection schema")?;
+            run_store::backfill_v6_pending_model_projections(&tx)
+                .context("failed to backfill AgentRuntime fast projection")?;
+            tx.pragma_update(None, "user_version", 6)
+                .context("failed to commit AgentRuntime fast projection schema version")?;
+        }
+        tx.commit()
+            .context("failed to commit state schema migration")?;
         Ok(())
+    }
+
+    fn enable_wal(conn: &Connection, db_path: &Path) -> Result<()> {
+        // Changing journal mode needs an exclusive database lock and SQLite's
+        // busy handler is not consistently invoked for this PRAGMA. A second
+        // opener may have acquired the schema migration writer lock in the
+        // small gap after our migration commit, so retry only BUSY/LOCKED for
+        // the same bounded window as the connection busy timeout.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match conn.query_row("PRAGMA journal_mode = WAL;", [], |row| {
+                row.get::<_, String>(0)
+            }) {
+                Ok(mode) if mode.eq_ignore_ascii_case("wal") => return Ok(()),
+                Ok(mode) => anyhow::bail!(
+                    "failed to enable WAL for {}: SQLite selected journal mode {mode}",
+                    db_path.display()
+                ),
+                Err(error)
+                    if matches!(
+                        error.sqlite_error_code(),
+                        Some(ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+                    ) && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(error).with_context(|| {
+                        format!("failed to enable WAL for {}", db_path.display())
+                    });
+                }
+            }
+        }
     }
 
     /// Insert or update thread metadata.
@@ -1691,24 +1812,12 @@ impl StateStore {
 }
 
 fn default_state_db_path() -> PathBuf {
-    // $CODEWHALE_HOME is a hard override of the base data directory
-    // (docs/reference/CONFIGURATION.md): when set, the state DB lives under it and we do
-    // NOT fall back to the legacy ~/.deepseek path — silent fallback would
-    // defeat the isolation the override promises (CI, containers, multi-project,
-    // test harnesses). Legacy ~/.deepseek migration only applies to the default
-    // home location.
+    // $CODEWHALE_HOME is a hard override of the base data directory.
     if let Some(overridden) = codewhale_home_override() {
         return overridden.join("state.db");
     }
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    // Prefer the CodeWhale directory, falling back to legacy DeepSeek path
-    // so existing installs don't lose their session history.
-    let primary = home.join(".codewhale").join("state.db");
-    if primary.exists() || !home.join(".deepseek").join("state.db").exists() {
-        primary
-    } else {
-        home.join(".deepseek").join("state.db")
-    }
+    home.join(".codewhale").join("state.db")
 }
 
 /// Resolve `$CODEWHALE_HOME` as a hard override of the data directory root.

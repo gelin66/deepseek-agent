@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_str, required_str,
 };
 use crate::tui::notifications::{Method, notify_done};
@@ -77,7 +77,7 @@ impl ToolSpec for NotifyTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, _ctx: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, _ctx: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let title_raw = required_str(&input, "title")?;
         let body_raw = optional_str(&input, "body").unwrap_or("");
 
@@ -113,7 +113,7 @@ impl ToolSpec for NotifyTool {
             std::time::Duration::from_secs(1),
         );
 
-        Ok(ToolResult::success(format!("notified: {title}")))
+        Ok(ToolOutcome::success(format!("notified: {title}")))
     }
 }
 
@@ -162,7 +162,7 @@ mod tests {
             .execute(json!({"title": "done", "body": "tests pass"}), &ctx())
             .await
             .expect("ok");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("done"));
     }
 

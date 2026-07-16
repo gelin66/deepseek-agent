@@ -61,7 +61,9 @@ fn text_sse(model: &str, text: &str) -> String {
             "usage": {
                 "prompt_tokens": 12,
                 "completion_tokens": 4,
-                "total_tokens": 16
+                "total_tokens": 16,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 12
             }
         })),
         "data: [DONE]\n\n".to_string(),
@@ -116,7 +118,9 @@ fn fanout_tool_call_sse_n(count: usize) -> String {
             "usage": {
                 "prompt_tokens": 20,
                 "completion_tokens": 12,
-                "total_tokens": 32
+                "total_tokens": 32,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 20
             }
         })),
         "data: [DONE]\n\n".to_string(),

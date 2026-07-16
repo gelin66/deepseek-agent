@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::task_manager::{TaskArtifactRef, TaskGithubEvent};
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_str, required_str, required_u64,
 };
 
@@ -61,7 +61,7 @@ impl ToolSpec for GithubIssueContextTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         ensure_github_repo(context)?;
         let number = required_u64(&input, "number")?;
         let include_comments = optional_bool(&input, "include_comments", true);
@@ -73,7 +73,7 @@ impl ToolSpec for GithubIssueContextTool {
         let number_s = number.to_string();
         let raw = run_gh_json(context, &["issue", "view", &number_s, "--json", fields])?;
         let shaped = shape_large_text(context, raw, "issue_body", BODY_ARTIFACT_THRESHOLD)?;
-        let mut result = ToolResult::json(&json!({
+        let mut result = ToolOutcome::json(&json!({
             "summary": format!("Issue #{number}: {}", shaped["title"].as_str().unwrap_or("")),
             "issue": shaped,
         }))
@@ -116,7 +116,7 @@ impl ToolSpec for GithubPrContextTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         ensure_github_repo(context)?;
         let number = required_u64(&input, "number")?;
         let number_s = number.to_string();
@@ -138,7 +138,7 @@ impl ToolSpec for GithubPrContextTool {
             shaped["diff_summary"] = json!(summarize(&diff, 900));
             shaped["diff_artifact"] = json!(diff_ref);
         }
-        let mut result = ToolResult::json(&json!({
+        let mut result = ToolOutcome::json(&json!({
             "summary": format!("PR #{number}: {}", shaped["title"].as_str().unwrap_or("")),
             "pr": shaped,
         }))
@@ -188,13 +188,13 @@ impl ToolSpec for GithubCommentTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         validate_evidence(&input, false)?;
         let target = required_str(&input, "target")?;
         let number = required_u64(&input, "number")?;
         let body = required_str(&input, "body")?;
         if optional_bool(&input, "dry_run", false) {
-            return Ok(ToolResult::success(format!(
+            return Ok(ToolOutcome::success(format!(
                 "Dry run: would comment on {target} #{number}."
             )));
         }
@@ -210,7 +210,7 @@ impl ToolSpec for GithubCommentTool {
             write_artifact_if_needed(context, "github_comment", body, BODY_ARTIFACT_THRESHOLD)?,
         );
         Ok(
-            ToolResult::success(format!("Commented on {target} #{number}."))
+            ToolOutcome::success(format!("Commented on {target} #{number}."))
                 .with_metadata(metadata),
         )
     }
@@ -238,7 +238,7 @@ impl ToolSpec for GithubCloseIssueTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         close_github_thread(input, context, GithubCloseTarget::Issue)
     }
 }
@@ -265,7 +265,7 @@ impl ToolSpec for GithubClosePrTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         close_github_thread(input, context, GithubCloseTarget::Pr)
     }
 }
@@ -335,12 +335,12 @@ fn close_github_thread(
     input: Value,
     context: &ToolContext,
     target: GithubCloseTarget,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     validate_evidence(&input, true)?;
     if !optional_bool(&input, "allow_dirty", false) {
         let status = git_status_porcelain(context)?;
         if !status.trim().is_empty() {
-            return Ok(ToolResult::error(format!(
+            return Ok(ToolOutcome::error(format!(
                 "Refusing to close {}: worktree is dirty and allow_dirty was false.",
                 target.display()
             ))
@@ -349,7 +349,7 @@ fn close_github_thread(
     }
     let number = required_u64(&input, "number")?;
     if optional_bool(&input, "dry_run", false) {
-        return Ok(ToolResult::success(format!(
+        return Ok(ToolOutcome::success(format!(
             "Dry run: would close {} #{number}.",
             target.display()
         )));
@@ -386,7 +386,7 @@ fn close_github_thread(
             .flatten(),
     );
     Ok(
-        ToolResult::success(format!("Closed {} #{number}.", target.display()))
+        ToolOutcome::success(format!("Closed {} #{number}.", target.display()))
             .with_metadata(metadata),
     )
 }

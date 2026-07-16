@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::dependencies::ExternalTool;
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_str, optional_u64,
 };
 
@@ -60,7 +60,7 @@ impl ToolSpec for GitStatusTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let git_ctx = resolve_git_context(context, optional_str(&input, "path"))?;
 
         let mut args = vec![
@@ -81,7 +81,7 @@ impl ToolSpec for GitStatusTool {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let message = format!("git status failed: {}", stderr.trim());
-            return Ok(ToolResult::error(message).with_metadata(json!({
+            return Ok(ToolOutcome::error(message).with_metadata(json!({
                 "command": command_str,
                 "exit_code": output.status.code(),
                 "stderr": stderr.trim(),
@@ -91,7 +91,7 @@ impl ToolSpec for GitStatusTool {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let (content, truncated, omitted_chars) = truncate_with_note(&stdout, MAX_OUTPUT_CHARS);
 
-        Ok(ToolResult::success(content).with_metadata(json!({
+        Ok(ToolOutcome::success(content).with_metadata(json!({
             "command": command_str,
             "working_dir": git_ctx.working_dir,
             "pathspec": git_ctx.pathspec,
@@ -152,7 +152,7 @@ impl ToolSpec for GitDiffTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let git_ctx = resolve_git_context(context, optional_str(&input, "path"))?;
         let cached = optional_bool(&input, "cached", false);
         let unified = optional_u64(&input, "unified", DEFAULT_UNIFIED).min(MAX_UNIFIED);
@@ -179,7 +179,7 @@ impl ToolSpec for GitDiffTool {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let message = format!("git diff failed: {}", stderr.trim());
-            return Ok(ToolResult::error(message).with_metadata(json!({
+            return Ok(ToolOutcome::error(message).with_metadata(json!({
                 "command": command_str,
                 "exit_code": output.status.code(),
                 "stderr": stderr.trim(),
@@ -189,7 +189,7 @@ impl ToolSpec for GitDiffTool {
         let stdout = String::from_utf8_lossy(&output.stdout);
         let (content, truncated, omitted_chars) = truncate_with_note(&stdout, MAX_OUTPUT_CHARS);
 
-        Ok(ToolResult::success(content).with_metadata(json!({
+        Ok(ToolOutcome::success(content).with_metadata(json!({
             "command": command_str,
             "working_dir": git_ctx.working_dir,
             "pathspec": git_ctx.pathspec,
@@ -359,7 +359,7 @@ mod tests {
         let ctx = ToolContext::new(tmp.path());
         let tool = GitStatusTool;
         let result = tool.execute(json!({}), &ctx).await.expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("##"));
         assert!(result.content.contains("file.txt"));
     }
@@ -382,7 +382,7 @@ mod tests {
         let ctx = ToolContext::new(tmp.path());
         let tool = GitStatusTool;
         let result = tool.execute(json!({}), &ctx).await.expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(
             result
                 .metadata
@@ -419,7 +419,7 @@ mod tests {
             .execute(json!({ "path": "src" }), &ctx)
             .await
             .expect("diff");
-        assert!(uncached.success);
+        assert!(uncached.is_success());
         assert!(uncached.content.contains("diff --git"));
         assert!(uncached.content.contains("lib.rs"));
 
@@ -430,7 +430,7 @@ mod tests {
             .execute(json!({ "path": "src", "cached": true }), &ctx)
             .await
             .expect("diff cached");
-        assert!(cached.success);
+        assert!(cached.is_success());
         assert!(cached.content.contains("diff --git"));
         assert!(
             cached
@@ -462,7 +462,7 @@ mod tests {
         let tool = GitDiffTool;
         let result = tool.execute(json!({}), &ctx).await.expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(
             result
                 .metadata

@@ -990,6 +990,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "codewhale-runtime"
+version = "0.8.68"
+dependencies = [
+ "async-trait",
+ "codewhale-protocol",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "codewhale-secrets"
 version = "0.8.68"
 dependencies = [
@@ -1007,12 +1019,18 @@ name = "codewhale-state"
 version = "0.8.68"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "codewhale-protocol",
+ "codewhale-runtime",
  "dirs",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1049,7 +1067,9 @@ dependencies = [
  "codewhale-lane",
  "codewhale-protocol",
  "codewhale-release",
+ "codewhale-runtime",
  "codewhale-secrets",
+ "codewhale-state",
  "codewhale-tools",
  "codewhale-workflow",
  "codewhale-workflow-js",

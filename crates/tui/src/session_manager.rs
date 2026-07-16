@@ -1272,6 +1272,7 @@ mod tests {
                             { "step": "render replay card", "status": "completed" }
                         ]
                     }),
+                    raw_arguments: None,
                     caller: None,
                 }],
             },
@@ -1319,6 +1320,7 @@ mod tests {
                     id: "call-big".to_string(),
                     name: "exec_shell".to_string(),
                     input: serde_json::json!({"command": "cargo test -p codewhale-tui"}),
+                    raw_arguments: None,
                     caller: None,
                 }],
             },
@@ -1371,6 +1373,7 @@ mod tests {
                     id: "call-legacy".to_string(),
                     name: "exec_shell".to_string(),
                     input: serde_json::json!({"command": "cargo check"}),
+                    raw_arguments: None,
                     caller: None,
                 }],
             },

@@ -292,7 +292,7 @@ pub enum LlmError {
     Timeout(Duration),
 
     /// Authentication failed (HTTP 401, selected HTTP 403)
-    AuthenticationError(AuthenticationErrorDetail),
+    AuthenticationError(Box<AuthenticationErrorDetail>),
 
     /// Authorization or provider-side blocking failed (HTTP 403)
     AuthorizationError(String),
@@ -464,7 +464,7 @@ impl LlmError {
 
     #[must_use]
     pub fn authentication_error(message: impl Into<String>) -> Self {
-        LlmError::AuthenticationError(AuthenticationErrorDetail::new(message))
+        LlmError::AuthenticationError(Box::new(AuthenticationErrorDetail::new(message)))
     }
 
     #[must_use]
@@ -472,7 +472,9 @@ impl LlmError {
         message: impl Into<String>,
         context: Option<AuthenticationErrorContext>,
     ) -> Self {
-        LlmError::AuthenticationError(AuthenticationErrorDetail::with_context(message, context))
+        LlmError::AuthenticationError(Box::new(AuthenticationErrorDetail::with_context(
+            message, context,
+        )))
     }
 
     /// Constructs an `LlmError` from HTTP response data plus request context

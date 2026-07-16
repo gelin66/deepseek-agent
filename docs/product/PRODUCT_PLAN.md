@@ -13,17 +13,9 @@
 [CURRENT_CODEWHALE.md](../architecture/CURRENT_CODEWHALE.md)，
 它描述现状，不覆盖本文件中的目标方向。
 
-当前实施状态仍以路线图为准；截至 2026-07-15，
-[M1-A 离线契约基线](../../eval/summaries/m1-offline-baseline-2026-07-15.md)与生产工具目录测量已完成；
-[M1-B 官方 DeepSeek live canary](../../eval/summaries/m1-b-deepseek-live-2026-07-15.md)
-通过 5/5 个受限请求。它们证明离线契约和 Standard、Thinking tool/exact replay、
-Beta Strict、Beta FIM 的线上协议兼容，不证明编码能力提升。M1-C 正在先建立覆盖真实
-HTTP 发送次数的共享硬预算，再执行真实编码任务 A/B，因此 M1 仍在进行中。
-
-M2-A 已把官方 DeepSeek `RequestPlan` 接入现有生产 Client 代码并完成单元回归，但
-Engine 到真实发送器/FIM 的 production-path 门禁和切换后的官方 live canary 尚未通过。
-这表示请求决策代码已经接线，不表示 M2-A 已验收，也不表示独立 `DeepSeekBackend`
-已经完成。
+当前实施阶段、已完成证据和未偿还证据债务只在
+[ROADMAP.md](ROADMAP.md) 中维护。本总纲不复制随开发变化的里程碑状态，避免旧进度
+覆盖路线图中的当前事实。
 
 ## 1. 产品结论
 

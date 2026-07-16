@@ -22,8 +22,10 @@
 pub enum GoalRunStatus {
     /// Still working toward the objective.
     Active,
-    /// The objective was achieved (the model self-reported done and, ideally, a
-    /// verifier confirmed — see `GoalGate`).
+    /// The objective passed the host-owned completion gate. The live Engine
+    /// handles this terminal state before calling the active-loop reducer, so
+    /// this variant mainly keeps the decision type complete for other hosts.
+    #[allow(dead_code)]
     Completed,
     /// The model reported it is blocked and needs the user.
     #[allow(dead_code)]

@@ -21,7 +21,7 @@ const HAPPY_PATH_SCENARIO: &str = "Happy path lists the current directory throug
 const UNKNOWN_TOOL_SCENARIO: &str = "Unknown tool returns an error result";
 const MALFORMED_ARGUMENTS_SCENARIO: &str = "Malformed tool arguments return an error result";
 const TOOL_CALL_ID: &str = "call_tool";
-const TEST_MODEL: &str = "acceptance-model";
+const TEST_MODEL: &str = "deepseek-v4-flash";
 
 #[derive(Debug, Default, cucumber::World)]
 struct ToolLifecycleWorld {
@@ -225,7 +225,7 @@ fn public_tool_result_should_report_error_for(world: &mut ToolLifecycleWorld, to
         .and_then(Value::as_str)
         .expect("tool_result error output");
     assert!(
-        output.contains(&tool_name) && output.contains("not available"),
+        output.contains(&tool_name) && output.contains("未在生产 AgentRuntime 工具目录中提供"),
         "tool_result error should name the unavailable tool:\n{output}"
     );
 }
@@ -251,7 +251,7 @@ fn codewhale_should_send_tool_error_back_to_mocked_llm(world: &mut ToolLifecycle
         .expect("tool result content");
     let tool_name = world.tool_name.as_deref().expect("tool name");
     assert!(
-        content.contains(tool_name) && content.contains("not available"),
+        content.contains(tool_name) && content.contains("未在生产 AgentRuntime 工具目录中提供"),
         "tool error sent to LLM should describe the unavailable tool:\n{content}"
     );
 }
@@ -602,7 +602,9 @@ fn tool_call_sse(tool_name: &str, arguments: &str) -> String {
             "usage": {
                 "prompt_tokens": 10,
                 "completion_tokens": 2,
-                "total_tokens": 12
+                "total_tokens": 12,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 10
             }
         })),
         "data: [DONE]\n\n".to_string(),
@@ -634,7 +636,9 @@ fn final_answer_sse(answer: &str) -> String {
             "usage": {
                 "prompt_tokens": 20,
                 "completion_tokens": 8,
-                "total_tokens": 28
+                "total_tokens": 28,
+                "prompt_cache_hit_tokens": 0,
+                "prompt_cache_miss_tokens": 20
             }
         })),
         "data: [DONE]\n\n".to_string(),

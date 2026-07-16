@@ -20,7 +20,7 @@ use crate::rlm::session::{
 use crate::tools::fetch_url::FetchUrlTool;
 use crate::tools::handle::VarHandle;
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 const DEFAULT_CHILD_MODEL: &str = "deepseek-v4-flash";
@@ -68,11 +68,15 @@ impl ToolSpec for RlmSessionObjectsTool {
         true
     }
 
-    async fn execute(&self, _input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _input: Value,
+        context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let snapshot = context.session_objects.as_ref().ok_or_else(|| {
             ToolError::not_available("rlm_session_objects: active session snapshot unavailable")
         })?;
-        ToolResult::json(&json!({
+        ToolOutcome::json(&json!({
             "objects": snapshot.object_cards(),
             "open_with": {
                 "tool": "rlm_open",
@@ -144,7 +148,7 @@ impl ToolSpec for RlmOpenTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let source_count = rlm_open_source_count(&input);
         if source_count != 1 {
             let mut msg = String::from(
@@ -210,7 +214,7 @@ impl ToolSpec for RlmOpenTool {
         let mut sessions = context.runtime.rlm_sessions.lock().await;
         sessions.insert(name.clone(), Arc::new(tokio::sync::Mutex::new(session)));
 
-        ToolResult::json(&json!({
+        ToolOutcome::json(&json!({
             "name": name,
             "id": id,
             "length": context_meta.length,
@@ -274,7 +278,7 @@ impl ToolSpec for RlmEvalTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let name = required_non_empty_str(&input, "name")?;
         let code = required_non_empty_str(&input, "code").map_err(|_| {
             ToolError::invalid_input(
@@ -416,7 +420,7 @@ impl ToolSpec for RlmEvalTool {
             "child_model": DEFAULT_CHILD_MODEL,
         });
 
-        Ok(ToolResult::json(&output)
+        Ok(ToolOutcome::json(&output)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?
             .with_metadata(metadata))
     }
@@ -453,7 +457,7 @@ impl ToolSpec for RlmConfigureTool {
         vec![ToolCapability::ReadOnly]
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let name = required_non_empty_str(&input, "name")?;
         let session = get_session(context, name).await?;
         let mut session = session.lock().await;
@@ -479,7 +483,7 @@ impl ToolSpec for RlmConfigureTool {
             session.config.share_session = share;
         }
 
-        ToolResult::json(&json!({
+        ToolOutcome::json(&json!({
             "name": session.name,
             "current_config": session.config,
         }))
@@ -514,7 +518,7 @@ impl ToolSpec for RlmCloseTool {
         vec![ToolCapability::ReadOnly]
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let name = required_non_empty_str(&input, "name")?;
         let removed = {
             let mut sessions = context.runtime.rlm_sessions.lock().await;
@@ -543,7 +547,7 @@ impl ToolSpec for RlmCloseTool {
             kernel.shutdown().await;
         }
 
-        ToolResult::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&output).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 

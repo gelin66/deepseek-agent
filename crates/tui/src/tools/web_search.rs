@@ -12,7 +12,8 @@
 //!   api_key = "tvly-..."
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
+    optional_u64,
 };
 use crate::config::SearchProvider;
 use crate::network_policy::{Decision, NetworkPolicyDecider};
@@ -193,7 +194,7 @@ impl ToolSpec for WebSearchTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let query = extract_search_query(&input)?;
         if query.is_empty() {
             return Err(ToolError::invalid_input("Query cannot be empty"));
@@ -384,7 +385,7 @@ fn search_tool_result(
     source: impl Into<String>,
     results: Vec<WebSearchEntry>,
     message_suffix: Option<&str>,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let message = if results.is_empty() {
         if let Some(suffix) = message_suffix {
             format!("No results found. {suffix}")
@@ -405,7 +406,7 @@ fn search_tool_result(
         results,
     };
 
-    ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
+    ToolOutcome::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
 }
 
 impl WebSearchTool {
@@ -420,7 +421,7 @@ impl WebSearchTool {
         max_results: usize,
         timeout_ms: u64,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let (url, host) = searxng_search_url(context.search_base_url.as_deref(), query)?;
         check_policy(context.network_policy.as_ref(), &host)?;
 
@@ -478,7 +479,7 @@ impl WebSearchTool {
         max_results: usize,
         timeout_ms: u64,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let api_key = context
             .search_api_key
             .as_deref()
@@ -565,7 +566,7 @@ impl WebSearchTool {
             results,
         };
 
-        ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 
     /// Search via Sofya web search API (<https://sofya.co>).
@@ -579,7 +580,7 @@ impl WebSearchTool {
         max_results: usize,
         timeout_ms: u64,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let env_key = std::env::var("SOFYA_API_KEY").ok();
         let api_key = context
             .search_api_key
@@ -647,7 +648,7 @@ impl WebSearchTool {
             results,
         };
 
-        ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 
     /// Search via Bocha AI Search API (<https://bochaai.com>).
@@ -657,7 +658,7 @@ impl WebSearchTool {
         max_results: usize,
         timeout_ms: u64,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let api_key = context
             .search_api_key
             .as_deref()
@@ -728,7 +729,7 @@ impl WebSearchTool {
             results,
         };
 
-        ToolResult::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&response).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 
     /// Search via Metaso AI Search API (<https://metaso.cn>). Falls back to
@@ -740,7 +741,7 @@ impl WebSearchTool {
         max_results: usize,
         timeout_ms: u64,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let env_key = std::env::var("METASO_API_KEY").ok();
         let api_key = context
             .search_api_key
@@ -841,7 +842,7 @@ impl WebSearchTool {
         max_results: usize,
         timeout_ms: u64,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let env_key = std::env::var("BAIDU_SEARCH_API_KEY").ok();
         let api_key = context
             .search_api_key
@@ -916,7 +917,7 @@ impl WebSearchTool {
         max_results: usize,
         timeout_ms: u64,
         context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let volc_key = std::env::var("VOLCENGINE_API_KEY").ok();
         let volc_ark_key = std::env::var("VOLCENGINE_ARK_API_KEY").ok();
         let ark_key = std::env::var("ARK_API_KEY").ok();

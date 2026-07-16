@@ -31,7 +31,8 @@ run_focused_tests() {
     "official_deepseek_endpoint_requires_exact_final_route_identity"
     "third_party_and_self_hosted_v4_routes_stay_conservative"
     "strict_schema_mode_does_not_force_a_tool_call"
-    "beta_chat_request_keeps_strict_tool_on_beta_route"
+    "client::deepseek::tests"
+    "thinking_tool_call_"
     "strict_tool_mode_doctor"
   )
 

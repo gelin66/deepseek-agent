@@ -4,7 +4,7 @@
 //! similar to ripgrep/grep functionality.
 
 use super::spec::{
-    ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_bool, optional_str,
+    ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec, optional_bool, optional_str,
     optional_u64, required_str,
 };
 use async_trait::async_trait;
@@ -101,7 +101,7 @@ impl ToolSpec for GrepFilesTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let pattern_str = required_str(&input, "pattern")?;
         let path_str = optional_str(&input, "path").unwrap_or(".");
         let context_lines = usize::try_from(optional_u64(&input, "context_lines", 2))
@@ -264,7 +264,7 @@ impl ToolSpec for GrepFilesTool {
         })
         .await?;
 
-        ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -745,7 +745,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("main"));
         assert!(result.content.contains("hello"));
     }
@@ -767,7 +767,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("line2")); // context before
         assert!(result.content.contains("line4")); // context after
 
@@ -817,7 +817,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         // Should find all 3 lines
         let parsed: Value = serde_json::from_str(&result.content).unwrap();
         assert_eq!(parsed["total_matches"].as_u64().unwrap(), 3);
@@ -837,7 +837,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         // Should only match .rs file
         let parsed: Value = serde_json::from_str(&result.content).unwrap();
         let matches = parsed["matches"].as_array().unwrap();
@@ -869,7 +869,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let parsed: Value = serde_json::from_str(&result.content).unwrap();
         assert_eq!(parsed["total_matches"].as_u64().unwrap(), 0);
         assert_eq!(parsed["files_searched"].as_u64().unwrap(), 0);
@@ -892,7 +892,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let parsed: Value = serde_json::from_str(&result.content).unwrap();
         assert_eq!(parsed["total_matches"].as_u64().unwrap(), 1);
         assert_eq!(parsed["files_searched"].as_u64().unwrap(), 1);
@@ -923,7 +923,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let parsed: Value = serde_json::from_str(&result.content).unwrap();
         assert_eq!(parsed["total_matches"].as_u64().unwrap(), 1);
         assert_eq!(parsed["files_searched"].as_u64().unwrap(), 1);
@@ -980,7 +980,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let parsed: Value = serde_json::from_str(&result.content).unwrap();
         let matches = parsed["matches"].as_array().unwrap();
         assert_eq!(matches.len(), 5);

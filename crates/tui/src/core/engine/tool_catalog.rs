@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 use crate::mcp::McpPool;
 use crate::model_profile::ToolSurfaceBudget;
 use crate::models::Tool;
-use crate::tools::spec::{ToolError, ToolResult, optional_str, optional_u64, required_str};
+use crate::tools::spec::{ToolError, ToolOutcome, optional_str, optional_u64, required_str};
 use crate::tui::app::AppMode;
 
 use crate::dependencies::ExternalTool;
@@ -41,6 +41,7 @@ pub(super) fn is_tool_search_tool(name: &str) -> bool {
 
 pub(super) const DEFAULT_ACTIVE_NATIVE_TOOLS: &[&str] = &[
     "agent",
+    "agents_wait",
     "apply_patch",
     "edit_file",
     "exec_interact",
@@ -250,7 +251,7 @@ fn apply_tool_surface_budget(
         }
         if matches!(
             tool.name.as_str(),
-            "agent" | "run_tests" | "run_verifiers" | "task_create" | "web_search"
+            "run_tests" | "run_verifiers" | "task_create" | "web_search"
         ) {
             tool.defer_loading = Some(true);
         }
@@ -750,7 +751,7 @@ pub(super) fn maybe_hydrate_requested_deferred_tool(
     catalog: &[Tool],
     active_tools_at_batch_start: &HashSet<String>,
     hydrated_tools_this_batch: &mut HashSet<String>,
-) -> Option<ToolResult> {
+) -> Option<ToolOutcome> {
     let def = catalog.iter().find(|def| def.name == tool_name)?;
 
     if !def.defer_loading.unwrap_or(false) || active_tools_at_batch_start.contains(tool_name) {
@@ -767,7 +768,7 @@ pub(super) fn preflight_requested_deferred_tool(
     tool_input: &Value,
     catalog: &[Tool],
     active_tools: &mut HashSet<String>,
-) -> Option<ToolResult> {
+) -> Option<ToolOutcome> {
     let active_tools_at_batch_start = active_tools.clone();
     let mut hydrated_tools_this_batch = HashSet::new();
     let result = maybe_hydrate_requested_deferred_tool(
@@ -781,7 +782,7 @@ pub(super) fn preflight_requested_deferred_tool(
     result
 }
 
-fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) -> ToolResult {
+fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) -> ToolOutcome {
     let expected = schema_fields(&tool.input_schema);
     let required = schema_required_fields(&tool.input_schema);
     let received = received_field_names(tool_input);
@@ -844,7 +845,7 @@ fn deferred_tool_schema_hydration_result(tool: &Tool, tool_input: &Value) -> Too
         }
     }
 
-    ToolResult::success(lines.join("\n")).with_metadata(json!({
+    ToolOutcome::success(lines.join("\n")).with_metadata(json!({
         "event": "tool.schema_hydrated",
         "tool": tool.name,
         "executed": false,
@@ -973,7 +974,7 @@ pub(super) fn execute_tool_search(
     input: &serde_json::Value,
     catalog: &[Tool],
     active_tools: &mut HashSet<String>,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let query = required_str(input, "query")?;
     let match_kind = match tool_name {
         LEGACY_TOOL_SEARCH_REGEX_NAME => "regex",
@@ -1029,20 +1030,19 @@ pub(super) fn execute_tool_search(
         "unavailable_tool_references": unavailable_references.clone(),
     });
 
-    Ok(ToolResult {
-        content: serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string()),
-        success: true,
-        metadata: Some(json!({
-            "tool_references": discovered,
-            "unavailable_tool_references": unavailable_references,
-        })),
-    })
+    Ok(ToolOutcome::success(
+        serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string()),
+    )
+    .with_metadata(json!({
+        "tool_references": discovered,
+        "unavailable_tool_references": unavailable_references,
+    })))
 }
 
 pub(super) async fn execute_code_execution_tool(
     input: &serde_json::Value,
     workspace: &Path,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let code = required_str(input, "code")?;
 
     // Resolve the locally-installed Python interpreter we cached at
@@ -1091,9 +1091,11 @@ pub(super) async fn execute_code_execution_tool(
         "content": [],
     });
 
-    Ok(ToolResult {
-        content: serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string()),
-        success,
-        metadata: Some(payload),
-    })
+    let content = serde_json::to_string(&payload).unwrap_or_else(|_| payload.to_string());
+    let outcome = if success {
+        ToolOutcome::success(content)
+    } else {
+        ToolOutcome::error(content)
+    };
+    Ok(outcome.with_metadata(payload))
 }

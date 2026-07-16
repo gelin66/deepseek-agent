@@ -9,7 +9,8 @@
 
 use super::handle::query_jsonpath;
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
+    optional_u64,
 };
 use crate::network_policy::{Decision, NetworkPolicyDecider};
 use async_trait::async_trait;
@@ -134,7 +135,7 @@ impl ToolSpec for FetchUrlTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let url = input
             .get("url")
             .and_then(Value::as_str)
@@ -254,16 +255,14 @@ impl ToolSpec for FetchUrlTool {
             // Don't `Err` on 4xx/5xx — the caller often wants to see the body
             // (e.g. a JSON error envelope). Mark the result as a failure so the
             // engine renders it as such.
-            return Ok(ToolResult {
-                content: serde_json::to_string_pretty(&response).map_err(|e| {
+            return Ok(ToolOutcome::error(
+                serde_json::to_string_pretty(&response).map_err(|e| {
                     ToolError::execution_failed(format!("failed to serialize response: {e}"))
                 })?,
-                success: false,
-                metadata: None,
-            });
+            ));
         }
 
-        ToolResult::json(&response)
+        ToolOutcome::json(&response)
             .map_err(|e| ToolError::execution_failed(format!("failed to serialize response: {e}")))
     }
 }

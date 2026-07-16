@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use crate::config::VisionModelConfig;
 use crate::llm_client::{LlmError, RetryConfig, sanitize_http_error_body, with_retry};
 use crate::tools::spec::{
-    ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
+    ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec, required_str,
 };
 
 const DEFAULT_VISION_MAX_OUTPUT_TOKENS: u32 = 4096;
@@ -184,7 +184,7 @@ impl ToolSpec for ImageAnalyzeTool {
         vec![ToolCapability::ReadOnly]
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let image_path = required_str(&input, "image_path")?;
         let prompt = input
             .get("prompt")
@@ -270,7 +270,7 @@ impl ToolSpec for ImageAnalyzeTool {
             "model": model,
         });
 
-        ToolResult::json(&result)
+        ToolOutcome::json(&result)
             .map_err(|e| ToolError::execution_failed(format!("Failed to serialize result: {e}")))
     }
 }

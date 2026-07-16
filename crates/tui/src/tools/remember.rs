@@ -14,7 +14,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
+    required_str,
 };
 
 /// Tool that appends one bullet to the user memory file.
@@ -60,7 +61,7 @@ impl ToolSpec for RememberTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let note = required_str(&input, "note")?;
         let path = context.memory_path.as_ref().ok_or_else(|| {
             ToolError::execution_failed(
@@ -73,7 +74,7 @@ impl ToolSpec for RememberTool {
             ToolError::execution_failed(format!("failed to append to {}: {err}", path.display()))
         })?;
 
-        Ok(ToolResult::success(format!(
+        Ok(ToolOutcome::success(format!(
             "remembered: {}",
             note.trim_start_matches('#').trim()
         )))
@@ -117,7 +118,7 @@ mod tests {
             .execute(json!({"note": "use 4 spaces for indentation"}), &ctx)
             .await
             .expect("ok");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("4 spaces"));
 
         let body = std::fs::read_to_string(&path).expect("read");

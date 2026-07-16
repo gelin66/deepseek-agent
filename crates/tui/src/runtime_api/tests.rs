@@ -166,6 +166,7 @@ fn session_detail_tool_use_preserves_caller_metadata() {
             id: "tool-1".to_string(),
             name: "task_shell_start".to_string(),
             input: json!({ "cmd": "cargo test" }),
+            raw_arguments: None,
             caller: Some(crate::models::ToolCaller {
                 caller_type: "subagent".to_string(),
                 tool_id: Some("parent-tool".to_string()),

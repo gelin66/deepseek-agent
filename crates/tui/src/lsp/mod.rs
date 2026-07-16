@@ -142,6 +142,13 @@ pub struct LspManager {
     custom_missing_warned: AsyncMutex<HashSet<String>>,
 }
 
+/// Host-visible evidence from all LSP transports owned by one manager.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct LspShutdownReport {
+    pub(crate) transports: usize,
+    pub(crate) failures: usize,
+}
+
 impl LspManager {
     /// Build a new manager. Does not spawn any LSP servers — that is lazy.
     #[must_use]
@@ -364,21 +371,25 @@ impl LspManager {
     /// Best-effort shutdown of every spawned transport. Called when the
     /// session ends.
     #[allow(dead_code)]
-    pub async fn shutdown_all(&self) {
-        let transports: Vec<Arc<dyn LspTransport>> =
-            self.transports.lock().await.values().cloned().collect();
-        let custom: Vec<Arc<dyn LspTransport>> = self
-            .custom_transports
-            .lock()
-            .await
-            .values()
-            .cloned()
-            .collect();
-        for transport in transports {
-            transport.shutdown().await;
-        }
-        for transport in custom {
-            transport.shutdown().await;
+    pub async fn shutdown_all(&self) -> LspShutdownReport {
+        let transports = std::mem::take(&mut *self.transports.lock().await);
+        let custom = std::mem::take(&mut *self.custom_transports.lock().await);
+        let test_transports = std::mem::take(&mut *self.test_transports.lock().await);
+        let transports = transports
+            .into_values()
+            .chain(custom.into_values())
+            .chain(test_transports.into_values())
+            .collect::<Vec<_>>();
+        let report_transports = transports.len();
+        let results = futures_util::future::join_all(
+            transports
+                .into_iter()
+                .map(|transport| async move { transport.shutdown().await }),
+        )
+        .await;
+        LspShutdownReport {
+            transports: report_transports,
+            failures: results.into_iter().filter(|settled| !settled).count(),
         }
     }
 }
@@ -461,7 +472,103 @@ pub(crate) mod tests {
             Ok(self.items.clone())
         }
 
-        async fn shutdown(&self) {}
+        async fn shutdown(&self) -> bool {
+            true
+        }
+    }
+
+    struct BarrierShutdownTransport {
+        barrier: Arc<tokio::sync::Barrier>,
+        shutdowns: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl LspTransport for BarrierShutdownTransport {
+        async fn diagnostics_for(
+            &self,
+            _path: &Path,
+            _text: &str,
+            _wait: Duration,
+        ) -> anyhow::Result<Vec<Diagnostic>> {
+            Ok(Vec::new())
+        }
+
+        async fn shutdown(&self) -> bool {
+            self.barrier.wait().await;
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            true
+        }
+    }
+
+    struct FailedShutdownTransport;
+
+    #[async_trait]
+    impl LspTransport for FailedShutdownTransport {
+        async fn diagnostics_for(
+            &self,
+            _path: &Path,
+            _text: &str,
+            _wait: Duration,
+        ) -> anyhow::Result<Vec<Diagnostic>> {
+            Ok(Vec::new())
+        }
+
+        async fn shutdown(&self) -> bool {
+            false
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_settles_builtin_custom_and_test_transports_concurrently() {
+        const TRANSPORTS: usize = 3;
+        let manager = LspManager::new(LspConfig::default(), PathBuf::from("/tmp"));
+        let barrier = Arc::new(tokio::sync::Barrier::new(TRANSPORTS));
+        let shutdowns = Arc::new(AtomicUsize::new(0));
+        let make_transport = || -> Arc<dyn LspTransport> {
+            Arc::new(BarrierShutdownTransport {
+                barrier: Arc::clone(&barrier),
+                shutdowns: Arc::clone(&shutdowns),
+            })
+        };
+        manager
+            .transports
+            .lock()
+            .await
+            .insert(Language::Rust, make_transport());
+        manager
+            .custom_transports
+            .lock()
+            .await
+            .insert("rb".to_string(), make_transport());
+        manager
+            .test_transports
+            .lock()
+            .await
+            .insert(Language::Go, make_transport());
+
+        let report = tokio::time::timeout(Duration::from_secs(1), manager.shutdown_all())
+            .await
+            .expect("serial LSP shutdown would deadlock on the first barrier participant");
+        assert_eq!(shutdowns.load(Ordering::SeqCst), TRANSPORTS);
+        assert_eq!(report.transports, TRANSPORTS);
+        assert_eq!(report.failures, 0);
+        assert!(manager.transports.lock().await.is_empty());
+        assert!(manager.custom_transports.lock().await.is_empty());
+        assert!(manager.test_transports.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_all_report_preserves_transport_failure() {
+        let manager = LspManager::new(LspConfig::default(), PathBuf::from("/tmp"));
+        manager
+            .transports
+            .lock()
+            .await
+            .insert(Language::Rust, Arc::new(FailedShutdownTransport));
+
+        let report = manager.shutdown_all().await;
+        assert_eq!(report.transports, 1);
+        assert_eq!(report.failures, 1);
     }
 
     #[tokio::test]

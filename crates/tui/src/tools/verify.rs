@@ -58,7 +58,8 @@ use crate::tui::app::ReasoningEffort;
 use crate::utils::truncate_with_ellipsis;
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
+    required_str,
 };
 
 /// Hard byte budget for the complete user prompt handed to the critic. Kept
@@ -402,7 +403,7 @@ self-check of whether what you just did is actually correct and complete."
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         // Opt-out (defense in depth; the primary gate is registration-time in
         // `with_agent_runtime_surface`). Honours `[features] verify_tool = false`
         // and lets saved-transcript replays respect a disabled toggle.
@@ -514,7 +515,7 @@ self-check of whether what you just did is actually correct and complete."
         // A refuted claim is a successful critic execution, not a tool
         // transport/execution failure. The agent must react to the structured
         // verdict and unresolved_risk fields in the content/metadata.
-        let result = ToolResult::json(&run.report)
+        let result = ToolOutcome::json(&run.report)
             .map_err(|e| ToolError::execution_failed(e.to_string()))?;
         Ok(result.with_metadata(metadata))
     }
@@ -1382,9 +1383,9 @@ mod tests {
             "finding should name the empty-input defect"
         );
         assert_eq!(run.report.highest_severity(), "critical");
-        let tool_result = ToolResult::json(&run.report).expect("serialize report");
+        let tool_result = ToolOutcome::json(&run.report).expect("serialize report");
         assert!(
-            tool_result.success,
+            tool_result.is_success(),
             "a refuted claim is a successful critic execution, not a tool failure"
         );
 

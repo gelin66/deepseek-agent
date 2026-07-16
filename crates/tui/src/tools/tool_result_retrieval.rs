@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::spec::{
-    ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_str, optional_u64,
+    ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec, optional_str, optional_u64,
     required_str,
 };
 
@@ -97,7 +97,7 @@ impl ToolSpec for RetrieveToolResultTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let reference = required_str(&input, "ref")?.trim();
         if reference.is_empty() {
             return Err(ToolError::invalid_input("ref cannot be empty"));
@@ -133,7 +133,7 @@ impl ToolSpec for RetrieveToolResultTool {
             }
         };
 
-        ToolResult::json(&payload).map_err(|err| {
+        ToolOutcome::json(&payload).map_err(|err| {
             ToolError::execution_failed(format!("failed to serialize result: {err}"))
         })
     }
@@ -699,7 +699,7 @@ mod tests {
             .unwrap_or_else(|err| err.into_inner())
     }
 
-    fn execute_tool(input: Value) -> Result<ToolResult, ToolError> {
+    fn execute_tool(input: Value) -> Result<ToolOutcome, ToolError> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -720,7 +720,7 @@ mod tests {
 
         let result = execute_tool(json!({"ref": "call-abc"})).unwrap();
 
-        assert!(result.success);
+        assert!(result.is_success());
         let body: Value = serde_json::from_str(&result.content).unwrap();
         assert_eq!(body["mode"], "summary");
         assert!(body["signal_lines"].to_string().contains("error[E0425]"));
@@ -813,11 +813,11 @@ mod tests {
 
         // Form: `sha:<hex>`
         let result = execute_tool(json!({"ref": format!("sha:{sha}")})).unwrap();
-        assert!(result.success, "sha:<hex> form should resolve");
+        assert!(result.is_success(), "sha:<hex> form should resolve");
 
         // Form: bare 64-hex
         let result = execute_tool(json!({"ref": &sha})).unwrap();
-        assert!(result.success, "bare 64-hex form should resolve");
+        assert!(result.is_success(), "bare 64-hex form should resolve");
     }
 
     #[test]
@@ -832,7 +832,10 @@ mod tests {
         crate::tools::truncate::write_spillover("call_xyz", "line1\nline2\nline3").unwrap();
 
         let result = execute_tool(json!({"ref": "art_call_xyz"})).unwrap();
-        assert!(result.success, "art_ prefix should resolve to legacy id");
+        assert!(
+            result.is_success(),
+            "art_ prefix should resolve to legacy id"
+        );
     }
 
     #[test]
@@ -887,7 +890,7 @@ mod tests {
         let result = runtime
             .block_on(RetrieveToolResultTool.execute(json!({"ref": "art_call_real"}), &ctx))
             .expect("art_<id> should resolve via session artifacts");
-        assert!(result.success);
+        assert!(result.is_success());
         let payload: Value = serde_json::from_str(&result.content).unwrap();
         assert!(
             payload

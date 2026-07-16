@@ -36,7 +36,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_str, required_str,
 };
 
@@ -107,7 +107,7 @@ impl ToolSpec for PandocConvertTool {
         ApprovalRequirement::Suggest
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let source_path_str = required_str(&input, "source_path")?;
         let target_format = required_str(&input, "target_format")?.trim().to_lowercase();
         let output_path_str = optional_str(&input, "output_path");
@@ -185,9 +185,9 @@ impl ToolSpec for PandocConvertTool {
             )
         } else {
             let text = String::from_utf8_lossy(&output.stdout).to_string();
-            return Ok(ToolResult::success(text));
+            return Ok(ToolOutcome::success(text));
         };
-        Ok(ToolResult::success(summary))
+        Ok(ToolOutcome::success(summary))
     }
 }
 
@@ -216,7 +216,7 @@ mod tests {
 
     // Test-only skip diagnostic; the module-wide print_stderr deny targets prod code.
     #[allow(clippy::print_stderr)]
-    async fn execute_pandoc_or_skip(input: Value, ctx: &ToolContext) -> Option<ToolResult> {
+    async fn execute_pandoc_or_skip(input: Value, ctx: &ToolContext) -> Option<ToolOutcome> {
         match PandocConvertTool.execute(input, ctx).await {
             Ok(result) => Some(result),
             Err(err) if pandoc_environment_unavailable(&err) => {
@@ -319,7 +319,7 @@ mod tests {
         else {
             return;
         };
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(
             result.content.contains("<h1") && result.content.contains("Title"),
             "html output must contain the heading; got {}",
@@ -353,7 +353,7 @@ mod tests {
         else {
             return;
         };
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("wrote"));
         let written = fs::read_to_string(tmp.path().join("out.html")).expect("read");
         assert!(

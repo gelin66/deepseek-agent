@@ -5,11 +5,11 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use std::collections::HashMap;
 use std::io::{self, IsTerminal, Read, Write};
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -25,6 +25,7 @@ use rust_i18n::i18n;
 i18n!("locales", fallback = ["en"]);
 
 mod acp_server;
+mod agent_runtime_adapter;
 mod artifacts;
 mod audit;
 mod auto_reasoning;
@@ -48,6 +49,8 @@ mod deepseek_theme;
 mod dependencies;
 mod error_taxonomy;
 mod eval;
+mod exec_output;
+mod exec_runtime;
 mod execpolicy;
 mod fast_hash;
 mod features;
@@ -128,13 +131,15 @@ mod workspace_trust;
 mod xai_oauth;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
+use crate::core::termination::RunTerminationReason;
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
+use crate::exec_output::ExecTerminalReceipt;
 use crate::features::{Feature, render_feature_table};
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig, McpServerOAuthConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
-use crate::tui::history::{summarize_tool_args, summarize_tool_output};
+use crate::tui::history::summarize_tool_output;
 
 #[cfg(windows)]
 fn configure_windows_console_utf8() {
@@ -381,14 +386,11 @@ struct ExecArgs {
     /// Emit machine-readable JSON output
     #[arg(long, default_value_t = false, conflicts_with = "output_format")]
     json: bool,
-    /// Resume a previous session by ID or prefix
-    #[arg(long, value_name = "SESSION_ID", conflicts_with_all = ["session_id", "continue_session"])]
+    /// Resume a durable Agent run by its exact run ID
+    #[arg(long, value_name = "RUN_ID", conflicts_with = "continue_session")]
     resume: Option<String>,
-    /// Resume a previous session by ID or prefix
-    #[arg(long = "session-id", value_name = "SESSION_ID", conflicts_with_all = ["resume", "continue_session"])]
-    session_id: Option<String>,
-    /// Continue the most recent session for this workspace
-    #[arg(long = "continue", default_value_t = false, conflicts_with_all = ["resume", "session_id"])]
+    /// Continue the most recent non-terminal Agent run for this workspace
+    #[arg(long = "continue", default_value_t = false, conflicts_with = "resume")]
     continue_session: bool,
     /// Output format for exec mode
     #[arg(long, value_enum, default_value_t = ExecOutputFormat::Text)]
@@ -406,13 +408,16 @@ struct ExecArgs {
     /// Maximum number of real DeepSeek HTTP requests started by this run.
     #[arg(long, value_name = "COUNT")]
     max_api_requests: Option<NonZeroU32>,
+    /// Hard wall-clock limit for the Headless Agent runtime.
+    #[arg(long, value_name = "SECONDS")]
+    max_runtime_secs: Option<NonZeroU64>,
     /// Extra text appended to the system prompt for this run.
     #[arg(long)]
     append_system_prompt: Option<String>,
-    /// Prompt to send to the model
+    /// Prompt to send to the model; omitted when resuming a durable run
     #[arg(
         value_name = "PROMPT",
-        required = true,
+        required_unless_present_any = ["resume", "continue_session"],
         trailing_var_arg = true,
         allow_hyphen_values = true
     )]
@@ -435,6 +440,12 @@ enum ExecOutputFormat {
     #[value(name = "stream-json")]
     StreamJson,
 }
+
+const DEFAULT_EXEC_MAX_RUNTIME_SECS: u64 = 30 * 60;
+const MAX_EXEC_MAX_RUNTIME_SECS: u64 = 24 * 60 * 60;
+const EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
+const EXEC_OUTPUT_QUEUE_CAPACITY: usize = 256;
+const EXEC_OUTPUT_CLOSE_TIMEOUT_SECS: u64 = 2;
 
 #[derive(Args, Debug, Clone)]
 struct TuiAuthArgs {
@@ -689,6 +700,158 @@ async fn wait_for_terminating_signal() -> i32 {
     130
 }
 
+fn spawn_exec_signal_controller() -> (
+    tokio::sync::watch::Receiver<Option<i32>>,
+    tokio::task::JoinHandle<()>,
+    std::sync::Arc<std::sync::atomic::AtomicI32>,
+) {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    let phase = std::sync::Arc::new(AtomicI32::new(0));
+    let controller_phase = std::sync::Arc::clone(&phase);
+    let task = tokio::spawn(async move {
+        let first = wait_for_terminating_signal().await;
+        // 0 = execution is cancellable, positive = first signal won the
+        // terminal race, -1 = terminal outcome has been committed. The CAS is
+        // the single linearization point: a signal can never produce a success
+        // receipt and a canceled process exit for the same execution.
+        if controller_phase
+            .compare_exchange(0, first, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            let _ = tx.send(Some(first));
+        }
+        // The first signal is cooperatively latched for structured settlement.
+        // A second signal is an explicit emergency escape from stuck cleanup
+        // or output I/O and must not depend on the controller being polled.
+        let second = wait_for_terminating_signal().await;
+        crate::tui::ui::emergency_restore_terminal();
+        std::process::exit(second);
+    });
+    (rx, task, phase)
+}
+
+fn commit_exec_terminal_signal(phase: &std::sync::atomic::AtomicI32) -> Option<i32> {
+    use std::sync::atomic::Ordering;
+
+    loop {
+        let current = phase.load(Ordering::SeqCst);
+        if current < 0 {
+            return None;
+        }
+        if phase
+            .compare_exchange(current, -1, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return (current > 0).then_some(current);
+        }
+    }
+}
+
+#[cfg(test)]
+mod exec_terminal_signal_tests {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    use super::commit_exec_terminal_signal;
+
+    #[test]
+    fn runtime_terminal_claim_prevents_a_later_signal_exit() {
+        let phase = AtomicI32::new(0);
+
+        assert_eq!(commit_exec_terminal_signal(&phase), None);
+        assert_eq!(phase.load(Ordering::SeqCst), -1);
+        assert_eq!(commit_exec_terminal_signal(&phase), None);
+    }
+
+    #[test]
+    fn an_already_latched_signal_suppresses_the_runtime_terminal_claim() {
+        let phase = AtomicI32::new(143);
+
+        assert_eq!(commit_exec_terminal_signal(&phase), Some(143));
+        assert_eq!(phase.load(Ordering::SeqCst), -1);
+    }
+}
+
+async fn recv_exec_signal(rx: &mut tokio::sync::watch::Receiver<Option<i32>>) -> Option<i32> {
+    loop {
+        if let Some(code) = *rx.borrow() {
+            return Some(code);
+        }
+        if rx.changed().await.is_err() {
+            return None;
+        }
+    }
+}
+
+async fn stop_exec_signal_controller(task: &mut Option<tokio::task::JoinHandle<()>>) {
+    let Some(task) = task.take() else {
+        return;
+    };
+    task.abort();
+    let _ = task.await;
+}
+
+enum ExecOutputWait {
+    Written,
+    WatchdogTimeout,
+    Signal(Option<i32>),
+    Failed(String),
+}
+
+async fn wait_exec_output_until<F>(
+    write: F,
+    deadline: tokio::time::Instant,
+    signal_rx: &mut tokio::sync::watch::Receiver<Option<i32>>,
+) -> ExecOutputWait
+where
+    F: std::future::Future<Output = Result<(), crate::exec_output::ExecOutputError>>,
+{
+    tokio::select! {
+        signal = recv_exec_signal(signal_rx) => ExecOutputWait::Signal(signal),
+        result = tokio::time::timeout_at(deadline, write) => match result {
+            Ok(Ok(())) => ExecOutputWait::Written,
+            Ok(Err(error)) => ExecOutputWait::Failed(error.to_string()),
+            Err(_) => ExecOutputWait::WatchdogTimeout,
+        },
+    }
+}
+
+async fn wait_terminal_output<F>(enqueue: F) -> Result<bool, String>
+where
+    F: std::future::Future<
+            Output = Result<crate::exec_output::ExecOutputAck, crate::exec_output::ExecOutputError>,
+        >,
+{
+    let acknowledgement =
+        match tokio::time::timeout(Duration::from_secs(EXEC_OUTPUT_CLOSE_TIMEOUT_SECS), enqueue)
+            .await
+        {
+            Ok(Ok(acknowledgement)) => acknowledgement,
+            Ok(Err(error)) => return Err(error.to_string()),
+            Err(_) => {
+                return Err(format!(
+                    "输出事件在 {} 秒内未能进入有界队列",
+                    EXEC_OUTPUT_CLOSE_TIMEOUT_SECS
+                ));
+            }
+        };
+
+    match tokio::time::timeout(
+        Duration::from_secs(EXEC_OUTPUT_CLOSE_TIMEOUT_SECS),
+        acknowledgement.wait(),
+    )
+    .await
+    {
+        Ok(Ok(())) => Ok(true),
+        Ok(Err(error)) => Err(error.to_string()),
+        // The command is already owned by the writer. A later clean
+        // close_and_join proves it was flushed; do not create a false
+        // non-zero exit solely because its acknowledgement was slow.
+        Err(_) => Ok(false),
+    }
+}
+
 fn join_prompt_parts(parts: &[String]) -> String {
     parts.join(" ")
 }
@@ -742,17 +905,24 @@ fn top_level_prompt_initial_input(parts: &[String]) -> Option<tui::InitialInput>
     (!parts.is_empty()).then(|| tui::InitialInput::Submit(join_prompt_parts(parts)))
 }
 
-fn resolve_exec_resume_session_id(args: &ExecArgs, workspace: &Path) -> Result<Option<String>> {
-    if let Some(id) = args.resume.as_ref().or(args.session_id.as_ref()) {
+async fn resolve_exec_resume_run_id(args: &ExecArgs, workspace: &Path) -> Result<Option<String>> {
+    if let Some(id) = args.resume.as_ref() {
         return Ok(Some(id.clone()));
     }
     if !args.continue_session {
         return Ok(None);
     }
-    latest_session_id_for_workspace(workspace)?.map_or_else(
+    let store = codewhale_state::StateStore::open(None)?;
+    codewhale_runtime::RunStore::latest_resumable_run(
+        &store,
+        &workspace.display().to_string(),
+    )
+    .await?
+    .map(|run_id| run_id.to_string())
+    .map_or_else(
         || {
             bail!(
-                "No saved sessions found for workspace {}. Use `codewhale sessions` to list sessions, or pass `codewhale exec --resume <SESSION_ID> ...`.",
+                "工作区 {} 没有可恢复的 Agent 运行。持久运行中断后，请使用 `codewhale exec --resume <RUN_ID> ...`。",
                 workspace.display()
             )
         },
@@ -1311,10 +1481,13 @@ async fn run_async_main() -> Result<()> {
     // pre-TUI subcommands (--version, doctor, login, …), the moments
     // around enable_raw_mode / disable_raw_mode, the external-editor
     // suspend path, and SIGTERM / SIGHUP from the OS.
-    spawn_signal_cleanup_task();
-
     dotenv().ok();
     let cli = Cli::parse();
+    // Engine-backed Headless exec installs its own structured controller.
+    // Other commands retain the emergency terminal-restoration behavior.
+    if !matches!(&cli.command, Some(Commands::Exec(_))) {
+        spawn_signal_cleanup_task();
+    }
     logging::set_verbose(cli.verbose || logging::env_requests_verbose_logging());
 
     // Install any user prompt overrides from the config directory before an
@@ -1369,6 +1542,12 @@ async fn run_async_main() -> Result<()> {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
+                let workspace = std::fs::canonicalize(&workspace).with_context(|| {
+                    format!(
+                        "无法解析 exec 工作区的规范绝对路径：{}",
+                        workspace.display()
+                    )
+                })?;
                 let mut config = config.clone();
                 merge_user_workspace_config(&mut config, cli.config.clone(), &workspace);
                 if let Some(sandbox) = args.sandbox.as_deref() {
@@ -1409,63 +1588,54 @@ async fn run_async_main() -> Result<()> {
                 }
                 let model = resolve_exec_model(&config, args.model.as_deref());
                 let prompt = join_prompt_parts(&args.prompt);
-                let resume_session_id = resolve_exec_resume_session_id(&args, &workspace)?;
+                let resume_run_id = resolve_exec_resume_run_id(&args, &workspace).await?;
                 // The `deepseek` launcher forwards `--yolo` to this binary via
                 // the DEEPSEEK_YOLO env var (which the config loader folds into
                 // `config.yolo`), not as a CLI flag. Honour either source.
                 let yolo = cli.yolo || config.yolo.unwrap_or(false);
                 let env_tool_surface = exec_tool_surface_from_env();
-                let needs_engine = args.auto
-                    || yolo
-                    || resume_session_id.is_some()
-                    || args.output_format == ExecOutputFormat::StreamJson
-                    || args.max_turns.is_some()
-                    || args.max_api_requests.is_some()
-                    || args.allowed_tools.is_some()
-                    || args.disallowed_tools.is_some()
-                    || args.append_system_prompt.is_some()
-                    || args.sandbox.is_some()
-                    || args.allow_sandbox_elevation
-                    || env_tool_surface.is_some();
-                if needs_engine {
-                    let provider = config.api_provider();
-                    let max_subagents = cli.max_subagents.map_or_else(
-                        || config.max_subagents_for_provider(provider),
-                        |value| value.clamp(1, MAX_SUBAGENTS),
-                    );
-                    let auto_mode = args.auto || yolo;
-                    let max_turns = args.max_turns.unwrap_or(100);
-                    let allowed_tools =
-                        resolve_exec_allowed_tools(args.allowed_tools.as_deref(), env_tool_surface);
-                    let disallowed_tools = args
-                        .disallowed_tools
-                        .as_deref()
-                        .map(normalize_exec_tool_names);
-                    run_exec_agent(
-                        &config,
-                        &model,
-                        &prompt,
-                        workspace,
-                        max_subagents,
-                        auto_mode,
-                        args.allow_sandbox_elevation,
-                        args.sandbox.as_deref(),
-                        auto_mode,
-                        args.json,
-                        resume_session_id,
-                        args.output_format,
-                        max_turns,
-                        args.max_api_requests,
-                        allowed_tools,
-                        disallowed_tools,
-                        args.append_system_prompt.clone(),
-                    )
-                    .await
-                } else if args.json {
-                    run_one_shot_json(&config, &model, &prompt).await
-                } else {
-                    run_one_shot(&config, &model, &prompt).await
-                }
+                let provider = config.api_provider();
+                let max_subagents = cli.max_subagents.map_or_else(
+                    || config.max_subagents_for_provider(provider),
+                    |value| value.clamp(1, MAX_SUBAGENTS),
+                );
+                let auto_mode = args.auto || yolo;
+                // Positive authority enables tools; a deny-list can only
+                // narrow an already-authorized surface and must never turn a
+                // plain one-shot request into a filesystem-writing agent.
+                let explicit_tool_surface =
+                    args.allowed_tools.is_some() || env_tool_surface.is_some();
+                let tool_mode = auto_mode || explicit_tool_surface;
+                let max_turns = args.max_turns.unwrap_or(100);
+                let allowed_tools =
+                    resolve_exec_allowed_tools(args.allowed_tools.as_deref(), env_tool_surface);
+                let disallowed_tools = args
+                    .disallowed_tools
+                    .as_deref()
+                    .map(normalize_exec_tool_names);
+                exec_runtime::run_exec_runtime(
+                    &config,
+                    &model,
+                    &prompt,
+                    workspace,
+                    max_subagents,
+                    auto_mode,
+                    args.allow_sandbox_elevation,
+                    args.sandbox.as_deref(),
+                    auto_mode,
+                    tool_mode,
+                    args.json,
+                    resume_run_id,
+                    args.output_format,
+                    max_turns,
+                    args.max_api_requests,
+                    args.max_runtime_secs
+                        .map_or(DEFAULT_EXEC_MAX_RUNTIME_SECS, NonZeroU64::get),
+                    allowed_tools,
+                    disallowed_tools,
+                    args.append_system_prompt.clone(),
+                )
+                .await
             }
             Commands::Fleet(args) => {
                 let config = load_config_from_cli(&cli)?;
@@ -5623,7 +5793,7 @@ async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
         .clone()
         .or_else(|| config.default_text_model.clone())
         .unwrap_or_else(|| config.default_model());
-    let route = resolve_cli_auto_route(config, &model, &diff).await?;
+    let route = resolve_cli_auto_route(config, &model, &diff, None).await?;
     let execution_config = config_for_cli_route(config, &route);
     let model = route.model.clone();
     let reasoning_effort = route
@@ -7384,25 +7554,22 @@ fn config_for_cli_route(config: &Config, route: &CliAutoRoute) -> Config {
     execution_config
 }
 
-fn resolve_cli_route_limits(
-    config: &Config,
-    provider: crate::config::ApiProvider,
-    model: &str,
-) -> Option<codewhale_config::route::RouteLimits> {
-    crate::route_runtime::resolve_runtime_route(config, provider, Some(model))
-        .ok()
-        .and_then(|route| crate::route_budget::known_route_limits(route.candidate.limits))
-}
-
 async fn resolve_cli_auto_route(
     config: &Config,
     model: &str,
     prompt: &str,
+    api_request_budget: Option<&crate::client::request_budget::SharedApiRequestBudget>,
 ) -> Result<CliAutoRoute> {
     if model.trim().eq_ignore_ascii_case("auto") {
-        let selection =
-            model_routing::resolve_auto_route_with_inventory(config, prompt, "", "auto", "auto")
-                .await?;
+        let selection = model_routing::resolve_auto_route_with_inventory(
+            config,
+            prompt,
+            "",
+            "auto",
+            "auto",
+            api_request_budget,
+        )
+        .await?;
         Ok(CliAutoRoute {
             provider: selection.provider,
             model: selection.model,
@@ -7452,108 +7619,34 @@ async fn resolve_cli_auto_route(
     }
 }
 
-async fn run_one_shot(config: &Config, model: &str, prompt: &str) -> Result<()> {
-    use crate::client::DeepSeekClient;
-    use crate::models::{ContentBlock, Message, MessageRequest};
-
-    let route = resolve_cli_auto_route(config, model, prompt).await?;
-    let execution_config = config_for_cli_route(config, &route);
-    let client = DeepSeekClient::new(&execution_config)?;
-    let reasoning_effort = route
-        .reasoning_effort
-        .and_then(|effort| cli_reasoning_effort_value(&execution_config, effort));
-
-    let request = MessageRequest {
-        model: route.model,
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-                cache_control: None,
-            }],
-        }],
-        max_tokens: 4096,
-        system: None,
-        tools: None,
-        tool_choice: None,
-        metadata: None,
-        thinking: None,
-        reasoning_effort,
-        stream: Some(false),
-        temperature: None,
-        top_p: None,
-    };
-
-    let response = client.create_message(request).await?;
-
-    for block in response.content {
-        if let ContentBlock::Text { text, .. } = block {
-            println!("{text}");
-        }
-    }
-
-    Ok(())
-}
-
-async fn run_one_shot_json(config: &Config, model: &str, prompt: &str) -> Result<()> {
-    use crate::client::DeepSeekClient;
-    use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
-
-    let route = resolve_cli_auto_route(config, model, prompt).await?;
-    let execution_config = config_for_cli_route(config, &route);
-    let client = DeepSeekClient::new(&execution_config)?;
-    let model = route.model.clone();
-    let reasoning_effort = route
-        .reasoning_effort
-        .and_then(|effort| cli_reasoning_effort_value(&execution_config, effort));
-    let request = MessageRequest {
-        model: model.clone(),
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-                cache_control: None,
-            }],
-        }],
-        max_tokens: 4096,
-        system: Some(SystemPrompt::Text(
-            "You are a coding assistant. Give concise, actionable responses.".to_string(),
-        )),
-        tools: None,
-        tool_choice: None,
-        metadata: None,
-        thinking: None,
-        reasoning_effort,
-        stream: Some(false),
-        temperature: Some(0.2),
-        top_p: Some(0.9),
-    };
-
-    let response = client.create_message(request).await?;
-    let mut output = String::new();
-    for block in response.content {
-        if let ContentBlock::Text { text, .. } = block {
-            output.push_str(&text);
-        }
-    }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({
-            "mode": "one-shot",
-            "model": model,
-            "success": true,
-            "output": output
-        }))?
-    );
-    Ok(())
-}
-
-#[derive(serde::Serialize)]
-struct ExecStreamMeta {
-    receipt_kind: &'static str,
-    provider: String,
+#[derive(Debug, Clone, serde::Serialize, PartialEq)]
+struct ExecSurfaceModelUsageBucket {
     model: String,
-    route_source: String,
+    api_surface: &'static str,
+    response_count: u32,
+    usage_response_count: u32,
+    input_tokens: u32,
+    output_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_hit_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_miss_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_write_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_replay_tokens: Option<u32>,
+    total_tokens: u64,
+    cost_usd: f64,
+    cost_cny: f64,
+}
+
+/// One stable Headless projection of the shared physical-request and provider
+/// usage ledgers. Both JSON summary and stream metadata flatten this exact
+/// receipt so startup, normal, and abnormal terminals cannot drift apart.
+#[derive(Debug, Clone, Default, serde::Serialize, PartialEq)]
+struct ExecAccountingReceipt {
     #[serde(skip_serializing_if = "Option::is_none")]
     input_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -7566,15 +7659,77 @@ struct ExecStreamMeta {
     prompt_cache_write_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_tokens: Option<u32>,
-    duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    retry_count: Option<u32>,
+    reasoning_replay_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_usd: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_cny: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage_response_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    standard_chat_response_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    strict_chat_response_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fim_response_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    surface_model_usage_buckets: Option<Vec<ExecSurfaceModelUsageBucket>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage_complete: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_complete: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage_missing_responses: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage_incomplete_responses: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    billing_unknown_attempts: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unpriced_usage_responses: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage_records_after_seal_observed: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    transport_retry_count: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_request_count: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_completed: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_in_flight: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_root_started: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_root_completed: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_root_in_flight: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_child_started: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_child_completed: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_child_in_flight: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_request_limit: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     api_request_budget_exhausted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_rejected_exhausted: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    api_request_rejected_after_seal_observed: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+struct ExecStreamMeta {
+    receipt_kind: &'static str,
+    provider: String,
+    model: String,
+    route_source: String,
+    #[serde(flatten)]
+    accounting: ExecAccountingReceipt,
+    duration_ms: u64,
     approval_posture: String,
     sandbox_posture: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -7586,14 +7741,12 @@ struct ExecStreamMeta {
     tool_catalog_sha256: Option<String>,
     input_analysis: ExecStreamInputAnalysis,
     visible_final_answer_chars: usize,
-    session_id: String,
+    run_id: String,
     resume_command: String,
     workspace: String,
     message_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    termination_reason: Option<String>,
+    #[serde(flatten)]
+    terminal: ExecTerminalReceipt,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_category: Option<String>,
 }
@@ -7653,26 +7806,23 @@ enum ExecStreamEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         result_metadata: Option<serde_json::Value>,
     },
-    #[serde(rename = "sandbox_denied")]
-    SandboxDenied {
-        tool_id: String,
-        tool_name: String,
-        reason: String,
-        outcome: String,
-    },
     #[serde(rename = "workflow_event")]
     WorkflowEvent {
         run_id: String,
         event: serde_json::Value,
     },
-    #[serde(rename = "session_capture")]
-    SessionCapture { content: String },
     #[serde(rename = "metadata")]
     Metadata { meta: Box<ExecStreamMeta> },
     #[serde(rename = "done")]
     Done,
     #[serde(rename = "error")]
-    Error { error: String },
+    Error {
+        error: String,
+        code: String,
+        category: String,
+        recoverable: bool,
+        termination_reason: RunTerminationReason,
+    },
 }
 
 fn exec_sandbox_elevation_authorized(
@@ -7683,9 +7833,33 @@ fn exec_sandbox_elevation_authorized(
         || explicit_sandbox.is_some_and(|policy| policy.eq_ignore_ascii_case("danger-full-access"))
 }
 
+fn exec_supports_provider(provider: crate::config::ApiProvider) -> bool {
+    matches!(provider, crate::config::ApiProvider::Deepseek)
+}
+
 fn emit_exec_stream_event(event: &ExecStreamEvent) -> Result<()> {
-    println!("{}", serde_json::to_string(&exec_stream_value(event)?)?);
+    let value = exec_stream_line(event)?;
+    let stdout = io::stdout();
+    let mut stdout = stdout.lock();
+    stdout
+        .write_all(&value)
+        .context("写入 exec stream-json 事件失败")?;
+    stdout.flush().context("刷新 exec stream-json 输出失败")?;
     Ok(())
+}
+
+fn exec_stream_line(event: &ExecStreamEvent) -> Result<Vec<u8>> {
+    let mut value = serde_json::to_vec(&exec_stream_value(event)?)?;
+    value.push(b'\n');
+    Ok(value)
+}
+
+async fn write_exec_stream_terminal(
+    output: &crate::exec_output::ExecOutput,
+    event: &ExecStreamEvent,
+) -> Result<bool, String> {
+    let bytes = exec_stream_line(event).map_err(|error| format!("{error:#}"))?;
+    wait_terminal_output(output.enqueue_stdout(bytes)).await
 }
 
 fn exec_stream_value(event: &ExecStreamEvent) -> Result<serde_json::Value> {
@@ -7698,19 +7872,6 @@ fn exec_stream_value(event: &ExecStreamEvent) -> Result<serde_json::Value> {
         );
     }
     Ok(value)
-}
-
-fn tool_error_receipt_category(error: &crate::tools::spec::ToolError) -> &'static str {
-    use crate::tools::spec::ToolError;
-    match error {
-        ToolError::InvalidInput { .. } => "invalid_input",
-        ToolError::MissingField { .. } => "missing_field",
-        ToolError::PathEscape { .. } => "path_escape",
-        ToolError::ExecutionFailed { .. } => "execution_failed",
-        ToolError::Timeout { .. } => "timeout",
-        ToolError::NotAvailable { .. } => "not_available",
-        ToolError::PermissionDenied { .. } => "permission_denied",
-    }
 }
 
 fn tool_artifact_receipt(metadata: Option<&serde_json::Value>) -> Option<serde_json::Value> {
@@ -7735,8 +7896,13 @@ fn tool_artifact_receipt(metadata: Option<&serde_json::Value>) -> Option<serde_j
 }
 
 fn current_binary_sha256() -> Option<String> {
-    let bytes = std::fs::read(std::env::current_exe().ok()?).ok()?;
-    Some(format!("sha256:{}", crate::hashing::sha256_hex(&bytes)))
+    static CURRENT_BINARY_SHA256: OnceLock<Option<String>> = OnceLock::new();
+    CURRENT_BINARY_SHA256
+        .get_or_init(|| {
+            let bytes = std::fs::read(std::env::current_exe().ok()?).ok()?;
+            Some(format!("sha256:{}", crate::hashing::sha256_hex(&bytes)))
+        })
+        .clone()
 }
 
 async fn run_workflow_tool_command(cli: &Cli, args: WorkflowToolArgs) -> Result<()> {
@@ -7745,6 +7911,10 @@ async fn run_workflow_tool_command(cli: &Cli, args: WorkflowToolArgs) -> Result<
         Err(error) => {
             let _ = emit_exec_stream_event(&ExecStreamEvent::Error {
                 error: format!("{error:#}"),
+                code: "workflow_command_failed".to_string(),
+                category: "tool".to_string(),
+                recoverable: false,
+                termination_reason: RunTerminationReason::ToolError,
             });
             exit_workflow_tool_failure();
         }
@@ -7785,6 +7955,7 @@ async fn run_workflow_tool_command_inner(cli: &Cli, args: WorkflowToolArgs) -> R
         &config,
         &model,
         "Run a checked-in Workflow through the host runtime",
+        None,
     )
     .await?;
     let execution_config = config_for_cli_route(&config, &route);
@@ -7834,7 +8005,12 @@ async fn run_workflow_tool_command_inner(cli: &Cli, args: WorkflowToolArgs) -> R
 
     let workflow_status =
         direct_workflow_status(&result.content).unwrap_or_else(|| "unknown".to_string());
-    let completed = result.success && workflow_status == "completed";
+    let completed = result.is_success() && workflow_status == "completed";
+    let terminal = ExecTerminalReceipt::from_reason(if completed {
+        RunTerminationReason::Resolved
+    } else {
+        RunTerminationReason::ToolError
+    });
     emit_exec_stream_event(&ExecStreamEvent::ToolResult {
         id: tool_id,
         name: "workflow".to_string(),
@@ -7868,17 +8044,8 @@ async fn run_workflow_tool_command_inner(cli: &Cli, args: WorkflowToolArgs) -> R
             // receipts rather than being misreported as one root model.
             model: "host-workflow".to_string(),
             route_source: "host_workflow".to_string(),
-            input_tokens: None,
-            output_tokens: None,
-            prompt_cache_hit_tokens: None,
-            prompt_cache_miss_tokens: None,
-            prompt_cache_write_tokens: None,
-            reasoning_tokens: None,
+            accounting: ExecAccountingReceipt::default(),
             duration_ms: u64::try_from(tool_started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            retry_count: None,
-            api_request_count: None,
-            api_request_limit: None,
-            api_request_budget_exhausted: None,
             approval_posture: "explicit_workflow_command".to_string(),
             sandbox_posture: "configured".to_string(),
             binary_sha256: current_binary_sha256(),
@@ -7887,12 +8054,11 @@ async fn run_workflow_tool_command_inner(cli: &Cli, args: WorkflowToolArgs) -> R
             tool_catalog_sha256: None,
             input_analysis: ExecStreamInputAnalysis::default(),
             visible_final_answer_chars: result.content.chars().count(),
-            session_id: String::new(),
+            run_id: String::new(),
             resume_command: String::new(),
             workspace: workspace.display().to_string(),
             message_count: 0,
-            status: Some(workflow_status.clone()),
-            termination_reason: Some(if completed { "resolved" } else { "tool_error" }.to_string()),
+            terminal,
             error_category: (!completed).then(|| "tool".to_string()),
         }),
     })?;
@@ -7900,6 +8066,10 @@ async fn run_workflow_tool_command_inner(cli: &Cli, args: WorkflowToolArgs) -> R
         let error = format!("workflow run ended with terminal status {workflow_status}");
         emit_exec_stream_event(&ExecStreamEvent::Error {
             error: error.clone(),
+            code: "workflow_terminal_failure".to_string(),
+            category: "tool".to_string(),
+            recoverable: false,
+            termination_reason: RunTerminationReason::ToolError,
         })?;
         exit_workflow_tool_failure();
     }
@@ -7928,7 +8098,13 @@ fn exit_workflow_tool_error(tool_id: &str, error: String) -> ! {
         artifact: None,
         result_metadata: None,
     });
-    let _ = emit_exec_stream_event(&ExecStreamEvent::Error { error });
+    let _ = emit_exec_stream_event(&ExecStreamEvent::Error {
+        error,
+        code: "workflow_tool_failed".to_string(),
+        category: "tool".to_string(),
+        recoverable: false,
+        termination_reason: RunTerminationReason::ToolError,
+    });
     exit_workflow_tool_failure()
 }
 
@@ -8169,1006 +8345,6 @@ fn direct_workflow_status(content: &str) -> Option<String> {
         .get("status")?
         .as_str()
         .map(str::to_ascii_lowercase)
-}
-
-fn exec_stream_input_analysis(
-    messages: &[Message],
-    system: Option<&SystemPrompt>,
-) -> ExecStreamInputAnalysis {
-    let mut analysis = ExecStreamInputAnalysis {
-        estimated_request_tokens: crate::compaction::estimate_input_tokens_conservative(
-            messages, system,
-        ),
-        estimated_message_content_tokens: crate::compaction::estimate_tokens(messages),
-        estimated_system_tokens: exec_stream_estimate_system_tokens(system),
-        estimated_framing_tokens: messages.len().saturating_mul(12).saturating_add(48),
-        ..ExecStreamInputAnalysis::default()
-    };
-
-    for message in messages {
-        match message.role.as_str() {
-            "user" => analysis.user_message_count += 1,
-            "assistant" => analysis.assistant_message_count += 1,
-            "tool" => analysis.tool_message_count += 1,
-            _ => {}
-        }
-
-        for block in &message.content {
-            match block {
-                ContentBlock::Text { text, .. } => {
-                    exec_stream_add_text_estimate(
-                        text,
-                        &mut analysis.text_chars,
-                        &mut analysis.text_estimated_tokens,
-                    );
-                }
-                ContentBlock::Thinking { thinking, .. } => {
-                    exec_stream_add_text_estimate(
-                        thinking,
-                        &mut analysis.thinking_chars,
-                        &mut analysis.thinking_estimated_tokens,
-                    );
-                }
-                ContentBlock::ToolUse { input, .. } | ContentBlock::ServerToolUse { input, .. } => {
-                    analysis.tool_use_count += 1;
-                    exec_stream_add_json_estimate(
-                        input,
-                        &mut analysis.tool_use_input_chars,
-                        &mut analysis.tool_use_input_estimated_tokens,
-                    );
-                }
-                ContentBlock::ToolResult {
-                    content,
-                    content_blocks,
-                    ..
-                } => {
-                    analysis.tool_result_count += 1;
-                    exec_stream_add_text_estimate(
-                        content,
-                        &mut analysis.tool_result_chars,
-                        &mut analysis.tool_result_estimated_tokens,
-                    );
-                    if let Some(blocks) = content_blocks {
-                        exec_stream_add_json_estimate(
-                            blocks,
-                            &mut analysis.tool_result_chars,
-                            &mut analysis.tool_result_estimated_tokens,
-                        );
-                    }
-                }
-                ContentBlock::ToolSearchToolResult { content, .. }
-                | ContentBlock::CodeExecutionToolResult { content, .. } => {
-                    analysis.tool_result_count += 1;
-                    exec_stream_add_json_estimate(
-                        content,
-                        &mut analysis.tool_result_chars,
-                        &mut analysis.tool_result_estimated_tokens,
-                    );
-                }
-                ContentBlock::ImageUrl { .. } => {}
-            }
-        }
-    }
-
-    analysis
-}
-
-fn exec_stream_add_text_estimate(text: &str, chars: &mut usize, tokens: &mut usize) {
-    *chars = chars.saturating_add(text.chars().count());
-    *tokens = tokens.saturating_add(crate::compaction::estimate_text_tokens_conservative(text));
-}
-
-fn exec_stream_add_json_estimate<T: serde::Serialize>(
-    value: &T,
-    chars: &mut usize,
-    tokens: &mut usize,
-) {
-    let text = serde_json::to_string(value).unwrap_or_default();
-    exec_stream_add_text_estimate(&text, chars, tokens);
-}
-
-fn exec_stream_estimate_system_tokens(system: Option<&SystemPrompt>) -> usize {
-    match system {
-        Some(SystemPrompt::Text(text)) => {
-            crate::compaction::estimate_text_tokens_conservative(text)
-        }
-        Some(SystemPrompt::Blocks(blocks)) => blocks
-            .iter()
-            .map(|block| crate::compaction::estimate_text_tokens_conservative(&block.text))
-            .sum(),
-        None => 0,
-    }
-}
-
-fn exec_saved_session_line(session_id: &str) -> String {
-    format!("session: {}", truncate_id(session_id))
-}
-
-fn exec_resumed_session_line(session_id: &str) -> String {
-    format!("resumed session: {}", truncate_id(session_id))
-}
-
-fn exec_stream_session_ref(session_id: &str) -> String {
-    crate::utils::redacted_identifier_for_log(session_id)
-}
-
-fn exec_stream_resume_hint(session_id: &str) -> String {
-    if session_id.trim().is_empty() {
-        String::new()
-    } else {
-        "codewhale exec --resume <redacted-session-id>".to_string()
-    }
-}
-
-fn persist_exec_session(
-    messages: &[Message],
-    model: &str,
-    workspace: &Path,
-    system_prompt: &Option<SystemPrompt>,
-    session_id: Option<&str>,
-    total_tokens: u64,
-) -> Result<String> {
-    let manager =
-        SessionManager::default_location().context("could not open session manager for save")?;
-    let saved = if let Some(id) = session_id.filter(|id| !id.trim().is_empty()) {
-        match manager.load_session(id) {
-            Ok(existing) => session_manager::update_session(
-                existing,
-                messages,
-                total_tokens,
-                system_prompt.as_ref(),
-            ),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-                session_manager::create_saved_session_with_id_and_mode(
-                    id.to_string(),
-                    messages,
-                    model,
-                    workspace,
-                    total_tokens,
-                    system_prompt.as_ref(),
-                    Some("exec"),
-                )
-            }
-            Err(err) => return Err(err).context("could not load existing exec session"),
-        }
-    } else {
-        session_manager::create_saved_session_with_mode(
-            messages,
-            model,
-            workspace,
-            total_tokens,
-            system_prompt.as_ref(),
-            Some("exec"),
-        )
-    };
-    let id = saved.metadata.id.clone();
-    manager
-        .save_session(&saved)
-        .context("could not save exec session")?;
-    Ok(id)
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_exec_agent(
-    config: &Config,
-    model: &str,
-    prompt: &str,
-    workspace: PathBuf,
-    max_subagents: usize,
-    auto_approve: bool,
-    allow_sandbox_elevation: bool,
-    explicit_sandbox: Option<&str>,
-    trust_mode: bool,
-    json_output: bool,
-    resume_session_id: Option<String>,
-    output_format: ExecOutputFormat,
-    max_turns: u32,
-    max_api_requests: Option<NonZeroU32>,
-    allowed_tools: Option<Vec<String>>,
-    disallowed_tools: Option<Vec<String>>,
-    append_system_prompt: Option<String>,
-) -> Result<()> {
-    use crate::client::request_budget::SharedApiRequestBudget;
-    use crate::compaction::CompactionConfig;
-    use crate::core::engine::{EngineConfig, spawn_engine, spawn_engine_with_api_request_budget};
-    use crate::core::events::Event;
-    use crate::core::ops::Op;
-    use crate::tools::plan::new_shared_plan_state;
-    use crate::tools::todo::new_shared_todo_list;
-    use crate::tui::app::AppMode;
-
-    if max_api_requests.is_some() && model.trim().eq_ignore_ascii_case("auto") {
-        bail!(
-            "使用 --max-api-requests 时必须通过 --model 指定 DeepSeek 模型；自动路由可能在共享预算绑定前发起探测请求"
-        );
-    }
-
-    let route = resolve_cli_auto_route(config, model, prompt).await?;
-    let execution_config = config_for_cli_route(config, &route);
-    let auto_model = route.auto_model;
-    let effective_provider = route.provider;
-    let effective_model = route.model;
-    if max_api_requests.is_some() {
-        let base_url = execution_config.deepseek_base_url();
-        let path_suffix = execution_config
-            .provider_config_for(effective_provider)
-            .and_then(|provider| provider.path_suffix.as_deref());
-        if !crate::client::deepseek::owns_route(effective_provider, &base_url, path_suffix) {
-            bail!(
-                "--max-api-requests 当前只支持 DeepSeek 官方 OpenAI 兼容路由；请使用 deepseek/deepseek-cn、官方 API 地址且不要配置 path_suffix"
-            );
-        }
-    }
-    let api_request_budget = max_api_requests.map(SharedApiRequestBudget::new);
-    let effective_provider_name = effective_provider.as_str().to_string();
-    let route_source = if auto_model {
-        "auto_resolver"
-    } else {
-        "explicit_or_configured"
-    }
-    .to_string();
-    let exec_started = Instant::now();
-    let prompt_sha256 = format!("sha256:{}", crate::hashing::sha256_hex(prompt.as_bytes()));
-    let binary_sha256 = current_binary_sha256();
-    let approval_posture = if auto_approve { "auto_tools" } else { "ask" }.to_string();
-    let sandbox_posture = explicit_sandbox.unwrap_or("configured_default").to_string();
-    let active_route_limits =
-        resolve_cli_route_limits(&execution_config, effective_provider, &effective_model);
-    let max_subagents = if max_subagents == config.max_subagents_for_provider(config.api_provider())
-    {
-        execution_config
-            .max_subagents_for_provider(effective_provider)
-            .clamp(1, MAX_SUBAGENTS)
-    } else {
-        max_subagents
-    };
-    let effective_reasoning_effort = route
-        .reasoning_effort
-        .and_then(|effort| cli_reasoning_effort_value(&execution_config, effort));
-
-    let settings = crate::settings::Settings::load().unwrap_or_default();
-    let auto_compact_enabled = if crate::settings::Settings::auto_compact_explicitly_configured() {
-        settings.auto_compact
-    } else {
-        crate::route_budget::auto_compact_default_for_route(
-            effective_provider,
-            &effective_model,
-            active_route_limits,
-        )
-    };
-    let compaction = CompactionConfig {
-        enabled: auto_compact_enabled,
-        model: effective_model.clone(),
-        effective_context_window: Some(crate::route_budget::route_context_window_tokens(
-            effective_provider,
-            &effective_model,
-            active_route_limits,
-        )),
-        token_threshold: crate::route_budget::compaction_threshold_for_route_at_percent(
-            effective_provider,
-            &effective_model,
-            active_route_limits,
-            settings.auto_compact_threshold_percent,
-        ),
-        ..Default::default()
-    };
-
-    let network_policy = execution_config.network.clone().map(|toml_cfg| {
-        crate::network_policy::NetworkPolicyDecider::with_default_audit(toml_cfg.into_runtime())
-    });
-
-    let lsp_config = execution_config
-        .lsp
-        .clone()
-        .map(crate::config::LspConfigToml::into_runtime);
-    let engine_config = EngineConfig {
-        model: effective_model.clone(),
-        active_route_limits,
-        workspace: workspace.clone(),
-        allow_shell: auto_approve || execution_config.allow_shell(),
-        trust_mode,
-        notes_path: execution_config.notes_path(),
-        mcp_config_path: execution_config.mcp_config_path(),
-        skills_dir: execution_config.skills_dir(),
-        skills_scan_codewhale_only: execution_config.skills_config().scan_codewhale_only(),
-        instructions: {
-            let mut instrs: Vec<crate::prompts::InstructionSource> = execution_config
-                .instructions_paths()
-                .into_iter()
-                .map(Into::into)
-                .collect();
-            if let Some(ref extra) = append_system_prompt {
-                instrs.push(crate::prompts::InstructionSource::Inline {
-                    name: "cli:append-system-prompt".into(),
-                    content: extra.clone(),
-                });
-            }
-            instrs
-        },
-        project_context_pack_enabled: execution_config.project_context_pack_enabled(),
-        translation_enabled: false,
-        show_thinking: settings.show_thinking,
-        max_steps: max_turns,
-        max_subagents,
-        max_admitted_subagents: execution_config
-            .max_admitted_subagents_for_provider(effective_provider)
-            .max(max_subagents),
-        launch_concurrency: execution_config.launch_concurrency_for_provider(effective_provider),
-        subagents_enabled: execution_config.subagents_enabled_for_provider(effective_provider),
-        features: execution_config.features(),
-        auto_review_policy: execution_config.auto_review_policy(),
-        compaction: compaction.clone(),
-        todos: new_shared_todo_list(),
-        plan_state: new_shared_plan_state(),
-        goal_state: crate::tools::goal::new_shared_goal_state(),
-        max_spawn_depth: execution_config.subagent_max_spawn_depth_for_provider(effective_provider),
-        subagent_token_budget: execution_config
-            .subagent_token_budget_for_provider(effective_provider),
-        network_policy,
-        snapshots_enabled: execution_config.snapshots_config().enabled,
-        snapshots_max_workspace_bytes: execution_config
-            .snapshots_config()
-            .max_workspace_gb
-            .saturating_mul(1024 * 1024 * 1024),
-        lsp_config,
-        runtime_services: crate::tools::spec::RuntimeToolServices::default(),
-        subagent_model_overrides: execution_config.subagent_model_overrides(),
-        fleet_roster: std::sync::Arc::new(crate::fleet::roster::FleetRoster::load(
-            &execution_config.fleet_config(),
-            &workspace,
-        )),
-        subagent_api_timeout: std::time::Duration::from_secs(
-            execution_config.subagent_api_timeout_secs_for_provider(effective_provider),
-        ),
-        stream_chunk_timeout: std::time::Duration::from_secs(
-            execution_config.stream_chunk_timeout_secs(),
-        ),
-        subagent_heartbeat_timeout: std::time::Duration::from_secs(
-            execution_config.subagent_heartbeat_timeout_secs_for_provider(effective_provider),
-        ),
-        prefer_bwrap: execution_config.prefer_bwrap.unwrap_or(false),
-        memory_enabled: execution_config.memory_enabled(),
-        moraine_fallback: execution_config.moraine_fallback(),
-        memory_path: execution_config.memory_path(),
-        speech_output_dir: execution_config.speech_output_dir(),
-        vision_config: execution_config.vision_model_config(),
-        strict_tool_mode: execution_config.strict_tool_mode.unwrap_or(false),
-        goal_objective: None,
-        goal_token_budget: None,
-        goal_status: crate::tools::goal::GoalStatus::Active,
-        allowed_tools: allowed_tools.clone(),
-        disallowed_tools: disallowed_tools.clone(),
-        hook_executor: None,
-        locale_tag: crate::localization::resolve_locale(&settings.locale)
-            .tag()
-            .to_string(),
-        workshop: config.workshop.clone(),
-        search_provider: execution_config.search_provider(),
-        search_api_key: execution_config
-            .search
-            .as_ref()
-            .and_then(|s| s.api_key.clone()),
-        search_base_url: execution_config
-            .search
-            .as_ref()
-            .and_then(|s| s.base_url.clone()),
-        tools_always_load: execution_config.tools_always_load(),
-        tools: execution_config.tools.clone(),
-        verbosity: execution_config.verbosity.clone(),
-        workspace_follow_symlinks: settings.workspace_follow_symlinks,
-        exec_policy_engine: execution_config.exec_policy_engine.clone(),
-        terminal_chrome_enabled: false,
-    };
-
-    let engine_handle = match api_request_budget.clone() {
-        Some(budget) => {
-            spawn_engine_with_api_request_budget(engine_config, &execution_config, budget)
-        }
-        None => spawn_engine(engine_config, &execution_config),
-    };
-    let mode = if auto_approve {
-        AppMode::Yolo
-    } else {
-        AppMode::Agent
-    };
-
-    let mut loaded_session_id = None;
-    if let Some(session_id) = resume_session_id.as_deref() {
-        let manager = SessionManager::default_location()
-            .context("could not open session manager for exec resume")?;
-        let session_ref = crate::utils::redacted_identifier_for_log(session_id);
-        let saved = manager
-            .load_session_by_prefix(session_id)
-            .with_context(|| format!("could not load session {session_ref}"))?;
-        let saved_id = saved.metadata.id.clone();
-        if saved.metadata.workspace != workspace && output_format == ExecOutputFormat::Text {
-            eprintln!(
-                "Warning: session {} was created in a different workspace ({}). Resuming anyway.",
-                truncate_id(&saved_id),
-                saved.metadata.workspace.display(),
-            );
-        }
-
-        engine_handle
-            .send(Op::SyncSession {
-                session_id: Some(saved_id.clone()),
-                messages: saved.messages,
-                system_prompt: saved.system_prompt.map(SystemPrompt::Text),
-                system_prompt_override: false,
-                model: saved.metadata.model,
-                workspace: saved.metadata.workspace,
-                mode,
-            })
-            .await?;
-        loaded_session_id = Some(saved_id.clone());
-        if output_format == ExecOutputFormat::Text && !json_output {
-            eprintln!("{}", exec_resumed_session_line(&saved_id));
-        }
-    }
-
-    engine_handle
-        .send(Op::SendMessage {
-            content: prompt.to_string(),
-            mode,
-            provider: Some(effective_provider),
-            model: effective_model.clone(),
-            route_limits: active_route_limits,
-            compaction: Box::new(compaction.clone()),
-            goal_objective: None,
-            goal_token_budget: None,
-            goal_status: crate::tools::goal::GoalStatus::Active,
-            allowed_tools: allowed_tools.clone(),
-            dynamic_tools: Vec::new(),
-            hook_executor: None,
-            reasoning_effort: effective_reasoning_effort,
-            reasoning_effort_auto: auto_model,
-            auto_model,
-            allow_shell: auto_approve || execution_config.allow_shell(),
-            trust_mode,
-            auto_approve,
-            translation_enabled: false,
-            show_thinking: settings.show_thinking,
-            approval_mode: if auto_approve {
-                crate::tui::approval::ApprovalMode::Bypass
-            } else {
-                execution_config
-                    .approval_policy
-                    .as_deref()
-                    .and_then(crate::tui::approval::ApprovalMode::from_config_value)
-                    .unwrap_or_default()
-            },
-            verbosity: execution_config.verbosity.clone(),
-            provenance: crate::core::ops::UserInputProvenance::ExternalUser,
-        })
-        .await?;
-
-    #[derive(serde::Serialize)]
-    struct ExecToolEntry {
-        name: String,
-        success: bool,
-        output: String,
-    }
-    #[derive(serde::Serialize)]
-    struct ExecOutcome {
-        kind: String,
-        outcome: String,
-        tool_name: String,
-        reason: String,
-    }
-    #[derive(serde::Serialize, Default)]
-    struct ExecSummary {
-        mode: String,
-        model: String,
-        prompt: String,
-        output: String,
-        tools: Vec<ExecToolEntry>,
-        outcomes: Vec<ExecOutcome>,
-        status: Option<String>,
-        termination_reason: Option<String>,
-        error_category: Option<String>,
-        error: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        api_request_count: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        api_request_limit: Option<u32>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        api_request_budget_exhausted: Option<bool>,
-    }
-    let mut summary = ExecSummary {
-        mode: "agent".to_string(),
-        model: effective_model.clone(),
-        prompt: prompt.to_string(),
-        ..ExecSummary::default()
-    };
-    let can_elevate_sandbox =
-        exec_sandbox_elevation_authorized(allow_sandbox_elevation, explicit_sandbox);
-    let mut sandbox_denied = false;
-    let mut approval_required = false;
-    let mut tool_error_seen = false;
-    let mut last_error_category = None;
-    let mut reported_sandbox_contract = false;
-
-    let should_persist_session =
-        resume_session_id.is_some() || output_format == ExecOutputFormat::StreamJson;
-    let mut latest_session_id = loaded_session_id;
-    let mut latest_messages: Vec<Message> = Vec::new();
-    let mut latest_system_prompt: Option<SystemPrompt> = None;
-    let mut latest_model = effective_model;
-    let mut latest_workspace = workspace.clone();
-    let mut tool_starts: HashMap<String, (Instant, String)> = HashMap::new();
-    let mut saw_turn_complete = false;
-
-    let mut stdout = io::stdout();
-    let mut ends_with_newline = false;
-    loop {
-        let event = {
-            let mut rx = engine_handle.rx_event.write().await;
-            rx.recv().await
-        };
-
-        let Some(event) = event else {
-            break;
-        };
-
-        match event {
-            Event::MessageDelta { content, .. } => {
-                summary.output.push_str(&content);
-                if output_format == ExecOutputFormat::StreamJson {
-                    emit_exec_stream_event(&ExecStreamEvent::Content { content })?;
-                } else if !json_output {
-                    print!("{content}");
-                    stdout.flush()?;
-                }
-                ends_with_newline = summary.output.ends_with('\n');
-            }
-            Event::MessageComplete { .. }
-                if output_format == ExecOutputFormat::Text
-                    && !json_output
-                    && !ends_with_newline =>
-            {
-                println!();
-            }
-            Event::ThinkingDelta { .. } => {
-                // Exec stream-json intentionally omits reasoning deltas; the
-                // TUI transcript retains its existing Activity Detail surface.
-            }
-            Event::ToolCallStarted { id, name, input } => {
-                let started_at = chrono::Utc::now().to_rfc3339();
-                tool_starts.insert(id.clone(), (Instant::now(), started_at.clone()));
-                if output_format == ExecOutputFormat::StreamJson {
-                    emit_exec_stream_event(&ExecStreamEvent::ToolUse {
-                        name,
-                        id,
-                        input,
-                        started_at,
-                    })?;
-                } else if !json_output {
-                    let summary = summarize_tool_args(&input);
-                    if let Some(summary) = summary {
-                        eprintln!("tool: {name} ({summary})");
-                    } else {
-                        eprintln!("tool: {name}");
-                    }
-                }
-            }
-            Event::ToolCallComplete {
-                id, name, result, ..
-            } => {
-                let (duration_ms, started_at) = tool_starts
-                    .remove(&id)
-                    .map(|(started, timestamp)| {
-                        (
-                            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
-                            timestamp,
-                        )
-                    })
-                    .unwrap_or_else(|| (0, chrono::Utc::now().to_rfc3339()));
-                let receipt_name = name.clone();
-                match result {
-                    Ok(output) => {
-                        tool_error_seen |= !output.success;
-                        summary.tools.push(ExecToolEntry {
-                            name: name.clone(),
-                            success: output.success,
-                            output: output.content.clone(),
-                        });
-                        if output_format == ExecOutputFormat::StreamJson {
-                            emit_exec_stream_event(&ExecStreamEvent::ToolResult {
-                                id,
-                                name: receipt_name,
-                                output: output.content,
-                                status: if output.success {
-                                    "success".to_string()
-                                } else {
-                                    "error".to_string()
-                                },
-                                started_at,
-                                completed_at: chrono::Utc::now().to_rfc3339(),
-                                duration_ms,
-                                side_effect_status: output
-                                    .metadata
-                                    .as_ref()
-                                    .and_then(|metadata| metadata.get("side_effect_status"))
-                                    .and_then(serde_json::Value::as_str)
-                                    .unwrap_or("unknown")
-                                    .to_string(),
-                                error_category: (!output.success).then(|| {
-                                    output
-                                        .metadata
-                                        .as_ref()
-                                        .and_then(|metadata| metadata.get("error_category"))
-                                        .and_then(serde_json::Value::as_str)
-                                        .unwrap_or("tool_reported_failure")
-                                        .to_string()
-                                }),
-                                truncated: output
-                                    .metadata
-                                    .as_ref()
-                                    .and_then(|metadata| metadata.get("truncated"))
-                                    .and_then(serde_json::Value::as_bool),
-                                artifact: tool_artifact_receipt(output.metadata.as_ref()),
-                                result_metadata: output.metadata,
-                            })?;
-                        } else if !json_output {
-                            if name == "exec_shell" && !output.content.trim().is_empty() {
-                                eprintln!("tool {name} completed");
-                                eprintln!(
-                                    "--- stdout/stderr ---\n{}\n---------------------",
-                                    output.content
-                                );
-                            } else {
-                                eprintln!(
-                                    "tool {name} completed: {}",
-                                    summarize_tool_output(&output.content)
-                                );
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        tool_error_seen = true;
-                        let error_text = err.to_string();
-                        summary.tools.push(ExecToolEntry {
-                            name: name.clone(),
-                            success: false,
-                            output: error_text.clone(),
-                        });
-                        if output_format == ExecOutputFormat::StreamJson {
-                            emit_exec_stream_event(&ExecStreamEvent::ToolResult {
-                                id,
-                                name: receipt_name,
-                                output: error_text,
-                                status: "error".to_string(),
-                                started_at,
-                                completed_at: chrono::Utc::now().to_rfc3339(),
-                                duration_ms,
-                                side_effect_status: "not_started_or_unknown".to_string(),
-                                error_category: Some(tool_error_receipt_category(&err).to_string()),
-                                truncated: None,
-                                artifact: None,
-                                result_metadata: None,
-                            })?;
-                        } else if !json_output {
-                            eprintln!("tool {name} failed: {err}");
-                        }
-                    }
-                }
-            }
-            Event::AgentSpawned { id, prompt, .. }
-                if output_format == ExecOutputFormat::Text && !json_output =>
-            {
-                eprintln!("sub-agent {id} spawned: {}", summarize_tool_output(&prompt));
-            }
-            Event::AgentProgress { id, status, .. }
-                if output_format == ExecOutputFormat::Text && !json_output =>
-            {
-                eprintln!("sub-agent {id}: {status}");
-            }
-            Event::AgentComplete { id, result }
-                if output_format == ExecOutputFormat::Text && !json_output =>
-            {
-                eprintln!(
-                    "sub-agent {id} completed: {}",
-                    summarize_tool_output(&result)
-                );
-            }
-            Event::AgentSpawned { .. }
-            | Event::AgentProgress { .. }
-            | Event::AgentComplete { .. } => {}
-            Event::WorkflowUi { run_id, event }
-                if output_format == ExecOutputFormat::StreamJson =>
-            {
-                emit_exec_stream_event(&ExecStreamEvent::WorkflowEvent { run_id, event })?;
-            }
-            Event::ApprovalRequired { id, .. } => {
-                if auto_approve {
-                    let _ = engine_handle.approve_tool_call(id).await;
-                } else {
-                    approval_required = true;
-                    let _ = engine_handle.deny_tool_call(id).await;
-                }
-            }
-            Event::ElevationRequired {
-                tool_id,
-                tool_name,
-                denial_reason,
-                ..
-            } => {
-                if can_elevate_sandbox {
-                    let policy = crate::sandbox::SandboxPolicy::DangerFullAccess;
-                    let _ = engine_handle.retry_tool_with_policy(tool_id, policy).await;
-                } else {
-                    sandbox_denied = true;
-                    approval_required = true;
-                    summary.outcomes.push(ExecOutcome {
-                        kind: "sandbox_denied".to_string(),
-                        outcome: "approval_required".to_string(),
-                        tool_name: tool_name.clone(),
-                        reason: denial_reason.clone(),
-                    });
-                    if !reported_sandbox_contract {
-                        eprintln!(
-                            "sandbox denied {tool_name}: {denial_reason}; --auto approves tools but does not elevate sandbox access — use --sandbox danger-full-access or --allow-sandbox-elevation to opt in"
-                        );
-                        reported_sandbox_contract = true;
-                    }
-                    if output_format == ExecOutputFormat::StreamJson {
-                        emit_exec_stream_event(&ExecStreamEvent::SandboxDenied {
-                            tool_id: tool_id.clone(),
-                            tool_name,
-                            reason: denial_reason,
-                            outcome: "approval_required".to_string(),
-                        })?;
-                    }
-                    let _ = engine_handle.deny_tool_call(tool_id).await;
-                }
-            }
-            Event::Error {
-                envelope,
-                recoverable: _,
-            } => {
-                last_error_category = Some(envelope.category);
-                summary.error_category = Some(envelope.category.to_string());
-                summary.error = Some(envelope.message.clone());
-                if output_format == ExecOutputFormat::StreamJson {
-                    emit_exec_stream_event(&ExecStreamEvent::Error {
-                        error: envelope.message,
-                    })?;
-                } else if !json_output {
-                    eprintln!("error: {}", envelope.message);
-                }
-            }
-            Event::TurnComplete {
-                status,
-                error,
-                usage,
-                tool_catalog,
-                ..
-            } => {
-                saw_turn_complete = true;
-                let api_request_snapshot = api_request_budget
-                    .as_ref()
-                    .map(SharedApiRequestBudget::seal_and_snapshot);
-                if let Some(snapshot) = api_request_snapshot {
-                    summary.api_request_count = Some(snapshot.started);
-                    summary.api_request_limit = Some(snapshot.limit);
-                    summary.api_request_budget_exhausted = Some(snapshot.denied > 0);
-                    if output_format == ExecOutputFormat::Text && !json_output {
-                        let suffix = if snapshot.denied > 0 {
-                            "，已有后续请求被阻止"
-                        } else {
-                            ""
-                        };
-                        eprintln!(
-                            "DeepSeek API 请求：{}/{}{}",
-                            snapshot.started, snapshot.limit, suffix
-                        );
-                    }
-                }
-                summary.status = Some(format!("{status:?}").to_lowercase());
-                if error.is_some() {
-                    summary.error = error;
-                }
-                if sandbox_denied
-                    && summary.error.is_none()
-                    && matches!(status, crate::core::events::TurnOutcomeStatus::Failed)
-                {
-                    summary.error = Some(
-                        "exec turn failed after sandbox denial; explicit sandbox elevation was not authorized"
-                            .to_string(),
-                    );
-                }
-                if last_error_category.is_none() {
-                    last_error_category = summary
-                        .error
-                        .as_deref()
-                        .map(crate::error_taxonomy::classify_error_message);
-                    summary.error_category =
-                        last_error_category.map(|category| category.to_string());
-                }
-                let request_budget_exhausted =
-                    api_request_snapshot.is_some_and(|snapshot| snapshot.denied > 0);
-                if request_budget_exhausted {
-                    last_error_category = Some(crate::error_taxonomy::ErrorCategory::State);
-                    summary.error_category = Some("state".to_string());
-                    if summary.error.is_none()
-                        && let Some(snapshot) = api_request_snapshot
-                    {
-                        summary.error = Some(format!(
-                            "DeepSeek API 请求预算已用尽（已发起：{}，上限：{}）",
-                            snapshot.started, snapshot.limit
-                        ));
-                    }
-                }
-                let termination_reason = if request_budget_exhausted {
-                    crate::core::termination::RunTerminationReason::BudgetExhausted
-                } else {
-                    crate::core::termination::classify_turn_termination(
-                        status,
-                        last_error_category,
-                        tool_error_seen,
-                        approval_required,
-                    )
-                };
-                summary.termination_reason = Some(termination_reason.as_str().to_string());
-                let saved_session_id = if should_persist_session && !latest_messages.is_empty() {
-                    match persist_exec_session(
-                        &latest_messages,
-                        &latest_model,
-                        &latest_workspace,
-                        &latest_system_prompt,
-                        latest_session_id.as_deref(),
-                        u64::from(usage.input_tokens) + u64::from(usage.output_tokens),
-                    ) {
-                        Ok(id) => {
-                            if output_format == ExecOutputFormat::Text && !json_output {
-                                eprintln!("{}", exec_saved_session_line(&id));
-                            }
-                            Some(id)
-                        }
-                        Err(err) => {
-                            if output_format == ExecOutputFormat::Text && !json_output {
-                                eprintln!("warning: failed to save exec session: {err}");
-                            }
-                            latest_session_id.clone()
-                        }
-                    }
-                } else {
-                    latest_session_id.clone()
-                };
-
-                if output_format == ExecOutputFormat::StreamJson {
-                    if let Some(id) = saved_session_id.as_ref() {
-                        emit_exec_stream_event(&ExecStreamEvent::SessionCapture {
-                            content: exec_stream_session_ref(id),
-                        })?;
-                    }
-                    emit_exec_stream_event(&ExecStreamEvent::Metadata {
-                        meta: Box::new(ExecStreamMeta {
-                            receipt_kind: "terminal",
-                            provider: effective_provider_name.clone(),
-                            model: latest_model.clone(),
-                            route_source: route_source.clone(),
-                            input_tokens: Some(usage.input_tokens),
-                            output_tokens: Some(usage.output_tokens),
-                            prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
-                            prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
-                            prompt_cache_write_tokens: usage.prompt_cache_write_tokens,
-                            reasoning_tokens: usage.reasoning_tokens,
-                            duration_ms: u64::try_from(exec_started.elapsed().as_millis())
-                                .unwrap_or(u64::MAX),
-                            retry_count: None,
-                            api_request_count: api_request_snapshot
-                                .map(|snapshot| snapshot.started),
-                            api_request_limit: api_request_snapshot.map(|snapshot| snapshot.limit),
-                            api_request_budget_exhausted: api_request_snapshot
-                                .map(|snapshot| snapshot.denied > 0),
-                            approval_posture: approval_posture.clone(),
-                            sandbox_posture: sandbox_posture.clone(),
-                            binary_sha256: binary_sha256.clone(),
-                            config_sha256: None,
-                            prompt_sha256: prompt_sha256.clone(),
-                            tool_catalog_sha256: tool_catalog.as_ref().and_then(|catalog| {
-                                serde_json::to_vec(catalog).ok().map(|bytes| {
-                                    format!("sha256:{}", crate::hashing::sha256_hex(&bytes))
-                                })
-                            }),
-                            input_analysis: exec_stream_input_analysis(
-                                &latest_messages,
-                                latest_system_prompt.as_ref(),
-                            ),
-                            visible_final_answer_chars: summary.output.chars().count(),
-                            resume_command: saved_session_id
-                                .as_deref()
-                                .map(exec_stream_resume_hint)
-                                .unwrap_or_default(),
-                            session_id: saved_session_id
-                                .as_deref()
-                                .map(exec_stream_session_ref)
-                                .unwrap_or_default(),
-                            workspace: latest_workspace.display().to_string(),
-                            message_count: latest_messages.len(),
-                            status: summary.status.clone(),
-                            termination_reason: summary.termination_reason.clone(),
-                            error_category: summary.error_category.clone(),
-                        }),
-                    })?;
-                    emit_exec_stream_event(&ExecStreamEvent::Done)?;
-                }
-                let _ = engine_handle.send(Op::Shutdown).await;
-                break;
-            }
-            Event::SessionUpdated {
-                session_id,
-                messages,
-                system_prompt,
-                model,
-                workspace,
-            } => {
-                latest_session_id = Some(session_id);
-                latest_messages = messages;
-                latest_system_prompt = system_prompt;
-                latest_model = model;
-                latest_workspace = workspace;
-            }
-            // #3027: surface the engine's max-steps notice in text mode so a
-            // --max-turns run that stops early says why instead of going quiet.
-            Event::Status { message }
-                if output_format == ExecOutputFormat::Text
-                    && !json_output
-                    && message.contains("Reached maximum steps") =>
-            {
-                eprintln!("{message}");
-            }
-            _ => {}
-        }
-    }
-
-    if summary.api_request_count.is_none()
-        && let Some(snapshot) = api_request_budget
-            .as_ref()
-            .map(SharedApiRequestBudget::seal_and_snapshot)
-    {
-        summary.api_request_count = Some(snapshot.started);
-        summary.api_request_limit = Some(snapshot.limit);
-        summary.api_request_budget_exhausted = Some(snapshot.denied > 0);
-    }
-
-    if !saw_turn_complete {
-        let message = "Agent 事件通道在发送终态前关闭，本次执行不能判定为成功".to_string();
-        summary.status = Some("failed".to_string());
-        summary.termination_reason = Some("infrastructure_error".to_string());
-        summary.error_category = Some("internal".to_string());
-        summary.error = Some(message.clone());
-        if output_format == ExecOutputFormat::StreamJson {
-            emit_exec_stream_event(&ExecStreamEvent::Error {
-                error: message.clone(),
-            })?;
-            emit_exec_stream_event(&ExecStreamEvent::Done)?;
-        } else if !json_output {
-            eprintln!("错误：{message}");
-        }
-        let _ = engine_handle.send(Op::Shutdown).await;
-    }
-
-    if json_output {
-        println!("{}", serde_json::to_string_pretty(&summary)?);
-    }
-
-    if let Some(error) = summary.error.as_ref()
-        && !error.trim().is_empty()
-    {
-        bail!("exec turn failed: {error}");
-    }
-
-    if matches!(
-        summary.status.as_deref(),
-        Some("failed" | "canceled" | "interrupted")
-    ) {
-        let status = summary.status.as_deref().unwrap_or("unknown");
-        bail!("exec turn ended with status {status}");
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -10428,7 +9604,7 @@ mod terminal_mode_tests {
             ..Default::default()
         };
 
-        let route = resolve_cli_auto_route(&config, crate::config::ZAI_GLM_5_2_MODEL, "pong")
+        let route = resolve_cli_auto_route(&config, crate::config::ZAI_GLM_5_2_MODEL, "pong", None)
             .await
             .expect("explicit GLM should route to the configured Z.ai provider");
 
@@ -10449,7 +9625,7 @@ mod terminal_mode_tests {
             ..Default::default()
         };
 
-        let err = resolve_cli_auto_route(&config, crate::config::ZAI_GLM_5_2_MODEL, "pong")
+        let err = resolve_cli_auto_route(&config, crate::config::ZAI_GLM_5_2_MODEL, "pong", None)
             .await
             .expect_err("ambiguous GLM route should ask for an explicit provider");
         let message = err.to_string();
@@ -10629,7 +9805,7 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn exec_accepts_resume_session_flags_for_harnesses() {
+    fn exec_accepts_resume_without_a_replacement_prompt() {
         let cli = parse_cli(&[
             "codewhale",
             "exec",
@@ -10637,7 +9813,6 @@ mod terminal_mode_tests {
             "abc123",
             "--output-format",
             "stream-json",
-            "follow up",
         ]);
         let Some(Commands::Exec(args)) = cli.command else {
             panic!("expected exec command");
@@ -10645,18 +9820,7 @@ mod terminal_mode_tests {
 
         assert_eq!(args.resume.as_deref(), Some("abc123"));
         assert_eq!(args.output_format, ExecOutputFormat::StreamJson);
-        assert_eq!(args.prompt, vec!["follow up"]);
-    }
-
-    #[test]
-    fn exec_accepts_session_id_alias() {
-        let cli = parse_cli(&["codewhale", "exec", "--session-id", "abc123", "follow up"]);
-        let Some(Commands::Exec(args)) = cli.command else {
-            panic!("expected exec command");
-        };
-
-        assert_eq!(args.session_id.as_deref(), Some("abc123"));
-        assert_eq!(args.output_format, ExecOutputFormat::Text);
+        assert!(args.prompt.is_empty());
     }
 
     #[test]
@@ -10672,6 +9836,8 @@ mod terminal_mode_tests {
             "7",
             "--max-api-requests",
             "11",
+            "--max-runtime-secs",
+            "90",
             "--append-system-prompt",
             "extra rules",
             "do the thing",
@@ -10690,6 +9856,7 @@ mod terminal_mode_tests {
         );
         assert_eq!(args.max_turns, Some(7));
         assert_eq!(args.max_api_requests.map(NonZeroU32::get), Some(11));
+        assert_eq!(args.max_runtime_secs.map(NonZeroU64::get), Some(90));
         assert_eq!(args.append_system_prompt.as_deref(), Some("extra rules"));
         assert_eq!(args.prompt, vec!["do the thing"]);
     }
@@ -10739,21 +9906,6 @@ mod terminal_mode_tests {
             args.allow_sandbox_elevation,
             args.sandbox.as_deref()
         ));
-    }
-
-    #[test]
-    fn exec_sandbox_denial_stream_event_is_typed() {
-        let event = ExecStreamEvent::SandboxDenied {
-            tool_id: "call_1".to_string(),
-            tool_name: "exec_shell".to_string(),
-            reason: "write blocked".to_string(),
-            outcome: "approval_required".to_string(),
-        };
-        let value: serde_json::Value =
-            serde_json::from_str(&serde_json::to_string(&event).expect("serializes"))
-                .expect("valid json");
-        assert_eq!(value["type"], "sandbox_denied");
-        assert_eq!(value["outcome"], "approval_required");
     }
 
     #[test]
@@ -10843,6 +9995,13 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn exec_rejects_zero_max_runtime_secs() {
+        let err = Cli::try_parse_from(["codewhale", "exec", "--max-runtime-secs", "0", "hello"])
+            .expect_err("max-runtime-secs must be >= 1");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
     fn exec_accepts_continue_for_latest_workspace_session() {
         let cli = parse_cli(&["codewhale", "exec", "--continue", "follow up"]);
         let Some(Commands::Exec(args)) = cli.command else {
@@ -10909,6 +10068,18 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn headless_accepts_only_deepseek_provider_identities() {
+        assert!(exec_supports_provider(crate::config::ApiProvider::Deepseek));
+        assert!(!exec_supports_provider(
+            crate::config::ApiProvider::DeepseekCN
+        ));
+        assert!(!exec_supports_provider(crate::config::ApiProvider::Openai));
+        assert!(!exec_supports_provider(
+            crate::config::ApiProvider::Openrouter
+        ));
+    }
+
+    #[test]
     fn workflow_receipt_stream_event_is_one_json_line() {
         let event = ExecStreamEvent::WorkflowEvent {
             run_id: "workflow_1234".to_string(),
@@ -10925,143 +10096,6 @@ mod terminal_mode_tests {
         assert_eq!(parsed["type"], "workflow_event");
         assert_eq!(parsed["run_id"], "workflow_1234");
         assert_eq!(parsed["event"]["type"], "task_completed");
-    }
-
-    #[test]
-    fn exec_stream_metadata_redacts_resume_breadcrumbs() {
-        let raw_session_id = "abc123fullsecret";
-        let event = ExecStreamEvent::Metadata {
-            meta: Box::new(ExecStreamMeta {
-                receipt_kind: "terminal",
-                provider: "deepseek".to_string(),
-                model: "deepseek-v4-flash".to_string(),
-                route_source: "explicit_or_configured".to_string(),
-                input_tokens: Some(123),
-                output_tokens: Some(45),
-                prompt_cache_hit_tokens: Some(10),
-                prompt_cache_miss_tokens: None,
-                prompt_cache_write_tokens: None,
-                reasoning_tokens: Some(3),
-                duration_ms: 2500,
-                retry_count: None,
-                api_request_count: Some(2),
-                api_request_limit: Some(3),
-                api_request_budget_exhausted: Some(false),
-                approval_posture: "ask".to_string(),
-                sandbox_posture: "configured_default".to_string(),
-                binary_sha256: Some("sha256:binary".to_string()),
-                config_sha256: None,
-                prompt_sha256: "sha256:prompt".to_string(),
-                tool_catalog_sha256: Some("sha256:tools".to_string()),
-                input_analysis: ExecStreamInputAnalysis::default(),
-                visible_final_answer_chars: 17,
-                session_id: exec_stream_session_ref(raw_session_id),
-                resume_command: exec_stream_resume_hint(raw_session_id),
-                workspace: "/tmp/work".to_string(),
-                message_count: 4,
-                status: Some("completed".to_string()),
-                termination_reason: Some("resolved".to_string()),
-                error_category: None,
-            }),
-        };
-
-        let json = serde_json::to_string(&event).expect("serializes");
-        assert!(!json.contains('\n'));
-        assert!(!json.contains(raw_session_id));
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid json");
-        assert_eq!(parsed["type"], "metadata");
-        assert_ne!(parsed["meta"]["session_id"], raw_session_id);
-        assert!(
-            parsed["meta"]["session_id"]
-                .as_str()
-                .unwrap()
-                .starts_with("<redacted:")
-        );
-        assert_eq!(
-            parsed["meta"]["resume_command"],
-            "codewhale exec --resume <redacted-session-id>"
-        );
-        assert_eq!(parsed["meta"]["workspace"], "/tmp/work");
-        assert_eq!(parsed["meta"]["message_count"], 4);
-        assert_eq!(parsed["meta"]["api_request_count"], 2);
-        assert_eq!(parsed["meta"]["api_request_limit"], 3);
-        assert_eq!(parsed["meta"]["api_request_budget_exhausted"], false);
-        assert_eq!(parsed["meta"]["visible_final_answer_chars"], 17);
-
-        let capture = ExecStreamEvent::SessionCapture {
-            content: exec_stream_session_ref(raw_session_id),
-        };
-        let capture_json = serde_json::to_string(&capture).expect("serializes");
-        assert!(!capture_json.contains(raw_session_id));
-        let parsed_capture: serde_json::Value =
-            serde_json::from_str(&capture_json).expect("valid json");
-        assert_eq!(parsed_capture["type"], "session_capture");
-        assert_ne!(parsed_capture["content"], raw_session_id);
-    }
-
-    #[test]
-    fn exec_stream_input_analysis_reports_prompt_composition() {
-        let system = SystemPrompt::Text("system rules".to_string());
-        let messages = vec![
-            Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: "run tests".to_string(),
-                    cache_control: None,
-                }],
-            },
-            Message {
-                role: "assistant".to_string(),
-                content: vec![
-                    ContentBlock::Thinking {
-                        thinking: "checking context".to_string(),
-                        signature: None,
-                    },
-                    ContentBlock::Text {
-                        text: "working".to_string(),
-                        cache_control: None,
-                    },
-                    ContentBlock::ToolUse {
-                        id: "call-1".to_string(),
-                        name: "exec_shell".to_string(),
-                        input: serde_json::json!({"command": "cargo test"}),
-                        caller: None,
-                    },
-                ],
-            },
-            Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::ToolResult {
-                    tool_use_id: "call-1".to_string(),
-                    content: "stdout line\nstderr line".to_string(),
-                    is_error: Some(false),
-                    content_blocks: Some(vec![serde_json::json!({
-                        "type": "text",
-                        "text": "structured output"
-                    })]),
-                }],
-            },
-        ];
-
-        let analysis = exec_stream_input_analysis(&messages, Some(&system));
-
-        assert_eq!(analysis.user_message_count, 2);
-        assert_eq!(analysis.assistant_message_count, 1);
-        assert_eq!(analysis.tool_message_count, 0);
-        assert_eq!(analysis.tool_use_count, 1);
-        assert_eq!(analysis.tool_result_count, 1);
-        assert_eq!(analysis.thinking_chars, "checking context".chars().count());
-        assert!(analysis.text_chars >= "run testsworking".chars().count());
-        assert!(analysis.tool_use_input_chars > 0);
-        assert!(analysis.tool_result_chars >= "stdout line\nstderr line".chars().count());
-        assert!(analysis.estimated_system_tokens > 0);
-        assert!(analysis.estimated_message_content_tokens > 0);
-        assert!(
-            analysis.estimated_request_tokens
-                >= analysis.estimated_system_tokens
-                    + analysis.estimated_message_content_tokens
-                    + analysis.estimated_framing_tokens
-        );
     }
 
     #[test]
@@ -11087,19 +10121,6 @@ mod terminal_mode_tests {
         assert_eq!(public["risk_level"], "error");
         assert!(!encoded.contains("secret"));
         assert!(!encoded.contains("/tmp/private"));
-    }
-
-    #[test]
-    fn exec_text_session_breadcrumbs_use_compact_ids() {
-        let session_id = "1234567890abcdef";
-
-        assert_eq!(exec_saved_session_line(session_id), "session: 12345678");
-        assert_eq!(
-            exec_resumed_session_line(session_id),
-            "resumed session: 12345678"
-        );
-        assert!(!exec_saved_session_line(session_id).contains(session_id));
-        assert!(!exec_resumed_session_line(session_id).contains(session_id));
     }
 
     #[test]

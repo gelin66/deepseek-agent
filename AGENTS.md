@@ -46,9 +46,15 @@ Changing one of these constraints requires evidence and a new ADR.
 ## Current repository truth
 
 - Imported CodeWhale baseline: `352e86a611fdf3cd8bd27c36d24d482c06a71117`.
-- The live production agent loop is still under `crates/tui`.
+- `codewhale exec` now runs through `crates/runtime::AgentRuntime`; its
+  composition/output adapter remains under `crates/tui`, and its canonical
+  events are persisted by the SQLite `RunStore` implemented in `crates/state`.
+- The interactive TUI and app-server have not migrated. Their live production
+  loops and private runtime/session/task state still remain under `crates/tui`.
 - `crates/core` is not yet the production model loop.
-- Root and child agents still have different execution loops.
+- Root and child runs inside the new `AgentRuntime` use the same execution
+  implementation. The unmigrated TUI child-agent path still has different
+  execution semantics and is a later replacement target.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split

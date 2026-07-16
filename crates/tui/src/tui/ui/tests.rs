@@ -2722,12 +2722,13 @@ async fn tool_result_api_content_receipts_large_live_output() {
             id: "call-live-big".to_string(),
             name: "exec_shell".to_string(),
             input: serde_json::json!({"command": "cargo test"}),
+            raw_arguments: None,
             caller: None,
         }],
     });
 
     let raw = "LIVE_RAW_SENTINEL\n".repeat(900);
-    let output = crate::tools::spec::ToolResult::success(raw.clone());
+    let output = crate::tools::spec::ToolOutcome::success(raw.clone());
     let content =
         tool_result_content_for_api_message(&app, "call-live-big", "exec_shell", &output).await;
 
@@ -2752,6 +2753,7 @@ fn live_tool_receipt_messages_clones_only_matching_tool_use() {
             id: "call-old".to_string(),
             name: "exec_shell".to_string(),
             input: serde_json::json!({"command": "old"}),
+            raw_arguments: None,
             caller: None,
         }],
     });
@@ -2770,6 +2772,7 @@ fn live_tool_receipt_messages_clones_only_matching_tool_use() {
             id: "call-new".to_string(),
             name: "read_file".to_string(),
             input: serde_json::json!({"path": "src/main.rs"}),
+            raw_arguments: None,
             caller: None,
         }],
     });
@@ -4459,6 +4462,8 @@ fn apply_goal_snapshot_updates_visible_goal_status() {
             check: "cargo test".to_string(),
             summary: "focused tests passed".to_string(),
         }),
+        task_contract: None,
+        host_verification: None,
     };
 
     assert!(apply_goal_snapshot_to_app(&mut app, &completed));
@@ -4487,6 +4492,8 @@ fn apply_goal_snapshot_updates_visible_goal_status() {
         evidence: None,
         blocker: Some("needs user approval".to_string()),
         completion_verification: None,
+        task_contract: None,
+        host_verification: None,
     };
 
     assert!(apply_goal_snapshot_to_app(&mut app, &blocked));
@@ -4526,6 +4533,8 @@ fn apply_goal_snapshot_resume_clears_frozen_timer() {
             check: "cargo test".to_string(),
             summary: "ok".to_string(),
         }),
+        task_contract: None,
+        host_verification: None,
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &completed));
     assert_eq!(app.hunt.verdict, crate::tui::app::HuntVerdict::Hunted);
@@ -4544,6 +4553,8 @@ fn apply_goal_snapshot_resume_clears_frozen_timer() {
         evidence: None,
         blocker: None,
         completion_verification: None,
+        task_contract: None,
+        host_verification: None,
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &resumed));
     assert_eq!(app.hunt.verdict, crate::tui::app::HuntVerdict::Hunting);
@@ -4572,6 +4583,8 @@ fn apply_goal_snapshot_keeps_paused_timer_frozen_across_usage_updates() {
         evidence: None,
         blocker: None,
         completion_verification: None,
+        task_contract: None,
+        host_verification: None,
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &paused));
     assert_eq!(app.hunt.verdict, crate::tui::app::HuntVerdict::Wounded);
@@ -4594,6 +4607,8 @@ fn apply_goal_snapshot_keeps_paused_timer_frozen_across_usage_updates() {
         evidence: None,
         blocker: None,
         completion_verification: None,
+        task_contract: None,
+        host_verification: None,
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &paused_with_usage));
     assert_eq!(app.hunt.verdict, crate::tui::app::HuntVerdict::Wounded);
@@ -4615,6 +4630,8 @@ fn apply_goal_snapshot_keeps_paused_timer_frozen_across_usage_updates() {
         evidence: None,
         blocker: None,
         completion_verification: None,
+        task_contract: None,
+        host_verification: None,
     };
     assert!(apply_goal_snapshot_to_app(&mut app, &resumed));
     assert_eq!(app.hunt.verdict, crate::tui::app::HuntVerdict::Hunting);
@@ -9412,18 +9429,18 @@ fn apply_mention_menu_selection_with_no_entries_is_noop() {
 
 // === CX#7 — single active cell mutated in place for parallel tool calls ===
 
-/// Build a minimal successful ToolResult with the given content.
+/// Build a minimal successful ToolOutcome with the given content.
 fn ok_result(
     content: &str,
-) -> Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError> {
-    Ok(crate::tools::spec::ToolResult::success(content))
+) -> Result<crate::tools::spec::ToolOutcome, crate::tools::spec::ToolError> {
+    Ok(crate::tools::spec::ToolOutcome::success(content))
 }
 
 fn hydrated_result(
     content: &str,
-) -> Result<crate::tools::spec::ToolResult, crate::tools::spec::ToolError> {
+) -> Result<crate::tools::spec::ToolOutcome, crate::tools::spec::ToolError> {
     Ok(
-        crate::tools::spec::ToolResult::success(content).with_metadata(serde_json::json!({
+        crate::tools::spec::ToolOutcome::success(content).with_metadata(serde_json::json!({
             "event": "tool.schema_hydrated",
             "tool": "exec_shell",
             "executed": false,
@@ -9560,13 +9577,13 @@ fn failed_tool_result_with_hydration_metadata_stays_failed() {
         "deferred_tool",
         &serde_json::json!({}),
     );
-    let result = Ok(crate::tools::spec::ToolResult::error("boom").with_metadata(
-        serde_json::json!({
+    let result = Ok(
+        crate::tools::spec::ToolOutcome::error("boom").with_metadata(serde_json::json!({
             "event": "tool.schema_hydrated",
             "executed": false,
             "retry_required": true,
-        }),
-    ));
+        })),
+    );
     handle_tool_call_complete(&mut app, "generic-failed", "deferred_tool", &result);
 
     let generic = app
@@ -9623,7 +9640,7 @@ fn shell_wait_without_command_uses_task_id_until_command_metadata_arrives() {
                 .contains("<command>")
     );
 
-    let result = Ok(crate::tools::spec::ToolResult::success(
+    let result = Ok(crate::tools::spec::ToolOutcome::success(
         "Background task running (no new output).",
     )
     .with_metadata(serde_json::json!({
@@ -9656,15 +9673,15 @@ fn shell_wait_without_command_uses_task_id_until_command_metadata_arrives() {
 #[test]
 fn tool_child_usage_metadata_updates_live_cost_counter() {
     let mut app = create_test_app();
-    let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(
-        serde_json::json!({
+    let result = Ok(
+        crate::tools::spec::ToolOutcome::success("ok").with_metadata(serde_json::json!({
             "child_model": "deepseek-v4-flash",
             "child_input_tokens": 10_000,
             "child_output_tokens": 1_000,
             "child_prompt_cache_hit_tokens": 7_000,
             "child_prompt_cache_miss_tokens": 3_000,
-        }),
-    ));
+        })),
+    );
 
     handle_tool_call_complete(&mut app, "review-usage", "review", &result);
 
@@ -9748,14 +9765,14 @@ fn codex_tool_child_usage_does_not_inherit_public_api_pricing() {
     app.api_provider = crate::config::ApiProvider::OpenaiCodex;
     app.billing_presentation =
         crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
-    let result = Ok(crate::tools::spec::ToolResult::success("ok").with_metadata(
-        serde_json::json!({
+    let result = Ok(
+        crate::tools::spec::ToolOutcome::success("ok").with_metadata(serde_json::json!({
             "child_model": "gpt-5.5",
             "child_input_tokens": 10_000,
             "child_output_tokens": 1_000,
             "child_provider": "openai-codex",
-        }),
-    ));
+        })),
+    );
 
     handle_tool_call_complete(&mut app, "review-usage", "review", &result);
 
@@ -9769,7 +9786,7 @@ fn spilled_tool_completion_records_session_artifact_metadata() {
     let raw = "checking crate ... error[E0425]: cannot find value\n".repeat(20);
     std::fs::write(&spillover_path, &raw).expect("write spillover");
     let result = Ok(
-        crate::tools::spec::ToolResult::success("checking crate ...").with_metadata(
+        crate::tools::spec::ToolOutcome::success("checking crate ...").with_metadata(
             serde_json::json!({
                 "spillover_path": spillover_path.display().to_string(),
                 "artifact_session_id": "session-123",
@@ -14391,6 +14408,7 @@ fn backtrack_cut_index_skips_tool_result_user_messages() {
                 id: "t1".into(),
                 name: "read_file".into(),
                 input: serde_json::json!({"path":"x"}),
+                raw_arguments: None,
                 caller: None,
             }],
         },

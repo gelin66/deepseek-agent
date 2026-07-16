@@ -143,9 +143,7 @@ pub struct WorkerRuntimeProfile {
     ///
     /// A child can only ever *add* entries — `derive_child()` takes the union of
     /// the parent's and the child's deny lists, so a descendant can never drop a
-    /// restriction an ancestor imposed. The only way to start without the
-    /// parent's list is an explicit `inherit_disallowed_tools: false` at spawn,
-    /// which clears the cloned runtime's list before the registry reads it.
+    /// restriction an ancestor imposed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub denied_tools: Vec<String>,
     /// Remaining nested-delegation budget. A worker may spawn children while
@@ -160,6 +158,8 @@ pub struct WorkerRuntimeProfile {
 }
 
 impl WorkerRuntimeProfile {
+    /// Focused reconnaissance: five model turns, one summary, one recovery, one spare.
+    pub const EXPLORE_MAX_STEPS: u32 = 8;
     /// Maximum model turns for read-mostly workers.
     pub const READ_ONLY_MAX_STEPS: u32 = 60;
     /// Maximum model turns for workers that may implement changes.
@@ -169,10 +169,10 @@ impl WorkerRuntimeProfile {
     #[must_use]
     pub const fn default_max_steps(role: SubAgentType) -> u32 {
         match role {
-            SubAgentType::Explore
-            | SubAgentType::Review
-            | SubAgentType::Plan
-            | SubAgentType::Verifier => Self::READ_ONLY_MAX_STEPS,
+            SubAgentType::Explore => Self::EXPLORE_MAX_STEPS,
+            SubAgentType::Review | SubAgentType::Plan | SubAgentType::Verifier => {
+                Self::READ_ONLY_MAX_STEPS
+            }
             SubAgentType::Implementer | SubAgentType::General | SubAgentType::Custom => {
                 Self::GENERAL_MAX_STEPS
             }

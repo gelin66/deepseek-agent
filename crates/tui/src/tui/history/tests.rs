@@ -859,6 +859,7 @@ fn history_replays_update_plan_tool_use_as_plan_card() {
                     { "step": "render replay card", "status": "completed" }
                 ]
             }),
+            raw_arguments: None,
             caller: None,
         }],
     };

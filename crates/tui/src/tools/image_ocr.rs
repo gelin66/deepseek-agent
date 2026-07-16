@@ -15,7 +15,7 @@ use std::process::{Command, Stdio};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
-use super::spec::{ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str};
+use super::spec::{ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec, required_str};
 
 /// Tool implementing `image_ocr`. Runs a local OCR backend and returns the
 /// extracted text on success.
@@ -52,7 +52,7 @@ impl ToolSpec for ImageOcrTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let path_str = required_str(&input, "path")?;
         let image_path = context.resolve_path(path_str)?;
         if !image_path.exists() {
@@ -63,7 +63,7 @@ impl ToolSpec for ImageOcrTool {
         }
 
         let text = ocr_image_path(&image_path)?;
-        Ok(ToolResult::success(text))
+        Ok(ToolOutcome::success(text))
     }
 }
 
@@ -332,7 +332,7 @@ mod tests {
             .execute(json!({"path": "ocr_hello.png"}), &ctx)
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         // Tesseract reliably recovers "HELLO OCR" from the rendered
         // PNG; allow either spacing variant.
         let normalised = result.content.to_uppercase();

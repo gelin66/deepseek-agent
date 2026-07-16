@@ -16,10 +16,9 @@ fn assert_workflow_trace_schema(conn: &Connection) {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("read user_version");
-    // v4 (goal-progress migration) adds `thread_goals.continuation_count` on top
-    // of the v3 workflow-trace + thread_goals tables. The table set asserted
-    // below is unchanged; only the schema version advanced.
-    assert_eq!(user_version, 4);
+    // v5 adds the canonical AgentRuntime event store without replacing the
+    // existing thread/workflow data in this same state database.
+    assert_eq!(user_version, 6);
 
     for table in [
         "workflow_runs",
@@ -28,6 +27,9 @@ fn assert_workflow_trace_schema(conn: &Connection) {
         "control_node_runs",
         "teacher_candidates",
         "thread_goals",
+        "agent_runs",
+        "agent_run_events",
+        "agent_run_snapshots",
     ] {
         let exists: bool = conn
             .query_row(

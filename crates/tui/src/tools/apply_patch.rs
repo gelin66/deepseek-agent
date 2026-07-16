@@ -8,12 +8,13 @@ use std::fs;
 use std::path::PathBuf;
 
 use async_trait::async_trait;
+use codewhale_protocol::agent_runtime::ToolSideEffectStatus;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     lsp_diagnostics_for_paths, optional_bool, optional_str, optional_u64, required_str,
 };
 
@@ -266,7 +267,7 @@ impl ToolSpec for ApplyPatchTool {
         ApprovalRequirement::Suggest
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let fuzz = optional_u64(&input, "fuzz", DEFAULT_FUZZ as u64).min(MAX_FUZZ as u64);
         let fuzz = usize::try_from(fuzz).unwrap_or(DEFAULT_FUZZ);
         let create_if_missing = optional_bool(&input, "create_if_missing", false);
@@ -290,8 +291,9 @@ impl ToolSpec for ApplyPatchTool {
                 file_summaries: stats.file_summaries.clone(),
                 message: build_summary_message(&stats),
             };
-            let mut tool_result = ToolResult::json(&result)
+            let mut tool_result = ToolOutcome::json(&result)
                 .map_err(|e| ToolError::execution_failed(e.to_string()))?;
+            tool_result.side_effect = ToolSideEffectStatus::Applied;
             tool_result =
                 tool_result.with_metadata(apply_patch_preflight_metadata(&preflight.summary));
             if !diag_block.is_empty() {
@@ -337,7 +339,8 @@ impl ToolSpec for ApplyPatchTool {
             message: build_summary_message(&stats),
         };
         let mut tool_result =
-            ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+            ToolOutcome::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))?;
+        tool_result.side_effect = ToolSideEffectStatus::Applied;
         tool_result = tool_result.with_metadata(apply_patch_preflight_metadata(&preflight.summary));
         if !diag_block.is_empty() {
             tool_result.content.push('\n');
@@ -1255,7 +1258,7 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    fn parse_patch_result(result: ToolResult) -> PatchResult {
+    fn parse_patch_result(result: ToolOutcome) -> PatchResult {
         serde_json::from_str(&result.content).expect("patch result json")
     }
 
@@ -1520,7 +1523,7 @@ diff --git a/same.txt b/same.txt
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert_eq!(
             result.metadata.as_ref().unwrap()["event"],
             "apply_patch.preflight"
@@ -1586,7 +1589,7 @@ diff --git a/same.txt b/same.txt
             .execute(json!({"path": "crlf.txt", "patch": patch}), &ctx)
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         let content = fs::read_to_string(tmp.path().join("crlf.txt")).expect("read");
         assert!(content.contains("modified"));
         // Regression: a CRLF file must not be flipped to LF.
@@ -1617,7 +1620,7 @@ diff --git a/same.txt b/same.txt
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let patch_result = parse_patch_result(result);
         assert_eq!(patch_result.touched_files, vec!["test.txt"]);
 
@@ -1645,7 +1648,7 @@ diff --git a/same.txt b/same.txt
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let patch_result = parse_patch_result(result);
         assert_eq!(patch_result.touched_files, vec!["new_file.txt"]);
         assert!(patch_result.file_summaries.first().unwrap().created);
@@ -1673,7 +1676,7 @@ diff --git a/same.txt b/same.txt
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let metadata = result.metadata.as_ref().expect("metadata");
         assert_eq!(metadata["event"], "apply_patch.preflight");
         assert_eq!(metadata["touched_files"], json!(["one.txt", "two.txt"]));
@@ -1756,7 +1759,7 @@ diff --git a/b.txt b/b.txt
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let metadata = result.metadata.as_ref().expect("metadata");
         assert_eq!(metadata["event"], "apply_patch.preflight");
         assert_eq!(metadata["touched_files"], json!(["a.txt", "b.txt"]));
@@ -1850,7 +1853,7 @@ diff --git a/b.txt b/b.txt
             .execute(json!({"path": "test.txt", "patch": patch, "fuzz": 3}), &ctx)
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         let patch_result = parse_patch_result(result);
         assert_eq!(patch_result.hunks_with_fuzz, 1);
         assert!(patch_result.fuzz_used > 0);

@@ -28,6 +28,8 @@ codewhale-execpolicy = { path = "../execpolicy", version = "0.8.68" }
 codewhale-lane = { path = "../lane", version = "0.8.68" }
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
 codewhale-release = { path = "../release", version = "0.8.68" }
+codewhale-runtime = { path = "../runtime", version = "0.8.68" }
+codewhale-state = { path = "../state", version = "0.8.68" }
 codewhale-secrets = { path = "../secrets", version = "0.8.68" }
 codewhale-tools = { path = "../tools", version = "0.8.68" }
 codewhale-workflow = { path = "../workflow", version = "0.8.68" }

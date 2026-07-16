@@ -19,6 +19,39 @@ async fn lock_mcp_loopback_tests() -> tokio::sync::MutexGuard<'static, ()> {
         .await
 }
 
+#[cfg(unix)]
+fn unix_process_exists(pid: libc::pid_t) -> bool {
+    let status = unsafe { libc::kill(pid, 0) };
+    status == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+}
+
+#[cfg(unix)]
+async fn wait_for_unix_pid_file(path: &Path, timeout: Duration) -> libc::pid_t {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Ok(raw) = tokio::fs::read_to_string(path).await
+            && let Ok(pid) = raw.trim().parse::<libc::pid_t>()
+        {
+            return pid;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "process did not publish pid at {}",
+            path.display()
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_unix_process_exit(pid: libc::pid_t, timeout: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + timeout;
+    while unix_process_exists(pid) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    !unix_process_exists(pid)
+}
+
 struct WorkspaceTrustConfigGuard {
     config_path: PathBuf,
     _codewhale_config_path: crate::test_support::EnvVarGuard,
@@ -1117,6 +1150,45 @@ impl Drop for DropCountingTransport {
     }
 }
 
+struct BarrierShutdownTransport {
+    barrier: Arc<tokio::sync::Barrier>,
+    shutdowns: Arc<AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl McpTransport for BarrierShutdownTransport {
+    async fn send(&mut self, _msg: Vec<u8>) -> Result<()> {
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        std::future::pending().await
+    }
+
+    async fn shutdown(&mut self) -> bool {
+        self.barrier.wait().await;
+        self.shutdowns.fetch_add(1, AtomicOrdering::SeqCst);
+        true
+    }
+}
+
+struct FailedShutdownTransport;
+
+#[async_trait::async_trait]
+impl McpTransport for FailedShutdownTransport {
+    async fn send(&mut self, _msg: Vec<u8>) -> Result<()> {
+        Ok(())
+    }
+
+    async fn recv(&mut self) -> Result<Vec<u8>> {
+        std::future::pending().await
+    }
+
+    async fn shutdown(&mut self) -> bool {
+        false
+    }
+}
+
 fn test_server_config() -> McpServerConfig {
     McpServerConfig {
         command: Some("mock".to_string()),
@@ -1156,6 +1228,70 @@ fn test_connection(transport: Box<dyn McpTransport>) -> McpConnection {
         read_timeout_secs: default_read_timeout(),
         cancel_token: tokio_util::sync::CancellationToken::new(),
     }
+}
+
+#[tokio::test]
+async fn mcp_pool_shutdown_all_settles_connections_concurrently() {
+    const CONNECTIONS: usize = 3;
+    let barrier = Arc::new(tokio::sync::Barrier::new(CONNECTIONS));
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    let mut pool = McpPool::new(McpConfig::default());
+    for index in 0..CONNECTIONS {
+        pool.connections.insert(
+            format!("server-{index}"),
+            test_connection(Box::new(BarrierShutdownTransport {
+                barrier: Arc::clone(&barrier),
+                shutdowns: Arc::clone(&shutdowns),
+            })),
+        );
+    }
+
+    let report = tokio::time::timeout(Duration::from_secs(1), pool.shutdown_all())
+        .await
+        .expect("serial MCP shutdown would deadlock on the first barrier participant");
+    assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), CONNECTIONS);
+    assert_eq!(report.connections, CONNECTIONS);
+    assert_eq!(report.failures, 0);
+    assert!(pool.connections.is_empty());
+}
+
+#[tokio::test]
+async fn mcp_pool_shutdown_report_preserves_transport_failure() {
+    let mut pool = McpPool::new(McpConfig::default());
+    pool.connections.insert(
+        "failed".to_string(),
+        test_connection(Box::new(FailedShutdownTransport)),
+    );
+
+    let report = pool.shutdown_all().await;
+    assert_eq!(report.connections, 1);
+    assert_eq!(report.failures, 1);
+}
+
+#[tokio::test]
+async fn mcp_runtime_eviction_paths_invoke_transport_shutdown() {
+    let barrier = Arc::new(tokio::sync::Barrier::new(1));
+    let shutdowns = Arc::new(AtomicUsize::new(0));
+    let make_connection = || {
+        test_connection(Box::new(BarrierShutdownTransport {
+            barrier: Arc::clone(&barrier),
+            shutdowns: Arc::clone(&shutdowns),
+        }))
+    };
+    let mut pool = McpPool::new(McpConfig::default());
+    pool.connections
+        .insert("reconnect".into(), make_connection());
+    pool.shutdown_connection("reconnect", "test reconnect")
+        .await;
+    assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 1);
+
+    pool.connections
+        .insert("reload-a".into(), make_connection());
+    pool.connections
+        .insert("reload-b".into(), make_connection());
+    pool.disconnect_all().await;
+    assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 3);
+    assert!(pool.connections.is_empty());
 }
 
 fn json_frame(value: serde_json::Value) -> Vec<u8> {
@@ -2073,7 +2209,7 @@ fn invalid_json_preview_collapses_lines_and_redacts_secrets() {
 }
 
 /// #420: `StdioTransport::shutdown` reaps the child process by sending
-/// SIGTERM and giving it a brief grace period before drop fires SIGKILL.
+/// SIGTERM and giving it a brief grace period before a hard-kill fallback.
 /// The test spawns `cat` (which exits immediately on stdin EOF / SIGTERM)
 /// and verifies the transport tears down cleanly. Unix-only because
 /// SIGTERM doesn't exist on Windows; on Windows the test would just
@@ -2085,17 +2221,34 @@ async fn stdio_transport_shutdown_terminates_child() {
     let mut cmd = TokioCommand::new("cat");
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    crate::tools::shell::configure_process_tree(cmd.as_std_mut());
     let mut child = cmd.spawn().expect("spawn cat");
     let pid = child.id().expect("child pid");
+    let process_tree =
+        crate::tools::shell::ProcessTreeOwner::attach_tokio(&child, "MCP shutdown test")
+            .expect("own MCP test process tree");
     let stdin = child.stdin.take().expect("child stdin");
     let stdout = child.stdout.take().expect("child stdout");
+    let stderr = child.stderr.take().expect("child stderr");
+    let stderr_tail = StderrTail::new();
+    let stderr_task = {
+        let tail = Arc::clone(&stderr_tail);
+        tokio::spawn(async move {
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tail.push(line).await;
+            }
+        })
+    };
     let mut transport = StdioTransport {
+        process_tree,
         child,
         stdin,
         reader: tokio::io::BufReader::new(stdout),
-        stderr_tail: StderrTail::new(),
+        stderr_tail,
+        stderr_task: Some(stderr_task),
     };
 
     // shutdown() should send SIGTERM and complete within the grace window.
@@ -2105,6 +2258,10 @@ async fn stdio_transport_shutdown_terminates_child() {
     assert!(
         elapsed < STDIO_SHUTDOWN_GRACE + Duration::from_millis(500),
         "shutdown blocked beyond grace window: {elapsed:?}"
+    );
+    assert!(
+        transport.stderr_task.is_none(),
+        "shutdown must consume and settle the stderr drain task"
     );
 
     // The child should be reaped — kill(pid, 0) returning ESRCH means
@@ -2118,6 +2275,75 @@ async fn stdio_transport_shutdown_terminates_child() {
         !still_alive,
         "child {pid} survived StdioTransport::shutdown — SIGTERM not delivered"
     );
+}
+
+/// Production-spawn regression: both the MCP server and its stubborn child
+/// observe group SIGTERM, then the hard fallback kills and reaps the whole
+/// process tree within one connection's bounded shutdown budget.
+#[cfg(unix)]
+#[tokio::test]
+async fn stdio_transport_shutdown_reaps_stubborn_descendant_tree() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let script_path = tmp.path().join("stubborn-mcp-tree.sh");
+    let child_pid_path = tmp.path().join("child.pid");
+    let term_marker_path = tmp.path().join("term-markers");
+    fs::write(
+        &script_path,
+        r#"#!/bin/sh
+pid_file=$1
+term_file=$2
+trap 'echo parent >> "$term_file"' TERM
+(
+  trap 'echo child >> "$term_file"' TERM
+  while :; do sleep 1; done
+) &
+child=$!
+echo "$child" > "$pid_file"
+while :; do wait "$child"; done
+"#,
+    )
+    .expect("write MCP lifecycle fixture");
+
+    let mut config = test_server_config();
+    config.command = Some("/bin/sh".to_string());
+    config.args = vec![
+        script_path.display().to_string(),
+        child_pid_path.display().to_string(),
+        term_marker_path.display().to_string(),
+    ];
+    config.cwd = Some(tmp.path().to_path_buf());
+    let mut transport = StdioTransport::spawn("stubborn-tree", "/bin/sh", &config)
+        .expect("spawn production MCP stdio transport");
+    let parent_pid = transport.child.id().expect("MCP parent pid") as libc::pid_t;
+    let child_pid = wait_for_unix_pid_file(&child_pid_path, Duration::from_secs(3)).await;
+
+    let started = std::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(6), transport.shutdown())
+        .await
+        .expect("MCP tree shutdown exceeded its lifecycle bound");
+    assert!(
+        started.elapsed() >= STDIO_SHUTDOWN_GRACE,
+        "fixture exited before exercising the hard-kill path: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "MCP tree shutdown exceeded Headless grace: {:?}",
+        started.elapsed()
+    );
+
+    let markers = fs::read_to_string(&term_marker_path).unwrap_or_default();
+    assert!(markers.lines().any(|line| line == "parent"), "{markers:?}");
+    assert!(markers.lines().any(|line| line == "child"), "{markers:?}");
+    let parent_exited = wait_for_unix_process_exit(parent_pid, Duration::from_secs(2)).await;
+    let child_exited = wait_for_unix_process_exit(child_pid, Duration::from_secs(2)).await;
+    if !parent_exited || !child_exited {
+        unsafe {
+            libc::kill(-parent_pid, libc::SIGKILL);
+        }
+        panic!("MCP process tree survived shutdown: parent={parent_pid} child={child_pid}");
+    }
+    assert!(transport.stderr_task.is_none());
 }
 
 /// Mid-run MCP server crash: the v0.8.x spawn path used `Stdio::null` for
@@ -2136,28 +2362,34 @@ async fn stdio_transport_recv_error_includes_stderr_tail() {
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    crate::tools::shell::configure_process_tree(cmd.as_std_mut());
 
     let mut child = cmd.spawn().expect("spawn sh");
+    let process_tree =
+        crate::tools::shell::ProcessTreeOwner::attach_tokio(&child, "MCP stderr test")
+            .expect("own MCP stderr process tree");
     let stdin = child.stdin.take().expect("stdin");
     let stdout = child.stdout.take().expect("stdout");
     let stderr = child.stderr.take().expect("stderr");
 
     let stderr_tail = StderrTail::new();
-    {
+    let stderr_task = {
         let tail = Arc::clone(&stderr_tail);
         tokio::spawn(async move {
             let mut lines = tokio::io::BufReader::new(stderr).lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 tail.push(line).await;
             }
-        });
-    }
+        })
+    };
 
     let mut transport = StdioTransport {
+        process_tree,
         child,
         stdin,
         reader: tokio::io::BufReader::new(stdout),
         stderr_tail,
+        stderr_task: Some(stderr_task),
     };
 
     // Give the subprocess time to write its stderr line and exit.
@@ -2266,8 +2498,80 @@ async fn sse_connect_waits_for_endpoint_before_first_send() {
         "first SSE send should POST to the discovered endpoint"
     );
 
-    cancel_token.cancel();
+    transport.shutdown().await;
+    assert!(
+        cancel_token.is_cancelled(),
+        "SSE shutdown must propagate lifecycle cancellation"
+    );
+    assert!(
+        transport.sse_task.is_none(),
+        "SSE shutdown must consume and settle its receive task"
+    );
     server.abort();
+}
+
+#[tokio::test]
+async fn sse_endpoint_timeout_closes_and_settles_receive_loop() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::sync::oneshot;
+
+    let _lock = lock_mcp_loopback_tests().await;
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (closed_tx, closed_rx) = oneshot::channel();
+
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = Vec::new();
+        let mut buf = [0; 1024];
+        loop {
+            let n = socket.read(&mut buf).await.unwrap();
+            if n == 0 {
+                return;
+            }
+            request.extend_from_slice(&buf[..n]);
+            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+            .await
+            .unwrap();
+
+        // No endpoint event is sent. The client-side connect timeout must
+        // cancel and join/abort its receive task, which closes this socket.
+        let mut byte = [0; 1];
+        let _ = socket.read(&mut byte).await;
+        let _ = closed_tx.send(());
+    });
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let err = SseTransport::connect(
+        test_http_client(),
+        format!("http://{addr}/sse"),
+        McpHttpAuth::default(),
+        cancel_token.clone(),
+        Duration::from_millis(50),
+    )
+    .await
+    .err()
+    .expect("endpoint timeout should fail connection setup");
+
+    assert!(
+        format!("{err:#}").contains("SSE endpoint not received"),
+        "unexpected connect error: {err:#}"
+    );
+    assert!(
+        cancel_token.is_cancelled(),
+        "failed SSE setup must cancel its connection lifecycle"
+    );
+    tokio::time::timeout(Duration::from_secs(1), closed_rx)
+        .await
+        .expect("server socket stayed open after failed SSE setup")
+        .expect("server close observer dropped");
+    server.await.unwrap();
 }
 
 #[tokio::test]
@@ -2866,6 +3170,7 @@ async fn legacy_sse_session_expiry_is_marked_stale() {
 
     let (_sender, receiver) = mpsc::unbounded_channel();
     let sse_task = tokio::spawn(async {});
+    let cancel_token = tokio_util::sync::CancellationToken::new();
     let mut transport = SseTransport {
         client: test_http_client(),
         base_url: format!("http://{addr}/sse"),
@@ -2873,7 +3178,8 @@ async fn legacy_sse_session_expiry_is_marked_stale() {
         endpoint_url: Some(format!("http://{addr}/messages")),
         receiver,
         pending_messages: VecDeque::new(),
-        sse_task,
+        cancel_token,
+        sse_task: Some(sse_task),
     };
 
     let err = transport

@@ -746,9 +746,10 @@ pub fn token_usage_for_pricing(usage: &Usage) -> TokenUsage {
         .saturating_add(cache_write);
     let uncategorized_input = usage.input_tokens.saturating_sub(accounted_input);
     let input = non_cached_reported.saturating_add(uncategorized_input);
-    let output = usage
-        .output_tokens
-        .saturating_add(usage.reasoning_tokens.unwrap_or(0));
+    // OpenAI-compatible usage reports `reasoning_tokens` as a breakdown of
+    // `completion_tokens`, not an additional billed class. DeepSeek follows
+    // that contract, so adding it again would double-charge thinking output.
+    let output = usage.output_tokens;
 
     TokenUsage {
         input: u64::from(input),
@@ -1418,7 +1419,7 @@ mod tests {
     }
 
     #[test]
-    fn token_usage_for_pricing_maps_cache_and_reasoning_classes() {
+    fn token_usage_for_pricing_does_not_double_count_reasoning_breakdown() {
         let usage = Usage {
             input_tokens: 1_000,
             output_tokens: 100,
@@ -1433,7 +1434,7 @@ mod tests {
             token_usage_for_pricing(&usage),
             TokenUsage {
                 input: 700,
-                output: 150,
+                output: 100,
                 cache_read: 250,
                 cache_write: 50,
             }

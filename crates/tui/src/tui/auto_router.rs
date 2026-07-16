@@ -41,6 +41,7 @@ pub(super) async fn resolve_auto_model_selection(
         if app.auto_model { "auto" } else { "fixed" },
         app.reasoning_effort
             .as_setting_for_provider(app.api_provider),
+        None,
     )
     .await
 }

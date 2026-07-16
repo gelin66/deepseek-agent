@@ -7,7 +7,8 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_u64,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
+    optional_u64,
 };
 
 pub struct ProjectMapTool;
@@ -49,10 +50,10 @@ impl ToolSpec for ProjectMapTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let max_depth = optional_u64(&input, "max_depth", 3) as usize;
         let map = generate_project_map(&context.workspace, max_depth, context.follow_symlinks)?;
-        ToolResult::json(&map).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&map).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 

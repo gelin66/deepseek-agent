@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use crate::tools::search::matches_glob;
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_str, optional_u64, required_str,
 };
 
@@ -77,7 +77,7 @@ impl ToolSpec for FileSearchTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let query = required_str(&input, "query")?.trim();
         if query.is_empty() {
             return Err(ToolError::invalid_input("query cannot be empty"));
@@ -102,7 +102,7 @@ impl ToolSpec for FileSearchTool {
             context.follow_symlinks,
         )
         .await?;
-        ToolResult::json(&matches).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&matches).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -426,7 +426,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("main.rs"));
     }
 
@@ -445,7 +445,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(!result.content.contains("ignored.txt"));
         assert!(result.content.contains("keep.txt"));
     }
@@ -464,7 +464,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.contains("main.rs"));
         assert!(!result.content.contains("notes.md"));
     }
@@ -484,7 +484,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let matches: Value = serde_json::from_str(&result.content).expect("search json");
         assert!(
             matches
@@ -511,7 +511,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         let matches: Value = serde_json::from_str(&result.content).expect("search json");
         assert!(
             matches
@@ -578,7 +578,7 @@ mod tests {
             .await
             .expect("execute");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(!result.content.contains("secret.txt"));
     }
 }

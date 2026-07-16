@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
-"""Run a small, explicit-cost DeepSeek protocol canary.
+"""Run a six-request, explicit-cost DeepSeek protocol canary.
 
 The key is read from ``--key-file`` or ``DEEPSEEK_API_KEY`` and is never
 written to argv or result records. Output is redacted JSONL suitable for
-``eval/results``; model text and reasoning stay in memory only.
+``eval/results``; model text and reasoning stay in memory only. The Strict
+case deliberately performs both tool-call and tool-result requests with
+``thinking=disabled`` and omits ``reasoning_content`` from replay, proving that
+non-thinking history is not confused with thinking-mode exact replay.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -16,6 +20,8 @@ import subprocess
 import sys
 import tempfile
 import time
+import unittest
+import uuid
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -27,20 +33,42 @@ STANDARD_URL = "https://api.deepseek.com/chat/completions"
 STRICT_URL = "https://api.deepseek.com/beta/chat/completions"
 FIM_URL = "https://api.deepseek.com/beta/completions"
 
-REQUEST_CAP = 5
+REQUEST_CAP = 6
 REQUEST_TIMEOUT_SECONDS = 45
-SUITE_TIMEOUT_SECONDS = 180
+SUITE_TIMEOUT_SECONDS = 225
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_COST_USD = 0.01
-PRICE_SNAPSHOT = "2026-07-15"
+PRICE_SNAPSHOT = "2026-07-16"
 PRICES = {
     FLASH: {"hit": 0.0028, "miss": 0.14, "output": 0.28},
     PRO: {"hit": 0.003625, "miss": 0.435, "output": 0.87},
 }
 # Fixed prompts are tiny. This deliberately overstates their total input;
 # output is hard-capped in each request below.
-PLANNED_INPUT_BOUND = {FLASH: 16_000, PRO: 4_000}
-PLANNED_OUTPUT_BOUND = {FLASH: 352, PRO: 64}
+PLANNED_INPUT_BOUND = {FLASH: 20_000, PRO: 4_000}
+PLANNED_OUTPUT_BOUND = {FLASH: 416, PRO: 64}
+EVALUATION_ID = "deepseek-live-" + uuid.uuid4().hex
+HARNESS_SHA256 = "sha256:" + hashlib.sha256(
+    Path(__file__).resolve().read_bytes()
+).hexdigest()
+
+
+def sha256_bytes(data: bytes) -> str:
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def request_body_bytes(body: dict[str, Any]) -> bytes:
+    return json.dumps(
+        body, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+
+def request_body_sha256(body: dict[str, Any]) -> str:
+    return sha256_bytes(request_body_bytes(body))
+
+
+def harness_sha256() -> str:
+    return HARNESS_SHA256
 
 
 def emit(record: dict[str, Any], stream: TextIO = sys.stdout) -> None:
@@ -49,6 +77,8 @@ def emit(record: dict[str, Any], stream: TextIO = sys.stdout) -> None:
         "record_class": "protocol_canary",
         "product_metric_eligible": False,
         "verified_success": None,
+        "evaluation_id": EVALUATION_ID,
+        "harness_sha256": harness_sha256(),
         **record,
     }
     print(json.dumps(record, ensure_ascii=True, sort_keys=True), file=stream, flush=True)
@@ -125,7 +155,7 @@ def post_json(
     os.chmod(work, 0o700)
     request_path = Path(work, "request.json")
     try:
-        request_path.write_text(json.dumps(body, ensure_ascii=False), encoding="utf-8")
+        request_path.write_bytes(request_body_bytes(body))
         os.chmod(request_path, 0o600)
         command = [
             curl,
@@ -238,6 +268,14 @@ def function_name(call: dict[str, Any]) -> str | None:
     return name if isinstance(name, str) else None
 
 
+def non_thinking_replay_assistant(assistant: dict[str, Any]) -> dict[str, Any]:
+    """Project only wire fields valid for a non-thinking assistant tool call."""
+    return {
+        name: assistant.get(name)
+        for name in ("role", "content", "tool_calls")
+    }
+
+
 def usage(outcome: dict[str, Any]) -> dict[str, int | None]:
     payload = outcome.get("payload")
     raw = payload.get("usage") if isinstance(payload, dict) else None
@@ -291,10 +329,17 @@ def record(
     model: str,
     outcome: dict[str, Any],
     assertions: dict[str, bool],
+    body_sha256: str | None,
 ) -> tuple[bool, float | None]:
     measured = usage(outcome)
     cost = estimated_cost(model, measured)
-    passed = outcome.get("error") is None and bool(assertions) and all(assertions.values())
+    passed = (
+        outcome.get("error") is None
+        and bool(assertions)
+        and all(assertions.values())
+        and isinstance(body_sha256, str)
+        and body_sha256.startswith("sha256:")
+    )
     emit(
         {
             "record_type": "request",
@@ -302,6 +347,7 @@ def record(
             "step": step,
             "surface": surface,
             "model": model,
+            "request_body_sha256": body_sha256,
             "request_attempted": bool(outcome.get("attempted")),
             "http_status": outcome.get("http_status"),
             "finish_reason": choice(outcome).get("finish_reason"),
@@ -358,7 +404,15 @@ def run_live(curl: str, key: str) -> int:
         else:
             outcome = post_json(curl, key, url, body, deadline)
             attempted += int(bool(outcome.get("attempted")))
-        passed, cost = record(case_id, step, surface, model, outcome, check(outcome))
+        passed, cost = record(
+            case_id,
+            step,
+            surface,
+            model,
+            outcome,
+            check(outcome),
+            request_body_sha256(body),
+        )
         results.append(passed)
         if cost is None:
             cost_known = False
@@ -454,6 +508,7 @@ def run_live(curl: str, key: str) -> int:
         passed, cost = record(
             "thinking_tool_replay", "exact_replay", "standard_chat", FLASH, skipped,
             {"prior_tool_call_valid": False},
+            None,
         )
         results.append(passed)
         if cost is None:
@@ -467,15 +522,21 @@ def run_live(curl: str, key: str) -> int:
     ]
     strict = {
         "model": FLASH,
-        "messages": [{"role": "user", "content": "Call canary_flag with enabled true."}],
+        "messages": [{
+            "role": "user",
+            "content": (
+                "Call canary_flag with enabled true. After its tool result, "
+                "answer with that result only."
+            ),
+        }],
         "thinking": {"type": "disabled"},
         "tools": strict_tools,
         "tool_choice": {"type": "function", "function": {"name": "canary_flag"}},
         "max_tokens": 64,
         "stream": False,
     }
-    run(
-        "beta_strict_catalog",
+    strict_first = run(
+        "beta_strict_non_thinking_roundtrip",
         "tool_call",
         "strict_chat",
         FLASH,
@@ -485,6 +546,7 @@ def run_live(curl: str, key: str) -> int:
             "http_200": out.get("http_status") == 200,
             "all_functions_strict": all(tool["function"].get("strict") is True for tool in strict_tools),
             "finish_tool_calls": choice(out).get("finish_reason") == "tool_calls",
+            "assistant_role": message(out).get("role") == "assistant",
             "one_tool_call": len(tool_calls(out)) == 1,
             "tool_id_present": len(tool_calls(out)) == 1 and bool(tool_calls(out)[0].get("id")),
             "tool_type_function": len(tool_calls(out)) == 1
@@ -493,9 +555,73 @@ def run_live(curl: str, key: str) -> int:
             and function_name(tool_calls(out)[0]) == "canary_flag",
             "strict_arguments_valid": len(tool_calls(out)) == 1
             and arguments(tool_calls(out)[0]) == {"enabled": True},
+            "reasoning_empty": not message(out).get("reasoning_content"),
             "usage_complete": usage_complete(out),
         },
     )
+    strict_assistant = message(strict_first)
+    strict_calls = tool_calls(strict_first)
+    if (
+        len(strict_calls) == 1
+        and strict_calls[0].get("id")
+        and strict_assistant.get("role") == "assistant"
+        and not strict_assistant.get("reasoning_content")
+    ):
+        # Deliberately copy only fields produced by a non-thinking assistant
+        # tool call. Adding a fabricated reasoning_content placeholder would
+        # invalidate the very protocol behavior this probe is designed to test.
+        strict_replay_assistant = non_thinking_replay_assistant(strict_assistant)
+        strict_replay = {
+            **strict,
+            "messages": [
+                strict["messages"][0],
+                strict_replay_assistant,
+                {
+                    "role": "tool",
+                    "tool_call_id": strict_calls[0].get("id"),
+                    "content": "STRICT_OK",
+                },
+            ],
+            "tool_choice": "none",
+        }
+        run(
+            "beta_strict_non_thinking_roundtrip",
+            "tool_result_without_reasoning",
+            "strict_chat",
+            FLASH,
+            STRICT_URL,
+            strict_replay,
+            lambda out: {
+                "reasoning_field_omitted_from_replay": (
+                    "reasoning_content" not in strict_replay_assistant
+                ),
+                "http_200": out.get("http_status") == 200,
+                "finish_stop": choice(out).get("finish_reason") == "stop",
+                "response_reasoning_empty": not message(out).get(
+                    "reasoning_content"
+                ),
+                "content_matches_tool_result": (
+                    str(message(out).get("content") or "").strip() == "STRICT_OK"
+                ),
+                "usage_complete": usage_complete(out),
+            },
+        )
+    else:
+        skipped = {"attempted": False, "error": "strict_replay_prerequisite", "seconds": 0.0}
+        passed, cost = record(
+            "beta_strict_non_thinking_roundtrip",
+            "tool_result_without_reasoning",
+            "strict_chat",
+            FLASH,
+            skipped,
+            {"prior_non_thinking_tool_call_valid": False},
+            None,
+        )
+        results.append(passed)
+        if cost is None:
+            cost_known = False
+        else:
+            total_cost += cost
 
     fim = {
         "model": PRO,
@@ -546,13 +672,48 @@ def run_live(curl: str, key: str) -> int:
     return 0 if suite_passed else 1
 
 
+class LiveHarnessSelfTests(unittest.TestCase):
+    def test_non_thinking_replay_never_carries_reasoning(self) -> None:
+        assistant = {
+            "role": "assistant",
+            "content": None,
+            "reasoning_content": "must-not-be-replayed",
+            "tool_calls": [{"id": "call-1"}],
+        }
+        projected = non_thinking_replay_assistant(assistant)
+        self.assertNotIn("reasoning_content", projected)
+        self.assertEqual(projected["tool_calls"], assistant["tool_calls"])
+
+    def test_request_hash_is_canonical_and_body_sensitive(self) -> None:
+        first = {"model": FLASH, "messages": [{"role": "user", "content": "a"}]}
+        reordered = {"messages": [{"content": "a", "role": "user"}], "model": FLASH}
+        changed = {"model": FLASH, "messages": [{"role": "user", "content": "b"}]}
+        self.assertEqual(request_body_sha256(first), request_body_sha256(reordered))
+        self.assertNotEqual(request_body_sha256(first), request_body_sha256(changed))
+        self.assertEqual(len(request_body_sha256(first)), 71)
+
+    def test_provenance_identifiers_are_typed(self) -> None:
+        self.assertTrue(EVALUATION_ID.startswith("deepseek-live-"))
+        self.assertEqual(len(harness_sha256()), 71)
+
+
+def run_self_tests() -> int:
+    suite = unittest.defaultTestLoader.loadTestsFromTestCase(LiveHarnessSelfTests)
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    return 0 if result.wasSuccessful() else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--acknowledge-cost", action="store_true")
-    parser.add_argument("--dry-run", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--self-test", action="store_true")
     parser.add_argument("--key-file")
     args = parser.parse_args()
 
+    if args.self_test:
+        return run_self_tests()
     bound = planned_cost_bound()
     if bound > MAX_COST_USD:
         emit({"record_type": "error", "error_code": "planned_cost_exceeds_cap"}, sys.stderr)
@@ -567,7 +728,12 @@ def main() -> int:
             "max_cost_usd": MAX_COST_USD,
             "key_accessed": False,
             "network_accessed": False,
-            "cases": ["standard_chat", "thinking_tool_replay", "strict_chat", "fim"],
+            "cases": [
+                "standard_chat",
+                "thinking_tool_replay",
+                "strict_non_thinking_roundtrip",
+                "fim",
+            ],
         })
         return 0
     if not args.acknowledge_cost:

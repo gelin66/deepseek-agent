@@ -5,15 +5,27 @@
 //! session-scoped state object plus tools the model can use to inspect and
 //! close out that state.
 
+use std::ffi::OsString;
+use std::fs::File;
+use std::io::Read;
+use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use codewhale_protocol::agent_runtime::{
+    ToolArtifact, ToolArtifactStatus, ToolEvidence, ToolEvidenceStatus,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use wait_timeout::ChildExt;
 
+use crate::tools::shell::{ProcessTreeOwner, configure_process_tree};
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
+    required_str,
 };
 
 /// Maximum number of automatic goal-continuation prompt injections in one
@@ -22,6 +34,26 @@ use crate::tools::spec::{
 /// cap**: a goal runs until complete/blocked/paused, or an optional budget is
 /// exhausted. See `goal_loop::decide_continuation`.
 pub const MAX_GOAL_CONTINUATIONS_PER_TURN: u32 = 3;
+
+const HOST_VERIFICATION_METADATA_KEY: &str = "goal_host_verification";
+const HOST_VERIFICATION_REJECTION_METADATA_KEY: &str = "goal_host_verification_rejected";
+// M5 deletion point: remove this metadata mirror after the TUI Goal consumer
+// reads canonical ToolOutcome evidence/artifact fields from AgentRuntime.
+const GOAL_EVIDENCE_ARTIFACT_METADATA_KEY: &str = "goal_evidence_artifact";
+const GOAL_EVIDENCE_ARTIFACT_ID_PREFIX: &str = "goal-evidence:";
+const GOAL_EVIDENCE_ARTIFACT_MEDIA_TYPE: &str = "application/json";
+const TASK_CONTRACT_VERSION: u32 = 1;
+const DEFAULT_GOAL_VERIFIER_ID: &str = "run_verifiers";
+const MAX_CONTRACT_SCOPE_ITEMS: usize = 64;
+const MAX_CONTRACT_SCOPE_ITEM_CHARS: usize = 4_000;
+const MAX_CONTRACT_CUSTOM_GATES: usize = 12;
+const MAX_GIT_DIFF_BYTES: usize = 256 * 1024 * 1024;
+const MAX_GIT_PATH_LIST_BYTES: usize = 16 * 1024 * 1024;
+const MAX_GIT_STDERR_BYTES: usize = 64 * 1024;
+const MAX_UNTRACKED_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_UNTRACKED_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const GIT_READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Shared reference to the current runtime goal.
 pub type SharedGoalState = Arc<Mutex<GoalState>>;
@@ -69,6 +101,10 @@ impl GoalStatus {
 /// elapsed seconds so tool output remains serializable and stable.
 #[derive(Debug, Clone, Default)]
 pub struct GoalState {
+    /// Monotonic identity for one concrete objective. Status changes retain
+    /// the generation; create/replace/clear advance it so late turn usage can
+    /// never leak into a different Goal.
+    generation: u64,
     objective: Option<String>,
     token_budget: Option<u32>,
     status: Option<GoalStatus>,
@@ -80,9 +116,46 @@ pub struct GoalState {
     evidence: Option<String>,
     blocker: Option<String>,
     completion_verification: Option<GoalCompletionVerification>,
+    /// Immutable acceptance contract for the current generation. This lives
+    /// in the Goal state so completion does not gain a second source of truth.
+    task_contract: Option<TaskContract>,
+    host_verification: Option<GoalHostVerificationReceipt>,
 }
 
 impl GoalState {
+    fn replace_generation(
+        &mut self,
+        objective: String,
+        token_budget: Option<u32>,
+        status: GoalStatus,
+        constraints: Vec<String>,
+        non_goals: Vec<String>,
+        acceptance: TaskAcceptance,
+    ) {
+        let now = Instant::now();
+        self.generation = self.generation.saturating_add(1);
+        let task_contract = TaskContract::derived(
+            self.generation,
+            objective.clone(),
+            constraints,
+            non_goals,
+            acceptance,
+        );
+        self.objective = Some(objective);
+        self.token_budget = token_budget;
+        self.status = Some(status);
+        self.tokens_used = 0;
+        self.time_used_seconds = 0;
+        self.continuation_count = 0;
+        self.started_at = Some(now);
+        self.finished_at = (status != GoalStatus::Active).then_some(now);
+        self.evidence = None;
+        self.blocker = None;
+        self.completion_verification = None;
+        self.task_contract = Some(task_contract);
+        self.host_verification = None;
+    }
+
     #[must_use]
     pub fn objective(&self) -> Option<&str> {
         self.objective.as_deref()
@@ -98,6 +171,19 @@ impl GoalState {
         self.objective.is_some() && self.status == Some(GoalStatus::Active)
     }
 
+    #[must_use]
+    pub fn active_generation(&self) -> Option<u64> {
+        self.is_active().then_some(self.generation)
+    }
+
+    /// Return the immutable acceptance contract for the active generation.
+    #[must_use]
+    pub fn active_task_contract(&self) -> Option<&TaskContract> {
+        self.is_active()
+            .then_some(self.task_contract.as_ref())
+            .flatten()
+    }
+
     pub fn sync_from_host_status(
         &mut self,
         objective: Option<&str>,
@@ -108,53 +194,106 @@ impl GoalState {
         match objective {
             Some(objective) => {
                 let changed = self.objective.as_deref() != Some(objective);
+                // A host-controlled resume from a terminal state starts a new
+                // execution lifetime even when the text happens to be the
+                // same. Otherwise late usage and a verifier receipt from the
+                // completed/blocked run could be accepted by the resumed run.
+                // Pause -> Active remains the same generation by design.
+                let terminal_reactivation = status == GoalStatus::Active
+                    && matches!(
+                        self.status,
+                        Some(GoalStatus::Complete | GoalStatus::Blocked)
+                    );
                 let status_changed = self.status != Some(status);
-                if changed {
-                    self.objective = Some(objective.to_string());
-                    self.token_budget = token_budget;
-                    self.tokens_used = 0;
-                    self.time_used_seconds = 0;
-                    self.continuation_count = 0;
-                    self.started_at = Some(Instant::now());
-                    self.evidence = None;
-                    self.blocker = None;
-                    self.completion_verification = None;
+                if changed || terminal_reactivation {
+                    self.replace_generation(
+                        objective.to_string(),
+                        token_budget,
+                        status,
+                        Vec::new(),
+                        Vec::new(),
+                        TaskAcceptance::HostAcceptanceRequired,
+                    );
                 } else if self.token_budget != token_budget {
                     self.token_budget = token_budget;
                 }
 
-                if changed || status_changed || self.status.is_none() {
+                if !changed && !terminal_reactivation && (status_changed || self.status.is_none()) {
                     self.status = Some(status);
                     self.finished_at = if status == GoalStatus::Active {
                         None
                     } else {
                         Some(Instant::now())
                     };
+                    if status != GoalStatus::Active {
+                        // A host pause, block, limit, or completion outranks an
+                        // in-flight model completion candidate. Never let a
+                        // stale verifier receipt resume or overwrite it.
+                        self.host_verification = None;
+                    }
                 }
             }
             None => self.clear(),
         }
     }
 
+    #[cfg(test)]
     pub fn create(&mut self, objective: String, token_budget: Option<u32>) {
-        self.objective = Some(objective);
-        self.token_budget = token_budget;
-        self.status = Some(GoalStatus::Active);
-        self.tokens_used = 0;
-        self.time_used_seconds = 0;
-        self.continuation_count = 0;
-        self.started_at = Some(Instant::now());
-        self.finished_at = None;
-        self.evidence = None;
-        self.blocker = None;
-        self.completion_verification = None;
+        self.replace_generation(
+            objective,
+            token_budget,
+            GoalStatus::Active,
+            Vec::new(),
+            Vec::new(),
+            TaskAcceptance::HostAcceptanceRequired,
+        );
     }
 
+    pub(crate) fn create_with_contract(
+        &mut self,
+        objective: String,
+        token_budget: Option<u32>,
+        constraints: Vec<String>,
+        non_goals: Vec<String>,
+        verifier_params: Value,
+    ) {
+        self.replace_generation(
+            objective,
+            token_budget,
+            GoalStatus::Active,
+            constraints,
+            non_goals,
+            TaskAcceptance::run_verifiers(verifier_params),
+        );
+    }
+
+    #[cfg(test)]
     pub fn record_usage(&mut self, token_delta: u64, time_delta_seconds: u64) {
-        if self.is_active() {
+        // A model can call `update_goal(complete)` before the enclosing turn
+        // returns. The provider usage belongs to that Goal even though its
+        // status already changed; only a cleared/non-existent Goal must ignore
+        // the late turn accounting.
+        if self.objective.is_some() {
             self.tokens_used = self.tokens_used.saturating_add(token_delta);
             self.time_used_seconds = self.time_used_seconds.saturating_add(time_delta_seconds);
         }
+    }
+
+    /// Charge provider usage only to the objective that was active when the
+    /// enclosing turn began. A Goal may become complete/blocked during that
+    /// same turn without changing generation, so its final usage is retained.
+    pub fn record_usage_for_generation(
+        &mut self,
+        generation: u64,
+        token_delta: u64,
+        time_delta_seconds: u64,
+    ) -> bool {
+        if self.objective.is_none() || self.generation != generation {
+            return false;
+        }
+        self.tokens_used = self.tokens_used.saturating_add(token_delta);
+        self.time_used_seconds = self.time_used_seconds.saturating_add(time_delta_seconds);
+        true
     }
 
     pub fn record_continuation(&mut self) {
@@ -166,33 +305,102 @@ impl GoalState {
     pub fn mark_complete(
         &mut self,
         evidence: String,
-        verification: GoalCompletionVerification,
+        host_verification: GoalHostVerificationReceipt,
     ) -> Result<(), &'static str> {
         if self.objective.is_none() {
             return Err("No active goal exists to complete.");
         }
+        if self.status != Some(GoalStatus::Active) {
+            return Err(
+                "Goal is not active; host-controlled terminal states cannot be overridden.",
+            );
+        }
+        if !self.receipt_matches_active_contract(&host_verification) {
+            return Err(
+                "Verifier receipt does not match the active Goal task contract and generation.",
+            );
+        }
+        let verification = GoalCompletionVerification {
+            status: "passed".to_string(),
+            check: host_verification.check.clone(),
+            summary: host_verification.summary.clone(),
+        };
         self.status = Some(GoalStatus::Complete);
         self.finished_at = Some(Instant::now());
         self.evidence = Some(evidence);
         self.blocker = None;
         self.completion_verification = Some(verification);
+        self.host_verification = Some(host_verification);
         Ok(())
+    }
+
+    /// Replace the completion receipt with evidence observed by the host after
+    /// a foreground verifier finished. Model-authored text never enters this
+    /// slot.
+    pub fn record_host_verification(&mut self, receipt: GoalHostVerificationReceipt) -> bool {
+        if !self.receipt_matches_active_contract(&receipt) {
+            return false;
+        }
+        self.host_verification = Some(receipt);
+        true
+    }
+
+    pub fn clear_host_verification(&mut self) {
+        if self.is_active() {
+            self.host_verification = None;
+        }
+    }
+
+    /// Return a model-completed Goal to active when the terminal host gate
+    /// proves that its verifier receipt no longer matches the final workspace.
+    pub fn reopen_after_stale_verification(&mut self) {
+        if self.status != Some(GoalStatus::Complete) || self.host_verification.is_none() {
+            return;
+        }
+        self.status = Some(GoalStatus::Active);
+        self.finished_at = None;
+        self.evidence = None;
+        self.blocker = None;
+        self.completion_verification = None;
+        self.host_verification = None;
+    }
+
+    #[must_use]
+    pub fn host_verification(&self) -> Option<&GoalHostVerificationReceipt> {
+        self.host_verification.as_ref()
+    }
+
+    #[must_use]
+    pub fn receipt_matches_active_contract(&self, receipt: &GoalHostVerificationReceipt) -> bool {
+        self.is_active()
+            && self
+                .task_contract
+                .as_ref()
+                .is_some_and(|contract| receipt.matches_contract(contract))
     }
 
     pub fn mark_blocked(&mut self, blocker: String) -> Result<(), &'static str> {
         if self.objective.is_none() {
             return Err("No active goal exists to block.");
         }
+        if self.status != Some(GoalStatus::Active) {
+            return Err(
+                "Goal is not active; host-controlled terminal states cannot be overridden.",
+            );
+        }
         self.status = Some(GoalStatus::Blocked);
         self.finished_at = Some(Instant::now());
         self.blocker = Some(blocker);
         self.evidence = None;
         self.completion_verification = None;
+        self.host_verification = None;
         Ok(())
     }
 
     pub fn clear(&mut self) {
+        let next_generation = self.generation.saturating_add(1);
         *self = Self::default();
+        self.generation = next_generation;
     }
 
     #[must_use]
@@ -221,6 +429,8 @@ impl GoalState {
             evidence: self.evidence.clone(),
             blocker: self.blocker.clone(),
             completion_verification: self.completion_verification.clone(),
+            task_contract: self.task_contract.clone(),
+            host_verification: self.host_verification.clone(),
         }
     }
 }
@@ -238,6 +448,8 @@ pub struct GoalSnapshot {
     pub evidence: Option<String>,
     pub blocker: Option<String>,
     pub completion_verification: Option<GoalCompletionVerification>,
+    pub task_contract: Option<TaskContract>,
+    pub host_verification: Option<GoalHostVerificationReceipt>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -245,6 +457,193 @@ pub struct GoalCompletionVerification {
     pub status: String,
     pub check: String,
     pub summary: String,
+}
+
+/// One immutable acceptance contract for a concrete Goal generation.
+///
+/// Objective, constraints, non-goals, and acceptance are fixed when the
+/// generation is created. An objective-only Goal deliberately requires host
+/// acceptance: generic test output is useful evidence, but it is not proof of
+/// an arbitrary task.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskContract {
+    pub version: u32,
+    pub goal_generation: u64,
+    pub objective: String,
+    pub objective_sha256: String,
+    pub constraints: Vec<String>,
+    pub constraints_sha256: String,
+    pub non_goals: Vec<String>,
+    pub non_goals_sha256: String,
+    pub acceptance: TaskAcceptance,
+    pub contract_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum TaskAcceptance {
+    HostAcceptanceRequired,
+    Verifier {
+        verifier_id: String,
+        params: Value,
+        params_sha256: String,
+    },
+}
+
+impl TaskAcceptance {
+    fn run_verifiers(params: Value) -> Self {
+        let params_sha256 = structured_value_hash("goal-verifier-params-v1", &params);
+        Self::Verifier {
+            verifier_id: DEFAULT_GOAL_VERIFIER_ID.to_string(),
+            params,
+            params_sha256,
+        }
+    }
+}
+
+impl TaskContract {
+    fn derived(
+        goal_generation: u64,
+        objective: String,
+        constraints: Vec<String>,
+        non_goals: Vec<String>,
+        acceptance: TaskAcceptance,
+    ) -> Self {
+        let objective_sha256 = domain_hash("goal-objective-v1", objective.as_bytes());
+        let constraints_value = serde_json::to_value(&constraints).expect("constraints serialize");
+        let non_goals_value = serde_json::to_value(&non_goals).expect("non-goals serialize");
+        let constraints_sha256 = structured_value_hash("goal-constraints-v1", &constraints_value);
+        let non_goals_sha256 = structured_value_hash("goal-non-goals-v1", &non_goals_value);
+        let contract_sha256 = structured_value_hash(
+            "goal-task-contract-v1",
+            &json!({
+                "version": TASK_CONTRACT_VERSION,
+                "goal_generation": goal_generation,
+                "objective": objective,
+                "objective_sha256": objective_sha256,
+                "constraints": constraints,
+                "constraints_sha256": constraints_sha256,
+                "non_goals": non_goals,
+                "non_goals_sha256": non_goals_sha256,
+                "acceptance": acceptance,
+            }),
+        );
+        Self {
+            version: TASK_CONTRACT_VERSION,
+            goal_generation,
+            objective,
+            objective_sha256,
+            constraints,
+            constraints_sha256,
+            non_goals,
+            non_goals_sha256,
+            acceptance,
+            contract_sha256,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn accepts_verifier(&self, verifier_id: &str, params: &Value) -> bool {
+        let TaskAcceptance::Verifier {
+            verifier_id: expected_id,
+            params: expected_params,
+            params_sha256,
+        } = &self.acceptance
+        else {
+            return false;
+        };
+        self.version == TASK_CONTRACT_VERSION
+            && expected_id == verifier_id
+            && *params_sha256 == structured_value_hash("goal-verifier-params-v1", params)
+            && *expected_params == *params
+    }
+
+    fn verifier_binding(&self) -> Option<(&str, &str)> {
+        match &self.acceptance {
+            TaskAcceptance::HostAcceptanceRequired => None,
+            TaskAcceptance::Verifier {
+                verifier_id,
+                params_sha256,
+                ..
+            } => Some((verifier_id, params_sha256)),
+        }
+    }
+}
+
+#[must_use]
+#[cfg(test)]
+pub(crate) fn default_run_verifiers_contract_params() -> Value {
+    json!({
+        "background": false,
+        "commands": [],
+        "level": "full",
+        "max_python_files": 200,
+        "profile": "auto",
+    })
+}
+
+/// Host-observed verifier receipt bound to the exact Git working-tree state
+/// that was checked. This is deliberately small: Goal completion needs proof,
+/// not a second workflow engine.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoalHostVerificationReceipt {
+    pub tool: String,
+    pub check: String,
+    pub summary: String,
+    pub workspace_revision: String,
+    pub contract_sha256: String,
+    pub goal_generation: u64,
+    pub objective_sha256: String,
+    pub verifier_id: String,
+    pub verifier_params_sha256: String,
+}
+
+impl GoalHostVerificationReceipt {
+    pub(crate) fn for_contract(
+        contract: &TaskContract,
+        tool: &str,
+        check: String,
+        summary: String,
+        workspace_revision: String,
+    ) -> Option<Self> {
+        let (verifier_id, verifier_params_sha256) = contract.verifier_binding()?;
+        Some(Self {
+            tool: tool.to_string(),
+            check,
+            summary,
+            workspace_revision,
+            contract_sha256: contract.contract_sha256.clone(),
+            goal_generation: contract.goal_generation,
+            objective_sha256: contract.objective_sha256.clone(),
+            verifier_id: verifier_id.to_string(),
+            verifier_params_sha256: verifier_params_sha256.to_string(),
+        })
+    }
+
+    #[must_use]
+    pub(crate) fn matches_contract(&self, contract: &TaskContract) -> bool {
+        let Some((verifier_id, verifier_params_sha256)) = contract.verifier_binding() else {
+            return false;
+        };
+        self.contract_sha256 == contract.contract_sha256
+            && self.goal_generation == contract.goal_generation
+            && self.objective_sha256 == contract.objective_sha256
+            && self.verifier_id == verifier_id
+            && self.verifier_params_sha256 == verifier_params_sha256
+            && self.tool == verifier_id
+    }
+}
+
+/// Revision-bound output from a successful checker. Artifacts are useful
+/// evidence, but only a contract-matching host receipt can close a Goal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoalEvidenceArtifact {
+    pub tool: String,
+    pub check: String,
+    pub summary: String,
+    pub workspace_revision: String,
+    pub verifier_id: String,
+    pub verifier_params_sha256: String,
 }
 
 impl GoalSnapshot {
@@ -270,6 +669,8 @@ impl GoalSnapshot {
             evidence: None,
             blocker: None,
             completion_verification: None,
+            task_contract: None,
+            host_verification: None,
         }
     }
 }
@@ -294,11 +695,27 @@ pub fn thread_goal_status_as_goal_status(
 #[must_use]
 pub fn render_continuation_prompt(snapshot: &GoalSnapshot, continuation_index: u32) -> String {
     let goal_json = serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| "{}".to_string());
+    let acceptance_guidance = match snapshot
+        .task_contract
+        .as_ref()
+        .map(|contract| &contract.acceptance)
+    {
+        Some(TaskAcceptance::Verifier { .. }) => {
+            "完成目标前，先在最终代码状态上运行前台 `run_verifiers`，并使用任务契约中的精确参数。普通 `run_tests` 和非契约参数只产生证据 artifact，不能完成 Goal。宿主会绑定 Goal generation、目标、约束/非目标、验证器参数和工作区版本；验证通过后再调用 `update_goal`，传入 `status: \"complete\"` 和具体完成证据。若工作区在验证后发生变化，必须重新验证。"
+        }
+        Some(TaskAcceptance::HostAcceptanceRequired) => {
+            "这是 objective-only Goal，只能由宿主验收。`run_tests`、`run_verifiers` 和模型文字都只能形成辅助证据，不能生成完成凭据；不要调用 `update_goal(status=\"complete\")`。完成实际工作并给出可核验的最终证据，等待宿主接受。"
+        }
+        None => {
+            "当前快照没有可执行的验收契约。可以运行必要检查作为辅助证据，但不要调用 `update_goal(status=\"complete\")`；完成实际工作后等待宿主确认或补充契约。"
+        }
+    };
     format!(
-        "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass #{}.\nIf the goal is complete, first run or cite a concrete verifier/check when one applies, then call `update_goal` with `status: \"complete\"`, concrete evidence, and `verification: {{\"status\":\"passed\",\"check\":\"...\",\"summary\":\"...\"}}`. For non-verifiable work (docs, research, writing), use `verification: {{\"status\":\"not_applicable\",\"check\":\"...\",\"summary\":\"...\"}}` with a clear rationale instead of fabricating a verifier receipt. If it is blocked, call `update_goal` with `status: \"blocked\"` and the blocker. Otherwise continue making progress toward the objective.",
+        "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass #{}.\n{}\n若确实阻塞，调用 `update_goal` 并传入 `status: \"blocked\"` 与 blocker；否则继续推进目标。",
         crate::prompts::GOAL_CONTINUATION_PROMPT.trim(),
         goal_json,
         continuation_index,
+        acceptance_guidance,
     )
 }
 
@@ -308,6 +725,582 @@ fn lock_goal_state(
     state
         .lock()
         .map_err(|_| ToolError::execution_failed("goal state lock poisoned"))
+}
+
+/// Capture a bounded digest of the Git revision plus every tracked change and
+/// non-ignored untracked file in the workspace. A verifier receipt is only
+/// reusable while this digest remains identical.
+pub(crate) async fn capture_workspace_revision(workspace: &Path) -> Result<String, String> {
+    let workspace = workspace.to_path_buf();
+    tokio::task::spawn_blocking(move || capture_workspace_revision_sync(&workspace))
+        .await
+        .map_err(|err| format!("workspace revision task failed: {err}"))?
+}
+
+fn capture_workspace_revision_sync(workspace: &Path) -> Result<String, String> {
+    let canonical_workspace = workspace
+        .canonicalize()
+        .map_err(|err| format!("cannot resolve workspace {}: {err}", workspace.display()))?;
+    let root_raw = run_git_capped(
+        &canonical_workspace,
+        &["rev-parse", "--show-toplevel"],
+        MAX_GIT_PATH_LIST_BYTES,
+    )?;
+    let root_text = std::str::from_utf8(&root_raw)
+        .map_err(|_| "git repository root is not valid UTF-8".to_string())?
+        .trim();
+    if root_text.is_empty() {
+        return Err("git did not report a repository root".to_string());
+    }
+    let repository_root = PathBuf::from(root_text)
+        .canonicalize()
+        .map_err(|err| format!("cannot resolve Git repository root {root_text}: {err}"))?;
+
+    let head = run_git_capped(
+        &canonical_workspace,
+        &["rev-parse", "--verify", "HEAD"],
+        4 * 1024,
+    )
+    .unwrap_or_else(|_| b"unborn".to_vec());
+    let staged = run_git_capped(
+        &canonical_workspace,
+        &[
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--cached",
+            "--",
+            ".",
+        ],
+        MAX_GIT_DIFF_BYTES,
+    )?;
+    let unstaged = run_git_capped(
+        &canonical_workspace,
+        &[
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--",
+            ".",
+        ],
+        MAX_GIT_DIFF_BYTES,
+    )?;
+    let untracked = run_git_capped(
+        &canonical_workspace,
+        &[
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+            "-z",
+            "--",
+            ".",
+        ],
+        MAX_GIT_PATH_LIST_BYTES,
+    )?;
+
+    let mut hasher = Sha256::new();
+    hash_segment(
+        &mut hasher,
+        b"workspace",
+        canonical_workspace.as_os_str().as_encoded_bytes(),
+    );
+    hash_segment(
+        &mut hasher,
+        b"repository",
+        repository_root.as_os_str().as_encoded_bytes(),
+    );
+    hash_segment(&mut hasher, b"head", &head);
+    hash_segment(&mut hasher, b"staged", &staged);
+    hash_segment(&mut hasher, b"unstaged", &unstaged);
+
+    let mut total_untracked_bytes = 0_u64;
+    for raw_path in untracked
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+    {
+        let relative = git_path_from_bytes(raw_path)?;
+        if relative.is_absolute()
+            || relative
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_) | Component::CurDir))
+        {
+            return Err(format!(
+                "git reported an unsafe untracked path: {}",
+                relative.display()
+            ));
+        }
+        let path = repository_root.join(&relative);
+        let metadata = std::fs::symlink_metadata(&path).map_err(|err| {
+            format!(
+                "cannot inspect untracked path {} while sealing verifier evidence: {err}",
+                path.display()
+            )
+        })?;
+        hash_segment(&mut hasher, b"untracked-path", raw_path);
+        if metadata.file_type().is_symlink() {
+            let target = std::fs::read_link(&path)
+                .map_err(|err| format!("cannot read symlink {}: {err}", path.display()))?;
+            hash_segment(
+                &mut hasher,
+                b"untracked-symlink",
+                target.as_os_str().as_encoded_bytes(),
+            );
+            continue;
+        }
+        if !metadata.is_file() {
+            return Err(format!(
+                "unsupported untracked filesystem entry {}",
+                path.display()
+            ));
+        }
+        if metadata.len() > MAX_UNTRACKED_FILE_BYTES {
+            return Err(format!(
+                "untracked file {} is too large to bind verifier evidence ({} bytes; limit {})",
+                path.display(),
+                metadata.len(),
+                MAX_UNTRACKED_FILE_BYTES
+            ));
+        }
+        total_untracked_bytes = total_untracked_bytes.saturating_add(metadata.len());
+        if total_untracked_bytes > MAX_UNTRACKED_TOTAL_BYTES {
+            return Err(format!(
+                "untracked files are too large to bind verifier evidence (limit {MAX_UNTRACKED_TOTAL_BYTES} bytes)"
+            ));
+        }
+        hash_file(&mut hasher, &path)?;
+    }
+
+    let digest = hasher.finalize();
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok(format!("sha256:{hex}"))
+}
+
+fn hash_segment(hasher: &mut Sha256, label: &[u8], value: &[u8]) {
+    hasher.update((label.len() as u64).to_le_bytes());
+    hasher.update(label);
+    hasher.update((value.len() as u64).to_le_bytes());
+    hasher.update(value);
+}
+
+fn domain_hash(domain: &str, value: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hash_segment(&mut hasher, domain.as_bytes(), value);
+    format_sha256(hasher.finalize().as_slice())
+}
+
+fn structured_value_hash(domain: &str, value: &Value) -> String {
+    let canonical = canonical_json(value);
+    let encoded = serde_json::to_vec(&canonical).expect("JSON value is serializable");
+    domain_hash(domain, &encoded)
+}
+
+fn canonical_json(value: &Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.iter().map(canonical_json).collect()),
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            let mut canonical = serde_json::Map::new();
+            for key in keys {
+                canonical.insert(key.clone(), canonical_json(&object[key]));
+            }
+            Value::Object(canonical)
+        }
+        primitive => primitive.clone(),
+    }
+}
+
+fn format_sha256(digest: &[u8]) -> String {
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{hex}")
+}
+
+fn hash_file(hasher: &mut Sha256, path: &Path) -> Result<(), String> {
+    let mut file = File::open(path)
+        .map_err(|err| format!("cannot open untracked file {}: {err}", path.display()))?;
+    hasher.update(b"untracked-file\0");
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|err| format!("cannot read untracked file {}: {err}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn git_path_from_bytes(path: &[u8]) -> Result<PathBuf, String> {
+    use std::os::unix::ffi::OsStringExt;
+    Ok(PathBuf::from(OsString::from_vec(path.to_vec())))
+}
+
+#[cfg(not(unix))]
+fn git_path_from_bytes(path: &[u8]) -> Result<PathBuf, String> {
+    String::from_utf8(path.to_vec())
+        .map(PathBuf::from)
+        .map_err(|_| "git reported a non-UTF-8 untracked path".to_string())
+}
+
+fn run_git_capped(workspace: &Path, args: &[&str], cap: usize) -> Result<Vec<u8>, String> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(workspace).args(args);
+    run_command_capped(
+        command,
+        &format!("git {}", args.join(" ")),
+        cap,
+        GIT_COMMAND_TIMEOUT,
+    )
+}
+
+fn run_command_capped(
+    mut command: Command,
+    label: &str,
+    stdout_cap: usize,
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
+    configure_process_tree(&mut command);
+
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("cannot run {label}: {err}"))?;
+    let mut process_tree = ProcessTreeOwner::attach_std(&child, label).map_err(|err| {
+        let _ = child.kill();
+        let _ = child.wait();
+        format!("cannot own {label} process tree: {err}")
+    })?;
+    let stdout = match child.stdout.take() {
+        Some(stdout) => stdout,
+        None => {
+            let _ = process_tree.kill();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{label} stdout pipe was not created"));
+        }
+    };
+    let stderr = match child.stderr.take() {
+        Some(stderr) => stderr,
+        None => {
+            let _ = process_tree.kill();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{label} stderr pipe was not created"));
+        }
+    };
+    let stdout_reader = spawn_capped_reader(stdout, stdout_cap);
+    let stderr_reader = spawn_capped_reader(stderr, MAX_GIT_STDERR_BYTES);
+
+    let status = match child.wait_timeout(timeout) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            let _ = process_tree.kill();
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = receive_capped_reader(stdout_reader, label, "stdout");
+            let _ = receive_capped_reader(stderr_reader, label, "stderr");
+            return Err(format!(
+                "{label} timed out after {:.1}s while sealing verifier evidence",
+                timeout.as_secs_f64()
+            ));
+        }
+        Err(err) => {
+            let _ = process_tree.kill();
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("cannot wait for {label}: {err}"));
+        }
+    };
+
+    let stdout = receive_capped_reader(stdout_reader, label, "stdout")?;
+    let stderr = receive_capped_reader(stderr_reader, label, "stderr")?;
+    // The direct process has been reaped and both inherited pipes are closed.
+    // Sweep any detached descendant before releasing the shared tree owner.
+    let _ = process_tree.kill();
+    process_tree.disarm();
+    if !status.success() {
+        let detail = String::from_utf8_lossy(&stderr);
+        return Err(format!("{label} failed with {}: {}", status, detail.trim()));
+    }
+    Ok(stdout)
+}
+
+fn spawn_capped_reader(
+    reader: impl Read + Send + 'static,
+    cap: usize,
+) -> std::sync::mpsc::Receiver<Result<Vec<u8>, String>> {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(read_capped(reader, cap));
+    });
+    receiver
+}
+
+fn receive_capped_reader(
+    receiver: std::sync::mpsc::Receiver<Result<Vec<u8>, String>>,
+    label: &str,
+    stream: &str,
+) -> Result<Vec<u8>, String> {
+    match receiver.recv_timeout(GIT_READER_DRAIN_TIMEOUT) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "{label} {stream} pipe did not close within {:.1}s",
+            GIT_READER_DRAIN_TIMEOUT.as_secs_f64()
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            Err(format!("{label} {stream} reader stopped unexpectedly"))
+        }
+    }
+}
+
+fn read_capped(mut reader: impl Read, cap: usize) -> Result<Vec<u8>, String> {
+    let mut output = Vec::with_capacity(cap.min(64 * 1024));
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|err| format!("cannot read git output: {err}"))?;
+        if read == 0 {
+            return Ok(output);
+        }
+        if output.len().saturating_add(read) > cap {
+            return Err(format!("git output exceeded the {cap}-byte evidence limit"));
+        }
+        output.extend_from_slice(&buffer[..read]);
+    }
+}
+
+/// Evidence observed by the host across one foreground verifier execution.
+pub(crate) struct HostVerifierObservation {
+    pub(crate) check: String,
+    pub(crate) summary: String,
+    pub(crate) revision_before: Result<String, String>,
+    pub(crate) revision_after: Result<String, String>,
+}
+
+/// Attach a host-only verifier receipt when the workspace stayed unchanged
+/// for the entire foreground check. Existing tool metadata is preserved.
+pub(crate) fn attach_host_verification(
+    result: &mut ToolOutcome,
+    tool: &str,
+    contract: &TaskContract,
+    verifier_params: &Value,
+    observation: HostVerifierObservation,
+) {
+    if !contract.accepts_verifier(tool, verifier_params) {
+        reject_host_verification(
+            result,
+            "verifier result does not exactly match the active Goal task contract",
+        );
+        return;
+    }
+    let HostVerifierObservation {
+        check,
+        summary,
+        revision_before,
+        revision_after,
+    } = observation;
+    let observation = match (revision_before, revision_after) {
+        (Ok(before), Ok(after)) if before == after && result.is_success() => {
+            let Some(receipt) =
+                GoalHostVerificationReceipt::for_contract(contract, tool, check, summary, after)
+            else {
+                reject_host_verification(
+                    result,
+                    "active Goal task contract requires host acceptance",
+                );
+                return;
+            };
+            Ok(receipt)
+        }
+        (Ok(_), Ok(_)) if result.is_success() => Err(
+            "workspace changed while the verifier was running; rerun a foreground verifier"
+                .to_string(),
+        ),
+        (Err(err), _) | (_, Err(err)) if result.is_success() => Err(format!(
+            "could not bind verifier evidence to the workspace revision: {err}"
+        )),
+        _ => return,
+    };
+
+    let metadata = result.metadata.get_or_insert_with(|| json!({}));
+    if !metadata.is_object() {
+        *metadata = json!({"tool_metadata": metadata.take()});
+    }
+    let object = metadata
+        .as_object_mut()
+        .expect("metadata was normalized to an object");
+    match observation {
+        Ok(receipt) => {
+            object.insert(
+                HOST_VERIFICATION_METADATA_KEY.to_string(),
+                serde_json::to_value(receipt).expect("receipt is serializable"),
+            );
+        }
+        Err(reason) => {
+            object
+                .entry(HOST_VERIFICATION_REJECTION_METADATA_KEY.to_string())
+                .or_insert_with(|| Value::String(reason));
+        }
+    }
+}
+
+/// Attach a revision-bound checker artifact without granting Goal completion
+/// authority. This is the only evidence produced by `run_tests`.
+///
+/// The typed fields are the canonical M4 projection. The metadata mirror is
+/// retained only for the not-yet-migrated TUI Goal consumer and is deleted in
+/// M5 when TaskContract/evidence completion moves into AgentRuntime.
+pub(crate) fn attach_goal_evidence_artifact(
+    result: &mut ToolOutcome,
+    tool: &str,
+    verifier_params: &Value,
+    check: String,
+    summary: String,
+    revision_before: Result<String, String>,
+    revision_after: Result<String, String>,
+) {
+    let observation = match (revision_before, revision_after) {
+        (Ok(before), Ok(after)) if before == after && result.is_success() => {
+            Ok(GoalEvidenceArtifact {
+                tool: tool.to_string(),
+                check,
+                summary,
+                workspace_revision: after,
+                verifier_id: tool.to_string(),
+                verifier_params_sha256: structured_value_hash(
+                    "goal-verifier-params-v1",
+                    verifier_params,
+                ),
+            })
+        }
+        (Ok(_), Ok(_)) if result.is_success() => Err((
+            ToolEvidenceStatus::Stale,
+            "workspace changed while the evidence command was running; rerun it in the final workspace"
+                .to_string(),
+        )),
+        (Err(err), _) | (_, Err(err)) if result.is_success() => Err((
+            ToolEvidenceStatus::Missing,
+            format!("could not bind checker evidence to the workspace revision: {err}"),
+        )),
+        _ => {
+            reject_goal_evidence_artifact(result);
+            return;
+        }
+    };
+
+    let metadata_entry = match observation {
+        Ok(artifact) => {
+            let artifact_value =
+                serde_json::to_value(&artifact).expect("Goal evidence artifact is serializable");
+            let artifact_bytes = serde_json::to_vec(&canonical_json(&artifact_value))
+                .expect("Goal evidence artifact JSON is serializable");
+            let artifact_sha256 = format_sha256(Sha256::digest(&artifact_bytes).as_slice());
+            let artifact_id = format!("{GOAL_EVIDENCE_ARTIFACT_ID_PREFIX}{artifact_sha256}");
+
+            result.evidence = ToolEvidence {
+                status: ToolEvidenceStatus::Produced,
+                references: vec![artifact_id.clone()],
+            };
+            result.artifacts = vec![ToolArtifact {
+                id: artifact_id,
+                status: ToolArtifactStatus::Available,
+                sha256: Some(artifact_sha256),
+                media_type: Some(GOAL_EVIDENCE_ARTIFACT_MEDIA_TYPE.to_string()),
+                byte_len: Some(
+                    u64::try_from(artifact_bytes.len())
+                        .expect("Goal evidence artifact length fits in u64"),
+                ),
+            }];
+            result.workspace_revision = Some(artifact.workspace_revision.clone());
+            (
+                GOAL_EVIDENCE_ARTIFACT_METADATA_KEY.to_string(),
+                artifact_value,
+            )
+        }
+        Err((status, reason)) => {
+            set_goal_evidence_status(result, status);
+            (
+                HOST_VERIFICATION_REJECTION_METADATA_KEY.to_string(),
+                Value::String(reason),
+            )
+        }
+    };
+
+    let metadata = result.metadata.get_or_insert_with(|| json!({}));
+    if !metadata.is_object() {
+        *metadata = json!({"tool_metadata": metadata.take()});
+    }
+    metadata
+        .as_object_mut()
+        .expect("metadata was normalized to an object")
+        .insert(metadata_entry.0, metadata_entry.1);
+}
+
+/// Record that a checker ran but did not produce acceptable evidence (for
+/// example, it failed or executed zero tests). Rejection never creates an
+/// artifact reference or a workspace binding.
+pub(crate) fn reject_goal_evidence_artifact(result: &mut ToolOutcome) {
+    set_goal_evidence_status(result, ToolEvidenceStatus::Rejected);
+}
+
+fn set_goal_evidence_status(result: &mut ToolOutcome, status: ToolEvidenceStatus) {
+    result.evidence = ToolEvidence {
+        status,
+        references: Vec::new(),
+    };
+    result.artifacts.clear();
+    result.workspace_revision = None;
+}
+
+/// Explain why a successful command is not strong enough to complete a Goal
+/// (for example, a zero-test filter or a model-supplied custom command).
+pub(crate) fn reject_host_verification(result: &mut ToolOutcome, reason: impl Into<String>) {
+    let metadata = result.metadata.get_or_insert_with(|| json!({}));
+    if !metadata.is_object() {
+        *metadata = json!({"tool_metadata": metadata.take()});
+    }
+    metadata
+        .as_object_mut()
+        .expect("metadata was normalized to an object")
+        .insert(
+            HOST_VERIFICATION_REJECTION_METADATA_KEY.to_string(),
+            Value::String(reason.into()),
+        );
+}
+
+#[must_use]
+pub(crate) fn is_host_verifier_tool(tool: &str) -> bool {
+    matches!(tool, "run_tests" | "run_verifiers")
+}
+
+#[must_use]
+pub(crate) fn host_verification_from_result(
+    tool: &str,
+    result: &ToolOutcome,
+) -> Option<GoalHostVerificationReceipt> {
+    if !result.is_success() || !is_host_verifier_tool(tool) {
+        return None;
+    }
+    let receipt = result
+        .metadata
+        .as_ref()?
+        .get(HOST_VERIFICATION_METADATA_KEY)?;
+    let receipt: GoalHostVerificationReceipt = serde_json::from_value(receipt.clone()).ok()?;
+    (receipt.tool == tool && receipt.verifier_id == tool).then_some(receipt)
 }
 
 fn parse_token_budget(input: &Value) -> Result<Option<u32>, ToolError> {
@@ -327,38 +1320,211 @@ fn parse_token_budget(input: &Value) -> Result<Option<u32>, ToolError> {
         .map_err(|_| ToolError::invalid_input("token_budget is too large"))
 }
 
-fn parse_completion_verification(input: &Value) -> Result<GoalCompletionVerification, ToolError> {
-    let Some(raw) = input.get("verification") else {
-        return Err(ToolError::invalid_input(
-            "verification is required when status is complete; run a verifier/check and pass verification: {status, check, summary}",
-        ));
+fn parse_contract_scope(input: &Value, field: &str) -> Result<Vec<String>, ToolError> {
+    let Some(raw) = input.get(field) else {
+        return Ok(Vec::new());
     };
-    let verification: GoalCompletionVerification = serde_json::from_value(raw.clone())
-        .map_err(|err| ToolError::invalid_input(format!("invalid verification: {err}")))?;
-    let status = verification.status.trim();
-    let normalized_status = match status {
-        "passed" | "not_applicable" => status,
-        other => {
+    let Some(items) = raw.as_array() else {
+        return Err(ToolError::invalid_input(format!(
+            "{field} must be an array of strings"
+        )));
+    };
+    if items.len() > MAX_CONTRACT_SCOPE_ITEMS {
+        return Err(ToolError::invalid_input(format!(
+            "{field} may contain at most {MAX_CONTRACT_SCOPE_ITEMS} items"
+        )));
+    }
+    let mut normalized = Vec::with_capacity(items.len());
+    for item in items {
+        let Some(item) = item.as_str() else {
             return Err(ToolError::invalid_input(format!(
-                "verification.status must be 'passed' or 'not_applicable' before update_goal can mark a goal complete; got '{other}'"
+                "every {field} item must be a string"
+            )));
+        };
+        let item = item.trim();
+        if item.is_empty() {
+            return Err(ToolError::invalid_input(format!(
+                "{field} items cannot be empty"
             )));
         }
-    };
-    if verification.check.trim().is_empty() {
-        return Err(ToolError::invalid_input("verification.check is required"));
+        if item.chars().count() > MAX_CONTRACT_SCOPE_ITEM_CHARS {
+            return Err(ToolError::invalid_input(format!(
+                "each {field} item may contain at most {MAX_CONTRACT_SCOPE_ITEM_CHARS} characters"
+            )));
+        }
+        if !normalized.iter().any(|existing| existing == item) {
+            normalized.push(item.to_string());
+        }
     }
-    if verification.summary.trim().is_empty() {
-        return Err(ToolError::invalid_input("verification.summary is required"));
-    }
-    Ok(GoalCompletionVerification {
-        status: normalized_status.to_string(),
-        check: verification.check.trim().to_string(),
-        summary: verification.summary.trim().to_string(),
-    })
+    Ok(normalized)
 }
 
-fn json_result(snapshot: &GoalSnapshot) -> Result<ToolResult, ToolError> {
-    ToolResult::json(snapshot).map_err(|err| ToolError::execution_failed(err.to_string()))
+fn parse_task_acceptance(input: &Value) -> Result<Option<Value>, ToolError> {
+    let Some(raw) = input.get("acceptance") else {
+        return Ok(None);
+    };
+    let Some(acceptance) = raw.as_object() else {
+        return Err(ToolError::invalid_input("acceptance must be an object"));
+    };
+    if acceptance
+        .keys()
+        .any(|key| !matches!(key.as_str(), "verifier_id" | "params"))
+    {
+        return Err(ToolError::invalid_input(
+            "acceptance supports only verifier_id and params",
+        ));
+    }
+    let verifier_id = acceptance
+        .get("verifier_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::invalid_input("acceptance.verifier_id is required"))?;
+    if verifier_id != DEFAULT_GOAL_VERIFIER_ID {
+        return Err(ToolError::invalid_input(
+            "acceptance.verifier_id must be run_verifiers",
+        ));
+    }
+    let params = acceptance
+        .get("params")
+        .and_then(Value::as_object)
+        .ok_or_else(|| ToolError::invalid_input("acceptance.params must be an object"))?;
+    if params.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "profile" | "level" | "max_python_files" | "commands" | "background"
+        )
+    }) {
+        return Err(ToolError::invalid_input(
+            "acceptance.params contains an unsupported run_verifiers field",
+        ));
+    }
+
+    let profile = params
+        .get("profile")
+        .and_then(Value::as_str)
+        .unwrap_or("auto");
+    if !matches!(profile, "auto" | "rust" | "node" | "python" | "go") {
+        return Err(ToolError::invalid_input(
+            "acceptance.params.profile is not supported",
+        ));
+    }
+    let level = params
+        .get("level")
+        .and_then(Value::as_str)
+        .unwrap_or("full");
+    if level != "full" {
+        return Err(ToolError::invalid_input(
+            "Goal acceptance requires run_verifiers level=full",
+        ));
+    }
+    let max_python_files = params
+        .get("max_python_files")
+        .and_then(Value::as_u64)
+        .unwrap_or(200);
+    if !(1..=1000).contains(&max_python_files) {
+        return Err(ToolError::invalid_input(
+            "acceptance.params.max_python_files must be between 1 and 1000",
+        ));
+    }
+    let background = params
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if background {
+        return Err(ToolError::invalid_input(
+            "Goal acceptance cannot use background verification",
+        ));
+    }
+    let commands = params
+        .get("commands")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if commands.len() > MAX_CONTRACT_CUSTOM_GATES {
+        return Err(ToolError::invalid_input(format!(
+            "acceptance.params.commands may contain at most {MAX_CONTRACT_CUSTOM_GATES} gates"
+        )));
+    }
+    let commands = commands
+        .iter()
+        .map(normalize_contract_command)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(Some(json!({
+        "background": false,
+        "commands": commands,
+        "level": "full",
+        "max_python_files": max_python_files,
+        "profile": profile,
+    })))
+}
+
+fn normalize_contract_command(raw: &Value) -> Result<Value, ToolError> {
+    let Some(command) = raw.as_object() else {
+        return Err(ToolError::invalid_input(
+            "every acceptance command must be an object",
+        ));
+    };
+    if command
+        .keys()
+        .any(|key| !matches!(key.as_str(), "name" | "program" | "args" | "cwd"))
+    {
+        return Err(ToolError::invalid_input(
+            "acceptance command contains an unsupported field",
+        ));
+    }
+    let required_exact = |field: &str| -> Result<String, ToolError> {
+        let value = command.get(field).and_then(Value::as_str).ok_or_else(|| {
+            ToolError::invalid_input(format!("acceptance command.{field} is required"))
+        })?;
+        if value.is_empty() || value.trim() != value {
+            return Err(ToolError::invalid_input(format!(
+                "acceptance command.{field} must be non-empty and have no surrounding whitespace"
+            )));
+        }
+        Ok(value.to_string())
+    };
+    let name = required_exact("name")?;
+    let program = required_exact("program")?;
+    if Path::new(&program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        == Some("true")
+    {
+        return Err(ToolError::invalid_input(
+            "acceptance commands cannot use the no-op true program",
+        ));
+    }
+    let args = command
+        .get("args")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if args.iter().any(|arg| !arg.is_string()) {
+        return Err(ToolError::invalid_input(
+            "acceptance command.args must contain only strings",
+        ));
+    }
+    let cwd = match command.get("cwd") {
+        None | Some(Value::Null) => Value::Null,
+        Some(Value::String(value)) if !value.trim().is_empty() && value.trim() == value => {
+            Value::String(value.clone())
+        }
+        _ => {
+            return Err(ToolError::invalid_input(
+                "acceptance command.cwd must be a non-empty string without surrounding whitespace",
+            ));
+        }
+    };
+    Ok(json!({
+        "args": args,
+        "cwd": cwd,
+        "name": name,
+        "program": program,
+    }))
+}
+
+fn json_result(snapshot: &GoalSnapshot) -> Result<ToolOutcome, ToolError> {
+    ToolOutcome::json(snapshot).map_err(|err| ToolError::execution_failed(err.to_string()))
 }
 
 pub struct CreateGoalTool {
@@ -394,6 +1560,77 @@ impl ToolSpec for CreateGoalTool {
                     "type": "integer",
                     "minimum": 0,
                     "description": "Optional soft token budget for the goal."
+                },
+                "constraints": {
+                    "type": "array",
+                    "maxItems": MAX_CONTRACT_SCOPE_ITEMS,
+                    "items": { "type": "string", "minLength": 1 },
+                    "description": "Optional explicit constraints. Objective-only goals remain simple and require host acceptance."
+                },
+                "non_goals": {
+                    "type": "array",
+                    "maxItems": MAX_CONTRACT_SCOPE_ITEMS,
+                    "items": { "type": "string", "minLength": 1 },
+                    "description": "Optional explicit non-goals that must remain out of scope."
+                },
+                "acceptance": {
+                    "type": "object",
+                    "description": "Optional trusted task acceptance. Without it, checks are artifacts and only the host can complete the Goal.",
+                    "properties": {
+                        "verifier_id": {
+                            "type": "string",
+                            "const": "run_verifiers"
+                        },
+                        "params": {
+                            "type": "object",
+                            "properties": {
+                                "profile": {
+                                    "type": "string",
+                                    "enum": ["auto", "rust", "node", "python", "go"],
+                                    "default": "auto"
+                                },
+                                "level": {
+                                    "type": "string",
+                                    "const": "full",
+                                    "default": "full"
+                                },
+                                "max_python_files": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 1000,
+                                    "default": 200
+                                },
+                                "commands": {
+                                    "type": "array",
+                                    "maxItems": MAX_CONTRACT_CUSTOM_GATES,
+                                    "default": [],
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "name": { "type": "string", "minLength": 1 },
+                                            "program": { "type": "string", "minLength": 1 },
+                                            "args": {
+                                                "type": "array",
+                                                "items": { "type": "string" },
+                                                "default": []
+                                            },
+                                            "cwd": { "type": "string", "minLength": 1 }
+                                        },
+                                        "required": ["name", "program"],
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "background": {
+                                    "type": "boolean",
+                                    "const": false,
+                                    "default": false
+                                }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "required": ["verifier_id", "params"],
+                    "additionalProperties": false
                 }
             },
             "required": ["objective"],
@@ -409,15 +1646,39 @@ impl ToolSpec for CreateGoalTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let objective = required_str(&input, "objective")?.trim().to_string();
         if objective.is_empty() {
             return Err(ToolError::invalid_input("objective cannot be empty"));
         }
         let token_budget = parse_token_budget(&input)?;
+        let constraints = parse_contract_scope(&input, "constraints")?;
+        let non_goals = parse_contract_scope(&input, "non_goals")?;
+        let acceptance = parse_task_acceptance(&input)?;
         let snapshot = {
             let mut state = lock_goal_state(&self.goal_state)?;
-            state.create(objective, token_budget);
+            if let Some(verifier_params) = acceptance {
+                state.create_with_contract(
+                    objective,
+                    token_budget,
+                    constraints,
+                    non_goals,
+                    verifier_params,
+                );
+            } else {
+                state.replace_generation(
+                    objective,
+                    token_budget,
+                    GoalStatus::Active,
+                    constraints,
+                    non_goals,
+                    TaskAcceptance::HostAcceptanceRequired,
+                );
+            }
             state.snapshot()
         };
         json_result(&snapshot)
@@ -469,7 +1730,7 @@ impl ToolSpec for GetGoalTool {
         &self,
         _input: Value,
         _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let snapshot = {
             let state = lock_goal_state(&self.goal_state)?;
             state.snapshot()
@@ -512,27 +1773,6 @@ impl ToolSpec for UpdateGoalTool {
                     "type": "string",
                     "description": "Required when status is complete. Briefly cite the proof that the goal is done."
                 },
-                "verification": {
-                    "type": "object",
-                    "description": "Required when status is complete. A verifier-as-judge receipt from a concrete check, such as run_verifiers or an equivalent project-specific gate.",
-                    "properties": {
-                        "status": {
-                            "type": "string",
-                            "enum": ["passed", "not_applicable"],
-                            "description": "Use passed when a concrete verifier/check succeeded; not_applicable when no automated verifier applies."
-                        },
-                        "check": {
-                            "type": "string",
-                            "description": "The verifier/check that passed."
-                        },
-                        "summary": {
-                            "type": "string",
-                            "description": "Brief result summary from the verifier/check."
-                        }
-                    },
-                    "required": ["status", "check", "summary"],
-                    "additionalProperties": false
-                },
                 "blocker": {
                     "type": "string",
                     "description": "Required when status is blocked. Explain the condition preventing progress."
@@ -555,28 +1795,72 @@ impl ToolSpec for UpdateGoalTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let status = required_str(&input, "status")?.trim().to_ascii_lowercase();
+        if status == "complete" {
+            let evidence = input
+                .get("evidence")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            if evidence.is_empty() {
+                return Err(ToolError::invalid_input(
+                    "evidence is required when status is complete",
+                ));
+            }
+            let receipt = {
+                let state = lock_goal_state(&self.goal_state)?;
+                if matches!(
+                    state
+                        .active_task_contract()
+                        .map(|contract| &contract.acceptance),
+                    Some(TaskAcceptance::HostAcceptanceRequired)
+                ) {
+                    return Err(ToolError::invalid_input(
+                        "当前任务契约要求宿主验收；模型不能用 update_goal 将 objective-only Goal 标记为完成",
+                    ));
+                }
+                state.host_verification().cloned().ok_or_else(|| {
+                    ToolError::invalid_input(
+                        "Goal 还没有匹配任务契约的宿主验证凭据；请在最终代码状态上用契约中的精确参数运行前台 run_verifiers",
+                    )
+                })?
+            };
+            let current_revision = capture_workspace_revision(&context.workspace)
+                .await
+                .map_err(|err| {
+                    ToolError::execution_failed(format!(
+                        "无法确认 Goal 验证凭据对应的工作区版本：{err}"
+                    ))
+                })?;
+            if current_revision != receipt.workspace_revision {
+                if let Ok(mut state) = self.goal_state.lock()
+                    && state.host_verification() == Some(&receipt)
+                {
+                    state.clear_host_verification();
+                }
+                return Err(ToolError::invalid_input(
+                    "工作区在验证通过后发生了变化；请用任务契约中的精确参数重新运行前台 run_verifiers",
+                ));
+            }
+            let snapshot = {
+                let mut state = lock_goal_state(&self.goal_state)?;
+                if state.host_verification() != Some(&receipt) {
+                    return Err(ToolError::invalid_input(
+                        "Goal 验证凭据已被新的验证结果替换；请重新检查后再完成",
+                    ));
+                }
+                state
+                    .mark_complete(evidence, receipt)
+                    .map_err(ToolError::invalid_input)?;
+                state.snapshot()
+            };
+            return json_result(&snapshot);
+        }
         let snapshot = {
             let mut state = lock_goal_state(&self.goal_state)?;
             match status.as_str() {
-                "complete" => {
-                    let evidence = input
-                        .get("evidence")
-                        .and_then(Value::as_str)
-                        .map(str::trim)
-                        .unwrap_or_default()
-                        .to_string();
-                    if evidence.is_empty() {
-                        return Err(ToolError::invalid_input(
-                            "evidence is required when status is complete",
-                        ));
-                    }
-                    let verification = parse_completion_verification(&input)?;
-                    state
-                        .mark_complete(evidence, verification)
-                        .map_err(ToolError::invalid_input)?;
-                }
                 "blocked" => {
                     let blocker = input
                         .get("blocker")
@@ -607,27 +1891,106 @@ impl ToolSpec for UpdateGoalTool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::process::Command;
+
     use serde_json::{Value, json};
+    use tempfile::{TempDir, tempdir};
 
     use super::*;
 
+    fn git_workspace() -> TempDir {
+        let directory = tempdir().expect("temp workspace");
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(directory.path())
+            .status()
+            .expect("git init should run");
+        assert!(status.success(), "git init should succeed");
+        directory
+    }
+
+    async fn record_test_receipt(state: &SharedGoalState, workspace: &Path) {
+        let revision = capture_workspace_revision(workspace)
+            .await
+            .expect("workspace revision");
+        let mut goal = state.lock().expect("goal lock");
+        let receipt = test_receipt(&mut goal, &revision);
+        assert!(goal.record_host_verification(receipt));
+    }
+
+    fn test_receipt(goal: &mut GoalState, revision: &str) -> GoalHostVerificationReceipt {
+        if matches!(
+            goal.active_task_contract()
+                .map(|contract| &contract.acceptance),
+            Some(TaskAcceptance::HostAcceptanceRequired)
+        ) {
+            let objective = goal.objective().expect("objective").to_string();
+            let token_budget = goal.token_budget();
+            goal.create_with_contract(
+                objective,
+                token_budget,
+                Vec::new(),
+                Vec::new(),
+                default_run_verifiers_contract_params(),
+            );
+        }
+        GoalHostVerificationReceipt::for_contract(
+            goal.active_task_contract().expect("active task contract"),
+            DEFAULT_GOAL_VERIFIER_ID,
+            "run_verifiers profile=auto level=full".to_string(),
+            "verifiers passed".to_string(),
+            revision.to_string(),
+        )
+        .expect("explicit verifier contract")
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn evidence_command_timeout_kills_the_process_group_and_returns_bounded() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & wait"]);
+        let started = Instant::now();
+
+        let error = run_command_capped(
+            command,
+            "hanging evidence command",
+            1024,
+            Duration::from_millis(100),
+        )
+        .expect_err("the evidence command must time out");
+
+        assert!(error.contains("timed out"), "unexpected error: {error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "timeout path exceeded its bounded settlement window"
+        );
+    }
+
     #[tokio::test]
     async fn create_get_and_complete_goal() {
+        let workspace = git_workspace();
         let state = new_shared_goal_state();
-        let ctx = ToolContext::new(".");
+        let ctx = ToolContext::new(workspace.path());
 
         let create = CreateGoalTool::new(state.clone());
         let created = create
             .execute(
                 json!({
                     "objective": "ship the runtime slice",
-                    "token_budget": 1200
+                    "token_budget": 1200,
+                    "constraints": ["  keep one runtime  ", "keep one runtime"],
+                    "non_goals": ["provider expansion"],
+                    "acceptance": {
+                        "verifier_id": "run_verifiers",
+                        "params": {}
+                    }
                 }),
                 &ctx,
             )
             .await
             .expect("create goal");
-        assert!(created.success);
+        assert!(created.is_success());
         let created_json: Value = serde_json::from_str(&created.content).expect("created json");
         assert_eq!(
             created_json.get("status").and_then(Value::as_str),
@@ -642,18 +2005,26 @@ mod tests {
             current_json.get("token_budget").and_then(Value::as_u64),
             Some(1200)
         );
+        assert_eq!(
+            current_json["task_contract"]["constraints"],
+            json!(["keep one runtime"])
+        );
+        assert_eq!(
+            current_json["task_contract"]["non_goals"],
+            json!(["provider expansion"])
+        );
+        assert_eq!(
+            current_json["task_contract"]["acceptance"]["kind"],
+            json!("verifier")
+        );
+        record_test_receipt(&state, workspace.path()).await;
 
         let update = UpdateGoalTool::new(state.clone());
         let completed = update
             .execute(
                 json!({
                     "status": "complete",
-                    "evidence": "focused tests passed",
-                    "verification": {
-                        "status": "passed",
-                        "check": "cargo test -p codewhale-tui goal_loop",
-                        "summary": "focused tests passed"
-                    }
+                    "evidence": "focused tests passed"
                 }),
                 &ctx,
             )
@@ -666,7 +2037,67 @@ mod tests {
             Some("complete")
         );
         assert!(completed.content.contains("focused tests passed"));
+        assert_eq!(
+            completed_json
+                .get("completion_verification")
+                .and_then(|verification| verification.get("check"))
+                .and_then(Value::as_str),
+            Some("run_verifiers profile=auto level=full")
+        );
         assert!(!state.lock().expect("goal lock").is_active());
+    }
+
+    #[tokio::test]
+    async fn objective_only_goal_requires_host_acceptance() {
+        let workspace = git_workspace();
+        let state = new_shared_goal_state();
+        let context = ToolContext::new(workspace.path());
+        CreateGoalTool::new(state.clone())
+            .execute(
+                json!({"objective": "write an unrelated document"}),
+                &context,
+            )
+            .await
+            .expect("create objective-only goal");
+        let contract = state
+            .lock()
+            .expect("goal lock")
+            .active_task_contract()
+            .expect("task contract")
+            .clone();
+        assert_eq!(contract.acceptance, TaskAcceptance::HostAcceptanceRequired);
+
+        let mut verifier_result = ToolOutcome::success("all generic gates passed");
+        let params = default_run_verifiers_contract_params();
+        attach_host_verification(
+            &mut verifier_result,
+            DEFAULT_GOAL_VERIFIER_ID,
+            &contract,
+            &params,
+            HostVerifierObservation {
+                check: "generic full gates".to_string(),
+                summary: "passed".to_string(),
+                revision_before: Ok("sha256:same".to_string()),
+                revision_after: Ok("sha256:same".to_string()),
+            },
+        );
+        assert!(
+            host_verification_from_result(DEFAULT_GOAL_VERIFIER_ID, &verifier_result).is_none()
+        );
+        assert!(
+            verifier_result.metadata.as_ref().unwrap()[HOST_VERIFICATION_REJECTION_METADATA_KEY]
+                .as_str()
+                .is_some_and(|reason| reason.contains("does not exactly match"))
+        );
+        let error = UpdateGoalTool::new(state.clone())
+            .execute(
+                json!({"status": "complete", "evidence": "generic gates"}),
+                &context,
+            )
+            .await
+            .expect_err("objective-only Goal must not auto-complete");
+        assert!(error.to_string().contains("任务契约"));
+        assert!(state.lock().expect("goal lock").is_active());
     }
 
     #[tokio::test]
@@ -686,14 +2117,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_goal_accepts_not_applicable_verification_for_non_verifiable_goals() {
+    async fn update_goal_rejects_model_authored_not_applicable_bypass() {
         let state = new_shared_goal_state_from_host_status(
             Some("write the release notes".to_string()),
             None,
             GoalStatus::Active,
         );
         let update = UpdateGoalTool::new(state.clone());
-        let completed = update
+        let error = update
             .execute(
                 json!({
                     "status": "complete",
@@ -707,30 +2138,21 @@ mod tests {
                 &ToolContext::new("."),
             )
             .await
-            .expect("non-verifiable goal should complete");
+            .expect_err("model text must not bypass host evidence");
 
-        let completed_json: Value =
-            serde_json::from_str(&completed.content).expect("completed json");
-        assert_eq!(
-            completed_json.get("status").and_then(Value::as_str),
-            Some("complete")
-        );
-        assert_eq!(
-            completed_json
-                .get("completion_verification")
-                .and_then(|verification| verification.get("status"))
-                .and_then(Value::as_str),
-            Some("not_applicable")
-        );
-        assert!(!state.lock().expect("goal lock").is_active());
+        assert!(error.to_string().contains("要求宿主验收"));
+        assert!(state.lock().expect("goal lock").is_active());
     }
 
     #[tokio::test]
-    async fn update_goal_requires_passed_verification_to_complete() {
-        let state = new_shared_goal_state_from_host_status(
-            Some("prove completion".to_string()),
+    async fn update_goal_requires_host_verification_to_complete() {
+        let state = new_shared_goal_state();
+        state.lock().expect("goal lock").create_with_contract(
+            "prove completion".to_string(),
             None,
-            GoalStatus::Active,
+            Vec::new(),
+            Vec::new(),
+            default_run_verifiers_contract_params(),
         );
         let update = UpdateGoalTool::new(state.clone());
         let err = update
@@ -744,8 +2166,223 @@ mod tests {
             .await
             .expect_err("missing verifier gate should fail");
 
-        assert!(err.to_string().contains("verification is required"));
+        assert!(err.to_string().contains("宿主验证凭据"));
         assert!(state.lock().expect("goal lock").is_active());
+    }
+
+    #[tokio::test]
+    async fn update_goal_rejects_workspace_changes_after_verification() {
+        let workspace = git_workspace();
+        let state = new_shared_goal_state_from_host_status(
+            Some("prove the final revision".to_string()),
+            None,
+            GoalStatus::Active,
+        );
+        record_test_receipt(&state, workspace.path()).await;
+        fs::write(workspace.path().join("changed-after-test.txt"), "new state")
+            .expect("mutate workspace");
+
+        let error = UpdateGoalTool::new(state.clone())
+            .execute(
+                json!({
+                    "status": "complete",
+                    "evidence": "stale test result"
+                }),
+                &ToolContext::new(workspace.path()),
+            )
+            .await
+            .expect_err("stale receipt must fail");
+
+        assert!(error.to_string().contains("工作区在验证通过后发生了变化"));
+        let goal = state.lock().expect("goal lock");
+        assert!(goal.is_active());
+        assert!(goal.host_verification().is_none());
+    }
+
+    #[tokio::test]
+    async fn workspace_revision_tracks_untracked_content() {
+        let workspace = git_workspace();
+        let before = capture_workspace_revision(workspace.path())
+            .await
+            .expect("initial revision");
+        fs::write(workspace.path().join("artifact.txt"), "one").expect("write artifact");
+        let first = capture_workspace_revision(workspace.path())
+            .await
+            .expect("revision with artifact");
+        fs::write(workspace.path().join("artifact.txt"), "two").expect("change artifact");
+        let second = capture_workspace_revision(workspace.path())
+            .await
+            .expect("changed artifact revision");
+
+        assert_ne!(before, first);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn host_verification_receipt_requires_stable_successful_result() {
+        let mut goal = GoalState::default();
+        goal.create_with_contract(
+            "bind the receipt".to_string(),
+            None,
+            Vec::new(),
+            Vec::new(),
+            default_run_verifiers_contract_params(),
+        );
+        let contract = goal
+            .active_task_contract()
+            .expect("active contract")
+            .clone();
+        let params = default_run_verifiers_contract_params();
+        let mut accepted = ToolOutcome::success("ok").with_metadata(json!({"existing": true}));
+        attach_host_verification(
+            &mut accepted,
+            "run_verifiers",
+            &contract,
+            &params,
+            HostVerifierObservation {
+                check: "full gates".to_string(),
+                summary: "passed".to_string(),
+                revision_before: Ok("sha256:same".to_string()),
+                revision_after: Ok("sha256:same".to_string()),
+            },
+        );
+        let receipt = host_verification_from_result("run_verifiers", &accepted)
+            .expect("stable successful verifier should carry a receipt");
+        assert_eq!(receipt.workspace_revision, "sha256:same");
+        assert_eq!(accepted.metadata.as_ref().unwrap()["existing"], true);
+
+        let mut rejected = ToolOutcome::success("ok");
+        attach_host_verification(
+            &mut rejected,
+            "run_verifiers",
+            &contract,
+            &params,
+            HostVerifierObservation {
+                check: "quick".to_string(),
+                summary: "passed".to_string(),
+                revision_before: Ok("sha256:before".to_string()),
+                revision_after: Ok("sha256:after".to_string()),
+            },
+        );
+        assert!(host_verification_from_result("run_verifiers", &rejected).is_none());
+        assert!(
+            rejected.metadata.as_ref().unwrap()[HOST_VERIFICATION_REJECTION_METADATA_KEY]
+                .as_str()
+                .unwrap()
+                .contains("workspace changed")
+        );
+    }
+
+    #[test]
+    fn checker_artifact_projection_is_stable_and_failures_do_not_mint_artifacts() {
+        let params = json!({"profile": "auto", "level": "full"});
+        let attach_stable = |result: &mut ToolOutcome| {
+            attach_goal_evidence_artifact(
+                result,
+                "run_verifiers",
+                &params,
+                "full gates".to_string(),
+                "all gates passed".to_string(),
+                Ok("sha256:stable".to_string()),
+                Ok("sha256:stable".to_string()),
+            );
+        };
+
+        let mut first = ToolOutcome::success("ok");
+        attach_stable(&mut first);
+        let mut second = ToolOutcome::success("ok");
+        attach_stable(&mut second);
+        assert_eq!(first.evidence.status, ToolEvidenceStatus::Produced);
+        assert_eq!(first.evidence.references, second.evidence.references);
+        assert_eq!(first.artifacts, second.artifacts);
+        assert_eq!(first.workspace_revision.as_deref(), Some("sha256:stable"));
+        assert_eq!(first.artifacts[0].status, ToolArtifactStatus::Available);
+        assert_eq!(first.evidence.references[0], first.artifacts[0].id);
+
+        let mut stale = ToolOutcome::success("ok");
+        attach_goal_evidence_artifact(
+            &mut stale,
+            "run_verifiers",
+            &params,
+            "full gates".to_string(),
+            "all gates passed".to_string(),
+            Ok("sha256:before".to_string()),
+            Ok("sha256:after".to_string()),
+        );
+        assert_eq!(stale.evidence.status, ToolEvidenceStatus::Stale);
+        assert!(stale.evidence.references.is_empty());
+        assert!(stale.artifacts.is_empty());
+        assert!(stale.workspace_revision.is_none());
+
+        let mut missing = ToolOutcome::success("ok");
+        attach_goal_evidence_artifact(
+            &mut missing,
+            "run_tests",
+            &json!({}),
+            "cargo test".to_string(),
+            "tests passed".to_string(),
+            Err("git unavailable".to_string()),
+            Ok("sha256:after".to_string()),
+        );
+        assert_eq!(missing.evidence.status, ToolEvidenceStatus::Missing);
+        assert!(missing.evidence.references.is_empty());
+        assert!(missing.artifacts.is_empty());
+        assert!(missing.workspace_revision.is_none());
+
+        let mut rejected = ToolOutcome::error("tests failed");
+        reject_goal_evidence_artifact(&mut rejected);
+        assert_eq!(rejected.evidence.status, ToolEvidenceStatus::Rejected);
+        assert!(rejected.evidence.references.is_empty());
+        assert!(rejected.artifacts.is_empty());
+        assert!(rejected.workspace_revision.is_none());
+    }
+
+    #[test]
+    fn goal_accepts_only_the_active_contract_receipt() {
+        let mut goal = GoalState::default();
+        goal.create("implement the exact objective".to_string(), None);
+        let valid = test_receipt(&mut goal, "sha256:final");
+
+        let mut wrong_generation = valid.clone();
+        wrong_generation.goal_generation = wrong_generation.goal_generation.saturating_add(1);
+        assert!(!goal.record_host_verification(wrong_generation));
+
+        let mut wrong_objective = valid.clone();
+        wrong_objective.objective_sha256 = "sha256:other-objective".to_string();
+        assert!(!goal.record_host_verification(wrong_objective));
+
+        let mut wrong_verifier = valid.clone();
+        wrong_verifier.verifier_id = "run_tests".to_string();
+        wrong_verifier.tool = "run_tests".to_string();
+        assert!(!goal.record_host_verification(wrong_verifier));
+
+        let mut wrong_params = valid.clone();
+        wrong_params.verifier_params_sha256 = "sha256:other-params".to_string();
+        assert!(!goal.record_host_verification(wrong_params));
+
+        let mut wrong_contract = valid.clone();
+        wrong_contract.contract_sha256 = "sha256:other-contract".to_string();
+        assert!(!goal.record_host_verification(wrong_contract));
+
+        assert!(goal.record_host_verification(valid.clone()));
+        goal.mark_complete("contract matched".to_string(), valid)
+            .expect("matching receipt completes the Goal");
+        assert_eq!(goal.snapshot().status, "complete");
+    }
+
+    #[test]
+    fn prior_generation_receipt_cannot_complete_replaced_goal() {
+        let mut goal = GoalState::default();
+        goal.create("first objective".to_string(), None);
+        let stale = test_receipt(&mut goal, "sha256:first");
+        goal.create("second objective".to_string(), None);
+
+        assert!(!goal.record_host_verification(stale.clone()));
+        assert!(
+            goal.mark_complete("stale".to_string(), stale).is_err(),
+            "a receipt from the prior generation must fail closed"
+        );
+        assert!(goal.is_active());
     }
 
     #[tokio::test]
@@ -762,6 +2399,49 @@ mod tests {
             .expect_err("model resume should fail");
 
         assert!(err.to_string().contains("complete or blocked"));
+    }
+
+    #[tokio::test]
+    async fn host_pause_revokes_receipt_and_cannot_be_overridden_by_update_goal() {
+        let workspace = git_workspace();
+        let state = new_shared_goal_state_from_host_status(
+            Some("host pause wins".to_string()),
+            None,
+            GoalStatus::Active,
+        );
+        record_test_receipt(&state, workspace.path()).await;
+        {
+            let mut goal = state.lock().expect("goal lock");
+            goal.sync_from_host_status(Some("host pause wins"), None, GoalStatus::Paused);
+            assert!(goal.host_verification().is_none());
+        }
+
+        let error = UpdateGoalTool::new(state.clone())
+            .execute(
+                json!({
+                    "status": "complete",
+                    "evidence": "stale in-flight completion"
+                }),
+                &ToolContext::new(workspace.path()),
+            )
+            .await
+            .expect_err("model must not override host pause");
+
+        assert!(error.to_string().contains("宿主验证凭据"));
+        assert_eq!(state.lock().expect("goal lock").snapshot().status, "paused");
+
+        let blocked_error = UpdateGoalTool::new(state.clone())
+            .execute(
+                json!({
+                    "status": "blocked",
+                    "blocker": "model tries to overwrite pause"
+                }),
+                &ToolContext::new(workspace.path()),
+            )
+            .await
+            .expect_err("model must not replace host pause with blocked");
+        assert!(blocked_error.to_string().contains("host-controlled"));
+        assert_eq!(state.lock().expect("goal lock").snapshot().status, "paused");
     }
 
     #[test]
@@ -798,6 +2478,78 @@ mod tests {
     }
 
     #[test]
+    fn completion_candidate_still_records_its_enclosing_turn_usage() {
+        let state = new_shared_goal_state_from_host_status(
+            Some("account the final turn".to_string()),
+            Some(1_000),
+            GoalStatus::Active,
+        );
+        {
+            let mut goal = state.lock().expect("goal lock");
+            let receipt = test_receipt(&mut goal, "sha256:test");
+            goal.mark_complete("verified".to_string(), receipt)
+                .expect("completion candidate");
+            goal.record_usage(321, 7);
+        }
+
+        let snapshot = state.lock().expect("goal lock").snapshot();
+        assert_eq!(snapshot.status, "complete");
+        assert_eq!(snapshot.tokens_used, 321);
+        assert_eq!(snapshot.time_used_seconds, 7);
+    }
+
+    #[test]
+    fn terminal_same_objective_reactivation_starts_a_clean_generation() {
+        let mut goal = GoalState::default();
+        goal.create("resume this objective".to_string(), Some(1_000));
+        let completed_generation = goal.active_generation().expect("active generation");
+        goal.record_usage_for_generation(completed_generation, 321, 7);
+        let receipt = test_receipt(&mut goal, "sha256:old");
+        goal.mark_complete("old evidence".to_string(), receipt)
+            .expect("complete first generation");
+
+        goal.sync_from_host_status(
+            Some("resume this objective"),
+            Some(1_000),
+            GoalStatus::Active,
+        );
+
+        let resumed_generation = goal.active_generation().expect("resumed generation");
+        assert!(resumed_generation > completed_generation);
+        assert!(!goal.record_usage_for_generation(completed_generation, 99, 1));
+        let snapshot = goal.snapshot();
+        assert_eq!(snapshot.status, "active");
+        assert_eq!(snapshot.tokens_used, 0);
+        assert_eq!(snapshot.time_used_seconds, 0);
+        assert!(snapshot.evidence.is_none());
+        assert!(snapshot.completion_verification.is_none());
+        assert!(snapshot.host_verification.is_none());
+    }
+
+    #[test]
+    fn paused_same_objective_resume_retains_generation_and_usage() {
+        let mut goal = GoalState::default();
+        goal.create("pause this objective".to_string(), Some(1_000));
+        let generation = goal.active_generation().expect("active generation");
+        assert!(goal.record_usage_for_generation(generation, 123, 4));
+        goal.sync_from_host_status(
+            Some("pause this objective"),
+            Some(1_000),
+            GoalStatus::Paused,
+        );
+        goal.sync_from_host_status(
+            Some("pause this objective"),
+            Some(1_000),
+            GoalStatus::Active,
+        );
+
+        assert_eq!(goal.active_generation(), Some(generation));
+        let snapshot = goal.snapshot();
+        assert_eq!(snapshot.tokens_used, 123);
+        assert_eq!(snapshot.time_used_seconds, 4);
+    }
+
+    #[test]
     fn completed_goal_snapshot_freezes_elapsed() {
         // Regression: a completed goal's snapshot elapsed_seconds must not keep
         // growing. Before the fix, snapshot() always used started_at.elapsed(),
@@ -809,15 +2561,9 @@ mod tests {
         );
         let first = {
             let mut goal = state.lock().expect("goal lock");
-            goal.mark_complete(
-                "evidence".to_string(),
-                GoalCompletionVerification {
-                    status: "passed".to_string(),
-                    check: "cargo test".to_string(),
-                    summary: "ok".to_string(),
-                },
-            )
-            .expect("mark complete");
+            let receipt = test_receipt(&mut goal, "sha256:test");
+            goal.mark_complete("evidence".to_string(), receipt)
+                .expect("mark complete");
             goal.snapshot()
         };
         let elapsed_at_completion = first.elapsed_seconds.expect("elapsed present");
@@ -864,6 +2610,13 @@ mod tests {
 
     #[test]
     fn continuation_prompt_includes_bound_and_goal_state() {
+        let contract = TaskContract::derived(
+            1,
+            "finish issue 2199".to_string(),
+            Vec::new(),
+            Vec::new(),
+            TaskAcceptance::HostAcceptanceRequired,
+        );
         let snapshot = GoalSnapshot {
             objective: Some("finish issue 2199".to_string()),
             status: "active".to_string(),
@@ -875,11 +2628,45 @@ mod tests {
             evidence: None,
             blocker: None,
             completion_verification: None,
+            task_contract: Some(contract),
+            host_verification: None,
         };
 
         let prompt = render_continuation_prompt(&snapshot, 2);
         assert!(prompt.contains("Goal Continuation"));
         assert!(prompt.contains("finish issue 2199"));
         assert!(prompt.contains("Continuation pass #2"));
+        assert!(prompt.contains("只能由宿主验收"));
+        assert!(!prompt.contains("精确参数"));
+    }
+
+    #[test]
+    fn continuation_prompt_requires_exact_verifier_only_for_explicit_contract() {
+        let contract = TaskContract::derived(
+            7,
+            "verify release".to_string(),
+            Vec::new(),
+            Vec::new(),
+            TaskAcceptance::run_verifiers(default_run_verifiers_contract_params()),
+        );
+        let snapshot = GoalSnapshot {
+            objective: Some("verify release".to_string()),
+            status: "active".to_string(),
+            token_budget: None,
+            tokens_used: 0,
+            time_used_seconds: 0,
+            continuation_count: 0,
+            elapsed_seconds: Some(1),
+            evidence: None,
+            blocker: None,
+            completion_verification: None,
+            task_contract: Some(contract),
+            host_verification: None,
+        };
+
+        let prompt = render_continuation_prompt(&snapshot, 1);
+        assert!(prompt.contains("精确参数"));
+        assert!(prompt.contains("再调用 `update_goal`"));
+        assert!(!prompt.contains("只能由宿主验收"));
     }
 }

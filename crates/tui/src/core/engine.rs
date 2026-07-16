@@ -11,6 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -21,6 +22,7 @@ use futures_util::StreamExt;
 use futures_util::stream::FuturesUnordered;
 use serde_json::{Value, json};
 use tokio::sync::{Mutex as AsyncMutex, RwLock, mpsc};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::client::DeepSeekClient;
@@ -32,7 +34,8 @@ use crate::config::{ApiProvider, Config, DEFAULT_MAX_SUBAGENTS, DEFAULT_TEXT_MOD
 use crate::core::model_client::SharedModelClient;
 use crate::error_taxonomy::{ErrorCategory, ErrorEnvelope, StreamError};
 use crate::features::{Feature, Features};
-use crate::mcp::{McpConfig, McpPool};
+use crate::lsp::LspShutdownReport;
+use crate::mcp::{McpConfig, McpPool, McpShutdownReport};
 #[cfg(test)]
 use crate::models::ToolCaller;
 use crate::models::{
@@ -48,7 +51,7 @@ use crate::tools::goal::{GoalSnapshot, GoalStatus, SharedGoalState, new_shared_g
 use crate::tools::plan::{PlanSnapshot, SharedPlanState, new_shared_plan_state};
 use crate::tools::shell::{SharedShellManager, new_shared_shell_manager};
 use crate::tools::spec::RuntimeToolServices;
-use crate::tools::spec::{ApprovalRequirement, ToolError, ToolResult};
+use crate::tools::spec::{ApprovalRequirement, ToolError, ToolOutcome};
 use crate::tools::subagent::{
     Mailbox, MailboxMessage, SharedSubAgentManager, SubAgentCompletion, SubAgentForkContext,
     SubAgentResult, SubAgentRuntime, SubAgentStatus, SubAgentThinking, SubAgentType,
@@ -460,7 +463,7 @@ fn inject_authoritative_work_state(
 }
 
 fn user_shell_turn_outcome(
-    result: &Result<ToolResult, ToolError>,
+    result: &Result<ToolOutcome, ToolError>,
     cancel_requested: bool,
 ) -> TurnOutcomeStatus {
     let tool_reported_cancel = result.as_ref().is_ok_and(|tool_result| {
@@ -474,7 +477,10 @@ fn user_shell_turn_outcome(
 
     if cancel_requested || tool_reported_cancel {
         TurnOutcomeStatus::Interrupted
-    } else if result.as_ref().is_ok_and(|tool_result| tool_result.success) {
+    } else if result
+        .as_ref()
+        .is_ok_and(|tool_result| tool_result.is_success())
+    {
         TurnOutcomeStatus::Completed
     } else {
         TurnOutcomeStatus::Failed
@@ -812,6 +818,29 @@ pub struct EngineHandle {
     shared_paused: Arc<StdMutex<bool>>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct EngineOwnedShutdownReport {
+    mcp: McpShutdownReport,
+    lsp: LspShutdownReport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GoalPostTurnDecision {
+    NoGoal,
+    Continue(String),
+    Completed,
+    Blocked(String),
+    Paused,
+    TokenBudgetExhausted {
+        used: u64,
+        limit: u64,
+    },
+    TimeBudgetExhausted {
+        used_seconds: u64,
+        limit_seconds: u64,
+    },
+}
+
 // `impl EngineHandle { ... }` moved to `engine/handle.rs` so the
 // mailbox API can be reviewed independently of the engine internals.
 
@@ -823,6 +852,14 @@ pub struct Engine {
     api_config: Config,
     deepseek_client: Option<DeepSeekClient>,
     api_request_budget: Option<SharedApiRequestBudget>,
+    /// Provider tokens already charged to the active Goal from the shared
+    /// execution ledger. Snapshots are cumulative, so this cursor prevents
+    /// double counting while covering root, child, background, and FIM calls.
+    goal_accounted_api_tokens: u64,
+    /// Sub-second Goal time carried across turns. Persisting the remainder
+    /// avoids making many fast turns look like zero elapsed time.
+    goal_time_remainder: Duration,
+    goal_time_remainder_generation: Option<u64>,
     /// Provider-neutral client used by the canonical main turn loop. Concrete
     /// clients remain temporarily available to provider-specific helper tools
     /// while those boundaries migrate independently.
@@ -832,6 +869,9 @@ pub struct Engine {
     session: Session,
     subagent_manager: SharedSubAgentManager,
     shell_manager: SharedShellManager,
+    lifecycle_tasks: Arc<StdMutex<Vec<JoinHandle<()>>>>,
+    quiescing: Arc<AtomicBool>,
+    runtime_shutdown_receipt: Arc<StdMutex<Option<EngineOwnedShutdownReport>>>,
     mcp_pool: Option<Arc<AsyncMutex<McpPool>>>,
     api_provider: ApiProvider,
     active_route_limits: Option<codewhale_config::route::RouteLimits>,
@@ -936,20 +976,34 @@ fn subagent_mailbox_best_effort_send_permitted(
 }
 
 impl Engine {
+    fn track_lifecycle_task(&self, task: JoinHandle<()>) {
+        match self.lifecycle_tasks.lock() {
+            Ok(mut tasks) => tasks.push(task),
+            Err(poisoned) => poisoned.into_inner().push(task),
+        }
+    }
+
     /// True only when the final client route is an allowlisted first-party
     /// DeepSeek endpoint with no custom request-path override. Provider/model
     /// labels alone are insufficient because users can point the built-in
-    /// DeepSeek provider at a self-hosted OpenAI-compatible server.
+    /// DeepSeek provider at a self-hosted OpenAI-compatible server. The model
+    /// client identity must also match the resolved route: injected clients
+    /// must not inherit capabilities from a transport they do not call.
     fn uses_official_deepseek_endpoint(&self) -> bool {
+        let client_matches_route = self
+            .model_client
+            .as_ref()
+            .is_some_and(|client| client.provider_name() == self.api_provider.as_str());
         let path_suffix = self
             .api_config
             .provider_config_for(self.api_provider)
             .and_then(|config| config.path_suffix.as_deref());
-        official_deepseek_endpoint(
-            self.api_provider,
-            self.deepseek_client.as_ref().map(DeepSeekClient::base_url),
-            path_suffix,
-        )
+        client_matches_route
+            && official_deepseek_endpoint(
+                self.api_provider,
+                self.deepseek_client.as_ref().map(DeepSeekClient::base_url),
+                path_suffix,
+            )
     }
 
     fn mode_runtime_instructions(mode: AppMode) -> &'static str {
@@ -1167,14 +1221,6 @@ impl Engine {
         Self::new_inner(config, api_config, None)
     }
 
-    pub(crate) fn new_with_api_request_budget(
-        config: EngineConfig,
-        api_config: &Config,
-        api_request_budget: SharedApiRequestBudget,
-    ) -> (Self, EngineHandle) {
-        Self::new_inner(config, api_config, Some(api_request_budget))
-    }
-
     fn new_inner(
         config: EngineConfig,
         api_config: &Config,
@@ -1353,17 +1399,26 @@ impl Engine {
             .map(std::sync::Arc::from);
 
         let active_route_limits = config.active_route_limits;
+        let lifecycle_tasks = Arc::new(StdMutex::new(Vec::new()));
+        let quiescing = Arc::new(AtomicBool::new(false));
+        let runtime_shutdown_receipt = Arc::new(StdMutex::new(None));
         let engine = Engine {
             config,
             api_config: api_config.clone(),
             deepseek_client,
             api_request_budget,
+            goal_accounted_api_tokens: 0,
+            goal_time_remainder: Duration::ZERO,
+            goal_time_remainder_generation: None,
             model_client,
             deepseek_client_error,
             api_key_env_only_recovery,
             session,
             subagent_manager,
             shell_manager,
+            lifecycle_tasks,
+            quiescing,
+            runtime_shutdown_receipt,
             mcp_pool: None,
             api_provider,
             active_route_limits,
@@ -1680,6 +1735,7 @@ impl Engine {
             })
             .await;
 
+        self.emit_run_terminal_candidate_if_idle(false).await;
         let _ = self
             .tx_event
             .send(Event::TurnComplete {
@@ -1732,41 +1788,24 @@ impl Engine {
 
             match input {
                 EngineRunInput::SubAgentCompletion(completion) => {
-                    self.handle_idle_subagent_completion(completion).await;
+                    if !self.quiescing.load(Ordering::Acquire) {
+                        self.handle_idle_subagent_completion(completion).await;
+                    }
                 }
-                EngineRunInput::Operation(op) => match *op {
-                    Op::SendMessage {
-                        content,
-                        mode,
-                        provider,
-                        model,
-                        route_limits,
-                        compaction,
-                        goal_objective,
-                        goal_token_budget,
-                        goal_status,
-                        reasoning_effort,
-                        reasoning_effort_auto,
-                        auto_model,
-                        allow_shell,
-                        trust_mode,
-                        auto_approve,
-                        approval_mode,
-                        translation_enabled,
-                        show_thinking,
-                        allowed_tools,
-                        dynamic_tools,
-                        hook_executor,
-                        verbosity,
-                        provenance,
-                    } => {
-                        self.handle_send_message(
+                EngineRunInput::Operation(op) => {
+                    if self.quiescing.load(Ordering::Acquire)
+                        && !matches!(op.as_ref(), Op::Shutdown)
+                    {
+                        continue;
+                    }
+                    match *op {
+                        Op::SendMessage {
                             content,
                             mode,
                             provider,
                             model,
                             route_limits,
-                            *compaction,
+                            compaction,
                             goal_objective,
                             goal_token_budget,
                             goal_status,
@@ -1784,313 +1823,340 @@ impl Engine {
                             hook_executor,
                             verbosity,
                             provenance,
-                        )
-                        .await;
-                    }
-                    Op::RunShellCommand {
-                        command,
-                        mode,
-                        allow_shell,
-                        trust_mode,
-                        auto_approve,
-                        approval_mode,
-                    } => {
-                        self.handle_run_shell_command(
+                        } => {
+                            self.handle_send_message(
+                                content,
+                                mode,
+                                provider,
+                                model,
+                                route_limits,
+                                *compaction,
+                                goal_objective,
+                                goal_token_budget,
+                                goal_status,
+                                reasoning_effort,
+                                reasoning_effort_auto,
+                                auto_model,
+                                allow_shell,
+                                trust_mode,
+                                auto_approve,
+                                approval_mode,
+                                translation_enabled,
+                                show_thinking,
+                                allowed_tools,
+                                dynamic_tools,
+                                hook_executor,
+                                verbosity,
+                                provenance,
+                            )
+                            .await;
+                        }
+                        Op::RunShellCommand {
                             command,
                             mode,
                             allow_shell,
                             trust_mode,
                             auto_approve,
                             approval_mode,
-                        )
-                        .await;
-                    }
-                    Op::SetGoalStatus { status, clear } => {
-                        self.handle_set_goal_status(status, clear).await;
-                    }
-                    Op::CancelRequest => {
-                        self.cancel_token.cancel();
-                        self.reset_cancel_token();
-                    }
-                    Op::ApproveToolCall { id } => {
-                        // Tool approval handling will be implemented in tools module
-                        let _ = self
-                            .tx_event
-                            .send(Event::status(format!("Approved tool call: {id}")))
+                        } => {
+                            self.handle_run_shell_command(
+                                command,
+                                mode,
+                                allow_shell,
+                                trust_mode,
+                                auto_approve,
+                                approval_mode,
+                            )
                             .await;
-                    }
-                    Op::DenyToolCall { id } => {
-                        let _ = self
-                            .tx_event
-                            .send(Event::status(format!("Denied tool call: {id}")))
-                            .await;
-                    }
-                    Op::SpawnSubAgent { prompt } => {
-                        let Some(client) = self.deepseek_client.clone() else {
-                            let message = self
-                                .deepseek_client_error
-                                .as_deref()
-                                .map(|err| format!("Failed to spawn sub-agent: {err}"))
-                                .unwrap_or_else(|| {
-                                    "Failed to spawn sub-agent: API client not configured"
-                                        .to_string()
-                                });
+                        }
+                        Op::SetGoalStatus { status, clear } => {
+                            self.handle_set_goal_status(status, clear).await;
+                        }
+                        Op::CancelRequest => {
+                            self.cancel_token.cancel();
+                            self.reset_cancel_token();
+                        }
+                        Op::ApproveToolCall { id } => {
+                            // Tool approval handling will be implemented in tools module
                             let _ = self
                                 .tx_event
-                                .send(Event::error(ErrorEnvelope::fatal(message)))
+                                .send(Event::status(format!("Approved tool call: {id}")))
                                 .await;
-                            continue;
-                        };
-
-                        let mcp_pool = if self.config.features.enabled(Feature::Mcp) {
-                            self.ensure_mcp_pool().await.ok()
-                        } else {
-                            None
-                        };
-
-                        let mut runtime = SubAgentRuntime::new(
-                            client,
-                            self.session.model.clone(),
-                            // Sub-agents don't inherit YOLO mode - use Agent mode defaults
-                            self.build_tool_context(AppMode::Agent, self.session.auto_approve),
-                            self.session.allow_shell,
-                            Some(self.tx_event.clone()),
-                            Arc::clone(&self.subagent_manager),
-                        )
-                        .with_role_models(self.subagent_role_models())
-                        .with_api_config(self.api_config.clone())
-                        .with_fleet_roster(self.config.fleet_roster.clone())
-                        .with_auto_model(self.session.auto_model)
-                        .with_reasoning_effort(
-                            self.session.reasoning_effort.clone(),
-                            self.session.reasoning_effort_auto,
-                        )
-                        .with_agent_tool_surface_options(self.agent_tool_surface_options(
-                            shell_policy_for_mode(AppMode::Agent, self.session.allow_shell),
-                        ))
-                        .with_max_spawn_depth(self.config.max_spawn_depth)
-                        .with_step_api_timeout(self.config.subagent_api_timeout)
-                        .with_speech_output_dir(self.config.speech_output_dir.clone())
-                        .with_mcp_pool(mcp_pool)
-                        .with_todos(self.config.todos.clone())
-                        .with_parent_mode(self.current_mode)
-                        .background_runtime();
-                        // #4042: thread the session's --disallowed-tools into
-                        // the child so tool restrictions flow down to sub-agents.
-                        runtime.worker_profile.denied_tools =
-                            self.config.disallowed_tools.clone().unwrap_or_default();
-                        let route = resolve_subagent_assignment_route(
-                            &runtime,
-                            None,
-                            &prompt,
-                            &SubAgentType::General,
-                            ModelRoute::Inherit,
-                            SubAgentThinking::Inherit,
-                        )
-                        .await;
-                        let effective_model = match ensure_subagent_model_for_provider(
-                            &runtime,
-                            &route.model_route,
-                            route.model,
-                        ) {
-                            Ok(model) => model,
-                            Err(err) => {
+                        }
+                        Op::DenyToolCall { id } => {
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!("Denied tool call: {id}")))
+                                .await;
+                        }
+                        Op::SpawnSubAgent { prompt } => {
+                            let Some(client) = self.deepseek_client.clone() else {
+                                let message = self
+                                    .deepseek_client_error
+                                    .as_deref()
+                                    .map(|err| format!("Failed to spawn sub-agent: {err}"))
+                                    .unwrap_or_else(|| {
+                                        "Failed to spawn sub-agent: API client not configured"
+                                            .to_string()
+                                    });
                                 let _ = self
                                     .tx_event
-                                    .send(Event::error(ErrorEnvelope::fatal(format!(
-                                        "Failed to spawn sub-agent: {err}"
-                                    ))))
+                                    .send(Event::error(ErrorEnvelope::fatal(message)))
                                     .await;
                                 continue;
-                            }
-                        };
-                        runtime.model = effective_model;
-                        runtime.reasoning_effort = route.reasoning_effort;
-                        runtime.reasoning_effort_auto = false;
+                            };
 
-                        let result = {
-                            let mut manager = self.subagent_manager.write().await;
-                            manager.spawn_background(
+                            let mcp_pool = if self.config.features.enabled(Feature::Mcp) {
+                                self.ensure_mcp_pool().await.ok()
+                            } else {
+                                None
+                            };
+
+                            let mut runtime = SubAgentRuntime::new(
+                                client,
+                                self.session.model.clone(),
+                                // Sub-agents don't inherit YOLO mode - use Agent mode defaults
+                                self.build_tool_context(AppMode::Agent, self.session.auto_approve),
+                                self.session.allow_shell,
+                                Some(self.tx_event.clone()),
                                 Arc::clone(&self.subagent_manager),
-                                runtime,
-                                SubAgentType::General,
-                                prompt.clone(),
+                            )
+                            .with_role_models(self.subagent_role_models())
+                            .with_api_config(self.api_config.clone())
+                            .with_fleet_roster(self.config.fleet_roster.clone())
+                            .with_auto_model(self.session.auto_model)
+                            .with_reasoning_effort(
+                                self.session.reasoning_effort.clone(),
+                                self.session.reasoning_effort_auto,
+                            )
+                            .with_agent_tool_surface_options(self.agent_tool_surface_options(
+                                shell_policy_for_mode(AppMode::Agent, self.session.allow_shell),
+                            ))
+                            .with_max_spawn_depth(self.config.max_spawn_depth)
+                            .with_step_api_timeout(self.config.subagent_api_timeout)
+                            .with_speech_output_dir(self.config.speech_output_dir.clone())
+                            .with_mcp_pool(mcp_pool)
+                            .with_todos(self.config.todos.clone())
+                            .with_parent_mode(self.current_mode)
+                            .background_runtime();
+                            // #4042: thread the session's --disallowed-tools into
+                            // the child so tool restrictions flow down to sub-agents.
+                            runtime.worker_profile.denied_tools =
+                                self.config.disallowed_tools.clone().unwrap_or_default();
+                            let route = resolve_subagent_assignment_route(
+                                &runtime,
                                 None,
+                                &prompt,
+                                &SubAgentType::General,
+                                ModelRoute::Inherit,
+                                SubAgentThinking::Inherit,
                             )
-                        };
+                            .await;
+                            let effective_model = match ensure_subagent_model_for_provider(
+                                &runtime,
+                                &route.model_route,
+                                route.model,
+                            ) {
+                                Ok(model) => model,
+                                Err(err) => {
+                                    let _ = self
+                                        .tx_event
+                                        .send(Event::error(ErrorEnvelope::fatal(format!(
+                                            "Failed to spawn sub-agent: {err}"
+                                        ))))
+                                        .await;
+                                    continue;
+                                }
+                            };
+                            runtime.model = effective_model;
+                            runtime.reasoning_effort = route.reasoning_effort;
+                            runtime.reasoning_effort_auto = false;
 
-                        match result {
-                            Ok(snapshot) => {
-                                let _ = self
-                                    .tx_event
-                                    .send(Event::status(format!(
-                                        "Spawned sub-agent {}",
-                                        snapshot.agent_id
-                                    )))
-                                    .await;
-                            }
-                            Err(err) => {
-                                let _ = self
-                                    .tx_event
-                                    .send(Event::error(ErrorEnvelope::fatal(format!(
-                                        "Failed to spawn sub-agent: {err}"
-                                    ))))
-                                    .await;
-                            }
-                        }
-                    }
-                    Op::ListSubAgents => {
-                        // #3803: the sidebar refresh is a read-only snapshot.
-                        // Render from a read lock; only take the write lock to
-                        // run cleanup on a bounded cadence, so a UI refresh storm
-                        // during a sub-agent fanout no longer contends for the
-                        // write lock (against completions/persistence) on every
-                        // request. Cleanup still auto-cancels stale agents.
-                        let due = {
-                            let manager = self.subagent_manager.read().await;
-                            manager.cleanup_due(
-                                crate::tools::subagent::SUBAGENT_LIST_CLEANUP_MIN_INTERVAL,
-                            )
-                        };
-                        let agents = if due {
-                            let mut manager = self.subagent_manager.write().await;
-                            manager.cleanup(Duration::from_secs(60 * 60));
-                            manager.list()
-                        } else {
-                            self.subagent_manager.read().await.list()
-                        };
-                        // #3802: use non-blocking send — this is a refresh event
-                        // that can safely be dropped when the channel is full.
-                        // The next drain cycle will re-request the list.
-                        if let Err(_e) = self.tx_event.try_send(Event::AgentList { agents }) {
-                            tracing::debug!(
-                                "Event channel full; dropping ListSubAgents refresh (will retry next drain)"
-                            );
-                        }
-                    }
-                    Op::CancelSubAgent { agent_id } => {
-                        let result = {
-                            let mut manager = self.subagent_manager.write().await;
-                            match manager.cancel_agent(&agent_id) {
-                                Ok(_) => Ok(manager.list()),
-                                Err(err) => Err(err),
-                            }
-                        };
-                        match result {
-                            Ok(agents) => {
-                                if let Err(_e) = self.tx_event.try_send(Event::AgentList { agents })
-                                {
-                                    tracing::debug!(
-                                        "Event channel full; dropping CancelSubAgent refresh"
-                                    );
+                            let result = {
+                                let mut manager = self.subagent_manager.write().await;
+                                manager.spawn_background(
+                                    Arc::clone(&self.subagent_manager),
+                                    runtime,
+                                    SubAgentType::General,
+                                    prompt.clone(),
+                                    None,
+                                )
+                            };
+
+                            match result {
+                                Ok(snapshot) => {
+                                    let _ = self
+                                        .tx_event
+                                        .send(Event::status(format!(
+                                            "Spawned sub-agent {}",
+                                            snapshot.agent_id
+                                        )))
+                                        .await;
+                                }
+                                Err(err) => {
+                                    let _ = self
+                                        .tx_event
+                                        .send(Event::error(ErrorEnvelope::fatal(format!(
+                                            "Failed to spawn sub-agent: {err}"
+                                        ))))
+                                        .await;
                                 }
                             }
-                            Err(err) => {
-                                let _ =
-                                    self.tx_event
-                                        .try_send(Event::error(ErrorEnvelope::transient(format!(
-                                            "Failed to cancel sub-agent {agent_id}: {err}"
-                                        ))));
+                        }
+                        Op::ListSubAgents => {
+                            // #3803: the sidebar refresh is a read-only snapshot.
+                            // Render from a read lock; only take the write lock to
+                            // run cleanup on a bounded cadence, so a UI refresh storm
+                            // during a sub-agent fanout no longer contends for the
+                            // write lock (against completions/persistence) on every
+                            // request. Cleanup still auto-cancels stale agents.
+                            let due = {
+                                let manager = self.subagent_manager.read().await;
+                                manager.cleanup_due(
+                                    crate::tools::subagent::SUBAGENT_LIST_CLEANUP_MIN_INTERVAL,
+                                )
+                            };
+                            let agents = if due {
+                                let mut manager = self.subagent_manager.write().await;
+                                manager.cleanup(Duration::from_secs(60 * 60));
+                                manager.list()
+                            } else {
+                                self.subagent_manager.read().await.list()
+                            };
+                            // #3802: use non-blocking send — this is a refresh event
+                            // that can safely be dropped when the channel is full.
+                            // The next drain cycle will re-request the list.
+                            if let Err(_e) = self.tx_event.try_send(Event::AgentList { agents }) {
+                                tracing::debug!(
+                                    "Event channel full; dropping ListSubAgents refresh (will retry next drain)"
+                                );
                             }
                         }
-                    }
-                    Op::ChangeMode {
-                        mode,
-                        allow_shell,
-                        trust_mode,
-                        auto_approve,
-                        approval_mode,
-                    } => {
-                        let authority = TurnAuthority::from_effective_fields(
+                        Op::CancelSubAgent { agent_id } => {
+                            let result = {
+                                let mut manager = self.subagent_manager.write().await;
+                                match manager.cancel_agent(&agent_id) {
+                                    Ok(_) => Ok(manager.list()),
+                                    Err(err) => Err(err),
+                                }
+                            };
+                            match result {
+                                Ok(agents) => {
+                                    if let Err(_e) =
+                                        self.tx_event.try_send(Event::AgentList { agents })
+                                    {
+                                        tracing::debug!(
+                                            "Event channel full; dropping CancelSubAgent refresh"
+                                        );
+                                    }
+                                }
+                                Err(err) => {
+                                    let _ = self.tx_event.try_send(Event::error(
+                                        ErrorEnvelope::transient(format!(
+                                            "Failed to cancel sub-agent {agent_id}: {err}"
+                                        )),
+                                    ));
+                                }
+                            }
+                        }
+                        Op::ChangeMode {
                             mode,
                             allow_shell,
                             trust_mode,
                             auto_approve,
                             approval_mode,
-                        );
-                        self.apply_runtime_mode_policy(&authority);
-                        self.emit_session_updated().await;
-                        let _ = self
-                            .tx_event
-                            .send(Event::status(format!(
-                                "Mode changed to: {}",
-                                mode.description()
-                            )))
-                            .await;
-                    }
-                    Op::SetModel {
-                        model,
-                        mode: _,
-                        route_limits,
-                    } => {
-                        self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
-                        self.session.model = model;
-                        self.config.model.clone_from(&self.session.model);
-                        self.active_route_limits = route_limits;
-                        self.refresh_system_prompt();
-                        self.emit_session_updated().await;
-                        let _ = self
-                            .tx_event
-                            .send(Event::status(format!(
-                                "Model set to: {}",
-                                self.session.model
-                            )))
-                            .await;
-                    }
-                    Op::SetCompaction { config } => {
-                        let enabled = config.enabled;
-                        self.config.compaction = config;
-                        let _ = self
-                            .tx_event
-                            .send(Event::status(format!(
-                                "Auto-compaction {}",
-                                if enabled { "enabled" } else { "disabled" }
-                            )))
-                            .await;
-                    }
-                    Op::SetStreamChunkTimeout { timeout_secs } => {
-                        self.config.stream_chunk_timeout = Duration::from_secs(timeout_secs);
-                        let _ = self
-                            .tx_event
-                            .send(Event::status(format!(
-                                "Stream chunk timeout set to {timeout_secs}s"
-                            )))
-                            .await;
-                    }
-                    Op::SetSubagentRuntimeConfig {
-                        enabled,
-                        max_subagents,
-                        launch_concurrency,
-                        max_spawn_depth,
-                        api_timeout_secs,
-                        heartbeat_timeout_secs,
-                    } => {
-                        self.config.subagents_enabled = enabled;
-                        self.config.max_subagents =
-                            max_subagents.clamp(1, crate::config::MAX_SUBAGENTS);
-                        self.config.launch_concurrency =
-                            launch_concurrency.clamp(1, self.config.max_subagents);
-                        self.config.max_spawn_depth =
-                            max_spawn_depth.min(codewhale_config::MAX_SPAWN_DEPTH_CEILING);
-                        self.config.subagent_api_timeout = Duration::from_secs(api_timeout_secs);
-                        self.config.subagent_heartbeat_timeout =
-                            Duration::from_secs(heartbeat_timeout_secs);
-                        let launch_gate_applied = {
-                            let mut manager = self.subagent_manager.write().await;
-                            manager.update_runtime_limits(
-                                self.config.max_subagents,
-                                self.config.max_admitted_subagents,
-                                self.config.subagent_heartbeat_timeout,
-                                self.config.launch_concurrency,
-                                self.config.subagent_token_budget,
-                            )
-                        };
-                        let launch_note = if launch_gate_applied {
-                            ""
-                        } else {
-                            "; launch_concurrency takes full effect after active sub-agents finish or the session restarts"
-                        };
-                        let _ = self
+                        } => {
+                            let authority = TurnAuthority::from_effective_fields(
+                                mode,
+                                allow_shell,
+                                trust_mode,
+                                auto_approve,
+                                approval_mode,
+                            );
+                            self.apply_runtime_mode_policy(&authority);
+                            self.emit_session_updated().await;
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!(
+                                    "Mode changed to: {}",
+                                    mode.description()
+                                )))
+                                .await;
+                        }
+                        Op::SetModel {
+                            model,
+                            mode: _,
+                            route_limits,
+                        } => {
+                            self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
+                            self.session.model = model;
+                            self.config.model.clone_from(&self.session.model);
+                            self.active_route_limits = route_limits;
+                            self.refresh_system_prompt();
+                            self.emit_session_updated().await;
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!(
+                                    "Model set to: {}",
+                                    self.session.model
+                                )))
+                                .await;
+                        }
+                        Op::SetCompaction { config } => {
+                            let enabled = config.enabled;
+                            self.config.compaction = config;
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!(
+                                    "Auto-compaction {}",
+                                    if enabled { "enabled" } else { "disabled" }
+                                )))
+                                .await;
+                        }
+                        Op::SetStreamChunkTimeout { timeout_secs } => {
+                            self.config.stream_chunk_timeout = Duration::from_secs(timeout_secs);
+                            let _ = self
+                                .tx_event
+                                .send(Event::status(format!(
+                                    "Stream chunk timeout set to {timeout_secs}s"
+                                )))
+                                .await;
+                        }
+                        Op::SetSubagentRuntimeConfig {
+                            enabled,
+                            max_subagents,
+                            launch_concurrency,
+                            max_spawn_depth,
+                            api_timeout_secs,
+                            heartbeat_timeout_secs,
+                        } => {
+                            self.config.subagents_enabled = enabled;
+                            self.config.max_subagents =
+                                max_subagents.clamp(1, crate::config::MAX_SUBAGENTS);
+                            self.config.launch_concurrency =
+                                launch_concurrency.clamp(1, self.config.max_subagents);
+                            self.config.max_spawn_depth =
+                                max_spawn_depth.min(codewhale_config::MAX_SPAWN_DEPTH_CEILING);
+                            self.config.subagent_api_timeout =
+                                Duration::from_secs(api_timeout_secs);
+                            self.config.subagent_heartbeat_timeout =
+                                Duration::from_secs(heartbeat_timeout_secs);
+                            let launch_gate_applied = {
+                                let mut manager = self.subagent_manager.write().await;
+                                manager.update_runtime_limits(
+                                    self.config.max_subagents,
+                                    self.config.max_admitted_subagents,
+                                    self.config.subagent_heartbeat_timeout,
+                                    self.config.launch_concurrency,
+                                    self.config.subagent_token_budget,
+                                )
+                            };
+                            let launch_note = if launch_gate_applied {
+                                ""
+                            } else {
+                                "; launch_concurrency takes full effect after active sub-agents finish or the session restarts"
+                            };
+                            let _ = self
                             .tx_event
                             .send(Event::status(format!(
                                 "Sub-agent runtime updated: enabled={enabled}, max_subagents={}, launch_concurrency={}, max_depth={}{}",
@@ -2100,146 +2166,148 @@ impl Engine {
                                 launch_note
                             )))
                             .await;
-                    }
-                    Op::SyncSession {
-                        session_id,
-                        messages,
-                        system_prompt,
-                        system_prompt_override,
-                        model,
-                        workspace,
-                        mode,
-                    } => {
-                        if let Some(session_id) = session_id {
-                            self.session.id = session_id;
-                        } else if messages.is_empty() && system_prompt.is_none() {
-                            self.session.id = uuid::Uuid::new_v4().to_string();
                         }
-                        self.session.messages = messages.into();
-                        self.session.compaction_summary_prompt =
-                            extract_compaction_summary_prompt(system_prompt.clone());
-                        self.session.system_prompt = system_prompt;
-                        self.session.last_system_prompt_hash =
-                            Some(system_prompt_hash(self.session.system_prompt.as_ref()));
-                        // Host-supplied prompts are persisted prefixes. Keep them
-                        // byte-stable; mode/runtime state is projected per request.
-                        self.session.system_prompt_override =
-                            system_prompt_override && self.session.system_prompt.is_some();
-                        self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
-                        self.session.model = model;
-                        self.session.workspace = workspace.clone();
-                        self.current_mode = mode;
-                        self.config.model.clone_from(&self.session.model);
-                        self.config.workspace = workspace.clone();
-                        let ctx =
-                            crate::project_context::load_project_context_with_parents(&workspace);
-                        self.session.project_context = if ctx.has_instructions() {
-                            Some(ctx)
-                        } else {
-                            None
-                        };
-                        self.session.rebuild_working_set();
-                        self.emit_session_updated().await;
-                        let _ = self
-                            .tx_event
-                            .send(Event::status("Session context synced".to_string()))
-                            .await;
-                    }
-                    Op::CompactContext => {
-                        self.handle_manual_compaction().await;
-                    }
-                    Op::GetSessionSnapshot { tx } => {
-                        let total_tokens = self.session.total_usage.input_tokens
-                            + self.session.total_usage.output_tokens;
-                        let snapshot = SessionSnapshot {
-                            messages: self.session.messages.to_vec(),
-                            total_tokens,
-                            model: self.session.model.clone(),
-                            model_provider: self.api_provider.as_str().to_string(),
-                            workspace: self.session.workspace.clone(),
-                            system_prompt: self.session.system_prompt.clone(),
-                            mode: self.current_mode.as_setting().to_string(),
-                        };
-                        if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
-                            let _ = tx.send(snapshot);
-                        }
-                    }
-                    Op::GetProviderRuntimeStatus { tx } => {
-                        let status = if let Some(client) = self.deepseek_client.as_ref() {
-                            ProviderRuntimeStatus {
-                                provider: client.api_provider(),
-                                request_concurrency_limit: client
-                                    .provider_request_concurrency_limit(),
-                                active_provider_requests: client.active_provider_requests(),
-                            }
-                        } else {
-                            let provider = self.api_config.api_provider();
-                            ProviderRuntimeStatus {
-                                provider,
-                                request_concurrency_limit: self
-                                    .api_config
-                                    .provider_max_concurrency(provider),
-                                active_provider_requests: 0,
-                            }
-                        };
-                        if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
-                            let _ = tx.send(status);
-                        }
-                    }
-                    Op::PurgeContext => {
-                        self.handle_purge().await;
-                    }
-                    Op::EditLastTurn { new_message } => {
-                        // #383: /edit — remove the last user+assistant exchange
-                        // from the session, then re-send with the new content.
-                        // Pop messages from the tail until we've removed the
-                        // most recent user message and everything after it.
-                        // First, find the last user message index.
-                        let mut cut = None;
-                        for (idx, msg) in self.session.messages.iter().enumerate().rev() {
-                            if msg.role == "user" {
-                                cut = Some(idx);
-                                break;
-                            }
-                        }
-                        if let Some(idx) = cut {
-                            self.session.messages.truncate_to(idx);
-                            self.session.bump_messages_revision();
-                        }
-                        // Now dispatch the new message as a normal send,
-                        // reusing the engine's stored mode/model config.
-                        let mode = self.current_mode;
-                        self.handle_send_message(
-                            new_message,
+                        Op::SyncSession {
+                            session_id,
+                            messages,
+                            system_prompt,
+                            system_prompt_override,
+                            model,
+                            workspace,
                             mode,
-                            Some(self.api_provider),
-                            self.session.model.clone(),
-                            self.active_route_limits,
-                            self.config.compaction.clone(),
-                            self.config.goal_objective.clone(),
-                            self.config.goal_token_budget,
-                            self.config.goal_status,
-                            self.session.reasoning_effort.clone(),
-                            self.session.reasoning_effort_auto,
-                            self.session.auto_model,
-                            self.session.allow_shell,
-                            self.session.trust_mode,
-                            self.session.auto_approve,
-                            self.session.approval_mode,
-                            self.config.translation_enabled,
-                            self.config.show_thinking,
-                            self.config.allowed_tools.clone(),
-                            Vec::new(),
-                            self.config.hook_executor.clone(),
-                            self.config.verbosity.clone(),
-                            UserInputProvenance::ExternalUser,
-                        )
-                        .await;
+                        } => {
+                            if let Some(session_id) = session_id {
+                                self.session.id = session_id;
+                            } else if messages.is_empty() && system_prompt.is_none() {
+                                self.session.id = uuid::Uuid::new_v4().to_string();
+                            }
+                            self.session.messages = messages.into();
+                            self.session.compaction_summary_prompt =
+                                extract_compaction_summary_prompt(system_prompt.clone());
+                            self.session.system_prompt = system_prompt;
+                            self.session.last_system_prompt_hash =
+                                Some(system_prompt_hash(self.session.system_prompt.as_ref()));
+                            // Host-supplied prompts are persisted prefixes. Keep them
+                            // byte-stable; mode/runtime state is projected per request.
+                            self.session.system_prompt_override =
+                                system_prompt_override && self.session.system_prompt.is_some();
+                            self.session.auto_model = model.trim().eq_ignore_ascii_case("auto");
+                            self.session.model = model;
+                            self.session.workspace = workspace.clone();
+                            self.current_mode = mode;
+                            self.config.model.clone_from(&self.session.model);
+                            self.config.workspace = workspace.clone();
+                            let ctx = crate::project_context::load_project_context_with_parents(
+                                &workspace,
+                            );
+                            self.session.project_context = if ctx.has_instructions() {
+                                Some(ctx)
+                            } else {
+                                None
+                            };
+                            self.session.rebuild_working_set();
+                            self.emit_session_updated().await;
+                            let _ = self
+                                .tx_event
+                                .send(Event::status("Session context synced".to_string()))
+                                .await;
+                        }
+                        Op::CompactContext => {
+                            self.handle_manual_compaction().await;
+                        }
+                        Op::GetSessionSnapshot { tx } => {
+                            let total_tokens = self.session.total_usage.input_tokens
+                                + self.session.total_usage.output_tokens;
+                            let snapshot = SessionSnapshot {
+                                messages: self.session.messages.to_vec(),
+                                total_tokens,
+                                model: self.session.model.clone(),
+                                model_provider: self.api_provider.as_str().to_string(),
+                                workspace: self.session.workspace.clone(),
+                                system_prompt: self.session.system_prompt.clone(),
+                                mode: self.current_mode.as_setting().to_string(),
+                            };
+                            if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
+                                let _ = tx.send(snapshot);
+                            }
+                        }
+                        Op::GetProviderRuntimeStatus { tx } => {
+                            let status = if let Some(client) = self.deepseek_client.as_ref() {
+                                ProviderRuntimeStatus {
+                                    provider: client.api_provider(),
+                                    request_concurrency_limit: client
+                                        .provider_request_concurrency_limit(),
+                                    active_provider_requests: client.active_provider_requests(),
+                                }
+                            } else {
+                                let provider = self.api_config.api_provider();
+                                ProviderRuntimeStatus {
+                                    provider,
+                                    request_concurrency_limit: self
+                                        .api_config
+                                        .provider_max_concurrency(provider),
+                                    active_provider_requests: 0,
+                                }
+                            };
+                            if let Some(tx) = tx.lock().ok().and_then(|mut g| g.take()) {
+                                let _ = tx.send(status);
+                            }
+                        }
+                        Op::PurgeContext => {
+                            self.handle_purge().await;
+                        }
+                        Op::EditLastTurn { new_message } => {
+                            // #383: /edit — remove the last user+assistant exchange
+                            // from the session, then re-send with the new content.
+                            // Pop messages from the tail until we've removed the
+                            // most recent user message and everything after it.
+                            // First, find the last user message index.
+                            let mut cut = None;
+                            for (idx, msg) in self.session.messages.iter().enumerate().rev() {
+                                if msg.role == "user" {
+                                    cut = Some(idx);
+                                    break;
+                                }
+                            }
+                            if let Some(idx) = cut {
+                                self.session.messages.truncate_to(idx);
+                                self.session.bump_messages_revision();
+                            }
+                            // Now dispatch the new message as a normal send,
+                            // reusing the engine's stored mode/model config.
+                            let mode = self.current_mode;
+                            self.handle_send_message(
+                                new_message,
+                                mode,
+                                Some(self.api_provider),
+                                self.session.model.clone(),
+                                self.active_route_limits,
+                                self.config.compaction.clone(),
+                                self.config.goal_objective.clone(),
+                                self.config.goal_token_budget,
+                                self.config.goal_status,
+                                self.session.reasoning_effort.clone(),
+                                self.session.reasoning_effort_auto,
+                                self.session.auto_model,
+                                self.session.allow_shell,
+                                self.session.trust_mode,
+                                self.session.auto_approve,
+                                self.session.approval_mode,
+                                self.config.translation_enabled,
+                                self.config.show_thinking,
+                                self.config.allowed_tools.clone(),
+                                Vec::new(),
+                                self.config.hook_executor.clone(),
+                                self.config.verbosity.clone(),
+                                UserInputProvenance::ExternalUser,
+                            )
+                            .await;
+                        }
+                        Op::Shutdown => {
+                            break;
+                        }
                     }
-                    Op::Shutdown => {
-                        break;
-                    }
-                },
+                }
             }
         }
 
@@ -2250,14 +2318,26 @@ impl Engine {
             manager.flush_pending_persist();
         }
 
-        // #420: graceful MCP shutdown — send SIGTERM and give stdio servers
-        // a brief window to exit before drop fires SIGKILL via kill_on_drop.
-        // Best-effort: pool may not exist (no MCP configured) and the lock
-        // can fail under contention; either way the kill_on_drop fallback
-        // still reaps the children.
-        if let Some(pool) = self.mcp_pool.as_ref() {
-            let mut guard = pool.lock().await;
-            guard.shutdown_all().await;
+        // MCP and LSP remain owned by this one Engine lifecycle, but their
+        // independent process trees settle concurrently so N servers cannot
+        // consume N sequential Headless grace windows.
+        let shutdown_report = if let Some(pool) = self.mcp_pool.as_ref() {
+            let shutdown_mcp = async {
+                let mut guard = pool.lock().await;
+                guard.shutdown_all().await
+            };
+            let shutdown_lsp = self.lsp_manager.shutdown_all();
+            let (mcp, lsp) = tokio::join!(shutdown_mcp, shutdown_lsp);
+            EngineOwnedShutdownReport { mcp, lsp }
+        } else {
+            EngineOwnedShutdownReport {
+                mcp: McpShutdownReport::default(),
+                lsp: self.lsp_manager.shutdown_all().await,
+            }
+        };
+        match self.runtime_shutdown_receipt.lock() {
+            Ok(mut receipt) => *receipt = Some(shutdown_report),
+            Err(poisoned) => *poisoned.into_inner() = Some(shutdown_report),
         }
     }
 
@@ -2289,19 +2369,86 @@ impl Engine {
 
     async fn emit_goal_updated(&self) {
         if let Some(snapshot) = self.goal_snapshot_for_event() {
-            let _ = self.tx_event.send(Event::GoalUpdated { snapshot }).await;
+            let _ = self
+                .tx_event
+                .send(Event::GoalUpdated {
+                    snapshot: Box::new(snapshot),
+                })
+                .await;
         }
     }
 
-    fn record_goal_usage_for_turn(&self, usage: &Usage, elapsed: std::time::Duration) {
-        let token_delta =
-            u64::from(usage.input_tokens).saturating_add(u64::from(usage.output_tokens));
-        let time_delta_seconds = elapsed.as_secs();
-        if token_delta == 0 && time_delta_seconds == 0 {
-            return;
-        }
+    fn active_goal_generation(&self) -> Option<u64> {
         match self.config.goal_state.lock() {
-            Ok(mut state) => state.record_usage(token_delta, time_delta_seconds),
+            Ok(state) => state.active_generation(),
+            Err(err) => {
+                tracing::warn!("goal state lock poisoned while capturing generation: {err}");
+                None
+            }
+        }
+    }
+
+    fn record_goal_usage_for_turn(
+        &mut self,
+        usage: &Usage,
+        elapsed: Duration,
+        expected_generation: Option<u64>,
+    ) {
+        let (token_delta, ledger_total) = if let Some(budget) = self.api_request_budget.as_ref() {
+            let observed = budget.usage_snapshot().usage;
+            let total =
+                u64::from(observed.input_tokens).saturating_add(u64::from(observed.output_tokens));
+            let delta = total.saturating_sub(self.goal_accounted_api_tokens);
+            (delta, Some(total))
+        } else {
+            (
+                u64::from(usage.input_tokens).saturating_add(u64::from(usage.output_tokens)),
+                None,
+            )
+        };
+
+        let Some(expected_generation) = expected_generation else {
+            if let Some(total) = ledger_total {
+                self.goal_accounted_api_tokens = total;
+            }
+            self.goal_time_remainder = Duration::ZERO;
+            self.goal_time_remainder_generation = None;
+            return;
+        };
+
+        let carried_time = if self.goal_time_remainder_generation == Some(expected_generation) {
+            self.goal_time_remainder
+        } else {
+            Duration::ZERO
+        };
+        let accumulated_time = carried_time.saturating_add(elapsed);
+        let time_delta_seconds = accumulated_time.as_secs();
+        let next_remainder =
+            accumulated_time.saturating_sub(Duration::from_secs(time_delta_seconds));
+        let goal_state = self.config.goal_state.clone();
+        match goal_state.lock() {
+            Ok(mut state) => {
+                if state.record_usage_for_generation(
+                    expected_generation,
+                    token_delta,
+                    time_delta_seconds,
+                ) {
+                    if let Some(total) = ledger_total {
+                        self.goal_accounted_api_tokens = total;
+                    }
+                    self.goal_time_remainder = next_remainder;
+                    self.goal_time_remainder_generation = Some(expected_generation);
+                } else {
+                    // The objective was cleared or replaced during the turn.
+                    // Advance the cumulative ledger baseline, but never charge
+                    // the old turn to the new generation.
+                    if let Some(total) = ledger_total {
+                        self.goal_accounted_api_tokens = total;
+                    }
+                    self.goal_time_remainder = Duration::ZERO;
+                    self.goal_time_remainder_generation = None;
+                }
+            }
             Err(err) => tracing::warn!("goal state lock poisoned while recording usage: {err}"),
         }
     }
@@ -2568,7 +2715,21 @@ impl Engine {
         }
     }
 
+    async fn emit_run_terminal_candidate_if_idle(&self, continuation_scheduled: bool) {
+        if continuation_scheduled || self.quiescing.load(Ordering::Acquire) {
+            return;
+        }
+        let children_running = self.subagent_manager.read().await.running_count() > 0;
+        if children_running || !self.rx_subagent_completion.is_empty() {
+            return;
+        }
+        let _ = self.tx_event.send(Event::RunTerminalCandidate).await;
+    }
+
     async fn handle_idle_subagent_completion(&mut self, first: SubAgentCompletion) {
+        if self.quiescing.load(Ordering::Acquire) {
+            return;
+        }
         let mut completions = vec![first];
         while let Ok(completion) = self.rx_subagent_completion.try_recv() {
             completions.push(completion);
@@ -2618,30 +2779,107 @@ impl Engine {
 
     /// Handle a send message operation
     #[allow(clippy::too_many_arguments)]
-    /// After a turn completes, check whether an active goal should keep going.
-    /// Returns a continuation message to re-dispatch as a new turn, or `None`
-    /// if the goal is complete, blocked, paused, or over an optional budget.
-    ///
-    /// There is no continuation cap — a goal runs until the model self-reports
-    /// done/blocked, the user pauses or clears, or an optional token/time
-    /// budget is exhausted. The loop is "until done," not "until N turns."
-    fn goal_continuation_if_active(&self) -> Option<String> {
-        let snapshot = self.config.goal_state.lock().ok()?.snapshot();
-        if !snapshot.is_active() {
-            return None;
+    /// Reduce the current durable Goal snapshot into a typed post-turn
+    /// decision. A missing Goal is ordinary one-shot success; only an explicit
+    /// `complete` Goal is successful. Blocked/paused/budget stops must not be
+    /// collapsed into the same `None` used by a completed Goal.
+    async fn goal_post_turn_decision(&self) -> GoalPostTurnDecision {
+        let snapshot = match self.config.goal_state.lock() {
+            Ok(state) => state.snapshot(),
+            Err(error) => {
+                tracing::warn!("goal state lock poisoned during continuation check: {error}");
+                return GoalPostTurnDecision::Blocked(
+                    "Goal 状态不可读取，不能判定目标已完成".to_string(),
+                );
+            }
+        };
+        if snapshot.objective.is_none() {
+            return GoalPostTurnDecision::NoGoal;
+        }
+        match snapshot.status.as_str() {
+            "complete" => {
+                // Host-controlled `/goal complete` has no model verifier
+                // receipt and remains authoritative. Model-completed Goals
+                // always carry a receipt and must still match the *final*
+                // workspace after every tool in the assistant response has
+                // finished, otherwise `update_goal` followed by a write could
+                // publish a false success.
+                let Some(receipt) = snapshot.host_verification.as_ref() else {
+                    return GoalPostTurnDecision::Completed;
+                };
+                if let Some(limit) = snapshot.token_budget.map(u64::from)
+                    && snapshot.tokens_used > limit
+                {
+                    return GoalPostTurnDecision::TokenBudgetExhausted {
+                        used: snapshot.tokens_used,
+                        limit,
+                    };
+                }
+                let contract_matches = snapshot
+                    .task_contract
+                    .as_ref()
+                    .is_some_and(|contract| receipt.matches_contract(contract));
+                let revision = if contract_matches {
+                    Some(
+                        crate::tools::goal::capture_workspace_revision(&self.session.workspace)
+                            .await,
+                    )
+                } else {
+                    None
+                };
+                if revision
+                    .as_ref()
+                    .is_some_and(|revision| revision.as_ref() == Ok(&receipt.workspace_revision))
+                {
+                    return GoalPostTurnDecision::Completed;
+                }
+
+                let reason = match revision {
+                    None => "验证凭据与当前 Goal 任务契约不匹配".to_string(),
+                    Some(Ok(_)) => "工作区在验证通过后又发生了变化".to_string(),
+                    Some(Err(error)) => format!("无法复核最终工作区版本：{error}"),
+                };
+                let reopened = match self.config.goal_state.lock() {
+                    Ok(mut state) => {
+                        state.reopen_after_stale_verification();
+                        state.snapshot()
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "goal state lock poisoned while reopening stale completion: {error}"
+                        );
+                        return GoalPostTurnDecision::Blocked(
+                            "Goal 最终验证失效且状态无法恢复，不能判定目标已完成".to_string(),
+                        );
+                    }
+                };
+                return GoalPostTurnDecision::Continue(format!(
+                    "Goal 完成候选被宿主撤销：{reason}。请在最终代码状态上重新运行前台验证。\n\n{}",
+                    crate::tools::goal::render_continuation_prompt(
+                        &reopened,
+                        reopened.continuation_count,
+                    )
+                ));
+            }
+            "blocked" => {
+                return GoalPostTurnDecision::Blocked(
+                    snapshot
+                        .blocker
+                        .clone()
+                        .unwrap_or_else(|| "Goal 已阻塞，但未提供阻塞原因".to_string()),
+                );
+            }
+            "paused" => return GoalPostTurnDecision::Paused,
+            "active" => {}
+            status => {
+                return GoalPostTurnDecision::Blocked(format!(
+                    "Goal 进入未知状态“{status}”，不能判定目标已完成"
+                ));
+            }
         }
 
-        // The snapshot status is a string ("active", "paused", "complete",
-        // "blocked"). Map it to the goal-loop decision core's status enum.
-        let status = match snapshot.status.as_str() {
-            "active" => crate::goal_loop::GoalRunStatus::Active,
-            "complete" => crate::goal_loop::GoalRunStatus::Completed,
-            // Paused / Blocked / unknown → no continuation.
-            _ => return None,
-        };
-
-        let decision = crate::goal_loop::decide_continuation(
-            status,
+        match crate::goal_loop::decide_continuation(
+            crate::goal_loop::GoalRunStatus::Active,
             crate::goal_loop::GoalProgress {
                 tokens_used: snapshot.tokens_used,
                 time_used_seconds: snapshot.time_used_seconds,
@@ -2651,21 +2889,40 @@ impl Engine {
                 token_budget: snapshot.token_budget.map(u64::from),
                 time_budget_seconds: None,
             },
-        );
-
-        match decision {
+        ) {
             crate::goal_loop::ContinuationDecision::Continue => {
-                Some(crate::tools::goal::render_continuation_prompt(
+                GoalPostTurnDecision::Continue(crate::tools::goal::render_continuation_prompt(
                     &snapshot,
                     snapshot.continuation_count,
                 ))
             }
-            // All stop reasons → no continuation. The caller (the async turn
-            // completion path) emits a status message for budget-exhaustion.
-            crate::goal_loop::ContinuationDecision::Stop(reason) => {
-                tracing::info!(?reason, "goal continuation stopped");
-                None
+            crate::goal_loop::ContinuationDecision::Stop(
+                crate::goal_loop::StopReason::TokenBudget,
+            ) => GoalPostTurnDecision::TokenBudgetExhausted {
+                used: snapshot.tokens_used,
+                limit: snapshot.token_budget.map(u64::from).unwrap_or_default(),
+            },
+            crate::goal_loop::ContinuationDecision::Stop(
+                crate::goal_loop::StopReason::TimeBudget,
+            ) => GoalPostTurnDecision::TimeBudgetExhausted {
+                used_seconds: snapshot.time_used_seconds,
+                limit_seconds: 0,
+            },
+            crate::goal_loop::ContinuationDecision::Stop(
+                crate::goal_loop::StopReason::Completed,
+            ) => GoalPostTurnDecision::Completed,
+            crate::goal_loop::ContinuationDecision::Stop(crate::goal_loop::StopReason::Blocked) => {
+                GoalPostTurnDecision::Blocked(
+                    snapshot
+                        .blocker
+                        .unwrap_or_else(|| "Goal 已阻塞，但未提供阻塞原因".to_string()),
+                )
             }
+            crate::goal_loop::ContinuationDecision::Stop(
+                crate::goal_loop::StopReason::ContinuationLimit,
+            ) => GoalPostTurnDecision::Blocked(
+                "Goal 连续执行触发了运行保护，不能判定目标已完成".to_string(),
+            ),
         }
     }
 
@@ -2736,6 +2993,9 @@ impl Engine {
         verbosity: Option<String>,
         provenance: UserInputProvenance,
     ) {
+        if self.quiescing.load(Ordering::Acquire) {
+            return;
+        }
         let input_policy = effective_input_policy(
             provenance,
             mode,
@@ -2750,6 +3010,10 @@ impl Engine {
         }
         // Reset cancel token for fresh turn (in case previous was cancelled)
         self.reset_cancel_token();
+        if self.quiescing.load(Ordering::Acquire) {
+            self.cancel_token.cancel();
+            return;
+        }
 
         // Track the complete effective mode policy so mid-turn metadata, `/edit`,
         // idle worker resumptions, and approval gates cannot read a stale policy
@@ -2789,6 +3053,7 @@ impl Engine {
                 .tx_event
                 .send(Event::error(ErrorEnvelope::transient(message.clone())))
                 .await;
+            self.emit_run_terminal_candidate_if_idle(false).await;
             let _ = self
                 .tx_event
                 .send(Event::TurnComplete {
@@ -2846,6 +3111,7 @@ impl Engine {
                 .tx_event
                 .send(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
                 .await;
+            self.emit_run_terminal_candidate_if_idle(false).await;
             let _ = self
                 .tx_event
                 .send(Event::TurnComplete {
@@ -2869,6 +3135,7 @@ impl Engine {
                 .tx_event
                 .send(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
                 .await;
+            self.emit_run_terminal_candidate_if_idle(false).await;
             let _ = self
                 .tx_event
                 .send(Event::TurnComplete {
@@ -2919,6 +3186,7 @@ impl Engine {
                 goal_status,
             );
         }
+        let goal_generation_for_turn = self.active_goal_generation();
         self.config.allowed_tools = allowed_tools;
         self.config.hook_executor = hook_executor;
         self.session.reasoning_effort = reasoning_effort;
@@ -2977,7 +3245,7 @@ impl Engine {
             let cancel_token = self.cancel_token.child_token();
             let (mailbox, mut receiver) = Mailbox::new(cancel_token.clone());
             let tx_event_clone = self.tx_event.clone();
-            spawn_supervised(
+            let drainer = spawn_supervised(
                 "subagent-mailbox-drainer",
                 std::panic::Location::caller(),
                 async move {
@@ -3009,6 +3277,7 @@ impl Engine {
                     }
                 },
             );
+            self.track_lifecycle_task(drainer);
             Some((mailbox, cancel_token))
         } else {
             None
@@ -3123,6 +3392,12 @@ impl Engine {
                     tool.defer_loading = Some(false);
                 }
             }
+            // Assemble the complete searchable catalog before applying the
+            // session gates. Otherwise synthetic tools added later (notably
+            // tool_search) can bypass --allowed-tools / --disallowed-tools.
+            if !catalog.is_empty() {
+                ensure_advanced_tooling(&mut catalog, input_policy.mode, &always_load);
+            }
             filter_tool_catalog_for_gates(
                 &mut catalog,
                 self.config.allowed_tools.as_deref(),
@@ -3151,7 +3426,7 @@ impl Engine {
         ))
         .catch_unwind()
         .await;
-        let (status, error) = match turn_result {
+        let (mut status, mut error) = match turn_result {
             Ok(outcome) => outcome,
             Err(panic) => {
                 let detail = crate::utils::panic_message(&*panic);
@@ -3169,11 +3444,129 @@ impl Engine {
 
         // Update session usage
         self.session.total_usage.add(&turn.usage);
-        self.record_goal_usage_for_turn(&turn.usage, turn.elapsed());
+        self.record_goal_usage_for_turn(&turn.usage, turn.elapsed(), goal_generation_for_turn);
+        let mut goal_continuation = None;
+        let mut goal_terminal_error = None;
+        if status == TurnOutcomeStatus::Completed {
+            match self.goal_post_turn_decision().await {
+                GoalPostTurnDecision::NoGoal | GoalPostTurnDecision::Completed => {}
+                GoalPostTurnDecision::Continue(continuation) => {
+                    goal_continuation = Some(continuation);
+                }
+                GoalPostTurnDecision::Blocked(blocker) => {
+                    status = TurnOutcomeStatus::Failed;
+                    let message = format!("Goal 未完成，当前已阻塞：{blocker}");
+                    error = Some(message.clone());
+                    goal_terminal_error = Some(ErrorEnvelope::new(
+                        crate::error_taxonomy::ErrorCategory::State,
+                        crate::error_taxonomy::ErrorSeverity::Error,
+                        false,
+                        "goal_blocked",
+                        message,
+                    ));
+                }
+                GoalPostTurnDecision::Paused => {
+                    status = TurnOutcomeStatus::Interrupted;
+                    let message = "Goal 已暂停，不能判定目标已完成".to_string();
+                    error = Some(message.clone());
+                    goal_terminal_error = Some(ErrorEnvelope::new(
+                        crate::error_taxonomy::ErrorCategory::State,
+                        crate::error_taxonomy::ErrorSeverity::Warning,
+                        true,
+                        "goal_paused",
+                        message,
+                    ));
+                }
+                GoalPostTurnDecision::TokenBudgetExhausted { used, limit } => {
+                    status = TurnOutcomeStatus::Failed;
+                    let message = format!(
+                        "Goal Token 预算已用尽（已使用：{used}，上限：{limit}），目标不能判定为完成"
+                    );
+                    error = Some(message.clone());
+                    goal_terminal_error = Some(ErrorEnvelope::new(
+                        crate::error_taxonomy::ErrorCategory::State,
+                        crate::error_taxonomy::ErrorSeverity::Error,
+                        false,
+                        "goal_token_budget_exhausted",
+                        message,
+                    ));
+                }
+                GoalPostTurnDecision::TimeBudgetExhausted {
+                    used_seconds,
+                    limit_seconds,
+                } => {
+                    status = TurnOutcomeStatus::Failed;
+                    let message = format!(
+                        "Goal 时间预算已用尽（已使用：{used_seconds} 秒，上限：{limit_seconds} 秒），目标不能判定为完成"
+                    );
+                    error = Some(message.clone());
+                    goal_terminal_error = Some(ErrorEnvelope::new(
+                        crate::error_taxonomy::ErrorCategory::State,
+                        crate::error_taxonomy::ErrorSeverity::Error,
+                        false,
+                        "goal_time_budget_exhausted",
+                        message,
+                    ));
+                }
+            }
+        }
+
+        // Queue the next turn before announcing it. `try_send` avoids a
+        // self-deadlock when the bounded op channel is full: the Engine cannot
+        // drain that channel until this handler returns. A failed queue is a
+        // typed terminal failure, never a phantom continuation marker.
+        if let Some(continuation) = goal_continuation.as_ref() {
+            let continuation_op = Op::SendMessage {
+                content: continuation.clone(),
+                mode,
+                provider,
+                model: self.session.model.clone(),
+                route_limits: self.active_route_limits,
+                compaction: Box::new(self.config.compaction.clone()),
+                goal_objective: None,
+                goal_token_budget: None,
+                goal_status: GoalStatus::Active,
+                reasoning_effort: self.session.reasoning_effort.clone(),
+                reasoning_effort_auto,
+                auto_model,
+                allow_shell,
+                trust_mode,
+                auto_approve,
+                approval_mode,
+                translation_enabled,
+                show_thinking,
+                allowed_tools: self.config.allowed_tools.clone(),
+                dynamic_tools: dynamic_tools.clone(),
+                hook_executor: self.config.hook_executor.clone(),
+                verbosity: self.config.verbosity.clone(),
+                provenance: UserInputProvenance::Runtime,
+            };
+            if let Err(send_error) = self.tx_op.try_send(continuation_op) {
+                goal_continuation = None;
+                status = TurnOutcomeStatus::Failed;
+                let message = format!("Goal 后续回合无法进入 Engine 队列：{send_error}");
+                error = Some(message.clone());
+                goal_terminal_error = Some(ErrorEnvelope::new(
+                    crate::error_taxonomy::ErrorCategory::Internal,
+                    crate::error_taxonomy::ErrorSeverity::Error,
+                    false,
+                    "goal_continuation_enqueue_failed",
+                    message,
+                ));
+            }
+        }
 
         // Emit turn complete event — after all post-turn bookkeeping so
         // the terminal is immediately responsive when the UI receives it.
+        if let Some(envelope) = goal_terminal_error {
+            let _ = self.tx_event.send(Event::error(envelope)).await;
+        }
         self.emit_goal_updated().await;
+        if goal_continuation.is_some() {
+            let _ = self.tx_event.send(Event::GoalContinuationScheduled).await;
+        }
+        self.emit_run_terminal_candidate_if_idle(goal_continuation.is_some())
+            .await;
         let _ = self
             .tx_event
             .send(Event::TurnComplete {
@@ -3204,51 +3597,6 @@ impl Engine {
                 );
             });
         }
-
-        // ── Cross-turn goal continuation ───────────────────────────────────
-        // If the turn completed successfully and a goal is still Active (and
-        // under any optional budget), re-dispatch a synthetic continuation
-        // message back into the engine's own op channel. This makes `/goal` a
-        // persistent loop that runs until the model self-reports complete or
-        // blocked, the user pauses/clears, or an optional budget is exhausted.
-        // There is no continuation cap. A Failed or Interrupted turn does NOT
-        // continue — Esc cancels the loop by interrupting the turn.
-        if status == TurnOutcomeStatus::Completed
-            && let Some(continuation) = self.goal_continuation_if_active()
-        {
-            // Re-dispatch with the same route/mode/approval settings as
-            // the prior turn. The non-Copy values were moved into
-            // `self.config` / `self.session` earlier in this function, so
-            // we clone them back out here.
-            let _ = self
-                .tx_op
-                .send(Op::SendMessage {
-                    content: continuation,
-                    mode,
-                    provider,
-                    model: self.session.model.clone(),
-                    route_limits: self.active_route_limits,
-                    compaction: Box::new(self.config.compaction.clone()),
-                    goal_objective: None,
-                    goal_token_budget: None,
-                    goal_status: GoalStatus::Active,
-                    reasoning_effort: self.session.reasoning_effort.clone(),
-                    reasoning_effort_auto,
-                    auto_model,
-                    allow_shell,
-                    trust_mode,
-                    auto_approve,
-                    approval_mode,
-                    translation_enabled,
-                    show_thinking,
-                    allowed_tools: self.config.allowed_tools.clone(),
-                    dynamic_tools: dynamic_tools.clone(),
-                    hook_executor: self.config.hook_executor.clone(),
-                    verbosity: self.config.verbosity.clone(),
-                    provenance: UserInputProvenance::Runtime,
-                })
-                .await;
-        }
     }
 
     async fn handle_manual_compaction(&mut self) {
@@ -3266,6 +3614,7 @@ impl Engine {
                 .tx_event
                 .send(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
                 .await;
+            self.emit_run_terminal_candidate_if_idle(false).await;
             let _ = self
                 .tx_event
                 .send(Event::TurnComplete {
@@ -3345,6 +3694,7 @@ impl Engine {
             }
         }
 
+        self.emit_run_terminal_candidate_if_idle(false).await;
         let _ = self
             .tx_event
             .send(Event::TurnComplete {
@@ -3370,6 +3720,7 @@ impl Engine {
                 .tx_event
                 .send(Event::error(ErrorEnvelope::fatal_auth(message.clone())))
                 .await;
+            self.emit_run_terminal_candidate_if_idle(false).await;
             let _ = self
                 .tx_event
                 .send(Event::TurnComplete {
@@ -3432,6 +3783,7 @@ impl Engine {
             }
         };
 
+        self.emit_run_terminal_candidate_if_idle(false).await;
         let _ = self
             .tx_event
             .send(Event::TurnComplete {
@@ -3609,6 +3961,15 @@ impl Engine {
         // refresh hook.
         let trusted = crate::workspace_trust::WorkspaceTrust::load_for(&self.session.workspace);
         let mut trusted_external_paths = trusted.paths().to_vec();
+        let goal_contract = match self.config.goal_state.lock() {
+            Ok(state) => state.active_task_contract().cloned(),
+            Err(error) => {
+                tracing::warn!(
+                    "goal state lock poisoned while binding tool context contract: {error}"
+                );
+                None
+            }
+        };
         let clipboard_images_dir =
             crate::tui::clipboard::clipboard_images_dir(&self.session.workspace);
         if !trusted_external_paths
@@ -3624,6 +3985,7 @@ impl Engine {
             self.session.mcp_config_path.clone(),
             authority.auto_approve,
         )
+        .with_goal_contract(goal_contract)
         .with_state_namespace(self.session.id.clone())
         .with_features(self.config.features.clone())
         .with_shell_manager(self.shell_manager.clone())
@@ -4263,25 +4625,14 @@ pub fn spawn_engine(config: EngineConfig, api_config: &Config) -> EngineHandle {
     spawn_engine_task(engine, handle)
 }
 
-pub(crate) fn spawn_engine_with_api_request_budget(
-    config: EngineConfig,
-    api_config: &Config,
-    api_request_budget: SharedApiRequestBudget,
-) -> EngineHandle {
-    let (engine, handle) =
-        Engine::new_with_api_request_budget(config, api_config, api_request_budget);
-    spawn_engine_task(engine, handle)
-}
-
 fn spawn_engine_task(engine: Engine, handle: EngineHandle) -> EngineHandle {
-    spawn_supervised(
+    let _task = spawn_supervised(
         "engine-event-loop",
         std::panic::Location::caller(),
         async move {
             engine.run().await;
         },
     );
-
     handle
 }
 
@@ -4423,11 +4774,10 @@ use self::streaming::TOOL_CALL_START_MARKERS;
 #[cfg(test)]
 use self::streaming::filter_tool_call_delta;
 use self::streaming::{
-    ContentBlockKind, FAKE_WRAPPER_NOTICE, MAX_STREAM_ERRORS_BEFORE_FAIL, MAX_STREAM_RETRIES,
-    MAX_TRANSPARENT_STREAM_RETRIES, STREAM_MAX_CONTENT_BYTES, STREAM_MAX_DURATION_SECS,
-    ToolCallDeltaFilterState, ToolUseState, contains_fake_tool_wrapper,
+    ContentBlockKind, FAKE_WRAPPER_NOTICE, MAX_STREAM_RETRIES, STREAM_MAX_CONTENT_BYTES,
+    STREAM_MAX_DURATION_SECS, ToolCallDeltaFilterState, ToolUseState, contains_fake_tool_wrapper,
     filter_tool_call_delta_with_state, flush_tool_call_delta_state, should_resume_after_sleep,
-    should_transparently_retry_stream, sleep_gap_detected, stream_read_error_user_message,
+    sleep_gap_detected, stream_read_error_user_message,
 };
 use self::tool_catalog::{
     CODE_EXECUTION_TOOL_NAME, JS_EXECUTION_TOOL_NAME, MULTI_TOOL_PARALLEL_NAME,

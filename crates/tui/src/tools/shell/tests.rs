@@ -219,7 +219,7 @@ async fn read_only_shell_policy_blocks_non_readonly_commands() {
         .execute(json!({"command": "cargo build"}), &ctx)
         .await
         .expect("execute");
-    assert!(!result.success);
+    assert!(!result.is_success());
     assert!(result.content.contains("read-only shell policy"));
 
     let result = tool
@@ -229,7 +229,7 @@ async fn read_only_shell_policy_blocks_non_readonly_commands() {
         )
         .await
         .expect("execute");
-    assert!(!result.success);
+    assert!(!result.is_success());
     assert!(result.content.contains("read-only shell policy"));
 }
 
@@ -245,7 +245,7 @@ async fn read_only_shell_policy_allows_readonly_inspection() {
         .expect("execute");
 
     assert!(
-        result.success,
+        result.is_success(),
         "unexpected shell failure: {}",
         result.content
     );
@@ -272,7 +272,7 @@ async fn exec_shell_multiline_block_explains_allow_shell_boundary() {
         .await
         .expect("execute");
 
-    assert!(!result.success);
+    assert!(!result.is_success());
     assert!(result.content.contains("Command contains multiple lines"));
     assert!(
         result
@@ -853,7 +853,7 @@ fn shell_delta_result_surfaces_network_restricted_hint() {
         &ctx,
     );
 
-    assert!(!tool_result.success);
+    assert!(!tool_result.is_success());
     assert!(tool_result.content.starts_with("Shell command blocked"));
     let metadata = tool_result.metadata.expect("metadata");
     assert_eq!(
@@ -988,7 +988,7 @@ fn shell_delta_result_surfaces_python_build_dependency_hint() {
         &ctx,
     );
 
-    assert!(!tool_result.success);
+    assert!(!tool_result.is_success());
     assert!(
         tool_result
             .content
@@ -1025,7 +1025,7 @@ async fn test_exec_shell_metadata_includes_summaries() {
         .execute(json!({"command": echo_command("hello")}), &ctx)
         .await
         .expect("execute");
-    assert!(result.success);
+    assert!(result.is_success());
 
     let meta = result.metadata.expect("metadata");
     let summary = meta
@@ -1050,7 +1050,7 @@ async fn test_exec_shell_combined_output_uses_single_stream() {
         .execute(json!({"command": command, "combined_output": true}), &ctx)
         .await
         .expect("execute");
-    assert!(result.success, "{}", result.content);
+    assert!(result.is_success(), "{}", result.content);
     assert!(result.content.contains("out"), "{}", result.content);
     assert!(result.content.contains("err"), "{}", result.content);
 
@@ -1078,7 +1078,7 @@ async fn test_exec_shell_foreground_timeout_guides_background_rerun() {
         .await
         .expect("execute");
 
-    assert!(!result.success);
+    assert!(!result.is_success());
     assert!(result.content.contains("task_shell_start"));
     assert!(result.content.contains("background: true"));
     assert!(result.content.contains("process killed"));
@@ -1144,7 +1144,7 @@ async fn test_exec_shell_foreground_cancel_kills_process() {
         .expect("foreground shell should observe cancellation")
         .expect("task should not panic");
 
-    assert!(!result.success);
+    assert!(!result.is_success());
     assert!(result.content.contains("Command canceled"));
     let meta = result.metadata.expect("metadata");
     assert_eq!(meta.get("status").and_then(Value::as_str), Some("Killed"));
@@ -1183,7 +1183,7 @@ async fn test_exec_shell_foreground_can_move_to_background() {
         .expect("foreground shell should detach")
         .expect("task should not panic");
 
-    assert!(result.success);
+    assert!(result.is_success());
     assert!(
         result
             .content
@@ -1249,7 +1249,7 @@ async fn test_exec_shell_wait_cancel_leaves_background_process_running() {
         .expect("wait should observe cancellation")
         .expect("task should not panic");
 
-    assert!(result.success);
+    assert!(result.is_success());
     assert!(result.content.contains("still running"));
     let meta = result.metadata.expect("metadata");
     assert_eq!(meta.get("status").and_then(Value::as_str), Some("Running"));
@@ -1289,7 +1289,7 @@ async fn test_completed_background_shell_releases_process_handles() {
         .await
         .expect("wait");
 
-    assert!(result.success);
+    assert!(result.is_success());
     let mut manager = shell_manager.lock().expect("shell manager lock");
     let result = wait_for_completed_shell(&mut manager, &task_id);
     assert_eq!(result.status, ShellStatus::Completed);
@@ -1319,7 +1319,7 @@ async fn test_exec_shell_cancel_tool_kills_background_process() {
         .await
         .expect("cancel");
 
-    assert!(result.success);
+    assert!(result.is_success());
     assert!(result.content.contains("Canceled background command"));
     let meta = result.metadata.expect("metadata");
     assert_eq!(meta.get("status").and_then(Value::as_str), Some("Killed"));
@@ -1358,7 +1358,7 @@ async fn test_exec_shell_cancel_tool_can_kill_all_running_processes() {
         .await
         .expect("cancel all");
 
-    assert!(result.success);
+    assert!(result.is_success());
     let meta = result.metadata.expect("metadata");
     assert_eq!(meta.get("status").and_then(Value::as_str), Some("Killed"));
     assert_eq!(meta.get("canceled").and_then(Value::as_u64), Some(2));
@@ -1697,4 +1697,66 @@ fn issue_1691_quoted_commit_message_round_trips() {
         .map(|a| a.to_string_lossy().into_owned())
         .collect();
     assert_eq!(got, spec.args);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn process_tree_shutdown_sweeps_descendant_after_direct_child_was_reaped() {
+    let tmp = tempdir().expect("tempdir");
+    let pid_file = tmp.path().join("descendant.pid");
+    let script = tmp.path().join("reaped-parent.sh");
+    std::fs::write(
+        &script,
+        r#"#!/bin/sh
+pid_file=$1
+(
+  trap '' HUP TERM
+  while :; do sleep 1; done
+) &
+echo "$!" > "$pid_file"
+exit 0
+"#,
+    )
+    .expect("write process-tree fixture");
+
+    let mut command = tokio::process::Command::new("/bin/sh");
+    command
+        .arg(&script)
+        .arg(&pid_file)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    configure_process_tree(command.as_std_mut());
+    let mut child = command.spawn().expect("spawn process-tree fixture");
+    let process_group = child.id().expect("direct child pid") as libc::pid_t;
+    let mut owner = ProcessTreeOwner::attach_tokio(&child, "reaped-parent test")
+        .expect("attach process-tree owner");
+    child.wait().await.expect("reap direct child");
+    assert!(
+        child.id().is_none(),
+        "test must enter the already-reaped branch"
+    );
+
+    let descendant = std::fs::read_to_string(&pid_file)
+        .expect("read descendant pid")
+        .trim()
+        .parse::<libc::pid_t>()
+        .expect("parse descendant pid");
+    assert_eq!(unsafe { libc::kill(descendant, 0) }, 0);
+
+    assert!(
+        shutdown_tokio_process_tree(&mut child, &mut owner, Duration::from_millis(100)).await,
+        "already-reaped direct child must not hide a live descendant"
+    );
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while unsafe { libc::kill(descendant, 0) } == 0 && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    if unsafe { libc::kill(descendant, 0) } == 0 {
+        unsafe {
+            libc::kill(-process_group, libc::SIGKILL);
+        }
+        panic!("descendant {descendant} survived the already-reaped owner sweep");
+    }
 }

@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 // === Types ===
@@ -333,7 +333,7 @@ impl ToolSpec for TodoAddTool {
         &self,
         input: serde_json::Value,
         _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let content = input
             .get("content")
             .and_then(|v| v.as_str())
@@ -349,7 +349,7 @@ impl ToolSpec for TodoAddTool {
         let snapshot = list.snapshot();
 
         let result = serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string());
-        Ok(ToolResult::success(format!(
+        Ok(ToolOutcome::success(format!(
             "Added todo #{} ({})\n{}",
             item.id,
             item.status.as_str(),
@@ -429,7 +429,7 @@ impl ToolSpec for TodoUpdateTool {
         &self,
         input: serde_json::Value,
         _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let id = input
             .get("id")
             .and_then(|v| v.as_u64())
@@ -447,14 +447,14 @@ impl ToolSpec for TodoUpdateTool {
         let result = serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string());
 
         match updated {
-            Some(item) => Ok(ToolResult::success(format!(
+            Some(item) => Ok(ToolOutcome::success(format!(
                 "Updated todo #{} to {}\n{}",
                 item.id,
                 item.status.as_str(),
                 result
             ))
             .with_metadata(work_progress_metadata(&snapshot, self.tool_name))),
-            None => Ok(ToolResult::error(format!("Todo id {id} not found"))),
+            None => Ok(ToolOutcome::error(format!("Todo id {id} not found"))),
         }
     }
 }
@@ -518,11 +518,11 @@ impl ToolSpec for TodoListTool {
         &self,
         _input: serde_json::Value,
         _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let list = self.todo_list.lock().await;
         let snapshot = list.snapshot();
         let result = serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string());
-        Ok(ToolResult::success(format!(
+        Ok(ToolOutcome::success(format!(
             "Todo list ({} items, {}% complete)\n{}",
             snapshot.items.len(),
             snapshot.completion_pct,
@@ -597,7 +597,7 @@ impl ToolSpec for TodoWriteTool {
         &self,
         input: serde_json::Value,
         _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let todos = input
             .get("todos")
             .and_then(|v| v.as_array())
@@ -627,7 +627,7 @@ impl ToolSpec for TodoWriteTool {
         let snapshot = list.snapshot();
         let result = serde_json::to_string_pretty(&snapshot).unwrap_or_else(|_| "{}".to_string());
 
-        Ok(ToolResult::success(format!(
+        Ok(ToolOutcome::success(format!(
             "Todo list updated ({} items, {}% complete)\n{}",
             snapshot.items.len(),
             snapshot.completion_pct,

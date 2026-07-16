@@ -94,15 +94,18 @@ impl HarnessBuilder {
         if let Some(home) = self.seal_home.as_deref() {
             std::fs::create_dir_all(home).context("create sealed HOME")?;
             let codewhale_config = home.join(".codewhale").join("config.toml");
-            let deepseek_config = home.join(".deepseek").join("config.toml");
             builder = builder
                 .env("HOME", home.to_string_lossy())
                 .env("XDG_CONFIG_HOME", home.join(".config").to_string_lossy())
                 .env("XDG_DATA_HOME", home.join(".local/share").to_string_lossy())
                 .env("XDG_CACHE_HOME", home.join(".cache").to_string_lossy())
                 .env("USERPROFILE", home.to_string_lossy())
-                .env("CODEWHALE_CONFIG_PATH", codewhale_config.to_string_lossy())
-                .env("DEEPSEEK_CONFIG_PATH", deepseek_config.to_string_lossy());
+                // Behavioral PTY selectors are intentionally language-stable.
+                // Pin them through the normal locale contract instead of
+                // creating both current and legacy settings homes.
+                .env("LANG", "en_US.UTF-8")
+                .env("LC_ALL", "en_US.UTF-8")
+                .env("CODEWHALE_CONFIG_PATH", codewhale_config.to_string_lossy());
         }
         for (k, v) in &self.env {
             builder = builder.env(k, v);
@@ -256,7 +259,11 @@ pub fn make_sealed_workspace() -> Result<SealedWorkspace> {
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&workspace).context("mkdir workspace")?;
     std::fs::create_dir_all(home.join(".codewhale")).context("mkdir home/.codewhale")?;
-    std::fs::create_dir_all(home.join(".deepseek")).context("mkdir home/.deepseek")?;
+    std::fs::write(
+        home.join(".codewhale").join("settings.toml"),
+        "locale = \"en\"\n",
+    )
+    .context("write deterministic PTY locale")?;
     Ok(SealedWorkspace {
         _tmp: tmp,
         workspace,

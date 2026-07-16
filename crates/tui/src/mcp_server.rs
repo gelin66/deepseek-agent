@@ -16,7 +16,7 @@ use crate::config::Config;
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest};
 use crate::session_manager::SessionManager;
-use crate::tools::spec::{ToolError, ToolResult};
+use crate::tools::spec::{ToolError, ToolOutcome};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
 
 #[derive(Debug, Default, Deserialize)]
@@ -538,12 +538,12 @@ fn build_exposed_tools(names: &[String]) -> Vec<ExposedTool> {
     tools
 }
 
-fn tool_result_to_mcp(result: Result<ToolResult, ToolError>) -> Value {
+fn tool_result_to_mcp(result: Result<ToolOutcome, ToolError>) -> Value {
     match result {
         Ok(tool_result) => {
             let mut response = json!({
                 "content": [{ "type": "text", "text": tool_result.content }],
-                "isError": !tool_result.success,
+                "isError": !tool_result.is_success(),
             });
             if let Some(metadata) = tool_result.metadata {
                 response["structuredContent"] = metadata;

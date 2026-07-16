@@ -17,7 +17,7 @@ use super::{
 };
 use crate::tools::registry::ToolRegistryBuilder;
 use crate::tools::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 const COORD_WAIT_DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -25,6 +25,15 @@ const COORD_WAIT_MIN_TIMEOUT_SECS: u64 = 1;
 const COORD_WAIT_MAX_TIMEOUT_SECS: u64 = 1800;
 const COORD_WAIT_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 const RECENT_PROGRESS_LIMIT: usize = 8;
+
+// DeepSeek function names only accept letters, digits, underscores, and
+// dashes. Keep canonical runtime names identical to their wire names so the
+// prompt, catalog, events, and dispatcher all speak one protocol.
+pub const AGENTS_LIST_TOOL_NAME: &str = "agents_list";
+pub const AGENTS_MESSAGE_TOOL_NAME: &str = "agents_message";
+pub const AGENTS_FOLLOWUP_TOOL_NAME: &str = "agents_followup";
+pub const AGENTS_INTERRUPT_TOOL_NAME: &str = "agents_interrupt";
+pub const AGENTS_WAIT_TOOL_NAME: &str = "agents_wait";
 
 // ── agents/list ──────────────────────────────────────────────────────────
 
@@ -42,7 +51,7 @@ impl AgentsListTool {
 #[async_trait]
 impl ToolSpec for AgentsListTool {
     fn name(&self) -> &'static str {
-        "agents/list"
+        AGENTS_LIST_TOOL_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -82,7 +91,11 @@ impl ToolSpec for AgentsListTool {
         true
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let include_archived = input
             .get("include_archived")
             .and_then(Value::as_bool)
@@ -106,7 +119,7 @@ impl ToolSpec for AgentsListTool {
             "count": summaries.len(),
             "agents": summaries,
         });
-        let mut tool_result = ToolResult::json(&payload)
+        let mut tool_result = ToolOutcome::json(&payload)
             .map_err(|err| ToolError::execution_failed(err.to_string()))?;
         tool_result.metadata = Some(json!({
             "action": "list",
@@ -132,11 +145,11 @@ impl AgentsMessageTool {
 #[async_trait]
 impl ToolSpec for AgentsMessageTool {
     fn name(&self) -> &'static str {
-        "agents/message"
+        AGENTS_MESSAGE_TOOL_NAME
     }
 
     fn description(&self) -> &'static str {
-        "Queue a parent message onto a child agent without waking it. The child receives the message on the next followup or natural resume. Use agents/followup when you also need to resume an idle or interrupted child."
+        "向子 Agent 投递消息但不主动唤醒；子 Agent 会在自然继续或下次跟进时收到。需要同时恢复空闲或已中断的子 Agent 时使用 agents_followup。"
     }
 
     fn input_schema(&self) -> Value {
@@ -164,7 +177,11 @@ impl ToolSpec for AgentsMessageTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let agent_ref =
             parse_agent_ref(&input).ok_or_else(|| ToolError::missing_field("agent_id"))?;
         let message = input
@@ -192,7 +209,7 @@ impl ToolSpec for AgentsMessageTool {
             "status": receipt.status,
             "note": "Message queued without waking the child.",
         });
-        let mut tool_result = ToolResult::json(&payload)
+        let mut tool_result = ToolOutcome::json(&payload)
             .map_err(|err| ToolError::execution_failed(err.to_string()))?;
         tool_result.metadata = Some(json!({
             "action": "message",
@@ -220,7 +237,7 @@ impl AgentsFollowupTool {
 #[async_trait]
 impl ToolSpec for AgentsFollowupTool {
     fn name(&self) -> &'static str {
-        "agents/followup"
+        AGENTS_FOLLOWUP_TOOL_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -252,7 +269,11 @@ impl ToolSpec for AgentsFollowupTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let agent_ref =
             parse_agent_ref(&input).ok_or_else(|| ToolError::missing_field("agent_id"))?;
         let message = input
@@ -282,7 +303,7 @@ impl ToolSpec for AgentsFollowupTool {
             "continuation_handle": receipt.continuation_handle,
             "note": receipt.note,
         });
-        let mut tool_result = ToolResult::json(&payload)
+        let mut tool_result = ToolOutcome::json(&payload)
             .map_err(|err| ToolError::execution_failed(err.to_string()))?;
         tool_result.metadata = Some(json!({
             "action": "followup",
@@ -323,7 +344,7 @@ impl AgentsInterruptTool {
 #[async_trait]
 impl ToolSpec for AgentsInterruptTool {
     fn name(&self) -> &'static str {
-        "agents/interrupt"
+        AGENTS_INTERRUPT_TOOL_NAME
     }
 
     fn description(&self) -> &'static str {
@@ -355,7 +376,7 @@ impl ToolSpec for AgentsInterruptTool {
         ApprovalRequirement::Required
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let agent_ref =
             parse_agent_ref(&input).ok_or_else(|| ToolError::missing_field("agent_id"))?;
         let reason = input
@@ -363,7 +384,7 @@ impl ToolSpec for AgentsInterruptTool {
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|s| !s.is_empty())
-            .unwrap_or("interrupted by parent via agents/interrupt")
+            .unwrap_or("interrupted by parent via agents_interrupt")
             .to_string();
 
         let (prior, snapshot) = {
@@ -388,7 +409,7 @@ impl ToolSpec for AgentsInterruptTool {
             "continuable": projection.continuable,
             "projection": projection,
         });
-        let mut tool_result = ToolResult::json(&payload)
+        let mut tool_result = ToolOutcome::json(&payload)
             .map_err(|err| ToolError::execution_failed(err.to_string()))?;
         tool_result.metadata = Some(json!({
             "action": "interrupt",
@@ -415,11 +436,11 @@ impl AgentsWaitTool {
 #[async_trait]
 impl ToolSpec for AgentsWaitTool {
     fn name(&self) -> &'static str {
-        "agents/wait"
+        AGENTS_WAIT_TOOL_NAME
     }
 
     fn description(&self) -> &'static str {
-        "Block until a child shows activity, settles (completion/failure/interrupt), or the timeout elapses. Prefer one wait over polling agents/list. until=completion (default) waits for settle; until=activity returns on progress or settle."
+        "等待子 Agent 活动、结算或超时。需要汇合时调用一次，不要轮询 agents_list；until=completion（默认）等待 handoff 结算，until=activity 也可在出现进展时返回。"
     }
 
     fn input_schema(&self) -> Value {
@@ -428,18 +449,18 @@ impl ToolSpec for AgentsWaitTool {
             "properties": {
                 "agent_id": {
                     "type": "string",
-                    "description": "Optional specific child. When omitted, waits for the next watched child event."
+                    "description": "可选的目标子 Agent；省略时等待任一受监视子 Agent。"
                 },
                 "timeout_secs": {
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 1800,
-                    "description": "Maximum seconds to block. Default 300."
+                    "description": "最长等待秒数，默认 300。"
                 },
                 "until": {
                     "type": "string",
                     "enum": ["completion", "activity"],
-                    "description": "completion (default): return when a child leaves running. activity: also return when recent progress changes."
+                    "description": "completion（默认）在子 Agent 结算时返回；activity 也会在进展变化时返回。"
                 }
             },
             "required": []
@@ -458,7 +479,7 @@ impl ToolSpec for AgentsWaitTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let until = input
             .get("until")
             .and_then(Value::as_str)
@@ -477,7 +498,7 @@ impl ToolSpec for AgentsWaitTool {
 
         if until != "activity" {
             return Err(ToolError::invalid_input(format!(
-                "Invalid until '{until}'. Use completion or activity."
+                "until='{until}' 无效；只能使用 completion 或 activity。"
             )));
         }
 
@@ -489,7 +510,7 @@ async fn wait_for_activity(
     input: &Value,
     manager: SharedSubAgentManager,
     context: &ToolContext,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let timeout_secs = input
         .get("timeout_secs")
         .or_else(|| input.get("timeout"))
@@ -515,7 +536,7 @@ async fn wait_for_activity(
                     "agent_id": snap.agent_id,
                     "status": subagent_status_name(&snap.status),
                 });
-                let mut tool_result = ToolResult::json(&payload)
+                let mut tool_result = ToolOutcome::json(&payload)
                     .map_err(|err| ToolError::execution_failed(err.to_string()))?;
                 tool_result.metadata = Some(json!({ "action": "wait", "timed_out": false }));
                 return Ok(tool_result);
@@ -543,10 +564,10 @@ async fn wait_for_activity(
         let payload = json!({
             "action": "wait",
             "until": "activity",
-            "note": "No running sub-agents; nothing to wait for.",
+            "note": "当前没有运行中的子 Agent。",
             "timed_out": false,
         });
-        let mut tool_result = ToolResult::json(&payload)
+        let mut tool_result = ToolOutcome::json(&payload)
             .map_err(|err| ToolError::execution_failed(err.to_string()))?;
         tool_result.metadata = Some(json!({ "action": "wait", "timed_out": false }));
         return Ok(tool_result);
@@ -598,7 +619,7 @@ async fn wait_for_activity(
                 "elapsed_ms": started.elapsed().as_millis(),
                 "timed_out": false,
             });
-            let mut tool_result = ToolResult::json(&payload)
+            let mut tool_result = ToolOutcome::json(&payload)
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?;
             tool_result.metadata = Some(json!({
                 "action": "wait",
@@ -618,9 +639,9 @@ async fn wait_for_activity(
                 "running": outcome.2,
                 "elapsed_ms": started.elapsed().as_millis(),
                 "timed_out": true,
-                "note": "Timed out before child activity or completion.",
+                "note": "等待超时，尚无子 Agent 活动或结算。",
             });
-            let mut tool_result = ToolResult::json(&payload)
+            let mut tool_result = ToolOutcome::json(&payload)
                 .map_err(|err| ToolError::execution_failed(err.to_string()))?;
             tool_result.metadata = Some(json!({ "action": "wait", "timed_out": true }));
             return Ok(tool_result);
@@ -630,7 +651,7 @@ async fn wait_for_activity(
             biased;
             () = &mut cancelled => {
                 return Err(ToolError::execution_failed(
-                    "Wait interrupted by user cancellation before child activity.".to_string(),
+                    "等待已被用户取消，尚无子 Agent 活动。".to_string(),
                 ));
             }
             () = tokio::time::sleep(COORD_WAIT_CHECK_INTERVAL) => {}

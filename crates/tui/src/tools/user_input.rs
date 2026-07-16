@@ -1,7 +1,7 @@
 //! Tool and types for requesting user input via the TUI.
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -174,7 +174,7 @@ impl ToolSpec for RequestUserInputTool {
         &self,
         _input: Value,
         _context: &ToolContext,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         Err(ToolError::execution_failed(
             "request_user_input must be handled by the engine",
         ))

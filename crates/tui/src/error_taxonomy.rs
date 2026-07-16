@@ -159,6 +159,20 @@ impl ErrorEnvelope {
         )
     }
 
+    /// The transport closed cleanly but the provider never emitted an
+    /// authoritative stream terminal (`[DONE]` or `finish_reason`). Partial
+    /// content cannot be accepted as a successful model response.
+    #[must_use]
+    pub fn stream_incomplete(message: impl Into<String>) -> Self {
+        Self::new(
+            ErrorCategory::Network,
+            ErrorSeverity::Error,
+            false,
+            "llm_stream_incomplete",
+            message,
+        )
+    }
+
     /// Tool execution failure.
     #[must_use]
     pub fn tool(message: impl Into<String>) -> Self {
@@ -322,6 +336,11 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
         || lower.contains("prompt is too long")
         || (lower.contains("requested") && lower.contains("tokens") && lower.contains("maximum"))
         || lower.contains("context window")
+    {
+        return ErrorCategory::InvalidInput;
+    }
+    if lower.contains("invalid deepseek request")
+        || lower.contains("exact reasoning replay requires")
     {
         return ErrorCategory::InvalidInput;
     }
@@ -539,6 +558,16 @@ mod tests {
                 "expected InvalidInput for `{msg}`",
             );
         }
+    }
+
+    #[test]
+    fn invalid_input_catches_exact_reasoning_replay_preflight() {
+        assert_eq!(
+            classify(
+                "Invalid DeepSeek request: exact reasoning replay requires assistant message 0 to contain its original reasoning_content; HTTP request was not sent"
+            ),
+            ErrorCategory::InvalidInput
+        );
     }
 
     #[test]

@@ -9,8 +9,10 @@ use tokio::sync::Mutex as TokioMutex;
 
 use super::{McpServerConfig, McpTransport};
 use crate::child_env;
+use crate::tools::shell::{ProcessTreeOwner, configure_process_tree, shutdown_tokio_process_tree};
 
 pub(super) struct StdioTransport {
+    pub(super) process_tree: ProcessTreeOwner,
     pub(super) child: Child,
     pub(super) stdin: ChildStdin,
     pub(super) reader: tokio::io::BufReader<ChildStdout>,
@@ -18,18 +20,24 @@ pub(super) struct StdioTransport {
     /// drains the child's stderr into this buffer so a mid-run crash leaves
     /// some context behind instead of `Stdio::null` swallowing it.
     pub(super) stderr_tail: Arc<StderrTail>,
+    pub(super) stderr_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// How long `StdioTransport::shutdown` waits for the child to exit on SIGTERM
-/// before `kill_on_drop` fires SIGKILL. Tuned short so a hung MCP server
-/// can't stall TUI exit; well-behaved servers almost always exit within
-/// a few hundred ms.
-pub(super) const STDIO_SHUTDOWN_GRACE: Duration = Duration::from_millis(2_000);
+/// before explicitly starting a hard kill. Tuned short so a hung MCP server
+/// cannot stall exit; well-behaved servers almost always exit within a few
+/// hundred milliseconds.
+pub(super) const STDIO_SHUTDOWN_GRACE: Duration = Duration::from_millis(1_000);
 
 /// How many lines of MCP-server stderr to keep around for crash diagnostics.
 /// Bounded so a chatty server can't grow this without limit; large enough to
 /// catch typical Node/Python startup or panic output.
 const STDERR_TAIL_CAPACITY: usize = 64;
+
+/// The child has already exited (or received a hard kill) when this wait
+/// begins, so stderr should reach EOF quickly. Keep a bound in case an OS pipe
+/// or custom runtime fails to wake the drain task.
+const STDERR_DRAIN_SHUTDOWN_GRACE: Duration = Duration::from_millis(250);
 
 /// Bounded ring buffer for the most recent stderr lines from a spawned MCP
 /// server. Used by `StdioTransport` to surface server-side context when the
@@ -72,6 +80,7 @@ impl StdioTransport {
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
+        configure_process_tree(cmd.as_std_mut());
         if let Some(cwd) = &config.cwd {
             cmd.current_dir(cwd);
         }
@@ -97,6 +106,22 @@ impl StdioTransport {
                 config.args,
             )
         })?;
+        let process_tree = match ProcessTreeOwner::attach_tokio(
+            &child,
+            &format!("MCP stdio server {server_name}"),
+        ) {
+            Ok(owner) => owner,
+            Err(error) => {
+                // A transport without process-tree ownership is not admitted.
+                // Best-effort direct cleanup covers the attach-failure path;
+                // Windows still has an inherent spawn-before-Job race unless
+                // the platform spawn is later changed to suspended creation.
+                let _ = child.start_kill();
+                return Err(error).with_context(|| {
+                    format!("failed to own MCP stdio process tree for '{server_name}'")
+                });
+            }
+        };
 
         let stdin = child.stdin.take().context("Failed to get MCP stdin")?;
         let stdout = child.stdout.take().context("Failed to get MCP stdout")?;
@@ -107,22 +132,43 @@ impl StdioTransport {
         // The task exits naturally when the child closes its stderr
         // (kill_on_drop / exit / explicit shutdown).
         let stderr_tail = StderrTail::new();
-        {
+        let stderr_task = {
             let tail = Arc::clone(&stderr_tail);
             tokio::spawn(async move {
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     tail.push(line).await;
                 }
-            });
-        }
+            })
+        };
 
         Ok(Self {
+            process_tree,
             child,
             stdin,
             reader: tokio::io::BufReader::new(stdout),
             stderr_tail,
+            stderr_task: Some(stderr_task),
         })
+    }
+
+    async fn settle_stderr_task(&mut self) -> bool {
+        let Some(mut task) = self.stderr_task.take() else {
+            return true;
+        };
+
+        match tokio::time::timeout(STDERR_DRAIN_SHUTDOWN_GRACE, &mut task).await {
+            Ok(Ok(())) => true,
+            Ok(Err(error)) => error.is_cancelled(),
+            Err(_) => {
+                task.abort();
+                match tokio::time::timeout(STDERR_DRAIN_SHUTDOWN_GRACE, &mut task).await {
+                    Ok(Ok(())) => true,
+                    Ok(Err(error)) => error.is_cancelled(),
+                    Err(_) => false,
+                }
+            }
+        }
     }
 }
 
@@ -139,31 +185,6 @@ async fn format_stderr_context(tail: &StderrTail) -> Option<String> {
         if lines.len() == 1 { "" } else { "s" },
         lines.join("\n"),
     ))
-}
-
-/// Best-effort SIGTERM. On Unix uses `libc::kill`; on Windows there's no
-/// equivalent so we let `kill_on_drop` (TerminateProcess) handle it via the
-/// subsequent Drop. Returns whether a signal was actually sent.
-fn send_sigterm(child: &Child) -> bool {
-    #[cfg(unix)]
-    {
-        if let Some(pid) = child.id() {
-            // SAFETY: pid was just obtained from `child.id()`. `libc::kill`
-            // with `SIGTERM` is async-signal-safe and never observes invalid
-            // memory. Worst case (pid wrap / process already gone) returns
-            // ESRCH, which we deliberately ignore.
-            unsafe {
-                let _ = libc::kill(pid as i32, libc::SIGTERM);
-            }
-            return true;
-        }
-        false
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = child;
-        false
-    }
 }
 
 #[async_trait::async_trait]
@@ -212,23 +233,37 @@ impl McpTransport for StdioTransport {
         }
     }
 
-    /// Send SIGTERM and wait up to `STDIO_SHUTDOWN_GRACE` for graceful exit
-    /// before letting Drop / `kill_on_drop` fire SIGKILL as the backstop.
-    async fn shutdown(&mut self) {
-        send_sigterm(&self.child);
-        // Give the child a window to exit cleanly. Discard the result —
-        // either it exits (success) or the timeout fires (Drop will SIGKILL).
-        let _ = tokio::time::timeout(STDIO_SHUTDOWN_GRACE, self.child.wait()).await;
+    /// Send SIGTERM and wait up to `STDIO_SHUTDOWN_GRACE` for graceful exit.
+    /// A child that does not exit is killed and reaped before the retained
+    /// stderr drain task is joined (or aborted after its own short bound).
+    async fn shutdown(&mut self) -> bool {
+        let _ = self.stdin.shutdown().await;
+        let tree_settled = shutdown_tokio_process_tree(
+            &mut self.child,
+            &mut self.process_tree,
+            STDIO_SHUTDOWN_GRACE,
+        )
+        .await;
+        if !tree_settled {
+            tracing::warn!("MCP stdio child did not reap within the hard shutdown bound");
+        }
+        let stderr_settled = self.settle_stderr_task().await;
+        if !stderr_settled {
+            tracing::warn!("MCP stdio stderr drain task did not settle within its shutdown bound");
+        }
+        tree_settled && stderr_settled
     }
 }
 
-/// Drop fallback (#420): if `shutdown` was never called explicitly, still
-/// fire SIGTERM before tokio's `kill_on_drop` sends SIGKILL. The two
-/// signals arrive back-to-back so well-behaved servers at least see the
-/// SIGTERM first; misbehaving ones get SIGKILL'd anyway.
+/// Drop fallback: if async shutdown was skipped, hard-kill the full owned
+/// process tree before Tokio's direct-child `kill_on_drop` backstop.
 impl Drop for StdioTransport {
     fn drop(&mut self) {
-        send_sigterm(&self.child);
+        let _ = self.process_tree.kill();
+        let _ = self.child.start_kill();
+        if let Some(task) = self.stderr_task.take() {
+            task.abort();
+        }
     }
 }
 

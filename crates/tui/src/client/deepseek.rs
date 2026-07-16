@@ -5,9 +5,24 @@ use std::fmt;
 use serde_json::{Value, json};
 
 use crate::config::{ApiProvider, wire_model_for_provider};
-use crate::models::{MessageRequest, Tool};
+use crate::models::{ContentBlock, MessageRequest, Tool};
 
 pub(crate) const FIM_MODEL: &str = "deepseek-v4-pro";
+
+/// Resolve the official DeepSeek thinking switch for one request.
+///
+/// DeepSeek documents thinking as enabled by default. Keeping that default
+/// explicit in the request plan gives the response assembler an unambiguous
+/// provenance rule for tool calls: enabled responses must carry their original
+/// reasoning, while disabled responses legitimately omit it.
+pub(crate) fn thinking_enabled_for_request(effort: Option<&str>) -> bool {
+    !effort.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "off" | "disabled" | "none" | "false"
+        )
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApiSurface {
@@ -41,6 +56,41 @@ pub(crate) struct ToolPlan {
     pub tools: Option<Vec<Tool>>,
     pub strict_fallback: bool,
 }
+
+/// A request cannot satisfy DeepSeek's exact history replay contract.
+///
+/// This is a local preflight error: callers must surface it without issuing an
+/// HTTP request or inventing replacement reasoning text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChatPlanError {
+    MissingReasoningContent {
+        message_index: usize,
+    },
+    AmbiguousReasoningContent {
+        message_index: usize,
+        block_count: usize,
+    },
+}
+
+impl fmt::Display for ChatPlanError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingReasoningContent { message_index } => write!(
+                f,
+                "Invalid DeepSeek request: exact reasoning replay requires assistant message {message_index} to contain its original reasoning_content; HTTP request was not sent"
+            ),
+            Self::AmbiguousReasoningContent {
+                message_index,
+                block_count,
+            } => write!(
+                f,
+                "Invalid DeepSeek request: assistant message {message_index} contains {block_count} reasoning blocks, so the original single reasoning_content value cannot be reconstructed exactly; HTTP request was not sent"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ChatPlanError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FimPlanError {
@@ -118,8 +168,19 @@ pub(crate) fn plan_chat(
     strict_enabled: bool,
     request: &MessageRequest,
     response_mode: ResponseMode,
-) -> Option<RequestPlan> {
-    let root = official_root(provider, base_url)?;
+) -> Result<Option<RequestPlan>, ChatPlanError> {
+    let Some(root) = official_root(provider, base_url) else {
+        return Ok(None);
+    };
+    let Some(tool_plan) = plan_tools(
+        provider,
+        base_url,
+        path_suffix,
+        strict_enabled,
+        request.tools.as_deref(),
+    ) else {
+        return Ok(None);
+    };
     let wire_model = wire_model_for_provider(provider, &request.model);
     // Prompt projection must use the same canonical model identity that will
     // be sent on the wire. Compact aliases such as `pro` and `flash` do not
@@ -127,15 +188,9 @@ pub(crate) fn plan_chat(
     // discard exact reasoning history before the request is serialized.
     let mut wire_request = request.clone();
     wire_request.model.clone_from(&wire_model);
+    validate_canonical_reasoning_replay(&wire_request, &wire_model)?;
     let messages =
         super::chat::build_chat_messages_for_request_and_provider(&wire_request, provider);
-    let tool_plan = plan_tools(
-        provider,
-        base_url,
-        path_suffix,
-        strict_enabled,
-        request.tools.as_deref(),
-    )?;
     let mut body = json!({
         "model": wire_model,
         "messages": messages,
@@ -161,21 +216,27 @@ pub(crate) fn plan_chat(
         body["tool_choice"] = mapped;
     }
     super::apply_reasoning_effort(&mut body, request.reasoning_effort.as_deref(), provider);
-    let reasoning_replay_tokens = super::chat::sanitize_thinking_mode_messages(
-        &mut body,
+    body["thinking"] = if thinking_enabled_for_request(request.reasoning_effort.as_deref()) {
+        json!({ "type": "enabled" })
+    } else {
+        json!({ "type": "disabled" })
+    };
+    validate_exact_reasoning_replay(&body, &wire_model)?;
+    let reasoning_replay_tokens = super::chat::reasoning_replay_tokens_for_messages(
+        &body,
         &wire_model,
         request.reasoning_effort.as_deref(),
         provider,
     );
 
-    Some(RequestPlan {
+    Ok(Some(RequestPlan {
         surface: tool_plan.surface,
         url: chat_url(root, tool_plan.surface),
         model: wire_model,
         body,
         response_mode,
         reasoning_replay_tokens,
-    })
+    }))
 }
 
 pub(crate) fn plan_fim(
@@ -209,12 +270,80 @@ pub(crate) fn plan_fim(
 }
 
 fn chat_url(root: &str, surface: ApiSurface) -> String {
-    let version = if surface == ApiSurface::StrictChat {
-        "beta"
+    if surface == ApiSurface::StrictChat {
+        format!("{root}/beta/chat/completions")
     } else {
-        "v1"
+        format!("{root}/chat/completions")
+    }
+}
+
+fn validate_exact_reasoning_replay(body: &Value, model: &str) -> Result<(), ChatPlanError> {
+    if !super::chat::requires_tool_call_reasoning_replay(model) {
+        return Ok(());
+    }
+    let Some(messages) = body.get("messages").and_then(Value::as_array) else {
+        return Ok(());
     };
-    format!("{root}/{version}/chat/completions")
+    for (message_index, message) in messages.iter().enumerate() {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let has_tool_calls = message
+            .get("tool_calls")
+            .and_then(Value::as_array)
+            .is_some_and(|calls| !calls.is_empty());
+        let has_empty_reasoning = message
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_some_and(str::is_empty);
+        // Absence is valid provenance for a non-thinking tool round. An
+        // explicitly present but empty value is not an exact replay.
+        if has_tool_calls && has_empty_reasoning {
+            return Err(ChatPlanError::MissingReasoningContent { message_index });
+        }
+    }
+    Ok(())
+}
+
+fn validate_canonical_reasoning_replay(
+    request: &MessageRequest,
+    model: &str,
+) -> Result<(), ChatPlanError> {
+    if !super::chat::requires_tool_call_reasoning_replay(model) {
+        return Ok(());
+    }
+    for (message_index, message) in request.messages.iter().enumerate() {
+        if message.role != "assistant"
+            || !message
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolUse { .. }))
+        {
+            continue;
+        }
+        let reasoning = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Thinking { thinking, .. } => Some(thinking.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        // No Thinking block is the canonical representation of a tool call
+        // generated with `thinking=disabled`. The production turn assembler
+        // rejects a thinking-enabled tool response before it can enter history
+        // without a non-empty block, making absence unambiguous for new runs.
+        if reasoning.len() == 1 && reasoning[0].is_empty() {
+            return Err(ChatPlanError::MissingReasoningContent { message_index });
+        }
+        if reasoning.len() > 1 {
+            return Err(ChatPlanError::AmbiguousReasoningContent {
+                message_index,
+                block_count: reasoning.len(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn clear_strict(tools: &mut [Tool]) {
@@ -383,6 +512,7 @@ mod tests {
                         id: "call-1".to_string(),
                         name: "lookup".to_string(),
                         input: json!({}),
+                        raw_arguments: None,
                         caller: None,
                     },
                 ],
@@ -413,6 +543,7 @@ mod tests {
             &request,
             ResponseMode::Streaming,
         )
+        .expect("valid exact replay history")
         .expect("official plan");
 
         assert_eq!(plan.surface, ApiSurface::StrictChat);
@@ -455,6 +586,7 @@ mod tests {
             &request,
             ResponseMode::NonStreaming,
         )
+        .expect("valid exact replay history")
         .expect("official plan");
 
         assert_eq!(plan.body["tool_choice"], "auto");
@@ -462,21 +594,91 @@ mod tests {
     }
 
     #[test]
-    fn compact_model_alias_replays_exact_reasoning_with_canonical_wire_model() {
+    fn chat_plan_makes_the_documented_default_thinking_mode_explicit() {
+        let mut request = request(Some(vec![compatible_tool("lookup")]));
+        request.reasoning_effort = None;
+
+        let plan = plan_chat(
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com",
+            None,
+            true,
+            &request,
+            ResponseMode::NonStreaming,
+        )
+        .expect("valid request")
+        .expect("official plan");
+
+        assert_eq!(plan.surface, ApiSurface::StrictChat);
+        assert_eq!(plan.body["thinking"]["type"], "enabled");
+        assert!(
+            plan.body.get("tool_choice").is_none(),
+            "thinking mode must not send the unsupported explicit tool_choice"
+        );
+    }
+
+    #[test]
+    fn strict_non_thinking_round_trips_tool_history_without_reasoning() {
+        let mut request = request(Some(vec![compatible_tool("lookup")]));
+        request.reasoning_effort = Some("off".to_string());
+        request.messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![ContentBlock::ToolUse {
+                    id: "call-non-thinking".to_string(),
+                    name: "lookup".to_string(),
+                    input: json!({"value": "history"}),
+                    raw_arguments: None,
+                    caller: None,
+                }],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-non-thinking".to_string(),
+                    content: "ok".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+
+        let plan = plan_chat(
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com",
+            None,
+            true,
+            &request,
+            ResponseMode::NonStreaming,
+        )
+        .expect("non-thinking history is protocol-valid")
+        .expect("official plan");
+
+        assert_eq!(plan.surface, ApiSurface::StrictChat);
+        assert_eq!(plan.body["thinking"]["type"], "disabled");
+        assert!(plan.body["messages"][0].get("reasoning_content").is_none());
+        assert!(plan.body["messages"][0].get("tool_calls").is_some());
+        assert_eq!(plan.reasoning_replay_tokens, None);
+    }
+
+    #[test]
+    fn official_standard_plan_replays_alias_reasoning_exactly() {
         let mut request = request(Some(vec![compatible_tool("lookup")]));
         request.model = "pro".to_string();
+        let original_reasoning = "先检查原始调用\nkeep trailing bytes  \t";
         request.messages = vec![
             Message {
                 role: "assistant".to_string(),
                 content: vec![
                     ContentBlock::Thinking {
-                        thinking: "inspect the exact call history".to_string(),
+                        thinking: original_reasoning.to_string(),
                         signature: None,
                     },
                     ContentBlock::ToolUse {
                         id: "call-alias".to_string(),
                         name: "lookup".to_string(),
                         input: json!({"value": "history"}),
+                        raw_arguments: None,
                         caller: None,
                     },
                 ],
@@ -496,22 +698,69 @@ mod tests {
             ApiProvider::Deepseek,
             "https://api.deepseek.com",
             None,
-            true,
+            false,
             &request,
             ResponseMode::Streaming,
         )
+        .expect("valid exact replay history")
         .expect("official plan");
 
         assert_eq!(plan.model, "deepseek-v4-pro");
+        assert_eq!(plan.surface, ApiSurface::StandardChat);
+        assert_eq!(plan.url, "https://api.deepseek.com/chat/completions");
         assert_eq!(plan.body["model"], "deepseek-v4-pro");
         assert_eq!(
             plan.body["messages"][0]["reasoning_content"],
-            "inspect the exact call history"
+            original_reasoning
         );
-        assert_ne!(
-            plan.body["messages"][0]["reasoning_content"],
-            "(reasoning omitted)"
+    }
+
+    #[test]
+    fn official_plan_rejects_empty_thinking_provenance_before_transport() {
+        let mut request = request(Some(vec![compatible_tool("lookup")]));
+        request.messages = vec![
+            Message {
+                role: "assistant".to_string(),
+                content: vec![
+                    ContentBlock::Thinking {
+                        thinking: String::new(),
+                        signature: None,
+                    },
+                    ContentBlock::ToolUse {
+                        id: "call-missing".to_string(),
+                        name: "lookup".to_string(),
+                        input: json!({"value": "history"}),
+                        raw_arguments: None,
+                        caller: None,
+                    },
+                ],
+            },
+            Message {
+                role: "user".to_string(),
+                content: vec![ContentBlock::ToolResult {
+                    tool_use_id: "call-missing".to_string(),
+                    content: "ok".to_string(),
+                    is_error: None,
+                    content_blocks: None,
+                }],
+            },
+        ];
+
+        let error = plan_chat(
+            ApiProvider::Deepseek,
+            "https://api.deepseek.com",
+            None,
+            false,
+            &request,
+            ResponseMode::Streaming,
+        )
+        .expect_err("empty thinking provenance must fail before HTTP");
+
+        assert_eq!(
+            error,
+            ChatPlanError::MissingReasoningContent { message_index: 0 }
         );
+        assert!(error.to_string().contains("HTTP request was not sent"));
     }
 
     #[test]
@@ -542,11 +791,12 @@ mod tests {
             &request,
             ResponseMode::NonStreaming,
         )
+        .expect("valid exact replay history")
         .expect("official plan");
 
         assert_eq!(plan.surface, ApiSurface::StandardChat);
         assert_eq!(plan.surface, prefix_plan.surface);
-        assert_eq!(plan.url, "https://api.deepseek.com/v1/chat/completions");
+        assert_eq!(plan.url, "https://api.deepseek.com/chat/completions");
         assert_eq!(plan.response_mode, ResponseMode::NonStreaming);
         assert_eq!(plan.body["stream"], false);
         assert!(plan.body.get("stream_options").is_none());

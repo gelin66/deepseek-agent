@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_str, optional_u64,
 };
 
@@ -238,7 +238,11 @@ impl ToolSpec for FinanceTool {
         true
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let raw_ticker = optional_str(&input, "ticker")
             .or_else(|| optional_str(&input, "symbol"))
             .ok_or_else(|| ToolError::missing_field("ticker"))?
@@ -259,11 +263,11 @@ impl ToolSpec for FinanceTool {
             fetch_quote_endpoint(&self.client, timeout, &self.endpoints, &request).await;
         match quote_result {
             Ok(result) => {
-                ToolResult::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
+                ToolOutcome::json(&result).map_err(|e| ToolError::execution_failed(e.to_string()))
             }
             Err(first_failure) => {
                 match fetch_chart_endpoint(&self.client, timeout, &self.endpoints, &request).await {
-                    Ok(result) => ToolResult::json(&result)
+                    Ok(result) => ToolOutcome::json(&result)
                         .map_err(|e| ToolError::execution_failed(e.to_string())),
                     Err(second_failure) => Err(finalize_failure(
                         &request,

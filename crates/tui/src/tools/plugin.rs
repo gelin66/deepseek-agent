@@ -16,8 +16,8 @@
 //! ```
 //!
 //! The script receives the tool's JSON input on **stdin** and must return
-//! a JSON `ToolResult` (`{"content": "...", "success": true}`) on **stdout**.
-//! Non-JSON output is wrapped in a `ToolResult` with `success: false`.
+//! a JSON `ToolOutcome` (`{"content": "...", "success": true}`) on **stdout**.
+//! Non-JSON output is wrapped in a failed `ToolOutcome`.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use serde_json::Value;
 use tokio::io::AsyncWriteExt;
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 use crate::config::ToolOverride;
@@ -53,7 +53,7 @@ pub struct PluginMetadata {
 
 /// A tool backed by an external script or executable dropped into the
 /// plugins directory. The script receives JSON input on stdin and writes
-/// a JSON `ToolResult` to stdout.
+/// a JSON `ToolOutcome` to stdout.
 struct ScriptPluginTool {
     metadata: PluginMetadata,
     /// Absolute path to the script.
@@ -97,7 +97,11 @@ impl ToolSpec for ScriptPluginTool {
         self.metadata.approval
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let (interpreter, script_args) = script_command_parts(&self.script_path, &self.args);
         let label = self.script_path.display().to_string();
         run_plugin_child(&interpreter, &script_args, &label, input).await
@@ -149,7 +153,11 @@ impl ToolSpec for CommandPluginTool {
         self.approval
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         // On Windows, if the command doesn't have an extension, try wrapping
         // in `cmd /c` or use `powershell` for `.ps1` files. For portability
         // we let tokio::process::Command resolve via PATH.
@@ -255,25 +263,25 @@ fn read_prefix_to_string(reader: impl std::io::Read, max_bytes: u64) -> Option<S
 // Shared child process helpers
 // ---------------------------------------------------------------------------
 
-/// Spawn a command, pipe JSON input to stdin, collect ToolResult from stdout.
+/// Spawn a command, pipe JSON input to stdin, collect ToolOutcome from stdout.
 async fn run_plugin_child(
     command: &str,
     args: &[String],
     label: &str,
     input: Value,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let mut cmd = tokio::process::Command::new(command);
     crate::utils::suppress_tokio_console_window(&mut cmd);
     cmd.args(args);
     run_plugin_child_raw(&mut cmd, label, input).await
 }
 
-/// Run a pre-configured tokio Command, pipe JSON input, collect ToolResult.
+/// Run a pre-configured tokio Command, pipe JSON input, collect ToolOutcome.
 async fn run_plugin_child_raw(
     cmd: &mut tokio::process::Command,
     label: &str,
     input: Value,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let input_bytes = serde_json::to_vec(&input)
         .map_err(|e| ToolError::invalid_input(format!("failed to serialize input: {e}")))?;
 
@@ -306,10 +314,10 @@ async fn run_plugin_child_raw(
 
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-        if let Ok(parsed) = serde_json::from_str::<ToolResult>(&stdout) {
+        if let Ok(parsed) = serde_json::from_str::<ToolOutcome>(&stdout) {
             Ok(parsed)
         } else {
-            Ok(ToolResult::success(stdout))
+            Ok(ToolOutcome::success(stdout))
         }
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -698,7 +706,7 @@ echo hello
         .expect("plugin execution should not deadlock")
         .expect("plugin child should succeed");
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(result.content.len() > 64 * 1024);
     }
 

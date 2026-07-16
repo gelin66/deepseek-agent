@@ -21,7 +21,7 @@ use crate::tools::goal::SharedGoalState;
 use super::schema_canonicalize;
 use super::schema_sanitize;
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 // === Types ===
@@ -114,8 +114,8 @@ impl ToolRegistry {
         Ok(result.content)
     }
 
-    /// Execute a tool by name, returning the full `ToolResult`.
-    pub async fn execute_full(&self, name: &str, input: Value) -> Result<ToolResult, ToolError> {
+    /// Execute a tool by name, returning the full `ToolOutcome`.
+    pub async fn execute_full(&self, name: &str, input: Value) -> Result<ToolOutcome, ToolError> {
         let tool = self
             .get(name)
             .ok_or_else(|| ToolError::not_available(format!("tool '{name}' is not registered")))?;
@@ -132,7 +132,7 @@ impl ToolRegistry {
         name: &str,
         input: Value,
         context_override: Option<&ToolContext>,
-    ) -> Result<ToolResult, ToolError> {
+    ) -> Result<ToolOutcome, ToolError> {
         let tool = self
             .get(name)
             .ok_or_else(|| ToolError::not_available(format!("tool '{name}' is not registered")))?;
@@ -184,7 +184,9 @@ impl ToolRegistry {
                         threshold,
                         "large-output routed through workshop"
                     );
-                    return Ok(ToolResult::success(wrapped));
+                    let mut routed = result;
+                    routed.content = wrapped;
+                    return Ok(routed);
                 }
             }
         }
@@ -1315,14 +1317,18 @@ impl ToolSpec for McpToolAdapter {
         !keep_loaded
     }
 
-    async fn execute(&self, input: Value, _context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        input: Value,
+        _context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let mut pool = self.pool.lock().await;
         let result = pool
             .call_tool(&self.name, input)
             .await
             .map_err(|e| ToolError::execution_failed(format!("MCP tool failed: {e}")))?;
         let content = serde_json::to_string(&result).unwrap_or_else(|_| result.to_string());
-        Ok(ToolResult::success(content))
+        Ok(ToolOutcome::success(content))
     }
 }
 
@@ -1339,7 +1345,7 @@ mod tests {
     use crate::config::ToolOverride;
     use crate::tools::ToolRegistryBuilder;
     use crate::tools::spec::{
-        ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, required_str,
+        ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec, required_str,
     };
 
     use super::ToolRegistry;
@@ -1378,9 +1384,9 @@ mod tests {
             &self,
             input: Value,
             _context: &ToolContext,
-        ) -> Result<ToolResult, ToolError> {
+        ) -> Result<ToolOutcome, ToolError> {
             let message = required_str(&input, "message")?;
-            Ok(ToolResult::success(format!("Echo: {message}")))
+            Ok(ToolOutcome::success(format!("Echo: {message}")))
         }
     }
 
@@ -1600,8 +1606,8 @@ mod tests {
             &self,
             _input: Value,
             _context: &ToolContext,
-        ) -> Result<ToolResult, ToolError> {
-            Ok(ToolResult::success("ok".to_string()))
+        ) -> Result<ToolOutcome, ToolError> {
+            Ok(ToolOutcome::success("ok".to_string()))
         }
     }
 

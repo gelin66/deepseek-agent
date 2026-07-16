@@ -5,7 +5,7 @@
 //! targets so agents do not turn it into a general network probe.
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_str, optional_u64, required_u64,
 };
 use async_trait::async_trait;
@@ -102,7 +102,7 @@ impl ToolSpec for WaitForDevServerTool {
         ApprovalRequirement::Auto
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let request = parse_request(&input)?;
         let output = wait_for_readiness(request, context).await?;
         readiness_result(output)
@@ -412,7 +412,7 @@ fn elapsed_ms(started: Instant) -> u64 {
     started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
 }
 
-fn readiness_result(output: ReadinessOutput) -> Result<ToolResult, ToolError> {
+fn readiness_result(output: ReadinessOutput) -> Result<ToolOutcome, ToolError> {
     let success = output.ready;
     let metadata = json!({
         "ready": output.ready,
@@ -427,17 +427,18 @@ fn readiness_result(output: ReadinessOutput) -> Result<ToolResult, ToolError> {
     let content = serde_json::to_string_pretty(&output).map_err(|err| {
         ToolError::execution_failed(format!("failed to serialize readiness result: {err}"))
     })?;
-    Ok(ToolResult {
-        content,
-        success,
-        metadata: Some(metadata),
-    })
+    let outcome = if success {
+        ToolOutcome::success(content)
+    } else {
+        ToolOutcome::error(content)
+    };
+    Ok(outcome.with_metadata(metadata))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::spec::{ToolContext, ToolResult, ToolSpec};
+    use crate::tools::spec::{ToolContext, ToolOutcome, ToolSpec};
     use serde_json::{Value, json};
     use std::path::PathBuf;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -448,7 +449,7 @@ mod tests {
         ToolContext::new(PathBuf::from("."))
     }
 
-    async fn run_tool(input: Value) -> (ToolResult, Value) {
+    async fn run_tool(input: Value) -> (ToolOutcome, Value) {
         let tool = WaitForDevServerTool;
         let result = tool.execute(input, &ctx()).await.expect("tool result");
         let payload = serde_json::from_str(&result.content).expect("json result");
@@ -541,7 +542,7 @@ mod tests {
         }))
         .await;
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["phase"], "ready");
         assert_eq!(payload["target"], format!("127.0.0.1:{port}"));
@@ -562,7 +563,7 @@ mod tests {
         }))
         .await;
 
-        assert!(!result.success);
+        assert!(!result.is_success());
         assert_eq!(payload["ready"], false);
         assert_eq!(payload["phase"], "tcp");
         assert_eq!(payload["timed_out"], true);
@@ -588,7 +589,7 @@ mod tests {
         }))
         .await;
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["phase"], "ready");
         assert_eq!(payload["last_status"], 204);
@@ -608,7 +609,7 @@ mod tests {
         }))
         .await;
 
-        assert!(!result.success);
+        assert!(!result.is_success());
         assert_eq!(payload["ready"], false);
         assert_eq!(payload["phase"], "http");
         assert_eq!(payload["timed_out"], true);
@@ -629,7 +630,7 @@ mod tests {
         }))
         .await;
 
-        assert!(!result.success);
+        assert!(!result.is_success());
         assert_eq!(payload["ready"], false);
         assert_eq!(payload["phase"], "http");
         assert_eq!(payload["timed_out"], true);
@@ -654,7 +655,7 @@ mod tests {
         }))
         .await;
 
-        assert!(result.success);
+        assert!(result.is_success());
         assert_eq!(payload["ready"], true);
         assert_eq!(payload["phase"], "ready");
         assert_eq!(payload["last_status"], 204);

@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 /// Tool for collecting workspace and toolchain diagnostics.
@@ -77,7 +77,11 @@ impl ToolSpec for DiagnosticsTool {
         true
     }
 
-    async fn execute(&self, _input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(
+        &self,
+        _input: Value,
+        context: &ToolContext,
+    ) -> Result<ToolOutcome, ToolError> {
         let workspace_root = context.workspace.display().to_string();
 
         let (current_dir, current_dir_error) = match env::current_dir() {
@@ -116,7 +120,7 @@ impl ToolSpec for DiagnosticsTool {
             trusted_external_paths,
         };
 
-        ToolResult::json(&diagnostics).map_err(|e| ToolError::execution_failed(e.to_string()))
+        ToolOutcome::json(&diagnostics).map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -264,7 +268,7 @@ mod tests {
         let ctx = ToolContext::new(tmp.path());
         let tool = DiagnosticsTool;
         let result = tool.execute(json!({}), &ctx).await.expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
 
         let parsed: DiagnosticsOutput =
             serde_json::from_str(&result.content).expect("tool result should be json");
@@ -282,7 +286,7 @@ mod tests {
         let ctx = ToolContext::new(tmp.path());
         let tool = DiagnosticsTool;
         let result = tool.execute(json!({}), &ctx).await.expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
 
         let parsed: DiagnosticsOutput =
             serde_json::from_str(&result.content).expect("tool result should be json");

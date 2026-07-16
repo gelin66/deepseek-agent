@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod agent_runtime;
 pub mod fleet;
 pub mod runtime;
 pub mod workroom;

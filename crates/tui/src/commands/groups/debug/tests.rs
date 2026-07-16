@@ -427,6 +427,7 @@ fn cache_inspect_displays_tool_result_budget_metadata() {
             id: "tool-1".to_string(),
             name: "shell_command".to_string(),
             input: serde_json::json!({"command": "cargo test"}),
+            raw_arguments: None,
             caller: None,
         }],
     });
@@ -445,6 +446,7 @@ fn cache_inspect_displays_tool_result_budget_metadata() {
             id: "tool-2".to_string(),
             name: "shell_command".to_string(),
             input: serde_json::json!({"command": "cargo test"}),
+            raw_arguments: None,
             caller: None,
         }],
     });
@@ -1040,6 +1042,7 @@ fn test_patch_undo_prunes_tool_turn_context() {
                 id: "call-1".to_string(),
                 name: "write_file".to_string(),
                 input: serde_json::json!({"path": "a.txt"}),
+                raw_arguments: None,
                 caller: None,
             },
         ],
@@ -1220,12 +1223,14 @@ fn test_prune_undone_tool_context_preserves_prior_tool_pairs() {
                 id: "call-a".to_string(),
                 name: "write_file".to_string(),
                 input: serde_json::json!({"path": "a.txt"}),
+                raw_arguments: None,
                 caller: None,
             },
             ContentBlock::ToolUse {
                 id: "call-b".to_string(),
                 name: "write_file".to_string(),
                 input: serde_json::json!({"path": "b.txt"}),
+                raw_arguments: None,
                 caller: None,
             },
         ],

@@ -9,7 +9,7 @@ use crate::config::ApiProvider;
 use crate::context_budget::ContextBudget;
 use crate::error_taxonomy::ErrorCategory;
 use crate::models::{Message, SystemPrompt};
-use crate::tools::spec::ToolResult;
+use crate::tools::spec::ToolOutcome;
 use codewhale_config::route::RouteLimits;
 use serde_json::Value;
 
@@ -582,7 +582,7 @@ fn tool_result_context_limits_for_window(context_window: u32) -> ToolResultConte
 pub(crate) fn compact_tool_result_for_context(
     model: &str,
     tool_name: &str,
-    output: &ToolResult,
+    output: &ToolOutcome,
 ) -> String {
     compact_tool_result_for_route(ApiProvider::Deepseek, model, None, tool_name, output)
 }
@@ -592,7 +592,7 @@ pub(crate) fn compact_tool_result_for_route(
     model: &str,
     route_limits: Option<RouteLimits>,
     tool_name: &str,
-    output: &ToolResult,
+    output: &ToolOutcome,
 ) -> String {
     let raw = output.content.trim();
     if raw.is_empty() {

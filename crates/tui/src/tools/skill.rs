@@ -34,7 +34,7 @@ use crate::skills::{
 };
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 
 pub struct LoadSkillTool;
@@ -76,7 +76,7 @@ impl ToolSpec for LoadSkillTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let name = input
             .get("name")
             .and_then(Value::as_str)
@@ -142,7 +142,7 @@ impl ToolSpec for LoadSkillTool {
         };
 
         let body = format_skill_body(skill);
-        Ok(ToolResult::success(body).with_metadata(json!({
+        Ok(ToolOutcome::success(body).with_metadata(json!({
             "skill_name": skill.name,
             "skill_path": skill.path.display().to_string(),
             "companion_files": collect_companion_files(skill)
@@ -341,7 +341,7 @@ mod tests {
             .execute(json!({"name": "from-opencode"}), &context)
             .await
             .expect("load_skill should succeed");
-        assert!(result.success);
+        assert!(result.is_success());
         assert!(
             result.content.contains("# Skill: from-opencode"),
             "body header missing: {}",
@@ -391,7 +391,7 @@ mod tests {
             .execute(json!({"name": "codewhale-only"}), &context)
             .await
             .expect("CodeWhale skill should load");
-        assert!(result.success);
+        assert!(result.is_success());
 
         let err = tool
             .execute(json!({"name": "claude-only"}), &context)

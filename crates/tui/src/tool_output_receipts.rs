@@ -364,6 +364,7 @@ mod tests {
                 id: id.to_string(),
                 name: name.to_string(),
                 input,
+                raw_arguments: None,
                 caller: None,
             }],
         }

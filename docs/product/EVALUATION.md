@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
 - 状态：V1 评测契约
-- 上次更新：2026-07-15
+- 上次更新：2026-07-16
 
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
@@ -163,9 +163,127 @@ evidence
 
 新增第二个状态真相或第二个 Agent loop 默认视为架构失败，不由成功率小幅提升抵消。
 
+### 5.1 A/B 与产品指标资格
+
+用于声称产品能力提升的 A/B 必须满足：
+
+- 显式提供 baseline/candidate 二进制及彼此不同的 revision，不由 Harness 自动 checkout；
+- baseline 与 candidate 使用相同任务、模型、评测任务提示词、请求/turn/时间和费用预算；
+- 若要把变化归因给某一个组件，该组件之外的生产系统提示词、工具目录和其他能力面必须
+  保持一致；若评测的是一个有意同时替换 Runtime、生产提示词或工具目录的垂直切片，必须
+  记录各自 hash 和 treatment 差异，结果只能归因给整个切片，不能归因给其中单个组件；
+- single 与 multi 等不同运行形态分层统计，不用混合均值掩盖某一层退化；
+- 每个 `variant × task/lane` cell 至少独立运行 3 次；
+- 逐 run 保存 `verified_success`、`false_success`、request、Token、时间和费用；
+- `verified_success` 必须同时满足 Host 接受终态、TaskContract 预先定义的验收成立与该运行
+  形态的协议/预算契约；
+- cell 聚合保存样本数、总量、均值/中位数与成功率，同 lane 再计算 candidate-baseline
+  差值；
+- usage/cost 不完整、cell 未跑完、缺 baseline 或样本少于 3 次时，
+  `product_metric_eligible=false`。
+
+计划记录和单次 run 本身永远不能标为产品指标。旧基线只作为隔离黑盒运行；若旧版本不
+满足当前生产 receipt 契约，应记录 contract failure，不得向候选 Runtime 或 Harness
+加入旧语义兼容层。
+
+### 5.2 TaskContract、终态与证据边界
+
+`TaskContract` 是 Host 在一次 generation 开始前确定的验收边界，至少绑定 objective、
+constraints、non-goals 和 acceptance。该 generation 内不可由模型改写、补写或追认；
+目标或约束改变时必须产生新的 generation，旧 receipt 不得沿用。
+
+acceptance 只有两类产品语义：
+
+1. **显式 verifier 契约**：预先固定 verifier 标识与精确参数。只有同时匹配 contract
+   generation、objective/constraints/non-goals、verifier 标识、精确参数和最新
+   `workspace_revision` 的成功 receipt，才能满足该契约。普通 `run_tests`、参数不同的
+   `run_verifiers`、任意绿色命令或额外模型 critic 都只能成为 artifact。
+2. **Host 验收**：objective-only 或没有显式 verifier 契约的任务必须由 Host 明确接受。
+   模型的完成声明、`update_goal` 请求、测试结果或自评只能提交候选和 artifact，不能替
+   Host 接受终态。
+
+Runtime 的 `Completed` 与评测的 `verified_success` 是两个层次：前者是 Host 按当前
+TaskContract 接受的运行终态，后者还必须满足评测任务预先定义的确定性验收或人工 rubric，
+并通过协议、预算和记录完整性检查。Host 手动结束目标、工具函数返回成功或模型自报完成，
+都不能自动生成产品指标上的 `verified_success=true`。
+
+`verification_runs` 只记录模型在运行中主动发起且被 Harness 识别的验证动作，用于衡量
+行为和成本；除非 TaskContract 明确把某个精确调用本身列为 acceptance，否则它不是
+`verified_success` 的替代条件。真正的成功证据仍是 Host 对最新 `workspace_revision`
+执行预先冻结的 verifier 后生成的 receipt。
+
+artifact 的状态同样不能越级推断。`Produced` 只表示工具产出了可引用对象；它可以作为
+后续 verifier 的输入，但不等于 `Host Verified`。只有与当前 TaskContract generation、
+最新 `workspace_revision` 和预定义验收器同时匹配的成功 receipt，才能把对应证据判为
+`Host Verified`。
+
+### 5.3 持久化、进程中断与恢复证据契约
+
+任何声称支持 crash/reopen/resume、幂等恢复或 exactly-once 终态的切片，都必须让每个
+故障窗口留下可审计的恢复证据。离线窗口可以由外部子进程故障测试、精确断言和提交的
+恢复矩阵共同证明；真实或凭据化 run 必须保存结构化恢复记录。若离线窗口也要参与恢复率、
+Token、费用或其他产品指标计算，同样必须生成逐 run 结构化记录。结构化记录至少包括：
+
+```text
+run_id
+crash_phase
+kill_mechanism
+same_run
+last_committed_seq_before_crash
+first_committed_seq_after_resume
+event_count_before_crash
+event_count_after_resume
+event_prefix_digest_before_crash
+event_prefix_digest_after_reopen
+final_event_digest
+unique_event_id_count
+terminal_count
+model_request_delta
+usage_delta
+unknown_billing
+tool_side_effect_count
+tool_side_effect_digest
+lease_outcome
+no_key_replay
+```
+
+字段须满足以下语义：
+
+- 恢复必须继续同一个 `run_id`，不能新建 run 后把两段输出拼成“恢复成功”；重开后已提交
+  事件前缀的规范化摘要必须保持不变，后续 sequence 严格单调且 event id 不重复。
+- `crash_phase` 必须区分模型请求准备/在途、工具执行前/副作用后未提交、普通事件提交后
+  未发布，以及 canonical terminal 提交后未发布等窗口；每个窗口分别报告预期与实际的
+  request、usage、事件和副作用增量。
+- 请求已发送但 usage 尚未持久化时，费用不能推断为零。记录必须设置
+  `unknown_billing=true`，保留已知 request/usage delta，并使依赖完整费用或 Token 的比较
+  `product_metric_eligible=false`。
+- 模型请求是否已发送无法判定，或非幂等工具可能已产生外部副作用时，恢复必须 fail
+  closed：不得自动重发请求、重跑危险工具或宣称完成。只有持久 idempotency key、可核验
+  的副作用摘要或明确的人工处置，才能解除该状态。
+- 工具证据至少绑定 tool call/attempt、恢复前后副作用计数与结果摘要；文件、进程或外部
+  系统的实际状态必须参与判定，不能只检查 Runtime 是否再次返回成功。
+- lease 证据至少记录旧 owner、新 owner、拒绝或回收决定，并证明存活 owner 的并发恢复被
+  拒绝、失效 owner 的 lease 可安全回收；同一时刻不能有两个执行者推进同一个 run。
+- terminal 的 exactly-once 只指 RunStore 中恰好一个 canonical terminal event。stdout、
+  NDJSON 与其他事件 sink 是至少一次投影，进程中断后可以重放。canonical event envelope
+  暴露 `run_id + sequence + event_id` 时，消费者可据此去重；当前紧凑
+  `codewhale.exec-stream` v1 并未在每条展示事件上承诺这些字段，必须按至少一次输出消费，
+  不能把重复投影误报为第二个持久终态。需要逐事件去重的调用方应读取 canonical event
+  记录；若未来给紧凑流增加 envelope identity，必须升级并测试机器协议版本。
+- terminal 后的 no-key replay 必须在不读取凭据、不发模型请求、不执行工具的情况下重放
+  同一终态；持久事件数量、事件摘要、usage、workspace 和工具副作用均不得改变。
+
+进程恢复验收必须包含由外部监督进程发送的真实 `SIGKILL`（Windows 使用等价的强制终止）
+并重新打开持久 Store。错误返回、panic 注入或同进程 fault hook 只能作为定位更精确的补充
+测试，不能替代 OS 级进程终止，因为它们无法证明缓冲区、析构器、lease 和重新打开行为。
+
+单次、受限费用的真实 DeepSeek resume canary 只证明当前生产二进制、官方 API 与持久恢复
+路径能够共同工作，必须标记 `product_metric_eligible=false`。它不能替代每个 cell 至少
+3 次的 A/B，也不能用一次成功推断恢复率、Token 或费用改善。
+
 ## 6. 真实性判定
 
-`verified_success` 只能来自任务定义的验收器，例如：
+`verified_success` 只能来自 TaskContract 和评测任务在运行前定义的验收器，例如：
 
 - 测试、编译、lint；
 - 确定性输出检查；
@@ -175,7 +293,9 @@ evidence
 
 模型自评、额外 critic 模型或自然语言结论只能作为 review 信号，不能单独成为成功证据。
 
-所有证据必须绑定生成时的 workspace revision；后续写入使旧证据失效。
+所有证据必须绑定生成时的 TaskContract generation 和 workspace revision；后续写入使旧
+证据失效。receipt 不匹配、缺失或无法证明最新 revision 时必须 fail closed，不能降级为
+模型判断、Host 的非结构化完成点击或旧兼容语义。
 
 ## 7. 能力保留门槛
 

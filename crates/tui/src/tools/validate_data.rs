@@ -9,7 +9,8 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use super::spec::{
-    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolResult, ToolSpec, optional_str,
+    ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
+    optional_str,
 };
 
 /// Tool for validating JSON/TOML configuration data.
@@ -89,7 +90,7 @@ impl ToolSpec for ValidateDataTool {
         true
     }
 
-    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolResult, ToolError> {
+    async fn execute(&self, input: Value, context: &ToolContext) -> Result<ToolOutcome, ToolError> {
         let path = optional_str(&input, "path");
         let content = optional_str(&input, "content");
         let requested_format = DataFormat::from_input(optional_str(&input, "format"))?;
@@ -132,7 +133,7 @@ fn validate_auto(
     raw_content: &str,
     source_name: &str,
     extension: Option<&str>,
-) -> Result<ToolResult, ToolError> {
+) -> Result<ToolOutcome, ToolError> {
     let hint = match extension {
         Some("json") => Some(DataFormat::Json),
         Some("toml") => Some(DataFormat::Toml),
@@ -160,25 +161,23 @@ fn validate_auto(
     let json_error = json_result.err().map(|e| e.to_string()).unwrap_or_default();
     let toml_error = toml_result.err().map(|e| e.to_string()).unwrap_or_default();
 
-    Ok(
-        ToolResult::error(
-            "Validation failed in auto mode: content is neither valid JSON nor TOML.",
-        )
-        .with_metadata(json!({
-            "valid": false,
-            "format": DataFormat::Auto.as_str(),
-            "source": source_name,
-            "json_error": json_error,
-            "toml_error": toml_error,
-        })),
+    Ok(ToolOutcome::error(
+        "Validation failed in auto mode: content is neither valid JSON nor TOML.",
     )
+    .with_metadata(json!({
+        "valid": false,
+        "format": DataFormat::Auto.as_str(),
+        "source": source_name,
+        "json_error": json_error,
+        "toml_error": toml_error,
+    })))
 }
 
-fn validate_json(raw_content: &str, source_name: &str) -> Result<ToolResult, ToolError> {
+fn validate_json(raw_content: &str, source_name: &str) -> Result<ToolOutcome, ToolError> {
     match serde_json::from_str::<serde_json::Value>(raw_content) {
         Ok(parsed) => build_success_result(DataFormat::Json, source_name, summarize_json(&parsed)),
         Err(err) => Ok(
-            ToolResult::error(format!("Invalid JSON: {err}")).with_metadata(json!({
+            ToolOutcome::error(format!("Invalid JSON: {err}")).with_metadata(json!({
                 "valid": false,
                 "format": DataFormat::Json.as_str(),
                 "source": source_name,
@@ -188,11 +187,11 @@ fn validate_json(raw_content: &str, source_name: &str) -> Result<ToolResult, Too
     }
 }
 
-fn validate_toml(raw_content: &str, source_name: &str) -> Result<ToolResult, ToolError> {
+fn validate_toml(raw_content: &str, source_name: &str) -> Result<ToolOutcome, ToolError> {
     match toml::from_str::<toml::Value>(raw_content) {
         Ok(parsed) => build_success_result(DataFormat::Toml, source_name, summarize_toml(&parsed)),
         Err(err) => Ok(
-            ToolResult::error(format!("Invalid TOML: {err}")).with_metadata(json!({
+            ToolOutcome::error(format!("Invalid TOML: {err}")).with_metadata(json!({
                 "valid": false,
                 "format": DataFormat::Toml.as_str(),
                 "source": source_name,
@@ -206,8 +205,8 @@ fn build_success_result(
     format: DataFormat,
     source_name: &str,
     summary: Value,
-) -> Result<ToolResult, ToolError> {
-    ToolResult::json(&json!({
+) -> Result<ToolOutcome, ToolError> {
+    ToolOutcome::json(&json!({
         "valid": true,
         "format": format.as_str(),
         "source": source_name,
@@ -270,7 +269,7 @@ mod tests {
             )
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         let content: Value = serde_json::from_str(&result.content).expect("validation json");
         assert_eq!(content.get("valid").and_then(Value::as_bool), Some(true));
     }
@@ -286,7 +285,7 @@ mod tests {
             .execute(json!({"path": "config.toml", "format": "toml"}), &ctx)
             .await
             .expect("execute");
-        assert!(result.success);
+        assert!(result.is_success());
         let content: Value = serde_json::from_str(&result.content).expect("validation json");
         assert_eq!(content.get("format").and_then(Value::as_str), Some("toml"));
     }
@@ -300,7 +299,7 @@ mod tests {
             .execute(json!({"content": "not-valid-data"}), &ctx)
             .await
             .expect("execute");
-        assert!(!result.success);
+        assert!(!result.is_success());
         assert!(result.content.contains("Validation failed in auto mode"));
     }
 
