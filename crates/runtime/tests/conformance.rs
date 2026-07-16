@@ -565,6 +565,56 @@ async fn final_is_store_first_and_terminal_is_exactly_once() {
 }
 
 #[tokio::test]
+async fn ready_returns_only_after_run_created_is_durable() {
+    let model = Arc::new(MockModel::new(|_| {
+        ScriptResponse::Events(vec![completed(
+            "完成",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let (runtime, _, _, store) = fixture(model);
+
+    let run = runtime.start(request("握手")).ready().await.unwrap();
+    let replay = store.load(&run.run_id).await.unwrap().unwrap();
+    assert!(matches!(
+        replay.events.first().map(|event| &event.event),
+        Some(RuntimeEventKind::RunCreated { .. })
+    ));
+
+    run.wait().await.unwrap();
+}
+
+#[tokio::test]
+async fn ready_preserves_typed_store_start_failure() {
+    let model = Arc::new(MockModel::new(|_| {
+        ScriptResponse::Events(vec![completed(
+            "不应调用",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let (runtime, _, _, store) = fixture(model);
+    let mut duplicate = request("重复");
+    duplicate.run_id = Some(RunId::from("duplicate-run"));
+    let created = store.create(duplicate.clone()).await.unwrap();
+
+    let error = match runtime.start(duplicate).ready().await {
+        Ok(_) => panic!("duplicate run unexpectedly became ready"),
+        Err(error) => error,
+    };
+    assert!(matches!(
+        error,
+        RunReadyError::Store(RunStoreError::AlreadyExists { ref run_id })
+            if run_id == &RunId::from("duplicate-run")
+    ));
+
+    store.release(&created.lease).await.unwrap();
+}
+
+#[tokio::test]
 async fn tool_reasoning_and_raw_arguments_replay_exactly() {
     let calls = Arc::new(AtomicUsize::new(0));
     let script_calls = calls.clone();

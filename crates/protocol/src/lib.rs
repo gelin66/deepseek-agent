@@ -5,6 +5,7 @@ use serde_json::Value;
 
 pub mod agent_runtime;
 pub mod fleet;
+pub mod run_api;
 pub mod runtime;
 pub mod workroom;
 

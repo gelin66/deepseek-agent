@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::*;
@@ -85,18 +85,20 @@ impl AgentRuntime {
     #[must_use]
     pub fn resume(self: &Arc<Self>, run_id: RunId) -> RuntimeRun {
         let (sender, receiver) = mpsc::unbounded_channel();
+        let (ready_sender, ready_receiver) = oneshot::channel();
         let control = AgentControl { sender };
         let runtime = self.clone();
         let task_run_id = run_id.clone();
         let join = tokio::spawn(async move {
             runtime
-                .run_launch(RunLaunch::Resume(task_run_id), None, receiver)
+                .run_launch(RunLaunch::Resume(task_run_id), None, receiver, ready_sender)
                 .await
         });
         RuntimeRun {
             run_id,
             control,
             join,
+            ready: Some(ready_receiver),
         }
     }
 
@@ -114,17 +116,24 @@ impl AgentRuntime {
         let run_id = request.run_id.take().unwrap_or_default();
         request.run_id = Some(run_id.clone());
         let (sender, receiver) = mpsc::unbounded_channel();
+        let (ready_sender, ready_receiver) = oneshot::channel();
         let control = AgentControl { sender };
         let runtime = self.clone();
         let join = tokio::spawn(async move {
             runtime
-                .run_launch(RunLaunch::Create(Box::new(request)), Some(budget), receiver)
+                .run_launch(
+                    RunLaunch::Create(Box::new(request)),
+                    Some(budget),
+                    receiver,
+                    ready_sender,
+                )
                 .await
         });
         RuntimeRun {
             run_id,
             control,
             join,
+            ready: Some(ready_receiver),
         }
     }
 
@@ -133,7 +142,9 @@ impl AgentRuntime {
         launch: RunLaunch,
         budget: Option<Arc<RuntimeBudget>>,
         mut control: mpsc::UnboundedReceiver<ControlCommand>,
+        ready: oneshot::Sender<Result<(), RunStoreError>>,
     ) -> AgentOutcome {
+        let mut ready = Some(ready);
         let resumed = matches!(&launch, RunLaunch::Resume(_));
         let (lease, replay) = match launch {
             RunLaunch::Create(request) => {
@@ -144,7 +155,10 @@ impl AgentRuntime {
                         self.sink.emit(created.created).await;
                         (created.lease, created.replay)
                     }
-                    Err(error) => return store_start_failure(error, run_id, parent_run_id),
+                    Err(error) => {
+                        signal_ready(&mut ready, Err(error.clone()));
+                        return store_start_failure(error, run_id, parent_run_id);
+                    }
                 }
             }
             RunLaunch::Resume(run_id) => match self.store.acquire(&run_id).await {
@@ -153,23 +167,26 @@ impl AgentRuntime {
                         self.sink.emit(event.clone()).await;
                     }
                     if let Some(outcome) = acquired.replay.snapshot.terminal.clone() {
+                        signal_ready(&mut ready, Ok(()));
                         return outcome;
                     }
                     let Some(lease) = acquired.lease else {
-                        return store_start_failure(
-                            RunStoreError::Corrupt {
-                                run_id: run_id.clone(),
-                                message: "non-terminal resume returned no writer lease".to_owned(),
-                            },
-                            run_id,
-                            None,
-                        );
+                        let error = RunStoreError::Corrupt {
+                            run_id: run_id.clone(),
+                            message: "non-terminal resume returned no writer lease".to_owned(),
+                        };
+                        signal_ready(&mut ready, Err(error.clone()));
+                        return store_start_failure(error, run_id, None);
                     };
                     (lease, acquired.replay)
                 }
-                Err(error) => return store_start_failure(error, run_id, None),
+                Err(error) => {
+                    signal_ready(&mut ready, Err(error.clone()));
+                    return store_start_failure(error, run_id, None);
+                }
             },
         };
+        signal_ready(&mut ready, Ok(()));
         let snapshot = replay.snapshot;
         let deadline = effective_deadline(&snapshot.request);
         let budget = budget.unwrap_or_else(|| {
@@ -1612,6 +1629,7 @@ pub struct RuntimeRun {
     pub run_id: RunId,
     control: AgentControl,
     join: JoinHandle<AgentOutcome>,
+    ready: Option<oneshot::Receiver<Result<(), RunStoreError>>>,
 }
 
 impl RuntimeRun {
@@ -1620,11 +1638,33 @@ impl RuntimeRun {
         self.control.clone()
     }
 
+    /// Wait until the canonical Store has durably created or acquired this
+    /// run. Transports use this handshake before acknowledging start/resume;
+    /// the Agent loop itself remains the only execution path.
+    pub async fn ready(mut self) -> Result<Self, RunReadyError> {
+        let Some(ready) = self.ready.take() else {
+            return Ok(self);
+        };
+        match ready.await {
+            Ok(Ok(())) => Ok(self),
+            Ok(Err(error)) => Err(RunReadyError::Store(error)),
+            Err(_) => Err(RunReadyError::RuntimeStopped),
+        }
+    }
+
     pub async fn wait(self) -> Result<AgentOutcome, RuntimeJoinError> {
         self.join.await.map_err(|error| RuntimeJoinError {
             message: error.to_string(),
         })
     }
+}
+
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+pub enum RunReadyError {
+    #[error(transparent)]
+    Store(#[from] RunStoreError),
+    #[error("runtime task stopped before the run store was ready")]
+    RuntimeStopped,
 }
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -1751,6 +1791,15 @@ fn store_start_failure(
         runtime_model_requests: 0,
         runtime_retries: 0,
         tool_calls: 0,
+    }
+}
+
+fn signal_ready(
+    ready: &mut Option<oneshot::Sender<Result<(), RunStoreError>>>,
+    result: Result<(), RunStoreError>,
+) {
+    if let Some(sender) = ready.take() {
+        let _ = sender.send(result);
     }
 }
 

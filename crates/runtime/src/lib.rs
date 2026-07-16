@@ -15,7 +15,9 @@ use tokio::sync::Notify;
 mod agent;
 mod store;
 
-pub use agent::{AgentControl, AgentRuntime, ControlError, RuntimeJoinError, RuntimeRun};
+pub use agent::{
+    AgentControl, AgentRuntime, ControlError, RunReadyError, RuntimeJoinError, RuntimeRun,
+};
 pub use store::{
     AcquiredRun, CreatedRun, DurableActionState, InMemoryRunStore, PendingModelAction,
     PendingToolAction, RunLease, RunReplay, RunSnapshot, StoppedModelFailure, apply_event,
