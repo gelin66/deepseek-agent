@@ -138,10 +138,9 @@ impl Drop for PendingActivation {
     }
 }
 
-/// Private composition boundary. A production implementation will move the
-/// existing DeepSeek model/tool/request wiring here; it must always construct
-/// the existing `AgentRuntime` with the Store and sink supplied by this
-/// service. Tests use the same runtime with deterministic ports.
+/// Private composition boundary shared by production and deterministic tests.
+/// Implementations must construct `AgentRuntime` with the Store and sink
+/// supplied by this service.
 #[async_trait]
 trait RunComposition: Send + Sync {
     async fn start(
