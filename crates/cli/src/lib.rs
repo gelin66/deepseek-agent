@@ -5,20 +5,23 @@ mod metrics;
 mod update;
 
 use std::io::{self, Read, Write};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
 use codewhale_agent::ModelRegistry;
+use codewhale_app::{AgentApplication, ProductionApplicationConfig, ProductionPromptConfig};
 use codewhale_app_server::{
-    AppServerOptions, run as run_app_server, run_stdio as run_app_server_stdio,
+    AppServerOptions, DEFAULT_MAX_BODY_BYTES, run as run_app_server,
+    run_stdio as run_app_server_stdio,
 };
 use codewhale_config::{
     CliRuntimeOverrides, ConfigStore, ProviderKind, ProviderSource, ResolvedRuntimeOptions,
-    RuntimeApiKeySource,
+    RuntimeApiKeySource, load_prompt_preferences,
 };
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
 use codewhale_mcp::{McpServerDefinition, run_stdio_server};
@@ -279,25 +282,14 @@ Runtime, not Fleet.
     Mcp(TuiPassthroughArgs),
     /// Inspect TUI feature flags.
     Features(TuiPassthroughArgs),
-    /// Run a local TUI server.
+    /// Run the existing MCP or ACP stdio server.
     #[command(after_help = "\
-Forwarded serve options:
-      --mcp                 Start MCP server over stdio
-      --http                Start runtime HTTP/SSE API server
-      --mobile              Start runtime HTTP/SSE API server with the mobile control page
-      --qr                  Show a QR code for the mobile URL (requires --mobile)
-      --acp                 Start ACP server over stdio for editor clients
-      --host <HOST>         Bind host (default 127.0.0.1; --mobile defaults to 0.0.0.0)
-      --port <PORT>         Bind port [default: 7878]
-      --workers <WORKERS>   Background task worker count (1-8)
-      --cors-origin <URL>   Additional CORS origin to allow (repeatable)
-      --auth-token <TOKEN>  Require this bearer token for /v1/* runtime API routes
-      --insecure            Disable runtime API auth when no token is configured
+Modes:
+  codewhale serve --mcp     Start MCP over stdio
+  codewhale serve --acp     Start ACP over stdio for editor clients
 
-`codewhale serve --http` and `codewhale serve --mobile` remain compatibility
-aliases for `codewhale app-server --http` and `codewhale app-server --mobile`.
-New integrations should prefer `codewhale app-server`.")]
-    Serve(TuiPassthroughArgs),
+The canonical local HTTP/SSE Run API is `codewhale app-server`.")]
+    Serve(ServeArgs),
     /// Generate shell completions for the TUI binary.
     Completions(TuiPassthroughArgs),
     /// Configure provider credentials.
@@ -316,19 +308,14 @@ New integrations should prefer `codewhale app-server`.")]
     Thread(ThreadArgs),
     /// Evaluate sandbox/approval policy decisions.
     Sandbox(SandboxArgs),
-    /// Run the canonical runtime API / control plane (HTTP/SSE, mobile, stdio).
+    /// Run the canonical local Run API over HTTP/SSE or stdio.
     #[command(after_help = "\
 Transports:
-  codewhale app-server --http              Full HTTP/SSE runtime API (/v1/*) on 127.0.0.1:7878
-  codewhale app-server --mobile            Runtime API + phone control page (binds 0.0.0.0)
-  codewhale app-server --stdio             JSON-RPC control transport over stdio (no listener)
-  codewhale app-server                     Legacy in-process app-server HTTP on 127.0.0.1:8787
+  codewhale app-server                     HTTP/SSE Run API on 127.0.0.1:7878
+  codewhale app-server --stdio             Canonical newline Run API on stdio
 
-`--http` and `--mobile` serve the same mature runtime API as `codewhale serve
---http`/`--mobile`, which remain as compatibility aliases. The runtime API token
-is read from --auth-token, CODEWHALE_RUNTIME_TOKEN, or DEEPSEEK_RUNTIME_TOKEN.
-
-See docs/architecture/RUNTIME_API.md.")]
+HTTP requires --auth-token (or CODEWHALE_APP_SERVER_TOKEN) unless the user
+explicitly selects --insecure-no-auth on a loopback address.")]
     AppServer(AppServerArgs),
     /// Generate shell completions.
     #[command(after_help = r#"Examples:
@@ -398,6 +385,17 @@ struct RunArgs {
 struct TuiPassthroughArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
+}
+
+#[derive(Debug, Args, Clone)]
+#[group(required = true, multiple = false)]
+struct ServeArgs {
+    /// Start the existing MCP server over stdio.
+    #[arg(long)]
+    mcp: bool,
+    /// Start the existing ACP server over stdio.
+    #[arg(long)]
+    acp: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1404,41 +1402,38 @@ impl From<ApprovalModeArg> for AskForApproval {
 
 #[derive(Debug, Args)]
 struct AppServerArgs {
-    /// Serve the full HTTP/SSE runtime API (`/v1/*`: sessions, threads, turns,
-    /// approvals, events, usage, fleet, tasks). This is the canonical runtime
-    /// API surface; it delegates to the same server as `codewhale serve --http`.
-    #[arg(long, conflicts_with_all = ["stdio", "mobile"])]
-    http: bool,
-    /// Serve the runtime API plus the phone-friendly mobile control page.
-    /// Equivalent to the legacy `codewhale serve --mobile`.
-    #[arg(long, conflicts_with = "stdio")]
-    mobile: bool,
-    /// Run the app-server JSON-RPC control transport over stdio (no listener).
-    /// Used by local SDKs and JSON-RPC integrations.
-    #[arg(long, default_value_t = false)]
+    /// Run the same canonical newline Run API over stdio instead of HTTP/SSE.
+    #[arg(
+        long,
+        default_value_t = false,
+        conflicts_with_all = [
+            "host",
+            "port",
+            "auth_token",
+            "insecure_no_auth",
+            "cors_origin",
+            "max_body_bytes"
+        ]
+    )]
     stdio: bool,
-    /// Show a QR code for the mobile URL in the terminal (requires --mobile).
-    #[arg(long, requires = "mobile")]
-    qr: bool,
-    /// Bind host. Defaults to 127.0.0.1; with --mobile and no host, binds
-    /// 0.0.0.0 so LAN devices can reach the mobile page.
+    /// HTTP bind host. Defaults to 127.0.0.1.
     #[arg(long)]
-    host: Option<String>,
-    /// Bind port. Defaults to 7878 for --http/--mobile (the runtime API) and
-    /// 8787 for the legacy in-process app-server HTTP transport.
+    host: Option<IpAddr>,
+    /// HTTP bind port. Defaults to 7878.
     #[arg(long)]
     port: Option<u16>,
-    /// Background task worker count (1-8). Only used with --http/--mobile.
-    #[arg(long)]
-    workers: Option<usize>,
-    #[arg(long)]
-    config: Option<PathBuf>,
+    /// Bearer token required by the HTTP Run API.
     #[arg(long = "auth-token")]
     auth_token: Option<String>,
+    /// Allow unauthenticated HTTP only on a loopback bind address.
     #[arg(long, default_value_t = false)]
     insecure_no_auth: bool,
+    /// Allowed browser origin. Repeat for more than one origin.
     #[arg(long = "cors-origin")]
     cors_origin: Vec<String>,
+    /// Maximum accepted HTTP request body size.
+    #[arg(long = "max-body-bytes")]
+    max_body_bytes: Option<usize>,
 }
 
 const MCP_SERVER_DEFINITIONS_KEY: &str = "mcp.server_definitions";
@@ -1587,9 +1582,7 @@ fn run() -> Result<()> {
         }
         Some(Commands::Serve(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            // `serve` starts a long-running runtime API listener; supervise the
-            // delegated child so it is torn down with the dispatcher (#3259).
-            delegate_server_to_tui(&cli, &resolved_runtime, tui_args("serve", args))
+            delegate_to_tui(&cli, &resolved_runtime, serve_tui_args(args))
         }
         Some(Commands::Completions(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
@@ -1616,16 +1609,8 @@ fn run() -> Result<()> {
         Some(Commands::Thread(args)) => run_thread_command(args.command),
         Some(Commands::Sandbox(args)) => run_sandbox_command(args.command),
         Some(Commands::AppServer(args)) => {
-            // The HTTP/mobile runtime API is delegated to the mature `serve` path
-            // in the TUI binary, which reads the *global* --config. app-server has
-            // historically taken a subcommand-level --config, so bridge it before
-            // resolving runtime options (provider/keyring) for the delegated run.
-            if (args.http || args.mobile) && cli.config.is_none() && args.config.is_some() {
-                cli.config = args.config.clone();
-                store = ConfigStore::load(cli.config.clone())?;
-            }
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            run_app_server_command(&cli, &resolved_runtime, args)
+            run_app_server_command(&resolved_runtime, args)
         }
         Some(Commands::Completion { shell }) => {
             let mut cmd = Cli::command();
@@ -1729,6 +1714,13 @@ fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
     forwarded.push(command.to_string());
     forwarded.extend(args.args);
     forwarded
+}
+
+fn serve_tui_args(args: ServeArgs) -> Vec<String> {
+    vec![
+        "serve".to_owned(),
+        if args.mcp { "--mcp" } else { "--acp" }.to_owned(),
+    ]
 }
 
 fn reject_exec_global_flags(args: &[String]) -> Result<()> {
@@ -2532,87 +2524,82 @@ fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
 }
 
 fn run_app_server_command(
-    cli: &Cli,
     resolved_runtime: &ResolvedRuntimeOptions,
     args: AppServerArgs,
 ) -> Result<()> {
-    // The full runtime API lives in the TUI crate behind `serve --http`/`--mobile`.
-    // Rather than duplicate ~6.5k lines or add a CLI→TUI crate dependency, the
-    // canonical `app-server --http`/`--mobile` entrypoint reuses that mature server
-    // by delegating to the sibling TUI binary (the same mechanism `serve` uses).
-    if args.http || args.mobile {
-        // Delegated runtime API listener — supervise it so the child does not
-        // outlive the dispatcher (#3259).
-        return delegate_server_to_tui(cli, resolved_runtime, app_server_serve_passthrough(&args));
-    }
-
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("failed to create tokio runtime")?;
+    let application = Arc::new(AgentApplication::production(
+        production_application_config(resolved_runtime)?,
+    )?);
     if args.stdio {
-        return runtime.block_on(run_app_server_stdio(args.config));
+        return runtime
+            .block_on(run_app_server_stdio(application))
+            .context("canonical app-server stdio transport failed");
     }
-    // Legacy in-process app-server HTTP transport (`/healthz`, `/thread`, `/app`,
-    // `/prompt`, `/tool`, `/jobs`). Kept for backward compatibility; defaults to
-    // 127.0.0.1:8787 to avoid colliding with the runtime API default of :7878.
-    let host = args.host.as_deref().unwrap_or("127.0.0.1");
-    let port = args.port.unwrap_or(8787);
-    let listen: SocketAddr = format!("{host}:{port}")
-        .parse()
-        .with_context(|| format!("invalid app-server listen address {host}:{port}"))?;
-    runtime.block_on(run_app_server(AppServerOptions {
-        listen,
-        config_path: args.config,
-        auth_token: args.auth_token.or_else(app_server_token_from_env),
-        insecure_no_auth: args.insecure_no_auth,
-        cors_origins: args.cors_origin,
-    }))
+
+    let listen = SocketAddr::new(
+        args.host.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        args.port.unwrap_or(7878),
+    );
+    runtime
+        .block_on(run_app_server(
+            application,
+            AppServerOptions {
+                listen,
+                auth_token: args.auth_token.or_else(app_server_token_from_env),
+                insecure_no_auth: args.insecure_no_auth,
+                cors_origins: args.cors_origin,
+                max_body_bytes: args.max_body_bytes.unwrap_or(DEFAULT_MAX_BODY_BYTES),
+                ..AppServerOptions::default()
+            },
+        ))
+        .with_context(|| format!("canonical app-server HTTP listener failed at {listen}"))
 }
 
-/// Build the `serve` argv forwarded to the TUI binary for
-/// `codewhale app-server --http`/`--mobile`. Maps app-server flags onto the
-/// matching `serve` flags (note `--insecure-no-auth` → `--insecure`). The
-/// subcommand-level `--config` is bridged through the global `--config` in the
-/// dispatcher, so it is intentionally not part of this passthrough. An auth
-/// token from the environment is deliberately *not* forwarded into child argv;
-/// the runtime API reads CODEWHALE_RUNTIME_TOKEN/DEEPSEEK_RUNTIME_TOKEN itself.
-fn app_server_serve_passthrough(args: &AppServerArgs) -> Vec<String> {
-    let mut forwarded = vec!["serve".to_string()];
-    forwarded.push(if args.mobile { "--mobile" } else { "--http" }.to_string());
-    if let Some(host) = args.host.as_ref() {
-        forwarded.push("--host".to_string());
-        forwarded.push(host.clone());
+fn production_application_config(
+    resolved_runtime: &ResolvedRuntimeOptions,
+) -> Result<ProductionApplicationConfig> {
+    if resolved_runtime.provider != ProviderKind::Deepseek {
+        bail!("app-server only supports the official DeepSeek provider");
     }
-    if let Some(port) = args.port {
-        forwarded.push("--port".to_string());
-        forwarded.push(port.to_string());
+    let base_url = resolved_runtime.base_url.trim_end_matches('/');
+    if ![
+        "https://api.deepseek.com",
+        "https://api.deepseek.com/v1",
+        "https://api.deepseek.com/beta",
+    ]
+    .iter()
+    .any(|official| base_url.eq_ignore_ascii_case(official))
+    {
+        bail!(
+            "app-server only supports the official DeepSeek endpoint; configured base URL is {base_url}"
+        );
     }
-    if let Some(workers) = args.workers {
-        forwarded.push("--workers".to_string());
-        forwarded.push(workers.to_string());
+    if resolved_runtime.insecure_skip_tls_verify {
+        bail!("app-server refuses insecure TLS for the official DeepSeek endpoint");
     }
-    for origin in &args.cors_origin {
-        forwarded.push("--cors-origin".to_string());
-        forwarded.push(origin.clone());
+    if !resolved_runtime.http_headers.is_empty() {
+        bail!("app-server does not forward custom Provider HTTP headers");
     }
-    if let Some(token) = args.auth_token.as_ref() {
-        forwarded.push("--auth-token".to_string());
-        forwarded.push(token.clone());
+
+    let prompt = ProductionPromptConfig {
+        preferences: load_prompt_preferences()
+            .context("failed to load production prompt preferences")?,
+        verbosity: resolved_runtime.verbosity.clone(),
+        ..ProductionPromptConfig::default()
+    };
+    let mut config = ProductionApplicationConfig::official().with_prompt(prompt);
+    if let Some(api_key) = resolved_runtime.api_key.clone() {
+        config = config.with_api_key(api_key)?;
     }
-    if args.insecure_no_auth {
-        forwarded.push("--insecure".to_string());
-    }
-    if args.qr {
-        forwarded.push("--qr".to_string());
-    }
-    forwarded
+    Ok(config)
 }
 
 fn app_server_token_from_env() -> Option<String> {
-    std::env::var("CODEWHALE_APP_SERVER_TOKEN")
-        .ok()
-        .or_else(|| std::env::var("DEEPSEEK_APP_SERVER_TOKEN").ok())
+    std::env::var("CODEWHALE_APP_SERVER_TOKEN").ok()
 }
 
 fn run_mcp_server_command(store: &mut ConfigStore) -> Result<()> {
@@ -2704,288 +2691,6 @@ fn delegate_exec_to_tui(
     }
 }
 
-/// Delegate a long-running server command (`serve --http`/`--mobile`,
-/// `app-server --http`/`--mobile`) to the sibling TUI binary, supervising the
-/// child so its listener does not outlive the dispatcher (#3259).
-///
-/// Plain [`delegate_to_tui`] blocks on `Command::status()`, which reaps the
-/// child only on the child's own exit. If the dispatcher is terminated while
-/// the delegated server is still running, the child can be reparented and keep
-/// its listener bound. Here the child runs under a Tokio supervisor that
-/// forwards termination (Ctrl+C / SIGTERM / SIGHUP) by killing and reaping the
-/// child before the dispatcher exits, and `kill_on_drop` tears the child down
-/// if the dispatcher unwinds.
-///
-/// For an *uncatchable* dispatcher death (SIGKILL, a hard crash) the Tokio
-/// supervisor above can't run, so two OS-level safety nets are installed as
-/// well (#3259): on Linux the child sets `PR_SET_PDEATHSIG` so the kernel
-/// signals it when the dispatcher dies; on Windows the child is placed in a
-/// kill-on-job-close Job Object so closing the dispatcher's handle (which the
-/// OS does on process death) terminates it. macOS has no equivalent primitive,
-/// so an uncatchable dispatcher death there can still orphan the child.
-fn delegate_server_to_tui(
-    cli: &Cli,
-    resolved_runtime: &ResolvedRuntimeOptions,
-    passthrough: Vec<String>,
-) -> Result<()> {
-    let mut std_cmd = build_tui_command(cli, resolved_runtime, passthrough)?;
-    install_server_parent_death_signal(&mut std_cmd);
-    let tui = PathBuf::from(std_cmd.get_program());
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .context("failed to create server-teardown runtime")?;
-    runtime.block_on(async move {
-        let mut cmd = tokio::process::Command::from(std_cmd);
-        cmd.kill_on_drop(true);
-        let mut child = cmd
-            .spawn()
-            .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
-        // Windows: hold a kill-on-job-close Job Object for the dispatcher's
-        // lifetime so an uncatchable dispatcher death tears the child down.
-        // Bound for the whole `block_on` scope; never dropped early because the
-        // match arms below `std::process::exit`.
-        #[cfg(windows)]
-        let _child_job = attach_server_child_job(&child);
-        match supervise_server_child(&mut child, server_shutdown_signal()).await? {
-            ServerTeardown::Exited(status) => exit_with_tui_status(status),
-            // The child has been killed and reaped; exit with the conventional
-            // 128 + signal code for the signal that initiated the shutdown.
-            ServerTeardown::Signaled(code) => std::process::exit(code),
-        }
-    })
-}
-
-/// On Linux, ask the kernel to terminate the delegated server if the dispatcher
-/// dies before it can run the graceful shutdown supervisor. This covers the
-/// hard parent-death edge of #3259 for `SIGKILL`, OOM, or abrupt process exit.
-#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-fn install_server_parent_death_signal(cmd: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    // SAFETY: `pre_exec` runs in the child between fork and exec. The closure
-    // only calls `libc::prctl` with constant arguments and does not touch heap
-    // memory or parent-held locks.
-    unsafe {
-        cmd.pre_exec(|| {
-            let result = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM, 0, 0, 0);
-            if result == -1 {
-                // Best effort: the child only loses this OS-level safety net.
-                let _ = std::io::Error::last_os_error();
-            }
-            Ok(())
-        });
-    }
-}
-
-#[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
-fn install_server_parent_death_signal(_cmd: &mut Command) {}
-
-/// Outcome of supervising a delegated server child.
-#[derive(Debug)]
-enum ServerTeardown {
-    /// The child exited on its own; its status is carried for propagation.
-    Exited(std::process::ExitStatus),
-    /// A shutdown signal fired; the child was killed and reaped. Carries the
-    /// conventional `128 + signal` exit code to propagate.
-    Signaled(i32),
-}
-
-/// Wait for the server `child` to exit, or for `shutdown` to fire first. On
-/// shutdown, kill the child and reap it so no listener is left reparented.
-async fn supervise_server_child<F>(
-    child: &mut tokio::process::Child,
-    shutdown: F,
-) -> io::Result<ServerTeardown>
-where
-    F: std::future::Future<Output = i32>,
-{
-    tokio::select! {
-        status = child.wait() => Ok(ServerTeardown::Exited(status?)),
-        code = shutdown => {
-            // Send the kill, then wait so the PID is reaped before the
-            // dispatcher returns and exits.
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            Ok(ServerTeardown::Signaled(code))
-        }
-    }
-}
-
-/// Resolve when the dispatcher should tear down a delegated server child, and
-/// the conventional `128 + signal` exit code to propagate: Ctrl+C on every
-/// platform (130), plus SIGTERM (143) and SIGHUP (129) on Unix.
-#[cfg(unix)]
-async fn server_shutdown_signal() -> i32 {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut terminate = signal(SignalKind::terminate()).ok();
-    let mut hangup = signal(SignalKind::hangup()).ok();
-    let term = async {
-        match terminate.as_mut() {
-            Some(s) => {
-                s.recv().await;
-            }
-            None => std::future::pending::<()>().await,
-        }
-    };
-    let hup = async {
-        match hangup.as_mut() {
-            Some(s) => {
-                s.recv().await;
-            }
-            None => std::future::pending::<()>().await,
-        }
-    };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => 130,
-        _ = term => 143,
-        _ = hup => 129,
-    }
-}
-
-#[cfg(not(unix))]
-async fn server_shutdown_signal() -> i32 {
-    let _ = tokio::signal::ctrl_c().await;
-    130
-}
-
-/// Assign the delegated server `child` to a kill-on-job-close Job Object so the
-/// OS terminates it when the dispatcher's handle to the job closes — which it
-/// does on any dispatcher exit, including an uncatchable kill (#3259). The
-/// returned guard must be held for the dispatcher's lifetime. Best-effort:
-/// returns `None` if the job cannot be created or assigned. Mirrors the Job
-/// Object idiom in `crates/tui/src/tools/shell.rs`.
-#[cfg(windows)]
-fn attach_server_child_job(child: &tokio::process::Child) -> Option<ServerChildJob> {
-    let Some(child_handle) = child.raw_handle() else {
-        tracing::warn!("delegated server child exited before a job object could be attached");
-        return None;
-    };
-
-    match ServerChildJob::attach(child_handle) {
-        Ok(job) => Some(job),
-        Err(err) => {
-            tracing::warn!("failed to place delegated server child in a job object: {err}");
-            None
-        }
-    }
-}
-
-#[cfg(windows)]
-struct ServerChildJob {
-    handle: windows::Win32::Foundation::HANDLE,
-}
-
-// SAFETY: the wrapped value is a process-wide kernel handle; moving it across
-// threads does not invalidate it, and it is only ever closed once, on drop.
-#[cfg(windows)]
-unsafe impl Send for ServerChildJob {}
-
-#[cfg(windows)]
-impl ServerChildJob {
-    fn attach(child_handle: std::os::windows::io::RawHandle) -> std::io::Result<Self> {
-        use windows::Win32::Foundation::HANDLE;
-        use windows::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
-            SetInformationJobObject,
-        };
-        use windows::core::PCWSTR;
-
-        // SAFETY: FFI calls with valid arguments; results are checked via the
-        // `windows` Result wrappers and the handle is stored for close-on-drop.
-        let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.map_err(win_io_error)?;
-        let job = Self { handle };
-
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        unsafe {
-            SetInformationJobObject(
-                job.handle,
-                JobObjectExtendedLimitInformation,
-                &limits as *const _ as *const core::ffi::c_void,
-                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            )
-            .map_err(win_io_error)?;
-            AssignProcessToJobObject(job.handle, HANDLE(child_handle)).map_err(win_io_error)?;
-        }
-        Ok(job)
-    }
-}
-
-#[cfg(windows)]
-impl Drop for ServerChildJob {
-    fn drop(&mut self) {
-        // Closing the last handle triggers KILL_ON_JOB_CLOSE. On a normal return
-        // the child has already been reaped, so this is a no-op cleanup; an
-        // uncatchable dispatcher death closes the handle via the OS instead.
-        unsafe {
-            let _ = windows::Win32::Foundation::CloseHandle(self.handle);
-        }
-    }
-}
-
-#[cfg(windows)]
-fn win_io_error(err: windows::core::Error) -> std::io::Error {
-    std::io::Error::other(err)
-}
-
-#[cfg(all(test, unix))]
-mod server_teardown_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn supervisor_propagates_child_exit_when_no_shutdown() {
-        // `true` exits immediately with success; a never-firing shutdown must
-        // let the child's own exit win.
-        let mut child = tokio::process::Command::new("true")
-            .kill_on_drop(true)
-            .spawn()
-            .expect("spawn true");
-        let outcome = supervise_server_child(&mut child, std::future::pending::<i32>())
-            .await
-            .expect("supervise");
-        match outcome {
-            ServerTeardown::Exited(status) => assert!(status.success()),
-            other => panic!("expected Exited, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn shutdown_signal_kills_and_reaps_long_running_child() {
-        // A long-lived child stands in for the delegated server listener; the
-        // regression is that it outlives dispatcher teardown (#3259).
-        let mut child = tokio::process::Command::new("sleep")
-            .arg("30")
-            .kill_on_drop(true)
-            .spawn()
-            .expect("spawn sleep");
-        assert!(
-            child.id().is_some(),
-            "child should be running before shutdown"
-        );
-        // A ready future models an immediate shutdown signal carrying the
-        // SIGTERM exit code (143).
-        let outcome = supervise_server_child(&mut child, async { 143 })
-            .await
-            .expect("supervise");
-        assert!(matches!(outcome, ServerTeardown::Signaled(143)));
-        // Once supervise returns the child has been killed AND reaped, so tokio
-        // drops the recorded pid — no listener is left reparented.
-        assert!(
-            child.id().is_none(),
-            "delegated child must be reaped after dispatcher teardown"
-        );
-    }
-
-    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-    #[test]
-    fn parent_death_signal_hook_does_not_break_spawn() {
-        let mut cmd = Command::new("true");
-        install_server_parent_death_signal(&mut cmd);
-        let status = cmd.status().expect("spawn true with parent-death hook");
-        assert!(status.success());
-    }
-}
 
 fn run_resume_command(
     cli: &Cli,

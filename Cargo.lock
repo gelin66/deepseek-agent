@@ -840,31 +840,16 @@ dependencies = [
 name = "codewhale-app-server"
 version = "0.8.68"
 dependencies = [
- "anyhow",
  "axum",
- "clap",
- "codewhale-agent",
  "codewhale-app",
- "codewhale-config",
- "codewhale-core",
- "codewhale-execpolicy",
- "codewhale-hooks",
- "codewhale-mcp",
  "codewhale-protocol",
- "codewhale-release",
- "codewhale-state",
- "codewhale-tools",
  "futures-util",
- "reqwest 0.13.4",
- "rustls",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tower",
  "tower-http 0.7.0",
- "tracing",
- "uuid",
 ]
 
 [[package]]
@@ -880,6 +865,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "codewhale-agent",
+ "codewhale-app",
  "codewhale-app-server",
  "codewhale-build-support",
  "codewhale-config",
@@ -902,7 +888,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
- "windows",
 ]
 
 [[package]]

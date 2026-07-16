@@ -1,1850 +1,1400 @@
-use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+//! Canonical Run API transport projection.
+//!
+//! This module contains no Agent loop, durable state, Provider transport, or
+//! event translation. It accepts the application service's canonical command
+//! and event types and only applies HTTP, SSE, and newline framing.
 
-use anyhow::{Context, Result, anyhow, bail};
-use axum::extract::{DefaultBodyLimit, Request, State};
-use axum::http::{HeaderValue, Method, StatusCode, header};
+use std::collections::VecDeque;
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::Json;
+use axum::extract::rejection::{JsonRejection, QueryRejection};
+use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::http::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, WWW_AUTHENTICATE};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
-use codewhale_agent::ModelRegistry;
-use codewhale_config::{CliRuntimeOverrides, ConfigStore};
-use codewhale_core::Runtime;
-use codewhale_hooks::{HookDispatcher, JsonlHookSink, StdoutHookSink, UnixSocketHookSink};
-use codewhale_mcp::McpManager;
-use codewhale_protocol::{
-    AppRequest, AppResponse, PromptRequest, PromptResponse, ThreadGoalClearParams,
-    ThreadGoalGetParams, ThreadGoalSetParams, ThreadRequest, ThreadResponse, UserInputAnswerEvent,
+use axum::{Router, extract::Request};
+use codewhale_app::AgentApplication;
+use codewhale_protocol::agent_runtime::{RunId, StoredRuntimeEvent};
+use codewhale_protocol::run_api::{
+    RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope,
+    RunCommandResponse, RunCommandResult,
 };
-use codewhale_state::StateStore;
-use codewhale_tools::{ToolCall, ToolRegistry};
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::{Mutex, RwLock};
-use tower_http::cors::CorsLayer;
-use uuid::Uuid;
+use futures_util::stream::{self, Stream};
+use serde::Deserialize;
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tower_http::cors::{AllowOrigin, CorsLayer};
 
-pub mod canonical;
+pub const DEFAULT_MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+const DEFAULT_SSE_KEEP_ALIVE: Duration = Duration::from_secs(15);
 
-/// Answers submitted for a pending `request_user_input` clarification.
-///
-/// The headless runtime emits [`codewhale_protocol::EventFrame::UserInputRequest`]
-/// fire-and-return (it has no resume channel, mirroring headless approval).
-/// Clients POST answers back via [`AppRequest::SubmitUserInput`]; we record
-/// them here keyed by `request_id` so a driver can retrieve and feed them into
-/// the next turn as structured context. True in-flight resume would require an
-/// awaiter in `invoke_tool` and is left as a follow-up.
-type PendingUserInputAnswers = Vec<UserInputAnswerEvent>;
-
-mod chat_completions;
-
-/// Legacy DeepSeek-era naming kept for external compatibility.
-///
-/// CodeWhale began life as a DeepSeek CLI; existing health probes, SDK
-/// harnesses, and on-disk layouts still key off these names. Every remaining
-/// legacy reference in this crate routes through this shim so a future
-/// coordinated migration touches exactly one place (repo policy: preserve
-/// legacy migration care).
-mod legacy_deepseek_compat {
-    use std::path::PathBuf;
-
-    /// Service name advertised by the HTTP and stdio health probes.
-    pub(crate) const SERVICE_NAME: &str = "deepseek-app-server";
-
-    /// Fallback hook-event log location used when no config path is
-    /// provided (legacy `.deepseek/` dot-directory layout).
-    pub(crate) fn default_events_log_path() -> PathBuf {
-        PathBuf::from(".deepseek/events.jsonl")
-    }
-}
-
-/// Upper bound on JSON request bodies accepted by the HTTP app-server.
-const MAX_HTTP_BODY_BYTES: usize = 16 * 1024 * 1024;
-const MAX_SSE_FRAME_BYTES: usize = 16 * 1024 * 1024;
-
-const DEFAULT_CORS_ORIGINS: &[&str] = &[
-    "http://localhost",
-    "http://localhost:1420",
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1",
-    "http://127.0.0.1:1420",
-    "tauri://localhost",
-];
-
+/// HTTP framing and access policy for the canonical local Run API.
 #[derive(Clone)]
 pub struct AppServerOptions {
     pub listen: SocketAddr,
-    pub config_path: Option<PathBuf>,
     pub auth_token: Option<String>,
     pub insecure_no_auth: bool,
     pub cors_origins: Vec<String>,
+    pub max_body_bytes: usize,
+    pub sse_keep_alive: Duration,
+}
+
+impl Default for AppServerOptions {
+    fn default() -> Self {
+        Self {
+            listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+            auth_token: None,
+            insecure_no_auth: false,
+            cors_origins: Vec::new(),
+            max_body_bytes: DEFAULT_MAX_BODY_BYTES,
+            sse_keep_alive: DEFAULT_SSE_KEEP_ALIVE,
+        }
+    }
 }
 
 impl std::fmt::Debug for AppServerOptions {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AppServerOptions")
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AppServerOptions")
             .field("listen", &self.listen)
-            .field("config_path", &self.config_path)
             .field(
                 "auth_token",
                 &self.auth_token.as_ref().map(|_| "<redacted>"),
             )
             .field("insecure_no_auth", &self.insecure_no_auth)
             .field("cors_origins", &self.cors_origins)
+            .field("max_body_bytes", &self.max_body_bytes)
+            .field("sse_keep_alive", &self.sse_keep_alive)
             .finish()
     }
 }
 
-/// Cached stdio→runtime bridge handle.
-///
-/// The outer [`AppState::stdio_bridge`] mutex guards only the cache slot;
-/// this inner mutex serializes traffic on one bridge (single child process
-/// plus per-thread seq bookkeeping requires ordered access).
-type SharedRuntimeBridge = Arc<Mutex<RuntimeBridge>>;
-
 #[derive(Clone)]
-struct AppState {
-    config_path: Option<PathBuf>,
-    config: Arc<RwLock<codewhale_config::ConfigToml>>,
-    /// Read/write split mirrors [`Runtime`]'s own receivers: `&self`
-    /// operations (tool calls, status, MCP startup) share a read guard and
-    /// run concurrently; `&mut self` turns (prompt/thread) and config pushes
-    /// take the write guard because the runtime genuinely requires
-    /// exclusivity there.
-    runtime: Arc<RwLock<Runtime>>,
-    registry: ModelRegistry,
-    auth_token: Option<String>,
-    stdio_bridge: Arc<Mutex<Option<SharedRuntimeBridge>>>,
-    stdio_thread_hints: Arc<Mutex<HashMap<String, RuntimeThreadHint>>>,
-    /// Answers submitted via `AppRequest::SubmitUserInput`, keyed by
-    /// `request_id`. A driver polls this to resolve clarification questions
-    /// raised by the model during a headless run.
-    pending_user_input: Arc<Mutex<std::collections::HashMap<String, PendingUserInputAnswers>>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ToolCallRequest {
-    call: ToolCall,
-    #[serde(default)]
-    cwd: Option<PathBuf>,
+struct TransportState {
+    application: Arc<AgentApplication>,
+    auth_token: Option<Arc<str>>,
+    sse_keep_alive: Duration,
 }
 
 #[derive(Debug, Deserialize)]
-struct JsonRpcRequest {
+#[serde(deny_unknown_fields)]
+struct EventQuery {
     #[serde(default)]
-    jsonrpc: Option<String>,
-    #[serde(default)]
-    id: Option<Value>,
-    method: String,
-    #[serde(default)]
-    params: Value,
-}
-
-#[derive(Debug)]
-struct JsonRpcError {
-    code: i64,
-    message: String,
-    data: Option<Value>,
-}
-
-#[derive(Debug)]
-struct StdioDispatchResult {
-    result: Value,
-    should_exit: bool,
-}
-
-#[derive(Debug)]
-struct RuntimeBridge {
-    base_url: String,
-    client: reqwest::Client,
-    auth_token: Option<String>,
-    child: Option<Child>,
-    thread_map: HashMap<String, String>,
-    last_seq_by_thread: HashMap<String, u64>,
-}
-
-#[derive(Debug, Clone, Default)]
-struct RuntimeThreadHint {
-    model: Option<String>,
-    workspace: Option<PathBuf>,
+    after_sequence: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TurnTerminalStatus {
-    Completed,
-    Failed,
-    Interrupted,
-    Canceled,
+enum PostRoute {
+    Start,
+    Resume,
+    Steer,
+    Interrupt,
+    Cancel,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AppTransport {
-    Http,
-    Stdio,
-}
-
-#[derive(Debug, Deserialize)]
-struct ConfigGetParams {
-    key: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ConfigSetParams {
-    key: String,
-    value: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ThreadIdParams {
-    thread_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct ThreadMessageParams {
-    thread_id: String,
-    input: String,
-}
-
-pub async fn run(options: AppServerOptions) -> Result<()> {
-    let auth_token = resolve_auth_token(&options)?;
-    let state = build_state(options.config_path.clone(), auth_token)?;
-    let app = app_router(state, &options.cors_origins);
-
+/// Serve the canonical local Run API until the listener stops.
+pub async fn run(
+    application: Arc<AgentApplication>,
+    options: AppServerOptions,
+) -> std::io::Result<()> {
+    let app = router(application, &options)?;
     let listener = tokio::net::TcpListener::bind(options.listen).await?;
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
-    Ok(())
+    axum::serve(listener, app).await
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
+/// Build the canonical HTTP router. The application service is the only
+/// stateful product dependency retained by the transport.
+pub fn router(
+    application: Arc<AgentApplication>,
+    options: &AppServerOptions,
+) -> std::io::Result<Router> {
+    validate_options(options)?;
+    let state = TransportState {
+        application,
+        auth_token: options.auth_token.clone().map(Arc::<str>::from),
+        sse_keep_alive: options.sse_keep_alive,
     };
-
-    #[cfg(unix)]
-    let terminate = async {
-        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
-            Ok(mut signal) => {
-                signal.recv().await;
-            }
-            Err(_) => std::future::pending::<()>().await,
-        }
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {}
-        _ = terminate => {}
-    }
-}
-
-fn app_router(state: AppState, cors_origins: &[String]) -> Router {
-    let protected_routes = Router::new()
-        .route("/thread", post(thread_handler))
-        .route("/app", post(app_handler))
-        .route("/prompt", post(prompt_handler))
-        .route("/tool", post(tool_handler))
-        .route("/jobs", get(jobs_handler))
-        .route("/mcp/startup", post(mcp_startup_handler))
-        .route(
-            "/v1/chat/completions",
-            post(chat_completions::chat_completions_handler),
-        )
+    let protected = Router::new()
+        .route("/v1/runs", post(start_run))
+        .route("/v1/runs/{run_id}", get(get_run))
+        .route("/v1/runs/{run_id}/events", get(get_events))
+        .route("/v1/runs/{run_id}/resume", post(resume_run))
+        .route("/v1/runs/{run_id}/steer", post(steer_run))
+        .route("/v1/runs/{run_id}/interrupt", post(interrupt_run))
+        .route("/v1/runs/{run_id}/cancel", post(cancel_run))
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
-            require_app_server_token,
+            require_bearer_token,
         ));
-
-    Router::new()
+    let mut app = Router::new()
         .route("/healthz", get(healthz))
-        .merge(protected_routes)
-        .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
-        .layer(cors_layer(cors_origins))
-        .with_state(state)
+        .merge(protected)
+        .layer(DefaultBodyLimit::max(options.max_body_bytes));
+    if let Some(cors) = cors_layer(&options.cors_origins) {
+        app = app.layer(cors);
+    }
+    Ok(app.with_state(state))
 }
 
-pub async fn run_stdio(config_path: Option<PathBuf>) -> Result<()> {
-    let state = build_state(config_path, None)?;
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-    let mut reader = BufReader::new(stdin).lines();
-    let mut writer = tokio::io::BufWriter::new(stdout);
-    while let Some(line) = reader.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        let request: JsonRpcRequest = match serde_json::from_str(&line) {
-            Ok(value) => value,
-            Err(err) => {
-                let response = jsonrpc_error(
-                    None,
-                    JsonRpcError::parse_error(format!("invalid json: {err}")),
-                );
-                writer.write_all(&serde_json::to_vec(&response)?).await?;
-                writer.write_all(b"\n").await?;
-                writer.flush().await?;
-                continue;
-            }
+/// Process newline-delimited canonical commands. Every input line produces
+/// exactly one `RunCommandResponse`; JSON-RPC aliases are not recognized.
+pub async fn serve_stdio<R, W>(
+    application: Arc<AgentApplication>,
+    reader: R,
+    mut writer: W,
+) -> std::io::Result<()>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut lines = reader.lines();
+    while let Some(line) = lines.next_line().await? {
+        let response = match decode_stdio_line(&line) {
+            Ok(envelope) => application.execute(envelope).await,
+            Err(response) => *response,
         };
-
-        if request
-            .jsonrpc
-            .as_deref()
-            .is_some_and(|version| version != "2.0")
-        {
-            let response = jsonrpc_error(
-                request.id,
-                JsonRpcError::invalid_request("jsonrpc version must be 2.0"),
-            );
-            writer.write_all(&serde_json::to_vec(&response)?).await?;
-            writer.write_all(b"\n").await?;
-            writer.flush().await?;
-            continue;
-        }
-
-        let response = match dispatch_stdio_request_with_writer(
-            &state,
-            &mut writer,
-            &request.method,
-            request.params,
-        )
-        .await
-        {
-            Ok(dispatch) => {
-                let encoded = jsonrpc_result(request.id, dispatch.result);
-                writer.write_all(&serde_json::to_vec(&encoded)?).await?;
-                writer.write_all(b"\n").await?;
-                writer.flush().await?;
-                if dispatch.should_exit {
-                    break;
-                }
-                continue;
-            }
-            Err(err) => jsonrpc_error(request.id, err),
-        };
-
-        writer.write_all(&serde_json::to_vec(&response)?).await?;
-        writer.write_all(b"\n").await?;
+        writer.write_all(&encode_stdio_response(&response)?).await?;
         writer.flush().await?;
     }
-
     Ok(())
 }
 
-async fn healthz() -> Json<Value> {
-    Json(json!({
-        "status": "ok",
-        "protocol": "v2",
-        "service": legacy_deepseek_compat::SERVICE_NAME
-    }))
+/// Bind the canonical newline transport to this process's standard streams.
+pub async fn run_stdio(application: Arc<AgentApplication>) -> std::io::Result<()> {
+    serve_stdio(
+        application,
+        BufReader::new(tokio::io::stdin()),
+        tokio::io::stdout(),
+    )
+    .await
 }
 
-async fn thread_handler(
-    State(state): State<AppState>,
-    Json(req): Json<ThreadRequest>,
-) -> (StatusCode, Json<ThreadResponse>) {
-    let mut runtime = state.runtime.write().await;
-    match runtime.handle_thread(req).await {
-        Ok(res) => (StatusCode::OK, Json(res)),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ThreadResponse {
-                thread_id: "error".to_string(),
-                status: format!("error:{err}"),
-                thread: None,
-                threads: Vec::new(),
-                goal: None,
-                model: None,
-                model_provider: None,
-                cwd: None,
-                approval_policy: None,
-                sandbox: None,
-                events: Vec::new(),
-                data: json!({}),
-            }),
-        ),
-    }
+async fn healthz() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "status": "ok" }))
 }
 
-async fn prompt_handler(
-    State(state): State<AppState>,
-    Json(req): Json<PromptRequest>,
-) -> (StatusCode, Json<PromptResponse>) {
-    let mut runtime = state.runtime.write().await;
-    let overrides = CliRuntimeOverrides::default();
-    match runtime.handle_prompt(req, &overrides).await {
-        Ok(res) => (StatusCode::OK, Json(res)),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(PromptResponse {
-                output: err.to_string(),
-                model: "unknown".to_string(),
-                events: Vec::new(),
-            }),
-        ),
-    }
+async fn start_run(
+    State(state): State<TransportState>,
+    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    execute_post(&state, PostRoute::Start, None, payload).await
 }
 
-async fn tool_handler(
-    State(state): State<AppState>,
-    Json(req): Json<ToolCallRequest>,
-) -> (StatusCode, Json<Value>) {
-    let cwd = req
-        .cwd
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
-    // Resolve approval policy from config instead of hardcoding.
-    let approval_mode = {
-        let cfg = state.config.read().await;
-        cfg.approval_policy
-            .as_deref()
-            .and_then(|p| match p.trim().to_ascii_lowercase().as_str() {
-                "auto" | "yolo" => Some(codewhale_execpolicy::AskForApproval::UnlessTrusted),
-                "never" | "deny" => Some(codewhale_execpolicy::AskForApproval::Never),
-                _ => None,
-            })
-            .unwrap_or(codewhale_execpolicy::AskForApproval::OnRequest)
+async fn resume_run(
+    State(state): State<TransportState>,
+    Path(run_id): Path<String>,
+    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    execute_post(&state, PostRoute::Resume, Some(run_id), payload).await
+}
+
+async fn steer_run(
+    State(state): State<TransportState>,
+    Path(run_id): Path<String>,
+    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    execute_post(&state, PostRoute::Steer, Some(run_id), payload).await
+}
+
+async fn interrupt_run(
+    State(state): State<TransportState>,
+    Path(run_id): Path<String>,
+    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    execute_post(&state, PostRoute::Interrupt, Some(run_id), payload).await
+}
+
+async fn cancel_run(
+    State(state): State<TransportState>,
+    Path(run_id): Path<String>,
+    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    execute_post(&state, PostRoute::Cancel, Some(run_id), payload).await
+}
+
+async fn execute_post(
+    state: &TransportState,
+    route: PostRoute,
+    path_run_id: Option<String>,
+    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let envelope = match payload {
+        Ok(Json(envelope)) => envelope,
+        Err(error) => return json_rejection_response(error),
     };
-    // `invoke_tool` takes `&self`, so long-running tool executions share a
-    // read guard: they run concurrently with each other and with status
-    // reads instead of serializing every request behind one Mutex.
-    let runtime = state.runtime.read().await;
-    match runtime.invoke_tool(req.call, approval_mode, &cwd).await {
-        Ok(value) => (StatusCode::OK, Json(value)),
-        Err(err) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({ "ok": false, "error": err.to_string() })),
-        ),
+    if let Err(message) = validate_post_envelope(route, path_run_id.as_deref(), &envelope) {
+        let run_id = path_run_id.map(RunId::from);
+        return command_response(invalid_response(&envelope.request_id, message, run_id));
     }
+    command_response(state.application.execute(envelope).await)
 }
 
-async fn jobs_handler(State(state): State<AppState>) -> Json<AppResponse> {
-    let runtime = state.runtime.read().await;
-    Json(runtime.app_status())
-}
-
-async fn mcp_startup_handler(State(state): State<AppState>) -> Json<Value> {
-    let runtime = state.runtime.read().await;
-    let summary = runtime.mcp_startup().await;
-    Json(json!({
-        "ok": true,
-        "summary": summary
-    }))
-}
-
-async fn app_handler(
-    State(state): State<AppState>,
-    Json(req): Json<AppRequest>,
-) -> (StatusCode, Json<AppResponse>) {
-    let response = process_app_request(&state, req, AppTransport::Http).await;
-    (app_response_status(&response), Json(response))
-}
-
-fn app_response_status(response: &AppResponse) -> StatusCode {
-    if response.ok {
-        return StatusCode::OK;
-    }
-    if response.data.get("request_id").is_some() {
-        StatusCode::CONFLICT
-    } else if response
-        .data
-        .get("error")
-        .and_then(Value::as_str)
-        .is_some_and(|err| err.contains("failed to load config"))
-    {
-        StatusCode::INTERNAL_SERVER_ERROR
-    } else {
-        StatusCode::BAD_REQUEST
-    }
-}
-
-fn build_state(config_path: Option<PathBuf>, auth_token: Option<String>) -> Result<AppState> {
-    let has_explicit_config_path = config_path.is_some();
-    let store = ConfigStore::load(config_path)?;
-    let config_path = has_explicit_config_path.then(|| store.path().to_path_buf());
-    let config = store.config.clone();
-    let exec_policy = store.exec_policy_engine();
-    let registry = ModelRegistry::default();
-
-    let state_db_path = config_path
-        .as_ref()
-        .and_then(|p| p.parent().map(|parent| parent.join("state.db")));
-    let state_store = StateStore::open(state_db_path)?;
-
-    let mut hooks = HookDispatcher::default();
-    hooks.add_sink(Arc::new(StdoutHookSink));
-    let hook_log_path = config_path
-        .as_ref()
-        .and_then(|p| p.parent().map(|parent| parent.join("events.jsonl")))
-        .unwrap_or_else(legacy_deepseek_compat::default_events_log_path);
-    hooks.add_sink(Arc::new(JsonlHookSink::new(hook_log_path)));
-
-    if let Some(socket_path) = config
-        .hook_sinks
-        .as_ref()
-        .and_then(|sinks| sinks.unix_socket_path.as_ref())
-        .filter(|path| !path.as_os_str().is_empty())
-    {
-        hooks.add_sink(Arc::new(UnixSocketHookSink::new(socket_path.clone())));
-    }
-
-    let runtime = Runtime::new(
-        config.clone(),
-        registry.clone(),
-        state_store,
-        Arc::new(ToolRegistry::default()),
-        Arc::new(McpManager::default()),
-        exec_policy,
-        hooks,
+async fn get_run(
+    State(state): State<TransportState>,
+    Path(run_id): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    let envelope = generated_envelope(
+        request_id(&headers, "get", &run_id),
+        RunCommand::Get {
+            run_id: RunId::from(run_id),
+        },
     );
+    command_response(state.application.execute(envelope).await)
+}
 
-    Ok(AppState {
-        config_path,
-        config: Arc::new(RwLock::new(config)),
-        runtime: Arc::new(RwLock::new(runtime)),
-        registry,
-        auth_token,
-        stdio_bridge: Arc::new(Mutex::new(None)),
-        stdio_thread_hints: Arc::new(Mutex::new(HashMap::new())),
-        pending_user_input: Arc::new(Mutex::new(std::collections::HashMap::new())),
+async fn get_events(
+    State(state): State<TransportState>,
+    Path(run_id): Path<String>,
+    query: Result<Query<EventQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Response {
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(error) => {
+            return command_response_with_status(
+                error.status(),
+                invalid_response(
+                    request_id(&headers, "events", &run_id),
+                    error.body_text(),
+                    Some(RunId::from(run_id)),
+                ),
+            );
+        }
+    };
+    let run_id = RunId::from(run_id);
+    if !accepts_sse(&headers) {
+        let envelope = generated_envelope(
+            request_id(&headers, "events", &run_id.0),
+            RunCommand::Events {
+                run_id,
+                after_sequence: query.after_sequence,
+            },
+        );
+        return command_response(state.application.execute(envelope).await);
+    }
+
+    let request_id = request_id(&headers, "events", &run_id.0);
+    let first = state
+        .application
+        .execute(generated_envelope(
+            request_id.clone(),
+            RunCommand::Events {
+                run_id: run_id.clone(),
+                after_sequence: query.after_sequence,
+            },
+        ))
+        .await;
+    let events = match sse_preflight(first, &run_id) {
+        Ok(events) => events,
+        Err(response) => return command_response(*response),
+    };
+
+    let stream = canonical_event_stream(
+        state.application.clone(),
+        run_id,
+        SseCursor::new(query.after_sequence, events),
+    );
+    Sse::new(stream)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(state.sse_keep_alive)
+                .text("keep-alive"),
+        )
+        .into_response()
+}
+
+fn canonical_event_stream(
+    application: Arc<AgentApplication>,
+    run_id: RunId,
+    cursor: SseCursor,
+) -> impl Stream<Item = Result<SseEvent, Infallible>> {
+    struct StreamState {
+        application: Arc<AgentApplication>,
+        run_id: RunId,
+        cursor: SseCursor,
+    }
+
+    stream::unfold(
+        StreamState {
+            application,
+            run_id,
+            cursor,
+        },
+        |mut state| async move {
+            loop {
+                if let Some(event) = state.cursor.next() {
+                    return Some((Ok(canonical_sse_event(&event)), state));
+                }
+                if state.cursor.finished {
+                    return None;
+                }
+                match state
+                    .application
+                    .wait_events(&state.run_id, state.cursor.after_sequence)
+                    .await
+                {
+                    RunCommandResult::Events { events, .. } if events.is_empty() => return None,
+                    RunCommandResult::Events { events, .. } => {
+                        state.cursor.extend(events);
+                    }
+                    RunCommandResult::Error { .. } => return None,
+                    _ => return None,
+                }
+            }
+        },
+    )
+}
+
+struct SseCursor {
+    after_sequence: u64,
+    pending: VecDeque<StoredRuntimeEvent>,
+    finished: bool,
+}
+
+impl SseCursor {
+    fn new(after_sequence: u64, events: Vec<StoredRuntimeEvent>) -> Self {
+        Self {
+            after_sequence,
+            pending: VecDeque::from(events),
+            finished: false,
+        }
+    }
+
+    fn extend(&mut self, events: Vec<StoredRuntimeEvent>) {
+        self.pending.extend(events);
+    }
+}
+
+impl Iterator for SseCursor {
+    type Item = StoredRuntimeEvent;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        let event = self.pending.pop_front()?;
+        self.after_sequence = event.sequence;
+        self.finished = event.event.is_terminal();
+        Some(event)
+    }
+}
+
+fn sse_preflight(
+    response: RunCommandResponse,
+    run_id: &RunId,
+) -> Result<Vec<StoredRuntimeEvent>, Box<RunCommandResponse>> {
+    let RunCommandResponse {
+        schema_version,
+        request_id,
+        result,
+    } = response;
+    match result {
+        RunCommandResult::Events { events, .. } => Ok(events),
+        RunCommandResult::Error { error } => Err(Box::new(RunCommandResponse {
+            schema_version,
+            request_id,
+            result: RunCommandResult::Error { error },
+        })),
+        _ => Err(Box::new(invalid_response(
+            request_id,
+            "application returned a non-event result for event polling",
+            Some(run_id.clone()),
+        ))),
+    }
+}
+
+fn canonical_sse_event(event: &StoredRuntimeEvent) -> SseEvent {
+    let data =
+        serde_json::to_string(event).expect("StoredRuntimeEvent serialization is infallible");
+    SseEvent::default()
+        .id(event.sequence.to_string())
+        .data(data)
+}
+
+fn validate_post_envelope(
+    route: PostRoute,
+    path_run_id: Option<&str>,
+    envelope: &RunCommandEnvelope,
+) -> Result<(), String> {
+    let body_run_id = match (&route, &envelope.command) {
+        (PostRoute::Start, RunCommand::Start(_)) => return Ok(()),
+        (PostRoute::Resume, RunCommand::Resume { run_id, .. })
+        | (PostRoute::Steer, RunCommand::Steer { run_id, .. })
+        | (PostRoute::Interrupt, RunCommand::Interrupt { run_id })
+        | (PostRoute::Cancel, RunCommand::Cancel { run_id }) => run_id,
+        _ => {
+            return Err(format!(
+                "command kind does not match the {} route",
+                route_name(route)
+            ));
+        }
+    };
+    let expected = path_run_id.expect("run-scoped POST routes always carry a run id");
+    if body_run_id.0 != expected {
+        return Err(format!(
+            "path run id {expected} does not match command run id {body_run_id}"
+        ));
+    }
+    Ok(())
+}
+
+fn route_name(route: PostRoute) -> &'static str {
+    match route {
+        PostRoute::Start => "start",
+        PostRoute::Resume => "resume",
+        PostRoute::Steer => "steer",
+        PostRoute::Interrupt => "interrupt",
+        PostRoute::Cancel => "cancel",
+    }
+}
+
+fn generated_envelope(request_id: String, command: RunCommand) -> RunCommandEnvelope {
+    RunCommandEnvelope {
+        schema_version: RUN_API_SCHEMA_VERSION,
+        request_id,
+        command,
+    }
+}
+
+fn request_id(headers: &HeaderMap, operation: &str, run_id: &str) -> String {
+    headers
+        .get("x-request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("http-{operation}-{run_id}"))
+}
+
+fn invalid_response(
+    request_id: impl Into<String>,
+    message: impl Into<String>,
+    run_id: Option<RunId>,
+) -> RunCommandResponse {
+    RunCommandResponse {
+        schema_version: RUN_API_SCHEMA_VERSION,
+        request_id: request_id.into(),
+        result: RunCommandResult::Error {
+            error: RunApiError {
+                code: RunApiErrorCode::InvalidRequest,
+                message: message.into(),
+                run_id,
+                terminal: None,
+            },
+        },
+    }
+}
+
+fn command_response(response: RunCommandResponse) -> Response {
+    let status = response_status(&response);
+    command_response_with_status(status, response)
+}
+
+fn command_response_with_status(status: StatusCode, response: RunCommandResponse) -> Response {
+    (status, Json(response)).into_response()
+}
+
+fn json_rejection_response(error: JsonRejection) -> Response {
+    command_response_with_status(
+        error.status(),
+        invalid_response("", error.body_text(), None),
+    )
+}
+
+fn response_status(response: &RunCommandResponse) -> StatusCode {
+    match &response.result {
+        RunCommandResult::Accepted { .. } => StatusCode::ACCEPTED,
+        RunCommandResult::Run { .. } | RunCommandResult::Events { .. } => StatusCode::OK,
+        RunCommandResult::Error { error } => match error.code {
+            RunApiErrorCode::InvalidRequest | RunApiErrorCode::EventCursorAhead => {
+                StatusCode::BAD_REQUEST
+            }
+            RunApiErrorCode::RunNotFound => StatusCode::NOT_FOUND,
+            RunApiErrorCode::RunAlreadyExists
+            | RunApiErrorCode::RunAlreadyRunning
+            | RunApiErrorCode::RunNotActive
+            | RunApiErrorCode::RunRecoveryRequired
+            | RunApiErrorCode::RunTerminal
+            | RunApiErrorCode::RunEnvironmentMismatch => StatusCode::CONFLICT,
+            RunApiErrorCode::RunStoreFailed => StatusCode::INTERNAL_SERVER_ERROR,
+        },
+    }
+}
+
+fn accepts_sse(headers: &HeaderMap) -> bool {
+    headers.get_all(ACCEPT).iter().any(|value| {
+        value.to_str().is_ok_and(|value| {
+            value.split(',').any(|media_range| {
+                media_range
+                    .split(';')
+                    .next()
+                    .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("text/event-stream"))
+            })
+        })
     })
 }
 
-fn resolve_auth_token(options: &AppServerOptions) -> Result<Option<String>> {
-    let configured = options.auth_token.as_ref().map(|token| token.trim());
-    if let Some(token) = configured
-        && token.is_empty()
+fn decode_stdio_line(line: &str) -> Result<RunCommandEnvelope, Box<RunCommandResponse>> {
+    serde_json::from_str(line).map_err(|error| {
+        Box::new(invalid_response(
+            "",
+            format!("invalid RunCommandEnvelope JSON: {error}"),
+            None,
+        ))
+    })
+}
+
+fn encode_stdio_response(response: &RunCommandResponse) -> std::io::Result<Vec<u8>> {
+    let mut encoded = serde_json::to_vec(response).map_err(std::io::Error::other)?;
+    encoded.push(b'\n');
+    Ok(encoded)
+}
+
+fn validate_options(options: &AppServerOptions) -> std::io::Result<()> {
+    if options.insecure_no_auth && options.auth_token.is_some() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "auth_token and insecure_no_auth are mutually exclusive",
+        ));
+    }
+    if options.insecure_no_auth && !options.listen.ip().is_loopback() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "unauthenticated app-server binds are restricted to loopback addresses",
+        ));
+    }
+    if options.auth_token.is_none() && !options.insecure_no_auth {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "auth_token is required unless insecure_no_auth is explicitly enabled",
+        ));
+    }
+    if options
+        .auth_token
+        .as_deref()
+        .is_some_and(|token| token.trim().is_empty())
     {
-        bail!("app-server auth token cannot be empty");
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "auth_token must not be empty",
+        ));
     }
-    let has_explicit_token = configured.is_some();
-
-    if options.insecure_no_auth {
-        if !options.listen.ip().is_loopback() {
-            bail!("refusing unauthenticated app-server bind on non-loopback address");
-        }
-        eprintln!("warning: app-server HTTP auth disabled by --insecure-no-auth");
-        return Ok(None);
+    if options.max_body_bytes == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "max_body_bytes must be greater than zero",
+        ));
     }
-
-    if !has_explicit_token && !options.listen.ip().is_loopback() {
-        bail!(
-            "refusing non-loopback app-server bind without explicit auth token; pass --auth-token or set CODEWHALE_APP_SERVER_TOKEN"
-        );
+    if options.sse_keep_alive.is_zero() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "sse_keep_alive must be greater than zero",
+        ));
     }
-
-    let token = configured
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("cwapp_{}", Uuid::new_v4().simple()));
-    for line in app_server_auth_status_lines(has_explicit_token) {
-        eprintln!("{line}");
+    for origin in &options.cors_origins {
+        HeaderValue::from_str(origin).map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid CORS origin {origin:?}: {error}"),
+            )
+        })?;
     }
-    Ok(Some(token))
+    Ok(())
 }
 
-fn app_server_auth_status_lines(has_explicit_token: bool) -> Vec<&'static str> {
-    if has_explicit_token {
-        return vec!["app-server auth: bearer token required for HTTP routes."];
-    }
-    vec![
-        "app-server auth: generated bearer token for this process (not printed).",
-        "  Pass --auth-token or set CODEWHALE_APP_SERVER_TOKEN when another client needs to connect.",
-    ]
-}
-
-fn cors_layer(extra_origins: &[String]) -> CorsLayer {
-    let mut origins: Vec<HeaderValue> = DEFAULT_CORS_ORIGINS
+fn cors_layer(origins: &[String]) -> Option<CorsLayer> {
+    let origins = origins
         .iter()
-        .filter_map(|origin| HeaderValue::from_str(origin).ok())
-        .collect();
-    for raw in extra_origins {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        match HeaderValue::from_str(trimmed) {
-            Ok(value) if !origins.contains(&value) => origins.push(value),
-            Ok(_) => {}
-            Err(err) => {
-                eprintln!("warning: ignoring invalid app-server CORS origin `{trimmed}`: {err}")
-            }
-        }
+        .map(|origin| {
+            HeaderValue::from_str(origin)
+                .expect("CORS origins were validated before router construction")
+        })
+        .collect::<Vec<_>>();
+    if origins.is_empty() {
+        return None;
     }
-
-    CorsLayer::new()
-        .allow_origin(origins)
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE])
+    Some(
+        CorsLayer::new()
+            .allow_origin(AllowOrigin::list(origins))
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers([
+                AUTHORIZATION,
+                ACCEPT,
+                CONTENT_TYPE,
+                HeaderName::from_static("x-request-id"),
+            ]),
+    )
 }
 
-async fn require_app_server_token(
-    State(state): State<AppState>,
-    req: Request,
+async fn require_bearer_token(
+    State(state): State<TransportState>,
+    request: Request,
     next: Next,
 ) -> Response {
     let Some(expected) = state.auth_token.as_deref() else {
-        return next.run(req).await;
+        return next.run(request).await;
     };
-    let authorized = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|raw| raw.strip_prefix("Bearer "))
-        .is_some_and(|token| constant_time_eq(token.as_bytes(), expected.as_bytes()));
-
+    let authorized = has_valid_bearer_token(request.headers(), expected);
     if authorized {
-        next.run(req).await
+        next.run(request).await
     } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            Json(json!({
-                "error": {
-                    "message": "app-server bearer token required",
-                    "status": StatusCode::UNAUTHORIZED.as_u16(),
-                }
-            })),
-        )
-            .into_response()
+        let mut response = StatusCode::UNAUTHORIZED.into_response();
+        response
+            .headers_mut()
+            .insert(WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        response
     }
 }
 
-/// Compares the full length of both inputs regardless of where they first
-/// differ, so auth failures don't leak the matching prefix length via timing.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = a.len() ^ b.len();
-    for i in 0..a.len().max(b.len()) {
-        let x = a.get(i).copied().unwrap_or(0);
-        let y = b.get(i).copied().unwrap_or(0);
-        diff |= usize::from(x ^ y);
-    }
-    diff == 0
-}
-
-fn params_or_object(params: Value) -> Value {
-    if params.is_null() { json!({}) } else { params }
-}
-
-fn parse_params<T: DeserializeOwned>(params: Value) -> std::result::Result<T, JsonRpcError> {
-    serde_json::from_value(params).map_err(|err| JsonRpcError::invalid_params(err.to_string()))
-}
-
-fn jsonrpc_result(id: Option<Value>, result: Value) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id.unwrap_or(Value::Null),
-        "result": result
-    })
-}
-
-fn jsonrpc_error(id: Option<Value>, err: JsonRpcError) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": id.unwrap_or(Value::Null),
-        "error": {
-            "code": err.code,
-            "message": err.message,
-            "data": err.data
-        }
-    })
-}
-
-impl JsonRpcError {
-    fn parse_error(message: impl Into<String>) -> Self {
-        Self {
-            code: -32700,
-            message: message.into(),
-            data: None,
-        }
-    }
-
-    fn invalid_request(message: impl Into<String>) -> Self {
-        Self {
-            code: -32600,
-            message: message.into(),
-            data: None,
-        }
-    }
-
-    fn method_not_found(method: &str) -> Self {
-        Self {
-            code: -32601,
-            message: format!("unsupported method: {method}"),
-            data: None,
-        }
-    }
-
-    fn invalid_params(message: impl Into<String>) -> Self {
-        Self {
-            code: -32602,
-            message: message.into(),
-            data: None,
-        }
-    }
-
-    fn internal(message: impl Into<String>) -> Self {
-        Self {
-            code: -32603,
-            message: message.into(),
-            data: None,
-        }
-    }
-}
-
-async fn handle_thread_request(
-    state: &AppState,
-    req: ThreadRequest,
-) -> std::result::Result<ThreadResponse, JsonRpcError> {
-    let mut runtime = state.runtime.write().await;
-    runtime
-        .handle_thread(req)
-        .await
-        .map_err(|err| JsonRpcError::internal(err.to_string()))
-}
-
-async fn handle_prompt_request(
-    state: &AppState,
-    req: PromptRequest,
-) -> std::result::Result<PromptResponse, JsonRpcError> {
-    let mut runtime = state.runtime.write().await;
-    runtime
-        .handle_prompt(req, &CliRuntimeOverrides::default())
-        .await
-        .map_err(|err| JsonRpcError::internal(err.to_string()))
-}
-
-async fn handle_stdio_thread_message<W: AsyncWrite + Unpin>(
-    state: &AppState,
-    writer: &mut W,
-    parsed: ThreadMessageParams,
-) -> std::result::Result<Value, JsonRpcError> {
-    let hint = {
-        let hints = state.stdio_thread_hints.lock().await;
-        hints.get(&parsed.thread_id).cloned()
-    };
-    let bridge = acquire_stdio_bridge(state).await?;
-    // The inner bridge lock is held for the whole turn: one child process
-    // serves all threads and per-thread seq tracking requires ordered
-    // access. The cache slot itself stays unlocked, so config updates and
-    // bridge invalidation are never queued behind a streaming turn.
-    let mut bridge = bridge.lock().await;
-    let runtime_thread_id = bridge
-        .ensure_runtime_thread(&parsed.thread_id, hint)
-        .await
-        .map_err(|err| JsonRpcError::internal(err.to_string()))?;
-    let mut result = bridge
-        .message_thread(&runtime_thread_id, &parsed.input, writer)
-        .await
-        .map_err(|err| JsonRpcError::internal(err.to_string()))?;
-    if let Some(object) = result.as_object_mut() {
-        object.insert("thread_id".to_string(), Value::String(parsed.thread_id));
-    }
-    Ok(result)
-}
-
-async fn record_stdio_thread_hint(state: &AppState, response: &ThreadResponse) {
-    let mut hints = state.stdio_thread_hints.lock().await;
-    hints.insert(
-        response.thread_id.clone(),
-        RuntimeThreadHint {
-            model: response.model.clone(),
-            workspace: response.cwd.clone(),
-        },
-    );
-}
-
-/// Fetch the cached stdio→runtime bridge, spawning one on first use.
-///
-/// The cache-slot lock is held only for the lookup/insert — never across
-/// the child spawn or any request traffic — so [`invalidate_stdio_bridge`]
-/// and other slot users are never blocked behind a slow bridge operation.
-async fn acquire_stdio_bridge(
-    state: &AppState,
-) -> std::result::Result<SharedRuntimeBridge, JsonRpcError> {
-    if let Some(bridge) = state.stdio_bridge.lock().await.as_ref() {
-        return Ok(bridge.clone());
-    }
-    let bridge = Arc::new(Mutex::new(
-        RuntimeBridge::start(state.config_path.as_deref())
-            .await
-            .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-    ));
-    let mut slot = state.stdio_bridge.lock().await;
-    // Prefer a bridge cached by a concurrent caller while we were spawning;
-    // dropping our unused one kills the extra child via `Drop`.
-    Ok(slot.get_or_insert_with(|| bridge.clone()).clone())
-}
-
-/// Drop the cached runtime bridge so the next stdio thread message spawns a
-/// fresh child that re-reads the persisted config. An in-flight message
-/// keeps its own [`SharedRuntimeBridge`] clone and finishes against the old
-/// child, which is killed when the last clone drops.
-async fn invalidate_stdio_bridge(state: &AppState) {
-    let mut bridge = state.stdio_bridge.lock().await;
-    *bridge = None;
-}
-
-impl RuntimeBridge {
-    async fn start(config_path: Option<&Path>) -> Result<Self> {
-        install_rustls_crypto_provider();
-        let port = reserve_runtime_port()?;
-        let auth_token = format!("cwrt_{}", Uuid::new_v4().simple());
-        let child = Self::runtime_command(config_path, port, &auth_token)?
-            .spawn()
-            .context("failed to start runtime API bridge")?;
-        let mut bridge = Self {
-            base_url: format!("http://127.0.0.1:{port}"),
-            client: codewhale_release::platform_http_client_builder()
-                .build()
-                .context("failed to build runtime API client")?,
-            auth_token: Some(auth_token),
-            child: Some(child),
-            thread_map: HashMap::new(),
-            last_seq_by_thread: HashMap::new(),
-        };
-        bridge.wait_until_ready().await?;
-        Ok(bridge)
-    }
-
-    fn runtime_command(config_path: Option<&Path>, port: u16, auth_token: &str) -> Result<Command> {
-        let current_exe = std::env::current_exe().ok();
-        let mut command = if let Some(path) = current_exe {
-            Command::new(path)
-        } else {
-            Command::new("codewhale")
-        };
-        command
-            .arg("app-server")
-            .arg("--http")
-            .arg("--host")
-            .arg("127.0.0.1")
-            .arg("--port")
-            .arg(port.to_string())
-            .arg("--auth-token")
-            .arg(auth_token)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        if let Some(config_path) = config_path {
-            command.arg("--config").arg(config_path);
-        }
-        Ok(command)
-    }
-
-    async fn wait_until_ready(&mut self) -> Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            if let Some(child) = self.child.as_mut()
-                && let Some(status) = child.try_wait()?
-            {
-                return Err(anyhow!(
-                    "runtime API bridge exited before becoming ready (status {status})"
-                ));
-            }
-
-            match self
-                .client
-                .get(format!("{}/health", self.base_url))
-                .send()
-                .await
-            {
-                Ok(response) if response.status().is_success() => return Ok(()),
-                _ if Instant::now() >= deadline => {
-                    bail!(
-                        "timed out waiting for runtime API bridge at {}/health",
-                        self.base_url
-                    )
-                }
-                _ => tokio::time::sleep(Duration::from_millis(50)).await,
-            }
-        }
-    }
-
-    fn authed(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match self.auth_token.as_deref() {
-            Some(token) => builder.bearer_auth(token),
-            None => builder,
-        }
-    }
-
-    async fn request_json(&self, builder: reqwest::RequestBuilder) -> Result<Value> {
-        let response = builder.send().await?;
-        let status = response.status();
-        let body = response.text().await?;
-        if !status.is_success() {
-            let detail = body.trim();
-            if detail.is_empty() {
-                bail!("runtime API returned {status}");
-            }
-            bail!("runtime API returned {status}: {detail}");
-        }
-        serde_json::from_str(&body).with_context(|| format!("invalid runtime API json: {body}"))
-    }
-
-    async fn ensure_runtime_thread(
-        &mut self,
-        stdio_thread_id: &str,
-        hint: Option<RuntimeThreadHint>,
-    ) -> Result<String> {
-        if let Some(runtime_thread_id) = self.thread_map.get(stdio_thread_id) {
-            return Ok(runtime_thread_id.clone());
-        }
-        let hint = hint.unwrap_or_default();
-        let runtime_thread_id = self
-            .create_runtime_thread(hint.model, hint.workspace)
-            .await?;
-        self.thread_map
-            .insert(stdio_thread_id.to_string(), runtime_thread_id.clone());
-        Ok(runtime_thread_id)
-    }
-
-    async fn create_runtime_thread(
-        &mut self,
-        model: Option<String>,
-        workspace: Option<PathBuf>,
-    ) -> Result<String> {
-        let record = self
-            .request_json(
-                self.authed(self.client.post(format!("{}/v1/threads", self.base_url)))
-                    .json(&json!({
-                        "model": model,
-                        "workspace": workspace,
-                        "mode": "agent",
-                        "archived": false,
-                    })),
-            )
-            .await?;
-        let thread_id = extract_runtime_thread_id(&record)?.to_string();
-        self.last_seq_by_thread
-            .entry(thread_id.clone())
-            .or_insert(0);
-        Ok(thread_id)
-    }
-
-    async fn message_thread<W: AsyncWrite + Unpin>(
-        &mut self,
-        thread_id: &str,
-        input: &str,
-        writer: &mut W,
-    ) -> Result<Value> {
-        let turn = self
-            .request_json(
-                self.authed(
-                    self.client
-                        .post(format!("{}/v1/threads/{thread_id}/turns", self.base_url)),
-                )
-                .json(&json!({ "prompt": input })),
-            )
-            .await?;
-        let turn_id = turn
-            .pointer("/turn/id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("runtime API turn response missing turn.id"))?
-            .to_string();
-        let response_id = format!("{thread_id}:{turn_id}");
-
-        emit_stdio_event(
-            writer,
-            json!({
-                "type": "response_start",
-                "response_id": response_id,
-            }),
-        )
-        .await?;
-
-        let since_seq = self.last_seq_by_thread.get(thread_id).copied().unwrap_or(0);
-        let stream_result = self
-            .stream_turn_events(thread_id, &turn_id, &response_id, writer, since_seq)
-            .await;
-
-        let _ = emit_stdio_event(
-            writer,
-            json!({
-                "type": "response_end",
-                "response_id": response_id,
-            }),
-        )
-        .await;
-
-        let (last_seq, status, error) = stream_result?;
-        self.last_seq_by_thread
-            .insert(thread_id.to_string(), last_seq);
-
-        match status {
-            TurnTerminalStatus::Completed => Ok(json!({
-                "thread_id": thread_id,
-                "status": "accepted",
-                "thread": Value::Null,
-                "threads": [],
-                "model": Value::Null,
-                "model_provider": Value::Null,
-                "cwd": Value::Null,
-                "approval_policy": Value::Null,
-                "sandbox": Value::Null,
-                "events": [],
-                "data": { "turn_id": turn_id },
-            })),
-            TurnTerminalStatus::Failed => Err(anyhow!(
-                "{}",
-                error.unwrap_or_else(|| "turn failed".to_string())
-            )),
-            TurnTerminalStatus::Interrupted => Err(anyhow!(
-                "{}",
-                error.unwrap_or_else(|| "turn interrupted".to_string())
-            )),
-            TurnTerminalStatus::Canceled => Err(anyhow!(
-                "{}",
-                error.unwrap_or_else(|| "turn canceled".to_string())
-            )),
-        }
-    }
-
-    async fn stream_turn_events<W: AsyncWrite + Unpin>(
-        &self,
-        thread_id: &str,
-        turn_id: &str,
-        response_id: &str,
-        writer: &mut W,
-        since_seq: u64,
-    ) -> Result<(u64, TurnTerminalStatus, Option<String>)> {
-        let mut response = self
-            .authed(self.client.get(format!(
-                "{}/v1/threads/{thread_id}/events?since_seq={since_seq}",
-                self.base_url
-            )))
-            .send()
-            .await?
-            .error_for_status()?;
-
-        let mut buffer = Vec::new();
-        let mut last_seq = since_seq;
-
-        while let Some(chunk) = response.chunk().await? {
-            buffer.extend_from_slice(&chunk);
-            if buffer.len() > MAX_SSE_FRAME_BYTES {
-                bail!(
-                    "runtime SSE frame exceeded {MAX_SSE_FRAME_BYTES} bytes without a frame delimiter"
-                );
-            }
-            while let Some(frame_bytes) = take_sse_frame(&mut buffer) {
-                let Some((event_name, frame_data)) = parse_sse_frame(&frame_bytes) else {
-                    continue;
-                };
-                let envelope: Value = serde_json::from_str(&frame_data)
-                    .with_context(|| format!("invalid SSE json for {event_name}: {frame_data}"))?;
-                if let Some(seq) = envelope.get("seq").and_then(Value::as_u64) {
-                    last_seq = last_seq.max(seq);
-                }
-                if envelope.get("turn_id").and_then(Value::as_str) != Some(turn_id) {
-                    continue;
-                }
-                let payload = envelope.get("payload").cloned().unwrap_or(Value::Null);
-                match event_name.as_str() {
-                    "item.delta" => {
-                        let kind = payload
-                            .get("kind")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default();
-                        if kind == "agent_message"
-                            && let Some(delta) = payload.get("delta").and_then(Value::as_str)
-                            && !delta.is_empty()
-                        {
-                            emit_stdio_event(
-                                writer,
-                                json!({
-                                    "type": "response_delta",
-                                    "response_id": response_id,
-                                    "delta": delta,
-                                }),
-                            )
-                            .await?;
-                        }
-                    }
-                    "turn.completed" => {
-                        let status = turn_terminal_status(&payload);
-                        let error = payload
-                            .pointer("/turn/error")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
-                        return Ok((last_seq, status, error));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        bail!("runtime event stream ended before turn.completed")
-    }
-
-    #[cfg(test)]
-    fn from_base_url_for_test(base_url: String) -> Self {
-        install_rustls_crypto_provider();
-        Self {
-            base_url,
-            client: codewhale_release::platform_http_client_builder()
-                .timeout(Duration::from_secs(5))
-                .build()
-                .expect("build reqwest test client"),
-            auth_token: None,
-            child: None,
-            thread_map: HashMap::new(),
-            last_seq_by_thread: HashMap::new(),
-        }
-    }
-}
-
-impl RuntimeBridge {
-    /// Kills the managed runtime child and reaps it on a detached thread so
-    /// neither an explicit shutdown nor Drop blocks a Tokio runtime thread.
-    fn shutdown_child(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
-    }
-}
-
-impl Drop for RuntimeBridge {
-    fn drop(&mut self) {
-        self.shutdown_child();
-    }
-}
-
-fn reserve_runtime_port() -> Result<u16> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(listener.local_addr()?.port())
-}
-
-fn install_rustls_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
-
-fn extract_runtime_thread_id(record: &Value) -> Result<&str> {
-    record
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("runtime API thread response missing id"))
-}
-
-fn turn_terminal_status(payload: &Value) -> TurnTerminalStatus {
-    match payload
-        .pointer("/turn/status")
-        .and_then(Value::as_str)
-        .unwrap_or("completed")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "failed" => TurnTerminalStatus::Failed,
-        "interrupted" => TurnTerminalStatus::Interrupted,
-        "canceled" | "cancelled" => TurnTerminalStatus::Canceled,
-        _ => TurnTerminalStatus::Completed,
-    }
-}
-
-async fn emit_stdio_event<W: AsyncWrite + Unpin>(writer: &mut W, event: Value) -> Result<()> {
-    writer.write_all(&serde_json::to_vec(&event)?).await?;
-    writer.write_all(b"\n").await?;
-    writer.flush().await?;
-    Ok(())
-}
-
-fn take_sse_frame(buffer: &mut Vec<u8>) -> Option<Vec<u8>> {
-    if let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
-        return Some(buffer.drain(..pos + 4).collect());
-    }
-    buffer
-        .windows(2)
-        .position(|window| window == b"\n\n")
-        .map(|pos| buffer.drain(..pos + 2).collect())
-}
-
-fn parse_sse_frame(frame_bytes: &[u8]) -> Option<(String, String)> {
-    let text = String::from_utf8(frame_bytes.to_vec()).ok()?;
-    let mut event_name = None;
-    let mut data_lines = Vec::new();
-    for raw_line in text.lines() {
-        let line = raw_line.trim_end_matches('\r');
-        if let Some(value) = line.strip_prefix("event:") {
-            event_name = Some(value.trim().to_string());
-        } else if let Some(value) = line.strip_prefix("data:") {
-            data_lines.push(value.trim_start().to_string());
-        }
-    }
-    match (event_name, data_lines.is_empty()) {
-        (Some(event), false) => Some((event, data_lines.join("\n"))),
-        _ => None,
-    }
-}
-
-#[cfg(test)]
-async fn dispatch_stdio_request(
-    state: &AppState,
-    method: &str,
-    params: Value,
-) -> std::result::Result<StdioDispatchResult, JsonRpcError> {
-    let mut sink = tokio::io::sink();
-    dispatch_stdio_request_with_writer(state, &mut sink, method, params).await
-}
-
-async fn dispatch_stdio_app_request(
-    state: &AppState,
-    request: AppRequest,
-) -> std::result::Result<StdioDispatchResult, JsonRpcError> {
-    let response = Box::pin(process_app_request(state, request, AppTransport::Stdio)).await;
-    Ok(StdioDispatchResult {
-        result: serde_json::to_value(response)
-            .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-        should_exit: false,
-    })
-}
-
-async fn dispatch_stdio_request_with_writer<W: AsyncWrite + Unpin>(
-    state: &AppState,
-    writer: &mut W,
-    method: &str,
-    params: Value,
-) -> std::result::Result<StdioDispatchResult, JsonRpcError> {
-    let outcome = match method {
-        "healthz" | "app/healthz" => StdioDispatchResult {
-            result: json!({
-                "status": "ok",
-                "service": legacy_deepseek_compat::SERVICE_NAME,
-                "transport": "stdio"
-            }),
-            should_exit: false,
-        },
-        "capabilities" => StdioDispatchResult {
-            result: json!({
-                "transport": "stdio",
-                "families": ["thread/*", "app/*", "prompt/*"],
-                "methods": [
-                    "healthz",
-                    "thread/capabilities",
-                    "thread/request",
-                    "thread/create",
-                    "thread/start",
-                    "thread/resume",
-                    "thread/fork",
-                    "thread/list",
-                    "thread/read",
-                    "thread/set_name",
-                    "thread/goal/set",
-                    "thread/goal/get",
-                    "thread/goal/clear",
-                    "thread/archive",
-                    "thread/unarchive",
-                    "thread/message",
-                    "app/capabilities",
-                    "app/request",
-                    "app/config/get",
-                    "app/config/set",
-                    "app/config/unset",
-                    "app/config/list",
-                    "app/config/reload",
-                    "app/models",
-                    "app/thread_loaded_list",
-                    "prompt/capabilities",
-                    "prompt/request",
-                    "prompt/run",
-                    "shutdown"
-                ]
-            }),
-            should_exit: false,
-        },
-        "thread/capabilities" => StdioDispatchResult {
-            result: json!({
-                "methods": [
-                    "thread/request",
-                    "thread/create",
-                    "thread/start",
-                    "thread/resume",
-                    "thread/fork",
-                    "thread/list",
-                    "thread/read",
-                    "thread/set_name",
-                    "thread/goal/set",
-                    "thread/goal/get",
-                    "thread/goal/clear",
-                    "thread/archive",
-                    "thread/unarchive",
-                    "thread/message"
-                ]
-            }),
-            should_exit: false,
-        },
-        "thread/request" => {
-            let request: ThreadRequest = parse_params(params)?;
-            if let ThreadRequest::Message { thread_id, input } = request {
-                let response = handle_stdio_thread_message(
-                    state,
-                    writer,
-                    ThreadMessageParams { thread_id, input },
-                )
-                .await?;
-                return Ok(StdioDispatchResult {
-                    result: response,
-                    should_exit: false,
-                });
-            }
-            let should_record_hint = matches!(
-                &request,
-                ThreadRequest::Create { .. }
-                    | ThreadRequest::Start(_)
-                    | ThreadRequest::Resume(_)
-                    | ThreadRequest::Fork(_)
-            );
-            let response = handle_thread_request(state, request).await?;
-            if should_record_hint {
-                record_stdio_thread_hint(state, &response).await;
-            }
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/create" => {
-            #[derive(Debug, Deserialize)]
-            struct CreateParams {
-                #[serde(default)]
-                metadata: Value,
-            }
-            let parsed: CreateParams = parse_params(params_or_object(params))?;
-            let response = handle_thread_request(
-                state,
-                ThreadRequest::Create {
-                    metadata: parsed.metadata,
-                },
-            )
-            .await?;
-            record_stdio_thread_hint(state, &response).await;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/start" => {
-            let request = ThreadRequest::Start(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
-            record_stdio_thread_hint(state, &response).await;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/resume" => {
-            let request = ThreadRequest::Resume(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
-            record_stdio_thread_hint(state, &response).await;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/fork" => {
-            let request = ThreadRequest::Fork(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
-            record_stdio_thread_hint(state, &response).await;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/list" => {
-            let request = ThreadRequest::List(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/read" => {
-            let request = ThreadRequest::Read(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/set_name" | "thread/set-name" => {
-            let request = ThreadRequest::SetName(parse_params(params_or_object(params))?);
-            let response = handle_thread_request(state, request).await?;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/goal/set" | "thread/goal_set" | "thread/goal-set" => {
-            let request = ThreadRequest::GoalSet(parse_params::<ThreadGoalSetParams>(
-                params_or_object(params),
-            )?);
-            let response = handle_thread_request(state, request).await?;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/goal/get" | "thread/goal_get" | "thread/goal-get" => {
-            let request = ThreadRequest::GoalGet(parse_params::<ThreadGoalGetParams>(
-                params_or_object(params),
-            )?);
-            let response = handle_thread_request(state, request).await?;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/goal/clear" | "thread/goal_clear" | "thread/goal-clear" => {
-            let request = ThreadRequest::GoalClear(parse_params::<ThreadGoalClearParams>(
-                params_or_object(params),
-            )?);
-            let response = handle_thread_request(state, request).await?;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/archive" => {
-            let parsed: ThreadIdParams = parse_params(params_or_object(params))?;
-            let response = handle_thread_request(
-                state,
-                ThreadRequest::Archive {
-                    thread_id: parsed.thread_id,
-                },
-            )
-            .await?;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/unarchive" => {
-            let parsed: ThreadIdParams = parse_params(params_or_object(params))?;
-            let response = handle_thread_request(
-                state,
-                ThreadRequest::Unarchive {
-                    thread_id: parsed.thread_id,
-                },
-            )
-            .await?;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "thread/message" => {
-            let parsed: ThreadMessageParams = parse_params(params_or_object(params))?;
-            let response = handle_stdio_thread_message(state, writer, parsed).await?;
-            StdioDispatchResult {
-                result: response,
-                should_exit: false,
-            }
-        }
-        "app/capabilities" => dispatch_stdio_app_request(state, AppRequest::Capabilities).await?,
-        "app/request" => {
-            let request: AppRequest = parse_params(params)?;
-            dispatch_stdio_app_request(state, request).await?
-        }
-        "app/config/get" => {
-            let parsed: ConfigGetParams = parse_params(params_or_object(params))?;
-            dispatch_stdio_app_request(state, AppRequest::ConfigGet { key: parsed.key }).await?
-        }
-        "app/config/set" => {
-            let parsed: ConfigSetParams = parse_params(params_or_object(params))?;
-            dispatch_stdio_app_request(
-                state,
-                AppRequest::ConfigSet {
-                    key: parsed.key,
-                    value: parsed.value,
-                },
-            )
-            .await?
-        }
-        "app/config/unset" => {
-            let parsed: ConfigGetParams = parse_params(params_or_object(params))?;
-            dispatch_stdio_app_request(state, AppRequest::ConfigUnset { key: parsed.key }).await?
-        }
-        "app/config/list" => dispatch_stdio_app_request(state, AppRequest::ConfigList).await?,
-        "app/config/reload" => dispatch_stdio_app_request(state, AppRequest::ConfigReload).await?,
-        "app/models" => dispatch_stdio_app_request(state, AppRequest::Models).await?,
-        "app/thread_loaded_list" | "app/thread-loaded-list" => {
-            dispatch_stdio_app_request(state, AppRequest::ThreadLoadedList).await?
-        }
-        "prompt/capabilities" => StdioDispatchResult {
-            result: json!({
-                "methods": ["prompt/request", "prompt/run"]
-            }),
-            should_exit: false,
-        },
-        "prompt/request" | "prompt/run" => {
-            let request: PromptRequest = parse_params(params)?;
-            let response = handle_prompt_request(state, request).await?;
-            StdioDispatchResult {
-                result: serde_json::to_value(response)
-                    .map_err(|err| JsonRpcError::internal(err.to_string()))?,
-                should_exit: false,
-            }
-        }
-        "shutdown" => {
-            if let Some(bridge) = state.stdio_bridge.lock().await.take() {
-                bridge.lock().await.shutdown_child();
-            }
-            StdioDispatchResult {
-                result: json!({"ok": true, "status": "stopped"}),
-                should_exit: true,
-            }
-        }
-        _ => return Err(JsonRpcError::method_not_found(method)),
-    };
-    Ok(outcome)
-}
-
-async fn process_app_request(
-    state: &AppState,
-    req: AppRequest,
-    _transport: AppTransport,
-) -> AppResponse {
-    match req {
-        AppRequest::Capabilities => AppResponse {
-            ok: true,
-            data: json!({
-                "routes": ["/thread", "/app", "/prompt", "/tool", "/jobs", "/mcp/startup"],
-                "config": ["get", "set", "unset", "list", "reload"],
-                "events": ["response_start", "response_delta", "response_end", "tool_call_start", "tool_call_result", "mcp_startup_update", "mcp_startup_complete"],
-                "transport": "stdio+http",
-                "config_path": state.config_path.as_ref().map(|p| p.display().to_string()),
-            }),
-            events: Vec::new(),
-        },
-        AppRequest::ConfigGet { key } => {
-            let cfg = state.config.read().await;
-            let value = cfg.get_display_value(&key);
-            AppResponse {
-                ok: true,
-                data: json!({ "key": key, "value": value }),
-                events: Vec::new(),
-            }
-        }
-        AppRequest::ConfigSet { key, value } => {
-            let (result, snapshot) = {
-                let mut cfg = state.config.write().await;
-                let result = cfg.set_value(&key, &value);
-                (result, cfg.clone())
-            };
-            let ok = result.is_ok();
-            let message = result.err().map(|e| e.to_string());
-            apply_config_update(state, snapshot, None, true).await;
-            AppResponse {
-                ok,
-                data: json!({ "key": key, "value": value, "error": message }),
-                events: Vec::new(),
-            }
-        }
-        AppRequest::ConfigUnset { key } => {
-            let (result, snapshot) = {
-                let mut cfg = state.config.write().await;
-                let result = cfg.unset_value(&key);
-                (result, cfg.clone())
-            };
-            let ok = result.is_ok();
-            let message = result.err().map(|e| e.to_string());
-            apply_config_update(state, snapshot, None, true).await;
-            AppResponse {
-                ok,
-                data: json!({ "key": key, "error": message }),
-                events: Vec::new(),
-            }
-        }
-        AppRequest::ConfigList => {
-            let cfg = state.config.read().await;
-            AppResponse {
-                ok: true,
-                data: json!({ "values": cfg.list_values() }),
-                events: Vec::new(),
-            }
-        }
-        AppRequest::ConfigReload => {
-            // Re-read both `config.toml` and the sibling `permissions.toml`
-            // from disk (the headless equivalent of the TUI
-            // `reload_runtime_config` codepath) and push the fresh
-            // snapshots into `state.config` and the live `Runtime`.
-            //
-            // `ConfigStore::load` resolves the same default config path
-            // that `build_state` used at startup when `config_path` is
-            // `None`, so a `None` here reloads from the same on-disk file
-            // the server booted from.
-            let store = match ConfigStore::load(state.config_path.clone()) {
-                Ok(store) => store,
-                Err(e) => {
-                    return AppResponse {
-                        ok: false,
-                        data: json!({ "error": format!("failed to load config: {e}") }),
-                        events: Vec::new(),
-                    };
-                }
-            };
-            let new_config = store.config.clone();
-            let new_exec_policy = store.exec_policy_engine();
-
-            // Disk is already the source of truth here, so nothing to
-            // persist; the exec policy rides along so the runtime picks up
-            // external `permissions.toml` edits too.
-            apply_config_update(state, new_config, Some(new_exec_policy), false).await;
-
-            AppResponse {
-                ok: true,
-                data: json!({ "reloaded": true }),
-                events: Vec::new(),
-            }
-        }
-        AppRequest::Models => AppResponse {
-            ok: true,
-            data: json!({ "models": state.registry.list() }),
-            events: Vec::new(),
-        },
-        AppRequest::ThreadLoadedList => {
-            let mut runtime = state.runtime.write().await;
-            let response = runtime
-                .handle_thread(codewhale_protocol::ThreadRequest::List(
-                    codewhale_protocol::ThreadListParams {
-                        include_archived: false,
-                        limit: Some(50),
-                    },
-                ))
-                .await;
-            match response {
-                Ok(thread_resp) => AppResponse {
-                    ok: true,
-                    data: json!({ "threads": thread_resp.threads }),
-                    events: thread_resp.events,
-                },
-                Err(err) => AppResponse {
-                    ok: false,
-                    data: json!({ "error": err.to_string() }),
-                    events: Vec::new(),
-                },
-            }
-        }
-        AppRequest::SubmitUserInput {
-            request_id,
-            answers,
-        } => {
-            // Record the user's answers against the pending clarification
-            // request so a driver can retrieve them. The headless runtime does
-            // not block on `request_user_input` (fire-and-return, like
-            // approval), so there is no in-flight turn to resume here — the
-            // caller is expected to feed these answers into the next turn.
-            let mut pending = state.pending_user_input.lock().await;
-            if pending.contains_key(&request_id) {
-                return AppResponse {
-                    ok: false,
-                    data: json!({
-                        "error": "request_id already resolved",
-                        "request_id": request_id,
-                    }),
-                    events: Vec::new(),
-                };
-            }
-            pending.insert(request_id.clone(), answers);
-            AppResponse {
-                ok: true,
-                data: json!({ "request_id": request_id, "resolved": true }),
-                events: Vec::new(),
-            }
-        }
-    }
-}
-
-/// Propagate a new config snapshot to every place that must observe it:
-/// optionally persist it to disk, install it in the shared `state.config`,
-/// push it into the live [`Runtime`], and invalidate the cached stdio
-/// bridge so the next stdio request spawns a fresh child that reads the
-/// new on-disk config. Shared by `ConfigSet` / `ConfigUnset` / `ConfigReload`.
-///
-/// `exec_policy` is `Some` only on the reload path, which re-reads
-/// `permissions.toml` from disk; set/unset intentionally leave the live
-/// exec policy alone (use `ConfigReload` to pick up external permission
-/// edits). `persist` is false on the reload path because disk is already
-/// the source of truth there.
-async fn apply_config_update(
-    state: &AppState,
-    snapshot: codewhale_config::ConfigToml,
-    exec_policy: Option<codewhale_execpolicy::ExecPolicyEngine>,
-    persist: bool,
-) {
-    if persist && let Err(e) = persist_config(state, snapshot.clone()).await {
-        tracing::error!("Failed to persist config update: {e}");
-    }
-    {
-        let mut cfg = state.config.write().await;
-        *cfg = snapshot.clone();
-    }
-    // Sync into the live Runtime so the next turn picks up the change
-    // without a restart. MCP server connections are NOT refreshed here —
-    // see `Runtime::reload_config_and_policy` for the rationale and the
-    // matching TUI `mcp_restart_required` note.
-    {
-        let mut runtime = state.runtime.write().await;
-        match exec_policy {
-            Some(policy) => runtime.reload_config_and_policy(snapshot, policy),
-            None => runtime.update_config(snapshot),
-        }
-    }
-    invalidate_stdio_bridge(state).await;
-}
-
-async fn persist_config(state: &AppState, config: codewhale_config::ConfigToml) -> Result<()> {
-    if state.config_path.is_none() {
-        return Ok(());
-    }
-    let mut store = ConfigStore::load(state.config_path.clone())?;
-    store.config = config;
-    store.save()
+fn has_valid_bearer_token(headers: &HeaderMap, expected: &str) -> bool {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|provided| provided == expected)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::num::NonZeroU32;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use axum::body::{Body, to_bytes};
-    use axum::extract::{Path as AxumPath, Query};
-    use axum::http::header;
-    use codewhale_protocol::AppRequest;
-    use std::collections::HashMap;
-    use std::fs;
-    use tokio::io::AsyncReadExt;
+    use axum::http::{Request as HttpRequest, Uri, header};
+    use codewhale_app::{
+        DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
+        TransportRetryPolicy,
+    };
+    use codewhale_protocol::agent_runtime::{
+        AgentOutcome, ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId,
+        RuntimeEventKind, TerminalState, ToolPolicy,
+    };
+    use codewhale_protocol::run_api::{RunProductControls, RunView, StartRunCommand};
+    use serde_json::json;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use tokio::sync::{Notify, Semaphore};
+    use tokio::task::JoinHandle;
     use tower::ServiceExt;
 
-    fn app_with_config(auth_token: Option<&str>) -> (Router, tempfile::TempDir) {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(&config_path, "api_key = \"sk-deepseek-secret\"\n").expect("write config");
-        let state = build_state(
-            Some(config_path),
-            auth_token.map(std::string::ToString::to_string),
-        )
-        .expect("state");
-        (app_router(state, &[]), tmp)
+    use super::*;
+
+    fn envelope(command: RunCommand) -> RunCommandEnvelope {
+        RunCommandEnvelope {
+            schema_version: RUN_API_SCHEMA_VERSION,
+            request_id: "request-1".to_owned(),
+            command,
+        }
+    }
+
+    fn start_command() -> StartRunCommand {
+        StartRunCommand {
+            input: "修复问题".to_owned(),
+            workspace: "/workspace".to_owned(),
+            model: Some("deepseek-v4-pro".to_owned()),
+            reasoning_effort: ReasoningEffort::High,
+            max_output_tokens: Some(8_192),
+            max_api_requests: NonZeroU32::new(8),
+            streaming: true,
+            tool_policy: ToolPolicy::default(),
+            limits: RunLimits::default(),
+            controls: RunProductControls::default(),
+        }
+    }
+
+    fn event(sequence: u64, terminal: bool) -> StoredRuntimeEvent {
+        StoredRuntimeEvent {
+            schema_version: 3,
+            run_id: RunId::from("run-1"),
+            parent_run_id: None,
+            event_id: RuntimeEventId(format!("event-{sequence}")),
+            sequence,
+            occurred_at_unix_ms: 123,
+            event: if terminal {
+                RuntimeEventKind::Terminal {
+                    outcome: Box::new(AgentOutcome {
+                        run_id: RunId::from("run-1"),
+                        parent_run_id: None,
+                        terminal: TerminalState::Cancelled,
+                        accounting: ModelAccounting::default(),
+                        runtime_model_requests: 0,
+                        runtime_retries: 0,
+                        tool_calls: 0,
+                    }),
+                }
+            } else {
+                RuntimeEventKind::Steered {
+                    content: "继续".to_owned(),
+                }
+            },
+        }
+    }
+
+    async fn response_json(response: Response) -> RunCommandResponse {
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        serde_json::from_slice(&bytes).expect("canonical response JSON")
+    }
+
+    struct DeepSeekFixture {
+        root: String,
+        requests: Arc<AtomicUsize>,
+        request_notify: Arc<Notify>,
+        release: Arc<Semaphore>,
+        server: JoinHandle<()>,
+    }
+
+    impl DeepSeekFixture {
+        async fn start() -> Self {
+            #[derive(Clone)]
+            struct FixtureState {
+                requests: Arc<AtomicUsize>,
+                request_notify: Arc<Notify>,
+                release: Arc<Semaphore>,
+            }
+
+            async fn complete(State(state): State<FixtureState>) -> Json<serde_json::Value> {
+                state.requests.fetch_add(1, Ordering::AcqRel);
+                state.request_notify.notify_waiters();
+                let permit = state.release.acquire().await.expect("fixture remains open");
+                permit.forget();
+                Json(json!({
+                    "id": "fixture-response",
+                    "model": "deepseek-v4-flash",
+                    "choices": [{
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "生产传输完成"}
+                    }],
+                    "usage": {
+                        "prompt_tokens": 11,
+                        "completion_tokens": 3,
+                        "total_tokens": 14
+                    }
+                }))
+            }
+
+            let requests = Arc::new(AtomicUsize::new(0));
+            let request_notify = Arc::new(Notify::new());
+            let release = Arc::new(Semaphore::new(0));
+            let state = FixtureState {
+                requests: requests.clone(),
+                request_notify: request_notify.clone(),
+                release: release.clone(),
+            };
+            let fixture = Router::new()
+                .route("/v1/chat/completions", post(complete))
+                .with_state(state);
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind DeepSeek loopback fixture");
+            let address = listener.local_addr().expect("fixture address");
+            let server = tokio::spawn(async move {
+                axum::serve(listener, fixture)
+                    .await
+                    .expect("serve DeepSeek fixture");
+            });
+            Self {
+                root: format!("http://{address}/v1"),
+                requests,
+                request_notify,
+                release,
+                server,
+            }
+        }
+
+        fn connection(&self) -> DeepSeekConnectionConfig {
+            DeepSeekConnectionConfig {
+                endpoint: DeepSeekEndpoint::loopback_fixture(&self.root)
+                    .expect("loopback endpoint"),
+                strict_tools: false,
+                response_header_timeout: Duration::from_secs(2),
+                stream_idle_timeout: Duration::from_secs(2),
+                retry: TransportRetryPolicy::disabled(),
+            }
+        }
+
+        fn release_one(&self) {
+            self.release.add_permits(1);
+        }
+
+        async fn wait_requests(&self, expected: usize) {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    let notified = self.request_notify.notified();
+                    if self.requests.load(Ordering::Acquire) >= expected {
+                        return;
+                    }
+                    notified.await;
+                }
+            })
+            .await
+            .expect("fixture receives expected requests");
+        }
+    }
+
+    impl Drop for DeepSeekFixture {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    fn production_app(
+        state_db: &Path,
+        fixture: &DeepSeekFixture,
+        with_key: bool,
+    ) -> Arc<AgentApplication> {
+        let config = ProductionApplicationConfig::official()
+            .with_state_db_path(state_db)
+            .with_deepseek_connection(fixture.connection())
+            .with_composition_build_revision("app-server-contract");
+        let config = if with_key {
+            config
+                .with_api_key("fixture-key")
+                .expect("fixture credential")
+        } else {
+            config
+        };
+        Arc::new(AgentApplication::production(config).expect("production application"))
+    }
+
+    fn production_start(workspace: &Path, input: &str) -> StartRunCommand {
+        StartRunCommand {
+            input: input.to_owned(),
+            workspace: workspace
+                .canonicalize()
+                .expect("canonical workspace")
+                .display()
+                .to_string(),
+            model: Some("deepseek-v4-flash".to_owned()),
+            reasoning_effort: ReasoningEffort::High,
+            max_output_tokens: Some(4_096),
+            max_api_requests: NonZeroU32::new(4),
+            streaming: false,
+            tool_policy: ToolPolicy {
+                enabled: false,
+                ..ToolPolicy::default()
+            },
+            limits: RunLimits {
+                max_depth: 0,
+                model_event_idle_ms: Some(5_000),
+                wall_time_ms: Some(10_000),
+                ..RunLimits::default()
+            },
+            controls: RunProductControls::default(),
+        }
+    }
+
+    fn test_options(auth_token: Option<&str>) -> AppServerOptions {
+        AppServerOptions {
+            auth_token: auth_token.map(str::to_owned),
+            insecure_no_auth: auth_token.is_none(),
+            ..AppServerOptions::default()
+        }
+    }
+
+    async fn post_command(
+        app: &Router,
+        uri: &str,
+        envelope: &RunCommandEnvelope,
+        token: Option<&str>,
+    ) -> (StatusCode, RunCommandResponse) {
+        let mut request = HttpRequest::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header(CONTENT_TYPE, "application/json");
+        if let Some(token) = token {
+            request = request.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                request
+                    .body(Body::from(
+                        serde_json::to_vec(envelope).expect("serialize command"),
+                    ))
+                    .expect("command request"),
+            )
+            .await
+            .expect("command response");
+        let status = response.status();
+        (status, response_json(response).await)
+    }
+
+    async fn get_command(
+        app: &Router,
+        uri: &str,
+        token: Option<&str>,
+    ) -> (StatusCode, RunCommandResponse) {
+        let mut request = HttpRequest::builder().uri(uri);
+        if let Some(token) = token {
+            request = request.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).expect("GET request"))
+            .await
+            .expect("GET response");
+        let status = response.status();
+        (status, response_json(response).await)
+    }
+
+    async fn wait_http_terminal(app: &Router, run_id: &RunId, token: Option<&str>) -> RunView {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let (_, response) =
+                    get_command(app, &format!("/v1/runs/{}", run_id.0), token).await;
+                let RunCommandResult::Run { run } = response.result else {
+                    panic!("expected run projection")
+                };
+                if run.terminal.is_some() {
+                    return *run;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("run reaches terminal")
+    }
+
+    fn run_from_response(response: RunCommandResponse) -> RunView {
+        match response.result {
+            RunCommandResult::Run { run } => *run,
+            other => panic!("expected run result, got {other:?}"),
+        }
+    }
+
+    fn events_from_response(response: RunCommandResponse) -> Vec<StoredRuntimeEvent> {
+        match response.result {
+            RunCommandResult::Events { events, .. } => events,
+            other => panic!("expected events result, got {other:?}"),
+        }
+    }
+
+    async fn sse_events(
+        app: &Router,
+        run_id: &RunId,
+        after_sequence: u64,
+    ) -> Vec<StoredRuntimeEvent> {
+        let response = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .uri(format!(
+                        "/v1/runs/{}/events?after_sequence={after_sequence}",
+                        run_id.0
+                    ))
+                    .header(ACCEPT, "text/event-stream")
+                    .body(Body::empty())
+                    .expect("SSE request"),
+            )
+            .await
+            .expect("SSE response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(CONTENT_TYPE),
+            Some(&HeaderValue::from_static("text/event-stream"))
+        );
+        let bytes = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("SSE body");
+        String::from_utf8(bytes.to_vec())
+            .expect("UTF-8 SSE")
+            .split("\n\n")
+            .filter_map(|frame| {
+                frame
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .map(|data| serde_json::from_str(data).expect("stored event JSON"))
+            })
+            .collect()
     }
 
     #[test]
-    fn build_state_keeps_resolved_explicit_config_path() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_dir = tmp.path().join("config-dir");
-        fs::create_dir_all(&config_dir).expect("config dir");
-        let config_path = config_dir.join("config.toml");
-        fs::write(&config_path, "api_key = \"sk-deepseek-secret\"\n").expect("write config");
-
-        let state = build_state(Some(config_path.clone()), None).expect("state");
-
-        assert_eq!(
-            state.config_path.as_deref(),
-            Some(
-                config_path
-                    .canonicalize()
-                    .expect("canonical config")
-                    .as_path()
+    fn every_post_route_requires_the_exact_canonical_command_and_run_id() {
+        let run_id = RunId::from("run-1");
+        let cases = [
+            (
+                PostRoute::Resume,
+                RunCommand::Resume {
+                    run_id: run_id.clone(),
+                    expected_workspace: None,
+                },
+            ),
+            (
+                PostRoute::Steer,
+                RunCommand::Steer {
+                    run_id: run_id.clone(),
+                    content: "继续".to_owned(),
+                },
+            ),
+            (
+                PostRoute::Interrupt,
+                RunCommand::Interrupt {
+                    run_id: run_id.clone(),
+                },
+            ),
+            (
+                PostRoute::Cancel,
+                RunCommand::Cancel {
+                    run_id: run_id.clone(),
+                },
+            ),
+        ];
+        for (route, command) in cases {
+            assert!(
+                validate_post_envelope(route, Some("run-1"), &envelope(command.clone())).is_ok()
+            );
+            assert!(validate_post_envelope(route, Some("different"), &envelope(command)).is_err());
+            assert!(
+                validate_post_envelope(
+                    route,
+                    Some("run-1"),
+                    &envelope(RunCommand::Get {
+                        run_id: run_id.clone()
+                    })
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            validate_post_envelope(
+                PostRoute::Start,
+                None,
+                &envelope(RunCommand::Start(start_command()))
             )
+            .is_ok()
+        );
+        assert!(
+            validate_post_envelope(
+                PostRoute::Start,
+                None,
+                &envelope(RunCommand::Resume {
+                    run_id,
+                    expected_workspace: None,
+                })
+            )
+            .is_err()
         );
     }
 
-    async fn response_body_json(response: Response) -> Value {
-        let bytes = to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("body bytes");
-        serde_json::from_slice(&bytes).expect("json response")
+    #[tokio::test]
+    async fn sse_frame_is_only_sequence_id_and_unchanged_stored_event_json() {
+        let event = event(9, false);
+        let body = to_bytes(
+            Sse::new(stream::iter([Ok::<_, Infallible>(canonical_sse_event(
+                &event,
+            ))]))
+            .into_response()
+            .into_body(),
+            usize::MAX,
+        )
+        .await
+        .expect("read SSE body");
+        let expected = format!(
+            "id: 9\ndata: {}\n\n",
+            serde_json::to_string(&event).expect("serialize canonical event")
+        );
+        assert_eq!(body.as_ref(), expected.as_bytes());
+    }
+
+    #[test]
+    fn terminal_event_is_detected_without_transport_status_translation() {
+        assert!(!event(1, false).event.is_terminal());
+        assert!(event(2, true).event.is_terminal());
+    }
+
+    #[test]
+    fn reconnect_replays_strictly_after_the_last_delivered_sequence_without_loss() {
+        let mut first_connection = SseCursor::new(0, vec![event(1, false), event(2, false)]);
+        assert_eq!(first_connection.next().map(|event| event.sequence), Some(1));
+
+        // The client disconnects after sequence 1. AgentApplication/RunStore
+        // returns the canonical events strictly after that cursor.
+        let resumed_events = vec![event(2, false), event(3, true)];
+        let resumed_sequences = SseCursor::new(1, resumed_events)
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>();
+        assert_eq!(resumed_sequences, vec![2, 3]);
+    }
+
+    #[test]
+    fn sse_cursor_stops_immediately_after_the_canonical_terminal() {
+        let mut cursor = SseCursor::new(1, vec![event(2, true), event(3, false)]);
+        assert_eq!(cursor.next().map(|event| event.sequence), Some(2));
+        assert!(cursor.next().is_none());
+        assert_eq!(cursor.after_sequence, 2);
+    }
+
+    #[test]
+    fn sse_preflight_preserves_the_application_typed_recovery_error() {
+        let response = RunCommandResponse {
+            schema_version: RUN_API_SCHEMA_VERSION,
+            request_id: "events-request".to_owned(),
+            result: RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::RunRecoveryRequired,
+                    message: "resume required".to_owned(),
+                    run_id: Some(RunId::from("run-1")),
+                    terminal: None,
+                },
+            },
+        };
+        let error = sse_preflight(response.clone(), &RunId::from("run-1"))
+            .expect_err("typed application error must not enter the SSE body");
+        assert_eq!(*error, response);
+    }
+
+    #[test]
+    fn sse_preflight_rejects_a_non_event_application_result_without_fabricating_an_event() {
+        let response = RunCommandResponse {
+            schema_version: RUN_API_SCHEMA_VERSION,
+            request_id: "events-request".to_owned(),
+            result: RunCommandResult::Accepted {
+                run_id: RunId::from("run-1"),
+                last_sequence: 7,
+            },
+        };
+        let error = sse_preflight(response, &RunId::from("run-1"))
+            .expect_err("only canonical event results may enter an SSE stream");
+        assert!(matches!(
+            error.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::InvalidRequest,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn accepts_sse_in_a_standard_accept_list() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            ACCEPT,
+            HeaderValue::from_static("application/json, text/event-stream; charset=utf-8"),
+        );
+        assert!(accepts_sse(&headers));
+        headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
+        assert!(!accepts_sse(&headers));
+    }
+
+    #[test]
+    fn typed_application_errors_map_to_stable_http_statuses() {
+        let cases = [
+            (RunApiErrorCode::InvalidRequest, StatusCode::BAD_REQUEST),
+            (RunApiErrorCode::EventCursorAhead, StatusCode::BAD_REQUEST),
+            (RunApiErrorCode::RunNotFound, StatusCode::NOT_FOUND),
+            (RunApiErrorCode::RunAlreadyExists, StatusCode::CONFLICT),
+            (RunApiErrorCode::RunRecoveryRequired, StatusCode::CONFLICT),
+            (RunApiErrorCode::RunAlreadyRunning, StatusCode::CONFLICT),
+            (RunApiErrorCode::RunNotActive, StatusCode::CONFLICT),
+            (RunApiErrorCode::RunTerminal, StatusCode::CONFLICT),
+            (
+                RunApiErrorCode::RunEnvironmentMismatch,
+                StatusCode::CONFLICT,
+            ),
+            (
+                RunApiErrorCode::RunStoreFailed,
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ];
+        for (code, expected) in cases {
+            let response = RunCommandResponse {
+                schema_version: RUN_API_SCHEMA_VERSION,
+                request_id: "request-1".to_owned(),
+                result: RunCommandResult::Error {
+                    error: RunApiError {
+                        code,
+                        message: "typed".to_owned(),
+                        run_id: None,
+                        terminal: None,
+                    },
+                },
+            };
+            assert_eq!(response_status(&response), expected);
+        }
+
+        let accepted = RunCommandResponse {
+            schema_version: RUN_API_SCHEMA_VERSION,
+            request_id: "request-accepted".to_owned(),
+            result: RunCommandResult::Accepted {
+                run_id: RunId::from("run-1"),
+                last_sequence: 3,
+            },
+        };
+        assert_eq!(response_status(&accepted), StatusCode::ACCEPTED);
+    }
+
+    #[test]
+    fn stdio_accepts_all_and_only_canonical_run_command_envelopes() {
+        let run_id = RunId::from("run-1");
+        let commands = [
+            RunCommand::Start(start_command()),
+            RunCommand::Get {
+                run_id: run_id.clone(),
+            },
+            RunCommand::Events {
+                run_id: run_id.clone(),
+                after_sequence: 4,
+            },
+            RunCommand::Resume {
+                run_id: run_id.clone(),
+                expected_workspace: None,
+            },
+            RunCommand::Steer {
+                run_id: run_id.clone(),
+                content: "继续".to_owned(),
+            },
+            RunCommand::Interrupt {
+                run_id: run_id.clone(),
+            },
+            RunCommand::Cancel { run_id },
+        ];
+        for command in commands {
+            let expected = envelope(command);
+            let canonical = serde_json::to_string(&expected).expect("serialize command");
+            assert_eq!(
+                decode_stdio_line(&canonical).expect("decode canonical envelope"),
+                expected
+            );
+        }
+
+        let json_rpc = r#"{"jsonrpc":"2.0","id":1,"method":"prompt","params":{}}"#;
+        let error = decode_stdio_line(json_rpc).expect_err("JSON-RPC must not be an alias");
+        assert!(matches!(
+            error.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::InvalidRequest,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[test]
+    fn stdio_frame_is_exactly_one_response_line_and_preserves_stored_events() {
+        let stored = event(8, false);
+        let response = RunCommandResponse {
+            schema_version: RUN_API_SCHEMA_VERSION,
+            request_id: "events-request".to_owned(),
+            result: RunCommandResult::Events {
+                run_id: RunId::from("run-1"),
+                after_sequence: 7,
+                events: vec![stored.clone()],
+            },
+        };
+        let encoded = encode_stdio_response(&response).expect("encode stdio response");
+        assert_eq!(encoded.last(), Some(&b'\n'));
+        assert_eq!(encoded.iter().filter(|byte| **byte == b'\n').count(), 1);
+
+        let decoded: RunCommandResponse =
+            serde_json::from_slice(&encoded[..encoded.len() - 1]).expect("decode response line");
+        assert_eq!(decoded, response);
+        assert!(matches!(
+            decoded.result,
+            RunCommandResult::Events { events, .. } if events == vec![stored]
+        ));
+    }
+
+    #[test]
+    fn event_query_defaults_to_zero_and_rejects_unknown_fields() {
+        let Query(default_query) = Query::<EventQuery>::try_from_uri(&Uri::from_static("/events"))
+            .expect("default cursor");
+        assert_eq!(default_query.after_sequence, 0);
+
+        let Query(query) =
+            Query::<EventQuery>::try_from_uri(&Uri::from_static("/events?after_sequence=41"))
+                .expect("explicit cursor");
+        assert_eq!(query.after_sequence, 41);
+        assert!(
+            Query::<EventQuery>::try_from_uri(&Uri::from_static("/events?since=41")).is_err(),
+            "legacy cursor aliases must fail closed"
+        );
+    }
+
+    #[test]
+    fn request_id_uses_the_explicit_header_or_a_canonical_fallback() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(request_id(&headers, "events", "run-1"), "http-events-run-1");
+        headers.insert(
+            "x-request-id",
+            HeaderValue::from_static("request-from-client"),
+        );
+        assert_eq!(
+            request_id(&headers, "events", "run-1"),
+            "request-from-client"
+        );
+    }
+
+    #[test]
+    fn bearer_auth_accepts_only_the_exact_configured_token() {
+        let mut headers = HeaderMap::new();
+        assert!(!has_valid_bearer_token(&headers, "secret"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Basic secret"));
+        assert!(!has_valid_bearer_token(&headers, "secret"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer wrong"));
+        assert!(!has_valid_bearer_token(&headers, "secret"));
+        headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
+        assert!(has_valid_bearer_token(&headers, "secret"));
     }
 
     #[tokio::test]
-    async fn http_app_routes_require_bearer_token_when_auth_enabled() {
-        let (app, _tmp) = app_with_config(Some("test-token"));
-        let response = app
+    async fn cors_allows_only_configured_origins_and_canonical_request_headers() {
+        let app = Router::new()
+            .route("/probe", get(|| async { StatusCode::NO_CONTENT }))
+            .layer(
+                cors_layer(&["https://client.example".to_owned()]).expect("configured CORS layer"),
+            );
+        let preflight = app
+            .clone()
             .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/app")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&AppRequest::ConfigGet {
-                            key: "api_key".to_string(),
-                        })
-                        .expect("request json"),
-                    ))
-                    .expect("request"),
+                HttpRequest::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/probe")
+                    .header(header::ORIGIN, "https://client.example")
+                    .header(header::ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(
+                        header::ACCESS_CONTROL_REQUEST_HEADERS,
+                        "authorization,content-type,x-request-id",
+                    )
+                    .body(Body::empty())
+                    .expect("preflight request"),
             )
             .await
-            .expect("response");
+            .expect("preflight response");
+        assert_eq!(preflight.status(), StatusCode::OK);
+        assert_eq!(
+            preflight.headers().get(header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&HeaderValue::from_static("https://client.example"))
+        );
+        let allowed_headers = preflight
+            .headers()
+            .get(header::ACCESS_CONTROL_ALLOW_HEADERS)
+            .and_then(|value| value.to_str().ok())
+            .expect("allowed headers");
+        assert!(allowed_headers.contains("x-request-id"));
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn http_config_get_redacts_sensitive_values_after_auth() {
-        let (app, _tmp) = app_with_config(Some("test-token"));
-        let response = app
+        let rejected = app
             .oneshot(
-                Request::builder()
-                    .method(Method::POST)
-                    .uri("/app")
-                    .header(header::AUTHORIZATION, "Bearer test-token")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::to_vec(&AppRequest::ConfigGet {
-                            key: "api_key".to_string(),
-                        })
-                        .expect("request json"),
-                    ))
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response_body_json(response).await;
-        assert_eq!(body["data"]["value"], "sk-d***cret");
-    }
-
-    #[tokio::test]
-    async fn cors_does_not_allow_arbitrary_origins() {
-        let (app, _tmp) = app_with_config(Some("test-token"));
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/healthz")
+                HttpRequest::builder()
+                    .uri("/probe")
                     .header(header::ORIGIN, "https://attacker.example")
                     .body(Body::empty())
-                    .expect("request"),
+                    .expect("cross-origin request"),
             )
             .await
-            .expect("response");
-
-        assert_eq!(response.status(), StatusCode::OK);
+            .expect("cross-origin response");
         assert!(
-            response
+            rejected
                 .headers()
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none()
@@ -1852,889 +1402,389 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn build_state_loads_permissions_into_runtime_policy() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(&config_path, "api_key = \"sk-deepseek-secret\"\n").expect("write config");
-        fs::write(
-            tmp.path().join("permissions.toml"),
-            r#"
-            [[rules]]
-            tool = "exec_shell"
-            command = "cargo test"
-            "#,
-        )
-        .expect("write permissions");
+    async fn body_limit_returns_a_typed_invalid_request_with_payload_too_large_status() {
+        async fn probe(payload: Result<Json<RunCommandEnvelope>, JsonRejection>) -> Response {
+            match payload {
+                Ok(_) => StatusCode::NO_CONTENT.into_response(),
+                Err(error) => json_rejection_response(error),
+            }
+        }
 
-        let state = build_state(Some(config_path), None).expect("state");
-        let runtime = state.runtime.read().await;
-        let decision = runtime
-            .exec_policy
-            .check(codewhale_execpolicy::ExecPolicyContext {
-                command: "cargo test --workspace",
-                cwd: "/workspace",
-                tool: Some("exec_shell"),
-                path: None,
-                ask_for_approval: codewhale_execpolicy::AskForApproval::UnlessTrusted,
-                sandbox_mode: Some("workspace-write"),
-            })
-            .expect("policy check");
-
-        assert!(decision.allow);
-        assert!(decision.requires_approval);
-        assert_eq!(
-            decision.matched_rule.as_deref(),
-            Some("tool=exec_shell command=cargo test")
-        );
+        let app = Router::new()
+            .route("/probe", post(probe))
+            .layer(DefaultBodyLimit::max(32));
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method(Method::POST)
+                    .uri("/probe")
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(r#"{{"payload":"{}"}}"#, "x".repeat(64))))
+                    .expect("oversized request"),
+            )
+            .await
+            .expect("body-limit response");
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let response = response_json(response).await;
+        assert!(matches!(
+            response.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::InvalidRequest,
+                    ..
+                }
+            }
+        ));
     }
 
     #[tokio::test]
-    async fn config_reload_refreshes_runtime_config_and_exec_policy_from_disk() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(
-            &config_path,
-            "api_key = \"sk-deepseek-secret\"\nmodel = \"deepseek-chat\"\n",
-        )
-        .expect("write config");
-        // No permissions.toml at startup → exec_policy starts empty.
-        let state = build_state(Some(config_path.clone()), None).expect("state");
+    async fn production_http_covers_every_run_command_and_typed_lifecycle_errors() {
+        let temp = tempfile::tempdir().expect("temporary app-server workspace");
+        let fixture = DeepSeekFixture::start().await;
+        let application = production_app(&temp.path().join("state.db"), &fixture, true);
+        let app = router(application, &test_options(None)).expect("canonical router");
 
-        // Sanity: initial runtime sees the on-disk model and has no rule.
-        {
-            let runtime = state.runtime.read().await;
-            assert_eq!(runtime.config.model.as_deref(), Some("deepseek-chat"));
-            let decision = runtime
-                .exec_policy
-                .check(codewhale_execpolicy::ExecPolicyContext {
-                    command: "cargo test",
-                    cwd: "/workspace",
-                    tool: Some("exec_shell"),
-                    path: None,
-                    ask_for_approval: codewhale_execpolicy::AskForApproval::UnlessTrusted,
-                    sandbox_mode: Some("workspace-write"),
-                })
-                .expect("policy check");
-            assert!(decision.matched_rule.is_none());
+        let start = envelope(RunCommand::Start(production_start(
+            temp.path(),
+            "HTTP 生命周期",
+        )));
+        let (status, response) = post_command(&app, "/v1/runs", &start, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let run = run_from_response(response);
+        fixture.wait_requests(1).await;
+
+        let (status, response) =
+            get_command(&app, &format!("/v1/runs/{}", run.run_id.0), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(run_from_response(response).run_id, run.run_id);
+
+        let (status, response) = get_command(
+            &app,
+            &format!("/v1/runs/{}/events?after_sequence=0", run.run_id.0),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!events_from_response(response).is_empty());
+
+        let (status, response) = get_command(&app, "/v1/runs/missing", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(matches!(
+            response.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::RunNotFound,
+                    ..
+                }
+            }
+        ));
+
+        let resume = envelope(RunCommand::Resume {
+            run_id: run.run_id.clone(),
+            expected_workspace: None,
+        });
+        let (status, response) = post_command(
+            &app,
+            &format!("/v1/runs/{}/resume", run.run_id.0),
+            &resume,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(matches!(
+            response.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::RunAlreadyRunning,
+                    ..
+                }
+            }
+        ));
+
+        let steer = envelope(RunCommand::Steer {
+            run_id: run.run_id.clone(),
+            content: "先检查边界".to_owned(),
+        });
+        let (status, response) = post_command(
+            &app,
+            &format!("/v1/runs/{}/steer", run.run_id.0),
+            &steer,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(matches!(response.result, RunCommandResult::Accepted { .. }));
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let (_, response) = get_command(
+                    &app,
+                    &format!("/v1/runs/{}/events?after_sequence=0", run.run_id.0),
+                    None,
+                )
+                .await;
+                if events_from_response(response)
+                    .iter()
+                    .any(|event| matches!(event.event, RuntimeEventKind::Steered { .. }))
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("steer becomes durable");
+
+        let interrupt = envelope(RunCommand::Interrupt {
+            run_id: run.run_id.clone(),
+        });
+        let (status, response) = post_command(
+            &app,
+            &format!("/v1/runs/{}/interrupt", run.run_id.0),
+            &interrupt,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(matches!(response.result, RunCommandResult::Accepted { .. }));
+        let interrupted = wait_http_terminal(&app, &run.run_id, None).await;
+        assert_eq!(interrupted.terminal, Some(TerminalState::Interrupted));
+
+        let cancel_terminal = envelope(RunCommand::Cancel {
+            run_id: run.run_id.clone(),
+        });
+        let (status, response) = post_command(
+            &app,
+            &format!("/v1/runs/{}/cancel", run.run_id.0),
+            &cancel_terminal,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(matches!(
+            response.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::RunTerminal,
+                    ..
+                }
+            }
+        ));
+
+        let second = envelope(RunCommand::Start(production_start(
+            temp.path(),
+            "HTTP 取消",
+        )));
+        let (_, response) = post_command(&app, "/v1/runs", &second, None).await;
+        let second = run_from_response(response);
+        fixture.wait_requests(2).await;
+        let cancel = envelope(RunCommand::Cancel {
+            run_id: second.run_id.clone(),
+        });
+        let (status, response) = post_command(
+            &app,
+            &format!("/v1/runs/{}/cancel", second.run_id.0),
+            &cancel,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        assert!(matches!(response.result, RunCommandResult::Accepted { .. }));
+        let cancelled = wait_http_terminal(&app, &second.run_id, None).await;
+        assert_eq!(cancelled.terminal, Some(TerminalState::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn terminal_replay_sse_reconnect_and_stdio_are_exact_and_need_no_key() {
+        let temp = tempfile::tempdir().expect("temporary app-server workspace");
+        let state_path = temp.path().join("state.db");
+        let fixture = DeepSeekFixture::start().await;
+        fixture.release_one();
+        let application = production_app(&state_path, &fixture, true);
+        let app = router(application.clone(), &test_options(None)).expect("canonical router");
+        let start = envelope(RunCommand::Start(production_start(
+            temp.path(),
+            "终态精确重放",
+        )));
+        let (_, response) = post_command(&app, "/v1/runs", &start, None).await;
+        let run = run_from_response(response);
+        fixture.wait_requests(1).await;
+        wait_http_terminal(&app, &run.run_id, None).await;
+        let (_, response) = get_command(
+            &app,
+            &format!("/v1/runs/{}/events?after_sequence=0", run.run_id.0),
+            None,
+        )
+        .await;
+        let frozen = events_from_response(response);
+        assert!(frozen.last().is_some_and(|event| event.event.is_terminal()));
+        assert_eq!(sse_events(&app, &run.run_id, 0).await, frozen);
+        let cursor = frozen
+            .get(1)
+            .unwrap_or_else(|| frozen.first().expect("run events"))
+            .sequence;
+        assert_eq!(
+            sse_events(&app, &run.run_id, cursor).await,
+            frozen
+                .iter()
+                .filter(|event| event.sequence > cursor)
+                .cloned()
+                .collect::<Vec<_>>()
+        );
+        drop(app);
+        drop(application);
+        drop(fixture);
+
+        let quiet_fixture = DeepSeekFixture::start().await;
+        let replay_application = production_app(&state_path, &quiet_fixture, false);
+        let replay_router = router(replay_application.clone(), &test_options(None))
+            .expect("credential-free replay router");
+        let (_, response) = get_command(
+            &replay_router,
+            &format!("/v1/runs/{}/events?after_sequence=0", run.run_id.0),
+            None,
+        )
+        .await;
+        assert_eq!(events_from_response(response), frozen);
+        let resume = envelope(RunCommand::Resume {
+            run_id: run.run_id.clone(),
+            expected_workspace: None,
+        });
+        let (status, response) = post_command(
+            &replay_router,
+            &format!("/v1/runs/{}/resume", run.run_id.0),
+            &resume,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(run_from_response(response).terminal.is_some());
+        assert_eq!(sse_events(&replay_router, &run.run_id, 0).await, frozen);
+
+        let stdio_commands = [
+            envelope(RunCommand::Get {
+                run_id: run.run_id.clone(),
+            }),
+            envelope(RunCommand::Events {
+                run_id: run.run_id.clone(),
+                after_sequence: 0,
+            }),
+            envelope(RunCommand::Resume {
+                run_id: run.run_id.clone(),
+                expected_workspace: None,
+            }),
+        ];
+        let mut input = stdio_commands
+            .iter()
+            .map(|command| serde_json::to_string(command).expect("stdio command"))
+            .collect::<Vec<_>>();
+        input.push(r#"{"jsonrpc":"2.0","id":1,"method":"prompt"}"#.to_owned());
+        let input = format!("{}\n", input.join("\n"));
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let (reader, writer) = tokio::io::split(server);
+        let stdio_app = replay_application.clone();
+        let task = tokio::spawn(async move {
+            serve_stdio(stdio_app, BufReader::new(reader), writer)
+                .await
+                .expect("serve canonical stdio")
+        });
+        client
+            .write_all(input.as_bytes())
+            .await
+            .expect("write stdio commands");
+        client.shutdown().await.expect("close stdio input");
+        let mut output = String::new();
+        client
+            .read_to_string(&mut output)
+            .await
+            .expect("read stdio responses");
+        task.await.expect("stdio task");
+        let responses = output
+            .lines()
+            .map(|line| serde_json::from_str::<RunCommandResponse>(line).expect("response line"))
+            .collect::<Vec<_>>();
+        assert_eq!(responses.len(), 4);
+        assert!(matches!(responses[0].result, RunCommandResult::Run { .. }));
+        assert!(matches!(
+            &responses[1].result,
+            RunCommandResult::Events { events, .. } if events == &frozen
+        ));
+        assert!(matches!(responses[2].result, RunCommandResult::Run { .. }));
+        assert!(matches!(
+            responses[3].result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::InvalidRequest,
+                    ..
+                }
+            }
+        ));
+        assert_eq!(quiet_fixture.requests.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn source_and_manifest_have_no_legacy_runtime_or_forbidden_dependencies() {
+        let source = include_str!("lib.rs");
+        let production = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source before tests");
+        for forbidden in [
+            "RuntimeBridge",
+            "handle_prompt",
+            "spawn_engine",
+            "RuntimeThreadStore",
+            "EngineEvent",
+            "monitor_turn",
+            "/v1/chat/completions",
+            "/thread",
+            "/prompt",
+            "/tool",
+            "/jobs",
+            "/mcp/startup",
+            "jsonrpc",
+        ] {
+            assert!(
+                !production.contains(forbidden),
+                "legacy app-server source survived: {forbidden}"
+            );
         }
-
-        // Edit both files on disk: new model + a permission rule.
-        fs::write(
-            &config_path,
-            "api_key = \"sk-deepseek-secret\"\nmodel = \"deepseek-reasoner\"\n",
-        )
-        .expect("rewrite config");
-        fs::write(
-            tmp.path().join("permissions.toml"),
-            r#"
-            [[rules]]
-            tool = "exec_shell"
-            command = "cargo test"
-            "#,
-        )
-        .expect("write permissions");
-
-        // ConfigReload must re-read both files and push them into the
-        // live Runtime without a restart.
-        let response =
-            process_app_request(&state, AppRequest::ConfigReload, AppTransport::Stdio).await;
-        assert!(response.ok, "reload should succeed");
-        assert_eq!(response.data["reloaded"], true);
-
-        // The shared config lock reflects the new model.
-        {
-            let cfg = state.config.read().await;
-            assert_eq!(cfg.model.as_deref(), Some("deepseek-reasoner"));
-        }
-        // The live Runtime reflects both the new model and the new rule.
-        {
-            let runtime = state.runtime.read().await;
-            assert_eq!(runtime.config.model.as_deref(), Some("deepseek-reasoner"));
-            let decision = runtime
-                .exec_policy
-                .check(codewhale_execpolicy::ExecPolicyContext {
-                    command: "cargo test --workspace",
-                    cwd: "/workspace",
-                    tool: Some("exec_shell"),
-                    path: None,
-                    ask_for_approval: codewhale_execpolicy::AskForApproval::UnlessTrusted,
-                    sandbox_mode: Some("workspace-write"),
-                })
-                .expect("policy check");
-            assert!(decision.allow);
-            assert!(decision.requires_approval);
-            assert_eq!(
-                decision.matched_rule.as_deref(),
-                Some("tool=exec_shell command=cargo test")
+        let manifest = include_str!("../Cargo.toml");
+        for forbidden in [
+            "codewhale-core",
+            "codewhale-tui",
+            "codewhale-state",
+            "codewhale-tools",
+            "codewhale-agent",
+            "codewhale-config",
+            "reqwest",
+        ] {
+            assert!(
+                !manifest.contains(forbidden),
+                "forbidden direct dependency survived: {forbidden}"
             );
         }
     }
 
-    #[tokio::test]
-    async fn config_set_propagates_to_runtime_config_without_touching_exec_policy() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(
-            &config_path,
-            "api_key = \"sk-deepseek-secret\"\nmodel = \"deepseek-chat\"\n",
-        )
-        .expect("write config");
-        let state = build_state(Some(config_path.clone()), None).expect("state");
-
-        // Set a new model via the API. Only config.toml is touched; no
-        // permissions.toml exists, so exec_policy must stay empty.
-        let response = process_app_request(
-            &state,
-            AppRequest::ConfigSet {
-                key: "model".to_string(),
-                value: "deepseek-reasoner".to_string(),
-            },
-            AppTransport::Stdio,
-        )
-        .await;
-        assert!(response.ok, "set should succeed");
-
-        // Live runtime sees the new model.
-        {
-            let runtime = state.runtime.read().await;
-            assert_eq!(runtime.config.model.as_deref(), Some("deepseek-reasoner"));
-            // exec_policy was empty at startup and must remain empty.
-            let decision = runtime
-                .exec_policy
-                .check(codewhale_execpolicy::ExecPolicyContext {
-                    command: "cargo test",
-                    cwd: "/workspace",
-                    tool: Some("exec_shell"),
-                    path: None,
-                    ask_for_approval: codewhale_execpolicy::AskForApproval::UnlessTrusted,
-                    sandbox_mode: Some("workspace-write"),
-                })
-                .expect("policy check");
-            assert!(decision.matched_rule.is_none());
-        }
-        // The on-disk file was persisted.
-        let persisted = fs::read_to_string(&config_path).expect("read config");
-        assert!(persisted.contains("deepseek-reasoner"));
-    }
-
-    #[tokio::test]
-    async fn config_unset_propagates_to_runtime_config() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(
-            &config_path,
-            "api_key = \"sk-deepseek-secret\"\nmodel = \"deepseek-chat\"\n",
-        )
-        .expect("write config");
-        let state = build_state(Some(config_path.clone()), None).expect("state");
-
-        // Sanity: runtime starts with the on-disk model.
-        {
-            let runtime = state.runtime.read().await;
-            assert_eq!(runtime.config.model.as_deref(), Some("deepseek-chat"));
-        }
-
-        // Unset the model via the API. This walks a separate code path
-        // from ConfigSet (unset_value + update_config), so it needs its
-        // own regression coverage.
-        let response = process_app_request(
-            &state,
-            AppRequest::ConfigUnset {
-                key: "model".to_string(),
-            },
-            AppTransport::Stdio,
-        )
-        .await;
-        assert!(response.ok, "unset should succeed");
-
-        // Live runtime sees the cleared model.
-        {
-            let runtime = state.runtime.read().await;
-            assert!(runtime.config.model.is_none());
-        }
-        // Shared config lock agrees.
-        {
-            let cfg = state.config.read().await;
-            assert!(cfg.model.is_none());
-        }
-        // The on-disk file no longer carries the model value.
-        let persisted = fs::read_to_string(&config_path).expect("read config");
-        assert!(!persisted.contains("deepseek-chat"));
-    }
-
-    #[tokio::test]
-    async fn config_reload_returns_error_when_disk_config_is_invalid() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(
-            &config_path,
-            "api_key = \"sk-deepseek-secret\"\nmodel = \"deepseek-chat\"\n",
-        )
-        .expect("write config");
-        let state = build_state(Some(config_path.clone()), None).expect("state");
-
-        // Corrupt the on-disk config so ConfigStore::load fails to parse.
-        fs::write(&config_path, "api_key = \"unterminated\n").expect("corrupt config");
-
-        let response =
-            process_app_request(&state, AppRequest::ConfigReload, AppTransport::Stdio).await;
-        assert!(!response.ok, "reload of corrupt config must fail");
-        let err = response.data["error"]
-            .as_str()
-            .expect("error message present")
-            .to_string();
-        assert!(
-            err.contains("failed to load config"),
-            "error should mention load failure, got: {err}"
-        );
-
-        // Live state is untouched: the early-return on load error must
-        // not have clobbered runtime.config or state.config.
-        {
-            let runtime = state.runtime.read().await;
-            assert_eq!(runtime.config.model.as_deref(), Some("deepseek-chat"));
-        }
-        {
-            let cfg = state.config.read().await;
-            assert_eq!(cfg.model.as_deref(), Some("deepseek-chat"));
-        }
-    }
-
-    async fn seed_test_bridge(state: &AppState) -> SharedRuntimeBridge {
-        let bridge = Arc::new(Mutex::new(RuntimeBridge::from_base_url_for_test(
-            "http://127.0.0.1:9".to_string(),
-        )));
-        *state.stdio_bridge.lock().await = Some(bridge.clone());
-        bridge
-    }
-
-    #[tokio::test]
-    async fn config_set_invalidates_cached_stdio_bridge() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(&config_path, "model = \"deepseek-chat\"\n").expect("write config");
-        let state = build_state(Some(config_path), None).expect("state");
-        seed_test_bridge(&state).await;
-
-        let response = process_app_request(
-            &state,
-            AppRequest::ConfigSet {
-                key: "model".to_string(),
-                value: "deepseek-reasoner".to_string(),
-            },
-            AppTransport::Stdio,
-        )
-        .await;
-        assert!(response.ok, "set should succeed");
-
-        // The cached bridge child must be dropped so the next stdio request
-        // spawns a fresh runtime that reads the persisted config.
-        assert!(state.stdio_bridge.lock().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn config_reload_invalidates_cached_stdio_bridge() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(&config_path, "model = \"deepseek-chat\"\n").expect("write config");
-        let state = build_state(Some(config_path), None).expect("state");
-        seed_test_bridge(&state).await;
-
-        let response =
-            process_app_request(&state, AppRequest::ConfigReload, AppTransport::Stdio).await;
-        assert!(response.ok, "reload should succeed");
-
-        assert!(state.stdio_bridge.lock().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn stdio_bridge_invalidation_not_blocked_by_in_flight_turn() {
-        let (state, _tmp) = capability_test_state();
-        let bridge = seed_test_bridge(&state).await;
-
-        // Simulate a long streaming turn holding the inner bridge lock.
-        let _in_flight = bridge.lock().await;
-
-        // Invalidation only touches the cache slot, so it must complete
-        // without waiting for the in-flight turn to release the bridge.
-        tokio::time::timeout(Duration::from_secs(1), invalidate_stdio_bridge(&state))
-            .await
-            .expect("invalidation must not wait on bridge traffic");
-        assert!(state.stdio_bridge.lock().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn runtime_read_paths_run_concurrently() {
-        // Tool/status/mcp handlers take read guards; two must coexist so a
-        // long-running tool call cannot serialize unrelated requests. With
-        // the old `Mutex<Runtime>` this pattern would deadlock.
-        let (state, _tmp) = capability_test_state();
-        let first = state.runtime.read().await;
-        let second = state.runtime.read().await;
-        assert!(first.app_status().ok);
-        assert!(second.app_status().ok);
-    }
-
-    #[tokio::test]
-    async fn health_probes_advertise_legacy_deepseek_service_name() {
-        // External probes still key off the DeepSeek-era service name; both
-        // transports must serve it from the single compat shim.
-        let (app, _tmp) = app_with_config(None);
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method(Method::GET)
-                    .uri("/healthz")
-                    .body(Body::empty())
-                    .expect("request"),
-            )
-            .await
-            .expect("response");
-        let body = response_body_json(response).await;
-        assert_eq!(body["service"], legacy_deepseek_compat::SERVICE_NAME);
-        assert_eq!(body["service"], "deepseek-app-server");
-
-        let (state, _tmp) = capability_test_state();
-        let stdio = dispatch_stdio_request(&state, "healthz", json!({}))
-            .await
-            .expect("stdio healthz");
-        assert_eq!(
-            stdio.result["service"],
-            legacy_deepseek_compat::SERVICE_NAME
-        );
-    }
-
     #[test]
-    fn non_loopback_bind_without_auth_fails_fast() {
+    fn options_fail_closed_and_debug_redacts_the_token() {
+        let options = AppServerOptions::default();
+        assert!(validate_options(&options).is_err());
+
         let options = AppServerOptions {
-            listen: "0.0.0.0:8787".parse().expect("socket addr"),
-            config_path: None,
-            auth_token: None,
-            insecure_no_auth: false,
-            cors_origins: Vec::new(),
+            auth_token: Some("secret".to_owned()),
+            ..options
         };
-
-        let err =
-            resolve_auth_token(&options).expect_err("non-loopback generated auth should fail");
-        assert!(err.to_string().contains("without explicit auth token"));
-    }
-
-    #[tokio::test]
-    async fn stdio_transport_redacts_config_get_secrets() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(&config_path, "").expect("write config");
-        let state = build_state(Some(config_path), None).expect("state");
-        {
-            let mut cfg = state.config.write().await;
-            cfg.api_key = Some("sk-deepseek-secret".to_string());
-        }
-
-        let response = process_app_request(
-            &state,
-            AppRequest::ConfigGet {
-                key: "api_key".to_string(),
-            },
-            AppTransport::Stdio,
-        )
-        .await;
-
-        assert_eq!(response.data["value"], "sk-d***cret");
-    }
-
-    #[tokio::test]
-    async fn stdio_thread_goal_methods_round_trip_persisted_goal() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(&config_path, "").expect("write config");
-        let state = build_state(Some(config_path), None).expect("state");
-
-        let capabilities = dispatch_stdio_request(&state, "thread/capabilities", json!({}))
-            .await
-            .expect("thread capabilities");
-        assert!(
-            capabilities.result["methods"]
-                .as_array()
-                .expect("methods")
-                .iter()
-                .any(|method| method == "thread/goal/set")
-        );
-
-        let started = dispatch_stdio_request(&state, "thread/start", json!({}))
-            .await
-            .expect("start thread");
-        let thread_id = started.result["thread_id"]
-            .as_str()
-            .expect("thread id")
-            .to_string();
-
-        let set = dispatch_stdio_request(
-            &state,
-            "thread/goal/set",
-            json!({
-                "thread_id": thread_id,
-                "objective": "Release 0.8.59",
-                "token_budget": 59000
-            }),
-        )
-        .await
-        .expect("set goal");
-        assert_eq!(set.result["status"], "ok");
-        assert_eq!(set.result["goal"]["objective"], "Release 0.8.59");
-        assert_eq!(set.result["goal"]["status"], "active");
-
-        let got = dispatch_stdio_request(
-            &state,
-            "thread/goal/get",
-            json!({
-                "thread_id": thread_id
-            }),
-        )
-        .await
-        .expect("get goal");
-        assert_eq!(got.result["goal"]["token_budget"], 59000);
-
-        let cleared = dispatch_stdio_request(
-            &state,
-            "thread/goal/clear",
-            json!({
-                "thread_id": thread_id
-            }),
-        )
-        .await
-        .expect("clear goal");
-        assert_eq!(cleared.result["status"], "cleared");
-        assert_eq!(cleared.result["data"]["cleared"], true);
-    }
-
-    fn sse_frame(event: &str, payload: Value) -> String {
-        format!("event: {event}\ndata: {payload}\n\n")
-    }
-
-    #[tokio::test]
-    async fn stdio_runtime_bridge_streams_response_delta_events() {
-        async fn create_turn(AxumPath(thread_id): AxumPath<String>) -> Json<Value> {
-            Json(json!({
-                "thread": { "id": thread_id },
-                "turn": { "id": "turn_test" },
-            }))
-        }
-
-        async fn thread_events(
-            AxumPath(thread_id): AxumPath<String>,
-            Query(query): Query<HashMap<String, String>>,
-        ) -> ([(header::HeaderName, &'static str); 1], String) {
-            assert_eq!(thread_id, "thr_test");
-            assert_eq!(query.get("since_seq").map(String::as_str), Some("0"));
-
-            let body = [
-                sse_frame(
-                    "item.delta",
-                    json!({
-                        "seq": 1,
-                        "turn_id": "turn_test",
-                        "payload": {
-                            "kind": "agent_message",
-                            "delta": "hello"
-                        }
-                    }),
-                ),
-                sse_frame(
-                    "turn.completed",
-                    json!({
-                        "seq": 2,
-                        "turn_id": "turn_test",
-                        "payload": {
-                            "turn": {
-                                "status": "completed"
-                            }
-                        }
-                    }),
-                ),
-            ]
-            .concat();
-
-            ([(header::CONTENT_TYPE, "text/event-stream")], body)
-        }
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test listener");
-        let addr = listener.local_addr().expect("listener addr");
-        let app = Router::new()
-            .route("/v1/threads/{thread_id}/turns", post(create_turn))
-            .route("/v1/threads/{thread_id}/events", get(thread_events));
-
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("serve test runtime");
-        });
-
-        let mut bridge = RuntimeBridge::from_base_url_for_test(format!("http://{addr}"));
-        let (mut reader, mut writer) = tokio::io::duplex(4096);
-
-        let result = bridge
-            .message_thread("thr_test", "hello", &mut writer)
-            .await
-            .expect("message_thread should succeed");
-        drop(writer);
-
-        let mut stdout = Vec::new();
-        reader
-            .read_to_end(&mut stdout)
-            .await
-            .expect("read stdio output");
-        server.abort();
-        let _ = server.await;
-
-        let lines: Vec<Value> = String::from_utf8(stdout)
-            .expect("utf8 output")
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("json line"))
-            .collect();
-
-        assert_eq!(
-            result.get("status").and_then(Value::as_str),
-            Some("accepted")
-        );
-        assert_eq!(
-            result.pointer("/data/turn_id").and_then(Value::as_str),
-            Some("turn_test")
-        );
-        assert_eq!(bridge.last_seq_by_thread.get("thr_test"), Some(&2));
-
-        let event_types: Vec<&str> = lines
-            .iter()
-            .map(|line| {
-                line.get("type")
-                    .and_then(Value::as_str)
-                    .expect("event type")
-            })
-            .collect();
-        assert_eq!(
-            event_types,
-            vec!["response_start", "response_delta", "response_end"]
-        );
-        assert_eq!(lines[1]["delta"], "hello");
-    }
-
-    #[tokio::test]
-    async fn stdio_runtime_bridge_applies_thread_start_hints() {
-        async fn create_thread(Json(body): Json<Value>) -> Json<Value> {
-            assert_eq!(body["model"], "deepseek-v4");
-            assert_eq!(body["workspace"], "/tmp/codewhale-stdio");
-            Json(json!({
-                "id": "thr_runtime",
-                "model": body["model"].clone(),
-                "workspace": body["workspace"].clone(),
-            }))
-        }
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind test listener");
-        let addr = listener.local_addr().expect("listener addr");
-        let app = Router::new().route("/v1/threads", post(create_thread));
-
-        let server = tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("serve test runtime");
-        });
-
-        let mut bridge = RuntimeBridge::from_base_url_for_test(format!("http://{addr}"));
-        let runtime_id = bridge
-            .ensure_runtime_thread(
-                "legacy_thread",
-                Some(RuntimeThreadHint {
-                    model: Some("deepseek-v4".to_string()),
-                    workspace: Some(PathBuf::from("/tmp/codewhale-stdio")),
-                }),
-            )
-            .await
-            .expect("runtime thread");
-        server.abort();
-        let _ = server.await;
-
-        assert_eq!(runtime_id, "thr_runtime");
-        assert_eq!(
-            bridge.thread_map.get("legacy_thread").map(String::as_str),
-            Some("thr_runtime")
-        );
-    }
-
-    // ── capability drift guard ─────────────────────────────────────────
-    //
-    // The stdio `capabilities` method is the benchmark/SDK contract: external
-    // harnesses probe it (without spending model tokens) to learn what the
-    // app-server can do. Pin the advertised method set so any change forces a
-    // deliberate update here, in the dispatcher, and in docs/architecture/RUNTIME_API.md.
-
-    /// Methods advertised by the top-level `capabilities` probe, in order.
-    const EXPECTED_CAPABILITY_METHODS: &[&str] = &[
-        "healthz",
-        "thread/capabilities",
-        "thread/request",
-        "thread/create",
-        "thread/start",
-        "thread/resume",
-        "thread/fork",
-        "thread/list",
-        "thread/read",
-        "thread/set_name",
-        "thread/goal/set",
-        "thread/goal/get",
-        "thread/goal/clear",
-        "thread/archive",
-        "thread/unarchive",
-        "thread/message",
-        "app/capabilities",
-        "app/request",
-        "app/config/get",
-        "app/config/set",
-        "app/config/unset",
-        "app/config/list",
-        "app/config/reload",
-        "app/models",
-        "app/thread_loaded_list",
-        "prompt/capabilities",
-        "prompt/request",
-        "prompt/run",
-        "shutdown",
-    ];
-
-    fn capability_test_state() -> (AppState, tempfile::TempDir) {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(&config_path, "").expect("write config");
-        let state = build_state(Some(config_path), None).expect("state");
-        (state, tmp)
-    }
-
-    #[tokio::test]
-    async fn capabilities_method_set_is_stable() {
-        let (state, _tmp) = capability_test_state();
-        let caps = dispatch_stdio_request(&state, "capabilities", json!({}))
-            .await
-            .expect("capabilities dispatch");
-        let methods: Vec<String> = caps.result["methods"]
-            .as_array()
-            .expect("methods array")
-            .iter()
-            .map(|m| m.as_str().expect("method string").to_string())
-            .collect();
-        assert_eq!(
-            methods, EXPECTED_CAPABILITY_METHODS,
-            "app-server stdio capability set drifted; update the dispatcher, this \
-             snapshot, and docs/architecture/RUNTIME_API.md together"
-        );
-    }
-
-    #[tokio::test]
-    async fn every_advertised_capability_is_dispatchable() {
-        let (state, _tmp) = capability_test_state();
-        // Empty params: methods may fail validation (-32602), but none may report
-        // method-not-found (-32601). Required fields (e.g. PromptRequest.prompt)
-        // make the prompt routes fail at parse time, so no model tokens are spent.
-        for method in EXPECTED_CAPABILITY_METHODS {
-            if let Err(err) = dispatch_stdio_request(&state, method, json!({})).await {
-                assert_ne!(
-                    err.code,
-                    JsonRpcError::method_not_found(method).code,
-                    "advertised capability `{method}` is not dispatchable"
-                );
-            }
-        }
-    }
-
-    // ── resolve_auth_token ─────────────────────────────────────────────
-
-    #[test]
-    fn auth_token_empty_string_fails() {
-        let options = AppServerOptions {
-            listen: "127.0.0.1:0".parse().expect("addr"),
-            config_path: None,
-            auth_token: Some("  ".to_string()),
-            insecure_no_auth: false,
-            cors_origins: Vec::new(),
-        };
-        let err = resolve_auth_token(&options).expect_err("empty token should fail");
-        assert!(err.to_string().contains("cannot be empty"));
-    }
-
-    #[test]
-    fn auth_token_generated_when_none_provided() {
-        let options = AppServerOptions {
-            listen: "127.0.0.1:0".parse().expect("addr"),
-            config_path: None,
-            auth_token: None,
-            insecure_no_auth: false,
-            cors_origins: Vec::new(),
-        };
-        let token = resolve_auth_token(&options).unwrap();
-        assert!(token.is_some());
-        assert!(token.unwrap().starts_with("cwapp_"));
-    }
-
-    #[test]
-    fn generated_auth_status_does_not_render_token() {
-        let rendered = app_server_auth_status_lines(false).join("\n");
-
-        assert!(!rendered.contains("Authorization: Bearer"));
-        assert!(rendered.contains("not printed"));
-        assert!(rendered.contains("CODEWHALE_APP_SERVER_TOKEN"));
-    }
-
-    #[test]
-    fn auth_token_explicit_is_preserved() {
-        let options = AppServerOptions {
-            listen: "127.0.0.1:0".parse().expect("addr"),
-            config_path: None,
-            auth_token: Some("my-secret".to_string()),
-            insecure_no_auth: false,
-            cors_origins: Vec::new(),
-        };
-        let token = resolve_auth_token(&options).unwrap();
-        assert_eq!(token.as_deref(), Some("my-secret"));
-    }
-
-    #[test]
-    fn auth_token_explicit_allows_non_loopback_bind() {
-        let options = AppServerOptions {
-            listen: "0.0.0.0:8787".parse().expect("socket addr"),
-            config_path: None,
-            auth_token: Some("my-secret".to_string()),
-            insecure_no_auth: false,
-            cors_origins: Vec::new(),
-        };
-        let token = resolve_auth_token(&options).unwrap();
-        assert_eq!(token.as_deref(), Some("my-secret"));
-    }
-
-    #[test]
-    fn insecure_no_auth_on_loopback_returns_none() {
-        let options = AppServerOptions {
-            listen: "127.0.0.1:0".parse().expect("addr"),
-            config_path: None,
-            auth_token: None,
-            insecure_no_auth: true,
-            cors_origins: Vec::new(),
-        };
-        let token = resolve_auth_token(&options).unwrap();
-        assert!(token.is_none());
-    }
-
-    #[test]
-    fn insecure_no_auth_on_non_loopback_fails_fast() {
-        let options = AppServerOptions {
-            listen: "0.0.0.0:8787".parse().expect("socket addr"),
-            config_path: None,
-            auth_token: None,
-            insecure_no_auth: true,
-            cors_origins: Vec::new(),
-        };
-
-        let err = resolve_auth_token(&options).expect_err("non-loopback unauth should fail");
-        assert!(
-            err.to_string()
-                .contains("refusing unauthenticated app-server bind")
-        );
-    }
-
-    // ── cors_layer ─────────────────────────────────────────────────────
-
-    #[test]
-    fn cors_layer_includes_default_origins() {
-        let layer = cors_layer(&[]);
-        // Just verify it doesn't panic and creates successfully
-        let _ = layer;
-    }
-
-    #[test]
-    fn cors_layer_adds_extra_origins() {
-        let extras = vec!["https://example.com".to_string()];
-        let layer = cors_layer(&extras);
-        let _ = layer;
-    }
-
-    #[test]
-    fn cors_layer_skips_empty_origins() {
-        let extras = vec!["".to_string(), "  ".to_string()];
-        let layer = cors_layer(&extras);
-        let _ = layer;
-    }
-
-    // ── JsonRpc helpers ────────────────────────────────────────────────
-
-    #[test]
-    fn params_or_object_returns_object_for_null() {
-        let result = params_or_object(Value::Null);
-        assert_eq!(result, json!({}));
-    }
-
-    #[test]
-    fn params_or_object_passthrough_for_non_null() {
-        let input = json!({"key": "value"});
-        let result = params_or_object(input.clone());
-        assert_eq!(result, input);
-    }
-
-    #[test]
-    fn jsonrpc_result_format() {
-        let result = jsonrpc_result(Some(json!(1)), json!({"ok": true}));
-        assert_eq!(result["jsonrpc"], "2.0");
-        assert_eq!(result["id"], 1);
-        assert_eq!(result["result"]["ok"], true);
-    }
-
-    #[test]
-    fn jsonrpc_result_null_id() {
-        let result = jsonrpc_result(None, json!(null));
-        assert_eq!(result["id"], Value::Null);
-    }
-
-    #[test]
-    fn jsonrpc_error_format() {
-        let err = jsonrpc_error(Some(json!(2)), JsonRpcError::internal("oops"));
-        assert_eq!(err["jsonrpc"], "2.0");
-        assert_eq!(err["id"], 2);
-        assert_eq!(err["error"]["code"], -32603);
-        assert_eq!(err["error"]["message"], "oops");
-    }
-
-    #[test]
-    fn jsonrpc_error_codes() {
-        assert_eq!(JsonRpcError::parse_error("").code, -32700);
-        assert_eq!(JsonRpcError::invalid_request("").code, -32600);
-        assert_eq!(JsonRpcError::method_not_found("x").code, -32601);
-        assert_eq!(JsonRpcError::invalid_params("").code, -32602);
-        assert_eq!(JsonRpcError::internal("").code, -32603);
-    }
-
-    // ── AppServerOptions ───────────────────────────────────────────────
-
-    #[test]
-    fn app_server_options_debug_does_not_leak_token() {
-        let options = AppServerOptions {
-            listen: "127.0.0.1:8080".parse().expect("addr"),
-            config_path: None,
-            auth_token: Some("secret-token".to_string()),
-            insecure_no_auth: false,
-            cors_origins: vec!["https://example.com".to_string()],
-        };
+        assert!(validate_options(&options).is_ok());
         let debug = format!("{options:?}");
-        assert!(!debug.contains("secret-token"));
+        assert!(!debug.contains("secret"));
         assert!(debug.contains("<redacted>"));
-        assert!(debug.contains("8080"));
-    }
 
-    // ── Default CORS origins ──────────────────────────────────────────
-
-    #[test]
-    fn default_cors_origins_include_common_dev_ports() {
-        assert!(DEFAULT_CORS_ORIGINS.contains(&"http://localhost:3000"));
-        assert!(DEFAULT_CORS_ORIGINS.contains(&"http://localhost:5173"));
-        assert!(DEFAULT_CORS_ORIGINS.contains(&"tauri://localhost"));
+        let insecure_non_loopback = AppServerOptions {
+            listen: SocketAddr::from(([0, 0, 0, 0], 8787)),
+            auth_token: None,
+            insecure_no_auth: true,
+            ..AppServerOptions::default()
+        };
+        assert!(validate_options(&insecure_non_loopback).is_err());
     }
 }

@@ -92,7 +92,6 @@ pub mod rlm;
 mod route_billing;
 mod route_budget;
 mod route_runtime;
-mod runtime_api;
 mod runtime_log;
 mod runtime_threads;
 mod sandbox_backend;
@@ -1133,84 +1132,14 @@ struct ApplyArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+#[group(required = true, multiple = false)]
 struct ServeArgs {
     /// Start MCP server over stdio
     #[arg(long)]
     mcp: bool,
-    /// Start runtime HTTP/SSE API server
-    #[arg(long)]
-    http: bool,
-    /// Start runtime HTTP/SSE API server with the built-in mobile control page
-    #[arg(long)]
-    mobile: bool,
-    /// Show a QR code for the mobile URL in the terminal (requires --mobile)
-    #[arg(long, requires = "mobile")]
-    qr: bool,
     /// Start ACP server over stdio for editor clients such as Zed
     #[arg(long)]
     acp: bool,
-    /// Bind host for HTTP server (default localhost; --mobile defaults to 0.0.0.0)
-    #[arg(long)]
-    host: Option<String>,
-    /// Bind port for HTTP server
-    #[arg(long, default_value_t = 7878)]
-    port: u16,
-    /// Background task worker count (1-8)
-    #[arg(long, default_value_t = 2)]
-    workers: usize,
-    /// Additional CORS origin to allow (repeatable). Stacks on top of the
-    /// built-in defaults (localhost:3000, localhost:1420, tauri://localhost).
-    /// Also reads `CODEWHALE_CORS_ORIGINS` (comma-separated), then
-    /// `DEEPSEEK_CORS_ORIGINS` as an alias, and `[runtime_api] cors_origins`
-    /// from `config.toml`. Whalescale#255.
-    #[arg(long = "cors-origin", value_name = "URL")]
-    cors_origin: Vec<String>,
-    /// Require this bearer token for `/v1/*` runtime API routes. Also reads
-    /// `CODEWHALE_RUNTIME_TOKEN` when omitted, then `DEEPSEEK_RUNTIME_TOKEN`
-    /// as an alias.
-    #[arg(long = "auth-token", value_name = "TOKEN")]
-    auth_token: Option<String>,
-    /// Disable runtime API auth when no token is configured. Only use on a trusted loopback.
-    #[arg(long = "insecure")]
-    insecure_no_auth: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ServeBindHost {
-    host: String,
-    mobile_rebound_to_lan: bool,
-}
-
-fn resolve_serve_bind_host(mobile: bool, host: Option<String>) -> ServeBindHost {
-    match (mobile, host) {
-        (true, None) => ServeBindHost {
-            host: "0.0.0.0".to_string(),
-            mobile_rebound_to_lan: true,
-        },
-        (_, Some(host)) => ServeBindHost {
-            host,
-            mobile_rebound_to_lan: false,
-        },
-        (false, None) => ServeBindHost {
-            host: "127.0.0.1".to_string(),
-            mobile_rebound_to_lan: false,
-        },
-    }
-}
-
-fn validate_serve_mode_selection(mcp: bool, http: bool, mobile: bool, acp: bool) -> Result<bool> {
-    if http && mobile {
-        bail!("--http and --mobile are mutually exclusive; choose one");
-    }
-    let http_selected = http || mobile;
-    let selected_modes = [mcp, http_selected, acp]
-        .into_iter()
-        .filter(|selected| *selected)
-        .count();
-    if selected_modes != 1 {
-        bail!("Choose exactly one server mode: --mcp, --http/--mobile, or --acp");
-    }
-    Ok(http_selected)
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -1297,10 +1226,10 @@ enum McpCommand {
     /// Register this CodeWhale binary as a local MCP stdio server.
     ///
     /// This adds a config entry that runs `codewhale serve --mcp` (stdio protocol).
-    /// For the HTTP/SSE runtime API, use `codewhale serve --http` directly instead.
+    /// For the canonical HTTP/SSE Run API, use `codewhale app-server` instead.
     #[command(
         name = "add-self",
-        long_about = "Register this CodeWhale binary as a local MCP stdio server.\n\nAdds a config entry to ~/.codewhale/mcp.json that launches `codewhale serve --mcp`\nvia the stdio transport. Other CodeWhale sessions (or any MCP client) can then\ndiscover and call tools exposed by this server.\n\nUse `codewhale serve --http` instead if you need the HTTP/SSE runtime API."
+        long_about = "Register this CodeWhale binary as a local MCP stdio server.\n\nAdds a config entry to ~/.codewhale/mcp.json that launches `codewhale serve --mcp`\nvia the stdio transport. Other CodeWhale sessions (or any MCP client) can then\ndiscover and call tools exposed by this server.\n\nUse `codewhale app-server` instead if you need the canonical HTTP/SSE Run API."
     )]
     AddSelf {
         /// Server name in mcp.json (default: "codewhale")
@@ -1674,41 +1603,12 @@ async fn run_async_main() -> Result<()> {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
-                let http_selected =
-                    validate_serve_mode_selection(args.mcp, args.http, args.mobile, args.acp)?;
                 if args.mcp {
                     tokio::task::block_in_place(|| mcp_server::run_mcp_server(workspace))
-                } else if http_selected {
-                    let config = load_config_from_cli(&cli)?;
-                    let cors_origins = resolve_cors_origins(&config, &args.cors_origin);
-                    let bind_host = resolve_serve_bind_host(args.mobile, args.host);
-                    if bind_host.mobile_rebound_to_lan {
-                        println!(
-                            "WARNING: --mobile is binding to 0.0.0.0 so LAN devices can reach the mobile control page. Use --host 127.0.0.1 to keep mobile loopback-only."
-                        );
-                    }
-                    runtime_api::run_http_server(
-                        config,
-                        workspace,
-                        runtime_api::RuntimeApiOptions {
-                            host: bind_host.host,
-                            port: args.port,
-                            workers: args.workers.clamp(1, 8),
-                            cors_origins,
-                            auth_token: args.auth_token,
-                            insecure_no_auth: args.insecure_no_auth,
-                            mobile: args.mobile,
-                            show_qr: args.qr,
-                            config_path: cli.config.clone(),
-                        },
-                    )
-                    .await
-                } else if args.acp {
+                } else {
                     let config = load_config_from_cli(&cli)?;
                     let model = config.default_model();
                     acp_server::run_acp_server(config, model, workspace).await
-                } else {
-                    unreachable!("server mode count checked above")
                 }
             }
             Commands::Resume { session_id, last } => {
@@ -2495,49 +2395,6 @@ fn init_plugins_dir(
     let example_status = write_template_file(&example_path, plugin_example_template(), force)?;
 
     Ok((readme_path, example_path, readme_status, example_status))
-}
-
-/// Resolve the user-supplied CORS origins for `codewhale serve --http`.
-///
-/// Sources, in priority order (later sources extend earlier ones):
-/// 1. `--cors-origin URL` flags (repeatable)
-/// 2. `CODEWHALE_CORS_ORIGINS` env var (comma-separated),
-///    then `DEEPSEEK_CORS_ORIGINS` as an alias
-/// 3. `[runtime_api] cors_origins = [...]` in `config.toml`
-///
-/// The runtime API always allows the built-in dev defaults
-/// (localhost:3000, localhost:1420, tauri://localhost). User entries are
-/// appended on top — empty strings are skipped, and duplicates are deduped
-/// while preserving first-seen order. Whalescale#255 / #561.
-fn resolve_cors_origins(config: &Config, flag_origins: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    let mut push = |raw: &str| {
-        let trimmed = raw.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-        if !out.iter().any(|existing| existing == trimmed) {
-            out.push(trimmed.to_string());
-        }
-    };
-    for o in flag_origins {
-        push(o);
-    }
-    if let Ok(env_value) =
-        std::env::var("CODEWHALE_CORS_ORIGINS").or_else(|_| std::env::var("DEEPSEEK_CORS_ORIGINS"))
-    {
-        for piece in env_value.split(',') {
-            push(piece);
-        }
-    }
-    if let Some(rt) = &config.runtime_api
-        && let Some(list) = &rt.cors_origins
-    {
-        for o in list {
-            push(o);
-        }
-    }
-    out
 }
 
 fn deepseek_home_dir() -> PathBuf {
@@ -6612,7 +6469,7 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
             );
             println!();
             println!("Tip: Use `codewhale mcp validate` to test the connection.");
-            println!("     Use `codewhale serve --http` for the HTTP/SSE runtime API instead.");
+            println!("     Use `codewhale app-server` for the canonical HTTP/SSE Run API instead.");
             Ok(())
         }
     }
@@ -8427,53 +8284,6 @@ mod serve_bind_host_tests {
         assert!(
             err.to_string()
                 .contains("--http and --mobile are mutually exclusive")
-        );
-    }
-}
-
-#[cfg(test)]
-mod doctor_legacy_state_tests {
-    use super::*;
-    use std::env;
-    use std::ffi::OsString;
-    use std::fs;
-    use tempfile::TempDir;
-
-    struct EnvVarRestore {
-        key: &'static str,
-        previous: Option<OsString>,
-    }
-
-    impl EnvVarRestore {
-        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
-            let previous = env::var_os(key);
-            unsafe {
-                env::set_var(key, value);
-            }
-            Self { key, previous }
-        }
-    }
-
-    impl Drop for EnvVarRestore {
-        fn drop(&mut self) {
-            unsafe {
-                match &self.previous {
-                    Some(value) => env::set_var(self.key, value),
-                    None => env::remove_var(self.key),
-                }
-            }
-        }
-    }
-
-    fn roots(tmp: &TempDir) -> (PathBuf, PathBuf) {
-        (tmp.path().join(".codewhale"), tmp.path().join(".deepseek"))
-    }
-
-    fn entry<'a>(report: &'a [DoctorLegacyStateEntry], name: &str) -> &'a DoctorLegacyStateEntry {
-        report
-            .iter()
-            .find(|entry| entry.name == name)
-            .expect("legacy state entry should exist")
     }
 
     #[test]
