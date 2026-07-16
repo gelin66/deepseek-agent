@@ -3,14 +3,11 @@
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
 - 状态：执行中
-- 当前阶段：M4-A `ToolOutcome + SQLite RunStore + crash/resume` 已严格完成；被测代码提交为
-  `0a5b76a8627fe8ae108a0a7688c0dd39ce5601a3`。M4-B 已启动依赖收敛：官方 DeepSeek 的
-  request planner、HTTP/SSE transport、类型化协议错误、物理请求预算、usage ledger 与精确
-  first-party pricing、canonical `ModelPort` 与精确 V4 capability table 已进入
-  `crates/deepseek`；app-server 纵切仍待完成。M1 的导入基线
-  A/B 与 M2 的完整官方 surface
-  canary 仍是独立证据债务
-- 上次更新：2026-07-16
+- 当前阶段：M4-B 本地 API 单一 Runtime/RunStore 纵向切换已严格完成；被测代码提交为
+  `a534a824670b60c807c5abf399ea8674d4beb527`。`exec` 与 app-server 已共用唯一
+  `AgentApplication`，旧 core/bridge/私有 API 状态路径已删除；下一垂直切片是 M4-C 交互
+  TUI 迁移。M1 的导入基线 A/B 与 M2 的完整官方 surface canary 仍是独立证据债务
+- 上次更新：2026-07-17
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -20,9 +17,10 @@
 
 - 导入基线：CodeWhale `352e86a611fdf3cd8bd27c36d24d482c06a71117`。
 - 基线版本：workspace `0.8.68`。
-- `codewhale exec` 已使用 `crates/runtime::AgentRuntime`；TUI 与 app-server 尚未迁移，
-  它们的旧生产 loop 仍位于 `crates/tui`。
-- `crates/core` 尚不是生产模型执行内核。
+- `codewhale exec` 与 app-server 已共用 `crates/app::AgentApplication`、唯一
+  `crates/runtime::AgentRuntime`、固定工具目录和 SQLite `RunStore`；交互 TUI 尚未迁移，
+  其旧生产 loop 仍位于 `crates/tui`。
+- `crates/core` 已删除；app-server 不再依赖 `core/tui`，也不启动 TUI 子进程。
 - 新 Runtime 内的根/子 Agent 使用同一实现；未迁移的旧 TUI 子 Agent 仍有不同循环。
 - M1-A 离线契约证据与生产工具目录测量已经完成。
 - M1-B 官方 DeepSeek live canary 已通过 5/5，但仅属于协议兼容证据。
@@ -30,9 +28,9 @@
   `exec` acceptance 22/22，TUI crate 6,888 passed、3 ignored，完整 workspace 回归 0 失败。
 - 已完成冻结的 pre-M3 候选与 M3 候选之间的真实单 Agent 编码 A/B；这证明 M3 整体切片
   在该任务上成功率不退化且 Token/成本下降，但不是导入基线 A/B，不能据此关闭 M1。
-- M2-A 已让官方 DeepSeek `RequestPlan` 接入现有 production Client；planner 与物理请求账本
-  已有独立 `crates/deepseek` owner，旧 TUI request-budget owner 已删除；
-  当前候选的 credentialed official live canary 尚未重跑，不能把本地门禁写成官方 API 验收通过。
+- M2-A 已让官方 DeepSeek `RequestPlan` 接入 production Client；planner 与物理请求账本已有
+  独立 `crates/deepseek` owner，旧 TUI request-budget owner 已删除。M4-B 的受限真实
+  Standard Chat + `read_file` canary 已通过，但未覆盖 M2 要求的全部官方 surface。
 - 当前已有一组 DeepSeek 协议、Agent 可靠性和独立 verify 实验 WIP。
 - WIP 保存提交：`2ccccdd4`。
 - 本地归档分支：`archive/pre-product-plan-20260715`。
@@ -86,7 +84,7 @@ diff、stdout/stderr 和原始日志保持稳定。最终门禁至少覆盖：
 | M1 | 建立原始 DeepSeek 能力基准 | 进行中（硬预算本地门禁已通过，导入基线真实编码 A/B 待完成） | 真实编码 A/B 在硬请求预算下可重复测量成功率、假成功、Token、时间和成本 |
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
-| M4 | 统一工具、事件、RunStore 和产品入口 | 进行中（M4-A 严格完成；M4-B/M4-C 待完成） | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
+| M4 | 统一工具、事件、RunStore 和产品入口 | 进行中（M4-A/M4-B 严格完成；M4-C 待完成） | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
 | M5 | RepoGraph、ContextBroker 和现有 WIP 证据链迁移 | 待开始 | 现有 TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 待开始 | 根/子 Agent 同内核，并行任务产生净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
@@ -396,7 +394,7 @@ Headless Task
 - M4-A 到此严格关闭；后续不得借 M4-B 重开第二个 Runtime/Store 或给旧 app-server 加长期
   bridge。M4-B 只迁移并删除 app-server 自己的旧生产路径。
 
-### M4-B：本地 API 单一 Runtime/RunStore 纵向切换（进行中）
+### M4-B：本地 API 单一 Runtime/RunStore 纵向切换（严格完成）
 
 真实问题不是“缺一个 HTTP 接口”，而是当前本地 API 有三条互相冲突的执行/状态路径：
 
@@ -432,34 +430,28 @@ worktree Orchestrator、Provider 全仓清理、提示词调优或全面汉化�
 request-user-input、approval、fork/undo/retry、task/fleet/session/automation/mobile API 用
 compat bridge 包装成新能力；未进入 canonical command/event 的能力直接不对外宣称。
 
-#### 当前执行进度（2026-07-16）
+#### 完成记录（2026-07-17）
 
-- 第一依赖纵切已完成源码迁移：`crates/deepseek` 成为 physical request admission、root/child
-  attribution、usage completeness、surface buckets 和官方 V4 first-party pricing 的唯一 owner；
-  exec 与未迁移交互 DeepSeek sender 已切到同一 owner。
-- `crates/tui/src/client/request_budget.rs` 已物理删除；Runtime 的 canonical request/output
-  不再通过 TUI DTO 往返，交互 TUI 仍保留自己尚未迁移的 presentation 转换。
-- 第二依赖纵切已完成：官方与显式 loopback fixture 的 HTTP sender、非流式/SSE parser、
-  reasoning/raw tool arguments/finish/usage 解析、typed transport error 和工具名 wire 投影由
-  `crates/deepseek` 唯一持有；exec 与交互 DeepSeek 调用方共用该实现。TUI 的通用非 DeepSeek
-  Chat compatibility sender/parser 暂留给未清理 Provider，不再承载官方 DeepSeek 流量。
-- 第三依赖纵切已完成源码迁移：`DeepSeekModelPort` 直接消费 `crates/deepseek` canonical
-  output；官方模型只接受 `deepseek-v4-pro`/`deepseek-v4-flash`，上下文为 1M，最大输出为
-  384K，旧 alias 与外部模型 fail closed。未显式指定输出长度时使用 262144 的 Agent 策略，
-  exec 的显式 384K 契约保持不变。
-- Model accounting snapshot、resume 物理请求余量进入 `crates/deepseek`；纯重放端口与是否需要
-  live model 的恢复门进入 `crates/app`。读 run/events/terminal replay 可只持有无凭据的
-  `DeepSeekConnectionConfig`，Key 与每 run budget 仅在 live start/resume 时绑定。
-- `exec_shell` 的命令解析、安全分类、子进程环境、shell dispatch、沙箱策略与本地 backend、
-  进程树、超时/取消、输出边界和结构化结果已从 TUI 迁入 `crates/tools`；TUI 只保留尚被交互
-  入口使用的策略、hook、外部 OpenSandbox transport 和 `ToolSpec` 投影。固定 11 工具的
-  catalog/schema/executor 仍待同一生产调用方切换后收口，不能把当前薄投影误报为完成。
-- DeepSeek 专用 auto-route classifier 的普通 Chat RequestPlan、4 秒执行边界、JSON 解析、
-  canonical pro/flash 校验和确定性 fallback 进入 `crates/deepseek`。生产 `exec` 不再读取 TUI
-  Provider inventory：auto 路由与随后根/子 Agent 复用同一个已绑定 transport 和
-  `SharedApiRequestBudget`，显式模型在任何 classifier 请求前经 official capability fail closed。
-  TUI 的旧 DeepSeek classifier sender/prompt/parser 已删除；交互 TUI 仍使用的 generic
-  inventory/非 DeepSeek heuristic 保留到 M4-C/Provider 清理，不是第二套 DeepSeek classifier。
+- `crates/app::AgentApplication` 已成为 `exec` 与 app-server 唯一 composition root；两者共用
+  `AgentRuntime`、`DeepSeekModelPort`、固定 11 工具、SQLite `RunStore`、请求预算和账本。
+- app-server 只保留 canonical start/get/events/resume/steer/interrupt/cancel 的
+  HTTP/SSE/stdio framing；SSE id 等于 Store sequence，stdio 使用同一 DTO 和 Store event。
+- `crates/core`、fake `/prompt`、raw model proxy、direct tool invoke、`RuntimeBridge`、TUI
+  sibling process、私有 seq/thread 状态和旧 route alias 已物理删除；app-server dependency
+  tree 不含 `core/tui`。`RuntimeThreadStore` 只剩交互 TUI 的真实消费者，删除点为 M4-C。
+- 同一 fixture 的 exec/HTTP/stdio canonical parity、SSE replay、typed command outcomes、外部
+  app-server `SIGKILL` 恢复、唯一 terminal、无 Key 重放和 M4-A crash matrix 均通过。
+- 被测源码为 commit `a534a824670b60c807c5abf399ea8674d4beb527`、tree
+  `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`；focused、fmt、workspace Clippy/test、两次
+  完整 TUI test、locked/offline release build 全部通过。
+- 真实 `deepseek-v4-pro` canary 只允许一次 `read_file`：2 次 Standard Chat 请求、1 次工具
+  调用、5,675 Token、3,908 ms、`$0.001378254`，89 个唯一事件且恰好一个 terminal；HTTP 与
+  SSE 完全一致，终态可由 app-server 和顶层 launcher 无 Key 重放且追加事件为 0。
+- M4-A checkpoint 到 M4-B 被测代码的 Git diff 为 299 files、`+33,892/-55,761`，净减少
+  21,869 行。该范围包含 M4-B 的依赖纵切和删除，不能冒充单模块净复杂度。
+- 完整脱敏证据、二进制摘要、费用、监督脚本诊断和残余风险见
+  [M4-B 本地 API 证据汇总](../../eval/summaries/m4-b-local-api-2026-07-17.md)。单次 canary
+  `product_metric_eligible=false`，不构成编码能力或效率提升声明。
 
 #### 同切片删除/替代
 
@@ -497,21 +489,20 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 7. focused crate tests、fmt、workspace Clippy `-D warnings`、workspace tests、现有 M4-A
    exec acceptance 和 resume gates 全部通过，随后冻结可 checkout/rebuild 的提交。
 
-#### M4-B 准备切片记录（进行中）
+#### M4-B 准备切片记录（已并入完成切片）
 
 - 生产 system prompt、项目上下文、技能发现和既有 WorldState block 顺序已从 TUI 源码
   move 到无 TUI/core/tools/app 反向依赖的 `crates/context`；`exec` 与交互 TUI 均调用这一个
   builder，旧 TUI builder 和 runtime prompt converter 已删除。本切片只冻结现有正文、顺序
-  和 Stable/Volatile 边界，没有调优或翻译提示词，也不代表 M4-B app-server 迁移完成。
+  和 Stable/Volatile 边界，没有调优或翻译提示词。
 - 交互 TUI 在进入旧 `models::SystemPrompt` 请求路径前仍有一次纯表示转换；该 adapter 不构造
   或修改正文，并在 M4-C 交互 Runtime 切换到 canonical protocol type 时随旧请求模型一起删除。
-- `ProductionPromptRequest` 暂由真实 `exec` 调用；`crates/app` 不为未来 composition 预建空依赖，
-  待 app-server 与 `exec` 真正同步迁入 application composition 时再接入。
+- `ProductionPromptRequest` 已由 `exec` 与 app-server 通过真实 `crates/app` composition 复用。
 
 ### M4 总体后续顺序
 
 - M4-A 已完成 Headless CLI 的 canonical `ToolOutcome`、SQLite RunStore 和恢复闭环。
-- M4-B 按上面的垂直切片迁移 app-server，并删除该入口的旧 core/bridge/私有状态路径。
+- M4-B 已完成 app-server 纵切，并删除该入口的旧 core/bridge/私有状态路径。
 - M4-C 最后迁移交互 TUI，只保留命令输入与 `RuntimeEvent` 投影，删除 TUI 生产 turn loop。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
@@ -520,20 +511,20 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 ### 删除/替代
 
-- Headless 已删除 `exec` 的旧 TUI Engine/spawn 路径；`crates/core::Runtime::handle_prompt`
-  不再是 `exec` 调用方，但仍被 app-server 使用，归入 M4-B 的明确删除点。
-- app-server 切换时删除启动 TUI 子进程的 bridge、`RuntimeBridge`、`monitor_turn` 和
-  `RuntimeThreadStore` 等事件/状态翻译层。
+- Headless 已删除 `exec` 的旧 TUI Engine/spawn 路径；`crates/core` 和 fake
+  `Runtime::handle_prompt` 已随 app-server 切换物理删除。
+- app-server 的 TUI 子进程 bridge、`RuntimeBridge`、`monitor_turn` 与私有事件/状态翻译已删除；
+  `RuntimeThreadStore` 只保留给尚未迁移的交互 TUI，删除点为 M4-C。
 - TUI 切换时删除 TUI 内生产 turn loop，只保留交互和 `RuntimeEvent` 投影。
 - 每个入口切换时同步删除对应 runtime/session/task/fleet/lane 重复 JSON/JSONL 写入。
 
 ### 整个 M4 的退出门槛
 
-- CLI/TUI/API 对同一 fixture 产生相同事件和终态。（未完成：TUI/API 尚未迁移）
+- CLI/API 对同一 fixture 产生相同事件和终态；交互 TUI 待 M4-C。
 - 内存 Store 与 SQLite Store 重放一致。（M4-A 行为门禁已通过）
-- crash/resume 和 exactly-once completion 通过。（M4-A `exec` 已通过）
-- 不存在第二个生产 loop、可写 Store 或入口私有 completion 语义。（仅 `exec` 已满足；
-  TUI/app-server 待 M4-B/M4-C 删除旧路径）
+- crash/resume 和 exactly-once completion 通过。（`exec` 与 app-server 已通过）
+- exec/app-server 不存在第二个生产 loop、可写 Store 或入口私有 completion 语义；交互 TUI
+  的旧生产 loop/state 仍是 M4-C 删除目标。
 
 ## 9. M5：RepoGraph、ContextBroker 与现有 WIP 证据链迁移
 
@@ -615,11 +606,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 - 其他 Provider、模型目录、定价和别名；
 - 旧 updater、release 和品牌耦合；
-- 当前仍被 remote-setup 引用的 Telegram、Feishu 和 bridge-core；
-- 腾讯云/CNB 等云部署；
-- 当前 Rust remote-setup 调用面；
+- 其余腾讯云/CNB 等未接线云部署资产；
 - 遗留 evidence 和最终不再需要的导入资产；
 - 无接线 stub、兼容别名、旧语义适配层和新旧双路径。
+
+Telegram、Feishu、bridge-core、remote-setup 调用面和 Tencent Lighthouse 部署链已在 M4-B
+因 app-server 旧控制面删除而同步物理删除，不再列为 M7 待办。
 
 清理必须先通过依赖盘点；Cargo 核心能力不得因外围删除而退化。Provider 专用的人类界面
 随对应旧路径一起删除，不投入翻译；每个切片只汉化已经确认保留的 DeepSeek 配置、Agent
@@ -651,8 +643,8 @@ M8 退出前必须通过第 2.1 节的中文端到端、机器协议稳定性、
 | `tui/src/tools/*` | `tools` | TUI 工具业务逻辑 |
 | `runtime_threads`、各 JSON store、Fleet ledger | `state` | 多状态真相 |
 | `subagent`、Workflow、Fleet、Lane | `orchestrator` | 第二循环和重复产品外壳 |
-| `app-server` bridge | `app + app-server` | TUI 子进程桥 |
-| `crates/core` 脚手架 | 真实 runtime/application 职责 | 假 `handle_prompt` 路径 |
+| `app-server` canonical projection（M4-B 已迁移） | `app + app-server` | TUI 子进程桥已删除 |
+| `crates/core` 脚手架（M4-B 已删除） | `app + runtime` | fake `handle_prompt` 已删除 |
 
 ## 14. 调整机制
 

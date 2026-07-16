@@ -7,7 +7,9 @@
 - 快照日期：2026-07-17
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
-- 当前阶段：M4-B 本地 API 纵向切换已落源码，M4-C 交互 TUI 尚未迁移
+- M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
+  `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
+- 当前阶段：M4-B 本地 API 纵向切换严格完成，M4-C 交互 TUI 尚未迁移
 
 ## 1. 当前结论
 
@@ -208,8 +210,10 @@ M4-B 提交中的离线验收已经证明：
 - live owner 并发 resume 被拒绝；terminal 可由第三个无 Key 进程原样重放；
 - app-server 不依赖 core/tui，生产调用图没有旧 bridge 符号。
 
-完整 workspace 门禁和官方 DeepSeek canary 结果以本阶段最终
-[ROADMAP.md](../product/ROADMAP.md) 与 eval summary 为准；未完成门禁不能从源码存在性推断。
+完整 workspace 门禁、冻结 release build 和官方 DeepSeek canary 均已通过。精确结果、
+二进制摘要、费用和非结论见
+[M4-B 本地 API 证据汇总](../../eval/summaries/m4-b-local-api-2026-07-17.md)；不能从一次
+链路 canary 推断编码能力或效率提升。
 
 ## 7. 明确非结论
 

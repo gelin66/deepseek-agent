@@ -46,15 +46,21 @@ Changing one of these constraints requires evidence and a new ADR.
 ## Current repository truth
 
 - Imported CodeWhale baseline: `352e86a611fdf3cd8bd27c36d24d482c06a71117`.
-- `codewhale exec` now runs through `crates/runtime::AgentRuntime`; its
-  composition/output adapter remains under `crates/tui`, and its canonical
-  events are persisted by the SQLite `RunStore` implemented in `crates/state`.
-- The interactive TUI and app-server have not migrated. Their live production
-  loops and private runtime/session/task state still remain under `crates/tui`.
-- `crates/core` is not yet the production model loop.
-- Root and child runs inside the new `AgentRuntime` use the same execution
-  implementation. The unmigrated TUI child-agent path still has different
-  execution semantics and is a later replacement target.
+- `codewhale exec` and `codewhale app-server` now share
+  `crates/app::AgentApplication`, `crates/runtime::AgentRuntime`, the fixed
+  `crates/tools` catalog, `crates/deepseek::DeepSeekModelPort`, and the SQLite
+  `RunStore` implemented in `crates/state`.
+- app-server is only an HTTP/SSE/stdio projection of the canonical Run API. It
+  has no `core`/`tui` dependency, private lifecycle store, model loop, tool
+  implementation, or sibling TUI process.
+- `crates/core`, the fake prompt loop, raw model proxy, direct tool route, and
+  the retired remote/mobile bridge chain have been deleted.
+- The interactive TUI has not migrated. Its live engine and private
+  session/task/runtime-thread state remain under `crates/tui` and are the M4-C
+  replacement target; do not route new callers through them.
+- Root and child runs inside `AgentRuntime` use the same execution
+  implementation. The unmigrated interactive TUI child-agent path still has
+  different execution semantics and is the M4-C replacement target.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split
