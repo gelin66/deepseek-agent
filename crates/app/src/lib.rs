@@ -204,6 +204,16 @@ impl AgentApplication {
                     events,
                 };
             }
+            if !self.active.lock().await.contains_key(run_id) {
+                return error_result(api_error(
+                    RunApiErrorCode::RunRecoveryRequired,
+                    format!(
+                        "run {run_id} is durable but inactive; resume it before waiting for new events"
+                    ),
+                    Some(run_id.clone()),
+                    None,
+                ));
+            }
             notified.await;
         }
     }
@@ -1323,6 +1333,31 @@ mod tests {
             result,
             RunCommandResult::Events { events, .. }
                 if !events.is_empty() && events.iter().all(|event| event.sequence > cursor)
+        ));
+    }
+
+    #[tokio::test]
+    async fn wait_events_requires_explicit_recovery_for_an_inactive_durable_run() {
+        let (app, store, _) = new_fixture(ModelMode::Pending).await;
+        let run_id = seed_resumable(&store, "recovery-required").await;
+        let replay = store
+            .load(&run_id)
+            .await
+            .expect("load seeded run")
+            .expect("seeded run exists");
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            app.wait_events(&run_id, replay.snapshot.last_sequence),
+        )
+        .await
+        .expect("inactive durable run must not leave an event transport hanging");
+
+        assert!(matches!(
+            result,
+            RunCommandResult::Error { error }
+                if error.code == RunApiErrorCode::RunRecoveryRequired
+                    && error.run_id.as_ref() == Some(&run_id)
         ));
     }
 

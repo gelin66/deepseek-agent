@@ -135,6 +135,7 @@ pub enum RunApiErrorCode {
     RunNotFound,
     RunAlreadyRunning,
     RunNotActive,
+    RunRecoveryRequired,
     RunTerminal,
     RunEnvironmentMismatch,
     EventCursorAhead,
@@ -417,6 +418,10 @@ mod tests {
             (RunApiErrorCode::RunNotFound, "run_not_found"),
             (RunApiErrorCode::RunAlreadyRunning, "run_already_running"),
             (RunApiErrorCode::RunNotActive, "run_not_active"),
+            (
+                RunApiErrorCode::RunRecoveryRequired,
+                "run_recovery_required",
+            ),
             (RunApiErrorCode::RunTerminal, "run_terminal"),
             (
                 RunApiErrorCode::RunEnvironmentMismatch,
