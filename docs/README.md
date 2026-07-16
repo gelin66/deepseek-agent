@@ -37,8 +37,10 @@
 
 ## 3. 当前开发说明
 
-- 当前生产 Agent loop 仍在 `crates/tui`。
-- 当前 DeepSeek WIP 已保存在提交 `2ccccdd4`，但尚未通过新评测门禁。
+- `codewhale exec` 与 `codewhale app-server` 已共用
+  `crates/app::AgentApplication`、`AgentRuntime` 和 SQLite `RunStore`。
+- 交互 TUI 的旧 engine 与 `TaskManager` 状态路径仍待 M4-C 迁移；它不是
+  app-server 的执行或状态来源。
 - 本地 focused 检查脚本：`../scripts/dev-deepseek-agent.sh`。
 - M1 离线能力基线：`../eval/README.md`。
 - 当前配置样例：`../config.deepseek-agent.example.toml`。
@@ -46,10 +48,10 @@
 
 ## 4. 历史和待清理资料
 
-网站、VS Code scaffold、npm 发布包装、上游社区自动化、版本 dogfood/release 和翻译
-资料已从活动开发树移除。未接入当前 Rust runtime 的 WeCom/Weixin 桥也已移除。
-Telegram/Feishu、remote setup、通用 Provider 和少量旧 evidence 仍被当前 Rust 路径
-或迁移审计引用，必须在对应调用方迁移后删除。
+网站、VS Code scaffold、npm 发布包装、上游社区自动化、版本 dogfood/release、
+remote setup、腾讯云部署、Telegram/Feishu chat bridge 和未接入 Rust runtime 的
+WeCom/Weixin bridge 已从活动开发树移除。通用 Provider、导入 skills 和少量旧 evidence
+仍待后续 DeepSeek-only 切片按真实调用图清理。
 
 新增文档时，应优先更新已有权威文件。只有新的长期架构决策才新增 ADR；不要创建
 新的平行 Roadmap、计划、handoff 或版本 tracker。

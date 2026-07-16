@@ -10,9 +10,10 @@ Browsing note:
 
 Server mode note:
 - `codewhale-tui serve --mcp` runs the MCP stdio server.
-- `codewhale-tui serve --http` runs the runtime HTTP/SSE API (separate mode).
 - The `codewhale` dispatcher exposes `codewhale mcp-server` as an equivalent stdio
   entrypoint used by the split CLI.
+- The canonical local Agent API is the separate `codewhale app-server`
+  HTTP/SSE or stdio Run API. It is not an MCP transport.
 
 ## Setup wizard vs manual MCP setup (#3407)
 
@@ -326,17 +327,17 @@ Tools from a self-hosted DeepSeek server follow the standard naming convention:
 
 For example, the `shell` tool becomes `mcp_deepseek_shell`.
 
-### MCP Server vs HTTP/SSE API vs ACP
+### MCP Server vs Run API vs ACP
 
-| | `codewhale-tui serve --mcp` | `codewhale-tui serve --http` | `codewhale-tui serve --acp` |
+| | `codewhale-tui serve --mcp` | `codewhale app-server` | `codewhale-tui serve --acp` |
 |---|---|---|---|
-| **Protocol** | MCP stdio | HTTP/SSE JSON-RPC | ACP stdio |
-| **Use case** | Tool server for MCP clients | Runtime API for apps | Editor agent for Zed/custom ACP clients |
-| **Config** | `~/.codewhale/mcp.json` entry | Direct URL connection | Editor `agent_servers` custom command |
-| **Lifecycle** | Spawned per client session | Long-running daemon | Spawned per editor agent session |
+| **Protocol** | MCP stdio | canonical HTTP/SSE or newline stdio | ACP stdio |
+| **Use case** | Tool server for MCP clients | Start/control/replay Agent runs | Editor agent for Zed/custom ACP clients |
+| **Config** | `~/.codewhale/mcp.json` entry | Direct local connection | Editor `agent_servers` custom command |
+| **Lifecycle** | Spawned per client session | Local long-running process or stdio child | Spawned per editor agent session |
 
 Use `mcp add-self` when you want DeepSeek tools available to other MCP clients.
-Use `serve --http` when building applications that consume the API directly.
+Use `codewhale app-server` when a local application needs the canonical Run API.
 Use `serve --acp` when an editor wants to talk to DeepSeek as an ACP agent.
 
 ### Verification

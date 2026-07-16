@@ -1,169 +1,101 @@
-# Current CodeWhale Architecture (Migration Snapshot)
+# Current CodeWhale Architecture
 
-> Category: migration evidence. This describes the imported implementation,
-> not the accepted target architecture.
+> 文档类别：迁移事实。只描述当前源码，不替代
+> [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
+> [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-This document describes the implementation that exists today. It is not the
-target product architecture. The accepted target, migration order, and ability
-gates live in [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md),
-[ROADMAP.md](../product/ROADMAP.md), and
-[EVALUATION.md](../product/EVALUATION.md).
+- 快照日期：2026-07-17
+- 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
+- workspace version：`0.8.68`
+- 当前阶段：M4-B 本地 API 纵向切换已落源码，M4-C 交互 TUI 尚未迁移
 
-- Snapshot date: 2026-07-16
-- Imported baseline: `352e86a611fdf3cd8bd27c36d24d482c06a71117`
-- Workspace version: `0.8.68`
+## 1. 当前结论
 
-The file remains useful during migration because it records which CodeWhale
-capabilities are currently wired. Sections must be removed or updated when the
-corresponding old path is deleted; they must not be treated as justification
-for preserving duplicate runtimes or product concepts.
-
-Current boundary note:
-- `codewhale exec` runs through the UI-independent
-  `crates/runtime::AgentRuntime`. Its concrete DeepSeek, tool, persistence, and
-  output composition remains in `crates/tui` while that production entry is
-  migrated vertically. Official request planning, HTTP/SSE transport, typed
-  response parsing, physical request/usage accounting, exact V4 capability
-  validation, DeepSeek-only auto-route request/parse/fallback, and the concrete
-  `DeepSeekModelPort` live in `crates/deepseek`. Runtime requests no longer pass
-  through TUI message/stream DTOs. Auto-routed `exec` binds one transport before
-  classification and moves that same transport and request ledger into the root
-  and child model port; explicit official models do not issue a classifier request.
-- Production `exec` persists schema-v3 canonical runtime events through the
-  schema-v6 `crates/state::StateStore` SQLite `RunStore`.
-- The interactive TUI, runtime API, app-server, and task manager have not
-  migrated. Their live loops and private runtime/session/task state still live
-  under `crates/tui`; they must not be described as projections of the new
-  `RunStore` yet.
-- Root and child runs inside the new `AgentRuntime` share one execution
-  implementation. The unmigrated TUI child-agent path still has different
-  execution semantics.
-- `crates/core` is not the production model loop.
-- The LSP subsystem (`crates/tui/src/lsp/`) is fully wired into the engine's post-tool-execution path
-  (`core/engine/lsp_hooks.rs`), providing inline diagnostics after every edit_file/apply_patch/write_file.
-- The swarm agent system was removed in v0.8.5. The active sub-agent surface is the single `agent` tool; persistent RLM sessions remain available through `rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close`.
-  No model-visible swarm tool remains in the active codebase.
-
-## High-Level Overview
+生产 Headless 与本地 API 已经共用一条 Agent 执行链：
 
 ```text
 codewhale exec
-  -> crates/tui exec composition + output projection
-  -> crates/runtime::AgentRuntime
-       -> crates/deepseek DeepSeekModelPort
-            -> request plan + HTTP/SSE + shared physical accounting
-       -> ProductionToolExecutor -> fixed 11-tool catalog
-       -> crates/state::StateStore as SQLite RunStore
-            -> canonical events -> reducer/snapshot -> terminal replay
+  -> TUI 内的 exec 参数/NDJSON 投影
+  -> crates/app::AgentApplication
 
-interactive TUI / runtime API / app-server / task manager
-  -> legacy crates/tui engine, runtime_threads, session and task state
+codewhale app-server
+  -> crates/app-server 的 HTTP/SSE/stdio framing
+  -> crates/app::AgentApplication
+
+AgentApplication
+  -> production composition
+  -> crates/runtime::AgentRuntime
+       -> crates/deepseek::DeepSeekModelPort
+       -> crates/tools::ProductionToolExecutor
+       -> crates/state::StateStore as SQLite RunStore
+       -> canonical StoredRuntimeEvent
 ```
 
-This is deliberately a split migration snapshot, not the target architecture.
-Only `exec` has crossed the new runtime/persistence boundary. The second path is
-scheduled for later vertical cutovers; its existence does not mean a second
-runtime or state truth is accepted as the final design.
+这两条入口不再拥有各自的模型循环、工具目录、终态判断或持久状态。
 
-## Module Organization
+交互 TUI 仍是明确的迁移例外：
 
-### Entry Point
+```text
+interactive TUI / TaskManager
+  -> crates/tui legacy engine/session/task path
+  -> RuntimeThreadManager / RuntimeThreadStore
+```
 
-- **`main.rs`** - CLI argument parsing (clap), configuration loading, entry point routing
+该路径只服务交互 TUI，已不再服务 app-server。它是 M4-C 的替换和删除目标，不能作为
+新调用方继续扩展。
 
-### Core Components
+## 2. 已统一的生产链
 
-- **`core/`** - Legacy interactive TUI/app-server engine components; this is
-  not the production `codewhale exec` loop
-  - `engine.rs` - Engine state, operation handling, message processing
-  - `engine/turn_loop.rs` - Streaming turn loop and tool execution orchestration
-  - `session.rs` - Session state management
-  - `turn.rs` - Turn-based conversation handling
-  - `events.rs` - Event system for UI updates
-  - `ops.rs` - Core operations
+### Application service
 
-### Configuration
+`crates/app` 是 exec 与 app-server 的唯一 application composition owner：
 
-- **`config.rs`** - Configuration loading, profiles, environment variables
-- **`settings.rs`** - Runtime settings management
+- 组合官方 DeepSeek connection、credential 和 HTTP client；
+- 组合 production prompt；
+- 组合固定工具 executor 与本地执行策略；
+- 打开同一种 SQLite `RunStore`；
+- 绑定 physical request budget、model accounting 和 execution fingerprint；
+- 维护轻量 process-local active control registry；
+- 实现 start、get、events、resume、steer、interrupt、cancel。
 
-### Workspace Crates
+active registry 只保存当前进程可投递的 control handle，不是第二个 lifecycle 或持久事实。
+run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
-- **`crates/tools`** - Shared tool invocation primitives and capabilities. It
-  re-exports the canonical `ToolOutcome`; the fixed `exec` handlers are still
-  physically composed from `crates/tui/src/tools` during this migration.
-- **`crates/agent`** - Model/provider registry (ModelRegistry) for resolving model IDs to provider endpoints.
-- **`crates/app-server`** - HTTP/SSE + JSON-RPC app server transport for
-  headless workflows. It has not migrated to the new `AgentRuntime`/`RunStore`.
-- **`crates/config`** - Config loading, profiles, environment variable precedence, CLI runtime overrides.
-- **`crates/core`** - Older application/session scaffolding still used by
-  unmigrated callers; it is not the production `exec` model loop.
-- **`crates/execpolicy`** - Approval/sandbox policy engine for tool execution decisions.
-- **`crates/hooks`** - Lifecycle hooks (stdout, jsonl, webhook) for pre/post tool events.
-- **`crates/mcp`** - MCP client + stdio server for Model Context Protocol tool servers.
-- **`crates/protocol`** - Request/response framing plus schema-v3 canonical
-  `AgentRuntime` events, transcript, `ToolOutcome`, accounting, and terminal
-  types.
-- **`crates/runtime`** - The one UI/HTTP/database-independent root/child Agent
-  execution kernel, canonical reducer, small ports, and test-only in-memory
-  `RunStore`.
-- **`crates/deepseek`** - Official Standard/Strict/FIM request planning plus
-  official Chat HTTP/SSE transport and typed parser, shared physical request
-  budget, root/child attribution, exact usage completeness ledger, surface
-  buckets, and official V4 first-party pricing. It has no TUI/config/tool
-  dependency and accepts only resolved official/explicit-loopback transport
-  configuration.
-- **`crates/secrets`** - OS keyring integration for API key storage.
-- **`crates/state`** - Schema-v6 SQLite state database. It implements the
-  production canonical `RunStore` for `exec` alongside still-unmigrated legacy
-  thread/session tables.
-- **`crates/workflow`** / **`crates/workflow-js`** - Workflow engine and its
-  QuickJS scripting layer (renamed from the whaleflow crates).
-- **`crates/lane`** - Lane runtime: durable, attachable running instances of
-  Fleet/Workflow work (`codewhale lane list/status/attach/logs/stop`).
-- **`crates/release`** / **`crates/build-support`** - Release checks and build
-  plumbing.
+### Agent runtime
 
-### LLM Integration
+`crates/runtime` 是 UI、HTTP、DeepSeek transport 和 SQLite 无关的唯一根/子 Agent 内核。
+根 Agent 和 child Agent 使用同一个 `AgentRuntime` 与 conformance semantics。Runtime 负责：
 
-- **`crates/deepseek`** - Official DeepSeek planner, Chat HTTP/SSE sender,
-  typed response parser, canonical Runtime `ModelPort`, exact official V4
-  capability table, DeepSeek-only auto-route classifier/fallback, and physical
-  request/usage accounting owner for Standard Chat and Beta Strict Chat; FIM
-  planning/accounting already shares this owner while its sender cutover remains
-  separate
-- **`client.rs` / `client/chat.rs`** - Generic compatibility HTTP/SSE path for
-  non-DeepSeek providers; it no longer sends, parses, or adapts canonical
-  Runtime requests for official DeepSeek Chat responses
-- **`client/deepseek.rs`** - Unmigrated interactive-TUI composition and legacy
-  presentation conversion around `crates/deepseek`; it is not a second sender,
-  parser, classifier, or Runtime `ModelPort`
-- **`llm_client.rs`** - Abstract LLM client trait with retry logic
-- **`models.rs`** - Data structures for API requests/responses
+- canonical transcript；
+- model/tool 循环；
+- root/child budget；
+- control command；
+- crash-safe event 提交；
+- terminal candidate 与 Host 接受边界。
 
-#### DeepSeek API Endpoints
+Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-The official DeepSeek planner currently owns these distinct surfaces:
+### DeepSeek backend
 
-- ordinary Chat and ordinary tool calls use Standard
-  `/chat/completions`;
-- only a whole tool catalog that is strict-compatible uses Beta Strict
-  `/beta/chat/completions`;
-- if any tool is incompatible, the entire catalog falls back to ordinary tool
-  calling without dropping tools;
-- FIM is a separate Beta Completions request at `/beta/completions`;
-- model discovery/health checks use the models endpoint independently of the
-  selected Chat surface.
+`crates/deepseek` 是官方 DeepSeek 请求事实 owner：
 
-An official-base `RequestPlan` fixes the surface, URL, wire model, response
-mode, exact reasoning replay, and request body before transport. Custom bases
-and path suffixes still have legacy compatibility branches pending later
-provider cleanup; they are not evidence that ordinary official Chat should use
-the Beta endpoint.
+- Standard Chat、Beta Strict Chat、FIM surface 规划；
+- 确定性 `RequestPlan`；
+- ordinary/non-streaming 与 SSE transport；
+- reasoning/tool-call 历史回放；
+- finish reason、typed error、retry 和 usage；
+- root/child physical request attribution；
+- auto-route classifier 与确定性 fallback；
+- 官方模型 capability、output limit 和 pricing fixture。
 
-### Tool System
+普通工具调用不因存在工具就误走 Beta；只有整组 schema strict-compatible 时使用
+Beta Strict Chat。FIM 仍是独立 Beta Completions surface。Context cache 由官方 Chat 的
+稳定前缀自动触发，不存在手工 cache API。
 
-Production `codewhale exec` exposes this fixed audited catalog:
+### Tools
+
+`crates/tools` 拥有 production 固定工具 catalog、schema、execution identity 和 handler。
+当前 11 个 Host 工具为：
 
 ```text
 apply_patch  edit_file    exec_shell   file_search
@@ -171,266 +103,123 @@ git_diff     git_status   grep_files   list_dir
 read_file    run_tests    run_verifiers
 ```
 
-All eleven handlers return the canonical `ToolOutcome`, which separately
-records invocation, transport, operation, side-effect, retry, evidence,
-artifact, and workspace-revision state. `run_tests` and `run_verifiers` may
-produce revision-bound evidence/artifact descriptors, but this is not yet the
-M5 production `EvidenceReceipt`/Host-completion migration. Wire-level names
-such as `ContentBlock::ToolResult` and the stable NDJSON `tool_result` event do
-not represent a second domain result type.
+Runtime 在允许的 depth/budget 内追加内建 `agent` control tool；它启动的 child 仍是同一个
+`AgentRuntime`，不是另一套 swarm loop。
 
-- **`tools/`** - Built-in tool implementations; the broad registry below is
-  still used by the unmigrated interactive runtime, while `exec` selects only
-  the fixed catalog above
-  - `mod.rs` - Tool registry and common types
-  - `shell.rs` - Shell command execution
-  - `file.rs` - File read/write operations
-  - `todo.rs` - Checklist tools plus legacy todo aliases
-  - `tasks.rs` - Model-visible durable task, gate, background shell, and PR-attempt tools
-  - `github.rs` - Read-only GitHub context and guarded comment/closure tools backed by `gh`
-  - `automation.rs` - Model-visible scheduling tools over `AutomationManager`
-  - `plan.rs` - Planning tools
-  - `subagent.rs` - Persistent sub-agent sessions
-  - `spec.rs` - Tool specifications
-  - `rlm.rs` - Persistent Recursive Language Model (RLM) sessions — sandboxed Python REPLs with semantic helper calls and `var_handle` output support
+所有 Host handler 返回 canonical `ToolOutcome`，明确区分 invocation、operation、retry、
+side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工具系统尚未迁移，
+不代表 Headless production catalog 会自动扩大。
 
-### Extension Systems
+### State
 
-- **`mcp.rs`** - Model Context Protocol client for external tool servers
-- **`skills.rs`** - Plugin/skill loading and execution
-- **`hooks.rs`** - Pre/post execution hooks with conditions
+`crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-### User Interface
+- append-only canonical event；
+- reducer/snapshot/replay；
+- execution lease 与 epoch；
+- pending model attempt 与 unknown billing；
+- terminal exactly-once；
+- no-key terminal replay。
 
-- **`tui/`** - Terminal UI components (ratatui-based)
-  - `app.rs` - Application state and message handling
-  - `ui.rs` - Event handling, streaming state, and rendering logic
-  - `approval.rs` - Tool approval dialog
-  - `clipboard.rs` - Clipboard handling
-  - `streaming.rs` - Streaming text collector
+旧 thread/session/task tables 仍供未迁移交互路径使用。它们不是 app-server 的状态来源，
+也不能与 canonical run 双写。
 
-- **`ui.rs`** - Legacy/simple UI utilities
+## 3. 当前入口
 
-### LSP Integration
+### `codewhale exec`
 
-- **`lsp/`** - Post-edit diagnostics injection (#136)
-  - `mod.rs` - `LspManager` — lazy per-language transport pool + config
-  - `client.rs` - `StdioLspTransport` — JSON-RPC over stdio with `didOpen`/`didChange`/`publishDiagnostics`
-  - `diagnostics.rs` - Diagnostic types, severity, and HTML-block renderer
-  - `registry.rs` - Language detection and default server map (rust-analyzer, pyright, gopls, clangd, typescript-language-server, jdtls, vue-language-server)
-  - Wired into the engine via `core/engine/lsp_hooks.rs` — called after every successful edit
+- 真实执行进入 `AgentApplication`；
+- text/NDJSON、receipt 和 exit code 投影仍在 `crates/tui`；
+- start/resume/events/cancel 均读写 canonical Run API；
+- crash/reopen/resume、terminal-first signal 和 no-key replay 已有外部进程门禁。
 
-### Security
+顶层 `codewhale` 仍委托现有 TUI binary 处理 exec 参数与输出，这是进程入口复用，不是
+第二个 Runtime。composition、model、tool 和 Store 已不在该 adapter 中重复。
 
-- **`sandbox/`** - platform sandbox policy preparation and denial reporting
-  - `mod.rs` - Sandbox type definitions
-  - `policy.rs` - Sandbox policy configuration
-  - `seatbelt.rs` - macOS Seatbelt profile generation
-  - `landlock.rs` - Linux Landlock detection and future helper contract
-  - `windows.rs` - Windows helper contract; not advertised until a Job
-    Object process-containment helper exists
+### `codewhale app-server`
 
-### Utilities
+- CLI 直接构造 production `AgentApplication`；
+- 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
+- `--stdio` 提供 newline Run envelope；
+- HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
+- crate dependency tree 不含 `crates/core` 或 `crates/tui`；
+- 不启动 sibling TUI process。
 
-- **`utils.rs`** - Common utilities
-- **`logging.rs`** - Logging infrastructure
-- **`compaction.rs`** - Context compaction for long conversations
-- **`purge.rs`** - Agent-driven context purging (surgical message removal/rewriting)
-- **`pricing.rs`** - Cost estimation
-- **`prompts.rs`** - System prompt templates
-- **`project_doc.rs`** - Project documentation handling
-- **`session.rs`** - Session serialization
-- **`runtime_api.rs`** - HTTP/SSE runtime API (`codewhale serve --http`)
-- **`runtime_threads.rs`** - Durable thread/turn/item store + replayable event timeline
-- **`task_manager.rs`** - Durable queue, worker pool, task timelines and artifacts
+完整接口见 [RUNTIME_API.md](RUNTIME_API.md)。
 
-## Data Flow
+### Interactive TUI
 
-### Headless `codewhale exec`
+交互 TUI 尚未切到 `AgentApplication`：
 
-1. CLI parsing resolves a new prompt or an exact `--resume <run_id>` request.
-2. The entry opens `StateStore` as the production `RunStore` before creating
-   the model client or Runtime.
-3. A new run durably appends `RunCreated`; resume loads the same canonical
-   event log and reducer snapshot.
-4. The composition creates one `AgentRuntime` with `DeepSeekModelPort`, the
-   fixed `ProductionToolExecutor`, the SQLite Store, and an output event sink.
-5. External actions use store-first phase events: model
-   `prepared -> in_flight -> response_committed`, and tool
-   `prepared -> execution_started -> outcome_committed`.
-6. Canonical events are committed before the output projection observes them.
-   Transcript, usage/accounting, pending action state, tool artifacts, and the
-   terminal outcome are rebuilt by the shared reducer.
-7. SQLite enforces one canonical terminal event per run. Reopening a terminal
-   run replays it rather than starting another model request.
+- `crates/tui/src/core/engine/*` 仍有旧 turn loop；
+- session、task 和 approval presentation 仍使用旧类型；
+- `TaskManager` 仍消费 `RuntimeThreadManager/RuntimeThreadStore`；
+- 交互 child-agent path 仍未通过与 canonical root/child 相同的 conformance suite；
+- generic Provider/config/UI 仍未执行 DeepSeek-only 最终清理。
 
-### Legacy Interactive Session
+因此当前不能宣称三个产品入口已经完全统一。M4-C 必须把交互输入变成 application command，
+把 UI 变成 RuntimeEvent projection，并删除旧 engine/runtime-thread 生产路径。
 
-1. User input received in TUI
-2. Input processed by `core/engine.rs`
-3. Message sent to LLM via `llm_client.rs`
-4. Response streamed back, parsed in `client.rs`
-5. Tool calls extracted and executed via `tools/`
-6. Hooks triggered before/after tool execution
-7. Results aggregated and sent back to LLM
-8. Final response rendered in TUI
+## 4. Crate responsibility snapshot
 
-### Headless RunStore Recovery
+| Crate | 当前生产职责 | 当前迁移债务 |
+|---|---|---|
+| `protocol` | canonical request、command、event、outcome、terminal | 后续 TaskContract/EvidenceReceipt 扩展 |
+| `runtime` | 唯一根/子 Agent loop 与 reducer | completion/evidence 的 M5 强化 |
+| `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | FIM 调优与定期官方复核 |
+| `context` | production prompt/context 构建边界 | RepoGraph/compaction M5 |
+| `tools` | 固定 production tool catalog 与执行 | 编辑/FIM 协议 A/B |
+| `state` | SQLite RunStore、lease、replay | 交互旧状态 M4-C 删除 |
+| `app` | 唯一 production composition 与 Run command | 后续 orchestrator command |
+| `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
+| `cli` | 顶层命令与 production config 解析 | DeepSeek-only 配置/中文 M7-M8 |
+| `tui` | exec projection + 未迁移交互产品 | M4-C 主删除目标 |
 
-- Events have per-run monotonic sequences and idempotent event IDs. A lease
-  epoch fences stale writers; a second live process cannot concurrently resume
-  the same non-terminal run.
-- A prepared action that has not crossed the external side-effect boundary can
-  continue after reopen. An in-flight model request or tool side effect is
-  ambiguous and fails closed as typed recovery-required state; it is not
-  silently reissued.
-- A committed model response resumes from its durable transcript and usage
-  without duplicating the request, assistant entry, or accounting.
-- A committed terminal is immutable. It can be replayed without an API Key,
-  without model I/O, and without appending a second terminal or other event.
-- Workspace, provider, tool-catalog, or execution-fingerprint mismatch fails
-  before model I/O rather than resuming under different semantics.
-- “Exactly once” refers to the durable canonical terminal. stdout/NDJSON is a
-  replayable projection and may be delivered again when a completed run is
-  explicitly resumed.
+`crates/core` 已删除。它原有的 fake `handle_prompt` 从未是 production Agent 能力；app-server
+迁移后没有保留兼容 crate 或空壳。
 
-### Legacy TUI Crash Recovery + Offline Queue
+## 5. 已删除的旧产品路径
 
-1. Before sending user input, the TUI writes a checkpoint snapshot to `~/.codewhale/sessions/checkpoints/latest.json`
-2. Startup remains fresh by default; prior sessions are resumed explicitly via `--resume`/`--continue` (or `Ctrl+R` in TUI)
-3. While degraded/offline, new prompts are queued in-memory and mirrored to `~/.codewhale/sessions/checkpoints/offline_queue.json`
-4. Queue edits (`/queue ...`) are persisted continuously so drafts and queued prompts survive restarts
-5. Successful turn completion clears the active checkpoint and writes a durable session snapshot
-6. Agent/Yolo turns also take pre/post-turn side-git workspace snapshots under `~/.codewhale/snapshots/<project_hash>/<worktree_hash>/.git`; `/restore N` and `revert_turn` restore file state without changing conversation history or the user's `.git`
+M4-B 已物理删除：
 
-### Headless Tool Execution
+- app-server fake core runtime；
+- `/prompt`、raw chat proxy、direct tool invoke；
+- RuntimeBridge、TUI child process、事件翻译和私有 seq/thread map；
+- TUI runtime HTTP/mobile server 与 mobile page；
+- `serve --http/--mobile`、`app-server --http/--mobile` alias；
+- remote-setup bundle generator；
+- Tencent Lighthouse deploy scripts/units；
+- Feishu、Telegram 和 bridge-core Node 产品链；
+- 对应的 QR、CORS 和孤儿 runtime-api config 依赖。
 
-1. `AgentRuntime` durably records the canonical invocation and operation ID.
-2. `ProductionToolExecutor` validates exact membership in the fixed 11-tool
-   catalog and executes through the existing audited handler.
-3. The handler returns one typed `ToolOutcome`; it is not converted through an
-   old domain `ToolResult`.
-4. Runtime commits the outcome, transcript projection, revision/evidence, and
-   artifact descriptors before the next model request can observe them.
-5. If a process dies after execution starts but before the outcome is durable,
-   recovery records ambiguity and does not repeat a potentially applied side
-   effect.
+删除这些外围产品不会删除 `agent` 多智能体能力。它们是旧 chat/cloud 控制面，不是
+`AgentRuntime × N + Orchestrator` 的目标多 Agent 架构。
 
-### Legacy TUI Tool Execution
+## 6. 当前验证事实
 
-1. LLM requests tool via `tool_use` content block
-2. Tool registry looks up handler
-3. Pre-execution hooks run
-4. Approval requested if needed (non-yolo mode)
-5. Tool executed (possibly sandboxed on macOS)
-6. Post-execution hooks run
-7. Result metadata is retained on runtime item records
-8. **LSP post-edit hook**: if the tool was `edit_file`/`apply_patch`/`write_file` and LSP is enabled, the engine runs `run_post_edit_lsp_hook()` to collect diagnostics
-9. **Diagnostics flush**: before the next API request, `flush_pending_lsp_diagnostics()` injects any collected errors as a synthetic user message
-10. Result returned to agent loop
+M4-B 提交中的离线验收已经证明：
 
-### Legacy TUI/app-server Background Tasks
+- exec、HTTP/SSE、stdio 对同一个 read-only tool fixture 产生相同的 12 个 normalized
+  canonical event、terminal、usage 和 accounting；
+- HTTP SSE 的每个 `id` 等于 Store sequence，`data` 是完整 Store event；stdio 也
+  0 丢失、0 虚构；
+- 外部 app-server 进程 `SIGKILL` 后恢复同一 run，前缀不变、epoch 提升、event id 唯一、
+  terminal 恰好一个；
+- live owner 并发 resume 被拒绝；terminal 可由第三个无 Key 进程原样重放；
+- app-server 不依赖 core/tui，生产调用图没有旧 bridge 符号。
 
-1. Client enqueues task (`/task add ...` or `POST /v1/tasks`)
-2. `task_manager.rs` persists task + queue entry under `~/.codewhale/tasks`
-3. Worker picks queued task (bounded pool), transitions to `running`
-4. Task creates/uses a runtime thread and starts a runtime turn
-5. `runtime_threads.rs` persists thread/turn/item records + monotonic event sequence
-6. Timeline/tool summaries/artifact references are persisted incrementally
-7. Checklist state, verifier gates, PR attempts, and guarded GitHub events are applied from tool metadata to the active task
-8. Final state (`completed|failed|canceled`) is durable and queryable via TUI/API
+完整 workspace 门禁和官方 DeepSeek canary 结果以本阶段最终
+[ROADMAP.md](../product/ROADMAP.md) 与 eval summary 为准；未完成门禁不能从源码存在性推断。
 
-Within the legacy path, model-visible durable task tools are a surface over this
-same manager: `task_create` enqueues normal tasks, `checklist_*` updates
-task-local progress, `task_gate_run` and completed `task_shell_wait` attach
-verification evidence, and automation runs enqueue ordinary durable tasks.
-Relative to the new `AgentRuntime`, however, this manager and its files remain
-an unmigrated state truth; M4-A does not claim they are canonical projections.
+## 7. 明确非结论
 
-### Legacy Runtime Thread/Turn Timeline
+当前源码不证明：
 
-1. API/TUI creates or resumes a thread (`/v1/threads*`)
-2. Turn starts on the thread (`/v1/threads/{id}/turns`)
-3. Engine events are mapped to item lifecycle events (`item.started|item.delta|item.completed`)
-4. Interrupt/steer operations apply to the active turn only
-5. Compaction (auto/manual) is emitted as `context_compaction` item lifecycle
-6. Purge (agent-driven) is emitted as `context_purge` item lifecycle
-7. Clients replay history and resume with `/v1/threads/{id}/events?since_seq=<n>`
+- 交互 TUI 已统一；
+- Provider 清理、全面汉化或中文 Agent prompt A/B 已完成；
+- RepoGraph、EvidenceReceipt、writer-worktree Orchestrator 已完成；
+- transport 迁移本身提升了真实编码成功率；
+- 单次 live canary 可以成为产品指标。
 
-These private item lifecycle events are not schema-v3 canonical
-`RuntimeEvent`s. The app-server and TUI cutovers must replace this translation
-and state path rather than bridge it permanently.
-
-### Durable Schema Gates
-
-- The SQLite `StateStore` is at schema version 6. Its `agent_run_events` rows
-  carry canonical AgentRuntime event schema version 3; a unique terminal index,
-  event IDs, sequence checks, writer leases, and reducer validation fail closed
-  on conflicts or corrupt replay.
-- The canonical event log is append-only. `agent_runs` and
-  `agent_run_snapshots` are derived projections updated transactionally for
-  acquisition and fast reads; they are not independent semantic truth.
-- `session_manager.rs`, `runtime_threads.rs`, and `task_manager.rs` embed `schema_version` on persisted records.
-- On load, newer schema versions are rejected with explicit errors instead of silently truncating/overwriting data.
-- This allows safe forward migrations and prevents corruption when binaries and stored state are out of sync.
-
-## Extension Points
-
-### Adding a New Tool
-
-1. Create handler in `tools/`
-2. Register in `tools/registry.rs`
-3. Add tool specification (name, description, input schema)
-
-### Adding an MCP Server
-
-1. Configure in `~/.codewhale/mcp.json`
-2. Server auto-discovered at startup
-3. Tools exposed to LLM automatically
-
-### Creating a Skill
-
-1. Create skill directory with `SKILL.md`
-2. Define skill prompt and optional scripts
-3. Place in `~/.codewhale/skills/`
-
-### Adding Hooks
-
-Configure in `~/.codewhale/config.toml`:
-
-```toml
-[[hooks]]
-event = "tool_call_before"
-command = "echo 'Running tool: $TOOL_NAME'"
-```
-
-## Key Design Decisions
-
-1. **Streaming-first**: All LLM responses stream for responsiveness
-2. **Tool safety**: Non-YOLO mode requires approval for destructive operations, including side-effectful MCP tools
-3. **Extensibility**: MCP, skills, and hooks allow customization without code changes
-4. **Cross-platform**: Core works on Linux/macOS/Windows. Sandbox guarantees
-   are platform-specific: macOS Seatbelt is the active policy path; Linux and
-   Windows require helper enforcement before they should be treated as full OS
-   sandboxing.
-5. **Minimal dependencies**: Careful dependency selection for build speed
-6. **Local-first runtime API**: HTTP/SSE endpoints are intended for trusted localhost access and are served by the `crates/tui` runtime today
-
-## Configuration Files
-
-- `~/.codewhale/config.toml` - Main configuration (`~/.deepseek/config.toml` is still read as a legacy fallback)
-- `~/.codewhale/state.db` - Default SQLite state database. For `exec`, its
-  schema-v6 Agent run tables are the canonical event/replay truth; legacy
-  tables used by unmigrated callers still coexist in the same database.
-- `$CODEWHALE_HOME/state.db` - Exact database location when
-  `CODEWHALE_HOME` overrides the application data root; no extra
-  `.codewhale/` component is inserted.
-- `/etc/deepseek/managed_config.toml` - Optional managed defaults layer (Unix)
-- `/etc/deepseek/requirements.toml` - Optional allowed-policy constraints (Unix)
-- `~/.codewhale/mcp.json` - MCP server configuration
-- `~/.codewhale/skills/` - User skills directory
-- `~/.codewhale/sessions/` - Session history
-- `~/.codewhale/sessions/checkpoints/` - Crash checkpoint + offline queue persistence
-- `~/.codewhale/snapshots/` - Side-git pre/post-turn workspace snapshots for `/restore` and `revert_turn`
-- `~/.codewhale/tasks/` - Background task records, queue, timelines, artifacts
-- `~/.codewhale/audit.log` - Append-only audit events for credential + approval/elevation actions
+这些能力只能按 ROADMAP 的后续切片实现，并按 EVALUATION 的同任务、同预算、重复 A/B
+决定保留或删除。
