@@ -148,7 +148,7 @@ pub struct RunApiError {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunCommandResult {
     Run {
-        run: RunView,
+        run: Box<RunView>,
     },
     Events {
         run_id: RunId,
@@ -382,7 +382,9 @@ mod tests {
         let run_response = RunCommandResponse {
             schema_version: RUN_API_SCHEMA_VERSION,
             request_id: "request-get".to_owned(),
-            result: RunCommandResult::Run { run: run_view() },
+            result: RunCommandResult::Run {
+                run: Box::new(run_view()),
+            },
         };
         assert_eq!(
             serde_json::from_str::<RunCommandResponse>(
