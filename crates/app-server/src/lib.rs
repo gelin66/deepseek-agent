@@ -31,6 +31,8 @@ use tokio::sync::{Mutex, RwLock};
 use tower_http::cors::CorsLayer;
 use uuid::Uuid;
 
+pub mod canonical;
+
 /// Answers submitted for a pending `request_user_input` clarification.
 ///
 /// The headless runtime emits [`codewhale_protocol::EventFrame::UserInputRequest`]

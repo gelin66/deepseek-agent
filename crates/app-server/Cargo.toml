@@ -18,12 +18,14 @@ codewhale-core = { path = "../core", version = "0.8.68" }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.8.68" }
 codewhale-hooks = { path = "../hooks", version = "0.8.68" }
 codewhale-mcp = { path = "../mcp", version = "0.8.68" }
+codewhale-app = { path = "../app", version = "0.8.68" }
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
 codewhale-release = { path = "../release", version = "0.8.68" }
 codewhale-state = { path = "../state", version = "0.8.68" }
 codewhale-tools = { path = "../tools", version = "0.8.68" }
 serde.workspace = true
 serde_json.workspace = true
+futures-util = "0.3"
 rustls.workspace = true
 tokio.workspace = true
 tower-http.workspace = true
