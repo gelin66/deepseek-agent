@@ -926,27 +926,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-core"
-version = "0.8.68"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "codewhale-agent",
- "codewhale-config",
- "codewhale-execpolicy",
- "codewhale-hooks",
- "codewhale-mcp",
- "codewhale-protocol",
- "codewhale-state",
- "codewhale-tools",
- "serde_json",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "codewhale-deepseek"
 version = "0.8.68"
 dependencies = [
