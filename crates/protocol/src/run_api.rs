@@ -48,6 +48,9 @@ pub struct StartRunCommand {
     pub reasoning_effort: ReasoningEffort,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_output_tokens: Option<u32>,
+    /// Whether the model response uses the streaming DeepSeek surface. Plain
+    /// one-shot CLI execution is non-streaming; Agent/SSE execution streams.
+    pub streaming: bool,
     #[serde(default)]
     pub tool_policy: ToolPolicy,
     #[serde(default)]
@@ -187,6 +190,7 @@ mod tests {
             model: Some("deepseek-v4-flash".to_owned()),
             reasoning_effort: ReasoningEffort::High,
             max_output_tokens: Some(8_192),
+            streaming: true,
             tool_policy: ToolPolicy {
                 enabled: true,
                 allowed: Some(vec!["read_file".to_owned(), "apply_patch".to_owned()]),
@@ -195,6 +199,7 @@ mod tests {
             limits: RunLimits {
                 max_turns: 12,
                 max_model_requests: 10,
+                max_api_requests: std::num::NonZeroU32::new(9),
                 max_model_retries: 1,
                 max_tool_calls: 32,
                 max_depth: 2,
@@ -256,6 +261,7 @@ mod tests {
                     "model": "deepseek-v4-flash",
                     "reasoning_effort": "high",
                     "max_output_tokens": 8192,
+                    "streaming": true,
                     "tool_policy": {
                         "enabled": true,
                         "allowed": ["read_file", "apply_patch"],
@@ -264,6 +270,7 @@ mod tests {
                     "limits": {
                         "max_turns": 12,
                         "max_model_requests": 10,
+                        "max_api_requests": 9,
                         "max_model_retries": 1,
                         "max_tool_calls": 32,
                         "max_depth": 2,
@@ -441,6 +448,25 @@ mod tests {
             .unwrap()
             .insert("system_prompt".to_owned(), json!("transport injection"));
         assert!(serde_json::from_value::<RunCommand>(command).is_err());
+
+        let mut missing_streaming =
+            serde_json::to_value(RunCommand::Start(start_command())).unwrap();
+        missing_streaming
+            .as_object_mut()
+            .unwrap()
+            .remove("streaming");
+        assert!(
+            serde_json::from_value::<RunCommand>(missing_streaming).is_err(),
+            "streaming must be explicit so plain exec and Agent runs cannot silently diverge"
+        );
+
+        let mut zero_physical_budget =
+            serde_json::to_value(RunCommand::Start(start_command())).unwrap();
+        zero_physical_budget["limits"]["max_api_requests"] = json!(0);
+        assert!(
+            serde_json::from_value::<RunCommand>(zero_physical_budget).is_err(),
+            "a physical HTTP budget of zero is not a runnable request"
+        );
 
         let future = json!({
             "schema_version": 99,

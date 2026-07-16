@@ -698,6 +698,7 @@ mod tests {
             .unwrap_or_else(|| "deepseek-v4-flash".to_owned());
         request.reasoning_effort = command.reasoning_effort;
         request.max_output_tokens = command.max_output_tokens;
+        request.streaming = command.streaming;
         request.tool_policy = command.tool_policy;
         request.limits = command.limits;
         request.environment = RunEnvironment {
@@ -718,6 +719,7 @@ mod tests {
             model: Some("deepseek-v4-flash".to_owned()),
             reasoning_effort: ReasoningEffort::High,
             max_output_tokens: Some(4_096),
+            streaming: true,
             tool_policy: ToolPolicy::default(),
             limits: RunLimits {
                 model_event_idle_ms: None,
