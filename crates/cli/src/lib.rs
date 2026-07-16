@@ -216,8 +216,6 @@ enum Commands {
     Init(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
     Setup(TuiPassthroughArgs),
-    /// Generate a remote CodeWhale agent deploy bundle (cloud + chat bridge).
-    RemoteSetup(RemoteSetupArgs),
     /// Run a non-interactive prompt through the TUI runtime.
     #[command(after_help = "\
 Examples:
@@ -1161,72 +1159,6 @@ fn lane_process_spec_from_command(command: &Command) -> Result<WorkflowProcessSp
     })
 }
 
-/// Flags for `codewhale remote-setup`. Forwarded to the TUI binary, which owns
-/// the interactive wizard and bundle generation.
-#[derive(Debug, Args, Clone, Default)]
-struct RemoteSetupArgs {
-    /// Cloud target slug (lighthouse, azure, digitalocean). Skips the prompt.
-    #[arg(long)]
-    cloud: Option<String>,
-    /// Chat bridge slug (feishu, telegram). Skips the prompt.
-    #[arg(long)]
-    bridge: Option<String>,
-    /// Provider slug; validated against the provider registry. Skips the prompt.
-    #[arg(long)]
-    provider: Option<String>,
-    /// Bundle output directory (default `./codewhale-deploy/<cloud>-<bridge>`).
-    #[arg(long, value_name = "DIR")]
-    out: Option<PathBuf>,
-    /// Emit the bundle, do not provision (default).
-    #[arg(long, default_value_t = false)]
-    generate_only: bool,
-    /// Run the cloud CLI to auto-provision (not yet implemented).
-    #[arg(long, default_value_t = false, conflicts_with = "generate_only")]
-    apply: bool,
-    /// Skip the final confirmation gate (CI / non-interactive).
-    #[arg(long, default_value_t = false)]
-    yes: bool,
-    /// Fail instead of prompting if any required value is missing.
-    #[arg(long, default_value_t = false)]
-    non_interactive: bool,
-}
-
-/// Build the forwarded argv for the TUI `remote-setup` subcommand from the
-/// structured CLI flags. Mirrors the named flags exactly so the TUI clap parser
-/// re-derives the same `RemoteSetupArgs`.
-fn remote_setup_tui_args(args: RemoteSetupArgs) -> Vec<String> {
-    let mut forwarded = vec!["remote-setup".to_string()];
-    if let Some(cloud) = args.cloud {
-        forwarded.push("--cloud".to_string());
-        forwarded.push(cloud);
-    }
-    if let Some(bridge) = args.bridge {
-        forwarded.push("--bridge".to_string());
-        forwarded.push(bridge);
-    }
-    if let Some(provider) = args.provider {
-        forwarded.push("--provider".to_string());
-        forwarded.push(provider);
-    }
-    if let Some(out) = args.out {
-        forwarded.push("--out".to_string());
-        forwarded.push(out.to_string_lossy().into_owned());
-    }
-    if args.generate_only {
-        forwarded.push("--generate-only".to_string());
-    }
-    if args.apply {
-        forwarded.push("--apply".to_string());
-    }
-    if args.yes {
-        forwarded.push("--yes".to_string());
-    }
-    if args.non_interactive {
-        forwarded.push("--non-interactive".to_string());
-    }
-    forwarded
-}
-
 #[derive(Debug, Args)]
 struct LoginArgs {
     #[arg(long, value_enum, hide = true)]
@@ -1535,10 +1467,6 @@ fn run() -> Result<()> {
         Some(Commands::Setup(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("setup", args))
-        }
-        Some(Commands::RemoteSetup(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, remote_setup_tui_args(args))
         }
         Some(Commands::Exec(args)) => {
             reject_exec_global_flags(&args.args)?;
@@ -2691,7 +2619,6 @@ fn delegate_exec_to_tui(
     }
 }
 
-
 fn run_resume_command(
     cli: &Cli,
     resolved_runtime: &ResolvedRuntimeOptions,
@@ -3424,13 +3351,11 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::AppServer(AppServerArgs {
-                host: Some(ref host),
+                host: Some(IpAddr::V4(host)),
                 port: Some(9999),
                 stdio: false,
-                http: false,
-                mobile: false,
                 ..
-            })) if host == "0.0.0.0"
+            })) if host == Ipv4Addr::UNSPECIFIED
         ));
 
         let cli = parse_ok(&["deepseek", "app-server", "--stdio"]);
@@ -3447,121 +3372,53 @@ mod tests {
     }
 
     #[test]
-    fn app_server_transports_are_mutually_exclusive() {
-        assert!(matches!(
-            parse_ok(&["deepseek", "app-server", "--http"]).command,
-            Some(Commands::AppServer(AppServerArgs {
-                http: true,
-                mobile: false,
-                stdio: false,
-                ..
-            }))
-        ));
-        assert!(matches!(
-            parse_ok(&["deepseek", "app-server", "--mobile"]).command,
-            Some(Commands::AppServer(AppServerArgs {
-                mobile: true,
-                http: false,
-                stdio: false,
-                ..
-            }))
-        ));
-
+    fn app_server_stdio_conflicts_with_http_options() {
         for argv in [
-            ["deepseek", "app-server", "--http", "--mobile"].as_slice(),
-            ["deepseek", "app-server", "--http", "--stdio"].as_slice(),
-            ["deepseek", "app-server", "--mobile", "--stdio"].as_slice(),
-        ] {
-            let err = Cli::try_parse_from(argv).expect_err("conflicting transports must fail");
-            assert_eq!(err.kind(), ErrorKind::ArgumentConflict, "argv={argv:?}");
-        }
-    }
-
-    #[test]
-    fn app_server_qr_requires_mobile() {
-        let err = Cli::try_parse_from(["deepseek", "app-server", "--qr"])
-            .expect_err("--qr without --mobile must fail");
-        assert_eq!(err.kind(), ErrorKind::MissingRequiredArgument);
-        assert!(matches!(
-            parse_ok(&["deepseek", "app-server", "--mobile", "--qr"]).command,
-            Some(Commands::AppServer(AppServerArgs {
-                mobile: true,
-                qr: true,
-                ..
-            }))
-        ));
-    }
-
-    #[test]
-    fn app_server_serve_passthrough_maps_flags_to_serve() {
-        let args = AppServerArgs {
-            http: true,
-            mobile: false,
-            stdio: false,
-            qr: false,
-            host: Some("127.0.0.1".to_string()),
-            port: Some(9000),
-            workers: Some(4),
-            config: None,
-            auth_token: Some("tok".to_string()),
-            insecure_no_auth: true,
-            cors_origin: vec!["http://localhost:5173".to_string()],
-        };
-        let argv = app_server_serve_passthrough(&args);
-        let as_str: Vec<&str> = argv.iter().map(String::as_str).collect();
-        // app-server's --insecure-no-auth maps onto serve's --insecure.
-        assert_eq!(
-            as_str,
-            vec![
-                "serve",
-                "--http",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "9000",
-                "--workers",
-                "4",
+            ["deepseek", "app-server", "--stdio", "--port", "9000"].as_slice(),
+            ["deepseek", "app-server", "--stdio", "--auth-token", "token"].as_slice(),
+            ["deepseek", "app-server", "--stdio", "--insecure-no-auth"].as_slice(),
+            [
+                "deepseek",
+                "app-server",
+                "--stdio",
                 "--cors-origin",
-                "http://localhost:5173",
-                "--auth-token",
-                "tok",
-                "--insecure",
+                "http://localhost",
             ]
-        );
-    }
-
-    #[test]
-    fn app_server_serve_passthrough_mobile_defaults_are_minimal() {
-        let args = AppServerArgs {
-            http: false,
-            mobile: true,
-            stdio: false,
-            qr: true,
-            host: None,
-            port: None,
-            workers: None,
-            config: None,
-            auth_token: None,
-            insecure_no_auth: false,
-            cors_origin: vec![],
-        };
-        let argv = app_server_serve_passthrough(&args);
-        let as_str: Vec<&str> = argv.iter().map(String::as_str).collect();
-        // No host/port forwarded → serve applies its own --mobile 0.0.0.0 default.
-        // No auth token is injected from the environment into child argv.
-        assert_eq!(as_str, vec!["serve", "--mobile", "--qr"]);
-    }
-
-    #[test]
-    fn serve_help_documents_forwarded_runtime_modes() {
-        let help = help_for(&["codewhale", "serve", "--help"]);
-        for flag in ["--http", "--mobile", "--mcp", "--acp"] {
-            assert!(
-                help.contains(flag),
-                "serve help should document forwarded flag {flag}; help was:\n{help}"
-            );
+            .as_slice(),
+        ] {
+            let error = Cli::try_parse_from(argv).expect_err("stdio and HTTP flags must conflict");
+            assert_eq!(error.kind(), ErrorKind::ArgumentConflict, "argv={argv:?}");
         }
-        assert!(help.contains("compatibility"));
+    }
+
+    #[test]
+    fn obsolete_app_server_and_serve_flags_fail_closed() {
+        for argv in [
+            ["deepseek", "app-server", "--http"].as_slice(),
+            ["deepseek", "app-server", "--mobile"].as_slice(),
+            ["deepseek", "app-server", "--qr"].as_slice(),
+            ["deepseek", "app-server", "--workers", "2"].as_slice(),
+            ["deepseek", "app-server", "--config", "old.toml"].as_slice(),
+            ["deepseek", "serve", "--http"].as_slice(),
+            ["deepseek", "serve", "--mobile"].as_slice(),
+        ] {
+            let error = Cli::try_parse_from(argv).expect_err("obsolete flag must fail closed");
+            assert_eq!(error.kind(), ErrorKind::UnknownArgument, "argv={argv:?}");
+        }
+        // The root CLI accepts free-form prompts, so an unknown first token is
+        // data, not a subcommand. It must not resurrect the retired generator.
+        let parsed = parse_ok(&["deepseek", "remote-setup"]);
+        assert!(parsed.command.is_none());
+        assert_eq!(parsed.prompt, ["remote-setup"]);
+    }
+
+    #[test]
+    fn serve_help_only_documents_mcp_and_acp() {
+        let help = help_for(&["codewhale", "serve", "--help"]);
+        assert!(help.contains("--mcp"));
+        assert!(help.contains("--acp"));
+        assert!(!help.contains("--http"));
+        assert!(!help.contains("--mobile"));
     }
 
     #[test]
@@ -5461,7 +5318,15 @@ mod tests {
             ),
             (
                 "app-server",
-                vec!["--host", "--port", "--config", "--stdio"],
+                vec![
+                    "--host",
+                    "--port",
+                    "--stdio",
+                    "--auth-token",
+                    "--insecure-no-auth",
+                    "--cors-origin",
+                    "--max-body-bytes",
+                ],
             ),
             (
                 "completion",

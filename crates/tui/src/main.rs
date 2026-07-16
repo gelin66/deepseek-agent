@@ -82,7 +82,6 @@ mod provider_lake;
 mod provider_readiness;
 mod purge;
 mod regex_cache;
-mod remote_setup;
 pub mod repl;
 mod repo_law;
 mod request_tuning;
@@ -241,8 +240,6 @@ enum Commands {
     SessionDiagnostics(SessionDiagnosticsArgs),
     /// Bootstrap MCP config and/or skills directories
     Setup(SetupArgs),
-    /// Generate a remote CodeWhale agent deploy bundle (cloud + chat bridge)
-    RemoteSetup(remote_setup::RemoteSetupArgs),
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for
@@ -1439,7 +1436,6 @@ async fn run_async_main() -> Result<()> {
                 let workspace = resolve_workspace(&cli);
                 run_setup(&config, &workspace, args)
             }
-            Commands::RemoteSetup(args) => remote_setup::run_remote_setup(args),
             Commands::Completions { shell } => {
                 generate_completions(shell);
                 Ok(())
@@ -4078,7 +4074,7 @@ fn print_doctor_setup_report(
         );
     }
     println!(
-        "  · next actions: /constitution (standing law), /setup report (readiness), /setup provider or /provider setup <name> (provider credentials), /model (route), /config (runtime posture), /setup fleet (Operate/Fleet readiness), /fleet setup (explicit profile authoring), /setup hotbar (optional shortcuts), /setup tools (Tools/MCP readiness), /setup remote (remote runtime on-ramp), /setup persistence (path review)"
+        "  · next actions: /constitution (standing law), /setup report (readiness), /setup provider or /provider setup <name> (provider credentials), /model (route), /config (runtime posture), /setup fleet (Operate/Fleet readiness), /fleet setup (explicit profile authoring), /setup hotbar (optional shortcuts), /setup tools (Tools/MCP readiness), /setup persistence (path review)"
     );
     for step in codewhale_config::SetupStep::ALL {
         let entry = state.steps.get(&step);
@@ -4440,7 +4436,6 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
             "operate_fleet": "/setup fleet (readiness), /fleet setup (explicit profile authoring)",
             "hotbar": "/setup hotbar",
             "tools_mcp": "/setup tools",
-            "remote_runtime": "/setup remote",
             "persistence": "/setup persistence",
         },
         "steps": steps,
@@ -4454,7 +4449,6 @@ fn setup_step_id(step: codewhale_config::SetupStep) -> &'static str {
         codewhale_config::SetupStep::TrustSandbox => "trust_sandbox",
         codewhale_config::SetupStep::ToolsMcp => "tools_mcp",
         codewhale_config::SetupStep::Hotbar => "hotbar",
-        codewhale_config::SetupStep::RemoteRuntime => "remote_runtime",
         codewhale_config::SetupStep::Persistence => "persistence",
         codewhale_config::SetupStep::Constitution => "constitution",
         codewhale_config::SetupStep::OperateFleet => "operate_fleet",
@@ -8193,48 +8187,48 @@ fn direct_workflow_status(content: &str) -> Option<String> {
 }
 
 #[cfg(test)]
-mod serve_bind_host_tests {
+mod doctor_legacy_state_tests {
     use super::*;
+    use std::env;
+    use std::ffi::OsString;
+    use std::fs;
+    use tempfile::TempDir;
 
-    #[test]
-    fn http_defaults_to_loopback() {
-        assert_eq!(
-            resolve_serve_bind_host(false, None),
-            ServeBindHost {
-                host: "127.0.0.1".to_string(),
-                mobile_rebound_to_lan: false,
-            }
-        );
+    struct EnvVarRestore {
+        key: &'static str,
+        previous: Option<OsString>,
     }
 
-    #[test]
-    fn mobile_default_rebinds_to_lan_with_warning_flag() {
-        assert_eq!(
-            resolve_serve_bind_host(true, None),
-            ServeBindHost {
-                host: "0.0.0.0".to_string(),
-                mobile_rebound_to_lan: true,
+    impl EnvVarRestore {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = env::var_os(key);
+            unsafe {
+                env::set_var(key, value);
             }
-        );
+            Self { key, previous }
+        }
     }
 
-    #[test]
-    fn mobile_respects_explicit_loopback_host() {
-        assert_eq!(
-            resolve_serve_bind_host(true, Some("127.0.0.1".to_string())),
-            ServeBindHost {
-                host: "127.0.0.1".to_string(),
-                mobile_rebound_to_lan: false,
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            unsafe {
+                match &self.previous {
+                    Some(value) => env::set_var(self.key, value),
+                    None => env::remove_var(self.key),
+                }
             }
-        );
+        }
     }
 
-    #[test]
-    fn http_and_mobile_are_mutually_exclusive() {
-        let err = validate_serve_mode_selection(false, true, true, false).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("--http and --mobile are mutually exclusive")
+    fn roots(tmp: &TempDir) -> (PathBuf, PathBuf) {
+        (tmp.path().join(".codewhale"), tmp.path().join(".deepseek"))
+    }
+
+    fn entry<'a>(report: &'a [DoctorLegacyStateEntry], name: &str) -> &'a DoctorLegacyStateEntry {
+        report
+            .iter()
+            .find(|entry| entry.name == name)
+            .expect("legacy state entry should exist")
     }
 
     #[test]
@@ -8490,7 +8484,6 @@ mod doctor_setup_state_tests {
         );
         assert_eq!(report["next_actions"]["hotbar"], "/setup hotbar");
         assert_eq!(report["next_actions"]["tools_mcp"], "/setup tools");
-        assert_eq!(report["next_actions"]["remote_runtime"], "/setup remote");
         assert_eq!(report["next_actions"]["persistence"], "/setup persistence");
         assert_eq!(
             report["checkpoint_version"],

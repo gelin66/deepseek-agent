@@ -57,8 +57,6 @@ pub enum SetupStep {
     Hotbar,
     /// Tools / MCP / skills / plugins (later lanes; tracked for completeness).
     ToolsMcp,
-    /// Remote / mobile runtime (later lane; tracked for completeness).
-    RemoteRuntime,
     /// Persistence paths for setup state, config, constitution, memory, and notes.
     Persistence,
     /// Final verification / doctor / ready summary.
@@ -67,7 +65,7 @@ pub enum SetupStep {
 
 impl SetupStep {
     /// All steps in canonical first-run order.
-    pub const ALL: [SetupStep; 10] = [
+    pub const ALL: [SetupStep; 9] = [
         SetupStep::Language,
         SetupStep::ProviderModel,
         SetupStep::TrustSandbox,
@@ -75,7 +73,6 @@ impl SetupStep {
         SetupStep::OperateFleet,
         SetupStep::Hotbar,
         SetupStep::ToolsMcp,
-        SetupStep::RemoteRuntime,
         SetupStep::Persistence,
         SetupStep::Verification,
     ];

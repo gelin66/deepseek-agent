@@ -41,13 +41,11 @@ mod model_draft;
 mod operate;
 mod persistence;
 mod provider;
-mod remote;
 mod tools_mcp;
 
 pub(crate) use fleet_draft::{draft_fleet_profile_with_model, workspace_fingerprint};
 pub(crate) use model_draft::draft_constitution_with_model;
 use persistence::SetupPersistenceFacts;
-use remote::SetupRemoteFacts;
 
 /// Target lane for the once-per-version constitution checkpoint. The workspace
 /// package remains 0.8.66 until release approval, so this cannot read
@@ -93,7 +91,7 @@ impl SetupWizardStep for StaticSetupStep {
     }
 }
 
-const STEP_SPECS: [StaticSetupStep; 10] = [
+const STEP_SPECS: [StaticSetupStep; 9] = [
     StaticSetupStep {
         id: SetupStep::Language,
         title_id: MessageId::SetupStepLanguageTitle,
@@ -134,12 +132,6 @@ const STEP_SPECS: [StaticSetupStep; 10] = [
         id: SetupStep::ToolsMcp,
         title_id: MessageId::SetupStepToolsMcpTitle,
         why_id: MessageId::SetupStepToolsMcpWhy,
-        required: false,
-    },
-    StaticSetupStep {
-        id: SetupStep::RemoteRuntime,
-        title_id: MessageId::SetupStepRemoteRuntimeTitle,
-        why_id: MessageId::SetupStepRemoteRuntimeWhy,
         required: false,
     },
     StaticSetupStep {
@@ -220,12 +212,6 @@ struct SetupRuntimeFacts {
     tools_mcp_path_display: String,
     tools_mcp_skills_path_display: String,
     tools_mcp_plugins_path_display: String,
-    remote_clouds_result: String,
-    remote_bridges_result: String,
-    remote_providers_result: String,
-    remote_mode_result: String,
-    remote_command_provider: String,
-    remote_result: String,
     persistence: SetupPersistenceFacts,
     default_mode: String,
     approval_policy_value: String,
@@ -273,12 +259,6 @@ impl Default for SetupRuntimeFacts {
             tools_mcp_path_display: String::new(),
             tools_mcp_skills_path_display: String::new(),
             tools_mcp_plugins_path_display: String::new(),
-            remote_clouds_result: "remote cloud registry not loaded".to_string(),
-            remote_bridges_result: "remote bridge registry not loaded".to_string(),
-            remote_providers_result: "provider registry not loaded".to_string(),
-            remote_mode_result: "remote setup mode not loaded".to_string(),
-            remote_command_provider: "deepseek".to_string(),
-            remote_result: "remote runtime not loaded".to_string(),
             persistence: SetupPersistenceFacts::default(),
             default_mode: "agent".to_string(),
             approval_policy_value: "on-request".to_string(),
@@ -416,7 +396,6 @@ impl SetupRuntimeFacts {
         let tools_mcp_path_display = tools_mcp.mcp_path_display;
         let tools_mcp_skills_path_display = tools_mcp.skills_path_display;
         let tools_mcp_plugins_path_display = tools_mcp.plugins_path_display;
-        let remote = SetupRemoteFacts::from_app(app);
         let constitution_autonomy = UserConstitution::load()
             .ok()
             .and_then(|load| {
@@ -464,12 +443,6 @@ impl SetupRuntimeFacts {
             tools_mcp_path_display,
             tools_mcp_skills_path_display,
             tools_mcp_plugins_path_display,
-            remote_clouds_result: remote.clouds_result,
-            remote_bridges_result: remote.bridges_result,
-            remote_providers_result: remote.providers_result,
-            remote_mode_result: remote.mode_result,
-            remote_command_provider: remote.command_provider,
-            remote_result: remote.result,
             persistence,
             default_mode: app.mode.as_setting().to_string(),
             approval_policy_value: config
@@ -1901,28 +1874,6 @@ impl SetupWizardView {
         })
     }
 
-    fn preview_remote_runtime_on_ramp(&self) -> ViewAction {
-        ViewAction::Emit(ViewEvent::OpenTextPager {
-            title: tr(self.locale, MessageId::SetupRemotePreviewTitle).to_string(),
-            content: remote_runtime_on_ramp_text(self.locale, &self.facts),
-        })
-    }
-
-    fn commit_remote_runtime_review(&mut self) -> ViewAction {
-        let mut state = self.state.clone();
-        state.set_step(
-            SetupStep::RemoteRuntime,
-            StepEntry::new(StepStatus::Verified, false, CONSTITUTION_CHECKPOINT_VERSION)
-                .with_result(self.facts.remote_result.clone()),
-        );
-        self.state = state.clone();
-        self.move_next();
-        ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
-            state,
-            message: tr(self.locale, MessageId::SetupRemoteReviewed).to_string(),
-        })
-    }
-
     fn commit_persistence_review(&mut self) -> ViewAction {
         let mut state = self.state.clone();
         state.set_step(
@@ -2301,9 +2252,6 @@ impl ModalView for SetupWizardView {
             KeyCode::Char('r') if self.selected_step() == SetupStep::ToolsMcp => {
                 self.preview_tools_mcp_on_ramp()
             }
-            KeyCode::Char('r') if self.selected_step() == SetupStep::RemoteRuntime => {
-                self.preview_remote_runtime_on_ramp()
-            }
             KeyCode::Char('r') => self.commit_selected_status(
                 StepStatus::NeedsAction,
                 MessageId::SetupStepRetryRecorded,
@@ -2377,9 +2325,6 @@ impl ModalView for SetupWizardView {
             }
             KeyCode::Enter if self.selected_step() == SetupStep::ToolsMcp => {
                 self.commit_tools_mcp_review()
-            }
-            KeyCode::Enter if self.selected_step() == SetupStep::RemoteRuntime => {
-                self.commit_remote_runtime_review()
             }
             KeyCode::Enter if self.selected_step() == SetupStep::Persistence => {
                 self.commit_persistence_review()
@@ -2481,11 +2426,6 @@ impl ModalView for SetupWizardView {
             hints.push(ActionHint::new(
                 "H",
                 tr(self.locale, MessageId::SetupActionHotbar).to_string(),
-            ));
-        } else if self.selected_step() == SetupStep::RemoteRuntime {
-            hints.push(ActionHint::new(
-                "R",
-                tr(self.locale, MessageId::SetupActionRemote).to_string(),
             ));
         } else if self.selected_step() == SetupStep::TrustSandbox {
             hints.push(ActionHint::new(
@@ -2593,7 +2533,6 @@ impl SetupWizardView {
             SetupStep::OperateFleet => self.operate_fleet_detail_lines(),
             SetupStep::Hotbar => self.hotbar_detail_lines(),
             SetupStep::ToolsMcp => self.tools_mcp_detail_lines(),
-            SetupStep::RemoteRuntime => self.remote_runtime_detail_lines(),
             SetupStep::Persistence => self.persistence_detail_lines(),
             SetupStep::Verification => self.verification_detail_lines(),
             _ => Vec::new(),
@@ -2845,31 +2784,6 @@ impl SetupWizardView {
             self.setup_review_hint_line(
                 MessageId::SetupToolsMcpReviewHint,
                 Some("Press R for safe on-ramps (no auto-run)."),
-            ),
-        ]
-    }
-
-    fn remote_runtime_detail_lines(&self) -> Vec<Line<'static>> {
-        vec![
-            self.detail_row(
-                MessageId::SetupRemoteCloudsLabel,
-                &self.facts.remote_clouds_result,
-            ),
-            self.detail_row(
-                MessageId::SetupRemoteBridgesLabel,
-                &self.facts.remote_bridges_result,
-            ),
-            self.detail_row(
-                MessageId::SetupRemoteProvidersLabel,
-                &self.facts.remote_providers_result,
-            ),
-            self.detail_row(
-                MessageId::SetupRemoteModeLabel,
-                &self.facts.remote_mode_result,
-            ),
-            self.setup_review_hint_line(
-                MessageId::SetupRemoteReviewHint,
-                Some("Press R to preview."),
             ),
         ]
     }
@@ -3201,17 +3115,6 @@ fn setup_report_result(state: &SetupState, facts: &SetupRuntimeFacts) -> String 
         state.runtime_posture_source,
         facts.runtime_result,
         facts.operate_result
-    )
-}
-
-fn remote_runtime_on_ramp_text(locale: Locale, facts: &SetupRuntimeFacts) -> String {
-    remote::on_ramp_text(
-        locale,
-        &facts.remote_clouds_result,
-        &facts.remote_bridges_result,
-        &facts.remote_providers_result,
-        &facts.remote_mode_result,
-        &facts.remote_command_provider,
     )
 }
 
@@ -3973,7 +3876,6 @@ mod tests {
                 SetupStep::OperateFleet,
                 SetupStep::Hotbar,
                 SetupStep::ToolsMcp,
-                SetupStep::RemoteRuntime,
                 SetupStep::Persistence,
                 SetupStep::Verification,
             ]
@@ -4462,98 +4364,6 @@ mod tests {
             action,
             ViewAction::EmitAndClose(ViewEvent::SetupOpenHotbarRequested)
         ));
-    }
-
-    #[test]
-    fn remote_runtime_step_previews_generate_only_on_ramp() {
-        let facts = SetupRuntimeFacts {
-            remote_clouds_result: "3 cloud targets: lighthouse, azure, digitalocean".to_string(),
-            remote_bridges_result: "2 chat bridges: feishu, telegram".to_string(),
-            remote_providers_result:
-                "12 providers from the provider registry; active route deepseek / deepseek-chat"
-                    .to_string(),
-            remote_mode_result:
-                "generate-only bundle; --apply not implemented; default port 7878, workers 2"
-                    .to_string(),
-            ..SetupRuntimeFacts::default()
-        };
-        let mut view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::RemoteRuntime,
-            facts,
-        );
-
-        let action = view.handle_key(key(KeyCode::Char('r')));
-
-        let ViewAction::Emit(ViewEvent::OpenTextPager { title, content }) = action else {
-            panic!("expected remote on-ramp pager");
-        };
-        assert_eq!(title, "Remote runtime on-ramp");
-        assert!(content.contains("does not generate deploy bundles"));
-        assert!(content.contains("codewhale remote-setup --generate-only"));
-        assert!(content.contains("`--apply` remains unimplemented"));
-    }
-
-    #[test]
-    fn remote_runtime_on_ramp_command_uses_active_provider() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let workspace = tmp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).expect("workspace dir");
-        let codewhale_home = tmp.path().join(".codewhale");
-        let _home = crate::test_support::EnvVarGuard::set("HOME", tmp.path());
-        let _userprofile = crate::test_support::EnvVarGuard::set("USERPROFILE", tmp.path());
-        let _codewhale_home =
-            crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", &codewhale_home);
-        let config = Config {
-            provider: Some("openrouter".to_string()),
-            ..Config::default()
-        };
-        let app = App::new(setup_test_options(workspace), &config);
-        let facts = SetupRuntimeFacts::from_app_config(&app, &config);
-
-        let content = remote_runtime_on_ramp_text(Locale::En, &facts);
-
-        assert!(content.contains("--provider openrouter"), "{content}");
-        assert!(!content.contains("--provider deepseek"), "{content}");
-        assert!(
-            content.contains("does not generate deploy bundles"),
-            "{content}"
-        );
-        assert!(
-            content.contains("`--apply` remains unimplemented"),
-            "{content}"
-        );
-    }
-
-    #[test]
-    fn remote_runtime_on_ramp_is_localized_for_shipped_locales() {
-        let facts = SetupRuntimeFacts {
-            remote_clouds_result: "3 cloud targets: lighthouse, azure, digitalocean".to_string(),
-            remote_bridges_result: "2 chat bridges: feishu, telegram".to_string(),
-            remote_providers_result:
-                "12 providers from the provider registry; active route deepseek / deepseek-chat"
-                    .to_string(),
-            remote_mode_result:
-                "generate-only bundle; --apply not implemented; default port 7878, workers 2"
-                    .to_string(),
-            ..SetupRuntimeFacts::default()
-        };
-        let english = remote_runtime_on_ramp_text(Locale::En, &facts);
-
-        for locale in Locale::shipped() {
-            let content = remote_runtime_on_ramp_text(*locale, &facts);
-            assert!(
-                content.contains("codewhale remote-setup --generate-only"),
-                "{}",
-                locale.tag()
-            );
-            assert!(content.contains("`--apply`"), "{}", locale.tag());
-            if *locale != Locale::En {
-                assert_ne!(content, english, "{}", locale.tag());
-            }
-        }
     }
 
     #[test]
@@ -5978,7 +5788,7 @@ mod tests {
                 .is_some_and(|result| result.contains("mode=read_only_safe_probe"))
         );
         assert!(message.contains("Tools/MCP readiness recorded"));
-        assert_eq!(view.selected_step(), SetupStep::RemoteRuntime);
+        assert_eq!(view.selected_step(), SetupStep::Persistence);
     }
 
     #[test]
@@ -6012,7 +5822,7 @@ mod tests {
         );
         assert!(message.contains("needs action") || message.contains("Tools/MCP"));
         // Optional step still advances; first-run is not blocked.
-        assert_eq!(view.selected_step(), SetupStep::RemoteRuntime);
+        assert_eq!(view.selected_step(), SetupStep::Persistence);
     }
 
     #[test]
@@ -6042,74 +5852,6 @@ mod tests {
         assert!(title.to_ascii_lowercase().contains("tool") || title.contains("MCP"));
         assert!(content.contains("/mcp") || content.contains("mcp init"));
         assert!(!content.contains("sk-"));
-    }
-
-    #[test]
-    fn remote_runtime_detail_lines_show_read_only_registry_facts() {
-        let facts = SetupRuntimeFacts {
-            remote_clouds_result: "3 cloud targets: lighthouse, azure, digitalocean".to_string(),
-            remote_bridges_result: "2 chat bridges: feishu, telegram".to_string(),
-            remote_providers_result:
-                "12 providers from the provider registry; active route deepseek / deepseek-chat"
-                    .to_string(),
-            remote_mode_result:
-                "generate-only bundle; --apply not implemented; default port 7878, workers 2"
-                    .to_string(),
-            ..SetupRuntimeFacts::default()
-        };
-        let view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::RemoteRuntime,
-            facts,
-        );
-
-        let text = lines_to_text(view.remote_runtime_detail_lines());
-
-        assert!(text.contains("Cloud targets:"));
-        assert!(text.contains("lighthouse"));
-        assert!(text.contains("Chat bridges:"));
-        assert!(text.contains("feishu"));
-        assert!(text.contains("Remote mode:"));
-        assert!(text.contains("--apply not implemented"));
-        assert!(text.contains("Enter records this setup snapshot. Press R to preview."));
-    }
-
-    #[test]
-    fn remote_runtime_review_records_optional_snapshot() {
-        let facts = SetupRuntimeFacts {
-            remote_result:
-                "clouds=3, bridges=2, providers=12, mode=generate_only, apply=not_implemented"
-                    .to_string(),
-            ..SetupRuntimeFacts::default()
-        };
-        let mut view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::RemoteRuntime,
-            facts,
-        );
-
-        let action = view.handle_key(key(KeyCode::Enter));
-
-        let ViewAction::Emit(ViewEvent::SetupStateCommitRequested { state, message }) = action
-        else {
-            panic!("expected setup-state commit event");
-        };
-        assert_eq!(state.status(SetupStep::RemoteRuntime), StepStatus::Verified);
-        let entry = state
-            .steps
-            .get(&SetupStep::RemoteRuntime)
-            .expect("remote setup entry");
-        assert!(!entry.required);
-        assert!(
-            entry
-                .result
-                .as_deref()
-                .is_some_and(|result| result.contains("mode=generate_only"))
-        );
-        assert!(message.contains("Remote runtime on-ramp recorded"));
-        assert_eq!(view.selected_step(), SetupStep::Persistence);
     }
 
     #[test]

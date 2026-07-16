@@ -83,12 +83,6 @@ impl RegisterCommand for SetupCmd {
                     step: SetupStep::ToolsMcp,
                 })
             }
-            Some(
-                "remote" | "remote-runtime" | "remote_runtime" | "cloud" | "bridge" | "mobile"
-                | "phone",
-            ) => CommandResult::action(AppAction::OpenSetupWizardAt {
-                step: SetupStep::RemoteRuntime,
-            }),
             Some("persistence" | "persist" | "storage") => {
                 CommandResult::action(AppAction::OpenSetupWizardAt {
                     step: SetupStep::Persistence,
@@ -185,8 +179,6 @@ mod tests {
             ("mcp", SetupStep::ToolsMcp),
             ("skills", SetupStep::ToolsMcp),
             ("plugins", SetupStep::ToolsMcp),
-            ("remote", SetupStep::RemoteRuntime),
-            ("cloud", SetupStep::RemoteRuntime),
             ("persistence", SetupStep::Persistence),
             ("persist", SetupStep::Persistence),
             ("storage", SetupStep::Persistence),
