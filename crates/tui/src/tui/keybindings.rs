@@ -198,13 +198,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
-        // `/context` is the guaranteed path; Alt+C is an unadvertised
-        // handler until proven in real terminals (TUI-DOG-003).
-        chord: "/context",
-        description_id: crate::localization::MessageId::KbCompactInspector,
-        section: KeybindingSection::Submission,
-    },
-    KeybindingEntry {
         chord: "Alt+L",
         description_id: crate::localization::MessageId::KbLastMessagePager,
         section: KeybindingSection::Submission,
@@ -361,16 +354,8 @@ mod tests {
     fn shell_binding_source_matches_help_catalog_chords() {
         use crate::tui::shell_key_routing::{ShellBindingId, binding};
         assert_eq!(binding(ShellBindingId::ToolDetails).catalog_chord, "Alt+V");
-        assert_eq!(
-            binding(ShellBindingId::ContextInspector).catalog_chord,
-            "/context"
-        );
         assert_eq!(binding(ShellBindingId::Help).catalog_chord, "F1 / Ctrl+/");
-        for id in [
-            ShellBindingId::ToolDetails,
-            ShellBindingId::ContextInspector,
-            ShellBindingId::Help,
-        ] {
+        for id in [ShellBindingId::ToolDetails, ShellBindingId::Help] {
             let chord = binding(id).catalog_chord;
             assert!(
                 KEYBINDINGS

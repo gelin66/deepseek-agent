@@ -53,7 +53,6 @@ pub enum ModalKind {
     FeedbackPicker,
     ThemePicker,
     ContextMenu,
-    ContextInspector,
 }
 
 /// Clear and paint a modal popup with an opaque surface.

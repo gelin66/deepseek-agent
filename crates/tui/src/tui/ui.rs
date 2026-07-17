@@ -50,7 +50,6 @@ use crate::palette;
 use crate::prompts;
 use crate::settings::Settings;
 use crate::tui::color_compat::ColorCompatBackend;
-use crate::tui::context_inspector::ContextInspectorView;
 use crate::tui::footer_ui::render_footer;
 use crate::tui::key_shortcuts;
 use crate::tui::live_transcript::LiveTranscriptOverlay;
@@ -2105,8 +2104,6 @@ fn render(f: &mut Frame, app: &mut App, config: &Config) {
         // are static and skip this refresh.
         if app.view_stack.top_kind() == Some(ModalKind::LiveTranscript) {
             refresh_live_transcript_overlay(app);
-        } else if app.view_stack.top_kind() == Some(ModalKind::ContextInspector) {
-            refresh_context_inspector_overlay(app);
         }
         let buf = f.buffer_mut();
         app.view_stack.render(size, buf);
@@ -2173,16 +2170,6 @@ fn refresh_live_transcript_overlay(app: &mut App) {
         return;
     };
     if let Some(typed) = overlay.as_any_mut().downcast_mut::<LiveTranscriptOverlay>() {
-        typed.refresh_from_app(app);
-    }
-    app.view_stack.push_boxed(overlay);
-}
-
-fn refresh_context_inspector_overlay(app: &mut App) {
-    let Some(mut overlay) = app.view_stack.pop() else {
-        return;
-    };
-    if let Some(typed) = overlay.as_any_mut().downcast_mut::<ContextInspectorView>() {
         typed.refresh_from_app(app);
     }
     app.view_stack.push_boxed(overlay);

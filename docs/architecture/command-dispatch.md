@@ -44,8 +44,8 @@ intentional:
 | Group | Scope |
 |-------|-------|
 | `core` | Help, model/provider selection, queue, hooks, subagents, links, feedback, voice, and core navigation. |
-| `config` | Config, settings, status surfaces, mode, theme, trust, logout, and related settings commands. |
-| `debug` | Token/cost introspection, cache, system/context, diff/edit, undo, and retry. |
+| `config` | Config, settings, footer status-line configuration, mode, theme, trust, logout, and related settings commands. |
+| `debug` | Canonical runtime cost, balance, and change-log inspection. |
 | `memory` | Persistent memory and notes. |
 | `plugins` | Plugin discovery, listing, and per-plugin metadata detail display. |
 | `project` | Project initialization, sharing, LSP, and goal/hunt commands. |

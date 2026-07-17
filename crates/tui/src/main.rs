@@ -104,7 +104,6 @@ mod startup_trace;
 #[cfg(test)]
 mod test_support;
 mod tls;
-mod tool_output_receipts;
 mod tools;
 mod tui;
 mod utils;

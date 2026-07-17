@@ -602,21 +602,21 @@ mod tests {
     /// final structure per FEAT-008 §3.2.
     ///
     /// Enforcement strategy:
-    /// - Exactly 9 source-verified groups (from `groups/mod.rs`)
+    /// - Exactly 8 source-verified groups (from `groups/mod.rs`)
     /// - Each group owns its commands() list
     /// - Config and debug exceptions verified within their specific groups by
-    ///   identifying the group through its first command ("config" and "tokens")
+    ///   identifying the group through its first command ("config" and "cost")
     /// - Not circular: the group-iterated command count is a consistency check;
     ///   the primary enforcement is exact group count + per-group non-empty + valid metadata
     #[test]
     fn command_ownership_contract_is_enforced() {
         let groups = groups::all_command_groups();
 
-        // AT-009 primary: exactly 9 groups matching groups/mod.rs
+        // AT-009 primary: exactly 8 groups matching groups/mod.rs
         assert_eq!(
             groups.len(),
-            9,
-            "expected exactly 9 command groups (core, session, config, debug, \
+            8,
+            "expected exactly 8 command groups (core, config, debug, \
              project, skills, memory, plugins, utility), got {}",
             groups.len()
         );
@@ -656,19 +656,19 @@ mod tests {
                 has_config = true;
                 assert_eq!(
                     commands.len(),
-                    12,
+                    11,
                     "config group (group-local metadata exception) expected \
-                     exactly 12 commands, got {}",
+                     exactly 11 commands, got {}",
                     commands.len()
                 );
             }
-            if commands.iter().any(|c| c.info().name == "tokens") {
+            if commands.iter().any(|c| c.info().name == "cost") {
                 has_debug = true;
                 assert_eq!(
                     commands.len(),
-                    11,
+                    3,
                     "debug group (group-local metadata exception) expected \
-                     exactly 11 commands, got {}",
+                     exactly 3 commands, got {}",
                     commands.len()
                 );
             }
@@ -681,7 +681,7 @@ mod tests {
         );
         assert!(
             has_debug,
-            "debug group not found (expected first command: /tokens)"
+            "debug group not found (expected first command: /cost)"
         );
 
         // Consistency: group-iterated command count must match registry
@@ -854,27 +854,6 @@ mod tests {
                 command.usage
             );
         }
-    }
-
-    #[test]
-    fn context_command_opens_inspector_and_keeps_ctx_alias() {
-        let context = command_infos()
-            .into_iter()
-            .find(|cmd| cmd.name == "context")
-            .expect("context command should exist");
-        assert_eq!(context.aliases, &["ctx"]);
-        assert!(context.description_for(Locale::En).contains("inspector"));
-
-        let mut app = create_test_app();
-        let result = execute("/ctx", &mut app);
-        assert!(matches!(
-            result.action,
-            Some(AppAction::OpenContextInspector)
-        ));
-
-        let report = execute("/context report", &mut app);
-        let message = report.message.expect("context report should return text");
-        assert!(message.contains("Context Source Map"));
     }
 
     #[test]
@@ -1222,12 +1201,6 @@ mod tests {
             .message
             .expect("/skills should return text");
         assert!(skills.contains("Skills location:"));
-
-        let mut app = create_test_app();
-        let tokens = execute("/tokens", &mut app)
-            .message
-            .expect("/tokens should return text");
-        assert!(tokens.contains("deepseek-v4-pro"));
     }
 
     /// Smoke test: every entry in `command_infos()` must dispatch to a real handler.

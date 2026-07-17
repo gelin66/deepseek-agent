@@ -1,4 +1,4 @@
-//! Shell keyboard bindings for details / context / help.
+//! Shell keyboard bindings for details and help.
 //!
 //! Footer hints, help catalog chords, and live handlers must agree on one
 //! source. Printable characters always belong to the composer: bare `v`
@@ -6,9 +6,8 @@
 //! panel, or modal (TUI-DOG-002). Details/output fires only on
 //! Option+V / Alt+V, and macOS renders the label as `⌥V`, never `Alt`/`Cmd`.
 //! Help is `F1` (with `/help`); `Ctrl+/` stays as a secondary fallback.
-//! `Alt+?` and `Alt+C` are still accepted where terminals deliver them but
-//! are never advertised until proven in real terminals (TUI-DOG-003);
-//! `/context` is the guaranteed context path.
+//! `Alt+?` is still accepted where terminals deliver it but is never
+//! advertised until proven in real terminals (TUI-DOG-003).
 //! Ambiguous macOS Option glyphs (`ç` / `¿`) remain text: terminals do not
 //! identify whether they came from Option or from a user's keyboard layout.
 
@@ -22,7 +21,6 @@ use crate::tui::key_shortcuts;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellBindingId {
     ToolDetails,
-    ContextInspector,
     Help,
 }
 
@@ -43,13 +41,6 @@ pub const SHELL_BINDINGS: &[ShellBinding] = &[
         id: ShellBindingId::ToolDetails,
         catalog_chord: "Alt+V",
         footer_chord: "Alt+V",
-    },
-    ShellBinding {
-        id: ShellBindingId::ContextInspector,
-        // `/context` is the guaranteed path; Alt+C stays an unadvertised
-        // handler until proven in Cursor/Terminal.app/iTerm2/tmux/PTY.
-        catalog_chord: "/context",
-        footer_chord: "/context",
     },
     ShellBinding {
         id: ShellBindingId::Help,
@@ -83,26 +74,19 @@ pub fn display_chord_for_platform(chord: &'static str, is_macos: bool) -> Cow<'s
     }
 }
 
-/// Footer right-hand action hints. Placeholders (`{output}`, `{context}`,
-/// `{keys}`) are localized by the caller.
+/// Footer right-hand action hints. Placeholders (`{output}`, `{keys}`) are
+/// localized by the caller.
 #[must_use]
-pub fn footer_action_hints(include_context: bool) -> String {
-    footer_action_hints_for_platform(include_context, cfg!(target_os = "macos"))
+pub fn footer_action_hints() -> String {
+    footer_action_hints_for_platform(cfg!(target_os = "macos"))
 }
 
 #[must_use]
-pub fn footer_action_hints_for_platform(include_context: bool, is_macos: bool) -> String {
+pub fn footer_action_hints_for_platform(is_macos: bool) -> String {
     let details =
         display_chord_for_platform(binding(ShellBindingId::ToolDetails).footer_chord, is_macos);
     let help = binding(ShellBindingId::Help).footer_chord;
-    if include_context {
-        format!(
-            "{details}:{{output}} · {}:{{context}} · {help}:{{keys}}",
-            binding(ShellBindingId::ContextInspector).footer_chord
-        )
-    } else {
-        format!("{details}:{{output}} · {help}:{{keys}}")
-    }
+    format!("{details}:{{output}} · {help}:{{keys}}")
 }
 
 /// Details/output opens only on Option+V (macOS legacy `√`) or Alt+V.
@@ -113,12 +97,6 @@ pub fn is_tool_details_shortcut(key: &KeyEvent) -> bool {
         return true;
     }
     matches!(key.code, KeyCode::Char('v') | KeyCode::Char('V'))
-        && key_shortcuts::alt_nav_modifiers(key.modifiers)
-}
-
-#[must_use]
-pub fn is_context_inspector_shortcut(key: &KeyEvent) -> bool {
-    matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C'))
         && key_shortcuts::alt_nav_modifiers(key.modifiers)
 }
 
@@ -161,28 +139,22 @@ mod tests {
     fn details_label_is_option_glyph_on_macos_and_alt_elsewhere() {
         assert_eq!(display_chord_for_platform("Alt+V", true), "⌥V");
         assert_eq!(display_chord_for_platform("Alt+V", false), "Alt+V");
-        let macos = footer_action_hints_for_platform(true, true);
+        let macos = footer_action_hints_for_platform(true);
         assert!(macos.starts_with("⌥V:"), "{macos}");
         assert!(!macos.contains("Alt"), "{macos}");
         assert!(!macos.contains("Cmd"), "{macos}");
-        let other = footer_action_hints_for_platform(true, false);
+        let other = footer_action_hints_for_platform(false);
         assert!(other.starts_with("Alt+V:"), "{other}");
     }
 
     #[test]
-    fn footer_hints_never_advertise_bare_v_alt_question_or_alt_c() {
+    fn footer_hints_never_advertise_bare_v_or_alt_question() {
         for is_macos in [true, false] {
-            for include_context in [true, false] {
-                let hints = footer_action_hints_for_platform(include_context, is_macos);
-                assert!(!hints.starts_with("v:"), "{hints}");
-                assert!(!hints.contains(" v:"), "{hints}");
-                assert!(!hints.contains("Alt+?"), "{hints}");
-                assert!(!hints.contains("Alt+C"), "{hints}");
-                assert!(hints.contains("F1:"), "{hints}");
-                if include_context {
-                    assert!(hints.contains("/context:"), "{hints}");
-                }
-            }
+            let hints = footer_action_hints_for_platform(is_macos);
+            assert!(!hints.starts_with("v:"), "{hints}");
+            assert!(!hints.contains(" v:"), "{hints}");
+            assert!(!hints.contains("Alt+?"), "{hints}");
+            assert!(hints.contains("F1:"), "{hints}");
         }
     }
 
@@ -206,20 +178,8 @@ mod tests {
     }
 
     #[test]
-    fn context_accepts_explicit_alt_c_without_stealing_layout_characters() {
-        let alt_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT);
-        assert!(is_context_inspector_shortcut(&alt_c));
-        let cedilla = KeyEvent::new(KeyCode::Char('\u{00e7}'), KeyModifiers::NONE);
-        assert!(!is_context_inspector_shortcut(&cedilla));
-    }
-
-    #[test]
     fn catalog_chords_match_final_contract() {
         assert_eq!(binding(ShellBindingId::Help).catalog_chord, "F1 / Ctrl+/");
-        assert_eq!(
-            binding(ShellBindingId::ContextInspector).catalog_chord,
-            "/context"
-        );
         assert_eq!(binding(ShellBindingId::ToolDetails).catalog_chord, "Alt+V");
         for binding in SHELL_BINDINGS {
             assert!(!binding.catalog_chord.contains("Alt+?"));

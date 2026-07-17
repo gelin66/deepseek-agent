@@ -24,7 +24,7 @@ use crate::core::authority::{ModeSessionPrefs, base_policy_for_mode};
 use crate::core::events::TurnRoute;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{MessageId, tr};
-use crate::models::{Message, SystemPrompt, Tool};
+use crate::models::{Message, SystemPrompt};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
 use crate::resource_telemetry::TokenThroughput;
@@ -1479,8 +1479,6 @@ pub struct SessionState {
     pub total_cache_hit_tokens: u32,
     pub total_cache_miss_tokens: u32,
     pub total_output_tokens: u32,
-    /// Tool catalog from the most recent model request.
-    pub last_tool_catalog: Option<Vec<Tool>>,
 }
 
 /// Sidebar hover state for mouse tooltip support.
@@ -1603,7 +1601,6 @@ impl Default for SessionState {
             total_cache_hit_tokens: 0,
             total_cache_miss_tokens: 0,
             total_output_tokens: 0,
-            last_tool_catalog: None,
         }
     }
 }
@@ -6644,7 +6641,6 @@ pub enum AppAction {
         api_timeout_secs: u64,
         heartbeat_timeout_secs: u64,
     },
-    OpenContextInspector,
     CompactContext,
     PurgeContext,
     ShellJob(ShellJobAction),

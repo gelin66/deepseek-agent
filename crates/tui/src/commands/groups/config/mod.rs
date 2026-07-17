@@ -5,7 +5,6 @@
 // migration scaffolding; see docs/architecture/command-dispatch.md.
 #[allow(clippy::module_inception)]
 pub mod config;
-mod status;
 
 use crate::commands::CommandResult;
 use crate::commands::traits::{Command, CommandGroup, CommandInfo, FunctionCommand};
@@ -21,7 +20,6 @@ impl CommandGroup for ConfigCommands {
             Box::new(FunctionCommand::new(&AUTH_INFO, run_auth)),
             Box::new(FunctionCommand::new(&SIDEBAR_INFO, run_sidebar)),
             Box::new(FunctionCommand::new(&SETTINGS_INFO, run_settings)),
-            Box::new(FunctionCommand::new(&STATUS_INFO, run_status)),
             Box::new(FunctionCommand::new(&STATUSLINE_INFO, run_statusline)),
             Box::new(FunctionCommand::new(&MODE_INFO, run_mode)),
             Box::new(FunctionCommand::new(&THEME_INFO, run_theme)),
@@ -58,12 +56,6 @@ static SETTINGS_INFO: CommandInfo = CommandInfo {
     aliases: &[],
     usage: "/settings",
     description_id: MessageId::CmdSettingsDescription,
-};
-static STATUS_INFO: CommandInfo = CommandInfo {
-    name: "status",
-    aliases: &[],
-    usage: "/status",
-    description_id: MessageId::CmdStatusDescription,
 };
 static STATUSLINE_INFO: CommandInfo = CommandInfo {
     name: "statusline",
@@ -124,9 +116,6 @@ fn run_sidebar(app: &mut App, arg: Option<&str>) -> CommandResult {
 fn run_settings(app: &mut App, arg: Option<&str>) -> CommandResult {
     run_registered(app, "settings", arg)
 }
-fn run_status(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "status", arg)
-}
 fn run_statusline(app: &mut App, arg: Option<&str>) -> CommandResult {
     run_registered(app, "statusline", arg)
 }
@@ -164,7 +153,6 @@ pub(in crate::commands) fn dispatch(
         },
         "sidebar" => config::sidebar(app, arg),
         "settings" => config::show_settings(app),
-        "status" => status::status(app),
         "statusline" => config::status_line(app),
         "mode" => config::mode(app, arg),
         "jihua" => config::mode(app, Some("plan")),

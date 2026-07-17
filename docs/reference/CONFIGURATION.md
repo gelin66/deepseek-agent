@@ -115,7 +115,7 @@ Each repo can carry two distinct, complementary files:
 
 > **`WHALE.md` is deprecated.** It overlapped confusingly with `AGENTS.md`.
 > CodeWhale no longer reads `WHALE.md` as project or global context. If one is
-> present, setup/context diagnostics report it as ignored so you can migrate it.
+> present, `doctor --context-json` reports it as ignored so you can migrate it.
 > Move ordinary instructions to `AGENTS.md` and CodeWhale-specific authority
 > policy to `.codewhale/constitution.json`. Personal standing guidance belongs
 > in `/constitution` / `$CODEWHALE_HOME/constitution.json`. (The global
@@ -1178,7 +1178,7 @@ Common settings keys:
   background color applied to the root, header, transcript, and footer
   surfaces while preserving panel contrast.
 - `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
-  context panel, `/cost`, `/tokens`, and long-turn notification summaries. The
+  `/cost`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
 - `default_mode` (`agent`, `plan`, or `operate`; legacy values are accepted for migration but are not live mode vocabulary)
 - `launch_screen` (`on`/`off`; default `off`): show the pre-session New/

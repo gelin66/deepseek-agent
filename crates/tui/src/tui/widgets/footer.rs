@@ -17,7 +17,7 @@
 //! | work count | `work`, `agents` | To-do/Agents sidebar, `/fleet` |
 //! | mode | `mode_label` | `/mode` picker |
 //! | permission | `permission` | Shift+Tab cycle, `/config` |
-//! | cost/rate | `cost`, `balance`, `cache` | `/tokens`, context inspector |
+//! | cost/rate | `cost`, `balance`, `cache` | canonical usage projection and `/cost` |
 //! | anomalies | `retry`, MCP chip | retry banner, MCP manager |
 //!
 //! Dense proof (tool receipts, full workflow history, raw config keys) stays

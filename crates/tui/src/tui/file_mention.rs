@@ -58,8 +58,8 @@ pub struct FileMentionPreview {
 ///
 /// The transcript keeps the user's compact text (`@path` or `[Attached ...]`)
 /// readable. This record preserves the exact target and inclusion state for
-/// the context inspector and for session resume without leaking raw metadata
-/// into the visible history cell.
+/// file-relevance and session metadata without leaking raw metadata into the
+/// visible history cell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextReference {
     pub kind: ContextReferenceKind,

@@ -217,17 +217,15 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
         use crate::tui::shell_key_routing::{ShellBindingId, binding, footer_action_hints};
         let hint_keys = tr(app.ui_locale, MessageId::FooterHintKeys);
         let hint_output = tr(app.ui_locale, MessageId::FooterHintOutput);
-        let hint_context = tr(app.ui_locale, MessageId::FooterHintContext);
         Cow::Owned(match tier {
             ShellTier::Compact => {
                 format!("{}:{hint_keys}", binding(ShellBindingId::Help).footer_chord)
             }
-            ShellTier::Normal => footer_action_hints(false)
+            ShellTier::Normal => footer_action_hints()
                 .replace("{output}", hint_output.as_ref())
                 .replace("{keys}", hint_keys.as_ref()),
-            ShellTier::Wide => footer_action_hints(true)
+            ShellTier::Wide => footer_action_hints()
                 .replace("{output}", hint_output.as_ref())
-                .replace("{context}", hint_context.as_ref())
                 .replace("{keys}", hint_keys.as_ref()),
         })
     };
