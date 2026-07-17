@@ -8,12 +8,9 @@
 //! a similar popup — the trigger characters, ranking, and post-selection
 //! behaviour differ enough to keep them apart.
 
-use crate::commands;
-
-use super::app::{App, looks_like_slash_command_input};
-use super::model_picker::provider_scoped_model_completion_ids;
+use super::app::App;
+use super::canonical_commands::{self, looks_like_command_input};
 use super::widgets::SlashMenuEntry;
-use super::widgets::slash_completion_hints_with_model_candidates;
 
 /// Return the slash-menu entries the composer should display, honouring
 /// `slash_menu_hidden` (set when the user dismisses the popup with Esc).
@@ -27,39 +24,34 @@ pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<SlashMenuEntry
         let trigger = app.input[byte_start..].chars().next().unwrap_or('/');
         return skill_mention_entries(&partial, trigger, limit, &app.cached_skills);
     }
-    if !looks_like_slash_command_input(&app.input) {
+    if !looks_like_command_input(&app.input) {
         return Vec::new();
     }
-    // Building the cross-provider model inventory is unnecessary while the
-    // user is merely typing `/model`; command-name completion needs no model
-    // rows. Only pay that cost once an argument prefix exists.
-    let trimmed = app.input.trim_start();
-    let needs_model_candidates = trimmed
-        .strip_prefix("/model")
-        .is_some_and(|rest| rest.starts_with(char::is_whitespace));
-    let model_candidates = if needs_model_candidates {
-        provider_scoped_model_completion_ids(app)
-    } else {
-        Vec::new()
-    };
-    slash_completion_hints_with_model_candidates(
-        &app.input,
-        limit,
-        &app.cached_skills,
-        app.ui_locale,
-        Some(&app.workspace),
-        &model_candidates,
-    )
+    canonical_commands::matching_command_infos(&app.input, limit)
+        .into_iter()
+        .map(|info| {
+            let prefix = app
+                .input
+                .trim_start()
+                .trim_start_matches('/')
+                .to_ascii_lowercase();
+            SlashMenuEntry {
+                name: format!("/{}", info.name),
+                description: crate::localization::tr(app.ui_locale, info.description_id)
+                    .into_owned(),
+                is_skill: false,
+                alias_hint: info
+                    .aliases
+                    .iter()
+                    .find(|alias| alias.starts_with(prefix.as_str()))
+                    .map(|alias| format!("/{alias}")),
+            }
+        })
+        .collect()
 }
 
 /// Apply the currently-selected slash menu entry to the composer input.
-/// Optionally appends a trailing space when the command takes arguments
-/// so the user can type the rest without an extra keystroke.
-pub fn apply_slash_menu_selection(
-    app: &mut App,
-    entries: &[SlashMenuEntry],
-    append_space: bool,
-) -> bool {
+pub fn apply_slash_menu_selection(app: &mut App, entries: &[SlashMenuEntry]) -> bool {
     if entries.is_empty() {
         return false;
     }
@@ -79,19 +71,7 @@ pub fn apply_slash_menu_selection(
         return true;
     }
 
-    let mut command = selected.name.clone();
-
-    if append_space
-        && !command.ends_with(' ')
-        && !command.contains(char::is_whitespace)
-        && let Some(info) = commands::get_command_info(command.trim_start_matches('/'))
-        && info.name != "change"
-        && (info.usage.contains('<') || info.usage.contains('['))
-    {
-        command.push(' ');
-    }
-
-    app.input = command;
+    app.input = selected.name.clone();
     app.cursor_position = app.input.chars().count();
     app.slash_menu_hidden = false;
     app.status_message = Some(format!("Command selected: {}", app.input.trim_end()));
@@ -99,14 +79,13 @@ pub fn apply_slash_menu_selection(
 }
 
 /// Return the `/<skill>` or `$<skill>` token under the cursor when it is used as
-/// an inline mention inside a normal message. A `/` or `$` at the start of the
-/// composer, even after leading whitespace, remains reserved for slash commands
-/// (handled by `slash_completion_hints`).
+/// an inline mention inside a normal message. A syntactic `/command` at the
+/// start of the composer remains reserved for canonical local commands.
 pub(crate) fn partial_inline_skill_mention_at_cursor(
     input: &str,
     cursor_chars: usize,
 ) -> Option<(usize, String)> {
-    if looks_like_slash_command_input(input) {
+    if looks_like_command_input(input) {
         return None;
     }
 
@@ -230,25 +209,16 @@ fn replace_inline_skill_mention(
 
 /// Tab-completion for a slash-command-like input. Extends the input to the
 /// longest unambiguous prefix; if exactly one command matches, completes it
-/// fully (with trailing space). On ambiguity, posts a status hint listing
-/// up to five candidates. Also considers skill names as completion candidates.
+/// fully. On ambiguity, posts a status hint listing up to five candidates.
 pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
-    if !looks_like_slash_command_input(&app.input) {
+    if !looks_like_command_input(&app.input) {
         return false;
     }
 
-    let model_candidates = provider_scoped_model_completion_ids(app);
-    let candidates = slash_completion_hints_with_model_candidates(
-        &app.input,
-        128,
-        &app.cached_skills,
-        app.ui_locale,
-        Some(&app.workspace),
-        &model_candidates,
-    )
-    .into_iter()
-    .map(|entry| entry.name)
-    .collect::<Vec<_>>();
+    let candidates = canonical_commands::matching_command_infos(&app.input, 128)
+        .into_iter()
+        .map(|info| format!("/{}", info.name))
+        .collect::<Vec<_>>();
 
     if candidates.is_empty() {
         return false;
@@ -270,10 +240,7 @@ pub fn try_autocomplete_slash_command(app: &mut App) -> bool {
     }
 
     if candidates.len() == 1 {
-        let mut completed = candidates[0].clone();
-        if !completed.ends_with(' ') {
-            completed.push(' ');
-        }
+        let completed = candidates[0].clone();
         app.input = completed.clone();
         app.cursor_position = completed.chars().count();
         app.slash_menu_hidden = false;

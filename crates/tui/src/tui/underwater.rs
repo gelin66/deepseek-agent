@@ -756,8 +756,8 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, app: &mut App) {
     crate::tui::phase_strip::render(area, buf, app);
 }
 
-/// Build the post-launch idle composition. It is deliberately not a command
-/// dashboard: one brand mark, one context line, and one quiet Fleet setup path.
+/// Build the post-launch idle composition: one brand mark and one context line.
+/// Commands are discovered only through the canonical composer menu.
 pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     if area.width == 0 || area.height == 0 {
         return Vec::new();
@@ -822,20 +822,6 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         format!("{inset}{context}"),
         Style::default().fg(app.ui_theme.text_muted),
     )));
-    if area.height >= 6 {
-        lines.push(Line::from(""));
-        let fleet_label = if tier == ShellTier::Compact {
-            tr(app.ui_locale, MessageId::EmptyStateFleetLabel)
-        } else {
-            tr(app.ui_locale, MessageId::EmptyStateFleetSetupLabel)
-        };
-        let fleet = format!("{fleet_label}  /fleet setup");
-        let inset = " ".repeat(width.saturating_sub(fleet.width()) / 2);
-        lines.push(Line::from(Span::styled(
-            format!("{inset}{fleet}"),
-            Style::default().fg(app.ui_theme.text_hint),
-        )));
-    }
     lines
 }
 

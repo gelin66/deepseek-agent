@@ -67,8 +67,12 @@ use super::app::{
     App, AppMode, OnboardingState, ReasoningEffort, SidebarFocus, StatusToastLevel, TuiOptions,
 };
 use super::approval::{ApprovalMode, ApprovalRequest, ApprovalView, ReviewDecision};
+use super::canonical_commands::{self, CanonicalSlashCommand, CanonicalSlashParse};
+use super::composer_ui::{select_next_slash_menu_entry, select_previous_slash_menu_entry};
 use super::history::{HistoryCell, ToolCell, ToolStatus};
-use super::slash_menu::visible_slash_menu_entries;
+use super::slash_menu::{
+    apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
+};
 use super::views::{ModalKind, ViewEvent};
 use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
 use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
@@ -872,7 +876,13 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         app.auto_submit_initial_input = false;
     } else if app.auto_submit_initial_input {
         app.auto_submit_initial_input = false;
-        if let Some(input) = app.submit_input() {
+        if !matches!(
+            canonical_commands::parse(&app.input),
+            CanonicalSlashParse::NotCommand
+        ) {
+            app.status_message =
+                Some("启动参数中的交互命令已保留在输入框，请按 Enter 确认执行".to_owned());
+        } else if let Some(input) = app.submit_input() {
             let _ = run_client
                 .submit(canonical_start_command(&app, config, input))
                 .await?;
@@ -1312,6 +1322,7 @@ async fn handle_canonical_key(
         return Ok(false);
     }
 
+    let slash_menu_entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
     match key.code {
         KeyCode::Enter
             if key.modifiers.contains(KeyModifiers::SHIFT)
@@ -1320,11 +1331,14 @@ async fn handle_canonical_key(
             app.insert_char('\n');
         }
         KeyCode::Enter => {
+            if !slash_menu_entries.is_empty() {
+                let _ = apply_slash_menu_selection(app, &slash_menu_entries);
+            }
             let Some(input) = app.handle_composer_enter() else {
                 return Ok(false);
             };
-            match input.trim() {
-                "/exit" | "/quit" => {
+            match canonical_commands::parse(&input) {
+                CanonicalSlashParse::Command(CanonicalSlashCommand::Exit) => {
                     if run_client.snapshot().await.current_active_root.is_some() {
                         run_client.cancel().await?;
                         *exit_after_terminal = true;
@@ -1337,7 +1351,7 @@ async fn handle_canonical_key(
                     }
                     return Ok(true);
                 }
-                "/compact" => {
+                CanonicalSlashParse::Command(CanonicalSlashCommand::Compact) => {
                     let snapshot = run_client.snapshot().await;
                     if let Some(run_id) = snapshot.latest_terminal_root {
                         let _ = run_client
@@ -1348,12 +1362,27 @@ async fn handle_canonical_key(
                         app.status_message = Some("当前没有可压缩的终态运行".to_owned());
                     }
                 }
-                command if command.starts_with('/') => {
-                    app.insert_str(&input);
-                    app.status_message =
-                        Some("该旧斜杠命令没有 canonical Run 语义，未执行".to_owned());
+                CanonicalSlashParse::Command(CanonicalSlashCommand::Help) => {
+                    app.add_message(HistoryCell::System {
+                        content: canonical_commands::help_text(app.ui_locale),
+                    });
+                    app.status_message = Some("已显示 canonical 交互命令".to_owned());
                 }
-                _ => {
+                CanonicalSlashParse::Command(CanonicalSlashCommand::Cost) => {
+                    let total = app.displayed_session_cost_for_currency(app.cost_currency);
+                    let content = crate::localization::tr(
+                        app.ui_locale,
+                        crate::localization::MessageId::CmdCostReport,
+                    )
+                    .replace("{cost}", &app.format_cost_amount_precise(total));
+                    app.add_message(HistoryCell::System { content });
+                    app.status_message = Some("已显示 canonical 用量费用".to_owned());
+                }
+                CanonicalSlashParse::Error(message) => {
+                    app.insert_str(&input);
+                    app.status_message = Some(message);
+                }
+                CanonicalSlashParse::NotCommand => {
                     let snapshot = run_client.snapshot().await;
                     if snapshot.current_active_root.is_some() {
                         match run_client.steer(input.clone()).await {
@@ -1381,6 +1410,18 @@ async fn handle_canonical_key(
                     }
                 }
             }
+        }
+        KeyCode::Tab => {
+            let _ = try_autocomplete_slash_command(app);
+        }
+        KeyCode::Up if !slash_menu_entries.is_empty() => {
+            select_previous_slash_menu_entry(app, slash_menu_entries.len());
+        }
+        KeyCode::Down if !slash_menu_entries.is_empty() => {
+            select_next_slash_menu_entry(app, slash_menu_entries.len());
+        }
+        KeyCode::Esc if !slash_menu_entries.is_empty() => {
+            app.close_slash_menu();
         }
         KeyCode::Esc => {
             if !app.input.is_empty() {

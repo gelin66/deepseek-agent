@@ -110,26 +110,6 @@ pub(crate) fn resolve_skills_dir(
     global_skills_dir.to_path_buf()
 }
 
-pub(crate) fn looks_like_slash_command_input(input: &str) -> bool {
-    let trimmed = input.trim_start();
-    // `$skillname` at the start of input is treated like a slash command so the
-    // skill-completion menu appears.
-    let Some(rest) = trimmed
-        .strip_prefix('/')
-        .or_else(|| trimmed.strip_prefix('$'))
-    else {
-        return false;
-    };
-    if rest.chars().next().is_some_and(|ch| ch.is_whitespace()) {
-        return false;
-    }
-    let Some(command) = rest.split_whitespace().next() else {
-        return rest.is_empty();
-    };
-
-    !command.contains('/')
-}
-
 pub(crate) fn shell_command_from_bang_input(input: &str) -> Result<Option<&str>, &'static str> {
     let Some(rest) = input.trim_start().strip_prefix('!') else {
         return Ok(None);
@@ -5671,7 +5651,7 @@ impl App {
             }
             input.push_str(&reference);
         }
-        if !looks_like_slash_command_input(&input) {
+        if !super::canonical_commands::looks_like_command_input(&input) {
             self.input_history.push(input.clone());
             if self.max_input_history == 0 {
                 self.input_history.clear();

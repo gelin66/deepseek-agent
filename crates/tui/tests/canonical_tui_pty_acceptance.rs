@@ -394,6 +394,68 @@ fn unknown_billing_blocks_automatic_cli_prompt_and_all_deepseek_posts() -> anyho
     Ok(())
 }
 
+#[test]
+fn canonical_local_commands_are_truthful_and_never_post_to_deepseek() -> anyhow::Result<()> {
+    let fixture = CountingDeepSeekFixture::spawn()?;
+    let isolated = make_sealed_workspace()?;
+    let codewhale_home = isolated.home().join(".codewhale");
+
+    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+        .cwd(isolated.workspace())
+        .clear_env()
+        .seal_home(isolated.home())
+        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
+        .env("DEEPSEEK_API_KEY", "offline-canonical-command-key")
+        .env("DEEPSEEK_BASE_URL", fixture.base_url())
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            isolated
+                .workspace()
+                .to_str()
+                .expect("UTF-8 fixture workspace"),
+            "--no-project-config",
+            "--skip-onboarding",
+            "--prompt",
+            "/he",
+        ])
+        .size(40, 140)
+        .spawn()?;
+
+    tui.wait_for_text("/he", BOOT_TIMEOUT)?;
+    assert_eq!(
+        fixture.post_count(),
+        0,
+        "an initial local command must wait for explicit execution"
+    );
+    tui.send(b"\t")?;
+    tui.wait_for_text("/help", Duration::from_secs(5))?;
+    tui.send(keys::key::enter())?;
+    tui.wait_for_text("Available commands:", Duration::from_secs(5))?;
+    tui.wait_for_text("/compact", Duration::from_secs(5))?;
+    tui.wait_for_text("/cost", Duration::from_secs(5))?;
+
+    tui.paste("/provider")?;
+    tui.send(keys::key::enter())?;
+    tui.wait_for_text("未知命令：/provider", Duration::from_secs(5))?;
+    assert_eq!(
+        fixture.post_count(),
+        0,
+        "local and rejected commands must never become DeepSeek prompts"
+    );
+
+    tui.send(b"\x04")?;
+    assert_eq!(
+        tui.wait_for_exit(EXIT_TIMEOUT),
+        Some(0),
+        "canonical local-command surface did not exit cleanly:\n{}",
+        tui.debug_dump()
+    );
+    fixture.shutdown()?;
+    Ok(())
+}
+
 fn assert_canonical_sqlite_truth(state_path: &Path, workspace: &str) -> anyhow::Result<()> {
     let store = StateStore::open(Some(state_path.to_path_buf()))?;
     let runtime = tokio::runtime::Builder::new_current_thread()

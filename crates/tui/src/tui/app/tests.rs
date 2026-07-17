@@ -639,14 +639,17 @@ fn sidebar_focus_accepts_pinned_and_maps_legacy_trackers_to_pinned() {
 
 #[test]
 fn slash_command_classifier_treats_absolute_path_as_message() {
-    assert!(looks_like_slash_command_input("/"));
-    assert!(looks_like_slash_command_input("/help"));
-    assert!(looks_like_slash_command_input("/model deepseek-v4-pro"));
-    assert!(!looks_like_slash_command_input("/ hello"));
-    assert!(!looks_like_slash_command_input("  / hello"));
-    assert!(!looks_like_slash_command_input(
+    use crate::tui::canonical_commands::looks_like_command_input;
+
+    assert!(looks_like_command_input("/"));
+    assert!(looks_like_command_input("/help"));
+    assert!(looks_like_command_input("/model deepseek-v4-pro"));
+    assert!(!looks_like_command_input("/ hello"));
+    assert!(!looks_like_command_input("  / hello"));
+    assert!(!looks_like_command_input(
         "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？"
     ));
+    assert!(!looks_like_command_input("$skill-name 处理任务"));
 }
 
 #[test]
