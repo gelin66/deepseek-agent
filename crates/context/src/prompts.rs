@@ -133,22 +133,17 @@ fn is_concise_verbosity(value: Option<&str>) -> bool {
 /// The block is appended to the workspace-static portion of the
 /// system prompt (after mode prompt + project context, before
 /// configured instructions / skills).
-fn render_environment_block(workspace: &Path, shell: &str) -> String {
+fn render_environment_block(shell: &str) -> String {
     let codewhale_version = env!("CARGO_PKG_VERSION");
     let platform = std::env::consts::OS;
 
-    // The workspace path is volatile session state, so it belongs below the
-    // cache-stable constitution rather than being omitted or placed in the
-    // stable prefix.
     format!(
         "## 运行环境\n\
          \n\
          - lang: zh-Hans\n\
          - codewhale_version: {codewhale_version}\n\
          - platform: {platform}\n\
-         - shell: {shell}\n\
-         - cwd: {}",
-        workspace.display()
+         - shell: {shell}"
     )
 }
 
@@ -768,10 +763,7 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
     // `render_diff` without rebuilding unrelated material.
 
     // Workspace fragment: environment + mid-session memory/goal facts.
-    let mut workspace_parts = vec![render_environment_block(
-        workspace,
-        session_context.shell_binary,
-    )];
+    let mut workspace_parts = vec![render_environment_block(session_context.shell_binary)];
     if let Some(memory_block) = session_context.user_memory_block
         && !memory_block.trim().is_empty()
     {
@@ -1051,7 +1043,8 @@ mod tests {
         assert!(prompt.blocks[0].text.contains("## 语言"));
         assert!(prompt.blocks[1].text.contains("/fixture/bin/zsh"));
         assert!(prompt.blocks[1].text.contains("- lang: zh-Hans"));
-        assert!(prompt.blocks[1].text.contains("- cwd: "));
+        assert!(!prompt.blocks[1].text.contains("- cwd: "));
+        assert!(!prompt.blocks[1].text.contains("<fixture-root>"));
         assert!(prompt.blocks[2].text.contains("OPAQUE_FILE_INSTRUCTION"));
         assert!(prompt.blocks[2].text.contains("OPAQUE_INLINE_INSTRUCTION"));
         assert!(prompt.blocks[3].text.contains("model: deepseek-v4-pro"));
@@ -1120,7 +1113,7 @@ mod tests {
             block_hashes,
             [
                 "f46e6dcb87fb0113fe9ee4458b8ad9222de36f9ce791b89763d13482d3a13c6b",
-                "a82dc219365a2a16f40d152f3d4ca2ff5a19b2cfe5ac1b8658a2f960bab367db",
+                "2caa65b9283dccb613c68ab9e334dee8999d36519d393cd45d42eccd9b25d3ca",
                 "70e9297a2ae78cb815d9a24c18d93f57eb8fe05cc12b005a9826e778ffd1c4fe",
                 "50f497cd9e457dacbe0e0b8ce8166bcaa7da57a705a5b3b781b2623a5a21dd00",
                 "5e7da4e8d562f6d2b93697c57f0cac6e514989a9d31295213672aabce27716e0",
@@ -1141,7 +1134,7 @@ mod tests {
             .join("\0\0");
         assert_eq!(
             sha256(normalized_prompt.as_bytes()),
-            "6b27e0543388a1f654ed69338b6065d51d393e447857a062bee4f13e0b1c756a"
+            "04db7abff4496476511f3487f7f583c5e151f219df7fc2c811d272784895a311"
         );
 
         let no_tool_prompt = production_system_prompt(ProductionPromptRequest {
