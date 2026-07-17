@@ -109,7 +109,7 @@ impl PressureLevel {
 
     /// Lowercase, stable label suitable for status lines and logs.
     ///
-    /// Kept aligned with the existing context-report vocabulary
+    /// Kept aligned with the canonical context-budget vocabulary.
     /// (`low`/`moderate`/`high`/`critical`).
     #[must_use]
     pub const fn label(self) -> &'static str {
