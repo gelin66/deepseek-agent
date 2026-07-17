@@ -2347,21 +2347,6 @@ fn expanded_tool_runs_rebase_when_history_prefix_shifts() {
 }
 
 #[test]
-fn expanded_tool_runs_prune_when_history_is_truncated() {
-    let mut app = App::new(test_options(false), &Config::default());
-    for idx in 0..5 {
-        app.add_message(HistoryCell::System {
-            content: format!("cell {idx}"),
-        });
-    }
-    app.expanded_tool_runs = std::collections::HashSet::from([1usize, 4usize]);
-
-    app.truncate_history_to(3);
-
-    assert_eq!(app.expanded_tool_runs, std::collections::HashSet::from([1]));
-}
-
-#[test]
 fn tool_run_expansion_toggle_opens_and_closes_run() {
     let mut app = App::new(test_options(false), &Config::default());
     app.tool_collapse_mode = ToolCollapseMode::Compact;

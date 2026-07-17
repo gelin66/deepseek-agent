@@ -1,14 +1,9 @@
-//! Debug command area: token/cost introspection, cache tooling, undo/retry,
-//! and the change log.
+//! Debug command area: token/cost introspection, cache tooling, and the change log.
 
 mod balance;
 mod cache;
 mod change;
 mod tokens;
-mod undo;
-
-#[cfg(test)]
-mod tests;
 
 use crate::commands::CommandResult;
 use crate::commands::traits::{Command, CommandGroup, CommandInfo, FunctionCommand};
@@ -27,10 +22,6 @@ impl CommandGroup for DebugCommands {
             Box::new(FunctionCommand::new(&CHANGE_INFO, run_change)),
             Box::new(FunctionCommand::new(&SYSTEM_INFO, run_system)),
             Box::new(FunctionCommand::new(&CONTEXT_INFO, run_context)),
-            Box::new(FunctionCommand::new(&EDIT_INFO, run_edit)),
-            Box::new(FunctionCommand::new(&DIFF_INFO, run_diff)),
-            Box::new(FunctionCommand::new(&UNDO_INFO, run_undo)),
-            Box::new(FunctionCommand::new(&RETRY_INFO, run_retry)),
         ])
     }
 }
@@ -77,30 +68,6 @@ static CONTEXT_INFO: CommandInfo = CommandInfo {
     usage: "/context [report|json|summary]",
     description_id: MessageId::CmdContextDescription,
 };
-static EDIT_INFO: CommandInfo = CommandInfo {
-    name: "edit",
-    aliases: &[],
-    usage: "/edit",
-    description_id: MessageId::CmdEditDescription,
-};
-static DIFF_INFO: CommandInfo = CommandInfo {
-    name: "diff",
-    aliases: &[],
-    usage: "/diff",
-    description_id: MessageId::CmdDiffDescription,
-};
-static UNDO_INFO: CommandInfo = CommandInfo {
-    name: "undo",
-    aliases: &[],
-    usage: "/undo",
-    description_id: MessageId::CmdUndoDescription,
-};
-static RETRY_INFO: CommandInfo = CommandInfo {
-    name: "retry",
-    aliases: &["chongshi"],
-    usage: "/retry",
-    description_id: MessageId::CmdRetryDescription,
-};
 
 fn run_registered(app: &mut App, name: &str, arg: Option<&str>) -> CommandResult {
     dispatch(app, name, arg).expect("registered debug command should dispatch")
@@ -127,18 +94,6 @@ fn run_system(app: &mut App, arg: Option<&str>) -> CommandResult {
 fn run_context(app: &mut App, arg: Option<&str>) -> CommandResult {
     run_registered(app, "context", arg)
 }
-fn run_edit(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "edit", arg)
-}
-fn run_diff(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "diff", arg)
-}
-fn run_undo(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "undo", arg)
-}
-fn run_retry(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "retry", arg)
-}
 
 pub(in crate::commands) fn dispatch(
     app: &mut App,
@@ -153,24 +108,6 @@ pub(in crate::commands) fn dispatch(
         "change" => change::change(app, arg),
         "system" | "xitong" => tokens::system_prompt(app),
         "context" | "ctx" => tokens::context(app, arg),
-        "edit" => undo::edit(app),
-        "diff" => undo::diff(app),
-        "undo" => {
-            // Try surgical patch-undo first; fall back to conversation undo
-            // if no snapshots are available or if the snapshot undo couldn't
-            // find anything useful.
-            let result = undo::patch_undo(app);
-            if result.message.as_deref().is_none_or(|m| {
-                m.starts_with("No snapshots found")
-                    || m.starts_with("No older tool or pre-turn")
-                    || m.starts_with("Snapshot repo")
-            }) {
-                undo::undo_conversation(app)
-            } else {
-                result
-            }
-        }
-        "retry" | "chongshi" => undo::retry(app),
         _ => return None,
     };
     Some(result)

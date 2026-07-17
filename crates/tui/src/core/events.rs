@@ -3,14 +3,14 @@
 //! These events flow from the engine to the TUI via a channel,
 //! enabling non-blocking, real-time updates.
 
-use std::{path::PathBuf, sync::Arc};
+use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::config::ApiProvider;
 use crate::error_taxonomy::ErrorEnvelope;
-use crate::models::{Message, SystemPrompt, Tool, Usage};
+use crate::models::{Tool, Usage};
 use crate::tools::goal::GoalSnapshot;
 use crate::tools::spec::{ToolError, ToolOutcome};
 use crate::tools::subagent::SubAgentResult;
@@ -146,10 +146,8 @@ pub enum Event {
         #[allow(dead_code)]
         messages_after: Option<usize>,
         /// Rendered text of the accumulated compaction summary prompt, if any.
-        /// Host layers (e.g. the /v1 runtime) persist this into the thread
-        /// record so the summary survives engine reloads — without it the
-        /// summary lives only in engine memory and is lost on LRU eviction
-        /// or restart (SyncSession re-extracts it from the record prompt).
+        /// Retained by old compaction consumers while this event surface is
+        /// awaiting deletion.
         summary_prompt: Option<String>,
     },
 
@@ -271,21 +269,6 @@ pub enum Event {
     UserInputRequired {
         id: String,
         request: UserInputRequest,
-    },
-
-    /// Authoritative API conversation state from the engine session.
-    ///
-    /// The UI receives granular display events, but those are not always a
-    /// lossless representation of the API transcript. DeepSeek can emit
-    /// reasoning directly followed by tool calls without a visible assistant
-    /// text block, and that assistant message still has to be persisted for
-    /// later `reasoning_content` replay.
-    SessionUpdated {
-        session_id: String,
-        messages: Vec<Message>,
-        system_prompt: Option<SystemPrompt>,
-        model: String,
-        workspace: PathBuf,
     },
 
     /// Request user decision after sandbox denial

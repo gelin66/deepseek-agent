@@ -5,12 +5,10 @@
 
 use crate::compaction::CompactionConfig;
 use crate::config::ApiProvider;
-use crate::models::{Message, SystemPrompt};
 use crate::tools::goal::GoalStatus;
 use crate::tui::app::AppMode;
 use crate::tui::approval::ApprovalMode;
 use codewhale_protocol::runtime::DynamicToolSpec;
-use std::path::PathBuf;
 
 /// Prefix used for tool-call ids created by local composer shell shortcuts.
 pub const USER_SHELL_TOOL_ID_PREFIX: &str = "user_shell_";
@@ -186,17 +184,6 @@ pub enum Op {
         max_spawn_depth: u32,
         api_timeout_secs: u64,
         heartbeat_timeout_secs: u64,
-    },
-
-    /// Sync engine session state (used for resume/load)
-    SyncSession {
-        session_id: Option<String>,
-        messages: Vec<Message>,
-        system_prompt: Option<SystemPrompt>,
-        system_prompt_override: bool,
-        model: String,
-        workspace: PathBuf,
-        mode: AppMode,
     },
 
     /// Run context compaction immediately.

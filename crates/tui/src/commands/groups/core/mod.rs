@@ -5,7 +5,6 @@
 mod acceptance;
 mod agent;
 mod anchor;
-mod clear;
 mod constitution;
 // This group dir intentionally has a `core.rs` child module with the same
 // name. The module_inception allow is a permanent structure rationale, not
@@ -37,8 +36,6 @@ pub mod voice;
 mod workflow;
 mod workspace;
 
-pub(in crate::commands) use self::core::reset_conversation_state;
-
 use crate::commands::CommandResult;
 use crate::commands::traits::{Command, CommandGroup, FunctionCommand, RegisterCommand};
 
@@ -54,10 +51,6 @@ impl CommandGroup for CoreCommands {
             Box::new(FunctionCommand::new(
                 help::HelpCmd::info(),
                 help::HelpCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                clear::ClearCmd::info(),
-                clear::ClearCmd::execute,
             )),
             Box::new(FunctionCommand::new(
                 exit::ExitCmd::info(),

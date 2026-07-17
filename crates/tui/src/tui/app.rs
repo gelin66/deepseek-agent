@@ -2353,17 +2353,12 @@ pub struct App {
     /// back to original indices for the `HideCell` / `ShowCell` actions.
     pub collapsed_cell_map: Vec<usize>,
 
-    /// Whether `/edit` has loaded the last user message into the composer and
-    /// the next submit should replace (not append to) the last exchange.
-    pub edit_in_progress: bool,
-
     /// Whether LSP diagnostics are currently enabled. Mirrors the config file
     /// `[lsp].enabled` setting. Toggled at runtime via `/lsp on|off`.
     pub lsp_enabled: bool,
     /// Current-turn LSP repair-loop summary for Ctrl-O Turn Inspector (#4107).
     pub lsp_repair: LspRepairState,
-    /// Derived title for the current session shown in the composer border.
-    /// Updated when `EngineEvent::SessionUpdated` fires or a saved session is loaded.
+    /// Optional title shown in the composer border.
     pub session_title: Option<String>,
 
     /// Post-turn receipt rendered as transient composer chrome.
@@ -3197,7 +3192,6 @@ impl App {
             collapsed_cells: HashSet::new(),
             folded_thinking: HashSet::new(),
             collapsed_cell_map: Vec::new(),
-            edit_in_progress: false,
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
             lsp_repair: LspRepairState::default(),
             composer_arrows_scroll: config
@@ -4067,41 +4061,6 @@ impl App {
             self.needs_redraw = true;
         }
         cell
-    }
-
-    /// Truncate `history` (and the parallel `history_revisions` + auxiliary
-    /// per-cell maps) so that only cells with index `< new_len` remain.
-    /// Cells dropped here are gone; callers are responsible for keeping any
-    /// parallel legacy transcript state synchronized.
-    pub fn truncate_history_to(&mut self, new_len: usize) {
-        if new_len >= self.history.len() {
-            return;
-        }
-        self.history.truncate(new_len);
-        if self.history_revisions.len() > new_len {
-            self.history_revisions.truncate(new_len);
-        }
-        // Drop any auxiliary maps keyed on history indices that now point
-        // past the new tail. We keep the rest intact so unaffected tool
-        // cells continue to render correctly.
-        self.tool_cells.retain(|_, idx| *idx < new_len);
-        self.tool_details_by_cell.retain(|idx, _| *idx < new_len);
-        self.context_references_by_cell
-            .retain(|idx, _| *idx < new_len);
-        self.rebuild_session_context_references();
-        self.subagent_card_index.retain(|_, idx| *idx < new_len);
-        if self
-            .last_fanout_card_index
-            .is_some_and(|idx| idx >= new_len)
-        {
-            self.last_fanout_card_index = None;
-        }
-        // Drop collapsed cells that reference indices past the new tail.
-        self.collapsed_cells.retain(|idx| *idx < new_len);
-        self.expanded_tool_runs.retain(|idx| *idx < new_len);
-        self.collapsed_cell_map.clear();
-        self.history_version = self.history_version.wrapping_add(1);
-        self.needs_redraw = true;
     }
 
     #[must_use]
@@ -6672,18 +6631,6 @@ pub fn media_attachment_reference(kind: &str, path: &Path, description: Option<&
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppAction {
     Quit,
-    #[allow(dead_code)] // For explicit /save command
-    SaveSession(PathBuf),
-    #[allow(dead_code)] // For explicit /load command
-    LoadSession(PathBuf),
-    SyncSession {
-        session_id: Option<String>,
-        messages: Vec<Message>,
-        system_prompt: Option<SystemPrompt>,
-        model: String,
-        workspace: PathBuf,
-        mode: AppMode,
-    },
     OpenConfigEditor(ConfigUiMode),
     OpenConfigView,
     /// Open the `/model` two-pane picker (Pro/Flash + Off/High/Max).
