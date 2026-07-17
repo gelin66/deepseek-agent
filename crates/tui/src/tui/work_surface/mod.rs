@@ -456,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn todo_open_records_hitbox_and_opens_pager() {
+    fn todo_open_records_click_action() {
         let mut app = app();
         app.todos
             .try_lock()
@@ -491,12 +491,6 @@ mod tests {
             outcome.action,
             Some(crate::tui::app::SidebarRowAction::InspectText { .. })
         ));
-        crate::tui::mouse_ui::apply_sidebar_row_action(&mut app, outcome.action.expect("action"));
-        assert_eq!(
-            app.view_stack.top_kind(),
-            Some(crate::tui::views::ModalKind::Pager)
-        );
-        assert!(app.work_surface.opened.is_some());
     }
 
     #[test]

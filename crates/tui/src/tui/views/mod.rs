@@ -52,7 +52,6 @@ pub enum ModalKind {
     StatusPicker,
     FeedbackPicker,
     ThemePicker,
-    ContextMenu,
 }
 
 /// Clear and paint a modal popup with an opaque surface.
@@ -552,45 +551,6 @@ pub enum CommandPaletteAction {
     OpenTextPager { title: String, content: String },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ContextMenuAction {
-    CopySelection,
-    OpenSelection,
-    ClearSelection,
-    CopyCell {
-        cell_index: usize,
-    },
-    OpenDetails {
-        cell_index: usize,
-    },
-    Paste,
-    OpenCommandPalette,
-    OpenHelp,
-    /// Open the selected file:line in the user's editor.
-    OpenFileAtLine {
-        cell_index: usize,
-    },
-    /// Hide a transcript cell. Adds the cell's index to `collapsed_cells`.
-    HideCell {
-        cell_index: usize,
-    },
-    /// Show a previously hidden cell (when right-clicking near it).
-    ShowCell {
-        cell_index: usize,
-    },
-    /// Show all currently hidden cells.
-    ShowAllHidden,
-    /// Execute a slash command associated with a contextual UI row.
-    ExecuteCommand {
-        command: String,
-    },
-    /// Copy a pre-resolved text payload (e.g. a sidebar row's full text)
-    /// to the clipboard.
-    CopyText {
-        text: String,
-    },
-}
-
 #[derive(Debug, Clone)]
 pub enum ViewEvent {
     CommandPaletteSelected {
@@ -827,9 +787,6 @@ pub enum ViewEvent {
     /// Emitted by the `/hotbar` setup wizard when the user chooses "Disable
     /// Hotbar". The host persists `hotbar = []` and hides the panel.
     HotbarDisableRequested,
-    ContextMenuSelected {
-        action: ContextMenuAction,
-    },
     /// Emitted by the pager (`c` / `y`) to copy its body to the system
     /// clipboard. The host handler writes via `app.clipboard` and surfaces a
     /// status message — modal views cannot reach `app` directly. `label` is
@@ -5199,7 +5156,7 @@ base_url = "https://api.xiaomimimo.com/v1"
 
     impl ModalView for BareModal {
         fn kind(&self) -> ModalKind {
-            ModalKind::ContextMenu
+            ModalKind::Pager
         }
 
         fn handle_key(&mut self, _key: KeyEvent) -> ViewAction {

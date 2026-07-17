@@ -53,7 +53,6 @@ use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::footer_ui::render_footer;
 use crate::tui::key_shortcuts;
 use crate::tui::live_transcript::LiveTranscriptOverlay;
-use crate::tui::mouse_ui::*;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::run_client::{TuiRunClient, TuiRunClientError};
@@ -77,14 +76,7 @@ use super::views::{ModalKind, ViewEvent};
 use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
 use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
 
-// Activity Detail / raw-detail / pager-text helpers extracted into `activity_detail`
-// (issue #4103). Re-export the cross-module entry points so existing
-// `crate::tui::ui::{...}` importers (mouse_ui, footer_ui) keep resolving, and
-// import the ui-internal entry points used from this file's own body.
-pub(crate) use self::activity_detail::{
-    copy_cell_to_clipboard, detail_target_label, open_details_pager_for_cell,
-    selected_detail_footer_label, turn_handoff_markdown,
-};
+pub(crate) use self::activity_detail::selected_detail_footer_label;
 // === Constants ===
 
 /// Upper bound on slash-menu entries returned to the renderer. The composer's
@@ -2842,20 +2834,6 @@ fn should_tick_status_animation(
         || app.is_purging
         || history_has_live_motion
         || active_cell_has_live_motion
-}
-
-pub(crate) fn open_pager_for_selection(app: &mut App) -> bool {
-    let Some(text) = selection_to_text(app) else {
-        return false;
-    };
-    let width = app
-        .viewport
-        .last_transcript_area
-        .map(|area| area.width)
-        .unwrap_or(80);
-    let pager = PagerView::from_text("Selection", &text, width.saturating_sub(2));
-    app.view_stack.push(pager);
-    true
 }
 
 fn open_pager_for_last_message(app: &mut App) -> bool {
