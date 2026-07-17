@@ -32,7 +32,7 @@ const TEST_MODEL: &str = "deepseek-v4-flash";
 const TEST_KEY: &str = "offline-exec-terminal-test-key";
 const MULTI_AGENT_ROOT_PROMPT: &str = "exec-multi-agent-root-production-marker";
 const MULTI_AGENT_SPAWN_CALL_ID: &str = "call_exec_multi_agent_spawn";
-const MULTI_AGENT_CHILD_SYSTEM_MARKER: &str = "你是在同一 AgentRuntime 中运行的后台子 Agent";
+const MULTI_AGENT_CHILD_SYSTEM_MARKER: &str = "你是在同一 AgentRuntime 中运行的";
 const MULTI_AGENT_HANDOFF_MARKER: &str = "<codewhale:runtime_event kind=\"subagent_completion\"";
 const MULTI_AGENT_ROOT_WAIT_MARKER: &str = "root-turn-ended-before-child-completion";
 const MULTI_AGENT_CHILD_MARKER: &str = "child-production-complete-marker";
@@ -1376,7 +1376,6 @@ async fn multi_agent_exec_waits_for_child_handoff_before_one_success_terminal() 
     assert_eq!(metadata["termination_reason"], "resolved");
     // Root spawn reports 19/8 tokens; root wait, child, and parent
     // integration each report 11/3.
-    assert_exact_success_accounting(metadata, 4, 52, 17);
 
     let root_wait_index = events
         .iter()
@@ -1426,6 +1425,86 @@ async fn multi_agent_exec_waits_for_child_handoff_before_one_success_terminal() 
         1,
         "the agent launch must have one successful tool receipt: {events:#?}"
     );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event["type"] == "tool_result" && event["name"] == "agent")
+            .count(),
+        1,
+        "the agent launch must have exactly one tool receipt: {events:#?}"
+    );
+    let child_started = events
+        .iter()
+        .filter(|event| event["type"] == "child_started")
+        .collect::<Vec<_>>();
+    let child_finished = events
+        .iter()
+        .filter(|event| event["type"] == "child_finished")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        child_started.len(),
+        1,
+        "canonical child start receipt missing or duplicated: {events:#?}"
+    );
+    assert_eq!(
+        child_finished.len(),
+        1,
+        "canonical child finish receipt missing or duplicated: {events:#?}"
+    );
+    assert_eq!(child_started[0]["call_id"], child_finished[0]["call_id"]);
+    assert_eq!(
+        child_started[0]["child_run_id"],
+        child_finished[0]["child_run_id"]
+    );
+    assert_eq!(child_started[0]["depth"], 1);
+    assert_eq!(child_finished[0]["status"], "completed");
+    assert_eq!(child_finished[0]["result_present"], true);
+    assert!(
+        events
+            .iter()
+            .all(|event| event.get("name").and_then(Value::as_str) != Some("agents_wait")),
+        "canonical Runtime must auto-join children without a model-visible wait tool: {events:#?}"
+    );
+    let agent_tool_use_index = events
+        .iter()
+        .position(|event| event["type"] == "tool_use" && event["name"] == "agent")
+        .expect("agent tool use");
+    let child_started_index = events
+        .iter()
+        .position(|event| event["type"] == "child_started")
+        .expect("child start receipt");
+    let agent_tool_result_index = events
+        .iter()
+        .position(|event| event["type"] == "tool_result" && event["name"] == "agent")
+        .expect("agent tool result");
+    assert_eq!(
+        events[agent_tool_use_index]["id"], child_started[0]["call_id"],
+        "child lifecycle must correlate with the launching tool call"
+    );
+    assert_eq!(
+        events[agent_tool_result_index]["id"], events[agent_tool_use_index]["id"],
+        "agent tool lifecycle must preserve the launching call id"
+    );
+    let launch_receipt = events[agent_tool_result_index]["output"]
+        .as_str()
+        .and_then(|output| serde_json::from_str::<Value>(output).ok())
+        .expect("agent tool result must contain its redacted launch receipt");
+    assert_eq!(
+        launch_receipt["agent_id"], child_started[0]["child_run_id"],
+        "launch receipt and canonical child lifecycle must identify the same run"
+    );
+    let child_finished_index = events
+        .iter()
+        .position(|event| event["type"] == "child_finished")
+        .expect("child finish receipt");
+    assert!(
+        agent_tool_use_index < child_started_index
+            && child_started_index < agent_tool_result_index
+            && agent_tool_result_index < root_wait_index
+            && root_wait_index < child_finished_index
+            && child_finished_index < parent_integration_index,
+        "canonical child lifecycle ordering is invalid: {events:#?}"
+    );
 
     let chat_requests = server
         .received_requests()
@@ -1467,6 +1546,7 @@ async fn multi_agent_exec_waits_for_child_handoff_before_one_success_terminal() 
         1,
         "child request missing or duplicated: {request_kinds:?}"
     );
+    assert_exact_success_accounting(metadata, 4, 52, 17);
     let integration_body = chat_requests[3]
         .body_json::<Value>()
         .expect("parent integration request JSON");

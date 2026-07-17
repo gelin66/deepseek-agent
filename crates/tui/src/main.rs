@@ -7306,6 +7306,21 @@ enum ExecStreamEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         result_metadata: Option<serde_json::Value>,
     },
+    #[serde(rename = "child_started")]
+    ChildStarted {
+        call_id: String,
+        child_run_id: String,
+        depth: u8,
+        started_at: String,
+    },
+    #[serde(rename = "child_finished")]
+    ChildFinished {
+        call_id: String,
+        child_run_id: String,
+        status: String,
+        result_present: bool,
+        completed_at: String,
+    },
     #[serde(rename = "workflow_event")]
     WorkflowEvent {
         run_id: String,
@@ -9483,6 +9498,79 @@ mod terminal_mode_tests {
         assert_eq!(parsed["schema_version"], 1);
         assert_eq!(parsed["duration_ms"], 1000);
         assert_eq!(parsed["side_effect_status"], "not_started");
+    }
+
+    #[test]
+    fn exec_child_receipt_contains_only_correlation_and_status() {
+        let started = ExecStreamEvent::ChildStarted {
+            call_id: "agent-call-1".to_string(),
+            child_run_id: "child-run-1".to_string(),
+            depth: 1,
+            started_at: "2026-07-18T00:00:00Z".to_string(),
+        };
+        let started_value = exec_stream_value(&started).expect("serializes");
+        let mut started_keys = started_value
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        started_keys.sort();
+        assert_eq!(
+            started_keys,
+            [
+                "call_id",
+                "child_run_id",
+                "depth",
+                "schema",
+                "schema_version",
+                "started_at",
+                "type",
+            ]
+            .map(str::to_owned)
+        );
+
+        let event = ExecStreamEvent::ChildFinished {
+            call_id: "agent-call-1".to_string(),
+            child_run_id: "child-run-1".to_string(),
+            status: "completed".to_string(),
+            result_present: true,
+            completed_at: "2026-07-18T00:00:01Z".to_string(),
+        };
+
+        let value = exec_stream_value(&event).expect("serializes");
+        assert_eq!(value["type"], "child_finished");
+        assert_eq!(value["schema"], "codewhale.exec-stream");
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["call_id"], "agent-call-1");
+        assert_eq!(value["child_run_id"], "child-run-1");
+        assert_eq!(value["status"], "completed");
+        assert_eq!(value["result_present"], true);
+        let mut keys = value
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort();
+        assert_eq!(
+            keys,
+            [
+                "call_id",
+                "child_run_id",
+                "completed_at",
+                "result_present",
+                "schema",
+                "schema_version",
+                "status",
+                "type",
+            ]
+            .map(str::to_owned)
+        );
+        assert!(
+            value.get("content").is_none() && value.get("handoff_content").is_none(),
+            "public child receipt must not copy model output"
+        );
     }
 
     #[test]

@@ -1269,6 +1269,23 @@ impl<'a> RuntimeEventProjection<'a> {
                     None
                 }
             }
+            RuntimeEventKind::ChildStarted {
+                call_id,
+                child_run_id,
+                depth,
+            } => {
+                if format == ExecOutputFormat::StreamJson {
+                    exec_stream_line(&ExecStreamEvent::ChildStarted {
+                        call_id: call_id.clone(),
+                        child_run_id: child_run_id.0.clone(),
+                        depth: *depth,
+                        started_at: timestamp(event.occurred_at_unix_ms),
+                    })
+                    .ok()
+                } else {
+                    None
+                }
+            }
             RuntimeEventKind::ChildFinished {
                 call_id,
                 outcome,
@@ -1281,7 +1298,29 @@ impl<'a> RuntimeEventProjection<'a> {
                     outcome: outcome.clone(),
                     handoff_content: handoff_content.clone(),
                 });
-                None
+                if format == ExecOutputFormat::StreamJson {
+                    let (status, terminal_result_present) = match &outcome.terminal {
+                        TerminalState::Completed { message } => {
+                            ("completed", !message.trim().is_empty())
+                        }
+                        TerminalState::Blocked { .. } => ("blocked", false),
+                        TerminalState::Failed { .. } => ("failed", false),
+                        TerminalState::Cancelled => ("cancelled", false),
+                        TerminalState::Interrupted => ("interrupted", false),
+                        TerminalState::RecoveryRequired { .. } => ("recovery_required", false),
+                    };
+                    exec_stream_line(&ExecStreamEvent::ChildFinished {
+                        call_id: call_id.clone(),
+                        child_run_id: outcome.run_id.0.clone(),
+                        status: status.to_owned(),
+                        result_present: terminal_result_present
+                            && !handoff_content.trim().is_empty(),
+                        completed_at: timestamp(event.occurred_at_unix_ms),
+                    })
+                    .ok()
+                } else {
+                    None
+                }
             }
             RuntimeEventKind::InteractionRequested { .. }
             | RuntimeEventKind::InteractionResolved { .. }
@@ -1315,8 +1354,7 @@ impl<'a> RuntimeEventProjection<'a> {
             | RuntimeEventKind::ContextCompactionAttemptFailed { .. }
             | RuntimeEventKind::ContextCompactionCommitted { .. }
             | RuntimeEventKind::ReasoningDelta { .. }
-            | RuntimeEventKind::ToolExecutionStarted { .. }
-            | RuntimeEventKind::ChildStarted { .. } => None,
+            | RuntimeEventKind::ToolExecutionStarted { .. } => None,
         };
         if !render {
             return None;

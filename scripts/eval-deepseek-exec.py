@@ -73,11 +73,9 @@ ALLOWED_TOOLS = (
     "list_dir",
     "grep_files",
     "apply_patch",
-    "write_file",
     "edit_file",
     "exec_shell",
     "agent",
-    "agents_wait",
 )
 # Shell is conservatively write-capable. Treat every invocation as a write
 # barrier so a root Agent cannot mutate the workspace before the Explorer
@@ -143,15 +141,15 @@ SINGLE_PROMPT = BASE_TASK + """
 
 MULTI_PROMPT = BASE_TASK + """
 执行方式：这是固定的多 Agent lane，必须遵守以下顺序：
-1. 立即且只启动一个子 Agent；调用 `agent` 时必须显式传入 `deliberate=true`、
-   `type=explore`、`workspace_policy=shared`、`write_authority=read_only`、
-   `expected_artifact="缺陷诊断"`、`thinking=off`、`max_steps=4`，并将
+1. 立即且只启动一个子 Agent；调用 `agent` 时必须显式传入 `type=explore`、
+   `fork_context=false`、`expected_artifact="缺陷诊断"`、`max_steps=4`、
+   `wall_time_secs=120`，并将
    `allowed_tools` 严格设为 `["read_file", "list_dir", "grep_files"]`，让它只读检查缺陷；
    不得启动第二个子 Agent；
-2. 使用 `agents_wait` 等待该 Explorer 结算并取得 handoff；等待完成前根 Agent 不得修改文件；
-3. 只有根 Agent 可以在 handoff 后通过 `apply_patch`/`edit_file`/`write_file`
-   修改 `ranges.py`；不得用测试 shell 命令冒充修改；然后由根 Agent 运行测试并完成任务。
-Explorer 使用 `wall_time_secs=120`，不要让它写文件。
+2. 启动后本轮不要再调用任何工具，让 Runtime 自动等待 Explorer 并回注 handoff；
+   handoff 到达前根 Agent 不得读取、修改文件或运行命令；
+3. 收到 handoff 后，只有根 Agent 可以通过 `apply_patch` 或 `edit_file` 修改
+   `ranges.py`；不得用测试 shell 命令冒充修改；然后由根 Agent 运行测试并完成任务。
 """
 
 
@@ -639,43 +637,6 @@ def optional_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-@dataclasses.dataclass(frozen=True)
-class WaitSettlement:
-    agent_id: str
-    status: str
-    artifact_present: bool
-
-
-def parse_wait_settlement(event: dict[str, Any]) -> WaitSettlement | None:
-    """Accept only one explicitly completed child, never aggregate counts."""
-    if event.get("status") != "success" or not isinstance(event.get("output"), str):
-        return None
-    try:
-        payload = json.loads(event["output"])
-    except json.JSONDecodeError:
-        return None
-    if (
-        not isinstance(payload, dict)
-        or not isinstance(payload.get("settled"), list)
-        or len(payload["settled"]) != 1
-        or payload.get("running") != 0
-        or payload.get("timed_out") is not False
-    ):
-        return None
-    settled = payload["settled"][0]
-    if not isinstance(settled, dict):
-        return None
-    agent_id = settled.get("agent_id")
-    status = settled.get("status")
-    if not isinstance(agent_id, str) or not agent_id or status != "completed":
-        return None
-    # A completed child is not proof that its requested artifact exists.
-    # Runtimes without this explicit redacted receipt (including an older
-    # baseline) therefore fail the multi-Agent capability contract.
-    artifact_present = settled.get("artifact_present") is True
-    return WaitSettlement(agent_id, status, artifact_present)
-
-
 def parse_spawn_agent_id(event: dict[str, Any]) -> str | None:
     if event.get("status") != "success" or not isinstance(event.get("output"), str):
         return None
@@ -711,20 +672,30 @@ def canonical_agent_spawn(value: Any) -> bool:
 def valid_explorer_spawn(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
+    canonical_fields = {
+        "prompt",
+        "type",
+        "fork_context",
+        "allowed_tools",
+        "max_steps",
+        "max_depth",
+        "wall_time_secs",
+        "expected_artifact",
+    }
     return (
         canonical_agent_spawn(value)
-        and value.get("deliberate") is True
+        and set(value).issubset(canonical_fields)
+        and isinstance(value.get("prompt"), str)
+        and bool(value["prompt"].strip())
         and str(value.get("type", "")).strip().lower() == "explore"
-        and value.get("workspace_policy") == "shared"
-        and value.get("write_authority") == "read_only"
+        and value.get("fork_context") is False
         and value.get("expected_artifact") == "缺陷诊断"
-        and value.get("thinking") == "off"
         and value.get("max_steps") == 4
+        and value.get("wall_time_secs") == 120
         and isinstance(value.get("allowed_tools"), list)
         and all(isinstance(name, str) for name in value["allowed_tools"])
         and set(value.get("allowed_tools", []))
         == {"read_file", "list_dir", "grep_files"}
-        and value.get("worktree") is not True
     )
 
 
@@ -752,9 +723,10 @@ class StreamReceipt:
     agent_spawn_count: int = 0
     valid_explorer_spawn_count: int = 0
     agent_spawn_success_count: int = 0
-    wait_call_count: int = 0
-    settled_wait_count: int = 0
-    first_settled_wait_index: int | None = None
+    agent_tool_call_count: int = 0
+    child_started_count: int = 0
+    child_finished_count: int = 0
+    first_child_finished_index: int | None = None
     write_indices: list[int] = dataclasses.field(default_factory=list)
     successful_mutation_indices: list[int] = dataclasses.field(default_factory=list)
     patch_calls: int = 0
@@ -774,8 +746,13 @@ class StreamReceipt:
     tool_lifecycle_receipt: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     agent_spawn_tool_ids: list[str] = dataclasses.field(default_factory=list)
     spawned_agent_ids: list[str] = dataclasses.field(default_factory=list)
-    completed_wait_agent_ids: list[str] = dataclasses.field(default_factory=list)
-    completed_wait_artifact_proven: bool = False
+    started_children: list[tuple[str, str]] = dataclasses.field(default_factory=list)
+    started_child_indices: list[int] = dataclasses.field(default_factory=list)
+    started_child_depths: list[int] = dataclasses.field(default_factory=list)
+    finished_children: list[tuple[str, str]] = dataclasses.field(default_factory=list)
+    finished_child_indices: list[int] = dataclasses.field(default_factory=list)
+    child_finished_statuses: list[str] = dataclasses.field(default_factory=list)
+    completed_child_result_proven: bool = False
     handoff_workspace_snapshot: dict[str, dict[str, Any]] | None = None
     handoff_snapshot_error: bool = False
 
@@ -820,6 +797,64 @@ class StreamReceipt:
             if isinstance(code, str):
                 self.error_code = code
             return
+        if event_type == "child_started":
+            call_id = event.get("call_id")
+            child_run_id = event.get("child_run_id")
+            depth = optional_int(event.get("depth"))
+            if (
+                not isinstance(call_id, str)
+                or not call_id
+                or not isinstance(child_run_id, str)
+                or not child_run_id
+                or depth is None
+                or depth < 1
+            ):
+                self.schema_errors += 1
+                return
+            self.child_started_count += 1
+            self.started_children.append((call_id, child_run_id))
+            self.started_child_indices.append(self.event_count)
+            self.started_child_depths.append(depth)
+            return
+        if event_type == "child_finished":
+            call_id = event.get("call_id")
+            child_run_id = event.get("child_run_id")
+            status = event.get("status")
+            result_present = event.get("result_present")
+            if (
+                not isinstance(call_id, str)
+                or not call_id
+                or not isinstance(child_run_id, str)
+                or not child_run_id
+                or not isinstance(status, str)
+                or status not in {
+                    "completed",
+                    "blocked",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                    "recovery_required",
+                }
+                or not isinstance(result_present, bool)
+            ):
+                self.schema_errors += 1
+                return
+            self.child_finished_count += 1
+            self.finished_children.append((call_id, child_run_id))
+            self.finished_child_indices.append(self.event_count)
+            self.child_finished_statuses.append(status)
+            if status == "completed" and result_present:
+                self.completed_child_result_proven = True
+            if self.first_child_finished_index is None:
+                self.first_child_finished_index = self.event_count
+                if workspace is None:
+                    self.handoff_snapshot_error = True
+                else:
+                    try:
+                        self.handoff_workspace_snapshot = snapshot_workspace(workspace)
+                    except OSError:
+                        self.handoff_snapshot_error = True
+            return
         if event_type == "tool_use":
             self.tool_calls += 1
             name = event.get("name")
@@ -856,7 +891,11 @@ class StreamReceipt:
                 self.write_indices.append(self.event_count)
             if name in MUTATION_TOOLS:
                 self.patch_calls += 1
-            if self.first_settled_wait_index is None and name not in {"agent", "agents_wait"}:
+            valid_explorer = name == "agent" and valid_explorer_spawn(tool_input)
+            if name == "agent":
+                self.agent_tool_call_count += 1
+            exempt_first_spawn = valid_explorer and self.agent_tool_call_count == 1
+            if self.first_child_finished_index is None and not exempt_first_spawn:
                 self.pre_handoff_root_tool_count += 1
                 if name not in self.pre_handoff_root_tool_names:
                     self.pre_handoff_root_tool_names.append(name)
@@ -865,8 +904,6 @@ class StreamReceipt:
                     self.agent_spawn_count += 1
                     self.agent_spawn_tool_ids.append(tool_id)
                     self.valid_explorer_spawn_count += int(valid_explorer_spawn(tool_input))
-            elif name == "agents_wait":
-                self.wait_call_count += 1
             return
         if event_type == "tool_result":
             tool_id = event.get("id")
@@ -898,7 +935,10 @@ class StreamReceipt:
                 self.tool_failures += 1
                 if name in MUTATION_TOOLS:
                     self.patch_failures += 1
-            elif name in MUTATION_TOOLS:
+            elif (
+                name in MUTATION_TOOLS
+                and event.get("side_effect_status") == "applied"
+            ):
                 self.successful_mutation_indices.append(started_index)
             if verification:
                 self.verification_runs += 1
@@ -913,23 +953,6 @@ class StreamReceipt:
                 if agent_id is not None:
                     self.agent_spawn_success_count += 1
                     self.spawned_agent_ids.append(agent_id)
-            if name == "agents_wait":
-                settlement = parse_wait_settlement(event)
-                if settlement is not None:
-                    self.settled_wait_count += 1
-                    self.completed_wait_agent_ids.append(settlement.agent_id)
-                    self.completed_wait_artifact_proven = (
-                        self.completed_wait_artifact_proven or settlement.artifact_present
-                    )
-                    if self.first_settled_wait_index is None:
-                        self.first_settled_wait_index = self.event_count
-                        if workspace is None:
-                            self.handoff_snapshot_error = True
-                        else:
-                            try:
-                                self.handoff_workspace_snapshot = snapshot_workspace(workspace)
-                            except OSError:
-                                self.handoff_snapshot_error = True
 
     def protocol_errors(self) -> list[str]:
         errors: list[str] = []
@@ -949,6 +972,20 @@ class StreamReceipt:
             errors.append("tool_name_mismatch")
         if self.started_tools:
             errors.append("tool_result_missing")
+        if len(set(self.started_children)) != len(self.started_children):
+            errors.append("duplicate_child_started")
+        if len(set(self.finished_children)) != len(self.finished_children):
+            errors.append("duplicate_child_finished")
+        if any(pair not in self.started_children for pair in self.finished_children):
+            errors.append("orphan_child_finished")
+        started_at = dict(zip(self.started_children, self.started_child_indices))
+        if any(
+            started_at.get(pair, self.event_count + 1) >= finished_index
+            for pair, finished_index in zip(
+                self.finished_children, self.finished_child_indices
+            )
+        ):
+            errors.append("child_lifecycle_out_of_order")
         if self.terminal_count != 1:
             errors.append("terminal_metadata_count")
         if self.done_count != 1:
@@ -1227,37 +1264,71 @@ def lane_contract(
     initial_snapshot: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if lane == "single":
-        passed = receipt.agent_spawn_count == 0 and receipt.wait_call_count == 0
+        passed = (
+            receipt.agent_tool_call_count == 0
+            and receipt.agent_spawn_count == 0
+            and receipt.child_started_count == 0
+            and receipt.child_finished_count == 0
+        )
         return {
             "passed": passed,
             "evidence_complete": True,
             "expected_child_count": 0,
+            "agent_tool_calls": receipt.agent_tool_call_count,
             "child_spawn_count": receipt.agent_spawn_count,
-            "wait_calls": receipt.wait_call_count,
+            "child_started_receipts": receipt.child_started_count,
+            "child_finished_receipts": receipt.child_finished_count,
         }
-    wait_index = receipt.first_settled_wait_index
-    writes_after_wait = (
-        sum(index > wait_index for index in receipt.write_indices) if wait_index else 0
+    handoff_index = receipt.first_child_finished_index
+    writes_after_handoff = (
+        sum(index > handoff_index for index in receipt.write_indices)
+        if handoff_index is not None
+        else 0
     )
-    writes_before_wait = (
-        sum(index < wait_index for index in receipt.write_indices)
-        if wait_index
+    writes_before_handoff = (
+        sum(index < handoff_index for index in receipt.write_indices)
+        if handoff_index is not None
         else len(receipt.write_indices)
     )
-    successful_mutations_after_wait = (
-        sum(index > wait_index for index in receipt.successful_mutation_indices)
-        if wait_index
+    successful_mutations_after_handoff = (
+        sum(index > handoff_index for index in receipt.successful_mutation_indices)
+        if handoff_index is not None
         else 0
     )
     spawned_id = (
         receipt.spawned_agent_ids[0] if len(receipt.spawned_agent_ids) == 1 else None
     )
-    completed_id = (
-        receipt.completed_wait_agent_ids[0]
-        if len(receipt.completed_wait_agent_ids) == 1
-        else None
+    started_pair = (
+        receipt.started_children[0] if len(receipt.started_children) == 1 else None
     )
-    agent_id_matches = spawned_id is not None and spawned_id == completed_id
+    finished_pair = (
+        receipt.finished_children[0] if len(receipt.finished_children) == 1 else None
+    )
+    child_receipts_match = (
+        spawned_id is not None
+        and started_pair is not None
+        and finished_pair is not None
+        and len(receipt.agent_spawn_tool_ids) == 1
+        and started_pair[0] == receipt.agent_spawn_tool_ids[0]
+        and started_pair == finished_pair
+        and spawned_id == started_pair[1]
+    )
+    agent_lifecycles = [
+        item for item in receipt.tool_lifecycle_receipt if item.get("name") == "agent"
+    ]
+    child_receipts_in_order = (
+        len(agent_lifecycles) == 1
+        and len(receipt.started_child_indices) == 1
+        and len(receipt.finished_child_indices) == 1
+        and isinstance(agent_lifecycles[0].get("use_event_ordinal"), int)
+        and isinstance(agent_lifecycles[0].get("result_event_ordinal"), int)
+        and agent_lifecycles[0]["use_event_ordinal"]
+        < receipt.started_child_indices[0]
+        < agent_lifecycles[0]["result_event_ordinal"]
+        < receipt.finished_child_indices[0]
+    )
+    root_child_depth_valid = receipt.started_child_depths == [1]
+    child_completed = receipt.child_finished_statuses == ["completed"]
     workspace_unchanged_at_handoff = bool(
         initial_snapshot is not None
         and receipt.handoff_workspace_snapshot is not None
@@ -1267,31 +1338,43 @@ def lane_contract(
     reasons: list[str] = []
     if not receipt.first_tool_valid_explorer:
         reasons.append("first_tool_must_be_canonical_read_only_explorer")
+    if receipt.agent_tool_call_count != 1:
+        reasons.append("exactly_one_agent_tool_call_required")
     if receipt.agent_spawn_count != 1 or receipt.valid_explorer_spawn_count != 1:
         reasons.append("exactly_one_canonical_read_only_explorer_required")
     if receipt.agent_spawn_success_count != 1 or len(receipt.spawned_agent_ids) != 1:
         reasons.append("spawn_receipt_missing_or_ambiguous")
-    if receipt.settled_wait_count != 1 or len(receipt.completed_wait_agent_ids) != 1:
-        reasons.append("one_completed_wait_receipt_required")
-    if not agent_id_matches:
-        reasons.append("spawn_wait_agent_id_mismatch")
+    if receipt.child_started_count != 1 or len(receipt.started_children) != 1:
+        reasons.append("one_child_started_receipt_required")
+    if receipt.child_finished_count != 1 or len(receipt.finished_children) != 1:
+        reasons.append("one_child_finished_receipt_required")
+    if not child_completed:
+        reasons.append("child_must_complete")
+    if not child_receipts_match:
+        reasons.append("spawn_child_receipt_mismatch")
+    if not child_receipts_in_order:
+        reasons.append("child_lifecycle_order_invalid")
+    if not root_child_depth_valid:
+        reasons.append("root_child_depth_must_be_one")
     if receipt.pre_handoff_root_tool_count:
         reasons.append("root_tool_before_handoff")
     if not workspace_unchanged_at_handoff:
         reasons.append("workspace_changed_or_unprovable_at_handoff")
-    if writes_before_wait:
+    if writes_before_handoff:
         reasons.append("write_capable_tool_before_handoff")
-    if successful_mutations_after_wait < 1:
+    if successful_mutations_after_handoff < 1:
         reasons.append("root_mutation_after_handoff_required")
-    if not receipt.completed_wait_artifact_proven:
-        reasons.append("child_artifact_receipt_missing")
+    if not receipt.completed_child_result_proven:
+        reasons.append("child_result_receipt_missing")
     passed = not reasons and (
-        receipt.agent_spawn_count == 1
+        receipt.agent_tool_call_count == 1
+        and receipt.agent_spawn_count == 1
         and receipt.valid_explorer_spawn_count == 1
         and receipt.agent_spawn_success_count == 1
-        and receipt.settled_wait_count == 1
-        and writes_before_wait == 0
-        and successful_mutations_after_wait >= 1
+        and receipt.child_started_count == 1
+        and receipt.child_finished_count == 1
+        and writes_before_handoff == 0
+        and successful_mutations_after_handoff >= 1
     )
     return {
         "passed": passed,
@@ -1299,23 +1382,28 @@ def lane_contract(
         and not receipt.handoff_snapshot_error,
         "reasons": reasons,
         "expected_child_count": 1,
+        "agent_tool_calls": receipt.agent_tool_call_count,
         "child_spawn_count": receipt.agent_spawn_count,
         "valid_read_only_explorer_spawns": receipt.valid_explorer_spawn_count,
         "successful_child_spawns": receipt.agent_spawn_success_count,
-        "wait_calls": receipt.wait_call_count,
-        "settled_handoffs": receipt.settled_wait_count,
+        "child_started_receipts": receipt.child_started_count,
+        "child_finished_receipts": receipt.child_finished_count,
         "first_tool": receipt.first_tool_name,
         "first_tool_valid_explorer": receipt.first_tool_valid_explorer,
         "spawned_agent_id_count": len(receipt.spawned_agent_ids),
-        "completed_wait_agent_id_count": len(receipt.completed_wait_agent_ids),
-        "spawn_wait_agent_id_matches": agent_id_matches,
-        "child_artifact_proven": receipt.completed_wait_artifact_proven,
+        "started_child_id_count": len(receipt.started_children),
+        "finished_child_id_count": len(receipt.finished_children),
+        "spawn_child_receipts_match": child_receipts_match,
+        "child_lifecycle_order_valid": child_receipts_in_order,
+        "root_child_depth_valid": root_child_depth_valid,
+        "child_completed": child_completed,
+        "child_result_proven": receipt.completed_child_result_proven,
         "workspace_unchanged_at_handoff": workspace_unchanged_at_handoff,
         "root_tools_before_handoff": receipt.pre_handoff_root_tool_count,
         "root_tool_names_before_handoff": receipt.pre_handoff_root_tool_names,
-        "writes_before_handoff": writes_before_wait,
-        "writes_after_handoff": writes_after_wait,
-        "successful_mutations_after_handoff": successful_mutations_after_wait,
+        "writes_before_handoff": writes_before_handoff,
+        "writes_after_handoff": writes_after_handoff,
+        "successful_mutations_after_handoff": successful_mutations_after_handoff,
     }
 
 
@@ -3094,15 +3182,21 @@ class HarnessSelfTests(unittest.TestCase):
                     id="a",
                     name="agent",
                     input={
+                        "prompt": "只读检查范围合并缺陷",
                         "type": "explore",
-                        "deliberate": True,
-                        "workspace_policy": "shared",
-                        "write_authority": "read_only",
+                        "fork_context": False,
                         "expected_artifact": "缺陷诊断",
-                        "thinking": "off",
                         "max_steps": 4,
+                        "wall_time_secs": 120,
                         "allowed_tools": ["read_file", "list_dir", "grep_files"],
                     },
+                ),
+                stream_event(
+                    "child_started",
+                    call_id="a",
+                    child_run_id="child-1",
+                    depth=1,
+                    started_at="2026-07-18T00:00:00Z",
                 ),
                 stream_event(
                     "tool_result",
@@ -3111,25 +3205,13 @@ class HarnessSelfTests(unittest.TestCase):
                     status="success",
                     output=json.dumps({"agent_id": "child-1"}),
                 ),
-                stream_event("tool_use", id="w", name="agents_wait", input={}),
                 stream_event(
-                    "tool_result",
-                    id="w",
-                    name="agents_wait",
-                    status="success",
-                    output=json.dumps(
-                        {
-                            "settled": [
-                                {
-                                    "agent_id": "child-1",
-                                    "status": "completed",
-                                    "artifact_present": True,
-                                }
-                            ],
-                            "running": 0,
-                            "timed_out": False,
-                        }
-                    ),
+                    "child_finished",
+                    call_id="a",
+                    child_run_id="child-1",
+                    status="completed",
+                    result_present=True,
+                    completed_at="2026-07-18T00:00:01Z",
                 ),
                 stream_event(
                     "tool_use",
@@ -3138,7 +3220,12 @@ class HarnessSelfTests(unittest.TestCase):
                     input={"patch": "sk-self-test-do-not-leak"},
                 ),
                 stream_event(
-                    "tool_result", id="p", name="apply_patch", status="success", output="ok"
+                    "tool_result",
+                    id="p",
+                    name="apply_patch",
+                    status="success",
+                    side_effect_status="applied",
+                    output="ok",
                 ),
                 stream_event(
                     "metadata", meta={"receipt_kind": "terminal", "status": "completed"}
@@ -3156,7 +3243,6 @@ class HarnessSelfTests(unittest.TestCase):
                 ],
                 [
                     ("agent", "success"),
-                    ("agents_wait", "success"),
                     ("apply_patch", "success"),
                 ],
             )
@@ -3164,16 +3250,27 @@ class HarnessSelfTests(unittest.TestCase):
                 "sk-self-test-do-not-leak", json.dumps(dataclasses.asdict(receipt))
             )
 
-            missing_artifact = dataclasses.replace(
-                receipt, completed_wait_artifact_proven=False
+            missing_result = dataclasses.replace(
+                receipt, completed_child_result_proven=False
             )
-            blocked = lane_contract("multi", missing_artifact, initial)
+            blocked = lane_contract("multi", missing_result, initial)
             self.assertFalse(blocked["passed"])
             self.assertTrue(blocked["evidence_complete"])
-            self.assertIn("child_artifact_receipt_missing", blocked["reasons"])
+            self.assertIn("child_result_receipt_missing", blocked["reasons"])
             self.assertEqual(
                 classify_claim_outcome(True, blocked["passed"]),
                 (False, True),
+            )
+
+            no_applied_effect = StreamReceipt()
+            for item in events:
+                if item.get("type") == "tool_result" and item.get("name") == "apply_patch":
+                    item = {**item, "side_effect_status": "not_applied"}
+                no_applied_effect.process(item, workspace)
+            no_effect_contract = lane_contract("multi", no_applied_effect, initial)
+            self.assertFalse(no_effect_contract["passed"])
+            self.assertIn(
+                "root_mutation_after_handoff_required", no_effect_contract["reasons"]
             )
 
     def test_legacy_agent_actions_are_neither_spawns_nor_settled_handoffs(self) -> None:
@@ -3197,9 +3294,76 @@ class HarnessSelfTests(unittest.TestCase):
 
         self.assertEqual(receipt.agent_spawn_count, 0)
         self.assertEqual(receipt.agent_spawn_success_count, 0)
-        self.assertEqual(receipt.wait_call_count, 0)
-        self.assertEqual(receipt.settled_wait_count, 0)
+        self.assertEqual(receipt.agent_tool_call_count, 1)
+        self.assertEqual(receipt.child_started_count, 0)
+        self.assertEqual(receipt.child_finished_count, 0)
         self.assertFalse(lane_contract("multi", receipt)["passed"])
+
+    def test_multi_rejects_extra_agent_and_misordered_or_unlinked_child(self) -> None:
+        valid_input = {
+            "prompt": "只读检查范围合并缺陷",
+            "type": "explore",
+            "fork_context": False,
+            "expected_artifact": "缺陷诊断",
+            "max_steps": 4,
+            "wall_time_secs": 120,
+            "allowed_tools": ["read_file", "list_dir", "grep_files"],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            workspace = Path(temporary)
+            (workspace / "ranges.py").write_text("before", encoding="utf-8")
+            initial = snapshot_workspace(workspace)
+            receipt = StreamReceipt()
+            for item in (
+                stream_event("tool_use", id="a", name="agent", input=valid_input),
+                stream_event(
+                    "tool_use",
+                    id="legacy",
+                    name="agent",
+                    input={"action": "wait"},
+                ),
+                stream_event(
+                    "tool_result",
+                    id="legacy",
+                    name="agent",
+                    status="success",
+                    output="{}",
+                ),
+                stream_event(
+                    "child_finished",
+                    call_id="wrong-call",
+                    child_run_id="child-1",
+                    status="completed",
+                    result_present=True,
+                    completed_at="2026-07-18T00:00:01Z",
+                ),
+                stream_event(
+                    "child_started",
+                    call_id="wrong-call",
+                    child_run_id="child-1",
+                    depth=2,
+                    started_at="2026-07-18T00:00:02Z",
+                ),
+                stream_event(
+                    "tool_result",
+                    id="a",
+                    name="agent",
+                    status="success",
+                    output=json.dumps({"agent_id": "child-1"}),
+                ),
+            ):
+                receipt.process(item, workspace)
+
+            self.assertIn(
+                "child_lifecycle_out_of_order", receipt.protocol_errors()
+            )
+            contract = lane_contract("multi", receipt, initial)
+            self.assertFalse(contract["passed"])
+            self.assertIn("exactly_one_agent_tool_call_required", contract["reasons"])
+            self.assertIn("spawn_child_receipt_mismatch", contract["reasons"])
+            self.assertIn("child_lifecycle_order_invalid", contract["reasons"])
+            self.assertIn("root_child_depth_must_be_one", contract["reasons"])
+            self.assertIn("root_tool_before_handoff", contract["reasons"])
 
     def test_single_lane_rejects_child_spawn(self) -> None:
         receipt = StreamReceipt(agent_spawn_count=1)
@@ -3207,11 +3371,20 @@ class HarnessSelfTests(unittest.TestCase):
 
     def test_multi_lane_treats_shell_as_write_capable_before_handoff(self) -> None:
         receipt = StreamReceipt(
+            agent_tool_call_count=1,
             agent_spawn_count=1,
             valid_explorer_spawn_count=1,
             agent_spawn_success_count=1,
-            settled_wait_count=1,
-            first_settled_wait_index=5,
+            child_started_count=1,
+            child_finished_count=1,
+            first_child_finished_index=5,
+            started_children=[("a", "child-1")],
+            started_child_indices=[2],
+            started_child_depths=[1],
+            finished_children=[("a", "child-1")],
+            finished_child_indices=[5],
+            child_finished_statuses=["completed"],
+            completed_child_result_proven=True,
             write_indices=[3, 6],
         )
         contract = lane_contract("multi", receipt)
@@ -3441,15 +3614,21 @@ class HarnessSelfTests(unittest.TestCase):
                     id="a",
                     name="agent",
                     input={
+                        "prompt": "只读检查范围合并缺陷",
                         "type": "explore",
-                        "deliberate": True,
-                        "workspace_policy": "shared",
-                        "write_authority": "read_only",
+                        "fork_context": False,
                         "expected_artifact": "缺陷诊断",
-                        "thinking": "off",
                         "max_steps": 4,
+                        "wall_time_secs": 120,
                         "allowed_tools": ["read_file", "list_dir", "grep_files"],
                     },
+                ),
+                stream_event(
+                    "child_started",
+                    call_id="a",
+                    child_run_id="child-1",
+                    depth=1,
+                    started_at="2026-07-18T00:00:00Z",
                 ),
                 stream_event(
                     "tool_result",
@@ -3458,28 +3637,20 @@ class HarnessSelfTests(unittest.TestCase):
                     status="success",
                     output=json.dumps({"agent_id": "child-1"}),
                 ),
-                stream_event("tool_use", id="w", name="agents_wait", input={}),
                 stream_event(
-                    "tool_result",
-                    id="w",
-                    name="agents_wait",
-                    status="success",
-                    output=json.dumps(
-                        {
-                            "settled": [
-                                {"agent_id": "child-1", "status": "failed", "artifact_present": True}
-                            ],
-                            "running": 0,
-                            "timed_out": False,
-                        }
-                    ),
+                    "child_finished",
+                    call_id="a",
+                    child_run_id="child-1",
+                    status="failed",
+                    result_present=False,
+                    completed_at="2026-07-18T00:00:01Z",
                 ),
             ):
                 receipt.process(item, workspace)
             contract = lane_contract("multi", receipt, initial)
             self.assertFalse(contract["passed"])
             self.assertIn("root_tool_before_handoff", contract["reasons"])
-            self.assertIn("one_completed_wait_receipt_required", contract["reasons"])
+            self.assertIn("child_must_complete", contract["reasons"])
 
     def test_official_reprice_and_terminal_projection_are_fail_closed(self) -> None:
         runtime_sha = sha256_bytes(b"runtime")
