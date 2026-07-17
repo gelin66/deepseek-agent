@@ -1,0 +1,706 @@
+[
+  {
+    "schema_version": 5,
+    "run_id": "fixture-root-run",
+    "parent_run_id": null,
+    "event_id": "run_created",
+    "sequence": 1,
+    "occurred_at_unix_ms": 1001,
+    "event": {
+      "kind": "run_created",
+      "request": {
+        "run_id": "fixture-root-run",
+        "parent_run_id": null,
+        "purpose": "agent",
+        "model": "deepseek-v4-flash",
+        "input": "修复目标代码并验证结果。",
+        "system_prompt": {
+          "blocks": [
+            {
+              "text": "你是 CodeWhale 编码 Agent。",
+              "cache_control": "stable"
+            },
+            {
+              "text": "当前角色：根 Agent。",
+              "cache_control": "volatile"
+            }
+          ]
+        },
+        "reasoning_effort": "high",
+        "max_output_tokens": 256,
+        "streaming": true,
+        "actor": {
+          "kind": "root",
+          "depth": 0
+        }
+      }
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-root-run",
+    "parent_run_id": null,
+    "event_id": "root-model-prepared-0",
+    "sequence": 2,
+    "occurred_at_unix_ms": 1002,
+    "event": {
+      "kind": "model_request_prepared",
+      "attempt_id": "root-model-attempt-0",
+      "request": {
+        "run_id": "fixture-root-run",
+        "parent_run_id": null,
+        "actor": {
+          "kind": "root",
+          "depth": 0
+        },
+        "model": "deepseek-v4-flash",
+        "system_prompt": {
+          "blocks": [
+            {
+              "text": "你是 CodeWhale 编码 Agent。",
+              "cache_control": "stable"
+            },
+            {
+              "text": "当前角色：根 Agent。",
+              "cache_control": "volatile"
+            }
+          ]
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "修复目标代码并验证结果。"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "high",
+        "max_output_tokens": 256,
+        "streaming": true,
+        "request_number": 1,
+        "attempt": 0
+      }
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-root-run",
+    "parent_run_id": null,
+    "event_id": "root-model-in-flight-0",
+    "sequence": 3,
+    "occurred_at_unix_ms": 1003,
+    "event": {
+      "kind": "model_request_in_flight",
+      "attempt_id": "root-model-attempt-0"
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-root-run",
+    "parent_run_id": null,
+    "event_id": "root-model-failed-0",
+    "sequence": 4,
+    "occurred_at_unix_ms": 1004,
+    "event": {
+      "kind": "model_request_failed",
+      "attempt_id": "root-model-attempt-0",
+      "failure": {
+        "code": "timeout",
+        "category": "timeout",
+        "message": "首次模型请求超时。",
+        "retryable": true,
+        "actionable_output": false
+      },
+      "accounting": {
+        "root": {
+          "started": 1,
+          "completed": 1,
+          "in_flight": 0,
+          "retries": 0
+        },
+        "child": {
+          "started": 0,
+          "completed": 0,
+          "in_flight": 0,
+          "retries": 0
+        },
+        "transport_retries": 0,
+        "runtime_retries": 0,
+        "sealed_denied": 0,
+        "exhausted_denied": 0,
+        "budget_exhausted": false,
+        "sealed": false,
+        "complete": true,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false,
+        "usage_responses": 0,
+        "usage_missing_responses": 0,
+        "incomplete_responses": 0,
+        "billing_unknown_attempts": 0,
+        "unpriced_usage_responses": 0,
+        "records_after_seal": 0,
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_hit_tokens": 0,
+          "cache_miss_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "reasoning_replay_tokens": 0
+        },
+        "surface_usage": [],
+        "cost_nanousd": 0,
+        "cost_nanocny": 0
+      },
+      "retry": {
+        "decision": "retry",
+        "prepared": {
+          "attempt_id": "root-model-attempt-1",
+          "request": {
+            "run_id": "fixture-root-run",
+            "parent_run_id": null,
+            "actor": {
+              "kind": "root",
+              "depth": 0
+            },
+            "model": "deepseek-v4-flash",
+            "system_prompt": {
+              "blocks": [
+                {
+                  "text": "你是 CodeWhale 编码 Agent。",
+                  "cache_control": "stable"
+                },
+                {
+                  "text": "当前角色：根 Agent。",
+                  "cache_control": "volatile"
+                }
+              ]
+            },
+            "messages": [
+              {
+                "role": "user",
+                "content": "修复目标代码并验证结果。"
+              }
+            ],
+            "tools": [],
+            "reasoning_effort": "high",
+            "max_output_tokens": 256,
+            "streaming": true,
+            "request_number": 1,
+            "attempt": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-root-run",
+    "parent_run_id": null,
+    "event_id": "root-model-in-flight-1",
+    "sequence": 5,
+    "occurred_at_unix_ms": 1005,
+    "event": {
+      "kind": "model_request_in_flight",
+      "attempt_id": "root-model-attempt-1"
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-root-run",
+    "parent_run_id": null,
+    "event_id": "root-model-failed-1",
+    "sequence": 6,
+    "occurred_at_unix_ms": 1006,
+    "event": {
+      "kind": "model_request_failed",
+      "attempt_id": "root-model-attempt-1",
+      "failure": {
+        "code": "timeout",
+        "category": "timeout",
+        "message": "模型重试仍然超时。",
+        "retryable": true,
+        "actionable_output": false
+      },
+      "accounting": {
+        "root": {
+          "started": 2,
+          "completed": 2,
+          "in_flight": 0,
+          "retries": 1
+        },
+        "child": {
+          "started": 0,
+          "completed": 0,
+          "in_flight": 0,
+          "retries": 0
+        },
+        "transport_retries": 0,
+        "runtime_retries": 1,
+        "sealed_denied": 0,
+        "exhausted_denied": 0,
+        "budget_exhausted": false,
+        "sealed": false,
+        "complete": true,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false,
+        "usage_responses": 0,
+        "usage_missing_responses": 0,
+        "incomplete_responses": 0,
+        "billing_unknown_attempts": 0,
+        "unpriced_usage_responses": 0,
+        "records_after_seal": 0,
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_hit_tokens": 0,
+          "cache_miss_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "reasoning_replay_tokens": 0
+        },
+        "surface_usage": [],
+        "cost_nanousd": 0,
+        "cost_nanocny": 0
+      },
+      "retry": {
+        "decision": "stop",
+        "reason": "retry_limit_reached"
+      }
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-root-run",
+    "parent_run_id": null,
+    "event_id": "terminal",
+    "sequence": 7,
+    "occurred_at_unix_ms": 1007,
+    "event": {
+      "kind": "terminal",
+      "outcome": {
+        "run_id": "fixture-root-run",
+        "parent_run_id": null,
+        "terminal": {
+          "state": "failed",
+          "failure": {
+            "kind": "model",
+            "code": "timeout",
+            "category": "timeout",
+            "message": "模型重试耗尽。",
+            "retryable": true
+          }
+        },
+        "accounting": {
+          "root": {
+            "started": 2,
+            "completed": 2,
+            "in_flight": 0,
+            "retries": 1
+          },
+          "child": {
+            "started": 0,
+            "completed": 0,
+            "in_flight": 0,
+            "retries": 0
+          },
+          "transport_retries": 0,
+          "runtime_retries": 1,
+          "sealed_denied": 0,
+          "exhausted_denied": 0,
+          "budget_exhausted": false,
+          "sealed": true,
+          "complete": true,
+          "usage_complete": true,
+          "usage_missing": false,
+          "usage_incomplete": false,
+          "billing_unknown": false,
+          "unpriced": false,
+          "usage_responses": 0,
+          "usage_missing_responses": 0,
+          "incomplete_responses": 0,
+          "billing_unknown_attempts": 0,
+          "unpriced_usage_responses": 0,
+          "records_after_seal": 0,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_hit_tokens": 0,
+            "cache_miss_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "reasoning_replay_tokens": 0
+          },
+          "surface_usage": [],
+          "cost_nanousd": 0,
+          "cost_nanocny": 0
+        },
+        "runtime_model_requests": 2,
+        "runtime_retries": 1,
+        "tool_calls": 0
+      }
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-child-run",
+    "parent_run_id": "fixture-root-run",
+    "event_id": "run_created",
+    "sequence": 1,
+    "occurred_at_unix_ms": 2001,
+    "event": {
+      "kind": "run_created",
+      "request": {
+        "run_id": "fixture-child-run",
+        "parent_run_id": "fixture-root-run",
+        "purpose": "agent",
+        "model": "deepseek-v4-flash",
+        "input": "只读分析目标代码。",
+        "system_prompt": {
+          "blocks": [
+            {
+              "text": "你是 CodeWhale 编码 Agent。",
+              "cache_control": "stable"
+            },
+            {
+              "text": "当前角色：只读子 Agent。",
+              "cache_control": "volatile"
+            }
+          ]
+        },
+        "reasoning_effort": "high",
+        "max_output_tokens": 256,
+        "streaming": true,
+        "actor": {
+          "kind": "child",
+          "depth": 1
+        }
+      }
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-child-run",
+    "parent_run_id": "fixture-root-run",
+    "event_id": "child-compaction-prepared-0",
+    "sequence": 2,
+    "occurred_at_unix_ms": 2002,
+    "event": {
+      "kind": "context_compaction_prepared",
+      "compaction_id": "child-compaction-1",
+      "attempt_id": "child-compaction-attempt-0",
+      "trigger": "preflight_limit",
+      "plan": {
+        "source_entry_count": 8,
+        "source_projection_sha256": "fixture-source-projection",
+        "before_tokens": 12000,
+        "locally_pruned_tokens": 9000,
+        "retained_messages": [
+          {
+            "role": "user",
+            "content": "保留的最近约束。"
+          }
+        ],
+        "retained_user_message_indices": [
+          0
+        ]
+      },
+      "request": {
+        "run_id": "fixture-child-run",
+        "parent_run_id": "fixture-root-run",
+        "actor": {
+          "kind": "child",
+          "depth": 1
+        },
+        "model": "deepseek-v4-flash",
+        "system_prompt": {
+          "blocks": [
+            {
+              "text": "你是编码 Agent 的上下文压缩器。准确保留事实、约束、工作状态和验证证据。",
+              "cache_control": "stable"
+            }
+          ]
+        },
+        "messages": [
+          {
+            "role": "user",
+            "content": "请压缩此前上下文。"
+          }
+        ],
+        "tools": [],
+        "reasoning_effort": "low",
+        "max_output_tokens": 128,
+        "streaming": false,
+        "request_number": 1,
+        "attempt": 0
+      }
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-child-run",
+    "parent_run_id": "fixture-root-run",
+    "event_id": "child-compaction-in-flight-0",
+    "sequence": 3,
+    "occurred_at_unix_ms": 2003,
+    "event": {
+      "kind": "context_compaction_in_flight",
+      "compaction_id": "child-compaction-1",
+      "attempt_id": "child-compaction-attempt-0"
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-child-run",
+    "parent_run_id": "fixture-root-run",
+    "event_id": "child-compaction-failed-0",
+    "sequence": 4,
+    "occurred_at_unix_ms": 2004,
+    "event": {
+      "kind": "context_compaction_attempt_failed",
+      "compaction_id": "child-compaction-1",
+      "attempt_id": "child-compaction-attempt-0",
+      "failure": {
+        "code": "service_unavailable",
+        "category": "service",
+        "message": "首次压缩请求暂时不可用。",
+        "retryable": true,
+        "actionable_output": false
+      },
+      "accounting": {
+        "root": {
+          "started": 0,
+          "completed": 0,
+          "in_flight": 0,
+          "retries": 0
+        },
+        "child": {
+          "started": 1,
+          "completed": 1,
+          "in_flight": 0,
+          "retries": 0
+        },
+        "transport_retries": 0,
+        "runtime_retries": 0,
+        "sealed_denied": 0,
+        "exhausted_denied": 0,
+        "budget_exhausted": false,
+        "sealed": false,
+        "complete": true,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false,
+        "usage_responses": 0,
+        "usage_missing_responses": 0,
+        "incomplete_responses": 0,
+        "billing_unknown_attempts": 0,
+        "unpriced_usage_responses": 0,
+        "records_after_seal": 0,
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_hit_tokens": 0,
+          "cache_miss_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "reasoning_replay_tokens": 0
+        },
+        "surface_usage": [],
+        "cost_nanousd": 0,
+        "cost_nanocny": 0
+      },
+      "retry": {
+        "decision": "retry",
+        "prepared": {
+          "attempt_id": "child-compaction-attempt-1",
+          "request": {
+            "run_id": "fixture-child-run",
+            "parent_run_id": "fixture-root-run",
+            "actor": {
+              "kind": "child",
+              "depth": 1
+            },
+            "model": "deepseek-v4-flash",
+            "system_prompt": {
+              "blocks": [
+                {
+                  "text": "你是编码 Agent 的上下文压缩器。准确保留事实、约束、工作状态和验证证据。",
+                  "cache_control": "stable"
+                }
+              ]
+            },
+            "messages": [
+              {
+                "role": "user",
+                "content": "请压缩此前上下文。"
+              }
+            ],
+            "tools": [],
+            "reasoning_effort": "low",
+            "max_output_tokens": 128,
+            "streaming": false,
+            "request_number": 1,
+            "attempt": 1
+          }
+        }
+      }
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-child-run",
+    "parent_run_id": "fixture-root-run",
+    "event_id": "child-compaction-in-flight-1",
+    "sequence": 5,
+    "occurred_at_unix_ms": 2005,
+    "event": {
+      "kind": "context_compaction_in_flight",
+      "compaction_id": "child-compaction-1",
+      "attempt_id": "child-compaction-attempt-1"
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-child-run",
+    "parent_run_id": "fixture-root-run",
+    "event_id": "child-compaction-failed-1",
+    "sequence": 6,
+    "occurred_at_unix_ms": 2006,
+    "event": {
+      "kind": "context_compaction_attempt_failed",
+      "compaction_id": "child-compaction-1",
+      "attempt_id": "child-compaction-attempt-1",
+      "failure": {
+        "code": "service_unavailable",
+        "category": "service",
+        "message": "压缩请求重试仍然不可用。",
+        "retryable": true,
+        "actionable_output": false
+      },
+      "accounting": {
+        "root": {
+          "started": 0,
+          "completed": 0,
+          "in_flight": 0,
+          "retries": 0
+        },
+        "child": {
+          "started": 2,
+          "completed": 2,
+          "in_flight": 0,
+          "retries": 1
+        },
+        "transport_retries": 0,
+        "runtime_retries": 1,
+        "sealed_denied": 0,
+        "exhausted_denied": 0,
+        "budget_exhausted": false,
+        "sealed": false,
+        "complete": true,
+        "usage_complete": true,
+        "usage_missing": false,
+        "usage_incomplete": false,
+        "billing_unknown": false,
+        "unpriced": false,
+        "usage_responses": 0,
+        "usage_missing_responses": 0,
+        "incomplete_responses": 0,
+        "billing_unknown_attempts": 0,
+        "unpriced_usage_responses": 0,
+        "records_after_seal": 0,
+        "usage": {
+          "input_tokens": 0,
+          "output_tokens": 0,
+          "cache_hit_tokens": 0,
+          "cache_miss_tokens": 0,
+          "cache_write_tokens": 0,
+          "reasoning_tokens": 0,
+          "reasoning_replay_tokens": 0
+        },
+        "surface_usage": [],
+        "cost_nanousd": 0,
+        "cost_nanocny": 0
+      },
+      "retry": {
+        "decision": "stop",
+        "reason": "retry_limit_reached"
+      }
+    }
+  },
+  {
+    "schema_version": 5,
+    "run_id": "fixture-child-run",
+    "parent_run_id": "fixture-root-run",
+    "event_id": "terminal",
+    "sequence": 7,
+    "occurred_at_unix_ms": 2007,
+    "event": {
+      "kind": "terminal",
+      "outcome": {
+        "run_id": "fixture-child-run",
+        "parent_run_id": "fixture-root-run",
+        "terminal": {
+          "state": "failed",
+          "failure": {
+            "kind": "context_compaction_failed",
+            "message": "压缩请求重试耗尽。"
+          }
+        },
+        "accounting": {
+          "root": {
+            "started": 0,
+            "completed": 0,
+            "in_flight": 0,
+            "retries": 0
+          },
+          "child": {
+            "started": 2,
+            "completed": 2,
+            "in_flight": 0,
+            "retries": 1
+          },
+          "transport_retries": 0,
+          "runtime_retries": 1,
+          "sealed_denied": 0,
+          "exhausted_denied": 0,
+          "budget_exhausted": false,
+          "sealed": true,
+          "complete": true,
+          "usage_complete": true,
+          "usage_missing": false,
+          "usage_incomplete": false,
+          "billing_unknown": false,
+          "unpriced": false,
+          "usage_responses": 0,
+          "usage_missing_responses": 0,
+          "incomplete_responses": 0,
+          "billing_unknown_attempts": 0,
+          "unpriced_usage_responses": 0,
+          "records_after_seal": 0,
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_hit_tokens": 0,
+            "cache_miss_tokens": 0,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "reasoning_replay_tokens": 0
+          },
+          "surface_usage": [],
+          "cost_nanousd": 0,
+          "cost_nanocny": 0
+        },
+        "runtime_model_requests": 2,
+        "runtime_retries": 1,
+        "tool_calls": 0
+      }
+    }
+  }
+]
