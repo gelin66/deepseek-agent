@@ -19,7 +19,6 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::{MessageId, tr};
 use crate::tui::{
     app::App,
     history::{HistoryCell, ToolCell, ToolStatus},
@@ -206,27 +205,17 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
         ));
     }
 
-    // Live phases keep the strip quiet: no detail-key chorus competing with
-    // the ledger. Idle/typing may advertise keys on the quiet footer.
-    // Hints come from shell_key_routing so advertised chords match handlers;
-    // bare letters are never advertised — the composer owns printable keys.
+    // Live phases keep the strip quiet so the ledger owns attention.
+    // Idle/typing advertise only commands handled by the canonical foreground.
+    // Compact terminals keep the discovery entry; wider tiers also expose the
+    // manual compaction operation.
     let right_text: Cow<'static, str> = if PhaseStripPlacement::for_phase(phase).is_above_composer()
     {
         Cow::Borrowed("")
     } else {
-        use crate::tui::shell_key_routing::{ShellBindingId, binding, footer_action_hints};
-        let hint_keys = tr(app.ui_locale, MessageId::FooterHintKeys);
-        let hint_output = tr(app.ui_locale, MessageId::FooterHintOutput);
-        Cow::Owned(match tier {
-            ShellTier::Compact => {
-                format!("{}:{hint_keys}", binding(ShellBindingId::Help).footer_chord)
-            }
-            ShellTier::Normal => footer_action_hints()
-                .replace("{output}", hint_output.as_ref())
-                .replace("{keys}", hint_keys.as_ref()),
-            ShellTier::Wide => footer_action_hints()
-                .replace("{output}", hint_output.as_ref())
-                .replace("{keys}", hint_keys.as_ref()),
+        Cow::Borrowed(match tier {
+            ShellTier::Compact => "/help",
+            ShellTier::Normal | ShellTier::Wide => "/help · /compact",
         })
     };
 
@@ -370,8 +359,40 @@ mod tests {
         assert!(text.contains("working"), "{text}");
         assert!(text.contains("run ×1"), "{text}");
         assert!(
-            !text.contains("Alt+?") && !text.contains("F1:"),
+            !text.contains("/help") && !text.contains("/compact"),
             "live phase strip stays quiet: {text}"
         );
+    }
+
+    #[test]
+    fn idle_band_advertises_only_canonical_commands_by_width() {
+        fn render_text(width: u16) -> String {
+            let mut app = test_app();
+            app.ui_locale = codewhale_config::Locale::En;
+            let backend = TestBackend::new(width, 1);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| render(frame.area(), frame.buffer_mut(), &mut app))
+                .expect("draw");
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        }
+
+        let compact = render_text(40);
+        assert!(compact.contains("/help"), "{compact}");
+        assert!(!compact.contains("/compact"), "{compact}");
+
+        for width in [80, 120] {
+            let text = render_text(width);
+            assert!(text.contains("/help"), "{text}");
+            assert!(text.contains("/compact"), "{text}");
+            assert!(!text.contains("Alt+V"), "{text}");
+            assert!(!text.contains("F1"), "{text}");
+        }
     }
 }
