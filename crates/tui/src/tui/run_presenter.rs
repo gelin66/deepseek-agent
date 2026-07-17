@@ -136,6 +136,12 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
         } => {
             app.session.last_prompt_tokens = Some(narrow_u64(output.usage.input_tokens));
             app.session.last_completion_tokens = Some(narrow_u64(output.usage.output_tokens));
+            app.session.last_prompt_cache_hit_tokens =
+                Some(narrow_u64(output.usage.cache_hit_tokens));
+            app.session.last_prompt_cache_miss_tokens =
+                Some(narrow_u64(output.usage.cache_miss_tokens));
+            app.session.last_reasoning_replay_tokens =
+                Some(narrow_u64(output.usage.reasoning_replay_tokens));
             project_accounting(app, &accounting);
             reconcile_model_output(app, &output);
             app.status_message = Some("DeepSeek 响应已确认".to_owned());
@@ -818,15 +824,23 @@ mod tests {
     #[test]
     fn model_response_projects_canonical_usage_without_legacy_messages() {
         let run_id = RunId::from("run");
-        let usage = Usage {
+        let response_usage = Usage {
             input_tokens: 12_345,
             output_tokens: 678,
             cache_hit_tokens: 10_000,
             cache_miss_tokens: 2_345,
+            reasoning_replay_tokens: 321,
             ..Usage::default()
         };
         let mut accounting = ModelAccounting::default();
-        accounting.usage = usage;
+        accounting.usage = Usage {
+            input_tokens: 20_000,
+            output_tokens: 1_000,
+            cache_hit_tokens: 15_000,
+            cache_miss_tokens: 5_000,
+            reasoning_replay_tokens: 400,
+            ..Usage::default()
+        };
         let event = stored(
             &run_id,
             2,
@@ -837,7 +851,7 @@ mod tests {
                     reasoning_content: None,
                     tool_calls: Vec::new(),
                     finish_reason: ModelFinishReason::Stop,
-                    usage,
+                    usage: response_usage,
                 }),
                 accounting: Box::new(accounting),
             },
@@ -853,10 +867,13 @@ mod tests {
 
         assert_eq!(app.session.last_prompt_tokens, Some(12_345));
         assert_eq!(app.session.last_completion_tokens, Some(678));
-        assert_eq!(app.session.total_input_tokens, 12_345);
-        assert_eq!(app.session.total_output_tokens, 678);
-        assert_eq!(app.session.total_cache_hit_tokens, 10_000);
-        assert_eq!(app.session.total_cache_miss_tokens, 2_345);
+        assert_eq!(app.session.last_prompt_cache_hit_tokens, Some(10_000));
+        assert_eq!(app.session.last_prompt_cache_miss_tokens, Some(2_345));
+        assert_eq!(app.session.last_reasoning_replay_tokens, Some(321));
+        assert_eq!(app.session.total_input_tokens, 20_000);
+        assert_eq!(app.session.total_output_tokens, 1_000);
+        assert_eq!(app.session.total_cache_hit_tokens, 15_000);
+        assert_eq!(app.session.total_cache_miss_tokens, 5_000);
         assert!(app.api_messages.is_empty());
     }
 
