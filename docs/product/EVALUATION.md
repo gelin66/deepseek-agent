@@ -244,6 +244,19 @@ A/B 已完成，但 **没有通过保留门槛**：
 下一候选必须先改变实现，再重新运行同任务成对 A/B；只补跑计量失效的单 Agent run 不能
 推翻 multi lane 的真实回退。
 
+随后两个 3/cell 收敛 canary 也均被拒绝：
+
+- v2 叠加停止、父子去重和 child 结果轮提醒后，请求不降、合计 Token 基本不变，且两个
+  candidate cell 各有一次未知计费，主线 WIP 已删除；
+- v3 只删除固定五阶段清单，single 请求从 mean 5.000 降为 4.000，multi root 从
+  mean 6.333 降为 6.000；但 child 从 mean 2.000 升为 3.333，造成两次预算终止，
+  candidate multi 仅 `1/3`，因此不得合并。
+
+完整 canary 身份、hash、费用和逐 actor 结果见
+[中文生产提示词收敛 canary](../../eval/summaries/prompt-convergence-canaries-2026-07-18.md)。
+该结果把下一问题收窄为 Runtime 的 child 最终产物保障；不得再靠增加提示词限制或提高总请求
+预算掩盖。
+
 ### 5.2 TaskContract、终态与证据边界
 
 `TaskContract` 是 Host 在一次 generation 开始前确定的验收边界，至少绑定 objective、

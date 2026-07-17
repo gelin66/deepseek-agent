@@ -98,6 +98,10 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 不能用效率单项掩盖成功率回退。该版本保持 WIP，不默认启用；安全的 workspace path
 移除继续保留。完整记录见
 [中文原生生产提示词正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md)。
+后续 v2/v3 的 3/cell canary 也均被拒绝：v2 没有减少请求，v3 虽让 single 和 multi root
+收敛，却让 child 两次用满 4 轮并使 multi 降为 `1/3`。v2 WIP 已删除，v3 不合并；下一步
+由 Runtime 保证 child 最终产物机会，不再叠加提示词限制。证据见
+[中文生产提示词收敛 canary](../../eval/summaries/prompt-convergence-canaries-2026-07-18.md)。
 
 ## 3. 里程碑总览
 
@@ -685,8 +689,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - Agent 数量和预算；
 - 开发中文原生 Agent 提示词组合，分别调优规划、工具策略、失败恢复、压缩和子 Agent 协作；
   以当前生产提示和归档基线做同任务 A/B，候选按版本评测并可回滚；
-- 首个合并候选 `b088fd13` 已因 multi 成功率回退被拒绝；下一轮只调整重复读取、父/子重复
-  调查和完成前额外模型轮次，不恢复已经删除的模式、人格、Provider 或兼容提示层；
+- 首个合并候选 `b088fd13` 及后续 v2/v3 收敛 canary 均因 multi 可靠性或计量门槛被拒绝；
+  v3 已证明 fixed checklist 影响 root 收敛，也证明 child 最终结果轮不能靠提示词保证；
+  后续先改 Runtime 机制，不恢复已经删除的模式、人格、Provider 或兼容提示层；
 - 只有基准证明需要时才加入 embedding。
 
 ### 剩余清理

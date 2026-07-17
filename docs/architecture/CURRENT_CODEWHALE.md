@@ -274,9 +274,10 @@ surface 兼容；尚无 compaction on/off 真实 A/B，不能声称 Token、成�
 - 旧 TUI compaction/runtime-thread 路径已删除；
 - 当前 compaction 已证明节省 Token、降低成本或提高任务成功率；
 - Provider 清理或全面汉化已完成；
-- 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 已完成但候选因 multi 成功率回退
-  被拒绝，见
-  [中文原生生产提示词正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md)；
+- 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
+  v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
+  [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
+  [收敛 canary](../../eval/summaries/prompt-convergence-canaries-2026-07-18.md)；
 - RepoGraph、EvidenceReceipt、writer-worktree Orchestrator 已完成；
 - transport 迁移本身提升了真实编码成功率；
 - 单次 live canary 可以成为产品指标。
