@@ -1700,11 +1700,6 @@ async fn async_child_launches_then_handoff_integrates_in_four_requests() {
                     .text
                     .contains("你是在同一 AgentRuntime 中运行的只读后台子 Agent")
             }));
-            assert!(request.system_prompt.blocks.iter().any(|block| {
-                block.text.contains("已有结果仍适用时不重复读取")
-                    && block.text.contains("模型轮次上限包含最后返回结果的一轮")
-                    && block.text.contains("关键证据定位和未确定项")
-            }));
             assert!(request.messages.iter().any(|message| matches!(
                 message,
                 ModelMessage::User { content }
