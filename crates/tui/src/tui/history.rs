@@ -127,14 +127,12 @@ pub enum HistoryCell {
         summary: String,
     },
     Tool(ToolCell),
-    /// Live in-transcript card for sub-agent activity (issue #128). Owns
-    /// either a single `DelegateCard` or a multi-worker `FanoutCard`; the
-    /// UI re-binds it from the mailbox stream as envelopes arrive.
+    /// In-transcript card for sub-agent activity (issue #128). Owns either
+    /// a single `DelegateCard` or a multi-worker `FanoutCard`.
     SubAgent(SubAgentCell),
 }
 
 /// In-transcript sub-agent cell — either a single delegate or a fanout.
-/// State mutates over the turn as mailbox envelopes are drained.
 #[derive(Debug, Clone)]
 pub enum SubAgentCell {
     Delegate(crate::tui::widgets::agent_card::DelegateCard),

@@ -1,18 +1,12 @@
 //! In-transcript cards for sub-agent activity (issue #128).
 //!
-//! Two cards consume the #130 mailbox stream and render live in the chat
-//! transcript:
+//! Two cards render sub-agent state in the chat transcript:
 //!
 //! - [`DelegateCard`] — single `agent` invocation. Live tree of the
 //!   last 3 actions plus a header with status / glyph / role.
 //! - [`FanoutCard`] — `rlm` fanout (or any future multi-child dispatch).
 //!   Dot-grid of worker slots (`●` filled, `○` pending); header owns lifecycle.
 //!
-//! Both cards are state machines updated by [`apply_to_delegate`] /
-//! [`apply_to_fanout`]. The sidebar (see `tui/sidebar.rs`) defers detail
-//! to whichever card is active in the transcript, so these are the
-//! primary status surface.
-
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
@@ -532,9 +526,6 @@ pub fn apply_to_delegate(card: &mut DelegateCard, msg: &MailboxMessage) -> bool 
             return false;
         }
         MailboxMessage::TokenUsage { .. } => {
-            // Cost accumulation happens in handle_subagent_mailbox (ui.rs)
-            // before this apply function is called; TokenUsage never reaches
-            // this arm in practice.
             return false;
         }
     }
@@ -566,12 +557,7 @@ pub fn apply_to_fanout(card: &mut FanoutCard, msg: &MailboxMessage) -> bool {
         MailboxMessage::ChildSpawned { child_id, .. } => {
             card.upsert_worker(child_id, AgentLifecycle::Pending)
         }
-        MailboxMessage::TokenUsage { .. } => {
-            // Cost accumulation happens in handle_subagent_mailbox (ui.rs)
-            // before this apply function is called; TokenUsage never reaches
-            // this arm in practice.
-            true
-        }
+        MailboxMessage::TokenUsage { .. } => true,
     }
 }
 
