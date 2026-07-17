@@ -6,19 +6,13 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
-use crate::{
-    DEFAULT_LOCALE, Locale, codewhale_home, codewhale_home_is_explicit, legacy_deepseek_home,
-    normalize_configured_locale, resolve_locale,
-};
+use crate::{codewhale_home, codewhale_home_is_explicit, legacy_deepseek_home};
 
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 
 /// The small settings subset needed before a presentation client exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptPreferences {
-    /// Canonical configured locale setting. `auto` remains explicit until
-    /// runtime environment resolution and is therefore not a locale tag.
-    pub locale_setting: String,
     /// Whether model reasoning should be projected to human-facing output.
     pub show_thinking: bool,
 }
@@ -26,17 +20,8 @@ pub struct PromptPreferences {
 impl Default for PromptPreferences {
     fn default() -> Self {
         Self {
-            locale_setting: DEFAULT_LOCALE.tag().to_owned(),
             show_thinking: false,
         }
-    }
-}
-
-impl PromptPreferences {
-    /// Resolve `locale_setting`, including `auto`, through the product resolver.
-    #[must_use]
-    pub fn resolved_locale(&self) -> Locale {
-        resolve_locale(&self.locale_setting)
     }
 }
 
@@ -74,12 +59,6 @@ impl SettingsSource {
         };
 
         PromptPreferences {
-            locale_setting: settings
-                .locale
-                .as_deref()
-                .and_then(normalize_configured_locale)
-                .unwrap_or(DEFAULT_LOCALE.tag())
-                .to_owned(),
             show_thinking: settings.show_thinking.unwrap_or(false),
         }
     }
@@ -117,7 +96,6 @@ impl SettingsSource {
 #[derive(Debug, Deserialize)]
 struct PromptPreferencesWire {
     show_thinking: Option<bool>,
-    locale: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -299,7 +277,6 @@ pub fn load_prompt_preferences() -> Result<PromptPreferences> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolve_locale_with_env;
 
     fn candidates(
         primary: Option<PathBuf>,
@@ -314,11 +291,10 @@ mod tests {
     }
 
     #[test]
-    fn prompt_preferences_default_to_product_chinese_and_hidden_thinking() {
+    fn prompt_preferences_default_to_hidden_thinking() {
         assert_eq!(
             PromptPreferences::default(),
             PromptPreferences {
-                locale_setting: "zh-Hans".to_owned(),
                 show_thinking: false,
             }
         );
@@ -431,7 +407,6 @@ mod tests {
         assert_eq!(
             source.prompt_preferences(),
             PromptPreferences {
-                locale_setting: "ja".to_owned(),
                 show_thinking: true,
             }
         );
@@ -464,20 +439,15 @@ mod tests {
                 .expect("read malformed settings");
         assert_eq!(malformed.prompt_preferences(), PromptPreferences::default());
 
-        for body in [
-            "locale = []\nshow_thinking = true\n",
-            "locale = \"ja\"\nshow_thinking = []\n",
-        ] {
-            std::fs::write(&path, body).expect("typed-invalid preferences");
-            let typed_invalid =
-                load_settings_source_from_candidates(candidates(Some(path.clone()), None, None))
-                    .expect("read typed-invalid preferences");
-            assert_eq!(
-                typed_invalid.prompt_preferences(),
-                PromptPreferences::default(),
-                "an invalid owned field defaults the small preference document"
-            );
-        }
+        std::fs::write(&path, "show_thinking = []\n").expect("typed-invalid preferences");
+        let typed_invalid =
+            load_settings_source_from_candidates(candidates(Some(path.clone()), None, None))
+                .expect("read typed-invalid preferences");
+        assert_eq!(
+            typed_invalid.prompt_preferences(),
+            PromptPreferences::default(),
+            "an invalid owned field defaults the small preference document"
+        );
     }
 
     #[test]
@@ -486,7 +456,7 @@ mod tests {
         let path = tmp.path().join("settings.toml");
         std::fs::write(
             &path,
-            "locale = \"ja\"\nshow_thinking = true\nsidebar_width_percent = \"wide\"\n",
+            "locale = []\nshow_thinking = true\nsidebar_width_percent = \"wide\"\n",
         )
         .expect("unrelated typed-invalid setting");
         let source = load_settings_source_from_candidates(candidates(Some(path), None, None))
@@ -494,14 +464,13 @@ mod tests {
         assert_eq!(
             source.prompt_preferences(),
             PromptPreferences {
-                locale_setting: "ja".to_owned(),
                 show_thinking: true,
             }
         );
     }
 
     #[test]
-    fn valid_preferences_normalize_tags_and_auto_uses_product_locale_resolution() {
+    fn locale_setting_is_outside_prompt_preferences() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("settings.toml");
         std::fs::write(&path, "locale = \"auto\"\nshow_thinking = true\n").expect("settings");
@@ -509,21 +478,6 @@ mod tests {
             .expect("source");
         let preferences = source.prompt_preferences();
 
-        assert_eq!(preferences.locale_setting, "auto");
         assert!(preferences.show_thinking);
-        assert_eq!(
-            resolve_locale_with_env(&preferences.locale_setting, |key| {
-                (key == "LANG").then(|| "ja_JP.UTF-8".to_owned())
-            }),
-            Locale::Ja
-        );
-        assert_eq!(
-            PromptPreferences {
-                locale_setting: "ja".to_owned(),
-                show_thinking: false,
-            }
-            .resolved_locale(),
-            Locale::Ja
-        );
     }
 }
