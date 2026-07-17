@@ -155,13 +155,10 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
             append_reasoning_delta(app, &delta);
             None
         }
-        RuntimeEventKind::ToolPrepared {
-            operation_id,
-            invocation,
-        } => {
+        RuntimeEventKind::ToolPrepared { invocation, .. } => {
             present_tool_prepared(
                 app,
-                &operation_id.0,
+                &invocation.call_id,
                 &invocation.name,
                 &invocation.arguments,
             );
@@ -188,12 +185,12 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
             })
         }
         RuntimeEventKind::ToolOutcomeCommitted {
-            operation_id,
+            call_id,
             name,
             outcome,
             ..
         } => {
-            present_tool_outcome(app, &operation_id.0, &name, &outcome);
+            present_tool_outcome(app, &call_id, &name, &outcome);
             app.status_message = Some(if outcome.is_success() {
                 format!("工具已完成：{name}")
             } else {
@@ -585,8 +582,8 @@ mod tests {
 
     use codewhale_protocol::agent_runtime::{
         AgentOutcome, AttemptId, CommandId, DurableControlAction, ModelAccounting,
-        ModelFinishReason, ModelOutput, RunId, RunRequest, RuntimeEventId, StoredRuntimeEvent,
-        TerminalState, TranscriptEntry, Usage,
+        ModelFinishReason, ModelOutput, ModelToolCall, OperationId, RunId, RunRequest,
+        RuntimeEventId, StoredRuntimeEvent, TerminalState, ToolInvocation, TranscriptEntry, Usage,
     };
 
     use super::*;
@@ -757,6 +754,114 @@ mod tests {
         assert_eq!(transcript(&live), transcript(&replay));
         assert_eq!(live.runtime_turn_status, replay.runtime_turn_status);
         assert_eq!(live.is_loading, replay.is_loading);
+    }
+
+    #[test]
+    fn tool_projection_matches_live_replay_and_transcript_rebuild() {
+        let run_id = RunId::from("run");
+        let operation_id = OperationId("operation-read-1".to_owned());
+        let call_id = "call-read-1".to_owned();
+        let name = "read_file".to_owned();
+        let arguments = ToolArguments::parse(r#"{"path":"src/lib.rs","line_end":200}"#);
+        let output = "第一行\n第二行\n完整工具输出".to_owned();
+        let outcome = ToolOutcome::success(output.clone());
+        let events = vec![
+            created(&run_id, Vec::new()),
+            stored(
+                &run_id,
+                2,
+                RuntimeEventKind::ToolPrepared {
+                    operation_id: operation_id.clone(),
+                    invocation: ToolInvocation {
+                        run_id: run_id.clone(),
+                        call_id: call_id.clone(),
+                        name: name.clone(),
+                        arguments: arguments.clone(),
+                    },
+                },
+            ),
+            stored(
+                &run_id,
+                3,
+                RuntimeEventKind::ToolOutcomeCommitted {
+                    operation_id,
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    outcome: outcome.clone(),
+                },
+            ),
+        ];
+
+        let mut live = app();
+        apply_events(&mut live, events.clone());
+        let mut replay = app();
+        apply_events(&mut replay, events);
+
+        let mut rebuilt_request = RunRequest::new("继续处理", "系统");
+        rebuilt_request.run_id = Some(RunId::from("continued-run"));
+        rebuilt_request.transcript.entries = vec![
+            TranscriptEntry::Assistant {
+                content: None,
+                reasoning_content: None,
+                tool_calls: vec![ModelToolCall {
+                    id: call_id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                }],
+            },
+            TranscriptEntry::Tool {
+                call_id: call_id.clone(),
+                name: name.clone(),
+                outcome,
+            },
+        ];
+        let rebuilt_event = stored(
+            &RunId::from("continued-run"),
+            1,
+            RuntimeEventKind::RunCreated {
+                request: Box::new(rebuilt_request),
+            },
+        );
+        let mut rebuilt = app();
+        apply_events(&mut rebuilt, vec![rebuilt_event]);
+
+        let snapshot = |app: &App| {
+            let (index, cell) = app
+                .history
+                .iter()
+                .enumerate()
+                .find_map(|(index, cell)| match cell {
+                    HistoryCell::Tool(ToolCell::Generic(cell)) => Some((index, cell)),
+                    _ => None,
+                })
+                .expect("one canonical tool cell");
+            let detail = app
+                .tool_details_by_cell
+                .get(&index)
+                .expect("canonical tool detail");
+            (
+                cell.name.clone(),
+                cell.status,
+                cell.output.clone(),
+                detail.tool_id.clone(),
+                detail.tool_name.clone(),
+                detail.input.clone(),
+                detail.output.clone(),
+            )
+        };
+        let expected = (
+            name.clone(),
+            ToolStatus::Success,
+            Some(output.clone()),
+            call_id.clone(),
+            name,
+            arguments.parsed.expect("valid canonical arguments"),
+            Some(output),
+        );
+
+        assert_eq!(snapshot(&live), expected);
+        assert_eq!(snapshot(&replay), expected);
+        assert_eq!(snapshot(&rebuilt), expected);
     }
 
     #[test]

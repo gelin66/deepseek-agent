@@ -63,9 +63,7 @@ pub use tool_run::{ToolRun, detect_tool_runs_from_slices, tool_run_summary};
 #[cfg(test)]
 use thinking::{REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL};
 pub(crate) use tool_output::output_looks_like_diff;
-pub use tool_output::{
-    OutputRow, summarize_mcp_output, summarize_tool_args, summarize_tool_output,
-};
+pub use tool_output::{OutputRow, summarize_tool_args, summarize_tool_output};
 
 use std::process::Command;
 
@@ -1739,7 +1737,7 @@ fn exploring_header_summary(entries: &[ExploringEntry]) -> Option<String> {
 /// are all searches reads with the `find` verb so the completed action agrees
 /// with its `Searching for …` labels (#4145); every other exploration mix keeps
 /// the neutral `read` verb the Workspace card uses. The search signal is the
-/// English label prefix produced by `exploring_label` in `tool_routing`.
+/// stored exploring-entry label prefix.
 fn exploring_card_family(entries: &[ExploringEntry]) -> crate::tui::widgets::tool_card::ToolFamily {
     use crate::tui::widgets::tool_card::ToolFamily;
     let all_search = !entries.is_empty()

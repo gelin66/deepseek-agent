@@ -72,7 +72,6 @@ pub mod streaming;
 pub mod streaming_thinking;
 mod subagent_routing;
 pub mod theme_picker;
-mod tool_routing;
 pub mod transcript;
 pub mod transcript_cache;
 pub mod translation;

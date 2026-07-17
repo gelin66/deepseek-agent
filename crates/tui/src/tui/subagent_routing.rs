@@ -5,11 +5,9 @@ use std::time::{Duration, Instant};
 use crate::tools::subagent::{AgentWorkerStatus, MailboxMessage, SubAgentResult, SubAgentStatus};
 use crate::tui::app::{AgentProgressMeta, App, SidebarFocus};
 use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
-use crate::tui::tool_routing::refreshes_workspace_context_on_completion;
 use crate::tui::widgets::agent_card::{
     AgentLifecycle, DelegateCard, FanoutCard, apply_to_delegate, apply_to_fanout,
 };
-use crate::tui::workspace_context;
 
 const SUBAGENT_TERMINAL_CARD_TTL: Duration = Duration::from_secs(5 * 60);
 const SUBAGENT_TERMINAL_CARD_MAX_RETAINED: usize = 24;
@@ -344,14 +342,6 @@ pub(super) fn sort_subagents_in_place(agents: &mut [SubAgentResult]) {
     });
 }
 
-pub(super) fn subagent_message_refreshes_workspace_context(message: &MailboxMessage) -> bool {
-    matches!(
-        message,
-        MailboxMessage::ToolCallCompleted { tool_name, .. }
-            if refreshes_workspace_context_on_completion(tool_name)
-    )
-}
-
 /// Route a `MailboxMessage` envelope to the matching in-transcript card,
 /// allocating a `DelegateCard` or `FanoutCard` on first sight (issue #128).
 pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &MailboxMessage) -> bool {
@@ -382,10 +372,6 @@ pub(super) fn handle_subagent_mailbox(app: &mut App, seq: u64, message: &Mailbox
     // is special — it always belongs to the active fanout card if one
     // exists; otherwise it seeds a new one.
     let agent_id = message.agent_id().to_string();
-    if subagent_message_refreshes_workspace_context(message) {
-        workspace_context::refresh_now(app, Instant::now());
-    }
-
     if matches!(message, MailboxMessage::ChildSpawned { .. })
         && let Some(idx) = app.last_fanout_card_index
         && let Some(HistoryCell::SubAgent(SubAgentCell::Fanout(card))) = app.history.get_mut(idx)
