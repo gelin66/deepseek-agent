@@ -1,6 +1,10 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 
+use codewhale_protocol::agent_runtime::{ReasoningEffort, RunLimits, ToolPolicy};
+use codewhale_protocol::run_api::{
+    PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
+};
 use codewhale_runtime::{
     ActorRequestAccounting, AgentOutcome, AttemptId, CommandId, CreatedRun, DurableActionState,
     InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall,
@@ -26,6 +30,27 @@ fn request(run_id: &str, workspace: &str) -> RunRequest {
     request.run_id = Some(RunId::from(run_id));
     request.environment.workspace = workspace.to_owned();
     request
+}
+
+fn creation_intent(workspace: &str) -> codewhale_runtime::CreationIntent {
+    let command = StartRunCommand {
+        input: "实现功能".to_owned(),
+        workspace: workspace.to_owned(),
+        model: Some("deepseek-chat".to_owned()),
+        reasoning_effort: ReasoningEffort::default(),
+        max_output_tokens: None,
+        max_api_requests: None,
+        streaming: false,
+        tool_policy: ToolPolicy::default(),
+        limits: RunLimits::default(),
+        controls: RunProductControls::default(),
+    };
+    codewhale_runtime::CreationIntent {
+        kind: PendingCreationKind::Start,
+        workspace: workspace.to_owned(),
+        source_run_id: None,
+        command: RunCommand::Start(command),
+    }
 }
 
 fn user_event(id: &str, content: &str) -> PendingRuntimeEvent {
@@ -858,11 +883,21 @@ async fn creation_reservation_is_durable_idempotent_and_rejects_payload_reuse() 
     let proposed = RunId::from("reserved-run");
 
     let sqlite_first = sqlite
-        .reserve_creation(&command_id, "sha256:first", proposed.clone())
+        .reserve_creation(
+            &command_id,
+            "sha256:first",
+            proposed.clone(),
+            creation_intent("/tmp/creation"),
+        )
         .await
         .expect("reserve sqlite creation");
     let memory_first = memory
-        .reserve_creation(&command_id, "sha256:first", proposed.clone())
+        .reserve_creation(
+            &command_id,
+            "sha256:first",
+            proposed.clone(),
+            creation_intent("/tmp/creation"),
+        )
         .await
         .expect("reserve memory creation");
     assert_eq!(
@@ -880,11 +915,21 @@ async fn creation_reservation_is_durable_idempotent_and_rejects_payload_reuse() 
     assert!(sqlite_first.newly_reserved);
 
     let sqlite_retry = sqlite
-        .reserve_creation(&command_id, "sha256:first", RunId::from("ignored-proposal"))
+        .reserve_creation(
+            &command_id,
+            "sha256:first",
+            RunId::from("ignored-proposal"),
+            creation_intent("/tmp/creation"),
+        )
         .await
         .expect("retry sqlite reservation");
     let memory_retry = memory
-        .reserve_creation(&command_id, "sha256:first", RunId::from("ignored-proposal"))
+        .reserve_creation(
+            &command_id,
+            "sha256:first",
+            RunId::from("ignored-proposal"),
+            creation_intent("/tmp/creation"),
+        )
         .await
         .expect("retry memory reservation");
     assert_eq!(
@@ -904,7 +949,12 @@ async fn creation_reservation_is_durable_idempotent_and_rejects_payload_reuse() 
 
     assert!(matches!(
         sqlite
-            .reserve_creation(&command_id, "sha256:different", RunId::from("other-run"))
+            .reserve_creation(
+                &command_id,
+                "sha256:different",
+                RunId::from("other-run"),
+                creation_intent("/tmp/creation"),
+            )
             .await,
         Err(RunStoreError::CreationConflict { .. })
     ));
@@ -915,10 +965,37 @@ async fn creation_reservation_is_durable_idempotent_and_rejects_payload_reuse() 
             &command_id,
             "sha256:first",
             RunId::from("second-ignored-proposal"),
+            creation_intent("/tmp/creation"),
         )
         .await
         .expect("retry after reopen");
     assert_eq!(reopened_retry, sqlite_retry);
+    let pending = reopened
+        .list_pending_creations("/tmp/creation", 10)
+        .await
+        .expect("list pending creation after reopen");
+    assert_eq!(pending, vec![reopened_retry.reservation.clone()]);
+
+    let mut reserved_request = request("ignored", "/tmp/creation");
+    reserved_request.run_id = Some(reopened_retry.reservation.run_id.clone());
+    reopened
+        .create(reserved_request)
+        .await
+        .expect("create reserved run");
+    assert!(
+        reopened
+            .list_pending_creations("/tmp/creation", 10)
+            .await
+            .expect("list after RunCreated")
+            .is_empty()
+    );
+    let completed_receipt = reopened
+        .creation(&command_id)
+        .await
+        .expect("load completed creation receipt")
+        .expect("creation receipt remains durable");
+    assert_eq!(completed_receipt.run_id, proposed);
+    assert!(completed_receipt.intent.is_none());
 }
 
 #[tokio::test]
@@ -1345,7 +1422,7 @@ async fn v5_migration_replays_and_backfills_prepared_and_in_flight_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 8);
+    assert_eq!(user_version, 9);
     for (run_id, expected_state) in [
         ("v5-prepared", DurableActionState::Prepared),
         ("v5-in-flight", DurableActionState::InFlight),
@@ -1445,7 +1522,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 8);
+        assert_eq!(user_version, 9);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -1457,9 +1534,9 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 9)
+    conn.pragma_update(None, "user_version", 10)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
-    assert!(error.to_string().contains("newer than supported version 8"));
+    assert!(error.to_string().contains("newer than supported version 9"));
 }

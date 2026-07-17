@@ -15,6 +15,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use codewhale_protocol::agent_runtime::{ReasoningEffort, RunLimits, ToolPolicy};
+use codewhale_protocol::run_api::{
+    PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
+};
 use codewhale_runtime::{
     ActorRequestAccounting, AgentControl, AgentRuntime, ApiSurface, ApprovalRisk,
     CancellationToken, CommandId, DurableActionState, ModelAccounting, ModelFinishReason,
@@ -39,6 +43,27 @@ const RUN_ID: &str = "process-crash-run";
 const CREATE_COMMAND_ID: &str = "process-crash-create-command";
 const CREATE_COMMAND_SHA256: &str = "sha256:process-crash-create-payload";
 const TOOL_NAME: &str = "write_marker";
+
+fn creation_intent() -> codewhale_runtime::CreationIntent {
+    let command = StartRunCommand {
+        input: "执行进程恢复测试".to_owned(),
+        workspace: "/tmp/codewhale-process-crash-test".to_owned(),
+        model: Some("deepseek-chat".to_owned()),
+        reasoning_effort: ReasoningEffort::default(),
+        max_output_tokens: None,
+        max_api_requests: None,
+        streaming: false,
+        tool_policy: ToolPolicy::default(),
+        limits: RunLimits::default(),
+        controls: RunProductControls::default(),
+    };
+    codewhale_runtime::CreationIntent {
+        kind: PendingCreationKind::Start,
+        workspace: command.workspace.clone(),
+        source_run_id: None,
+        command: RunCommand::Start(command),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrashScenario {
@@ -868,6 +893,7 @@ async fn commit_creation_reservation_prefix(store: &StateStore, abort_marker: &P
             &CommandId::from(CREATE_COMMAND_ID),
             CREATE_COMMAND_SHA256,
             RunId::from(RUN_ID),
+            creation_intent(),
         )
         .await
         .expect("commit creation reservation");
@@ -1941,6 +1967,7 @@ async fn creation_reservation_sigkill_before_run_created_reuses_identity_and_cre
             &command_id,
             CREATE_COMMAND_SHA256,
             RunId::from("ignored-retry-proposal"),
+            creation_intent(),
         )
         .await
         .expect("retry identical creation reservation after reopen");
@@ -1948,6 +1975,14 @@ async fn creation_reservation_sigkill_before_run_created_reuses_identity_and_cre
     assert_eq!(retried.reservation.command_id, command_id);
     assert_eq!(retried.reservation.command_sha256, CREATE_COMMAND_SHA256);
     assert_eq!(retried.reservation.run_id, RunId::from(RUN_ID));
+    assert!(retried.reservation.intent.is_some());
+    assert_eq!(
+        store
+            .list_pending_creations("/tmp/codewhale-process-crash-test", 10)
+            .await
+            .expect("list pending creation after SIGKILL"),
+        vec![retried.reservation.clone()]
+    );
 
     assert!(matches!(
         store
@@ -1955,6 +1990,7 @@ async fn creation_reservation_sigkill_before_run_created_reuses_identity_and_cre
                 &command_id,
                 "sha256:different-create-payload",
                 RunId::from("different-proposal"),
+                creation_intent(),
             )
             .await,
         Err(RunStoreError::CreationConflict {
@@ -2007,6 +2043,14 @@ async fn creation_reservation_sigkill_before_run_created_reuses_identity_and_cre
         .expect("count created runs");
     assert_eq!(reservation_count, 1);
     assert_eq!(run_count, 1);
+    let pending_payload_count = connection
+        .query_row(
+            "SELECT COUNT(*) FROM agent_run_creations WHERE command_id = ?1 AND command_json IS NOT NULL",
+            params![CREATE_COMMAND_ID],
+            |row| row.get::<_, i64>(0),
+        )
+        .expect("count pending creation payloads");
+    assert_eq!(pending_payload_count, 0);
 }
 
 #[tokio::test]

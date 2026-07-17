@@ -14,14 +14,16 @@ use codewhale_protocol::agent_runtime::{
     TerminalState, UserInteractionResponse,
 };
 use codewhale_protocol::run_api::{
-    CompactRunCommand, ContinueRunCommand, MAX_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION,
-    RootRunSummary, RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope,
-    RunCommandResponse, RunCommandResult, RunView, StartRunCommand,
+    CompactRunCommand, ContinueRunCommand, CreationRecoveryContext, MAX_RUN_LIST_LIMIT,
+    PendingCreationKind, PendingCreationSummary, RUN_API_SCHEMA_VERSION, RootRunSummary,
+    RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope, RunCommandResponse,
+    RunCommandResult, RunView, StartRunCommand,
 };
 use codewhale_runtime::{
-    AgentControl, ContinuationError, ControlError, DurableActionState, DurableCommand,
-    ModelAccounting, ModelErrorCategory, ModelPort, ModelPortError, ModelRequest, ModelStream,
-    RootRunRecord, RunReadyError, RunReplay, RunStore, RunStoreError, RuntimeEventSink, RuntimeRun,
+    AgentControl, ContinuationError, ControlError, CreationIntent, CreationReservation,
+    DurableActionState, DurableCommand, ModelAccounting, ModelErrorCategory, ModelPort,
+    ModelPortError, ModelRequest, ModelStream, RootRunRecord, RunReadyError, RunReplay, RunStore,
+    RunStoreError, RuntimeEventSink, RuntimeRun,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
@@ -156,6 +158,11 @@ impl Drop for PendingActivation {
 /// supplied by this service.
 #[async_trait]
 trait RunComposition: Send + Sync {
+    fn prepare_start_command(
+        &self,
+        command: StartRunCommand,
+    ) -> Result<StartRunCommand, RunApiError>;
+
     async fn start(
         &self,
         run_id: RunId,
@@ -250,6 +257,16 @@ impl AgentApplication {
         } else {
             match command {
                 RunCommand::Start(command) => {
+                    let command = match self.composition.prepare_start_command(command) {
+                        Ok(command) => command,
+                        Err(error) => {
+                            return RunCommandResponse {
+                                schema_version: RUN_API_SCHEMA_VERSION,
+                                request_id,
+                                result: error_result(error),
+                            };
+                        }
+                    };
                     let digest = creation_command_sha256(&RunCommand::Start(command.clone()));
                     self.start(command_id, digest, command).await
                 }
@@ -264,6 +281,12 @@ impl AgentApplication {
                 RunCommand::ListRoots { workspace, limit } => {
                     self.list_roots(&workspace, limit).await
                 }
+                RunCommand::ListPendingCreations { workspace, limit } => {
+                    self.list_pending_creations(&workspace, limit).await
+                }
+                RunCommand::RecoverCreation {
+                    creation_request_id,
+                } => self.recover_creation(&creation_request_id).await,
                 RunCommand::Get { run_id } => self.get(&run_id).await,
                 RunCommand::Events {
                     run_id,
@@ -386,7 +409,16 @@ impl AgentApplication {
         if let Err(error) = validate_start(&command) {
             return error_result(error);
         }
-        let reservation = match self.reserve_creation(&command_id, &command_sha256).await {
+        let intent = CreationIntent {
+            kind: PendingCreationKind::Start,
+            workspace: command.workspace.clone(),
+            source_run_id: None,
+            command: RunCommand::Start(command.clone()),
+        };
+        let reservation = match self
+            .reserve_creation(&command_id, &command_sha256, intent)
+            .await
+        {
             Ok(reservation) => reservation,
             Err(error) => return error_result(error),
         };
@@ -398,12 +430,7 @@ impl AgentApplication {
                     };
                 }
                 Ok(None) if command.model.is_none() => {
-                    return error_result(api_error(
-                        RunApiErrorCode::RunRecoveryRequired,
-                        "run_creation_recovery_required：自动路由可能已发出请求，但 run_created 尚未提交；为避免重复计费，不会自动重试，请使用新的 request_id 明确重试",
-                        Some(reservation.reservation.run_id),
-                        None,
-                    ));
+                    return error_result(unknown_billing_creation_error(&reservation.reservation));
                 }
                 Ok(None) => {}
                 Err(error) => return error_result(store_error(error)),
@@ -488,7 +515,16 @@ impl AgentApplication {
                 Some(outcome.terminal.clone()),
             ));
         }
-        let reservation = match self.reserve_creation(&command_id, &command_sha256).await {
+        let intent = CreationIntent {
+            kind: PendingCreationKind::Continue,
+            workspace: source.snapshot.request.environment.workspace.clone(),
+            source_run_id: Some(command.run_id.clone()),
+            command: RunCommand::Continue(command.clone()),
+        };
+        let reservation = match self
+            .reserve_creation(&command_id, &command_sha256, intent)
+            .await
+        {
             Ok(reservation) => reservation,
             Err(error) => return error_result(error),
         };
@@ -577,7 +613,16 @@ impl AgentApplication {
                 Some(outcome.terminal.clone()),
             ));
         }
-        let reservation = match self.reserve_creation(&command_id, &command_sha256).await {
+        let intent = CreationIntent {
+            kind: PendingCreationKind::Compact,
+            workspace: source.snapshot.request.environment.workspace.clone(),
+            source_run_id: Some(command.run_id.clone()),
+            command: RunCommand::Compact(command.clone()),
+        };
+        let reservation = match self
+            .reserve_creation(&command_id, &command_sha256, intent)
+            .await
+        {
             Ok(reservation) => reservation,
             Err(error) => return error_result(error),
         };
@@ -623,11 +668,102 @@ impl AgentApplication {
         &self,
         command_id: &CommandId,
         command_sha256: &str,
+        intent: CreationIntent,
     ) -> Result<codewhale_runtime::ReservedCreation, RunApiError> {
         self.store
-            .reserve_creation(command_id, command_sha256, RunId::new())
+            .reserve_creation(command_id, command_sha256, RunId::new(), intent)
             .await
             .map_err(store_error)
+    }
+
+    async fn recover_creation(&self, creation_request_id: &str) -> RunCommandResult {
+        if creation_request_id.trim().is_empty() {
+            return error_result(api_error(
+                RunApiErrorCode::InvalidRequest,
+                "creation_request_id must not be empty",
+                None,
+                None,
+            ));
+        }
+        let command_id = CommandId::from(creation_request_id.to_owned());
+        let reservation = match self.store.creation(&command_id).await {
+            Ok(Some(reservation)) => reservation,
+            Ok(None) => {
+                return error_result(creation_error(
+                    RunApiErrorCode::RunNotFound,
+                    format!(
+                        "creation request {creation_request_id:?} does not have a durable reservation"
+                    ),
+                    creation_request_id,
+                    None,
+                    false,
+                ));
+            }
+            Err(error) => return error_result(store_error(error)),
+        };
+        match self.store.load(&reservation.run_id).await {
+            Ok(Some(replay)) => {
+                return RunCommandResult::Run {
+                    run: Box::new(project_run(&replay)),
+                };
+            }
+            Ok(None) => {}
+            Err(error) => return error_result(store_error(error)),
+        }
+        let Some(intent) = reservation.intent.clone() else {
+            return error_result(creation_error(
+                RunApiErrorCode::RunRecoveryRequired,
+                "creation reservation has no pending canonical command",
+                creation_request_id,
+                Some(reservation.run_id),
+                false,
+            ));
+        };
+        if intent.is_unknown_billing() {
+            return error_result(unknown_billing_creation_error(&reservation));
+        }
+        let digest = reservation.command_sha256.clone();
+        match intent.command {
+            RunCommand::Start(command) => self.start(command_id, digest, command).await,
+            RunCommand::Continue(command) => self.continue_run(command_id, digest, command).await,
+            RunCommand::Compact(command) => self.compact_run(command_id, digest, command).await,
+            _ => error_result(creation_error(
+                RunApiErrorCode::RunStoreFailed,
+                "pending creation payload is not a creation command",
+                creation_request_id,
+                Some(reservation.run_id),
+                false,
+            )),
+        }
+    }
+
+    async fn list_pending_creations(&self, workspace: &str, limit: u32) -> RunCommandResult {
+        if workspace.trim().is_empty() {
+            return error_result(api_error(
+                RunApiErrorCode::InvalidRequest,
+                "workspace must not be empty",
+                None,
+                None,
+            ));
+        }
+        if limit == 0 || limit > MAX_RUN_LIST_LIMIT {
+            return error_result(api_error(
+                RunApiErrorCode::InvalidRequest,
+                format!("pending creation list limit must be between 1 and {MAX_RUN_LIST_LIMIT}"),
+                None,
+                None,
+            ));
+        }
+        match self.store.list_pending_creations(workspace, limit).await {
+            Ok(reservations) => RunCommandResult::PendingCreations {
+                workspace: workspace.to_owned(),
+                creations: reservations
+                    .into_iter()
+                    .filter_map(project_pending_creation)
+                    .collect(),
+            },
+            Err(error) => error_result(store_error(error)),
+        }
     }
 
     async fn list_roots(&self, workspace: &str, limit: u32) -> RunCommandResult {
@@ -1054,6 +1190,20 @@ fn project_root_run(record: RootRunRecord) -> RootRunSummary {
     }
 }
 
+fn project_pending_creation(reservation: CreationReservation) -> Option<PendingCreationSummary> {
+    let intent = reservation.intent?;
+    let unknown_billing = intent.is_unknown_billing();
+    Some(PendingCreationSummary {
+        creation_request_id: reservation.command_id.0,
+        reserved_run_id: reservation.run_id,
+        kind: intent.kind,
+        workspace: intent.workspace,
+        source_run_id: intent.source_run_id,
+        unknown_billing,
+        created_at_unix_ms: reservation.created_at_unix_ms,
+    })
+}
+
 fn strictly_after(events: Vec<StoredRuntimeEvent>, after_sequence: u64) -> Vec<StoredRuntimeEvent> {
     events
         .into_iter()
@@ -1187,10 +1337,40 @@ fn api_error(
 ) -> RunApiError {
     RunApiError {
         code,
-        message: message.into(),
+        message: message.into().into_boxed_str(),
         run_id,
         terminal,
+        creation: None,
     }
+}
+
+fn creation_error(
+    code: RunApiErrorCode,
+    message: impl Into<String>,
+    creation_request_id: &str,
+    run_id: Option<RunId>,
+    unknown_billing: bool,
+) -> RunApiError {
+    RunApiError {
+        code,
+        message: message.into().into_boxed_str(),
+        run_id,
+        terminal: None,
+        creation: Some(Box::new(CreationRecoveryContext {
+            creation_request_id: creation_request_id.to_owned(),
+            unknown_billing,
+        })),
+    }
+}
+
+fn unknown_billing_creation_error(reservation: &CreationReservation) -> RunApiError {
+    creation_error(
+        RunApiErrorCode::RunRecoveryRequired,
+        "run_creation_recovery_required：自动路由请求可能已发出，但 run_created 尚未提交；为避免重复计费，当前 creation 不会再次路由",
+        &reservation.command_id.0,
+        Some(reservation.run_id.clone()),
+        true,
+    )
 }
 
 fn error_result(error: RunApiError) -> RunCommandResult {
@@ -1200,8 +1380,10 @@ fn error_result(error: RunApiError) -> RunCommandResult {
 #[cfg(test)]
 mod tests {
     use std::future::pending;
+    use std::path::PathBuf;
+    use std::process::Command;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use codewhale_protocol::agent_runtime::{
         ContextPolicy, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest,
@@ -1213,6 +1395,7 @@ mod tests {
         AgentRuntime, CancellationToken, InMemoryRunStore, ModelPort, ModelPortError, ModelStream,
         ToolExecutionError, ToolExecutor,
     };
+    use codewhale_state::StateStore;
 
     use super::*;
 
@@ -1303,6 +1486,7 @@ mod tests {
         resumes: AtomicUsize,
         last_resume_sequence: AtomicU64,
         ready_gate: Option<Arc<ReadyGate>>,
+        start_block_marker: Option<PathBuf>,
     }
 
     impl FixtureComposition {
@@ -1313,6 +1497,7 @@ mod tests {
                 resumes: AtomicUsize::new(0),
                 last_resume_sequence: AtomicU64::new(0),
                 ready_gate: None,
+                start_block_marker: None,
             }
         }
 
@@ -1323,6 +1508,18 @@ mod tests {
                 resumes: AtomicUsize::new(0),
                 last_resume_sequence: AtomicU64::new(0),
                 ready_gate: Some(ready_gate),
+                start_block_marker: None,
+            }
+        }
+
+        fn blocking_start(marker: PathBuf) -> Self {
+            Self {
+                mode: ModelMode::Complete,
+                starts: AtomicUsize::new(0),
+                resumes: AtomicUsize::new(0),
+                last_resume_sequence: AtomicU64::new(0),
+                ready_gate: None,
+                start_block_marker: Some(marker),
             }
         }
 
@@ -1382,6 +1579,13 @@ mod tests {
 
     #[async_trait]
     impl RunComposition for FixtureComposition {
+        fn prepare_start_command(
+            &self,
+            command: StartRunCommand,
+        ) -> Result<StartRunCommand, RunApiError> {
+            Ok(command)
+        }
+
         async fn start(
             &self,
             run_id: RunId,
@@ -1390,6 +1594,11 @@ mod tests {
             sink: Arc<dyn RuntimeEventSink>,
         ) -> Result<RuntimeRun, RunApiError> {
             self.starts.fetch_add(1, Ordering::AcqRel);
+            if let Some(marker) = &self.start_block_marker {
+                std::fs::write(marker, b"creation_reserved\n")
+                    .expect("write durable creation-reserved marker");
+                pending::<()>().await;
+            }
             let mut request = request_from(command);
             request.run_id = Some(run_id);
             request.environment.provider = "deepseek".to_owned();
@@ -1979,6 +2188,444 @@ mod tests {
             .await
             .expect("list idempotent roots");
         assert_eq!(roots.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn pending_explicit_start_is_listed_and_concurrent_recovery_creates_one_run() {
+        let (app, store, _) = new_fixture(ModelMode::Pending).await;
+        let creation_request_id = "recover-explicit-start";
+        let command = RunCommand::Start(start_command("恢复显式模型创建"));
+        let reserved_run_id = RunId::from("reserved-explicit-start");
+        let intent = CreationIntent {
+            kind: PendingCreationKind::Start,
+            workspace: "/workspace/project".to_owned(),
+            source_run_id: None,
+            command: command.clone(),
+        };
+        store
+            .reserve_creation(
+                &CommandId::from(creation_request_id),
+                &creation_command_sha256(&command),
+                reserved_run_id.clone(),
+                intent,
+            )
+            .await
+            .expect("reserve interrupted explicit start");
+
+        let listed = app
+            .execute(envelope(
+                "list-pending-start",
+                RunCommand::ListPendingCreations {
+                    workspace: "/workspace/project".to_owned(),
+                    limit: 10,
+                },
+            ))
+            .await;
+        let RunCommandResult::PendingCreations { creations, .. } = listed.result else {
+            panic!("expected pending creations");
+        };
+        assert_eq!(creations.len(), 1);
+        assert_eq!(creations[0].creation_request_id, creation_request_id);
+        assert_eq!(creations[0].reserved_run_id, reserved_run_id);
+        assert!(!creations[0].unknown_billing);
+
+        let responses = execute_concurrently(
+            app.clone(),
+            envelope(
+                "recover-caller-a",
+                RunCommand::RecoverCreation {
+                    creation_request_id: creation_request_id.to_owned(),
+                },
+            ),
+            envelope(
+                "recover-caller-b",
+                RunCommand::RecoverCreation {
+                    creation_request_id: creation_request_id.to_owned(),
+                },
+            ),
+        )
+        .await;
+        let [first, second] = responses.map(run_result);
+        assert_eq!(first.run_id, reserved_run_id);
+        assert_eq!(second.run_id, reserved_run_id);
+        assert_eq!(
+            store
+                .list_root_runs("/workspace/project", 10)
+                .await
+                .expect("list recovered roots")
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .list_pending_creations("/workspace/project", 10)
+                .await
+                .expect("list cleared creation intents")
+                .is_empty()
+        );
+        let _ = app
+            .execute(envelope(
+                "cancel-recovered-start",
+                RunCommand::Cancel {
+                    run_id: reserved_run_id,
+                },
+            ))
+            .await;
+    }
+
+    const CREATION_CRASH_DB_ENV: &str = "CODEWHALE_APP_CREATION_CRASH_DB";
+    const CREATION_CRASH_MARKER_ENV: &str = "CODEWHALE_APP_CREATION_CRASH_MARKER";
+    const CREATION_CRASH_WORKSPACE_ENV: &str = "CODEWHALE_APP_CREATION_CRASH_WORKSPACE";
+    const CREATION_CRASH_REQUEST_ID: &str = "process-recover-explicit-start";
+
+    #[tokio::test]
+    #[ignore = "launched by the external SIGKILL recovery test"]
+    async fn creation_recovery_process_helper() {
+        let Ok(db_path) = std::env::var(CREATION_CRASH_DB_ENV) else {
+            return;
+        };
+        let marker =
+            PathBuf::from(std::env::var(CREATION_CRASH_MARKER_ENV).expect("crash marker path"));
+        let workspace = std::env::var(CREATION_CRASH_WORKSPACE_ENV).expect("crash workspace path");
+        let store = Arc::new(StateStore::open(Some(db_path.into())).expect("open child store"));
+        let composition = Arc::new(FixtureComposition::blocking_start(marker));
+        let app = AgentApplication::new(store, composition);
+        let mut command = start_command("SIGKILL 前持久化创建意图");
+        command.workspace = workspace;
+        let _ = app
+            .execute(envelope(
+                CREATION_CRASH_REQUEST_ID,
+                RunCommand::Start(command),
+            ))
+            .await;
+        panic!("blocking composition unexpectedly returned");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn sigkill_after_reservation_is_discovered_and_recovered_only_through_run_api() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let temp = tempfile::tempdir().expect("temporary crash fixture");
+        let state_path = temp.path().join("state.db");
+        let marker = temp.path().join("creation-reserved.marker");
+        let workspace = temp
+            .path()
+            .canonicalize()
+            .expect("canonical crash workspace")
+            .display()
+            .to_string();
+        let mut child = Command::new(std::env::current_exe().expect("current test binary"))
+            .arg("--exact")
+            .arg("tests::creation_recovery_process_helper")
+            .arg("--ignored")
+            .arg("--nocapture")
+            .arg("--test-threads=1")
+            .env(CREATION_CRASH_DB_ENV, &state_path)
+            .env(CREATION_CRASH_MARKER_ENV, &marker)
+            .env(CREATION_CRASH_WORKSPACE_ENV, &workspace)
+            .spawn()
+            .expect("spawn creation crash helper");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !marker.exists() {
+            if let Some(status) = child.try_wait().expect("poll creation crash helper") {
+                panic!("creation crash helper exited before reservation marker: {status}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for creation reservation marker"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child.kill().expect("SIGKILL creation crash helper");
+        let status = child.wait().expect("reap creation crash helper");
+        assert_eq!(status.signal(), Some(9));
+
+        let store =
+            Arc::new(StateStore::open(Some(state_path)).expect("reopen killed child store"));
+        let composition = Arc::new(FixtureComposition::new(ModelMode::Complete));
+        let app = AgentApplication::new(store.clone(), composition);
+        let listed = app
+            .execute(envelope(
+                "process-list-pending",
+                RunCommand::ListPendingCreations {
+                    workspace: workspace.clone(),
+                    limit: 10,
+                },
+            ))
+            .await;
+        let RunCommandResult::PendingCreations { creations, .. } = listed.result else {
+            panic!("expected pending creation after external SIGKILL");
+        };
+        assert_eq!(creations.len(), 1);
+        let pending = &creations[0];
+        assert_eq!(pending.creation_request_id, CREATION_CRASH_REQUEST_ID);
+        assert!(!pending.unknown_billing);
+        let reserved_run_id = pending.reserved_run_id.clone();
+
+        let recovered = run_result(
+            app.execute(envelope(
+                "process-recover-caller",
+                RunCommand::RecoverCreation {
+                    creation_request_id: CREATION_CRASH_REQUEST_ID.to_owned(),
+                },
+            ))
+            .await,
+        );
+        assert_eq!(recovered.run_id, reserved_run_id);
+        let replay = wait_terminal(store.as_ref(), &reserved_run_id).await;
+        assert_eq!(
+            replay
+                .events
+                .iter()
+                .filter(|event| matches!(event.event, RuntimeEventKind::RunCreated { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            store
+                .list_pending_creations(&workspace, 10)
+                .await
+                .expect("list cleared intent")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn sqlite_reopen_discovers_and_concurrently_recovers_explicit_start() {
+        let temp = tempfile::tempdir().expect("temporary state");
+        let state_path = temp.path().join("state.db");
+        let creation_request_id = "sqlite-recover-explicit-start";
+        let command = RunCommand::Start(start_command("重开后恢复显式创建"));
+        let reserved_run_id = RunId::from("sqlite-reserved-explicit-start");
+        {
+            let store = StateStore::open(Some(state_path.clone())).expect("open first store");
+            store
+                .reserve_creation(
+                    &CommandId::from(creation_request_id),
+                    &creation_command_sha256(&command),
+                    reserved_run_id.clone(),
+                    CreationIntent {
+                        kind: PendingCreationKind::Start,
+                        workspace: "/workspace/project".to_owned(),
+                        source_run_id: None,
+                        command,
+                    },
+                )
+                .await
+                .expect("reserve before simulated process loss");
+        }
+
+        let store = Arc::new(StateStore::open(Some(state_path)).expect("reopen store"));
+        let composition = Arc::new(FixtureComposition::new(ModelMode::Pending));
+        let app = Arc::new(AgentApplication::new(store.clone(), composition));
+        let listed = app
+            .execute(envelope(
+                "sqlite-list-pending",
+                RunCommand::ListPendingCreations {
+                    workspace: "/workspace/project".to_owned(),
+                    limit: 10,
+                },
+            ))
+            .await;
+        let RunCommandResult::PendingCreations { creations, .. } = listed.result else {
+            panic!("expected reopened pending creation");
+        };
+        assert_eq!(creations[0].reserved_run_id, reserved_run_id);
+
+        let responses = execute_concurrently(
+            app.clone(),
+            envelope(
+                "sqlite-recover-a",
+                RunCommand::RecoverCreation {
+                    creation_request_id: creation_request_id.to_owned(),
+                },
+            ),
+            envelope(
+                "sqlite-recover-b",
+                RunCommand::RecoverCreation {
+                    creation_request_id: creation_request_id.to_owned(),
+                },
+            ),
+        )
+        .await;
+        let [first, second] = responses.map(run_result);
+        assert_eq!(first.run_id, reserved_run_id);
+        assert_eq!(second.run_id, reserved_run_id);
+        assert_eq!(
+            store
+                .list_root_runs("/workspace/project", 10)
+                .await
+                .expect("list SQLite roots")
+                .len(),
+            1
+        );
+        assert!(
+            store
+                .list_pending_creations("/workspace/project", 10)
+                .await
+                .expect("list cleared SQLite intents")
+                .is_empty()
+        );
+        let _ = app
+            .execute(envelope(
+                "sqlite-cancel-recovered",
+                RunCommand::Cancel {
+                    run_id: reserved_run_id,
+                },
+            ))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn pending_continue_and_compact_recover_their_reserved_run_ids() {
+        let (app, store, _) = new_fixture(ModelMode::Complete).await;
+        let source = run_result(
+            app.execute(envelope(
+                "recovery-source",
+                RunCommand::Start(start_command("创建恢复源")),
+            ))
+            .await,
+        );
+        wait_terminal(store.as_ref(), &source.run_id).await;
+
+        let continue_request_id = "recover-continue";
+        let continue_command = RunCommand::Continue(ContinueRunCommand {
+            run_id: source.run_id,
+            input: "恢复 continuation".to_owned(),
+            expected_workspace: Some("/workspace/project".to_owned()),
+        });
+        let continued_run_id = RunId::from("reserved-continue");
+        store
+            .reserve_creation(
+                &CommandId::from(continue_request_id),
+                &creation_command_sha256(&continue_command),
+                continued_run_id.clone(),
+                CreationIntent {
+                    kind: PendingCreationKind::Continue,
+                    workspace: "/workspace/project".to_owned(),
+                    source_run_id: match &continue_command {
+                        RunCommand::Continue(command) => Some(command.run_id.clone()),
+                        _ => unreachable!(),
+                    },
+                    command: continue_command,
+                },
+            )
+            .await
+            .expect("reserve interrupted continuation");
+        let continued = run_result(
+            app.execute(envelope(
+                "recover-continue-caller",
+                RunCommand::RecoverCreation {
+                    creation_request_id: continue_request_id.to_owned(),
+                },
+            ))
+            .await,
+        );
+        assert_eq!(continued.run_id, continued_run_id);
+        wait_terminal(store.as_ref(), &continued.run_id).await;
+
+        let compact_request_id = "recover-compact";
+        let compact_command = RunCommand::Compact(CompactRunCommand {
+            run_id: continued.run_id,
+            expected_workspace: Some("/workspace/project".to_owned()),
+        });
+        let compact_run_id = RunId::from("reserved-compact");
+        store
+            .reserve_creation(
+                &CommandId::from(compact_request_id),
+                &creation_command_sha256(&compact_command),
+                compact_run_id.clone(),
+                CreationIntent {
+                    kind: PendingCreationKind::Compact,
+                    workspace: "/workspace/project".to_owned(),
+                    source_run_id: match &compact_command {
+                        RunCommand::Compact(command) => Some(command.run_id.clone()),
+                        _ => unreachable!(),
+                    },
+                    command: compact_command,
+                },
+            )
+            .await
+            .expect("reserve interrupted compaction");
+        let compacted = run_result(
+            app.execute(envelope(
+                "recover-compact-caller",
+                RunCommand::RecoverCreation {
+                    creation_request_id: compact_request_id.to_owned(),
+                },
+            ))
+            .await,
+        );
+        assert_eq!(compacted.run_id, compact_run_id);
+    }
+
+    #[tokio::test]
+    async fn pending_auto_route_fails_closed_with_typed_unknown_billing() {
+        let (app, store, composition) = new_fixture(ModelMode::Complete).await;
+        let creation_request_id = "recover-auto-start";
+        let mut auto_command = start_command("恢复自动路由创建");
+        auto_command.model = None;
+        let command = RunCommand::Start(auto_command);
+        let reserved_run_id = RunId::from("reserved-auto-start");
+        store
+            .reserve_creation(
+                &CommandId::from(creation_request_id),
+                &creation_command_sha256(&command),
+                reserved_run_id.clone(),
+                CreationIntent {
+                    kind: PendingCreationKind::Start,
+                    workspace: "/workspace/project".to_owned(),
+                    source_run_id: None,
+                    command: command.clone(),
+                },
+            )
+            .await
+            .expect("reserve interrupted auto route");
+
+        let recovery_error = error(
+            app.execute(envelope(
+                "recover-auto-caller",
+                RunCommand::RecoverCreation {
+                    creation_request_id: creation_request_id.to_owned(),
+                },
+            ))
+            .await,
+        );
+        assert_eq!(recovery_error.code, RunApiErrorCode::RunRecoveryRequired);
+        let recovery_context = recovery_error
+            .creation
+            .as_deref()
+            .expect("typed creation recovery context");
+        assert_eq!(recovery_context.creation_request_id, creation_request_id);
+        assert_eq!(recovery_error.run_id, Some(reserved_run_id.clone()));
+        assert!(recovery_context.unknown_billing);
+        assert_eq!(composition.starts.load(Ordering::Acquire), 0);
+
+        let retry_error = error(app.execute(envelope(creation_request_id, command)).await);
+        assert!(
+            retry_error
+                .creation
+                .as_deref()
+                .is_some_and(|context| context.unknown_billing)
+        );
+        assert_eq!(composition.starts.load(Ordering::Acquire), 0);
+        assert!(store.load(&reserved_run_id).await.expect("load").is_none());
+
+        let listed = app
+            .execute(envelope(
+                "list-pending-auto",
+                RunCommand::ListPendingCreations {
+                    workspace: "/workspace/project".to_owned(),
+                    limit: 10,
+                },
+            ))
+            .await;
+        let RunCommandResult::PendingCreations { creations, .. } = listed.result else {
+            panic!("expected pending creations");
+        };
+        assert_eq!(creations.len(), 1);
+        assert!(creations[0].unknown_billing);
     }
 
     #[tokio::test]

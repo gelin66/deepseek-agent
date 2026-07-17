@@ -5,6 +5,7 @@ use codewhale_context::compaction::{
     ContextCompactionPreparation, effective_context, estimate_projection_tokens,
     prepare_compaction, projection_from_summary,
 };
+use codewhale_protocol::run_api::{PendingCreationKind, RunCommand};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
@@ -44,15 +45,34 @@ pub struct RootRunRecord {
     pub updated_at_unix_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CreationIntent {
+    pub kind: PendingCreationKind,
+    pub workspace: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<RunId>,
+    pub command: RunCommand,
+}
+
+impl CreationIntent {
+    #[must_use]
+    pub fn is_unknown_billing(&self) -> bool {
+        matches!(&self.command, RunCommand::Start(command) if command.model.is_none())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CreationReservation {
     pub command_id: CommandId,
     pub command_sha256: String,
     pub run_id: RunId,
     pub created_at_unix_ms: u64,
+    /// Present only until this reservation's `RunCreated` is committed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intent: Option<CreationIntent>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ReservedCreation {
     pub reservation: CreationReservation,
     pub newly_reserved: bool,
@@ -1540,10 +1560,16 @@ impl RunStore for InMemoryRunStore {
         command_id: &CommandId,
         command_sha256: &str,
         proposed_run_id: RunId,
+        intent: CreationIntent,
     ) -> Result<ReservedCreation, RunStoreError> {
         let mut creations = self.creations.lock().await;
         if let Some(existing) = creations.get(command_id) {
-            if existing.command_sha256 != command_sha256 {
+            if existing.command_sha256 != command_sha256
+                || existing
+                    .intent
+                    .as_ref()
+                    .is_some_and(|stored| stored != &intent)
+            {
                 return Err(RunStoreError::CreationConflict {
                     command_id: command_id.clone(),
                 });
@@ -1568,12 +1594,48 @@ impl RunStore for InMemoryRunStore {
             command_sha256: command_sha256.to_owned(),
             run_id: proposed_run_id,
             created_at_unix_ms: now_unix_ms(),
+            intent: Some(intent),
         };
         creations.insert(command_id.clone(), reservation.clone());
         Ok(ReservedCreation {
             reservation,
             newly_reserved: true,
         })
+    }
+
+    async fn creation(
+        &self,
+        command_id: &CommandId,
+    ) -> Result<Option<CreationReservation>, RunStoreError> {
+        Ok(self.creations.lock().await.get(command_id).cloned())
+    }
+
+    async fn list_pending_creations(
+        &self,
+        workspace: &str,
+        limit: u32,
+    ) -> Result<Vec<CreationReservation>, RunStoreError> {
+        let mut creations = self
+            .creations
+            .lock()
+            .await
+            .values()
+            .filter(|reservation| {
+                reservation
+                    .intent
+                    .as_ref()
+                    .is_some_and(|intent| intent.workspace == workspace)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        creations.sort_by(|left, right| {
+            right
+                .created_at_unix_ms
+                .cmp(&left.created_at_unix_ms)
+                .then_with(|| right.command_id.0.cmp(&left.command_id.0))
+        });
+        creations.truncate(limit as usize);
+        Ok(creations)
     }
 
     async fn create(&self, mut request: RunRequest) -> Result<CreatedRun, RunStoreError> {
@@ -1611,13 +1673,23 @@ impl RunStore for InMemoryRunStore {
         };
         let replay = replay(vec![created.clone()])?;
         runs.insert(
-            run_id,
+            run_id.clone(),
             InMemoryRun {
                 events: vec![created.clone()],
                 lease: Some(lease.clone()),
                 next_epoch: 2,
             },
         );
+        drop(runs);
+        if let Some(reservation) = self
+            .creations
+            .lock()
+            .await
+            .values_mut()
+            .find(|reservation| reservation.run_id == run_id)
+        {
+            reservation.intent = None;
+        }
         Ok(CreatedRun {
             lease,
             created,

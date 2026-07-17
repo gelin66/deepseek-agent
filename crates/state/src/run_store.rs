@@ -2,14 +2,15 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use codewhale_protocol::run_api::PendingCreationKind;
 use codewhale_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, PendingRuntimeEvent, RunId, RunPurpose, RunRequest,
     RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent,
 };
 use codewhale_runtime::{
-    AcquiredRun, CreatedRun, CreationReservation, DurableActionState, ReservedCreation,
-    RootRunRecord, RunLease, RunReplay, RunSnapshot, RunStore, RunStoreError, apply_event,
-    reduce_events, validate_continuation_request,
+    AcquiredRun, CreatedRun, CreationIntent, CreationReservation, DurableActionState,
+    ReservedCreation, RootRunRecord, RunLease, RunReplay, RunSnapshot, RunStore, RunStoreError,
+    apply_event, reduce_events, validate_continuation_request,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -35,6 +36,7 @@ impl StateStore {
         command_id: codewhale_runtime::CommandId,
         command_sha256: String,
         proposed_run_id: RunId,
+        intent: CreationIntent,
     ) -> Result<ReservedCreation, RunStoreError> {
         let mut conn = self.conn().map_err(backend)?;
         let tx = conn
@@ -43,7 +45,8 @@ impl StateStore {
         let existing = tx
             .query_row(
                 r#"
-                SELECT command_sha256, run_id, created_at_unix_ms
+                SELECT command_sha256, run_id, created_at_unix_ms,
+                       creation_kind, workspace, source_run_id, command_json
                 FROM agent_run_creations
                 WHERE command_id = ?1
                 "#,
@@ -53,24 +56,48 @@ impl StateStore {
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 },
             )
             .optional()
             .map_err(backend)?;
-        if let Some((existing_sha256, run_id, created_at)) = existing {
+        if let Some((
+            existing_sha256,
+            run_id,
+            created_at,
+            creation_kind,
+            workspace,
+            source_run_id,
+            command_json,
+        )) = existing
+        {
             if existing_sha256 != command_sha256 {
+                return Err(RunStoreError::CreationConflict { command_id });
+            }
+            let run_id = RunId(run_id);
+            let stored_intent = decode_creation_intent(
+                &run_id,
+                creation_kind,
+                workspace,
+                source_run_id,
+                command_json,
+            )?;
+            if stored_intent
+                .as_ref()
+                .is_some_and(|stored| stored != &intent)
+            {
                 return Err(RunStoreError::CreationConflict { command_id });
             }
             let reservation = CreationReservation {
                 command_id,
                 command_sha256: existing_sha256,
-                run_id: RunId(run_id),
-                created_at_unix_ms: from_store_u64(
-                    created_at,
-                    &proposed_run_id,
-                    "creation timestamp",
-                )?,
+                created_at_unix_ms: from_store_u64(created_at, &run_id, "creation timestamp")?,
+                intent: stored_intent,
+                run_id,
             };
             tx.commit().map_err(backend)?;
             return Ok(ReservedCreation {
@@ -79,17 +106,27 @@ impl StateStore {
             });
         }
         let created_at_unix_ms = now_unix_ms();
+        let creation_kind = encode_creation_kind(intent.kind);
+        let command_json = serde_json::to_string(&intent.command).map_err(backend)?;
         tx.execute(
             r#"
             INSERT INTO agent_run_creations(
-                command_id, command_sha256, run_id, created_at_unix_ms
-            ) VALUES (?1, ?2, ?3, ?4)
+                command_id, command_sha256, run_id, created_at_unix_ms,
+                creation_kind, workspace, source_run_id, command_json
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
             "#,
             params![
                 command_id.0,
                 command_sha256,
                 proposed_run_id.0,
                 to_store_i64(created_at_unix_ms, "creation timestamp")?,
+                creation_kind,
+                intent.workspace,
+                intent
+                    .source_run_id
+                    .as_ref()
+                    .map(|run_id| run_id.0.as_str()),
+                command_json,
             ],
         )
         .map_err(backend)?;
@@ -98,12 +135,49 @@ impl StateStore {
             command_sha256,
             run_id: proposed_run_id,
             created_at_unix_ms,
+            intent: Some(intent),
         };
         tx.commit().map_err(backend)?;
         Ok(ReservedCreation {
             reservation,
             newly_reserved: true,
         })
+    }
+
+    fn creation_sync(
+        &self,
+        command_id: codewhale_runtime::CommandId,
+    ) -> Result<Option<CreationReservation>, RunStoreError> {
+        let conn = self.conn().map_err(backend)?;
+        read_creation(&conn, &command_id)
+    }
+
+    fn list_pending_creations_sync(
+        &self,
+        workspace: String,
+        limit: u32,
+    ) -> Result<Vec<CreationReservation>, RunStoreError> {
+        let conn = self.conn().map_err(backend)?;
+        let mut statement = conn
+            .prepare(
+                r#"
+                SELECT command_id, command_sha256, run_id, created_at_unix_ms,
+                       creation_kind, workspace, source_run_id, command_json
+                FROM agent_run_creations
+                WHERE workspace = ?1 AND command_json IS NOT NULL
+                ORDER BY created_at_unix_ms DESC, command_id DESC
+                LIMIT ?2
+                "#,
+            )
+            .map_err(backend)?;
+        let mut rows = statement
+            .query(params![workspace, i64::from(limit)])
+            .map_err(backend)?;
+        let mut reservations = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            reservations.push(decode_creation_row(row)?);
+        }
+        Ok(reservations)
     }
 
     fn create_run_sync(&self, mut request: RunRequest) -> Result<CreatedRun, RunStoreError> {
@@ -178,6 +252,11 @@ impl StateStore {
         .map_err(backend)?;
         insert_event(&tx, &created)?;
         upsert_snapshot(&tx, &run_id, &snapshot)?;
+        tx.execute(
+            "UPDATE agent_run_creations SET command_json = NULL WHERE run_id = ?1",
+            params![run_id.0],
+        )
+        .map_err(backend)?;
         tx.commit().map_err(backend)?;
         Ok(CreatedRun {
             lease,
@@ -517,6 +596,160 @@ impl StateStore {
     }
 }
 
+fn read_creation(
+    conn: &Connection,
+    command_id: &codewhale_runtime::CommandId,
+) -> Result<Option<CreationReservation>, RunStoreError> {
+    conn.query_row(
+        r#"
+        SELECT command_id, command_sha256, run_id, created_at_unix_ms,
+               creation_kind, workspace, source_run_id, command_json
+        FROM agent_run_creations
+        WHERE command_id = ?1
+        "#,
+        params![command_id.0],
+        decode_creation_row_sql,
+    )
+    .optional()
+    .map_err(backend)?
+    .map(decode_creation_columns)
+    .transpose()
+}
+
+type CreationColumns = (
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+fn decode_creation_row_sql(row: &rusqlite::Row<'_>) -> rusqlite::Result<CreationColumns> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+        row.get(6)?,
+        row.get(7)?,
+    ))
+}
+
+fn decode_creation_row(row: &rusqlite::Row<'_>) -> Result<CreationReservation, RunStoreError> {
+    decode_creation_columns(decode_creation_row_sql(row).map_err(backend)?)
+}
+
+fn decode_creation_columns(
+    (
+        command_id,
+        command_sha256,
+        run_id,
+        created_at,
+        creation_kind,
+        workspace,
+        source_run_id,
+        command_json,
+    ): CreationColumns,
+) -> Result<CreationReservation, RunStoreError> {
+    let run_id = RunId(run_id);
+    Ok(CreationReservation {
+        command_id: codewhale_runtime::CommandId::from(command_id),
+        command_sha256,
+        created_at_unix_ms: from_store_u64(created_at, &run_id, "creation timestamp")?,
+        intent: decode_creation_intent(
+            &run_id,
+            creation_kind,
+            workspace,
+            source_run_id,
+            command_json,
+        )?,
+        run_id,
+    })
+}
+
+fn decode_creation_intent(
+    run_id: &RunId,
+    creation_kind: Option<String>,
+    workspace: Option<String>,
+    source_run_id: Option<String>,
+    command_json: Option<String>,
+) -> Result<Option<CreationIntent>, RunStoreError> {
+    let Some(command_json) = command_json else {
+        return Ok(None);
+    };
+    let kind = match creation_kind.as_deref() {
+        Some("start") => PendingCreationKind::Start,
+        Some("continue") => PendingCreationKind::Continue,
+        Some("compact") => PendingCreationKind::Compact,
+        _ => {
+            return Err(corrupt(
+                run_id,
+                "pending creation kind is missing or invalid",
+            ));
+        }
+    };
+    let workspace =
+        workspace.ok_or_else(|| corrupt(run_id, "pending creation workspace is missing"))?;
+    let source_run_id = source_run_id.map(RunId);
+    let command = serde_json::from_str(&command_json).map_err(|error| {
+        corrupt(
+            run_id,
+            format!("pending creation command is invalid: {error}"),
+        )
+    })?;
+    let metadata_matches = match (&kind, &command) {
+        (PendingCreationKind::Start, codewhale_protocol::run_api::RunCommand::Start(command)) => {
+            source_run_id.is_none() && command.workspace == workspace
+        }
+        (
+            PendingCreationKind::Continue,
+            codewhale_protocol::run_api::RunCommand::Continue(command),
+        ) => {
+            source_run_id.as_ref() == Some(&command.run_id)
+                && command
+                    .expected_workspace
+                    .as_ref()
+                    .is_none_or(|expected| expected == &workspace)
+        }
+        (
+            PendingCreationKind::Compact,
+            codewhale_protocol::run_api::RunCommand::Compact(command),
+        ) => {
+            source_run_id.as_ref() == Some(&command.run_id)
+                && command
+                    .expected_workspace
+                    .as_ref()
+                    .is_none_or(|expected| expected == &workspace)
+        }
+        _ => false,
+    };
+    if !metadata_matches {
+        return Err(corrupt(
+            run_id,
+            "pending creation metadata disagrees with its canonical command",
+        ));
+    }
+    Ok(Some(CreationIntent {
+        kind,
+        workspace,
+        source_run_id,
+        command,
+    }))
+}
+
+const fn encode_creation_kind(kind: PendingCreationKind) -> &'static str {
+    match kind {
+        PendingCreationKind::Start => "start",
+        PendingCreationKind::Continue => "continue",
+        PendingCreationKind::Compact => "compact",
+    }
+}
+
 /// Validate the schema-v7 continuation projection against canonical RunCreated
 /// events. Existing rows are expected to have a null continuation id; any
 /// disagreement aborts migration rather than manufacturing lineage.
@@ -680,12 +913,37 @@ impl RunStore for StateStore {
         command_id: &codewhale_runtime::CommandId,
         command_sha256: &str,
         proposed_run_id: RunId,
+        intent: CreationIntent,
     ) -> Result<ReservedCreation, RunStoreError> {
         self.reserve_creation_sync(
             command_id.clone(),
             command_sha256.to_owned(),
             proposed_run_id,
+            intent,
         )
+    }
+
+    async fn creation(
+        &self,
+        command_id: &codewhale_runtime::CommandId,
+    ) -> Result<Option<CreationReservation>, RunStoreError> {
+        let store = self.clone();
+        let command_id = command_id.clone();
+        tokio::task::spawn_blocking(move || store.creation_sync(command_id))
+            .await
+            .map_err(join_error)?
+    }
+
+    async fn list_pending_creations(
+        &self,
+        workspace: &str,
+        limit: u32,
+    ) -> Result<Vec<CreationReservation>, RunStoreError> {
+        let store = self.clone();
+        let workspace = workspace.to_owned();
+        tokio::task::spawn_blocking(move || store.list_pending_creations_sync(workspace, limit))
+            .await
+            .map_err(join_error)?
     }
 
     async fn create(&self, request: RunRequest) -> Result<CreatedRun, RunStoreError> {

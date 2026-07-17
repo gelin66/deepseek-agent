@@ -15,7 +15,7 @@ use crate::agent_runtime::{
 };
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 3;
+pub const RUN_API_SCHEMA_VERSION: u32 = 4;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -93,6 +93,35 @@ pub struct CompactRunCommand {
     pub expected_workspace: Option<String>,
 }
 
+/// Durable identity of a creation command whose reserved run has not reached
+/// `RunCreated`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PendingCreationKind {
+    Start,
+    Continue,
+    Compact,
+}
+
+/// Read-only projection of one pending creation intent.
+///
+/// The original command payload remains private to the RunStore. This
+/// projection contains enough identity for a client to request recovery
+/// without resubmitting or reconstructing that payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct PendingCreationSummary {
+    pub creation_request_id: String,
+    pub reserved_run_id: RunId,
+    pub kind: PendingCreationKind,
+    pub workspace: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_run_id: Option<RunId>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unknown_billing: bool,
+    pub created_at_unix_ms: u64,
+}
+
 /// One versioned application command submitted over HTTP or stdio.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -113,6 +142,14 @@ pub enum RunCommand {
         workspace: String,
         #[serde(default = "default_run_list_limit")]
         limit: u32,
+    },
+    ListPendingCreations {
+        workspace: String,
+        #[serde(default = "default_run_list_limit")]
+        limit: u32,
+    },
+    RecoverCreation {
+        creation_request_id: String,
     },
     Get {
         run_id: RunId,
@@ -216,11 +253,22 @@ pub enum RunApiErrorCode {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RunApiError {
     pub code: RunApiErrorCode,
-    pub message: String,
+    pub message: Box<str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub creation: Option<Box<CreationRecoveryContext>>,
+}
+
+/// Typed recovery facts present only on creation-delivery errors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct CreationRecoveryContext {
+    pub creation_request_id: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub unknown_billing: bool,
 }
 
 /// Transport-neutral result payload for every Run command.
@@ -239,6 +287,10 @@ pub enum RunCommandResult {
         workspace: String,
         runs: Vec<RootRunSummary>,
     },
+    PendingCreations {
+        workspace: String,
+        creations: Vec<PendingCreationSummary>,
+    },
     Accepted {
         run_id: RunId,
         last_sequence: u64,
@@ -250,6 +302,10 @@ pub enum RunCommandResult {
 
 const fn default_run_list_limit() -> u32 {
     DEFAULT_RUN_LIST_LIMIT
+}
+
+const fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 /// Versioned response correlated with one [`RunCommandEnvelope`].
@@ -343,7 +399,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 3,
+                "schema_version": 4,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
@@ -387,6 +443,9 @@ mod tests {
             "system_prompt",
             "actor",
             "provider",
+            "api_key",
+            "credential",
+            "authorization",
             "tool_catalog_sha256",
             "execution_fingerprint_sha256",
             "accounting_baseline",
@@ -413,9 +472,20 @@ mod tests {
                 input: "继续修复".to_owned(),
                 expected_workspace: Some("/workspace/project".to_owned()),
             }),
+            RunCommand::Compact(CompactRunCommand {
+                run_id: RunId::from("run-1"),
+                expected_workspace: Some("/workspace/project".to_owned()),
+            }),
             RunCommand::ListRoots {
                 workspace: "/workspace/project".to_owned(),
                 limit: 25,
+            },
+            RunCommand::ListPendingCreations {
+                workspace: "/workspace/project".to_owned(),
+                limit: 25,
+            },
+            RunCommand::RecoverCreation {
+                creation_request_id: "creation-1".to_owned(),
             },
             RunCommand::Get {
                 run_id: RunId::from("run-1"),
@@ -447,7 +517,10 @@ mod tests {
         let expected = [
             "start",
             "continue",
+            "compact",
             "list_roots",
+            "list_pending_creations",
+            "recover_creation",
             "get",
             "events",
             "resume",
@@ -569,6 +642,56 @@ mod tests {
             .expect("deserialize run response"),
             run_response
         );
+    }
+
+    #[test]
+    fn pending_creation_projection_and_unknown_billing_error_are_typed() {
+        let response = RunCommandResponse {
+            schema_version: RUN_API_SCHEMA_VERSION,
+            request_id: "list-pending".to_owned(),
+            result: RunCommandResult::PendingCreations {
+                workspace: "/workspace/project".to_owned(),
+                creations: vec![PendingCreationSummary {
+                    creation_request_id: "creation-auto".to_owned(),
+                    reserved_run_id: RunId::from("reserved-auto"),
+                    kind: PendingCreationKind::Start,
+                    workspace: "/workspace/project".to_owned(),
+                    source_run_id: None,
+                    unknown_billing: true,
+                    created_at_unix_ms: 123,
+                }],
+            },
+        };
+        let encoded = serde_json::to_value(&response).expect("serialize pending response");
+        assert_eq!(encoded["result"]["kind"], "pending_creations");
+        assert_eq!(
+            encoded["result"]["creations"][0]["creation_request_id"],
+            "creation-auto"
+        );
+        assert_eq!(
+            encoded["result"]["creations"][0]["reserved_run_id"],
+            "reserved-auto"
+        );
+        assert_eq!(encoded["result"]["creations"][0]["unknown_billing"], true);
+        assert_eq!(
+            serde_json::from_value::<RunCommandResponse>(encoded).expect("round-trip pending"),
+            response
+        );
+
+        let error = RunApiError {
+            code: RunApiErrorCode::RunRecoveryRequired,
+            message: "不会重复路由".into(),
+            run_id: Some(RunId::from("reserved-auto")),
+            terminal: None,
+            creation: Some(Box::new(CreationRecoveryContext {
+                creation_request_id: "creation-auto".to_owned(),
+                unknown_billing: true,
+            })),
+        };
+        let encoded = serde_json::to_value(&error).expect("serialize recovery error");
+        assert_eq!(encoded["creation"]["creation_request_id"], "creation-auto");
+        assert_eq!(encoded["run_id"], "reserved-auto");
+        assert_eq!(encoded["creation"]["unknown_billing"], true);
     }
 
     #[test]

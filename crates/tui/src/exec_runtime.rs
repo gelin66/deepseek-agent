@@ -513,7 +513,7 @@ pub(crate) async fn run_exec_runtime(
                 Next::DrainTimeout => std::process::exit(1),
                 Next::Events(RunCommandResult::Events { events, .. }) => events,
                 Next::Events(RunCommandResult::Error { error }) => {
-                    output_failure.get_or_insert(error.message);
+                    output_failure.get_or_insert(error.message.into_string());
                     break;
                 }
                 Next::Events(other) => {
@@ -854,7 +854,7 @@ fn signal_cancel_won(result: &RunCommandResult, phase: &AtomicI32) -> bool {
 }
 
 fn startup_failure_for_run_api(error: &RunApiError) -> ExecStartupFailure {
-    let message = error.message.as_str();
+    let message = error.message.as_ref();
     if message.starts_with("run_resume_workspace_mismatch：") {
         return ExecStartupFailure::ResumeWorkspaceMismatch;
     }
@@ -1844,9 +1844,10 @@ mod tests {
         let result = RunCommandResult::Error {
             error: RunApiError {
                 code: RunApiErrorCode::RunTerminal,
-                message: "run already terminal".to_owned(),
+                message: "run already terminal".into(),
                 run_id: Some(RunId::from("run-terminal")),
                 terminal: None,
+                creation: None,
             },
         };
 

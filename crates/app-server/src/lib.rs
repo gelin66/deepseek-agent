@@ -91,7 +91,7 @@ struct EventQuery {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct RootRunQuery {
+struct WorkspaceListQuery {
     workspace: String,
     #[serde(default)]
     limit: Option<u32>,
@@ -133,6 +133,11 @@ pub fn router(
     };
     let protected = Router::new()
         .route("/v1/runs", get(list_root_runs).post(start_run))
+        .route("/v1/runs/pending-creations", get(list_pending_creations))
+        .route(
+            "/v1/runs/pending-creations/{creation_request_id}/recover",
+            post(recover_creation),
+        )
         .route("/v1/runs/{run_id}", get(get_run))
         .route("/v1/runs/{run_id}/events", get(get_events))
         .route("/v1/runs/{run_id}/continue", post(continue_run))
@@ -305,7 +310,7 @@ async fn get_run(
 
 async fn list_root_runs(
     State(state): State<TransportState>,
-    query: Result<Query<RootRunQuery>, QueryRejection>,
+    query: Result<Query<WorkspaceListQuery>, QueryRejection>,
     headers: HeaderMap,
 ) -> Response {
     let Query(query) = match query {
@@ -328,6 +333,65 @@ async fn list_root_runs(
             limit: query.limit.unwrap_or(DEFAULT_RUN_LIST_LIMIT),
         },
     );
+    command_response(state.application.execute(envelope).await)
+}
+
+async fn list_pending_creations(
+    State(state): State<TransportState>,
+    query: Result<Query<WorkspaceListQuery>, QueryRejection>,
+    headers: HeaderMap,
+) -> Response {
+    let Query(query) = match query {
+        Ok(query) => query,
+        Err(error) => {
+            return command_response_with_status(
+                error.status(),
+                invalid_response(
+                    request_id(&headers, "list", "pending-creations"),
+                    error.body_text(),
+                    None,
+                ),
+            );
+        }
+    };
+    let envelope = generated_envelope(
+        request_id(&headers, "list", "pending-creations"),
+        RunCommand::ListPendingCreations {
+            workspace: query.workspace,
+            limit: query.limit.unwrap_or(DEFAULT_RUN_LIST_LIMIT),
+        },
+    );
+    command_response(state.application.execute(envelope).await)
+}
+
+async fn recover_creation(
+    State(state): State<TransportState>,
+    Path(path_creation_request_id): Path<String>,
+    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let envelope = match payload {
+        Ok(Json(envelope)) => envelope,
+        Err(error) => return json_rejection_response(error),
+    };
+    let RunCommand::RecoverCreation {
+        creation_request_id,
+    } = &envelope.command
+    else {
+        return command_response(invalid_response(
+            &envelope.request_id,
+            "command kind does not match the recover creation route",
+            None,
+        ));
+    };
+    if creation_request_id != &path_creation_request_id {
+        return command_response(invalid_response(
+            &envelope.request_id,
+            format!(
+                "path creation request id {path_creation_request_id} does not match command creation request id {creation_request_id}"
+            ),
+            None,
+        ));
+    }
     command_response(state.application.execute(envelope).await)
 }
 
@@ -585,9 +649,10 @@ fn invalid_response(
         result: RunCommandResult::Error {
             error: RunApiError {
                 code: RunApiErrorCode::InvalidRequest,
-                message: message.into(),
+                message: message.into().into_boxed_str(),
                 run_id,
                 terminal: None,
+                creation: None,
             },
         },
     }
@@ -614,6 +679,7 @@ fn response_status(response: &RunCommandResponse) -> StatusCode {
         RunCommandResult::Accepted { .. } => StatusCode::ACCEPTED,
         RunCommandResult::Run { .. }
         | RunCommandResult::Runs { .. }
+        | RunCommandResult::PendingCreations { .. }
         | RunCommandResult::Events { .. } => StatusCode::OK,
         RunCommandResult::Error { error } => match error.code {
             RunApiErrorCode::InvalidRequest
@@ -786,7 +852,8 @@ mod tests {
         TerminalState, ToolPolicy, UserInteractionResponse,
     };
     use codewhale_protocol::run_api::{
-        CompactRunCommand, ContinueRunCommand, RunProductControls, RunView, StartRunCommand,
+        CompactRunCommand, ContinueRunCommand, PendingCreationKind, RunProductControls, RunView,
+        StartRunCommand,
     };
     use serde_json::json;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -1293,9 +1360,10 @@ mod tests {
             result: RunCommandResult::Error {
                 error: RunApiError {
                     code: RunApiErrorCode::RunRecoveryRequired,
-                    message: "resume required".to_owned(),
+                    message: "resume required".into(),
                     run_id: Some(RunId::from("run-1")),
                     terminal: None,
+                    creation: None,
                 },
             },
         };
@@ -1370,9 +1438,10 @@ mod tests {
                 result: RunCommandResult::Error {
                     error: RunApiError {
                         code,
-                        message: "typed".to_owned(),
+                        message: "typed".into(),
                         run_id: None,
                         terminal: None,
+                        creation: None,
                     },
                 },
             };
@@ -1407,6 +1476,13 @@ mod tests {
             RunCommand::ListRoots {
                 workspace: "/workspace".to_owned(),
                 limit: 10,
+            },
+            RunCommand::ListPendingCreations {
+                workspace: "/workspace".to_owned(),
+                limit: 10,
+            },
+            RunCommand::RecoverCreation {
+                creation_request_id: "creation-1".to_owned(),
             },
             RunCommand::Get {
                 run_id: run_id.clone(),
@@ -1451,6 +1527,107 @@ mod tests {
             RunCommandResult::Error {
                 error: RunApiError {
                     code: RunApiErrorCode::InvalidRequest,
+                    ..
+                }
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn http_creation_recovery_routes_are_static_thin_application_projections() {
+        let temp = tempfile::tempdir().expect("temporary creation recovery workspace");
+        let fixture = DeepSeekFixture::start().await;
+        let state_db = temp.path().join("state.db");
+        let application = production_app(&state_db, &fixture, true);
+        let app = router(application.clone(), &test_options(None)).expect("Run API router");
+        let workspace = temp
+            .path()
+            .canonicalize()
+            .expect("canonical workspace")
+            .display()
+            .to_string();
+
+        let creation_request_id = "creation-http-recover";
+        let mut start = production_start(temp.path(), "中断自动路由创建");
+        start.model = None;
+        let interrupted_app = app.clone();
+        let interrupted_start = RunCommandEnvelope {
+            schema_version: RUN_API_SCHEMA_VERSION,
+            request_id: creation_request_id.to_owned(),
+            command: RunCommand::Start(start),
+        };
+        let interrupted = tokio::spawn(async move {
+            post_command(&interrupted_app, "/v1/runs", &interrupted_start, None).await
+        });
+        fixture.wait_requests(1).await;
+        interrupted.abort();
+        assert!(
+            interrupted
+                .await
+                .expect_err("interrupted creation must not return an HTTP response")
+                .is_cancelled()
+        );
+
+        let uri = format!(
+            "/v1/runs/pending-creations?workspace={}&limit=7",
+            workspace.replace('/', "%2F")
+        );
+        let (status, response) = get_command(&app, &uri, None).await;
+        assert_eq!(status, StatusCode::OK);
+        let RunCommandResult::PendingCreations {
+            workspace: listed_workspace,
+            creations,
+        } = response.result
+        else {
+            panic!("the static pending-creations route was captured as {{run_id}}")
+        };
+        assert_eq!(listed_workspace, workspace);
+        assert_eq!(creations.len(), 1);
+        assert_eq!(creations[0].creation_request_id, creation_request_id);
+        assert_eq!(creations[0].kind, PendingCreationKind::Start);
+        assert!(creations[0].unknown_billing);
+
+        let recover = envelope(RunCommand::RecoverCreation {
+            creation_request_id: creation_request_id.to_owned(),
+        });
+        let application_response = application.execute(recover.clone()).await;
+        let (status, response) = post_command(
+            &app,
+            &format!("/v1/runs/pending-creations/{creation_request_id}/recover"),
+            &recover,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(
+            response, application_response,
+            "HTTP framing must not rewrite the application typed error"
+        );
+        assert!(matches!(
+            response.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::RunRecoveryRequired,
+                    creation: Some(ref creation),
+                    ..
+                }
+            } if creation.creation_request_id == creation_request_id && creation.unknown_billing
+        ));
+
+        let (status, response) = post_command(
+            &app,
+            "/v1/runs/pending-creations/different-creation/recover",
+            &recover,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(matches!(
+            response.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::InvalidRequest,
+                    creation: None,
                     ..
                 }
             }

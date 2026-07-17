@@ -24,7 +24,7 @@ use serde_json::Value;
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 8;
+const STATE_SCHEMA_VERSION: u32 = 9;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -698,6 +698,23 @@ impl StateStore {
             .context("failed to initialize durable run creation receipts")?;
             tx.pragma_update(None, "user_version", 8)
                 .context("failed to commit run creation receipt schema version")?;
+            user_version = 8;
+        }
+        if user_version < 9 {
+            tx.execute_batch(
+                r#"
+                ALTER TABLE agent_run_creations ADD COLUMN creation_kind TEXT;
+                ALTER TABLE agent_run_creations ADD COLUMN workspace TEXT;
+                ALTER TABLE agent_run_creations ADD COLUMN source_run_id TEXT;
+                ALTER TABLE agent_run_creations ADD COLUMN command_json TEXT;
+                CREATE INDEX idx_agent_run_creations_pending_workspace
+                    ON agent_run_creations(workspace, created_at_unix_ms DESC, command_id DESC)
+                    WHERE command_json IS NOT NULL;
+                "#,
+            )
+            .context("failed to initialize durable run creation intent schema")?;
+            tx.pragma_update(None, "user_version", 9)
+                .context("failed to commit run creation intent schema version")?;
         }
         tx.commit()
             .context("failed to commit state schema migration")?;

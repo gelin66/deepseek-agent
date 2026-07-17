@@ -19,11 +19,12 @@ pub use agent::{
     AgentControl, AgentRuntime, ControlError, RunReadyError, RuntimeJoinError, RuntimeRun,
 };
 pub use store::{
-    AcquiredRun, CommandReceipt, CommittedContextCompaction, CreatedRun, CreationReservation,
-    DurableActionState, DurableCommand, InMemoryRunStore, PendingContextCompaction, PendingControl,
-    PendingModelAction, PendingSteer, PendingToolAction, PendingUserInteraction, ReservedCreation,
-    RootRunRecord, RunLease, RunReplay, RunSnapshot, StoppedContextCompactionFailure,
-    StoppedModelFailure, apply_event, reduce_events, validate_continuation_request,
+    AcquiredRun, CommandReceipt, CommittedContextCompaction, CreatedRun, CreationIntent,
+    CreationReservation, DurableActionState, DurableCommand, InMemoryRunStore,
+    PendingContextCompaction, PendingControl, PendingModelAction, PendingSteer, PendingToolAction,
+    PendingUserInteraction, ReservedCreation, RootRunRecord, RunLease, RunReplay, RunSnapshot,
+    StoppedContextCompactionFailure, StoppedModelFailure, apply_event, reduce_events,
+    validate_continuation_request,
 };
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -214,7 +215,19 @@ pub trait RunStore: Send + Sync {
         command_id: &CommandId,
         command_sha256: &str,
         proposed_run_id: RunId,
+        intent: CreationIntent,
     ) -> Result<ReservedCreation, RunStoreError>;
+
+    async fn creation(
+        &self,
+        command_id: &CommandId,
+    ) -> Result<Option<CreationReservation>, RunStoreError>;
+
+    async fn list_pending_creations(
+        &self,
+        workspace: &str,
+        limit: u32,
+    ) -> Result<Vec<CreationReservation>, RunStoreError>;
 
     async fn create(&self, request: RunRequest) -> Result<CreatedRun, RunStoreError>;
 

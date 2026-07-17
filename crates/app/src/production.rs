@@ -235,6 +235,13 @@ impl AgentApplication {
 
 #[async_trait]
 impl RunComposition for ProductionComposition {
+    fn prepare_start_command(
+        &self,
+        command: StartRunCommand,
+    ) -> Result<StartRunCommand, RunApiError> {
+        prepare_production_start_command(command)
+    }
+
     async fn start(
         &self,
         run_id: RunId,
@@ -674,6 +681,13 @@ fn canonical_start_workspace(raw: &str) -> Result<PathBuf, RunApiError> {
     Ok(canonical)
 }
 
+fn prepare_production_start_command(
+    mut command: StartRunCommand,
+) -> Result<StartRunCommand, RunApiError> {
+    command.workspace = stable_path(&canonical_start_workspace(&command.workspace)?);
+    Ok(command)
+}
+
 fn canonical_resume_workspace(run_id: &RunId, raw: &str) -> Result<PathBuf, RunApiError> {
     let path = Path::new(raw);
     let canonical = path.canonicalize().map_err(|error| {
@@ -1013,6 +1027,24 @@ mod tests {
                 sandbox: Some("workspace-write".to_owned()),
             },
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn production_start_command_is_canonical_before_creation_reservation() {
+        let parent = tempfile::tempdir().expect("temporary parent");
+        let workspace = parent.path().join("workspace");
+        let alias = parent.path().join("workspace-alias");
+        std::fs::create_dir(&workspace).expect("create workspace");
+        std::os::unix::fs::symlink(&workspace, &alias).expect("create workspace symlink");
+
+        let prepared =
+            prepare_production_start_command(start_command(&alias, Some("deepseek-chat")))
+                .expect("prepare canonical start command");
+        assert_eq!(
+            prepared.workspace,
+            stable_path(&workspace.canonicalize().expect("canonical workspace"))
+        );
     }
 
     #[test]
