@@ -21,8 +21,8 @@ use ratatui::{
 use crate::deepseek_theme::Theme;
 use crate::palette;
 use crate::tools::plan::StepStatus;
-use crate::tools::subagent::{AgentWorkerStatus, SubAgentStatus, agent_worker_status_name};
 use crate::tools::todo::TodoStatus;
+use codewhale_protocol::agent_runtime::TerminalState;
 
 use super::app::{
     App, SidebarFocus, SidebarHoverRow, SidebarHoverSection, SidebarHoverState, SidebarRowAction,
@@ -30,7 +30,6 @@ use super::app::{
 };
 use super::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
 use super::spinner::braille_spinner_frame_for_duration_ms;
-use super::subagent_routing::active_fanout_counts;
 use super::ui_text::{concise_shell_command_label, truncate_line_to_width};
 
 /// Tolerance for floating-point cost comparison in the sidebar breakdown.
@@ -42,6 +41,22 @@ const ACTIVE_TOOL_COMPLETED_ROW_TTL: Duration = Duration::from_secs(8);
 const ACTIVE_TOOL_STALE_RUNNING_ROW_TTL: Duration = Duration::from_secs(600);
 const TASK_STOP_TARGET_LABEL: &str = "[x]";
 const TASK_STOP_TARGET_SUFFIX: &str = " [x]";
+
+/// The explicit Agents view remains available for settled children. Auto mode
+/// only claims screen space while canonical child work is active.
+pub(crate) fn agents_sidebar_surface_visible(app: &App) -> bool {
+    match app.sidebar_focus {
+        SidebarFocus::Hidden => false,
+        SidebarFocus::Agents => true,
+        SidebarFocus::Auto => app.child_agents.has_active(),
+        _ => false,
+    }
+}
+
+pub(crate) fn running_agent_count(app: &App) -> usize {
+    app.child_agents.active_count()
+}
+
 pub fn render_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     // Clear hover state at the start of each render
     app.sidebar_hover = SidebarHoverState::default();
@@ -168,10 +183,9 @@ fn auto_sidebar_state(app: &mut App) -> AutoSidebarState {
         // Completed jobs, per-turn tools, and model reasoning do not reopen
         // the panel; they remain visible only when Tasks is explicitly focused.
         tasks_empty: !app.task_panel.iter().any(background_task_is_live),
-        agents_empty: app.subagent_cache.is_empty()
-            && app.agent_progress.is_empty()
-            && active_fanout_counts(app).is_none()
-            && !foreground_rlm_running(app),
+        // Auto mode follows live canonical child work only. Settled children
+        // remain available when the user explicitly opens the Agents panel.
+        agents_empty: !app.child_agents.has_active(),
         context_enabled: app.context_panel,
     }
 }
@@ -2249,42 +2263,21 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &mut App) {
 
     let content_width = area.width.saturating_sub(4) as usize;
     let usable_rows = area.height.saturating_sub(3) as usize;
-    let cached_ids: std::collections::HashSet<&str> = app
-        .subagent_cache
-        .iter()
-        .map(|agent| agent.agent_id.as_str())
-        .collect();
-    let progress_only_count = app
-        .agent_progress
-        .keys()
-        .filter(|id| !cached_ids.contains(id.as_str()))
-        .count();
-    let cached_running = app
-        .subagent_cache
-        .iter()
-        .filter(|agent| matches!(agent.status, SubAgentStatus::Running))
-        .count();
-    let role_counts: std::collections::BTreeMap<String, usize> =
-        app.subagent_cache
-            .iter()
-            .fold(std::collections::BTreeMap::new(), |mut acc, agent| {
-                *acc.entry(agent.agent_type.as_str().to_string())
-                    .or_insert(0) += 1;
-                acc
-            });
-    let (fanout_running, fanout_total) = active_fanout_counts(app)
-        .map(|(running, total)| (running, Some(total)))
-        .unwrap_or((0, None));
-    let foreground_rlm_running = foreground_rlm_running(app);
+    let mut role_counts = std::collections::BTreeMap::new();
+    for child in app.child_agents.rows() {
+        let role = if child.depth > 1 {
+            "子级 Agent"
+        } else {
+            "子 Agent"
+        };
+        *role_counts.entry(role.to_string()).or_insert(0) += 1;
+    }
 
     let summary = SidebarSubagentSummary {
-        cached_total: app.subagent_cache.len(),
-        cached_running,
-        progress_only_count,
-        fanout_total,
-        fanout_running,
-        foreground_rlm_running,
+        cached_total: app.child_agents.rows().len(),
+        cached_running: app.child_agents.active_count(),
         role_counts,
+        ..SidebarSubagentSummary::default()
     };
     let rows = sidebar_agent_rows(app);
     let (lines, row_actions) = subagent_panel_rows(
@@ -2330,109 +2323,31 @@ pub struct SidebarAgentRow {
     pub expanded: bool,
 }
 
-fn foreground_rlm_running(app: &App) -> bool {
-    app.active_cell.as_ref().is_some_and(|active| {
-        active.entries().iter().any(|entry| {
-            matches!(
-                entry,
-                HistoryCell::Tool(ToolCell::Generic(generic))
-                    if matches!(
-                        generic.name.as_str(),
-                        "rlm_open" | "rlm_eval" | "rlm_configure" | "rlm_close" | "rlm"
-                    ) && generic.status == ToolStatus::Running
-            )
-        })
-    })
-}
-
 fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
-    let mut rows: Vec<SidebarAgentRow> = app
-        .subagent_cache
+    app.child_agents
+        .rows()
         .iter()
-        .map(|agent| {
-            let progress = app
-                .agent_progress
-                .get(&agent.agent_id)
-                .cloned()
-                .or_else(|| {
-                    agent
-                        .result
-                        .as_deref()
-                        .map(summarize_tool_output)
-                        .filter(|summary| !summary.trim().is_empty())
-                });
-            // #3030: Prefer the user-assigned nickname > stable label
-            // ("Agent 1") > raw name. Every spawned agent gets a label-map
-            // entry, so the generated label must not shadow nicknames.
-            let display_name = agent
-                .nickname
-                .clone()
-                .or_else(|| app.agent_label_map.get(&agent.agent_id).cloned())
-                .unwrap_or_else(|| agent.name.clone());
-            SidebarAgentRow {
-                id: agent.agent_id.clone(),
-                parent_run_id: agent.parent_run_id.clone(),
-                spawn_depth: agent.spawn_depth,
-                name: display_name,
-                role: agent.agent_type.as_str().to_string(),
-                model: Some(agent.model.clone()).filter(|model| !model.trim().is_empty()),
-                status: agent
-                    .worker_status
-                    .map(sidebar_worker_status_text)
-                    .unwrap_or_else(|| subagent_status_text(&agent.status))
-                    .to_string(),
-                objective: Some(agent.assignment.objective.clone())
-                    .filter(|objective| !objective.trim().is_empty()),
-                git_branch: agent.git_branch.clone(),
-                progress,
-                steps_taken: agent.steps_taken,
-                duration_ms: Some(agent.duration_ms),
-                expanded: app.expanded_sidebar_agents.contains(&agent.agent_id),
-            }
+        .enumerate()
+        .map(|(index, child)| SidebarAgentRow {
+            id: child.child_run_id.0.clone(),
+            parent_run_id: Some(child.parent_run_id.0.clone()),
+            spawn_depth: u32::from(child.depth),
+            name: format!("子 Agent {}", index + 1),
+            role: if child.depth > 1 {
+                "子级 Agent".to_string()
+            } else {
+                "子 Agent".to_string()
+            },
+            model: None,
+            status: canonical_child_status(child.terminal.as_ref()).to_string(),
+            objective: None,
+            git_branch: None,
+            progress: child.handoff_content.clone(),
+            steps_taken: 0,
+            duration_ms: None,
+            expanded: false,
         })
-        .collect();
-
-    let cached_ids: std::collections::HashSet<&str> = app
-        .subagent_cache
-        .iter()
-        .map(|agent| agent.agent_id.as_str())
-        .collect();
-    rows.extend(
-        app.agent_progress
-            .iter()
-            .filter(|(id, _)| !cached_ids.contains(id.as_str()))
-            .map(|(id, progress)| {
-                // #3030: Prefer stable label for progress-only agents too.
-                let display_name = app
-                    .agent_label_map
-                    .get(id.as_str())
-                    .cloned()
-                    .unwrap_or_else(|| id.clone());
-                let meta = app.agent_progress_meta.get(id.as_str());
-                let spawn_depth = meta.map(|meta| meta.spawn_depth).unwrap_or_default();
-                SidebarAgentRow {
-                    id: id.clone(),
-                    parent_run_id: meta.and_then(|meta| meta.parent_run_id.clone()),
-                    spawn_depth,
-                    name: display_name,
-                    role: if spawn_depth > 1 {
-                        "child".to_string()
-                    } else {
-                        "agent".to_string()
-                    },
-                    model: None,
-                    status: sidebar_progress_status_text(progress).to_string(),
-                    objective: None,
-                    git_branch: None,
-                    progress: Some(progress.clone()),
-                    steps_taken: 0,
-                    duration_ms: None,
-                    expanded: app.expanded_sidebar_agents.contains(id),
-                }
-            }),
-    );
-
-    sort_sidebar_agent_rows_as_tree(rows)
+        .collect()
 }
 
 fn sort_sidebar_agent_rows_as_tree(rows: Vec<SidebarAgentRow>) -> Vec<SidebarAgentRow> {
@@ -2489,49 +2404,15 @@ fn sort_sidebar_agent_rows_as_tree(rows: Vec<SidebarAgentRow>) -> Vec<SidebarAge
         .collect()
 }
 
-fn subagent_status_text(status: &SubAgentStatus) -> &'static str {
-    match status {
-        SubAgentStatus::Running => "running",
-        SubAgentStatus::Completed => "done",
-        SubAgentStatus::Interrupted(_) => "interrupted",
-        SubAgentStatus::Failed(_) => "failed",
-        SubAgentStatus::Cancelled => "canceled",
-        SubAgentStatus::BudgetExhausted => "budget",
-    }
-}
-
-fn sidebar_worker_status_text(status: AgentWorkerStatus) -> &'static str {
-    match status {
-        AgentWorkerStatus::Queued => "queued",
-        AgentWorkerStatus::Starting => "starting",
-        AgentWorkerStatus::Running => "running",
-        AgentWorkerStatus::WaitingForUser => "waiting",
-        AgentWorkerStatus::ModelWait => "model wait",
-        AgentWorkerStatus::RunningTool => "tool",
-        AgentWorkerStatus::Completed => "done",
-        AgentWorkerStatus::Failed => "failed",
-        AgentWorkerStatus::Cancelled => "canceled",
-        AgentWorkerStatus::Interrupted => "interrupted",
-    }
-}
-
-fn sidebar_progress_status_text(progress: &str) -> &'static str {
-    let lower = progress.to_ascii_lowercase();
-    if lower.contains("queued") {
-        "queued"
-    } else if lower.contains("waiting for user") || lower.contains("waiting for follow-up") {
-        "waiting"
-    } else if lower.contains("waiting for model") || lower.contains("requesting model") {
-        "model wait"
-    } else if lower.contains("running tool")
-        || lower.contains("executing tool")
-        || lower.contains("tool:")
-    {
-        "tool"
-    } else if lower.contains("starting") {
-        "starting"
-    } else {
-        agent_worker_status_name(AgentWorkerStatus::Running)
+fn canonical_child_status(terminal: Option<&TerminalState>) -> &'static str {
+    match terminal {
+        None => "running",
+        Some(TerminalState::Completed { .. }) => "done",
+        Some(TerminalState::Blocked { .. }) => "blocked",
+        Some(TerminalState::Failed { .. }) => "failed",
+        Some(TerminalState::Cancelled) => "canceled",
+        Some(TerminalState::Interrupted) => "interrupted",
+        Some(TerminalState::RecoveryRequired { .. }) => "recovery",
     }
 }
 
@@ -2681,14 +2562,11 @@ fn subagent_panel_rows(
             "{tree_prefix}{marker} {}",
             sidebar_agent_row_label(row, content_width.max(1))
         );
-        let label = if sidebar_agent_status_is_running(row.status.as_str()) {
-            label_with_stop_target(&label, content_width.max(1))
-        } else {
-            truncate_line_to_width(&label, content_width.max(1))
-        };
+        let label = truncate_line_to_width(&label, content_width.max(1));
         lines.push(Line::from(Span::styled(label, Style::default().fg(color))));
-        actions.push(Some(SidebarRowAction::ToggleAgentDetails {
-            agent_id: row.id.clone(),
+        actions.push(Some(SidebarRowAction::InspectText {
+            label: row.name.clone(),
+            detail: agent_row_hover_text(row),
         }));
 
         // Auto-collapse finished sub-agents so the sidebar stays compact when
@@ -2740,8 +2618,9 @@ fn subagent_panel_rows(
         // Clicking the expanded dossier drills into the child's transcript
         // card in the detail pager (#2889 slice, dogfood A3). The label row
         // above keeps its expand/collapse toggle.
-        actions.push(Some(SidebarRowAction::OpenAgentDetail {
-            agent_id: row.id.clone(),
+        actions.push(Some(SidebarRowAction::InspectText {
+            label: row.name.clone(),
+            detail: agent_row_hover_text(row),
         }));
 
         // #4094: hand the user a copyable bounded projection instead of
@@ -2762,8 +2641,9 @@ fn subagent_panel_rows(
                 ),
                 Style::default().fg(theme.text_muted),
             )));
-            actions.push(Some(SidebarRowAction::OpenAgentDetail {
-                agent_id: row.id.clone(),
+            actions.push(Some(SidebarRowAction::InspectText {
+                label: row.name.clone(),
+                detail: agent_row_hover_text(row),
             }));
         }
     }
@@ -3218,12 +3098,7 @@ fn sidebar_hover_rows(
             let click_action = row_actions.get(idx).and_then(|a| a.clone());
             let stop_action = display_text
                 .ends_with(TASK_STOP_TARGET_LABEL)
-                .then(|| {
-                    click_action
-                        .as_ref()
-                        .and_then(agent_stop_action_for_click)
-                        .or_else(|| row_actions.get(idx + 1).and_then(|a| a.clone()))
-                })
+                .then(|| row_actions.get(idx + 1).and_then(|a| a.clone()))
                 .flatten()
                 .filter(SidebarRowAction::is_cancel_action);
             let stop_target_width = unicode_width::UnicodeWidthStr::width(TASK_STOP_TARGET_LABEL);
@@ -3257,19 +3132,6 @@ fn sidebar_hover_rows(
         .collect()
 }
 
-fn agent_stop_action_for_click(action: &SidebarRowAction) -> Option<SidebarRowAction> {
-    match action {
-        SidebarRowAction::ToggleAgentDetails { agent_id } => Some(SidebarRowAction::CancelAgent {
-            agent_id: agent_id.clone(),
-        }),
-        SidebarRowAction::Command(_)
-        | SidebarRowAction::PrefillCommand(_)
-        | SidebarRowAction::OpenAgentDetail { .. }
-        | SidebarRowAction::CancelAgent { .. }
-        | SidebarRowAction::InspectText { .. } => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3291,8 +3153,7 @@ mod tests {
     use crate::tools::todo::TodoStatus;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{
-        AgentProgressMeta, App, HuntVerdict, SidebarRowAction, TaskPanelEntry, TaskPanelEntryKind,
-        TuiOptions,
+        App, HuntVerdict, SidebarRowAction, TaskPanelEntry, TaskPanelEntryKind, TuiOptions,
     };
     use crate::tui::history::{
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
@@ -3329,6 +3190,18 @@ mod tests {
             initial_input: None,
         };
         App::new(options, &Config::default())
+    }
+
+    fn start_child(app: &mut App, parent: &str, child: &str, depth: u8) {
+        use codewhale_protocol::agent_runtime::RunId;
+
+        app.child_agents.begin_root(RunId("root-run".to_string()));
+        app.child_agents.record_started(
+            RunId(parent.to_string()),
+            format!("call-{child}"),
+            RunId(child.to_string()),
+            depth,
+        );
     }
 
     fn sidebar_tool_row(name: &str, status: ToolStatus) -> SidebarToolRow {
@@ -3592,12 +3465,7 @@ mod tests {
     fn pinned_sidebar_renders_agents_section_when_subagents_are_active() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Pinned;
-        app.subagent_cache
-            .push(cached_agent("agent-active-1", Some("critic")));
-        app.agent_progress.insert(
-            "agent-active-1".to_string(),
-            "checking sidebar visibility".to_string(),
-        );
+        start_child(&mut app, "root-run", "child-active-1", 1);
 
         let backend = TestBackend::new(72, 18);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -3617,12 +3485,8 @@ mod tests {
             "pinned sidebar must surface active sub-agents: {rendered:?}"
         );
         assert!(
-            rendered.contains("critic") || rendered.contains("Agent 1"),
+            rendered.contains('子') && rendered.contains("Agent 1"),
             "pinned sidebar should render the child agent label: {rendered:?}"
-        );
-        assert!(
-            !rendered.contains("checking sidebar visibility"),
-            "collapsed agent rows should not render noisy progress: {rendered:?}"
         );
     }
 
@@ -4970,21 +4834,18 @@ mod tests {
             .expect("agent label row");
         assert!(matches!(
             actions[agent_idx],
-            Some(SidebarRowAction::ToggleAgentDetails { ref agent_id })
-                if agent_id == "agent_0123456789"
+            Some(SidebarRowAction::InspectText { ref label, .. })
+                if label == "investigator"
         ));
         assert!(
-            text[agent_idx].ends_with("[x]"),
-            "running agent row exposes a compact stop target: {text:?}"
+            !text[agent_idx].ends_with("[x]"),
+            "canonical child rows do not expose a fake direct stop target: {text:?}"
         );
-        assert_eq!(
+        assert!(matches!(
             actions[agent_idx + 1],
-            Some(SidebarRowAction::OpenAgentDetail {
-                agent_id: "agent_0123456789".to_string(),
-            }),
-            "expanded detail row drills into the child's transcript card (#2889); \
-             the stop target stays on the label row"
-        );
+            Some(SidebarRowAction::InspectText { ref label, .. })
+                if label == "investigator"
+        ));
     }
 
     #[test]
@@ -5027,8 +4888,8 @@ mod tests {
         );
         assert!(matches!(
             actions[agent_idx],
-            Some(SidebarRowAction::ToggleAgentDetails { ref agent_id })
-                if agent_id == "agent_fedcba987654"
+            Some(SidebarRowAction::InspectText { ref label, .. })
+                if label == "scout"
         ));
     }
 
@@ -5125,8 +4986,8 @@ mod tests {
         );
         assert!(matches!(
             actions[agent_idx],
-            Some(SidebarRowAction::ToggleAgentDetails { ref agent_id })
-                if agent_id == "agent_cancelled"
+            Some(SidebarRowAction::InspectText { ref label, .. })
+                if label == "worker-cancelled"
         ));
         assert!(
             actions
@@ -5252,30 +5113,10 @@ mod tests {
     }
 
     #[test]
-    fn subagent_sidebar_orders_and_indents_live_progress_children() {
+    fn subagent_sidebar_orders_and_indents_canonical_children() {
         let mut app = create_test_app();
-        app.agent_progress
-            .insert("agent_parent".to_string(), "running".to_string());
-        app.agent_progress_meta.insert(
-            "agent_parent".to_string(),
-            AgentProgressMeta {
-                parent_run_id: None,
-                spawn_depth: 1,
-            },
-        );
-        app.agent_progress.insert(
-            "agent_child".to_string(),
-            "step 2: finished tool 'read_file'".to_string(),
-        );
-        app.agent_progress_meta.insert(
-            "agent_child".to_string(),
-            AgentProgressMeta {
-                parent_run_id: Some("agent_parent".to_string()),
-                spawn_depth: 2,
-            },
-        );
-        app.ensure_agent_label("agent_parent");
-        app.ensure_agent_label("agent_child");
+        start_child(&mut app, "root-run", "agent_parent", 1);
+        start_child(&mut app, "agent_parent", "agent_child", 2);
 
         let rows = sidebar_agent_rows(&app);
 
@@ -5284,21 +5125,22 @@ mod tests {
         assert_eq!(rows[1].id, "agent_child");
         assert_eq!(rows[1].parent_run_id.as_deref(), Some("agent_parent"));
         assert_eq!(rows[1].spawn_depth, 2);
-        assert_eq!(rows[1].role, "child");
+        assert_eq!(rows[1].role, "子级 Agent");
 
         let summary = SidebarSubagentSummary {
-            progress_only_count: 2,
+            cached_total: 2,
+            cached_running: 2,
             ..SidebarSubagentSummary::default()
         };
         let (lines, _) = subagent_panel_rows(&summary, &rows, 64, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         let parent_idx = text
             .iter()
-            .position(|line| line.contains("Agent 1"))
+            .position(|line| line.contains("子 Agent 1"))
             .expect("live parent row");
         let child_idx = text
             .iter()
-            .position(|line| line.contains("Agent 2"))
+            .position(|line| line.contains("子 Agent 2"))
             .expect("live child row");
         assert!(
             parent_idx < child_idx,
@@ -5997,10 +5839,7 @@ mod tests {
     }
 
     #[test]
-    fn subagent_expanded_dossier_rows_register_open_agent_detail() {
-        // #2889 slice / dogfood A3: the expanded dossier rows must be
-        // clickable drill-ins to the child's transcript card, while the
-        // label row keeps its expand/collapse toggle.
+    fn subagent_expanded_dossier_rows_register_read_only_inspection() {
         let summary = SidebarSubagentSummary {
             cached_total: 1,
             cached_running: 1,
@@ -6027,16 +5866,9 @@ mod tests {
         assert!(
             actions.iter().any(|action| matches!(
                 action,
-                Some(SidebarRowAction::ToggleAgentDetails { agent_id }) if agent_id == "agent_drill"
+                Some(SidebarRowAction::InspectText { label, .. }) if label == "scout"
             )),
-            "label row keeps the toggle action"
-        );
-        assert!(
-            actions.iter().any(|action| matches!(
-                action,
-                Some(SidebarRowAction::OpenAgentDetail { agent_id }) if agent_id == "agent_drill"
-            )),
-            "expanded dossier rows should register the drill-in action: {actions:?}"
+            "canonical child rows should remain inspectable: {actions:?}"
         );
     }
 
@@ -6422,13 +6254,11 @@ mod tests {
             .iter()
             .position(|line| line.contains("handle_read"))
             .unwrap();
-        assert_eq!(
+        assert!(matches!(
             actions[handle_idx],
-            Some(SidebarRowAction::OpenAgentDetail {
-                agent_id: "agent_7f3c".to_string(),
-            }),
-            "handle line should open the child's detail card on click"
-        );
+            Some(SidebarRowAction::InspectText { ref label, .. })
+                if label == "scout"
+        ));
     }
 
     #[test]
@@ -6596,97 +6426,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn ensure_agent_label_assigns_stable_sequential_labels() {
-        let mut app = create_test_app();
-        assert_eq!(app.ensure_agent_label("agent_aaa111"), "Agent 1");
-        assert_eq!(app.ensure_agent_label("agent_bbb222"), "Agent 2");
-        // Re-seeing a known agent keeps its original label.
-        assert_eq!(app.ensure_agent_label("agent_aaa111"), "Agent 1");
-        assert_eq!(app.agent_counter, 2);
-        // Read-only lookup falls back to the raw id for unknown agents.
-        assert_eq!(app.agent_display_label("agent_bbb222"), "Agent 2");
-        assert_eq!(app.agent_display_label("agent_zzz999"), "agent_zzz999");
-    }
-
-    fn cached_agent(
-        agent_id: &str,
-        nickname: Option<&str>,
-    ) -> crate::tools::subagent::SubAgentResult {
-        crate::tools::subagent::SubAgentResult {
-            name: "implementation-worker".to_string(),
-            agent_id: agent_id.to_string(),
-            context_mode: "fresh".to_string(),
-            fork_context: false,
-            workspace: None,
-            git_branch: None,
-            agent_type: crate::tools::subagent::SubAgentType::General,
-            assignment: crate::tools::subagent::SubAgentAssignment {
-                objective: "task".to_string(),
-                role: Some("worker".to_string()),
-            },
-            model: String::new(),
-            nickname: nickname.map(str::to_string),
-            status: crate::tools::subagent::SubAgentStatus::Running,
-            worker_status: None,
-            parent_run_id: None,
-            spawn_depth: 0,
-            result: None,
-            steps_taken: 1,
-            checkpoint: None,
-            needs_input: None,
-            duration_ms: 100,
-            from_prior_session: false,
-        }
-    }
-
-    #[test]
-    fn sidebar_agent_rows_use_worker_status_from_cached_agents() {
-        let mut app = create_test_app();
-        let mut agent = cached_agent("agent_model_wait", Some("Blue"));
-        agent.worker_status = Some(crate::tools::subagent::AgentWorkerStatus::ModelWait);
-        app.subagent_cache.push(agent);
-
-        let rows = sidebar_agent_rows(&app);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].status, "model wait");
-    }
-
-    #[test]
-    fn sidebar_progress_only_rows_parse_status_instead_of_hardcoding_running() {
-        let mut app = create_test_app();
-        app.agent_progress.insert(
-            "agent_queued".to_string(),
-            "queued for launch permit".to_string(),
-        );
-
-        let rows = sidebar_agent_rows(&app);
-
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].status, "queued");
-    }
-
-    #[test]
-    fn sidebar_agent_rows_prefer_nickname_over_generated_label() {
-        let mut app = create_test_app();
-        let agent_id = "agent_cafe0123";
-        app.ensure_agent_label(agent_id);
-        app.subagent_cache
-            .push(cached_agent(agent_id, Some("doc-fixer")));
-
-        let rows = super::sidebar_agent_rows(&app);
-        assert_eq!(
-            rows[0].name, "doc-fixer",
-            "user nickname must beat the generated Agent-N label"
-        );
-
-        // Without a nickname the generated label is used.
-        app.subagent_cache[0].nickname = None;
-        let rows = super::sidebar_agent_rows(&app);
-        assert_eq!(rows[0].name, "Agent 1");
-    }
-
     // --- Unicode / CJK / terminal-width QA (issue #3488) -------------------
     // The sub-agent overlay renders CJK display names next to ASCII ids,
     // numeric columns (step count, elapsed), status verbs, and branch lines.
@@ -6764,8 +6503,8 @@ mod tests {
                 "width {content_width}: running marker hidden by CJK name: {text:?}"
             );
             assert!(
-                text[label_idx].ends_with("[x]"),
-                "width {content_width}: stop target hidden by CJK name: {text:?}"
+                !text[label_idx].ends_with("[x]"),
+                "width {content_width}: canonical row must not expose direct stop: {text:?}"
             );
             assert!(
                 !text[label_idx].contains('\u{FFFD}'),
@@ -6774,8 +6513,8 @@ mod tests {
             assert!(
                 matches!(
                     actions[label_idx],
-                    Some(SidebarRowAction::ToggleAgentDetails { ref agent_id })
-                        if agent_id == "agent_e0b2dcf1"
+                    Some(SidebarRowAction::InspectText { ref label, .. })
+                        if label == "抹香鲸"
                 ),
                 "width {content_width}: CJK row must still resolve to its agent id"
             );

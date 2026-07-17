@@ -1,15 +1,16 @@
 //! Canonical live-work projection for the Ocean work surface.
 //!
 //! This is deliberately a read-only projection.  The task panel, active tool
-//! cell, worker cache, and workflow panel remain the owners of their state;
+//! cell, canonical child projection, and workflow panel remain the owners of
+//! their state;
 //! this module owns only the identity, kind, liveness, and ordering used by
 //! the work surface.
 
 use std::collections::HashMap;
 
-use crate::tools::subagent::{AgentWorkerStatus, SubAgentStatus};
 use crate::tui::app::{App, TaskPanelEntry, TaskPanelEntryKind};
 use crate::tui::history::{HistoryCell, ToolCell, ToolStatus};
+use codewhale_protocol::agent_runtime::TerminalState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LiveWorkKind {
@@ -125,56 +126,24 @@ impl LiveWorkProjection {
             }
         }
 
-        for agent in &app.subagent_cache {
-            let status = agent
-                .worker_status
-                .map(worker_status)
-                .unwrap_or_else(|| subagent_status(&agent.status));
-            let state = worker_state(agent.worker_status, &agent.status, status);
-            let name = agent
-                .nickname
-                .clone()
-                .or_else(|| app.agent_label_map.get(&agent.agent_id).cloned())
-                .unwrap_or_else(|| agent.name.clone());
+        for (index, child) in app.child_agents.rows().iter().enumerate() {
+            let status = child_status(child.terminal.as_ref());
             insert_prefer_live(
                 &mut by_identity,
                 LiveWorkRow {
-                    identity: format!("worker:{}", agent.agent_id),
+                    identity: format!("worker:{}", child.child_run_id),
                     kind: LiveWorkKind::Worker,
-                    state,
-                    status: status.to_string(),
-                    label: format!("{name} · {}", agent.agent_type.as_str()),
-                    detail: format!("{} · {}", agent.assignment.objective, agent.model),
-                },
-            );
-        }
-        let cached_worker_ids = app
-            .subagent_cache
-            .iter()
-            .map(|agent| agent.agent_id.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        for (agent_id, progress) in &app.agent_progress {
-            if cached_worker_ids.contains(agent_id.as_str()) {
-                continue;
-            }
-            let waiting = progress.to_ascii_lowercase().contains("waiting");
-            insert_prefer_live(
-                &mut by_identity,
-                LiveWorkRow {
-                    identity: format!("worker:{agent_id}"),
-                    kind: LiveWorkKind::Worker,
-                    state: if waiting {
-                        LiveWorkState::Waiting
-                    } else {
+                    state: if child.is_active() {
                         LiveWorkState::Active
+                    } else {
+                        LiveWorkState::Settled
                     },
-                    status: if waiting { "waiting" } else { "running" }.to_string(),
-                    label: app
-                        .agent_label_map
-                        .get(agent_id)
-                        .cloned()
-                        .unwrap_or_else(|| agent_id.clone()),
-                    detail: progress.clone(),
+                    status: status.to_string(),
+                    label: format!("子 Agent {}", index + 1),
+                    detail: child
+                        .handoff_content
+                        .clone()
+                        .unwrap_or_else(|| child.child_run_id.to_string()),
                 },
             );
         }
@@ -260,52 +229,15 @@ fn is_shell_wait_tool(name: &str) -> bool {
     matches!(name, "task_shell_wait" | "exec_shell_wait" | "exec_wait")
 }
 
-fn worker_state(
-    status: Option<AgentWorkerStatus>,
-    legacy: &SubAgentStatus,
-    label: &str,
-) -> LiveWorkState {
-    if label == "waiting" {
-        LiveWorkState::Waiting
-    } else if status.is_some_and(|status| {
-        matches!(
-            status,
-            AgentWorkerStatus::Completed
-                | AgentWorkerStatus::Failed
-                | AgentWorkerStatus::Cancelled
-                | AgentWorkerStatus::Interrupted
-        )
-    }) || status.is_none() && !matches!(legacy, SubAgentStatus::Running)
-    {
-        LiveWorkState::Settled
-    } else {
-        LiveWorkState::Active
-    }
-}
-
-fn worker_status(status: AgentWorkerStatus) -> &'static str {
-    match status {
-        AgentWorkerStatus::Queued => "queued",
-        AgentWorkerStatus::Starting => "starting",
-        AgentWorkerStatus::Running => "running",
-        AgentWorkerStatus::WaitingForUser => "waiting",
-        AgentWorkerStatus::ModelWait => "model wait",
-        AgentWorkerStatus::RunningTool => "tool",
-        AgentWorkerStatus::Completed => "done",
-        AgentWorkerStatus::Failed => "failed",
-        AgentWorkerStatus::Cancelled => "canceled",
-        AgentWorkerStatus::Interrupted => "interrupted",
-    }
-}
-
-fn subagent_status(status: &SubAgentStatus) -> &'static str {
-    match status {
-        SubAgentStatus::Running => "running",
-        SubAgentStatus::Completed => "done",
-        SubAgentStatus::Interrupted(_) => "interrupted",
-        SubAgentStatus::Failed(_) => "failed",
-        SubAgentStatus::Cancelled => "canceled",
-        SubAgentStatus::BudgetExhausted => "budget",
+fn child_status(terminal: Option<&TerminalState>) -> &'static str {
+    match terminal {
+        None => "running",
+        Some(TerminalState::Completed { .. }) => "done",
+        Some(TerminalState::Blocked { .. }) => "blocked",
+        Some(TerminalState::Failed { .. }) => "failed",
+        Some(TerminalState::Cancelled) => "canceled",
+        Some(TerminalState::Interrupted) => "interrupted",
+        Some(TerminalState::RecoveryRequired { .. }) => "recovery",
     }
 }
 

@@ -165,7 +165,7 @@ fn visible_message_window(world: &CoreCommandWorld) -> String {
             | HistoryCell::Thinking { content, .. } => Some(content.as_str()),
             HistoryCell::Error { message, .. } => Some(message.as_str()),
             HistoryCell::ArchivedContext { summary, .. } => Some(summary.as_str()),
-            HistoryCell::Tool(_) | HistoryCell::SubAgent(_) => None,
+            HistoryCell::Tool(_) => None,
         })
         .collect::<Vec<_>>()
         .join("\n")

@@ -205,16 +205,14 @@ mod tests {
     #[test]
     fn stop_arms_then_confirms_on_second_activation() {
         let mut app = app();
-        let row = WorkRowId("worker:a1".into());
-        let action = SidebarRowAction::CancelAgent {
-            agent_id: "a1".into(),
-        };
+        let row = WorkRowId("task:a1".into());
+        let action = SidebarRowAction::Command("/task cancel a1".into());
         assert!(activate_stop(&mut app, &row, action.clone()).is_none());
         assert!(app.work_surface.stop_arm.is_some());
         let confirmed = activate_stop(&mut app, &row, action).expect("confirm");
         assert!(matches!(
             confirmed,
-            SidebarRowAction::CancelAgent { agent_id } if agent_id == "a1"
+            SidebarRowAction::Command(command) if command == "/task cancel a1"
         ));
         assert!(app.work_surface.stop_arm.is_none());
         assert_eq!(app.work_surface.stopping.as_ref(), Some(&row));
@@ -224,8 +222,9 @@ mod tests {
     fn primary_toggles_opened_closed() {
         let mut app = app();
         let row = WorkRowId("worker:a1".into());
-        let open = SidebarRowAction::OpenAgentDetail {
-            agent_id: "a1".into(),
+        let open = SidebarRowAction::InspectText {
+            label: "子 Agent".into(),
+            detail: "a1".into(),
         };
         assert!(activate_primary(&mut app, &row, Some(open.clone())).is_some());
         assert_eq!(app.work_surface.opened.as_ref(), Some(&row));

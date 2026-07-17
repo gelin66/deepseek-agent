@@ -125,7 +125,6 @@ fn activity_cell_rank(cell: &HistoryCell) -> Option<u8> {
             Some(ToolStatus::Success) => Some(2),
             None => Some(2),
         },
-        HistoryCell::SubAgent(_) => Some(0),
         HistoryCell::Error { .. } => Some(1),
         HistoryCell::Thinking { .. } => Some(2),
         _ => None,
@@ -293,7 +292,6 @@ fn activity_cell_label(app: &App, cell_index: usize, cell: &HistoryCell) -> Stri
     match cell {
         HistoryCell::Thinking { .. } => "thinking".to_string(),
         HistoryCell::Error { .. } => "error".to_string(),
-        HistoryCell::SubAgent(_) => "sub-agent".to_string(),
         HistoryCell::Tool(ToolCell::Generic(generic)) => {
             crate::tui::widgets::tool_card::tool_activity_label_for_name(&generic.name)
         }
@@ -333,7 +331,6 @@ fn activity_status_line(cell: &HistoryCell) -> Option<String> {
             Some(line)
         }
         HistoryCell::Error { severity, .. } => Some(format!("Status: {severity:?}")),
-        HistoryCell::SubAgent(_) => None,
         _ => None,
     }
 }
@@ -462,7 +459,6 @@ fn activity_detail_handle_line(app: &App, cell_index: usize, cell: &HistoryCell)
 
     match cell {
         HistoryCell::Tool(_) => Some("Detail handle: v details".to_string()),
-        HistoryCell::SubAgent(_) => Some("Detail handle: v details".to_string()),
         _ => None,
     }
 }
@@ -607,7 +603,6 @@ pub(crate) fn open_details_pager_for_cell(app: &mut App, cell_index: usize) -> b
         HistoryCell::Error { .. } => "Error".to_string(),
         HistoryCell::Thinking { .. } => "Reasoning".to_string(),
         HistoryCell::Tool(_) => "Message".to_string(),
-        HistoryCell::SubAgent(_) => "Sub-agent".to_string(),
         HistoryCell::ArchivedContext { .. } => "Archived Context".to_string(),
     };
     let width = app
@@ -687,14 +682,9 @@ pub(crate) fn selected_detail_footer_label(app: &App) -> Option<String> {
     let cell = app.cell_at_virtual_index(cell_index)?;
     let label = truncate_line_to_width(&activity_cell_label(app, cell_index, cell), 30);
     let detail_hint = if app.cell_has_detail_target(cell_index) {
-        let noun = if matches!(cell, HistoryCell::SubAgent(_)) {
-            "details"
-        } else {
-            "raw details"
-        };
         format!(
             " · {}",
-            key_shortcuts::tool_details_shortcut_action_hint(noun)
+            key_shortcuts::tool_details_shortcut_action_hint("raw details")
         )
     } else {
         String::new()
@@ -763,7 +753,6 @@ pub(crate) fn detail_target_label(app: &App, cell_index: usize) -> Option<String
         HistoryCell::Tool(ToolCell::Generic(generic)) => {
             Some(crate::tui::widgets::tool_card::tool_activity_label_for_name(&generic.name))
         }
-        HistoryCell::SubAgent(_) => Some("sub-agent".to_string()),
         _ => None,
     }
 }
@@ -1172,11 +1161,6 @@ fn turn_timeline_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                     duration.as_deref(),
                     &actions,
                 ));
-            }
-            HistoryCell::SubAgent(_) => {
-                let summary = detail_target_label(app, idx).unwrap_or_else(|| "sub-agent".into());
-                let actions = timeline_cell_actions(app, idx, cell);
-                rows.push(timeline_row("sub-agent", &summary, None, None, &actions));
             }
             HistoryCell::Assistant { content, streaming } => {
                 let summary = one_line_summary(content, 96);

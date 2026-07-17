@@ -115,7 +115,11 @@ mod tests {
 
             let result = FleetCmd::execute(&mut app, Some(arg));
 
-            assert_eq!(result.action, Some(AppAction::ListSubAgents), "{arg}");
+            assert!(result.action.is_none(), "{arg}");
+            assert_eq!(
+                app.view_stack.top_kind(),
+                Some(crate::tui::views::ModalKind::SubAgents)
+            );
             assert!(result.message.is_none(), "{arg}");
         }
     }

@@ -5,13 +5,10 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::localization::MessageId;
 use crate::palette;
-use crate::tools::subagent::SubAgentStatus;
 use crate::tui::app::{App, TaskPanelEntryKind};
-use crate::tui::history::{HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
+use crate::tui::history::{HistoryCell, ToolCell, ToolStatus};
 use crate::tui::key_shortcuts;
-use crate::tui::subagent_routing::{
-    active_fanout_counts, agents_sidebar_surface_visible, running_agent_count,
-};
+use crate::tui::sidebar::{agents_sidebar_surface_visible, running_agent_count};
 use crate::tui::ui::{
     active_foreground_shell_running, context_usage_snapshot, selected_detail_footer_label,
     status_color,
@@ -194,20 +191,10 @@ const PROVIDER_WAIT_IDLE_SHOW_SECS: u64 = 60;
 /// exceeds that threshold the elapsed seconds appear, and when the idle
 /// approaches the stream-idle budget the full `Ns/Ms idle timeout` detail
 /// surfaces so the user knows the stream is at risk of timing out (#3189).
-/// Provider and model stay in the header bar; the structured incident logger
-/// (`maybe_log_provider_wait_incident`) captures full diagnostics regardless
-/// of the footer copy.
+/// Provider and model stay in the header bar.
 fn provider_wait_reason(app: &App) -> String {
     let idle = provider_wait_idle_secs(app);
     let budget = app.stream_chunk_timeout_secs;
-
-    if running_agent_count(app) == 0 {
-        if let Some((0, total)) = active_fanout_counts(app) {
-            return format!("waiting · fanout 0/{total}");
-        } else if app.pending_subagent_dispatch.is_some() {
-            return "waiting · dispatch pending".to_string();
-        }
-    }
 
     let near_timeout = budget > 0 && idle >= budget.saturating_mul(3) / 4; // ≥ 75%
     if near_timeout {
@@ -220,44 +207,6 @@ fn provider_wait_reason(app: &App) -> String {
         // whether the stream is making progress.
         format!("waiting for model · {idle}s")
     }
-}
-
-/// Threshold after which a provider wait with a planned fanout is logged as
-/// a structured incident (once per turn).
-const PROVIDER_WAIT_INCIDENT_SECS: u64 = 120;
-
-/// Log a compact structured incident when the parent turn has spent a long
-/// time in provider wait while a sub-agent fanout plan is present (#3095).
-pub(crate) fn maybe_log_provider_wait_incident(app: &mut App) {
-    if app.provider_wait_incident_logged || !app.is_loading {
-        return;
-    }
-    let elapsed = match app.turn_started_at {
-        Some(at) => at.elapsed().as_secs(),
-        None => return,
-    };
-    if elapsed < PROVIDER_WAIT_INCIDENT_SECS {
-        return;
-    }
-    let fanout = active_fanout_counts(app);
-    let pending_dispatch = app.pending_subagent_dispatch.is_some();
-    if fanout.is_none() && !pending_dispatch {
-        return;
-    }
-    let (fanout_running, fanout_total) = fanout.unwrap_or((0, 0));
-    app.provider_wait_incident_logged = true;
-    crate::logging::warn(format!(
-        "provider-wait incident: provider={} model={} elapsed_secs={elapsed} \
-         idle_secs={} stream_idle_budget_secs={} max_subagents={} \
-         fanout_running={fanout_running} fanout_total={fanout_total} \
-         running_agents={} pending_dispatch={pending_dispatch}",
-        app.api_provider.as_str(),
-        app.model,
-        provider_wait_idle_secs(app),
-        app.stream_chunk_timeout_secs,
-        app.max_subagents,
-        running_agent_count(app),
-    ));
 }
 
 /// Whether the footer should animate the water-spout strip. Driven by the
@@ -314,14 +263,18 @@ mod tests {
     #[test]
     fn active_subagent_status_label_is_descriptive_without_shortcut_or_timer() {
         let mut app = create_test_app();
-        app.agent_progress.insert(
-            "agent_live".to_string(),
-            "reading summary files".to_string(),
+        use codewhale_protocol::agent_runtime::RunId;
+        app.child_agents.begin_root(RunId("root-run".to_string()));
+        app.child_agents.record_started(
+            RunId("root-run".to_string()),
+            "call-live".to_string(),
+            RunId("agent_live".to_string()),
+            1,
         );
 
         let label = active_subagent_status_label(&app).expect("active agent label");
 
-        assert_eq!(label, "agents 1/1 running · reading summary files");
+        assert_eq!(label, "Agent 1/1 运行中 · 子 Agent agent_live");
         assert!(!label.contains("Ctrl+Alt+4"));
         assert!(!label.contains("0s"));
     }
@@ -457,46 +410,6 @@ mod tests {
         assert!(reason.contains("waiting for model"));
         assert!(reason.contains("25s/30s idle timeout"), "{reason}");
     }
-
-    #[test]
-    fn provider_wait_reason_dispatch_pending() {
-        let mut app = create_test_app();
-        app.stream_chunk_timeout_secs = 300;
-        app.turn_started_at = Some(std::time::Instant::now());
-        app.pending_subagent_dispatch = Some("test".to_string());
-        let reason = super::provider_wait_reason(&app);
-        assert_eq!(reason, "waiting · dispatch pending");
-    }
-}
-
-pub(crate) fn is_noisy_subagent_progress(status: &str) -> bool {
-    let status = status.trim().to_ascii_lowercase();
-    status.contains("requesting model response")
-}
-
-pub(crate) fn subagent_objective_summary(app: &App, id: &str) -> Option<String> {
-    app.subagent_cache
-        .iter()
-        .find(|agent| agent.agent_id == id)
-        .map(|agent| summarize_tool_output(&agent.assignment.objective))
-        .filter(|summary| !summary.is_empty())
-}
-
-pub(crate) fn friendly_subagent_progress(app: &App, id: &str, status: &str) -> String {
-    if !is_noisy_subagent_progress(status) {
-        return summarize_tool_output(status);
-    }
-
-    if let Some(summary) = subagent_objective_summary(app, id) {
-        return format!("working on {summary}");
-    }
-    if let Some(existing) = app.agent_progress.get(id)
-        && !is_noisy_subagent_progress(existing)
-        && existing != "working"
-    {
-        return existing.clone();
-    }
-    "working".to_string()
 }
 
 pub(crate) fn active_subagent_status_label(app: &App) -> Option<String> {
@@ -504,35 +417,18 @@ pub(crate) fn active_subagent_status_label(app: &App) -> Option<String> {
         return None;
     }
     let running = running_agent_count(app);
-    let fanout = active_fanout_counts(app);
-    let (display_running, total) = if let Some((fanout_running, fanout_total)) = fanout {
-        if fanout_running == 0 {
-            return None;
-        }
-        (fanout_running, fanout_total)
-    } else {
-        if running == 0 {
-            return None;
-        }
-        (running, running)
-    };
+    if running == 0 {
+        return None;
+    }
+    let total = app.child_agents.rows().len();
     let detail = app
-        .subagent_cache
-        .iter()
-        .find(|agent| matches!(agent.status, SubAgentStatus::Running))
-        .map(|agent| summarize_tool_output(&agent.assignment.objective))
-        .filter(|summary| !summary.is_empty())
-        .or_else(|| {
-            app.agent_progress
-                .values()
-                .find(|value| !is_noisy_subagent_progress(value) && value.as_str() != "working")
-                .cloned()
-        })
-        .unwrap_or_else(|| "working".to_string());
+        .child_agents
+        .active_rows()
+        .next()
+        .map(|child| format!("子 Agent {}", child.child_run_id))
+        .unwrap_or_else(|| "子 Agent 工作中".to_string());
     let detail = truncate_line_to_width(&detail, 34);
-    Some(format!(
-        "agents {display_running}/{total} running \u{00B7} {detail}"
-    ))
+    Some(format!("Agent {running}/{total} 运行中 \u{00B7} {detail}"))
 }
 
 #[derive(Default)]

@@ -176,11 +176,10 @@ pub fn models(_app: &mut App) -> CommandResult {
 /// List Fleet worker status from the engine.
 pub fn subagents(app: &mut App) -> CommandResult {
     if app.view_stack.top_kind() != Some(ModalKind::SubAgents) {
-        let agents = subagent_view_agents(app, &app.subagent_cache);
+        let agents = subagent_view_agents(app);
         app.view_stack.push(SubAgentsView::new(agents));
     }
-    app.status_message = Some(tr(MessageId::SubagentsFetching).to_string());
-    CommandResult::action(AppAction::ListSubAgents)
+    CommandResult::ok()
 }
 
 /// Switch to a configured profile.
@@ -487,7 +486,7 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
     }
 
     // Fleet role workers
-    let subagent_count = app.subagent_cache.len();
+    let subagent_count = app.child_agents.active_count();
     if subagent_count > 0 {
         let _ = writeln!(
             stats,
@@ -1040,16 +1039,12 @@ mod tests {
     }
 
     #[test]
-    fn test_subagents_pushes_view_and_sets_status() {
+    fn test_subagents_pushes_canonical_snapshot_view() {
         let mut app = create_test_app();
         let result = subagents(&mut app);
         assert!(result.message.is_none());
-        assert!(matches!(result.action, Some(AppAction::ListSubAgents)));
+        assert!(result.action.is_none());
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::SubAgents));
-        assert_eq!(
-            app.status_message,
-            Some("正在获取 Fleet 工作器状态...".to_string())
-        );
     }
 
     #[test]

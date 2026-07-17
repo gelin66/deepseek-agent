@@ -27,14 +27,6 @@ impl RegisterCommand for AgentCmd {
 
 pub fn agent(_app: &mut App, arg: Option<&str>) -> CommandResult {
     if let Some(action) = parse_agent_control_action(arg) {
-        if action.action == "cancel" {
-            return CommandResult::with_message_and_action(
-                format!("Cancelling agent {}...", action.agent_id),
-                AppAction::CancelSubAgent {
-                    agent_id: action.agent_id,
-                },
-            );
-        }
         let message = format!(
             "Call `agent` with action `{}`, agent_id `{}`, then summarize the returned status for the user. Do not start a new agent.",
             action.action, action.agent_id
@@ -137,9 +129,10 @@ mod tests {
         assert!(message.contains("Do not start a new agent"));
 
         let result = agent(&mut app, Some("cancel agent_123"));
-        let Some(AppAction::CancelSubAgent { agent_id }) = result.action else {
-            panic!("expected CancelSubAgent action");
+        let Some(AppAction::SendMessage(message)) = result.action else {
+            panic!("expected SendMessage action");
         };
-        assert_eq!(agent_id, "agent_123");
+        assert!(message.contains("action `cancel`"));
+        assert!(message.contains("agent_id `agent_123`"));
     }
 }

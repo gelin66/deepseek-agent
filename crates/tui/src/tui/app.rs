@@ -29,10 +29,10 @@ use crate::resource_telemetry::TokenThroughput;
 use crate::settings::Settings;
 use crate::tools::plan::{PlanState, SharedPlanState, new_shared_plan_state};
 use crate::tools::spec::RuntimeToolServices;
-use crate::tools::subagent::SubAgentResult;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
+use crate::tui::child_agents::ChildAgents;
 use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::paste_burst::{FlushResult, PasteBurst};
@@ -340,12 +340,6 @@ pub struct ProviderPickerMemory {
     pub catalog_view: bool,
     /// Provider id highlighted at dismissal, if it was a real row.
     pub selected_provider_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AgentProgressMeta {
-    pub parent_run_id: Option<String>,
-    pub spawn_depth: u32,
 }
 
 /// Per-turn LSP repair-loop summary for the Turn Inspector (#4107).
@@ -1458,18 +1452,6 @@ pub enum SidebarRowAction {
     /// The user confirms with Enter or cancels by editing/clearing the draft.
     #[allow(dead_code)] // destructive confirm path; mouse_ui already matches it (TUI-DOG-008)
     PrefillCommand(String),
-    ToggleAgentDetails {
-        agent_id: String,
-    },
-    /// Drill into the child's transcript card (action tree, status, summary)
-    /// in the detail pager — registered on the expanded dossier rows (#2889
-    /// slice, dogfood A3).
-    OpenAgentDetail {
-        agent_id: String,
-    },
-    CancelAgent {
-        agent_id: String,
-    },
     /// Safe read-only inspection for work rows without a mutable backend
     /// action (for example an agent-owned To-do item).
     InspectText {
@@ -1483,11 +1465,7 @@ impl SidebarRowAction {
     pub fn as_command(&self) -> Option<&str> {
         match self {
             Self::Command(command) => Some(command.as_str()),
-            Self::PrefillCommand(_)
-            | Self::ToggleAgentDetails { .. }
-            | Self::OpenAgentDetail { .. }
-            | Self::CancelAgent { .. }
-            | Self::InspectText { .. } => None,
+            Self::PrefillCommand(_) | Self::InspectText { .. } => None,
         }
     }
 
@@ -1496,10 +1474,7 @@ impl SidebarRowAction {
         match self {
             Self::Command(command) => command.contains(" cancel "),
             Self::PrefillCommand(command) => command.contains(" cancel "),
-            Self::CancelAgent { .. } => true,
-            Self::ToggleAgentDetails { .. }
-            | Self::OpenAgentDetail { .. }
-            | Self::InspectText { .. } => false,
+            Self::InspectText { .. } => false,
         }
     }
 }
@@ -1629,9 +1604,6 @@ pub struct App {
     /// Timestamp of the most recent Enter while the engine was busy.
     /// Used by `enter_with_double_tap()` to detect a double-tap within 500 ms.
     pub last_enter_instant: Option<Instant>,
-    /// Whether the once-per-turn provider-wait incident (#3095) has already
-    /// been logged for the current turn.
-    pub provider_wait_incident_logged: bool,
     /// Ghost-text follow-up suggestion shown in the composer when empty.
     /// Generated asynchronously after each completed turn; cleared on new input.
     pub prompt_suggestion: Option<String>,
@@ -1875,41 +1847,8 @@ pub struct App {
     pub max_subagents: usize,
     /// Per-SSE-chunk idle timeout for streamed turns, in seconds.
     pub stream_chunk_timeout_secs: u64,
-    /// Cached sub-agent snapshots for UI views.
-    pub subagent_cache: Vec<SubAgentResult>,
-    /// First time this TUI observed each terminal sub-agent card.
-    pub subagent_terminal_seen_at: HashMap<String, Instant>,
-    /// Last known per-agent progress text for running sub-agents.
-    pub agent_progress: HashMap<String, String>,
-    /// Agent rows expanded by direct sidebar interaction.
-    pub expanded_sidebar_agents: HashSet<String>,
-    /// Parent/depth metadata for live progress-only sub-agent rows.
-    pub agent_progress_meta: HashMap<String, AgentProgressMeta>,
-    /// In-transcript sub-agent card index by `agent_id` (issue #128).
-    /// Maps each live sub-agent to the `HistoryCell::SubAgent` it renders
-    /// into, so successive mailbox envelopes mutate the same cell rather
-    /// than spawning duplicates.
-    pub subagent_card_index: HashMap<String, usize>,
-    /// History index of the most recent FanoutCard. Sibling sub-agents
-    /// spawned by the same `rlm` invocation route into this card; reset
-    /// when a fresh fanout-family tool call starts.
-    pub last_fanout_card_index: Option<usize>,
-    /// Most recently observed sub-agent dispatch tool name (set on
-    /// `ToolCallStarted` for `agent` / `rlm` / etc., cleared
-    /// after the first `Started` mailbox envelope routes through it).
-    pub pending_subagent_dispatch: Option<String>,
-    /// Animation anchor for status-strip active sub-agent spinner.
-    pub agent_activity_started_at: Option<Instant>,
-    /// Monotonic counter for stable agent labels (#3030).
-    /// Incremented each time a sub-agent is spawned; used to generate
-    /// "Agent 1", "Agent 2", etc.
-    pub agent_counter: u64,
-    /// Maps raw agent_id to a stable user-facing label (#3030).
-    /// Populated when `AgentSpawned` fires; read by sidebar rendering.
-    pub agent_label_map: HashMap<String, String>,
-    /// Last time a sub-agent progress event triggered a redraw.
-    /// Used to throttle redraws under high sub-agent concurrency (#3033).
-    pub last_agent_progress_redraw: Option<Instant>,
+    /// Ephemeral projection of canonical root/child runtime events.
+    pub child_agents: ChildAgents,
     /// Last time a workflow `budget_updated` event was allowed to request a
     /// repaint. High-signal workflow events (task/run lifecycle) always paint;
     /// budget-only chatter is paced under fan-out (#4095 residual).
@@ -2782,7 +2721,6 @@ impl App {
             next_history_revision: 1,
             is_loading: false,
             last_enter_instant: None,
-            provider_wait_incident_logged: false,
             prompt_suggestion: None,
             prompt_suggestion_gen: std::sync::atomic::AtomicU64::new(0),
             offline_mode: false,
@@ -2881,18 +2819,7 @@ impl App {
             verbosity: config.verbosity.clone(),
             max_subagents,
             stream_chunk_timeout_secs: config.stream_chunk_timeout_secs(),
-            subagent_cache: Vec::new(),
-            subagent_terminal_seen_at: HashMap::new(),
-            agent_progress: HashMap::new(),
-            expanded_sidebar_agents: HashSet::new(),
-            agent_progress_meta: HashMap::new(),
-            subagent_card_index: HashMap::new(),
-            last_fanout_card_index: None,
-            pending_subagent_dispatch: None,
-            agent_activity_started_at: None,
-            agent_counter: 0,
-            agent_label_map: HashMap::new(),
-            last_agent_progress_redraw: None,
+            child_agents: ChildAgents::default(),
             last_workflow_budget_redraw: None,
             ui_theme,
             theme_id,
@@ -3657,25 +3584,6 @@ impl App {
             })
             .collect();
 
-        // subagent_card_index
-        self.subagent_card_index.retain(|_, idx| {
-            if *idx >= n {
-                *idx -= n;
-                true
-            } else {
-                false
-            }
-        });
-
-        // last_fanout_card_index
-        if let Some(ref mut idx) = self.last_fanout_card_index {
-            if *idx >= n {
-                *idx -= n;
-            } else {
-                self.last_fanout_card_index = None;
-            }
-        }
-
         // collapsed_cells
         self.collapsed_cells = std::mem::take(&mut self.collapsed_cells)
             .into_iter()
@@ -3686,28 +3594,6 @@ impl App {
             .filter_map(|idx| if idx >= n { Some(idx - n) } else { None })
             .collect();
         self.collapsed_cell_map.clear();
-    }
-
-    /// #3030: return the stable user-facing label for an agent id
-    /// ("Agent 3"), assigning the next sequential label on first sight.
-    pub(crate) fn ensure_agent_label(&mut self, agent_id: &str) -> String {
-        if let Some(label) = self.agent_label_map.get(agent_id) {
-            return label.clone();
-        }
-        self.agent_counter = self.agent_counter.saturating_add(1);
-        let label = format!("Agent {}", self.agent_counter);
-        self.agent_label_map
-            .insert(agent_id.to_string(), label.clone());
-        label
-    }
-
-    /// #3030: read-only label lookup with raw-id fallback for agents the
-    /// label map has never seen.
-    pub(crate) fn agent_display_label(&self, agent_id: &str) -> String {
-        self.agent_label_map
-            .get(agent_id)
-            .cloned()
-            .unwrap_or_else(|| agent_id.to_string())
     }
 
     pub fn mark_history_updated(&mut self) {
@@ -3927,13 +3813,13 @@ impl App {
 
     /// Whether a virtual transcript cell can open a meaningful `v` detail
     /// view. Thinking cells render their own raw text inline so there is no
-    /// separate "raw" target — only tool / sub-agent cells get the hint.
+    /// separate "raw" target — only tool cells get the hint.
     #[must_use]
     pub fn cell_has_detail_target(&self, index: usize) -> bool {
         self.tool_detail_record_for_cell(index).is_some()
             || matches!(
                 self.cell_at_virtual_index(index),
-                Some(HistoryCell::Tool(_) | HistoryCell::SubAgent(_))
+                Some(HistoryCell::Tool(_))
             )
     }
 
@@ -6314,10 +6200,6 @@ pub enum AppAction {
     },
     /// Send a message to the AI (normal chat mode).
     SendMessage(String),
-    /// Cancel a running sub-agent through the engine manager.
-    CancelSubAgent {
-        agent_id: String,
-    },
     /// Update the runtime goal status (`/goal pause|resume|clear|…`) without
     /// dispatching a model turn. The UI layer translates this into
     /// `Op::SetGoalStatus`.
@@ -6325,7 +6207,6 @@ pub enum AppAction {
         status: crate::tools::goal::GoalStatus,
         clear: bool,
     },
-    ListSubAgents,
     FetchModels,
     /// Force a Models.dev live-catalog refresh into ProviderLake (#4187).
     RefreshModelsDevCatalog,

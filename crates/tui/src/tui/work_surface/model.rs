@@ -270,19 +270,13 @@ fn live_row(row: &super::live_projection::LiveWorkRow, attention_hold: bool) -> 
         },
     };
     let (primary_action, stop_action) = match row.kind {
-        super::live_projection::LiveWorkKind::Worker => {
-            let agent_id = source_id
-                .strip_prefix("worker:")
-                .unwrap_or(&source_id)
-                .to_string();
-            (
-                Some(SidebarRowAction::OpenAgentDetail {
-                    agent_id: agent_id.clone(),
-                }),
-                (row.state != super::live_projection::LiveWorkState::Settled)
-                    .then_some(SidebarRowAction::CancelAgent { agent_id }),
-            )
-        }
+        super::live_projection::LiveWorkKind::Worker => (
+            Some(SidebarRowAction::InspectText {
+                label: row.label.clone(),
+                detail: row.detail.clone(),
+            }),
+            None,
+        ),
         super::live_projection::LiveWorkKind::Workflow => (None, None),
         _ => (
             Some(SidebarRowAction::Command(open)),

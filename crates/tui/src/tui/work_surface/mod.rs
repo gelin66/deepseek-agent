@@ -80,6 +80,18 @@ mod tests {
         });
     }
 
+    fn start_child(app: &mut App, child: &str) {
+        use codewhale_protocol::agent_runtime::RunId;
+
+        app.child_agents.begin_root(RunId("root-run".to_string()));
+        app.child_agents.record_started(
+            RunId("root-run".to_string()),
+            format!("call-{child}"),
+            RunId(child.to_string()),
+            1,
+        );
+    }
+
     #[test]
     fn projection_keeps_every_todo_reachable() {
         let mut app = app();
@@ -231,13 +243,10 @@ mod tests {
     }
 
     #[test]
-    fn progress_only_workers_render_before_snapshot_refresh() {
+    fn canonical_children_render_without_a_second_snapshot() {
         let mut app = app();
         for index in 1..=3 {
-            let id = format!("agent_{index}");
-            app.agent_label_map
-                .insert(id.clone(), format!("Agent {index}"));
-            app.agent_progress.insert(id, "starting".to_string());
+            start_child(&mut app, &format!("agent_{index}"));
         }
         let backend = TestBackend::new(80, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -252,8 +261,8 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert_eq!(app.work_surface.total_rows, 4, "section plus three workers");
-        assert!(text.contains("Agent 1"), "{text}");
-        assert!(text.contains("Agent 3"), "{text}");
+        assert!(text.contains("子 Agent 1"), "{text}");
+        assert!(text.contains("子 Agent 3"), "{text}");
     }
 
     #[test]
@@ -407,10 +416,7 @@ mod tests {
     fn enter_toggles_already_opened_worker_closed() {
         let mut app = app();
         for index in 1..=2 {
-            let id = format!("agent_{index}");
-            app.agent_label_map
-                .insert(id.clone(), format!("Agent {index}"));
-            app.agent_progress.insert(id, "running".to_string());
+            start_child(&mut app, &format!("agent_{index}"));
         }
         app.work_surface.focused = true;
         let rows = super::model::project(&mut app);
@@ -428,12 +434,9 @@ mod tests {
     }
 
     #[test]
-    fn stop_first_activation_arms_row_with_visible_confirm() {
+    fn canonical_worker_has_no_fake_direct_stop_action() {
         let mut app = app();
-        app.agent_label_map
-            .insert("agent_1".into(), "Agent 1".into());
-        app.agent_progress
-            .insert("agent_1".into(), "running".into());
+        start_child(&mut app, "agent_1");
         let backend = TestBackend::new(100, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
@@ -446,20 +449,7 @@ mod tests {
             .find(|row| row.id.0 == "worker:agent_1")
             .expect("worker")
             .clone();
-        let stop = worker.stop_action.clone().expect("stop");
-        assert!(super::interaction::activate_stop(&mut app, &worker.id, stop.clone()).is_none());
-        terminal
-            .draw(|frame| super::render(frame, frame.area(), &mut app))
-            .expect("draw");
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("确认"), "{text}");
-        assert!(text.contains("Esc"), "{text}");
-        let confirmed =
-            super::interaction::activate_stop(&mut app, &worker.id, stop).expect("fire");
-        assert!(matches!(
-            confirmed,
-            crate::tui::app::SidebarRowAction::CancelAgent { agent_id } if agent_id == "agent_1"
-        ));
+        assert!(worker.stop_action.is_none());
     }
 
     #[test]
@@ -522,7 +512,7 @@ mod tests {
     }
 
     #[test]
-    fn placements_share_keyboard_toggle_and_stop_arm() {
+    fn placements_share_keyboard_toggle_without_worker_stop() {
         for placement in [
             super::WorkSurfacePlacement::Top,
             super::WorkSurfacePlacement::Left,
@@ -530,10 +520,7 @@ mod tests {
         ] {
             let mut app = app();
             app.work_surface.placement = placement;
-            app.agent_label_map
-                .insert("agent_1".into(), "Agent 1".into());
-            app.agent_progress
-                .insert("agent_1".into(), "running".into());
+            start_child(&mut app, "agent_1");
             let area = ratatui::layout::Rect::new(0, 0, 100, 12);
             let render_area = match placement {
                 super::WorkSurfacePlacement::Top => {
@@ -561,9 +548,14 @@ mod tests {
                 .map(|row| row.id.clone())
                 .expect("worker");
             app.work_surface.selected = Some(worker_id.clone());
-            let open = Some(crate::tui::app::SidebarRowAction::OpenAgentDetail {
-                agent_id: "agent_1".into(),
-            });
+            let worker = app
+                .work_surface
+                .latest_rows
+                .iter()
+                .find(|row| row.id == worker_id)
+                .expect("worker row");
+            let open = worker.primary_action.clone();
+            assert!(worker.stop_action.is_none(), "{placement:?}");
             assert!(
                 super::interaction::activate_primary(&mut app, &worker_id, open.clone()).is_some(),
                 "{placement:?}"
@@ -572,29 +564,14 @@ mod tests {
                 super::interaction::activate_primary(&mut app, &worker_id, open).is_none(),
                 "{placement:?}"
             );
-            let stop = crate::tui::app::SidebarRowAction::CancelAgent {
-                agent_id: "agent_1".into(),
-            };
-            assert!(
-                super::interaction::activate_stop(&mut app, &worker_id, stop.clone()).is_none(),
-                "{placement:?}"
-            );
-            assert!(
-                super::interaction::activate_stop(&mut app, &worker_id, stop).is_some(),
-                "{placement:?}"
-            );
         }
     }
 
     #[test]
     fn moving_selection_clears_armed_stop() {
         let mut app = app();
-        for index in 1..=2 {
-            let id = format!("agent_{index}");
-            app.agent_label_map
-                .insert(id.clone(), format!("Agent {index}"));
-            app.agent_progress.insert(id, "running".into());
-        }
+        add_task(&mut app, "task_1");
+        add_task(&mut app, "task_2");
         app.work_surface.focused = true;
         let rows = super::model::project(&mut app);
         let selectable: Vec<_> = rows
@@ -606,9 +583,11 @@ mod tests {
         let first = selectable[0].clone();
         let second = selectable[1].clone();
         app.work_surface.selected = Some(first.clone());
-        let stop = crate::tui::app::SidebarRowAction::CancelAgent {
-            agent_id: first.0.trim_start_matches("worker:").to_string(),
-        };
+        let stop = rows
+            .iter()
+            .find(|row| row.id == first)
+            .and_then(|row| row.stop_action.clone())
+            .expect("task stop");
         assert!(super::interaction::activate_stop(&mut app, &first, stop).is_none());
         app.work_surface.selected = Some(second);
         super::interaction::on_selection_changed(&mut app);

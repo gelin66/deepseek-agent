@@ -39,7 +39,8 @@ pub enum PresenterAction {
 /// A canonical event may change status or transcript display, but it never
 /// invokes a model, tool, hook, persistence writer, or workspace probe.
 pub fn present_effect(app: &mut App, effect: ProjectionEffect) -> Option<PresenterAction> {
-    app.runtime_turn_id = Some(effect.run_id.0);
+    let source_run_id = effect.run_id;
+    app.runtime_turn_id = Some(source_run_id.0.clone());
 
     match effect.kind {
         ProjectionEffectKind::UserTranscript {
@@ -52,12 +53,19 @@ pub fn present_effect(app: &mut App, effect: ProjectionEffect) -> Option<Present
             app.status_message = None;
             None
         }
-        ProjectionEffectKind::Canonical(stored) => present_canonical_event(app, stored.event),
+        ProjectionEffectKind::Canonical(stored) => {
+            debug_assert_eq!(stored.run_id, source_run_id);
+            present_canonical_event(app, &source_run_id, stored.event)
+        }
     }
 }
 
 #[allow(clippy::too_many_lines)]
-fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<PresenterAction> {
+fn present_canonical_event(
+    app: &mut App,
+    source_run_id: &codewhale_protocol::agent_runtime::RunId,
+    event: RuntimeEventKind,
+) -> Option<PresenterAction> {
     match event {
         RuntimeEventKind::RunCreated { request } => {
             app.is_loading = true;
@@ -70,16 +78,18 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
                     // compaction lineage head. Its RunCreated transcript is
                     // canonical and must therefore rebuild the same display
                     // that was visible before restart.
+                    app.child_agents.begin_root(source_run_id.clone());
                     reset_run_display(app);
-                    rebuild_transcript(app, &request.transcript.entries);
+                    rebuild_transcript(app, source_run_id, &request.transcript.entries);
                     app.model = request.model.clone();
                     app.is_compacting = true;
                     app.runtime_turn_status = Some("compacting".to_owned());
                     app.status_message = Some("正在压缩上下文…".to_owned());
                 }
                 RunPurpose::Agent if request.parent_run_id.is_none() => {
+                    app.child_agents.begin_root(source_run_id.clone());
                     reset_run_display(app);
-                    rebuild_transcript(app, &request.transcript.entries);
+                    rebuild_transcript(app, source_run_id, &request.transcript.entries);
                     app.model = request.model.clone();
                     app.runtime_turn_status = Some("in_progress".to_owned());
                     app.status_message = Some("DeepSeek 正在处理…".to_owned());
@@ -209,10 +219,16 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
             None
         }
         RuntimeEventKind::ChildStarted {
+            call_id,
             child_run_id,
             depth,
-            ..
         } => {
+            app.child_agents.record_started(
+                source_run_id.clone(),
+                call_id,
+                child_run_id.clone(),
+                depth,
+            );
             app.flush_active_cell();
             app.add_message(HistoryCell::System {
                 content: format!("子 Agent 已启动：{}（深度 {depth}）", child_run_id.0),
@@ -220,10 +236,17 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
             None
         }
         RuntimeEventKind::ChildFinished {
+            call_id,
             outcome,
             handoff_content,
             ..
         } => {
+            app.child_agents.record_finished(
+                source_run_id.clone(),
+                call_id,
+                &outcome,
+                &handoff_content,
+            );
             app.flush_active_cell();
             let status = terminal_label(&outcome.terminal);
             let content = if handoff_content.trim().is_empty() {
@@ -275,7 +298,11 @@ fn reset_run_display(app: &mut App) {
     app.is_compacting = false;
 }
 
-fn rebuild_transcript(app: &mut App, entries: &[TranscriptEntry]) {
+fn rebuild_transcript(
+    app: &mut App,
+    source_run_id: &codewhale_protocol::agent_runtime::RunId,
+    entries: &[TranscriptEntry],
+) {
     for entry in entries {
         match entry {
             // The system prompt is execution context, not chat transcript.
@@ -319,11 +346,17 @@ fn rebuild_transcript(app: &mut App, entries: &[TranscriptEntry]) {
                 outcome,
             } => present_tool_outcome(app, call_id, name, outcome),
             TranscriptEntry::ChildOutcome {
+                call_id,
                 child_run_id,
                 outcome,
                 handoff_content,
-                ..
             } => {
+                app.child_agents.record_finished(
+                    source_run_id.clone(),
+                    call_id.clone(),
+                    outcome,
+                    handoff_content,
+                );
                 app.flush_active_cell();
                 let status = terminal_label(&outcome.terminal);
                 let content = if handoff_content.trim().is_empty() {
@@ -743,6 +776,22 @@ mod tests {
         )
     }
 
+    fn child_outcome(
+        parent_run_id: &RunId,
+        child_run_id: &RunId,
+        terminal: TerminalState,
+    ) -> AgentOutcome {
+        AgentOutcome {
+            run_id: child_run_id.clone(),
+            parent_run_id: Some(parent_run_id.clone()),
+            terminal,
+            accounting: ModelAccounting::default(),
+            runtime_model_requests: 1,
+            runtime_retries: 0,
+            tool_calls: 0,
+        }
+    }
+
     fn apply_events(app: &mut App, events: Vec<StoredRuntimeEvent>) {
         let mut projection = CanonicalRunProjection::new();
         for event in events {
@@ -765,9 +814,7 @@ mod tests {
                 } => Some(format!("thinking:{streaming}:{content}")),
                 HistoryCell::System { content } => Some(format!("system:{content}")),
                 HistoryCell::Tool(cell) => Some(format!("tool:{:?}", cell.status())),
-                HistoryCell::Error { .. }
-                | HistoryCell::SubAgent(_)
-                | HistoryCell::ArchivedContext { .. } => None,
+                HistoryCell::Error { .. } | HistoryCell::ArchivedContext { .. } => None,
             })
             .collect()
     }
@@ -1259,5 +1306,163 @@ mod tests {
             "中断"
         );
         assert_eq!(control_action_label(DurableControlAction::Cancel), "取消");
+    }
+
+    #[test]
+    fn canonical_child_events_are_the_live_display_truth() {
+        let root = RunId::from("root");
+        let child = RunId::from("child");
+        let mut app = app();
+        apply_events(
+            &mut app,
+            vec![
+                created(&root, Vec::new()),
+                stored(
+                    &root,
+                    2,
+                    RuntimeEventKind::ChildStarted {
+                        call_id: "call-child".to_owned(),
+                        child_run_id: child.clone(),
+                        depth: 2,
+                    },
+                ),
+            ],
+        );
+
+        assert_eq!(app.child_agents.active_count(), 1);
+        let row = &app.child_agents.rows()[0];
+        assert_eq!(row.parent_run_id, root);
+        assert_eq!(row.call_id, "call-child");
+        assert_eq!(row.child_run_id, child);
+        assert_eq!(row.depth, 2);
+        assert!(row.terminal.is_none());
+
+        apply_events(
+            &mut app,
+            vec![created(&RunId::from("unrelated-projection"), Vec::new())],
+        );
+        assert_eq!(
+            app.child_agents.active_count(),
+            0,
+            "a new root must not retain an active child from the previous root"
+        );
+    }
+
+    #[test]
+    fn concurrent_children_finish_by_identity_not_finish_order() {
+        let root = RunId::from("root");
+        let child_a = RunId::from("child-a");
+        let child_b = RunId::from("child-b");
+        let mut app = app();
+        apply_events(
+            &mut app,
+            vec![
+                created(&root, Vec::new()),
+                stored(
+                    &root,
+                    2,
+                    RuntimeEventKind::ChildStarted {
+                        call_id: "call-a".to_owned(),
+                        child_run_id: child_a.clone(),
+                        depth: 1,
+                    },
+                ),
+                stored(
+                    &root,
+                    3,
+                    RuntimeEventKind::ChildStarted {
+                        call_id: "call-b".to_owned(),
+                        child_run_id: child_b.clone(),
+                        depth: 1,
+                    },
+                ),
+                stored(
+                    &root,
+                    4,
+                    RuntimeEventKind::ChildFinished {
+                        call_id: "call-b".to_owned(),
+                        outcome: Box::new(child_outcome(
+                            &root,
+                            &child_b,
+                            TerminalState::Completed {
+                                message: "B 完成".to_owned(),
+                            },
+                        )),
+                        accounting: Box::new(ModelAccounting::default()),
+                        handoff_content: "B 证据".to_owned(),
+                    },
+                ),
+                stored(
+                    &root,
+                    5,
+                    RuntimeEventKind::ChildFinished {
+                        call_id: "call-a".to_owned(),
+                        outcome: Box::new(child_outcome(
+                            &root,
+                            &child_a,
+                            TerminalState::Failed {
+                                failure: codewhale_protocol::agent_runtime::RuntimeFailure::Join {
+                                    message: "A 失败".to_owned(),
+                                },
+                            },
+                        )),
+                        accounting: Box::new(ModelAccounting::default()),
+                        handoff_content: "A 证据".to_owned(),
+                    },
+                ),
+            ],
+        );
+
+        assert_eq!(app.child_agents.active_count(), 0);
+        let rows = app.child_agents.rows();
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.child_run_id.0.as_str())
+                .collect::<Vec<_>>(),
+            vec!["child-a", "child-b"],
+            "stable start order must survive reverse completion"
+        );
+        assert!(matches!(
+            rows[0].terminal,
+            Some(TerminalState::Failed { .. })
+        ));
+        assert_eq!(rows[0].handoff_content.as_deref(), Some("A 证据"));
+        assert!(matches!(
+            rows[1].terminal,
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(rows[1].handoff_content.as_deref(), Some("B 证据"));
+    }
+
+    #[test]
+    fn transcript_child_outcome_rebuilds_a_settled_continuation_row() {
+        let continuation = RunId::from("continuation");
+        let child = RunId::from("historical-child");
+        let transcript = vec![TranscriptEntry::ChildOutcome {
+            call_id: "historical-call".to_owned(),
+            child_run_id: child.clone(),
+            outcome: Box::new(child_outcome(
+                &RunId::from("source-root"),
+                &child,
+                TerminalState::Completed {
+                    message: "历史完成".to_owned(),
+                },
+            )),
+            handoff_content: "历史证据".to_owned(),
+        }];
+        let mut app = app();
+
+        apply_events(&mut app, vec![created(&continuation, transcript)]);
+
+        assert_eq!(app.child_agents.active_count(), 0);
+        let row = &app.child_agents.rows()[0];
+        assert_eq!(row.parent_run_id, continuation);
+        assert_eq!(row.call_id, "historical-call");
+        assert_eq!(row.child_run_id, child);
+        assert!(matches!(
+            row.terminal,
+            Some(TerminalState::Completed { .. })
+        ));
+        assert_eq!(row.handoff_content.as_deref(), Some("历史证据"));
     }
 }

@@ -20,8 +20,7 @@ use crate::tools::UserInputResponse;
 use crate::tools::subagent::{SubAgentAssignment, SubAgentResult, SubAgentStatus, SubAgentType};
 use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
-use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
-use crate::tui::widgets::agent_card::AgentLifecycle;
+use codewhale_protocol::agent_runtime::TerminalState;
 
 pub mod fleet_roster;
 pub mod fleet_setup;
@@ -3064,119 +3063,59 @@ pub struct SubAgentsView {
     scroll: usize,
 }
 
-/// Build the agent rows shown by `/subagents`.
-///
-/// The engine manager is the durable source of truth, but live UI cards can
-/// briefly be ahead of the manager-list refresh. Include those live rows so
-/// the command does not say "no agents" while the footer/sidebar already show
-/// active delegated work.
-pub(crate) fn subagent_view_agents(
-    app: &App,
-    manager_agents: &[SubAgentResult],
-) -> Vec<SubAgentResult> {
-    let mut agents = manager_agents.to_vec();
-    let mut seen: std::collections::HashSet<String> =
-        agents.iter().map(|agent| agent.agent_id.clone()).collect();
-
-    for (agent_id, progress) in &app.agent_progress {
-        if seen.insert(agent_id.clone()) {
-            agents.push(live_subagent_result(
-                agent_id,
-                SubAgentType::General,
-                SubAgentStatus::Running,
-                progress,
-                Some("live"),
-                None, // live rows compute nickname from agent manager on render
-            ));
-        }
-    }
-
-    for cell in &app.history {
-        match cell {
-            HistoryCell::SubAgent(SubAgentCell::Delegate(card))
-                if seen.insert(card.agent_id.clone()) =>
-            {
-                let agent_type =
-                    SubAgentType::from_str(&card.agent_type).unwrap_or(SubAgentType::General);
-                agents.push(live_subagent_result(
-                    &card.agent_id,
-                    agent_type,
-                    lifecycle_to_subagent_status(card.status),
-                    card.summary.as_deref().unwrap_or(card.agent_type.as_str()),
-                    Some("transcript"),
-                    None, // transcript-derived rows get nickname from manager on render
-                ));
-            }
-            HistoryCell::SubAgent(SubAgentCell::Fanout(card)) => {
-                for worker in &card.workers {
-                    if seen.insert(worker.agent_id.clone()) {
-                        let objective = format!(
-                            "{} worker {}",
-                            summarize_tool_output(&card.kind),
-                            summarize_tool_output(&worker.worker_id)
-                        );
-                        agents.push(live_subagent_result(
-                            &worker.agent_id,
-                            SubAgentType::General,
-                            lifecycle_to_subagent_status(worker.status),
-                            &objective,
-                            Some(card.kind.as_str()),
-                            None, // fanout worker rows get nickname from manager on render
-                        ));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    agents
+/// Build the `/subagents` snapshot exclusively from the canonical runtime
+/// projection. `SubAgentResult` is retained here only as a view DTO.
+pub(crate) fn subagent_view_agents(app: &App) -> Vec<SubAgentResult> {
+    app.child_agents
+        .rows()
+        .iter()
+        .enumerate()
+        .map(|(index, child)| SubAgentResult {
+            name: format!("子 Agent {}", index + 1),
+            agent_id: child.child_run_id.0.clone(),
+            context_mode: "fresh".to_string(),
+            fork_context: false,
+            workspace: None,
+            git_branch: None,
+            agent_type: SubAgentType::General,
+            assignment: SubAgentAssignment {
+                objective: child
+                    .handoff_content
+                    .clone()
+                    .unwrap_or_else(|| "规范子运行".to_string()),
+                role: Some(if child.depth > 1 {
+                    "子级 Agent".to_string()
+                } else {
+                    "子 Agent".to_string()
+                }),
+            },
+            model: String::new(),
+            nickname: None,
+            status: terminal_to_subagent_status(child.terminal.as_ref()),
+            worker_status: None,
+            parent_run_id: Some(child.parent_run_id.0.clone()),
+            spawn_depth: u32::from(child.depth),
+            result: child.handoff_content.clone(),
+            steps_taken: 0,
+            checkpoint: None,
+            needs_input: None,
+            duration_ms: 0,
+            from_prior_session: false,
+        })
+        .collect()
 }
 
-fn lifecycle_to_subagent_status(status: AgentLifecycle) -> SubAgentStatus {
-    match status {
-        AgentLifecycle::Pending | AgentLifecycle::Running => SubAgentStatus::Running,
-        AgentLifecycle::Completed => SubAgentStatus::Completed,
-        AgentLifecycle::Failed => SubAgentStatus::Failed("failed in transcript".to_string()),
-        AgentLifecycle::Cancelled => SubAgentStatus::Cancelled,
-        AgentLifecycle::Interrupted => {
-            SubAgentStatus::Interrupted("interrupted in transcript".to_string())
+fn terminal_to_subagent_status(terminal: Option<&TerminalState>) -> SubAgentStatus {
+    match terminal {
+        None => SubAgentStatus::Running,
+        Some(TerminalState::Completed { .. }) => SubAgentStatus::Completed,
+        Some(TerminalState::Blocked { reason }) => SubAgentStatus::Interrupted(reason.clone()),
+        Some(TerminalState::Failed { failure }) => SubAgentStatus::Failed(format!("{failure:?}")),
+        Some(TerminalState::Cancelled) => SubAgentStatus::Cancelled,
+        Some(TerminalState::Interrupted) => SubAgentStatus::Interrupted("运行被中断".to_string()),
+        Some(TerminalState::RecoveryRequired { ambiguity }) => {
+            SubAgentStatus::Failed(format!("需要恢复：{ambiguity:?}"))
         }
-    }
-}
-
-fn live_subagent_result(
-    agent_id: &str,
-    agent_type: SubAgentType,
-    status: SubAgentStatus,
-    objective: &str,
-    role: Option<&str>,
-    nickname: Option<String>,
-) -> SubAgentResult {
-    SubAgentResult {
-        name: agent_id.to_string(),
-        agent_id: agent_id.to_string(),
-        context_mode: "fresh".to_string(),
-        fork_context: false,
-        workspace: None,
-        git_branch: None,
-        agent_type,
-        assignment: SubAgentAssignment {
-            objective: summarize_tool_output(objective),
-            role: role.map(str::to_string),
-        },
-        model: String::new(),
-        nickname,
-        status,
-        worker_status: None,
-        parent_run_id: None,
-        spawn_depth: 0,
-        result: None,
-        steps_taken: 0,
-        checkpoint: None,
-        needs_input: None,
-        duration_ms: 0,
-        from_prior_session: false,
     }
 }
 
@@ -3594,13 +3533,9 @@ mod tests {
     use crate::localization::{MessageId, tr};
     use crate::palette;
     use crate::settings::Settings;
-    use crate::tools::subagent::{
-        SubAgentAssignment, SubAgentResult, SubAgentStatus, SubAgentType,
-    };
     use crate::tui::app::{App, TuiOptions};
-    use crate::tui::history::{HistoryCell, SubAgentCell};
     use crate::tui::views::{CommandPaletteAction, SubAgentsView};
-    use crate::tui::widgets::agent_card::{AgentLifecycle, FanoutCard};
+    use codewhale_protocol::agent_runtime::RunId;
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -3900,80 +3835,25 @@ mod tests {
         }
     }
 
-    fn manager_agent(id: &str, status: SubAgentStatus) -> SubAgentResult {
-        SubAgentResult {
-            name: id.to_string(),
-            agent_id: id.to_string(),
-            context_mode: "fresh".to_string(),
-            fork_context: false,
-            workspace: None,
-            git_branch: None,
-            agent_type: SubAgentType::Explore,
-            assignment: SubAgentAssignment {
-                objective: "read the docs".to_string(),
-                role: None,
-            },
-            model: "deepseek-v4-flash".to_string(),
-            nickname: None,
-            status,
-            worker_status: None,
-            parent_run_id: None,
-            spawn_depth: 0,
-            result: None,
-            steps_taken: 1,
-            checkpoint: None,
-            needs_input: None,
-            duration_ms: 10,
-            from_prior_session: false,
+    #[test]
+    fn subagent_view_agents_uses_only_canonical_children() {
+        let mut app = create_test_app();
+        app.child_agents.begin_root(RunId("root-run".to_string()));
+        for (child, depth) in [("child-one", 1), ("child-two", 2)] {
+            app.child_agents.record_started(
+                RunId("root-run".to_string()),
+                format!("call-{child}"),
+                RunId(child.to_string()),
+                depth,
+            );
         }
-    }
 
-    #[test]
-    fn subagent_view_agents_includes_progress_only_running_agent() {
-        let mut app = create_test_app();
-        app.agent_progress
-            .insert("agent_live".to_string(), "reading code".to_string());
-
-        let agents = subagent_view_agents(&app, &[]);
-
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].agent_id, "agent_live");
-        assert!(matches!(agents[0].status, SubAgentStatus::Running));
-        assert_eq!(agents[0].assignment.role.as_deref(), Some("live"));
-        assert!(agents[0].assignment.objective.contains("reading code"));
-    }
-
-    #[test]
-    fn subagent_view_agents_includes_live_fanout_workers_when_cache_is_empty() {
-        let mut app = create_test_app();
-        let mut card = FanoutCard::new("rlm").with_workers(["chunk_1", "chunk_2"]);
-        card.upsert_worker("chunk_1", AgentLifecycle::Completed);
-        card.upsert_worker("chunk_2", AgentLifecycle::Running);
-        app.add_message(HistoryCell::SubAgent(SubAgentCell::Fanout(card)));
-        app.last_fanout_card_index = Some(app.history.len().saturating_sub(1));
-
-        let agents = subagent_view_agents(&app, &[]);
-
+        let agents = subagent_view_agents(&app);
         assert_eq!(agents.len(), 2);
-        assert_eq!(agents[0].agent_id, "chunk_1");
-        assert!(matches!(agents[0].status, SubAgentStatus::Completed));
-        assert_eq!(agents[1].agent_id, "chunk_2");
-        assert!(matches!(agents[1].status, SubAgentStatus::Running));
-        assert_eq!(agents[1].assignment.role.as_deref(), Some("rlm"));
-    }
-
-    #[test]
-    fn subagent_view_agents_deduplicates_manager_rows_over_live_rows() {
-        let mut app = create_test_app();
-        app.agent_progress
-            .insert("agent_cached".to_string(), "live duplicate".to_string());
-        let manager = vec![manager_agent("agent_cached", SubAgentStatus::Running)];
-
-        let agents = subagent_view_agents(&app, &manager);
-
-        assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].agent_type, SubAgentType::Explore);
-        assert_eq!(agents[0].assignment.objective, "read the docs");
+        assert_eq!(agents[0].agent_id, "child-one");
+        assert_eq!(agents[0].assignment.role.as_deref(), Some("子 Agent"));
+        assert_eq!(agents[1].agent_id, "child-two");
+        assert_eq!(agents[1].assignment.role.as_deref(), Some("子级 Agent"));
     }
 
     #[test]
