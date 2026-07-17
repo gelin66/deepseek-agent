@@ -15,7 +15,6 @@ use crate::tui::app::{
     App, AppMode, ComposerDensity, ReasoningEffort, SidebarFocus, TranscriptSpacing,
 };
 use crate::tui::approval::ApprovalMode;
-use codewhale_config::{normalize_configured_locale, resolve_locale};
 
 #[cfg(feature = "web")]
 use schemaui::web::session::{ServeOptions, WebSessionBuilder, bind_session};
@@ -57,7 +56,6 @@ pub struct SettingsSection {
     pub paste_burst_detection: bool,
     pub show_thinking: bool,
     pub show_tool_details: bool,
-    pub locale: UiLocale,
     pub theme: UiThemeValue,
     #[schemars(
         title = "Background color",
@@ -160,28 +158,6 @@ pub enum ApprovalModeValue {
     Bypass,
     Suggest,
     Never,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub enum UiLocale {
-    #[serde(rename = "auto")]
-    #[schemars(rename = "auto")]
-    Auto,
-    #[serde(rename = "en")]
-    #[schemars(rename = "en")]
-    En,
-    #[serde(rename = "ja")]
-    #[schemars(rename = "ja")]
-    Ja,
-    #[serde(rename = "zh-Hans")]
-    #[schemars(rename = "zh-Hans")]
-    ZhHans,
-    #[serde(rename = "pt-BR")]
-    #[schemars(rename = "pt-BR")]
-    PtBr,
-    #[serde(rename = "es-419")]
-    #[schemars(rename = "es-419")]
-    Es419,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -355,7 +331,6 @@ pub fn build_document(app: &App, config: &Config) -> Result<ConfigUiDocument> {
             paste_burst_detection: settings.paste_burst_detection,
             show_thinking: settings.show_thinking,
             show_tool_details: settings.show_tool_details,
-            locale: UiLocale::from_setting(&settings.locale)?,
             theme: UiThemeValue::from_setting(&settings.theme)?,
             background_color: settings.background_color.clone(),
             bracketed_paste: settings.bracketed_paste,
@@ -528,7 +503,6 @@ pub fn apply_document(
             "show_tool_details",
             bool_str(doc.settings.show_tool_details),
         ),
-        ("locale", doc.settings.locale.as_setting()),
         ("theme", doc.settings.theme.as_setting()),
         (
             "background_color",
@@ -692,7 +666,6 @@ fn reload_runtime_config(app: &mut App, config: &mut Config) -> Result<()> {
     app.update_model_compaction_budget();
     app.mcp_config_path = reloaded.mcp_config_path();
     app.skills_dir = reloaded.skills_dir();
-    app.ui_locale = resolve_locale(&Settings::load_persisted().unwrap_or_default().locale);
     Ok(())
 }
 
@@ -741,32 +714,6 @@ impl ApprovalModeValue {
             Self::Bypass => "bypass",
             Self::Suggest => "suggest",
             Self::Never => "never",
-        }
-    }
-}
-
-impl UiLocale {
-    fn as_setting(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::En => "en",
-            Self::Ja => "ja",
-            Self::ZhHans => "zh-Hans",
-            Self::PtBr => "pt-BR",
-            Self::Es419 => "es-419",
-        }
-    }
-
-    fn from_setting(value: &str) -> Result<Self> {
-        match normalize_configured_locale(value) {
-            Some("auto") => Ok(Self::Auto),
-            Some("en") => Ok(Self::En),
-            Some("ja") => Ok(Self::Ja),
-            Some("zh-Hans") => Ok(Self::ZhHans),
-            Some("pt-BR") => Ok(Self::PtBr),
-            Some("es-419") => Ok(Self::Es419),
-            Some(other) => bail!("unsupported locale '{other}'"),
-            None => bail!("invalid locale '{value}'"),
         }
     }
 }
@@ -1292,10 +1239,10 @@ background_color = "#1A1B26"
         );
         let default_mode = &schema["$defs"]["DefaultModeValue"]["enum"];
         assert_eq!(default_mode, &serde_json::json!(["agent", "plan"]));
-        let locale = &schema["$defs"]["UiLocale"]["enum"];
-        assert_eq!(
-            locale,
-            &serde_json::json!(["auto", "en", "ja", "zh-Hans", "pt-BR", "es-419"])
+        assert!(
+            schema["$defs"]["SettingsSection"]["properties"]
+                .get("locale")
+                .is_none()
         );
         let theme = &schema["$defs"]["UiThemeValue"]["enum"];
         assert_eq!(

@@ -12,7 +12,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{ApiProvider, expand_path, normalize_model_name};
 use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
-use codewhale_config::{DEFAULT_LOCALE, normalize_configured_locale};
 
 const TUI_PREFS_FILE_NAME: &str = "tui.toml";
 
@@ -261,8 +260,6 @@ pub struct Settings {
     pub show_thinking: bool,
     /// Show detailed tool output
     pub show_tool_details: bool,
-    /// UI locale. Defaults to zh-Hans; an explicit `auto` follows the system.
-    pub locale: String,
     /// Named UI theme. Accepts `"system"` (follow terminal background),
     /// `"dark"`, `"light"`, `"grayscale"`, or one of the community
     /// presets: `"catppuccin-mocha"`, `"tokyo-night"`, `"dracula"`,
@@ -409,7 +406,6 @@ impl Default for Settings {
             // never displace the actual conversation in the default TUI.
             show_thinking: false,
             show_tool_details: false,
-            locale: DEFAULT_LOCALE.tag().to_string(),
             theme: "system".to_string(),
             background_color: None,
             composer_density: "comfortable".to_string(),
@@ -487,7 +483,6 @@ impl Settings {
     #[must_use]
     pub fn prompt_preferences(&self) -> codewhale_config::PromptPreferences {
         codewhale_config::PromptPreferences {
-            locale_setting: self.locale.clone(),
             show_thinking: self.show_thinking,
         }
     }
@@ -547,9 +542,6 @@ impl Settings {
                     normalize_work_surface_placement(&s.work_surface_placement).to_string();
                 s.synchronized_output =
                     normalize_synchronized_output(&s.synchronized_output).to_string();
-                s.locale = normalize_configured_locale(&s.locale)
-                    .unwrap_or(DEFAULT_LOCALE.tag())
-                    .to_string();
                 s.background_color =
                     normalize_optional_background_color(s.background_color.as_deref());
                 s.theme = normalize_settings_theme(&s.theme).to_string();
@@ -786,15 +778,6 @@ impl Settings {
             "show_tool_details" | "tool_details" => {
                 self.show_tool_details = parse_bool(value)?;
             }
-            "locale" | "language" => {
-                let Some(locale) = normalize_configured_locale(value) else {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid locale '{value}'. Expected: {}.",
-                        crate::localization::configured_locale_values(", ")
-                    );
-                };
-                self.locale = locale.to_string();
-            }
             "theme" => {
                 let Some(id) = crate::palette::ThemeId::from_name(value) else {
                     anyhow::bail!(
@@ -1001,10 +984,10 @@ impl Settings {
     }
 
     /// Get all settings as a displayable string
-    pub fn display(&self, locale: codewhale_config::Locale) -> String {
+    pub fn display(&self) -> String {
         use crate::localization::{MessageId, tr};
         let mut lines = Vec::new();
-        lines.push(tr(locale, MessageId::SettingsTitle).to_string());
+        lines.push(tr(MessageId::SettingsTitle).to_string());
         lines.push("─────────────────────────────".to_string());
         lines.push(format!("  auto_compact:       {}", self.auto_compact));
         lines.push(format!(
@@ -1033,7 +1016,6 @@ impl Settings {
         ));
         lines.push(format!("  show_thinking:      {}", self.show_thinking));
         lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
-        lines.push(format!("  locale:            {}", self.locale));
         lines.push(format!("  theme:              {}", self.theme));
         lines.push(format!(
             "  background_color:   {}",
@@ -1085,7 +1067,7 @@ impl Settings {
         lines.push(String::new());
         lines.push(format!(
             "{} {}",
-            tr(locale, MessageId::SettingsConfigFile),
+            tr(MessageId::SettingsConfigFile),
             Self::path().map_or_else(|_| "(unknown)".to_string(), |p| p.display().to_string())
         ));
         lines.join("\n")
@@ -1146,10 +1128,6 @@ impl Settings {
             (
                 "base_url",
                 "HTTP base URL for DeepSeek-compatible endpoints.",
-            ),
-            (
-                "locale",
-                "UI locale and default model language: auto, en, ja, zh-Hans, pt-BR, es-419",
             ),
             (
                 "theme",
@@ -1803,41 +1781,19 @@ mod tests {
     }
 
     #[test]
-    fn locale_defaults_to_simplified_chinese_without_overriding_explicit_choices() {
-        assert_eq!(Settings::default().locale, "zh-Hans");
-
-        let without_locale: Settings =
-            toml::from_str("theme = \"dark\"\n").expect("deserialize settings without locale");
-        assert_eq!(without_locale.locale, "zh-Hans");
-
-        for explicit in ["auto", "en", "ja"] {
-            let settings: Settings = toml::from_str(&format!("locale = \"{explicit}\"\n"))
-                .expect("deserialize explicit locale");
-            assert_eq!(settings.locale, explicit);
-        }
-    }
-
-    #[test]
-    fn locale_normalizes_supported_values_and_rejects_unknowns() {
+    fn language_is_not_a_configurable_setting() {
         let mut settings = Settings::default();
-        assert_eq!(settings.locale, "zh-Hans");
-
-        settings.set("locale", "auto").expect("set auto");
-        assert_eq!(settings.locale, "auto");
-
-        settings.set("locale", "en").expect("set en");
-        assert_eq!(settings.locale, "en");
-
-        settings.set("locale", "ja_JP.UTF-8").expect("set ja");
-        assert_eq!(settings.locale, "ja");
-
-        settings.set("language", "pt-PT").expect("set pt fallback");
-        assert_eq!(settings.locale, "pt-BR");
-
-        let err = settings
-            .set("locale", "ar")
-            .expect_err("Arabic is planned, not shipped");
-        assert!(err.to_string().contains("invalid locale"));
+        for key in ["locale", "language"] {
+            let err = settings
+                .set(key, "en")
+                .expect_err("single-language product must reject language settings");
+            assert!(err.to_string().contains("unknown setting"));
+        }
+        assert!(
+            Settings::available_settings()
+                .into_iter()
+                .all(|(key, _)| key != "locale" && key != "language")
+        );
     }
 
     #[test]
@@ -2015,20 +1971,16 @@ mod tests {
     }
 
     #[test]
-    fn display_localizes_header_and_config_file_label() {
+    fn display_uses_simplified_chinese_labels() {
         let settings = Settings::default();
-        let en = settings.display(codewhale_config::Locale::En);
-        assert!(en.contains("Settings:"), "english header missing:\n{en}");
+        let display = settings.display();
         assert!(
-            en.contains("Config file:"),
-            "english config label missing:\n{en}"
+            display.contains("设置"),
+            "chinese header missing:\n{display}"
         );
-
-        let zh = settings.display(codewhale_config::Locale::ZhHans);
-        assert!(zh.contains("设置"), "chinese header missing:\n{zh}");
         assert!(
-            zh.contains("配置文件"),
-            "chinese config label missing:\n{zh}"
+            display.contains("配置文件"),
+            "chinese config label missing:\n{display}"
         );
     }
 
@@ -2999,9 +2951,9 @@ mod tests {
             primary.exists(),
             "settings load should migrate to primary path"
         );
-        let display = loaded.display(codewhale_config::Locale::En);
+        let display = loaded.display();
         assert!(
-            display.contains(&format!("Config file: {}", primary.display())),
+            display.contains(&format!("配置文件: {}", primary.display())),
             "settings display should surface the canonical codewhale path:\n{display}"
         );
     }
