@@ -246,10 +246,14 @@ scripts/v0867-setup-qa.sh                               9 passed; 0 failed
   CodeQL / ubuntu+macOS tests all green; only slowest jobs finishing at
   snapshot time; zero failures.
 
-## Remaining Manual Evidence
+## Historical manual evidence
+
+> 本节记录 v0.8.67 当时的验收入口，不是当前开发命令。手工 context report 与
+> `doctor --context-json` 已在 DeepSeek 专用重构中删除；当前只保留 canonical
+> `doctor --json`。
 
 Before the release is called ready, keep the final manual pass from the QA
 matrix: open a current TUI build and visually confirm the same flow through
-`/setup`, `/constitution`, `/setup report`, `doctor --json`, and
-`doctor --context-json`. This file records automated current-build coverage,
+`/setup`, `/constitution`, `/setup report`, and `doctor --json`.
+This file records automated historical-build coverage,
 not a human visual acceptance pass.

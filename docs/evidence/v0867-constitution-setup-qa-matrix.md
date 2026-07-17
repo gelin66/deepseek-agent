@@ -1,5 +1,8 @@
 # v0.8.67 Constitution Setup QA Matrix
 
+> 历史证据：本矩阵只描述 v0.8.67 当时的产品面，不是当前开发门禁。多语言目录、手工
+> context report 和 `doctor --context-json` 已在断代重构中删除，不得按本页旧命令恢复。
+
 This matrix is the release evidence checklist for the v0.8.67
 constitution-first setup lane. It ties `/setup`, `/constitution`, doctor,
 context reports, and docs to one shared setup-state vocabulary instead of
@@ -17,10 +20,9 @@ Run these before claiming the setup lane is ready:
 ```sh
 cargo fmt --all -- --check
 git diff --check
-jq empty crates/tui/locales/en.json crates/tui/locales/es-419.json crates/tui/locales/ja.json crates/tui/locales/pt-BR.json crates/tui/locales/vi.json crates/tui/locales/zh-Hans.json
+jq empty crates/tui/locales/zh-Hans.json
 cargo test -p codewhale-tui --bin codewhale-tui --locked setup -- --nocapture
 cargo test -p codewhale-tui --bin codewhale-tui --locked constitution -- --nocapture
-cargo test -p codewhale-tui --bin codewhale-tui --locked context_report -- --nocapture
 cargo test -p codewhale-tui --bin codewhale-tui --locked doctor_setup -- --nocapture
 cargo test -p codewhale-tui --bin codewhale-tui --locked tui::onboarding -- --nocapture
 RUSTFLAGS="-D warnings" cargo test -p codewhale-tui --bin codewhale-tui --locked --no-run
@@ -37,12 +39,9 @@ scripts/v0867-setup-qa.sh                       # builds release if needed
 CODEWHALE_BIN=target/release/codewhale-tui scripts/v0867-setup-qa.sh
 ```
 
-It verifies: the `doctor --json .setup` block shape and
-`next_actions.constitution`, that a configured key never appears in
-`doctor --json`, that a repo `.codewhale/constitution.json` surfaces in
-`--context-json`, and that a legacy `WHALE.md` body is never loaded. It
-prints the remaining human-visual checks it cannot cover. This shrinks the
-manual pass to the visual items enumerated in the Text Snapshot Checklist.
+At the historical revision it verified the `doctor --json .setup` block and
+the now-retired context-report surface. Do not run this archived script as a
+current product gate; current commands come from `docs/product/ROADMAP.md`.
 
 ## Hermetic Local Setup
 
@@ -61,7 +60,6 @@ Useful noninteractive probes:
 
 ```sh
 cargo run -p codewhale-tui --locked -- doctor --json | jq '.setup'
-cargo run -p codewhale-tui --locked -- doctor --context-json | jq '.entries[] | select(.source_kind | test("constitution|project_context_warning"))'
 ```
 
 ## Matrix
@@ -90,7 +88,7 @@ cargo run -p codewhale-tui --locked -- doctor --context-json | jq '.entries[] | 
 | Custom provider/model route | `/model` can record provider-qualified custom routes without confusing them with the active provider only. | `cargo test -p codewhale-tui --bin codewhale-tui --locked model_picker -- --nocapture` |
 | MCP/tools configured or skipped | Optional tools/MCP readiness never blocks constitution checkpoint completion and remains represented with shared setup-step status. | `/setup` Tools/MCP row; setup filter gate |
 | Remote/runtime skipped | Remote runtime remains optional; skipped/deferred state is recorded through `SetupState` rather than blocking first-run. | `/setup` Remote Runtime row; `skip_and_retry_emit_setup_state_commits` |
-| WHALE.md migration | Legacy `WHALE.md` is ignored, reported as migration-needed, and its body is not loaded into prompt or context report. | `context_report_marks_whale_md_ignored_without_loading_body`; `constitution_manager_marks_whale_md_ignored` |
+| WHALE.md migration | Legacy `WHALE.md` is ignored and its body is not loaded into the prompt. The historical context-report diagnostic has been retired. | `constitution_manager_marks_whale_md_ignored` |
 | Final setup report is secret-free | Report names constitution choice, provider readiness, runtime posture, skipped/deferred/needs-action steps, and no raw secrets. | `doctor --json .setup`; `verification_report_records_ready_after_bundled_checkpoint`; `step_result_carries_no_secret_by_construction` |
 
 ## Text Snapshot Checklist
@@ -113,5 +111,5 @@ candidate:
    memory/handoff, preview, and maintenance actions.
 6. `/setup report` or `codewhale doctor --json | jq '.setup'` shows
    `constitution`, `runtime_posture_source`, `steps`, and `next_actions`.
-7. `doctor --context-json` shows repo constitution or WHALE.md migration
-   diagnostics without legacy file bodies.
+7. `doctor --json` remains secret-free; the retired `doctor --context-json`
+   surface must not reappear.

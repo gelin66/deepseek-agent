@@ -118,9 +118,10 @@ Each repo can carry two distinct, complementary files:
 
 > **`WHALE.md` is deprecated.** It overlapped confusingly with `AGENTS.md`.
 > CodeWhale no longer reads `WHALE.md` as project or global context. If one is
-> present, `doctor --context-json` reports it as ignored so you can migrate it.
-> Move ordinary instructions to `AGENTS.md` and CodeWhale-specific authority
-> policy to `.codewhale/constitution.json`. Personal standing guidance belongs
+> present, it is ignored; the retired manual context-report command is not a
+> supported migration surface. Move ordinary instructions to `AGENTS.md` and
+> CodeWhale-specific authority policy to `.codewhale/constitution.json`.
+> Personal standing guidance belongs
 > in `/constitution` / `$CODEWHALE_HOME/constitution.json`. (The global
 > CodeWhale Constitution shipped in the model prompt is a separate thing and is
 > unaffected.)

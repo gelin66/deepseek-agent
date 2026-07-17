@@ -4,7 +4,7 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-17
+- 快照日期：2026-07-18
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
@@ -61,7 +61,7 @@ interactive TUI / TaskManager
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、compact、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
-- start/continue/compact 通过 State schema v8 的 durable creation reservation 先绑定
+- start/continue/compact 通过 State schema v9 的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
@@ -133,7 +133,7 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 canonical RunStore schema 为 v8；
+- 当前 canonical RunStore schema 为 v9；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
@@ -170,7 +170,8 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- Run API v3 提供 continuation、manual compact 和 root 列表；RuntimeEvent writer 为 v5，
+- 当前 Run API v4 在 v3 的 continuation、manual compact 和 root list 上增加 durable
+  creation-intent list/recover；RuntimeEvent writer 为 v5，
   reader 接受 v4-v5；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
@@ -252,7 +253,8 @@ all-target check、全仓 clippy 和 workspace tests 均通过。该冻结不代
 编码能力或效率提升证据。
 
 M4-C C2 已冻结为提交 `4a3311ac`：Run API v3、RuntimeEvent writer
-v5/read v4-v5、State schema v8，以及 continuation、root list、manual/automatic context
+v5/read v4-v5；后续提交 `35fc3cc4` 的 durable run creation delivery 把当前 Run API
+提升到 v4、State schema 提升到 v9。continuation、root list、manual/automatic context
 projection 已进入 exec/app-server 的 canonical 链路。focused、workspace Clippy
 `-D warnings`、串行完整 workspace tests、内存/SQLite parity，以及由外部监督进程
 `SIGKILL` 的 compaction prepared/in-flight/committed 恢复矩阵均通过。费用受限的官方
@@ -271,7 +273,10 @@ surface 兼容；尚无 compaction on/off 真实 A/B，不能声称 Token、成�
 - 交互 TUI 已统一；
 - 旧 TUI compaction/runtime-thread 路径已删除；
 - 当前 compaction 已证明节省 Token、降低成本或提高任务成功率；
-- Provider 清理、全面汉化或中文 Agent prompt A/B 已完成；
+- Provider 清理或全面汉化已完成；
+- 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 已完成但候选因 multi 成功率回退
+  被拒绝，见
+  [中文原生生产提示词正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md)；
 - RepoGraph、EvidenceReceipt、writer-worktree Orchestrator 已完成；
 - transport 迁移本身提升了真实编码成功率；
 - 单次 live canary 可以成为产品指标。

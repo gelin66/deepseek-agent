@@ -224,6 +224,26 @@ compaction 的协议、replay、lineage 或恢复测试通过，只证明机制�
 满足当前生产 receipt 契约，应记录 contract failure，不得向候选 Runtime 或 Harness
 加入旧语义兼容层。
 
+#### 2026-07-18 中文原生生产提示词 treatment
+
+首个正式候选 `b088fd13` 相对 `0833ab35` 的 24-run、single/multi、6/cell 官方 DeepSeek
+A/B 已完成，但 **没有通过保留门槛**：
+
+- baseline single/multi 均为 6/6；
+- candidate multi 为 5/6，一次运行真实耗尽 10 次模型请求预算；
+- candidate single 的代码任务和 verifier 为 6/6，但一次失败重试缺少 usage，使该 cell
+  `measurement_invalid`；
+- 0 false success，production system prompt 每次请求均已由 State schema v9 /
+  RuntimeEvent v5 取证；
+- candidate multi 虽减少 12.27% Token，但成功率下降 16.67 个百分点，同时请求、耗时和
+  费用上升。
+
+因此当前中文提示词候选不得宣称提升，也不因 Token 单项下降默认启用。完整身份、cell
+统计、hash、费用与异常边界见
+[中文原生生产提示词正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md)。
+下一候选必须先改变实现，再重新运行同任务成对 A/B；只补跑计量失效的单 Agent run 不能
+推翻 multi lane 的真实回退。
+
 ### 5.2 TaskContract、终态与证据边界
 
 `TaskContract` 是 Host 在一次 generation 开始前确定的验收边界，至少绑定 objective、

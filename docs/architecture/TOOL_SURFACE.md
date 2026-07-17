@@ -3,7 +3,8 @@
 > Category: current capability map and migration input.
 
 Why these specific tools, in this groupings, and how each one is meant to be
-chosen over the available shell equivalent. Companion to `crates/tui/src/prompts/agent.txt`.
+chosen over the available shell equivalent. The canonical production catalog
+is owned by `crates/tools`; prompt guidance is assembled by `crates/context`.
 
 ## Design stance
 
@@ -222,8 +223,7 @@ The active model-facing sub-agent surface is intentionally small:
 |---|---|
 | `agent` | Launch one focused child run. Returns an agent id, compact receipt, and transcript handle while the parent can keep coordinating. |
 
-See `agent.txt` for the delegation protocol and
-[`SUBAGENTS.md`](SUBAGENTS.md) for the role taxonomy
+See [`SUBAGENTS.md`](SUBAGENTS.md) for the role taxonomy
 (`general` / `explore` / `plan` / `review` / `implementer` /
 `verifier` / `custom`).
 

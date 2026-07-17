@@ -3,10 +3,11 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M4-C C1、C2 已冻结；C2 实现提交为 `4a3311ac`，交互 TUI 尚未切换
-- 更新日期：2026-07-17
-- schema：`Run API`（`schema_version = 3`）、`RuntimeEvent`（writer v5，reader v4-v5）、
-  `State`（schema v8）
+- 状态：M4-C C1、C2 已冻结；C2 实现提交为 `4a3311ac`，后续 durable creation delivery
+  为 `35fc3cc4`，交互 TUI 尚未切换
+- 更新日期：2026-07-18
+- schema：`Run API`（`schema_version = 4`）、`RuntimeEvent`（writer v5，reader v4-v5）、
+  `State`（schema v9）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -326,7 +327,8 @@ RuntimeEvent v5 在 v4 基础上增加：
 ## 6. 并发、控制与恢复
 
 - `start`、`continue` 和 `compact` 在创建 run 前先把
-  `request_id + normalized command digest -> reserved run_id` 持久写入 State schema v8；
+  `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
+  持久写入 State schema v9；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation/compaction run 尚未创建，重试沿用同一 reserved
   run ID，不能再生成第二个 run。自动路由 start 的预运行请求可能已发出时则 fail closed，

@@ -7,8 +7,9 @@
   `a534a824670b60c807c5abf399ea8674d4beb527`；C1 实现提交 `1d127b78` 已建立并冻结
   canonical durable interaction/control contract。C2 的 Run API v3、RuntimeEvent writer
   v5/read v4-v5、State schema v8、continuation 和最小 context projection 已通过本机完整
-  验收与费用受限的官方 DeepSeek sender canary，并冻结为提交 `4a3311ac`；交互 TUI caller
-  尚未切换，旧 engine/runtime-thread/compaction 路径尚未删除。M1 的
+  验收与费用受限的官方 DeepSeek sender canary，并冻结为提交 `4a3311ac`；后续
+  `35fc3cc4` 已把 durable creation delivery 提升为 Run API v4 / State schema v9。交互 TUI
+  caller 尚未切换，旧 engine/runtime-thread/compaction 路径尚未删除。M1 的
   导入基线 A/B 与 M2 的完整官方 surface canary 仍是独立证据债务
 - 上次更新：2026-07-18
 
@@ -90,6 +91,13 @@ TUI all-targets check、完整 workspace test 和 focused gate 通过。严格 w
 调用方后物理删除。该切片只证明语言状态与翻译后处理已收敛，不代表保留界面已经没有全部
 英文，也不代表生产 Agent 系统提示已经完成中文重构；旧 Provider/Fleet/Workflow/TUI
 文案应随 M4-C/M7 调用方迁移删除，保留界面再进入消息目录，生产提示词必须另做同任务 A/B。
+
+首个中文原生生产提示词候选已经完成 24-run 正式 A/B，但未通过保留门槛：candidate
+multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate single 另有一条因失败
+重试缺 usage 而计量失效。候选 multi 的 Token 降低 12.27%，但请求、耗时和费用均上升，
+不能用效率单项掩盖成功率回退。该版本保持 WIP，不默认启用；安全的 workspace path
+移除继续保留。完整记录见
+[中文原生生产提示词正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md)。
 
 ## 3. 里程碑总览
 
@@ -677,6 +685,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - Agent 数量和预算；
 - 开发中文原生 Agent 提示词组合，分别调优规划、工具策略、失败恢复、压缩和子 Agent 协作；
   以当前生产提示和归档基线做同任务 A/B，候选按版本评测并可回滚；
+- 首个合并候选 `b088fd13` 已因 multi 成功率回退被拒绝；下一轮只调整重复读取、父/子重复
+  调查和完成前额外模型轮次，不恢复已经删除的模式、人格、Provider 或兼容提示层；
 - 只有基准证明需要时才加入 embedding。
 
 ### 剩余清理
