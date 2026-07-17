@@ -611,7 +611,6 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
     let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickSettings));
     let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickModel));
     let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickSubagents));
-    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickTaskList));
     let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickHelp));
 
     // Mode-specific tips

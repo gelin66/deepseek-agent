@@ -59,7 +59,7 @@ impl ToolSpec for RuntimeDynamicTool {
             })?;
         executor
             .execute_dynamic_tool(
-                context.runtime.active_thread_id.clone(),
+                None,
                 self.spec.namespace.clone(),
                 self.spec.name.clone(),
                 input,
@@ -111,7 +111,6 @@ mod tests {
             defer_loading: true,
         });
         let ctx = ToolContext::new(".").with_runtime_services(RuntimeToolServices {
-            active_thread_id: Some("thr_1".to_string()),
             dynamic_tool_executor: Some(Arc::new(EchoExecutor)),
             ..RuntimeToolServices::default()
         });
@@ -119,7 +118,7 @@ mod tests {
         let result = tool.execute(json!({"id": "123"}), &ctx).await.unwrap();
 
         assert!(result.is_success());
-        assert!(result.content.contains("\"thread_id\":\"thr_1\""));
+        assert!(result.content.contains("\"thread_id\":null"));
         assert!(result.content.contains("\"namespace\":\"bench\""));
         assert!(result.content.contains("\"name\":\"lookup\""));
     }

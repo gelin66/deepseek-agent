@@ -2133,19 +2133,6 @@ mod tests {
     }
 
     #[test]
-    fn slash_hotbar_action_dispatches_optional_argument_command_with_no_args() {
-        let registry = HotbarActionRegistry::with_builtins();
-        let task = registry.get("slash.task").expect("task slash action");
-        let mut app = test_app();
-
-        assert_eq!(
-            task.dispatch(&mut app).expect("dispatch /task"),
-            HotbarDispatch::AppAction(AppAction::TaskList)
-        );
-        assert!(app.input.is_empty());
-    }
-
-    #[test]
     fn slash_hotbar_action_prefills_required_argument_command() {
         let registry = HotbarActionRegistry::with_builtins();
         let rename = registry.get("slash.rename").expect("rename slash action");

@@ -698,79 +698,28 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RetrieveToolResultTool))
     }
 
-    /// Include durable task, gate, PR-attempt, GitHub, and automation tools.
-    ///
-    /// Shell-related task tools (`task_shell_start`, `task_shell_wait`) are
-    /// *not* included here — use [`with_runtime_task_shell_tools`] to register
-    /// them when `allow_shell` is true.
+    /// Include GitHub context and guarded write tools.
     #[must_use]
-    pub fn with_runtime_task_tools(self) -> Self {
-        use super::automation::{
-            AutomationCreateTool, AutomationDeleteTool, AutomationListTool, AutomationPauseTool,
-            AutomationReadTool, AutomationResumeTool, AutomationRunTool, AutomationUpdateTool,
-        };
+    pub fn with_github_tools(self) -> Self {
         use super::github::{
             GithubCloseIssueTool, GithubClosePrTool, GithubCommentTool, GithubIssueContextTool,
             GithubPrContextTool,
         };
-        use super::tasks::{
-            PrAttemptListTool, PrAttemptPreflightTool, PrAttemptReadTool, PrAttemptRecordTool,
-            TaskCancelTool, TaskCreateTool, TaskGateRunTool, TaskListTool, TaskReadTool,
-        };
 
-        self.with_tool(Arc::new(TaskCreateTool))
-            .with_tool(Arc::new(TaskListTool))
-            .with_tool(Arc::new(TaskReadTool))
-            .with_tool(Arc::new(TaskCancelTool))
-            .with_tool(Arc::new(TaskGateRunTool))
-            .with_tool(Arc::new(GithubIssueContextTool))
+        self.with_tool(Arc::new(GithubIssueContextTool))
             .with_tool(Arc::new(GithubPrContextTool))
-            .with_tool(Arc::new(PrAttemptRecordTool))
-            .with_tool(Arc::new(PrAttemptListTool))
-            .with_tool(Arc::new(PrAttemptReadTool))
-            .with_tool(Arc::new(PrAttemptPreflightTool))
-            .with_tool(Arc::new(AutomationCreateTool))
-            .with_tool(Arc::new(AutomationListTool))
-            .with_tool(Arc::new(AutomationReadTool))
-            .with_tool(Arc::new(AutomationUpdateTool))
-            .with_tool(Arc::new(AutomationPauseTool))
-            .with_tool(Arc::new(AutomationResumeTool))
-            .with_tool(Arc::new(AutomationDeleteTool))
-            .with_tool(Arc::new(AutomationRunTool))
             .with_tool(Arc::new(GithubCommentTool))
             .with_tool(Arc::new(GithubCloseIssueTool))
             .with_tool(Arc::new(GithubClosePrTool))
     }
 
-    /// Include shell-related task tools (`task_shell_start`, `task_shell_wait`).
-    ///
-    /// These are gated behind `allow_shell` because `task_shell_start`
-    /// delegates directly to `ExecShellTool`, providing the same shell
-    /// execution capability as `exec_shell`.
+    /// Include only read-only GitHub context tools.
     #[must_use]
-    pub fn with_runtime_task_shell_tools(self) -> Self {
-        use super::tasks::{TaskShellStartTool, TaskShellWaitTool};
-        self.with_tool(Arc::new(TaskShellStartTool))
-            .with_tool(Arc::new(TaskShellWaitTool))
-    }
-
-    /// Include only read-only durable task, PR-attempt, GitHub, and automation
-    /// inspection tools. Plan mode uses this surface so it can observe state
-    /// without starting work, changing remotes, or mutating automation config.
-    #[must_use]
-    pub fn with_runtime_read_only_task_tools(self) -> Self {
-        use super::automation::{AutomationListTool, AutomationReadTool};
+    pub fn with_read_only_github_tools(self) -> Self {
         use super::github::{GithubIssueContextTool, GithubPrContextTool};
-        use super::tasks::{PrAttemptListTool, PrAttemptReadTool, TaskListTool, TaskReadTool};
 
-        self.with_tool(Arc::new(TaskListTool))
-            .with_tool(Arc::new(TaskReadTool))
-            .with_tool(Arc::new(GithubIssueContextTool))
+        self.with_tool(Arc::new(GithubIssueContextTool))
             .with_tool(Arc::new(GithubPrContextTool))
-            .with_tool(Arc::new(PrAttemptListTool))
-            .with_tool(Arc::new(PrAttemptReadTool))
-            .with_tool(Arc::new(AutomationListTool))
-            .with_tool(Arc::new(AutomationReadTool))
     }
 
     /// Include web search and fetch tools.
@@ -1033,14 +982,14 @@ impl ToolRegistryBuilder {
             .with_validation_tools()
             .with_tool_result_retrieval_tool()
             .with_handle_tools()
-            .with_runtime_task_tools()
+            .with_github_tools()
             .with_revert_turn_tool()
             .with_pandoc_tools()
             .with_image_ocr_tools()
             .with_finance_tool();
 
         if shell_policy.allows_shell() {
-            builder.with_shell_tools().with_runtime_task_shell_tools()
+            builder.with_shell_tools()
         } else {
             builder
         }
@@ -1928,14 +1877,6 @@ mod tests {
             !registry.contains("exec_shell"),
             "exec_shell should be excluded when allow_shell is false"
         );
-        assert!(
-            !registry.contains("task_shell_start"),
-            "task_shell_start should be excluded when allow_shell is false"
-        );
-        assert!(
-            !registry.contains("task_shell_wait"),
-            "task_shell_wait should be excluded when allow_shell is false"
-        );
     }
 
     #[test]
@@ -1951,8 +1892,6 @@ mod tests {
             registry.contains("exec_shell"),
             "read-only shell policy should expose shell tools; execution enforces mutating-command denial"
         );
-        assert!(registry.contains("task_shell_start"));
-        assert!(registry.contains("task_shell_wait"));
     }
 
     #[test]
@@ -1965,14 +1904,6 @@ mod tests {
         assert!(
             registry.contains("exec_shell"),
             "exec_shell should be included when allow_shell is true"
-        );
-        assert!(
-            registry.contains("task_shell_start"),
-            "task_shell_start should be included when allow_shell is true"
-        );
-        assert!(
-            registry.contains("task_shell_wait"),
-            "task_shell_wait should be included when allow_shell is true"
         );
     }
 

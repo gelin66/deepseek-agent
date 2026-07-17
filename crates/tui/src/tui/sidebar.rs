@@ -1329,30 +1329,22 @@ fn render_sidebar_work_compact(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// Click actions for one background job row pair (#3028).
-///
-/// Returns `(show, detail)` where `show` opens the job and `detail` cancels
-/// it while it is still running (finished jobs make the detail row a second
-/// show target instead — cancel would only error). `shell_*` ids belong to
-/// the shell job manager and route through `/jobs`; everything else routes
-/// through `/task`.
-fn background_task_click_actions(task: &TaskPanelEntry) -> (String, String) {
-    let namespace = if task.id.starts_with("shell_") {
-        "jobs"
-    } else {
-        "task"
-    };
-    let show = format!("/{namespace} show {}", task.id);
+/// Click actions for one shell job row pair (#3028).
+fn background_task_click_actions(task: &TaskPanelEntry) -> (Option<String>, Option<String>) {
+    if !task.id.starts_with("shell_") {
+        return (None, None);
+    }
+    let show = format!("/jobs show {}", task.id);
     let detail = if matches!(task.status.as_str(), "running" | "queued") {
-        format!("/{namespace} cancel {}", task.id)
+        format!("/jobs cancel {}", task.id)
     } else {
         show.clone()
     };
-    (show, detail)
+    (Some(show), Some(detail))
 }
 
 fn background_task_has_stop_target(task: &TaskPanelEntry) -> bool {
-    matches!(task.status.as_str(), "running" | "queued")
+    task.id.starts_with("shell_") && matches!(task.status.as_str(), "running" | "queued")
 }
 
 fn command_row_action(command: String) -> SidebarRowAction {
@@ -1526,7 +1518,7 @@ fn task_panel_rows(
                 truncate_line_to_width(&label, content_width.max(1))
             };
             lines.push(Line::from(Span::styled(label, Style::default().fg(color))));
-            actions.push(Some(command_row_action(show_action)));
+            actions.push(show_action.map(command_row_action));
             lines.push(Line::from(Span::styled(
                 format!(
                     "  {}",
@@ -1534,7 +1526,7 @@ fn task_panel_rows(
                 ),
                 Style::default().fg(theme.text_dim),
             )));
-            actions.push(Some(command_row_action(detail_action)));
+            actions.push(detail_action.map(command_row_action));
         }
 
         if lines.len() < max_rows {
@@ -5326,7 +5318,7 @@ mod tests {
     }
 
     #[test]
-    fn task_panel_actions_route_each_job_to_its_own_id() {
+    fn task_panel_actions_route_shell_job_to_its_own_id() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
         app.task_panel.push(TaskPanelEntry {
@@ -5340,18 +5332,6 @@ mod tests {
             owner_agent_id: None,
             owner_agent_name: None,
         });
-        app.task_panel.push(TaskPanelEntry {
-            id: "task_bbb".to_string(),
-            status: "running".to_string(),
-            prompt_summary: "summarize the release notes".to_string(),
-            duration_ms: Some(3_000),
-            kind: TaskPanelEntryKind::Background,
-            stale: false,
-            elapsed_since_output_ms: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-        });
-
         let (lines, actions) = task_panel_rows(&app, &task_panel_row_sets(&app), 96, 16);
         let text = lines_to_text(&lines);
         assert_eq!(lines.len(), actions.len());
@@ -5377,23 +5357,9 @@ mod tests {
             "shell job detail row cancels the SAME job: {actions:?}"
         );
 
-        let task_idx = text
-            .iter()
-            .position(|line| line.contains("task_bbb"))
-            .expect("task job label row");
         assert!(
-            text[shell_idx].ends_with("[x]") && text[task_idx].ends_with("[x]"),
-            "running background jobs show inline stop affordances: {text:?}"
-        );
-        assert_eq!(
-            action_command(&actions[task_idx]),
-            Some("/task show task_bbb"),
-            "task-manager jobs route through /task: {actions:?}"
-        );
-        assert_eq!(
-            action_command(&actions[task_idx + 1]),
-            Some("/task cancel task_bbb"),
-            "task job detail row cancels the SAME job: {actions:?}"
+            text[shell_idx].ends_with("[x]"),
+            "running shell jobs show inline stop affordances: {text:?}"
         );
 
         let hint_idx = text
@@ -5462,9 +5428,9 @@ mod tests {
         );
         app.active_cell = Some(active);
         app.task_panel.push(TaskPanelEntry {
-            id: "task_q".to_string(),
+            id: "shell_q".to_string(),
             status: "running".to_string(),
-            prompt_summary: "investigate flaky test".to_string(),
+            prompt_summary: "shell: investigate flaky test".to_string(),
             duration_ms: Some(9_000),
             kind: TaskPanelEntryKind::Background,
             stale: false,
@@ -5491,11 +5457,11 @@ mod tests {
 
         let task_idx = text
             .iter()
-            .position(|line| line.contains("task_q"))
+            .position(|line| line.contains("investigate flaky test"))
             .expect("background job label row");
         assert_eq!(
             action_command(&actions[task_idx]),
-            Some("/task show task_q")
+            Some("/jobs show shell_q")
         );
     }
 

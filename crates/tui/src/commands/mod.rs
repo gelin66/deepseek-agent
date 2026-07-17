@@ -1249,10 +1249,6 @@ mod tests {
         assert!(skills.contains("Skills location:"));
 
         let mut app = create_test_app();
-        let result = execute("/task list", &mut app);
-        assert!(matches!(result.action, Some(AppAction::TaskList)));
-
-        let mut app = create_test_app();
         let tokens = execute("/tokens", &mut app)
             .message
             .expect("/tokens should return text");

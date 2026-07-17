@@ -622,14 +622,6 @@ impl ToolSpec for SlopLedgerAppendTool {
                     .collect();
             }
 
-            // Attach active task/thread context if available
-            if let Some(ref task_id) = context.runtime.active_task_id {
-                entry.task_id = Some(task_id.clone());
-            }
-            if let Some(ref thread_id) = context.runtime.active_thread_id {
-                entry.thread_id = Some(thread_id.clone());
-            }
-
             appended.push(entry);
         }
 

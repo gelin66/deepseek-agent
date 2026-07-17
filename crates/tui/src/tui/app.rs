@@ -1605,8 +1605,7 @@ pub struct SidebarHoverRow {
     pub is_truncated: bool,
     /// Slash command to execute when this row is clicked (#3028).
     /// `shell_*` job ids route through `/jobs` (e.g. `/jobs cancel
-    /// shell_abc123`); task-manager ids route through `/task` (e.g.
-    /// `/task show task_abc123`).
+    /// shell_abc123`).
     pub click_action: Option<SidebarRowAction>,
     /// Optional narrower stop target for rows that show an inline `[x]`.
     pub stop_action: Option<SidebarRowAction>,
@@ -6790,16 +6789,6 @@ pub enum AppAction {
     OpenContextInspector,
     CompactContext,
     PurgeContext,
-    TaskAdd {
-        prompt: String,
-    },
-    TaskList,
-    TaskShow {
-        id: String,
-    },
-    TaskCancel {
-        id: String,
-    },
     ShellJob(ShellJobAction),
     Mcp(McpUiAction),
     /// Switch to a different config profile without restarting.

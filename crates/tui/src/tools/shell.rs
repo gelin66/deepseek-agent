@@ -67,7 +67,6 @@ pub(crate) fn exec_shell_options(context: &ToolContext) -> ExecShellOptions {
     options.shell_network_denied_hint = context.shell_network_denied_hint.clone();
     options.sandbox_backend = context.sandbox_backend.clone();
     options.owner = shell_job_owner_from_context(context);
-    options.active_task_id = context.runtime.active_task_id.clone();
     options
 }
 

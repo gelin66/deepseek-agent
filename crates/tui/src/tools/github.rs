@@ -1,15 +1,11 @@
 //! GitHub context and guarded write tools backed by the `gh` CLI.
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::dependencies::ExternalTool;
 use async_trait::async_trait;
-use chrono::Utc;
 use serde_json::{Value, json};
-use uuid::Uuid;
 
-use crate::task_manager::{TaskArtifactRef, TaskGithubEvent};
 use crate::tools::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
     optional_bool, optional_str, required_str, required_u64,
@@ -38,7 +34,7 @@ impl ToolSpec for GithubIssueContextTool {
     }
 
     fn description(&self) -> &'static str {
-        "Read GitHub issue context using gh. Read-only: body/comments/labels/state are summarized and large bodies become task artifacts when a durable task is active."
+        "Read GitHub issue context using gh. Read-only: body/comments/labels/state are summarized when large."
     }
 
     fn input_schema(&self) -> Value {
@@ -73,16 +69,11 @@ impl ToolSpec for GithubIssueContextTool {
         let number_s = number.to_string();
         let raw = run_gh_json(context, &["issue", "view", &number_s, "--json", fields])?;
         let shaped = shape_large_text(context, raw, "issue_body", BODY_ARTIFACT_THRESHOLD)?;
-        let mut result = ToolOutcome::json(&json!({
+        ToolOutcome::json(&json!({
             "summary": format!("Issue #{number}: {}", shaped["title"].as_str().unwrap_or("")),
             "issue": shaped,
         }))
-        .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        let artifacts = artifact_refs_from_context(&result.content, "github_issue_body");
-        if !artifacts.is_empty() {
-            result = result.with_metadata(json!({ "task_updates": { "artifacts": artifacts } }));
-        }
-        Ok(result)
+        .map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -133,25 +124,17 @@ impl ToolSpec for GithubPrContextTool {
         let mut shaped = shape_large_text(context, raw, "pr_body", BODY_ARTIFACT_THRESHOLD)?;
         if optional_bool(&input, "include_diff", false) {
             let diff = run_gh_text(context, &["pr", "diff", &number_s, "--patch"])?;
-            let diff_ref =
-                write_artifact_if_needed(context, "pr_diff", &diff, DIFF_ARTIFACT_THRESHOLD)?;
             shaped["diff_summary"] = json!(summarize(&diff, 900));
-            shaped["diff_artifact"] = json!(diff_ref);
+            shaped["diff_truncated"] = json!(diff.len() > DIFF_ARTIFACT_THRESHOLD);
+            if diff.len() <= DIFF_ARTIFACT_THRESHOLD {
+                shaped["diff"] = json!(diff);
+            }
         }
-        let mut result = ToolOutcome::json(&json!({
+        ToolOutcome::json(&json!({
             "summary": format!("PR #{number}: {}", shaped["title"].as_str().unwrap_or("")),
             "pr": shaped,
         }))
-        .map_err(|e| ToolError::execution_failed(e.to_string()))?;
-        let mut artifacts = artifact_refs_from_context(&result.content, "github_pr_body");
-        artifacts.extend(artifact_refs_from_context(
-            &result.content,
-            "github_pr_diff",
-        ));
-        if !artifacts.is_empty() {
-            result = result.with_metadata(json!({ "task_updates": { "artifacts": artifacts } }));
-        }
-        Ok(result)
+        .map_err(|e| ToolError::execution_failed(e.to_string()))
     }
 }
 
@@ -201,18 +184,9 @@ impl ToolSpec for GithubCommentTool {
         let subcmd = if target == "pr" { "pr" } else { "issue" };
         let number_s = number.to_string();
         run_gh_text(context, &[subcmd, "comment", &number_s, "--body", body])?;
-        let metadata = github_event_metadata(
-            "comment",
-            target,
-            number,
-            summarize(body, 240),
-            None,
-            write_artifact_if_needed(context, "github_comment", body, BODY_ARTIFACT_THRESHOLD)?,
-        );
-        Ok(
-            ToolOutcome::success(format!("Commented on {target} #{number}."))
-                .with_metadata(metadata),
-        )
+        Ok(ToolOutcome::success(format!(
+            "Commented on {target} #{number}."
+        )))
     }
 }
 
@@ -284,23 +258,9 @@ impl GithubCloseTarget {
         }
     }
 
-    fn metadata_target(self) -> &'static str {
-        match self {
-            Self::Issue => "issue",
-            Self::Pr => "pr",
-        }
-    }
-
     fn display(self) -> &'static str {
         match self {
             Self::Issue => "issue",
-            Self::Pr => "PR",
-        }
-    }
-
-    fn summary_subject(self) -> &'static str {
-        match self {
-            Self::Issue => "Issue",
             Self::Pr => "PR",
         }
     }
@@ -364,31 +324,10 @@ fn close_github_thread(
         GithubCloseTarget::Pr => vec!["pr", "close", &number_s],
     };
     run_gh_text(context, &close_args)?;
-    let metadata = github_event_metadata(
-        "close",
-        target.metadata_target(),
-        number,
-        format!(
-            "{} closed as completed with structured evidence",
-            target.summary_subject()
-        ),
-        None,
-        optional_str(&input, "comment")
-            .and_then(|comment| {
-                write_artifact_if_needed(
-                    context,
-                    "github_close_comment",
-                    comment,
-                    BODY_ARTIFACT_THRESHOLD,
-                )
-                .ok()
-            })
-            .flatten(),
-    );
-    Ok(
-        ToolOutcome::success(format!("Closed {} #{number}.", target.display()))
-            .with_metadata(metadata),
-    )
+    Ok(ToolOutcome::success(format!(
+        "Closed {} #{number}.",
+        target.display()
+    )))
 }
 
 fn gh_bin() -> String {
@@ -452,7 +391,7 @@ fn git_status_porcelain(context: &ToolContext) -> Result<String, ToolError> {
 }
 
 fn shape_large_text(
-    context: &ToolContext,
+    _context: &ToolContext,
     mut value: Value,
     label: &str,
     threshold: usize,
@@ -464,134 +403,12 @@ fn shape_large_text(
     if let Some(body) = body
         && body.len() > threshold
     {
-        let artifact = write_artifact_if_needed(context, label, &body, threshold)?;
         value["body_summary"] = json!(summarize(&body, 900));
-        value["body_artifact"] = json!(artifact);
+        value["body_truncated"] = json!(true);
+        value["body_label"] = json!(label);
         value["body"] = json!(summarize(&body, 1200));
     }
     Ok(value)
-}
-
-fn write_artifact_if_needed(
-    context: &ToolContext,
-    label: &str,
-    content: &str,
-    threshold: usize,
-) -> Result<Option<PathBuf>, ToolError> {
-    if content.len() <= threshold {
-        return Ok(None);
-    }
-    let Some(task_id) = context.runtime.active_task_id.as_deref() else {
-        return Ok(None);
-    };
-    if let Some(manager) = context.runtime.task_manager.as_ref() {
-        return manager
-            .write_task_artifact(task_id, label, content)
-            .map(Some)
-            .map_err(|e| ToolError::execution_failed(e.to_string()));
-    }
-    let Some(data_dir) = context.runtime.task_data_dir.as_ref() else {
-        return Ok(None);
-    };
-    let dir = data_dir.join("artifacts").join(task_id);
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| ToolError::execution_failed(format!("create artifact dir: {e}")))?;
-    let absolute = dir.join(format!(
-        "{}_{}.txt",
-        Utc::now().format("%Y%m%dT%H%M%S%.3fZ"),
-        sanitize_filename(label)
-    ));
-    std::fs::write(&absolute, content)
-        .map_err(|e| ToolError::execution_failed(format!("write artifact: {e}")))?;
-    Ok(Some(
-        absolute
-            .strip_prefix(data_dir)
-            .map(Path::to_path_buf)
-            .unwrap_or(absolute),
-    ))
-}
-
-fn artifact_refs_from_context(content: &str, label: &str) -> Vec<TaskArtifactRef> {
-    let Ok(value) = serde_json::from_str::<Value>(content) else {
-        return Vec::new();
-    };
-    let (path_key, summary_key) = if label.ends_with("_diff") {
-        ("diff_artifact", "diff_summary")
-    } else {
-        ("body_artifact", "body_summary")
-    };
-    let mut refs = Vec::new();
-    collect_artifact_refs(&value, path_key, summary_key, label, &mut refs);
-    refs
-}
-
-fn collect_artifact_refs(
-    value: &Value,
-    path_key: &str,
-    summary_key: &str,
-    label: &str,
-    refs: &mut Vec<TaskArtifactRef>,
-) {
-    match value {
-        Value::Object(map) => {
-            if let Some(path) = map.get(path_key).and_then(Value::as_str) {
-                let summary = map
-                    .get(summary_key)
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| format!("GitHub {label} artifact"));
-                refs.push(TaskArtifactRef {
-                    label: label.to_string(),
-                    path: PathBuf::from(path),
-                    summary,
-                    created_at: Utc::now(),
-                });
-            }
-            for child in map.values() {
-                collect_artifact_refs(child, path_key, summary_key, label, refs);
-            }
-        }
-        Value::Array(items) => {
-            for child in items {
-                collect_artifact_refs(child, path_key, summary_key, label, refs);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn github_event_metadata(
-    action: &str,
-    target: &str,
-    number: u64,
-    summary: String,
-    url: Option<String>,
-    artifact: Option<PathBuf>,
-) -> Value {
-    let artifacts = artifact
-        .map(|path| {
-            json!([TaskArtifactRef {
-                label: format!("github_{action}"),
-                path,
-                summary: summary.clone(),
-                created_at: Utc::now(),
-            }])
-        })
-        .unwrap_or_else(|| json!([]));
-    json!({
-        "task_updates": {
-            "github_event": TaskGithubEvent {
-                id: format!("gh_{}", &Uuid::new_v4().to_string()[..8]),
-                action: action.to_string(),
-                target: target.to_string(),
-                number,
-                summary,
-                url,
-                recorded_at: Utc::now(),
-            },
-            "artifacts": artifacts
-        }
-    })
 }
 
 fn validate_evidence(input: &Value, closing: bool) -> Result<(), ToolError> {
@@ -637,22 +454,6 @@ fn summarize(text: &str, limit: usize) -> String {
         out.push(ch);
     }
     out
-}
-
-fn sanitize_filename(input: &str) -> String {
-    let mut out = String::new();
-    for ch in input.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
-    }
-    if out.is_empty() {
-        "artifact".to_string()
-    } else {
-        out
-    }
 }
 
 #[cfg(test)]

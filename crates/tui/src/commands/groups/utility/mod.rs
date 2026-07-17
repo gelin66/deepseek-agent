@@ -5,7 +5,6 @@ mod attachment;
 mod jobs;
 mod mcp;
 mod network;
-mod task;
 
 use crate::commands::traits::{Command, CommandGroup, FunctionCommand, RegisterCommand};
 
@@ -17,10 +16,6 @@ impl CommandGroup for UtilityCommands {
             Box::new(FunctionCommand::new(
                 attachment::AttachCmd::info(),
                 attachment::AttachCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                task::TaskCmd::info(),
-                task::TaskCmd::execute,
             )),
             Box::new(FunctionCommand::new(
                 jobs::JobsCmd::info(),

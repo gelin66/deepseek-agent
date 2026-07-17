@@ -40,20 +40,10 @@ pub trait DynamicToolExecutor: Send + Sync {
     ) -> Result<ToolOutcome, ToolError>;
 }
 
-/// Optional durable runtime services made available to model-visible tools.
-///
-/// These are intentionally optional so existing unit tests and one-off tool
-/// contexts keep working. Tools that need durable task/automation state fail
-/// closed with a clear "not available" error when the relevant service is not
-/// attached.
+/// Optional process-local services made available to model-visible tools.
 #[derive(Clone)]
 pub struct RuntimeToolServices {
     pub shell_manager: Option<SharedShellManager>,
-    pub task_manager: Option<crate::task_manager::SharedTaskManager>,
-    pub automations: Option<crate::automation_manager::SharedAutomationManager>,
-    pub task_data_dir: Option<PathBuf>,
-    pub active_task_id: Option<String>,
-    pub active_thread_id: Option<String>,
     pub dynamic_tool_executor: Option<Arc<dyn DynamicToolExecutor>>,
     /// Hook executor for `shell_env` injection (#456) and any future
     /// tool-side hook events. `None` outside the live engine — test
@@ -70,11 +60,6 @@ impl Default for RuntimeToolServices {
     fn default() -> Self {
         Self {
             shell_manager: None,
-            task_manager: None,
-            automations: None,
-            task_data_dir: None,
-            active_task_id: None,
-            active_thread_id: None,
             dynamic_tool_executor: None,
             hook_executor: None,
             handle_store: new_shared_handle_store(),
@@ -87,11 +72,6 @@ impl std::fmt::Debug for RuntimeToolServices {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RuntimeToolServices")
             .field("shell_manager", &self.shell_manager.is_some())
-            .field("task_manager", &self.task_manager.is_some())
-            .field("automations", &self.automations.is_some())
-            .field("task_data_dir", &self.task_data_dir)
-            .field("active_task_id", &self.active_task_id)
-            .field("active_thread_id", &self.active_thread_id)
             .field(
                 "dynamic_tool_executor",
                 &self.dynamic_tool_executor.is_some(),

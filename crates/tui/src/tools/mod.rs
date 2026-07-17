@@ -11,7 +11,6 @@
 pub mod apply_patch;
 pub mod approval_cache;
 pub mod arg_repair;
-pub mod automation;
 pub mod dev_server_readiness;
 pub mod diagnostics;
 pub mod diff_format;
@@ -52,7 +51,6 @@ pub mod skill;
 pub mod spec;
 pub mod speech;
 pub mod subagent;
-pub mod tasks;
 pub mod terminal_session;
 pub mod test_runner;
 pub mod todo;
