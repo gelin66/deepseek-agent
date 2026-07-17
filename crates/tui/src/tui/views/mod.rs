@@ -567,7 +567,6 @@ pub enum ContextMenuAction {
     },
     Paste,
     OpenCommandPalette,
-    OpenContextInspector,
     OpenHelp,
     /// Open the selected file:line in the user's editor.
     OpenFileAtLine {

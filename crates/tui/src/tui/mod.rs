@@ -54,7 +54,6 @@ pub mod output_rows_cache;
 pub mod pager;
 pub mod paste;
 pub mod paste_burst;
-pub mod persistence_actor;
 pub mod phase_strip;
 pub mod plan_prompt;
 pub mod plan_todo_bridge;

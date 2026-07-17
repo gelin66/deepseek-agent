@@ -23,8 +23,8 @@ use crate::tui::views::{ContextMenuAction, HelpView, ModalKind, ViewEvent};
 
 // These functions will need to be imported from ui.rs or we can just import crate::tui::ui::*.
 use crate::tui::ui::{
-    copy_cell_to_clipboard, detail_target_label, open_context_inspector,
-    open_details_pager_for_cell, open_pager_for_selection,
+    copy_cell_to_clipboard, detail_target_label, open_details_pager_for_cell,
+    open_pager_for_selection,
 };
 
 const COMPOSER_MOUSE_SCROLL_LINES: usize = 3;
@@ -1207,11 +1207,6 @@ pub(crate) fn build_context_menu_entries(app: &App, mouse: MouseEvent) -> Vec<Co
         action: ContextMenuAction::OpenCommandPalette,
     });
     entries.push(ContextMenuEntry {
-        label: app.tr(MessageId::CtxMenuContextInspector).to_string(),
-        description: app.tr(MessageId::CtxMenuContextInspectorDesc).to_string(),
-        action: ContextMenuAction::OpenContextInspector,
-    });
-    entries.push(ContextMenuEntry {
         label: app.tr(MessageId::CtxMenuHelp).to_string(),
         description: app.tr(MessageId::CtxMenuHelpDesc).to_string(),
         action: ContextMenuAction::OpenHelp,
@@ -1279,9 +1274,6 @@ pub(crate) fn handle_context_menu_action(app: &mut App, action: ContextMenuActio
                     app.mcp_snapshot.as_ref(),
                 ),
             ));
-        }
-        ContextMenuAction::OpenContextInspector => {
-            open_context_inspector(app);
         }
         ContextMenuAction::OpenHelp => {
             app.view_stack.push(HelpView::new_for_locale(app.ui_locale));

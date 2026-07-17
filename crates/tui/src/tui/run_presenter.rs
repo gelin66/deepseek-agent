@@ -131,7 +131,12 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
             app.status_message = Some(format!("DeepSeek 请求失败：{failure:?}；{retry:?}"));
             None
         }
-        RuntimeEventKind::ModelResponseCommitted { output, .. } => {
+        RuntimeEventKind::ModelResponseCommitted {
+            output, accounting, ..
+        } => {
+            app.session.last_prompt_tokens = Some(narrow_u64(output.usage.input_tokens));
+            app.session.last_completion_tokens = Some(narrow_u64(output.usage.output_tokens));
+            project_accounting(app, &accounting);
             reconcile_model_output(app, &output);
             app.status_message = Some("DeepSeek 响应已确认".to_owned());
             None
@@ -808,6 +813,51 @@ mod tests {
         assert!(app.is_compacting);
         assert!(app.is_loading);
         assert_eq!(app.runtime_turn_status.as_deref(), Some("compacting"));
+    }
+
+    #[test]
+    fn model_response_projects_canonical_usage_without_legacy_messages() {
+        let run_id = RunId::from("run");
+        let usage = Usage {
+            input_tokens: 12_345,
+            output_tokens: 678,
+            cache_hit_tokens: 10_000,
+            cache_miss_tokens: 2_345,
+            ..Usage::default()
+        };
+        let mut accounting = ModelAccounting::default();
+        accounting.usage = usage;
+        let event = stored(
+            &run_id,
+            2,
+            RuntimeEventKind::ModelResponseCommitted {
+                attempt_id: AttemptId("attempt".to_owned()),
+                output: Box::new(ModelOutput {
+                    content: "完成".to_owned(),
+                    reasoning_content: None,
+                    tool_calls: Vec::new(),
+                    finish_reason: ModelFinishReason::Stop,
+                    usage,
+                }),
+                accounting: Box::new(accounting),
+            },
+        );
+        let mut projection = CanonicalRunProjection::new();
+        let mut app = app();
+
+        for stored in [created(&run_id, Vec::new()), event] {
+            for effect in projection.apply(stored).unwrap() {
+                let _ = present_effect(&mut app, effect);
+            }
+        }
+
+        assert_eq!(app.session.last_prompt_tokens, Some(12_345));
+        assert_eq!(app.session.last_completion_tokens, Some(678));
+        assert_eq!(app.session.total_input_tokens, 12_345);
+        assert_eq!(app.session.total_output_tokens, 678);
+        assert_eq!(app.session.total_cache_hit_tokens, 10_000);
+        assert_eq!(app.session.total_cache_miss_tokens, 2_345);
+        assert!(app.api_messages.is_empty());
     }
 
     #[test]
