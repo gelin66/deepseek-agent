@@ -18,6 +18,7 @@ import json
 import os
 import shutil
 import signal
+import sqlite3
 import stat
 import statistics
 import subprocess
@@ -39,6 +40,9 @@ FIXTURE_ROOT = ROOT / "eval" / "fixtures" / "deepseek-exec"
 FIXTURE_WORKSPACE = FIXTURE_ROOT / "workspace"
 VERIFIER = FIXTURE_ROOT / "verifier.py"
 AGGREGATE_FIXTURE = FIXTURE_ROOT / "aggregate-runs.json"
+RUNTIME_EVENT_V5_PROMPT_LEDGER_FIXTURE = (
+    FIXTURE_ROOT / "runtime-event-v5-prompt-ledger.json"
+)
 
 SCHEMA = "codewhale.eval.deepseek-exec.v2"
 TASK_ID = "python-coalesce-ranges-v1"
@@ -67,6 +71,23 @@ MAX_STREAM_LINE_BYTES = 4 * 1024 * 1024
 VERIFIER_TIMEOUT_SECONDS = 30
 ACTIVE_OUTPUT_STREAM: TextIO | None = None
 SCHEDULE_POLICY = "deterministic_pair_order_balance_v1"
+SYSTEM_PROMPT_EVIDENCE_SCHEMA = "codewhale.eval.system-prompt-evidence.v1"
+SYSTEM_PROMPT_FINGERPRINT_SCHEMA = "codewhale.eval.system-prompt-fingerprint.v1"
+SUPPORTED_STATE_SCHEMA_VERSIONS = {9}
+SUPPORTED_RUNTIME_EVENT_SCHEMA_VERSIONS = {5}
+PROMPT_HASH_DOMAIN = b"codewhale.eval.system-prompt/v1\0"
+PROMPT_BLOCK_HASH_DOMAIN = b"codewhale.eval.system-prompt-block/v1\0"
+PROMPT_STABLE_PREFIX_HASH_DOMAIN = (
+    b"codewhale.eval.system-prompt-stable-prefix/v1\0"
+)
+PROMPT_WIRE_HASH_DOMAIN = b"codewhale.eval.deepseek-wire-system/v1\0"
+PROMPT_LEDGER_HASH_DOMAIN = b"codewhale.eval.system-prompt-ledger/v1\0"
+RUN_REFERENCE_HASH_DOMAIN = b"codewhale.eval.run-reference/v1\0"
+ATTEMPT_REFERENCE_HASH_DOMAIN = b"codewhale.eval.attempt-reference/v1\0"
+COMPACTION_REFERENCE_HASH_DOMAIN = (
+    b"codewhale.eval.compaction-reference/v1\0"
+)
+DEEPSEEK_SYSTEM_BLOCK_SEPARATOR = b"\n\n---\n\n"
 
 ALLOWED_TOOLS = (
     "read_file",
@@ -1023,6 +1044,7 @@ def sanitize_terminal(meta: dict[str, Any]) -> dict[str, Any]:
         "binary_sha256",
         "prompt_sha256",
         "tool_catalog_sha256",
+        "run_id",
         "status",
         "termination_reason",
         "error_category",
@@ -1413,6 +1435,853 @@ def valid_sha256(value: Any) -> bool:
     return all(character in "0123456789abcdef" for character in value[7:])
 
 
+class PromptEvidenceError(Exception):
+    def __init__(self, code: str):
+        super().__init__(code)
+        self.code = code
+
+
+def domain_separated_hash(domain: bytes, parts: list[bytes]) -> str:
+    digest = hashlib.sha256()
+    digest.update(domain)
+    for part in parts:
+        digest.update(len(part).to_bytes(8, "big"))
+        digest.update(part)
+    return "sha256:" + digest.hexdigest()
+
+
+def redacted_reference(domain: bytes, value: str) -> str:
+    return domain_separated_hash(domain, [value.encode("utf-8", errors="strict")])
+
+
+def ordered_prompt_hash(
+    blocks: list[tuple[str, bytes]], domain: bytes = PROMPT_HASH_DOMAIN
+) -> str:
+    parts = [len(blocks).to_bytes(8, "big")]
+    for index, (cache_control, text) in enumerate(blocks):
+        parts.extend(
+            [
+                index.to_bytes(8, "big"),
+                b"\x00" if cache_control == "stable" else b"\x01",
+                text,
+            ]
+        )
+    return domain_separated_hash(domain, parts)
+
+
+def fingerprint_system_prompt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != {"blocks"}:
+        raise PromptEvidenceError("prompt_block_invalid")
+    raw_blocks = value.get("blocks")
+    if not isinstance(raw_blocks, list) or not raw_blocks:
+        raise PromptEvidenceError("prompt_block_invalid")
+    blocks: list[tuple[str, bytes]] = []
+    block_receipts: list[dict[str, Any]] = []
+    cache_controls: list[str] = []
+    volatile_seen = False
+    stable_after_volatile = False
+    stable_prefix_count = 0
+    try:
+        for index, raw in enumerate(raw_blocks):
+            if not isinstance(raw, dict) or set(raw) != {"text", "cache_control"}:
+                raise PromptEvidenceError("prompt_block_invalid")
+            text = raw.get("text")
+            cache_control = raw.get("cache_control")
+            if not isinstance(text, str) or cache_control not in {"stable", "volatile"}:
+                raise PromptEvidenceError("prompt_block_invalid")
+            encoded = text.encode("utf-8", errors="strict")
+            if cache_control == "volatile":
+                volatile_seen = True
+            elif volatile_seen:
+                stable_after_volatile = True
+            else:
+                stable_prefix_count += 1
+            blocks.append((cache_control, encoded))
+            cache_controls.append(cache_control)
+            block_receipts.append(
+                {
+                    "index": index,
+                    "cache_control": cache_control,
+                    "utf8_bytes": len(encoded),
+                    "sha256": domain_separated_hash(
+                        PROMPT_BLOCK_HASH_DOMAIN,
+                        [
+                            b"\x00" if cache_control == "stable" else b"\x01",
+                            encoded,
+                        ],
+                    ),
+                }
+            )
+    except UnicodeEncodeError as error:
+        raise PromptEvidenceError("prompt_block_invalid") from error
+    stable_prefix = blocks[:stable_prefix_count]
+    stable_wire = DEEPSEEK_SYSTEM_BLOCK_SEPARATOR.join(
+        text for _, text in stable_prefix
+    )
+    wire = DEEPSEEK_SYSTEM_BLOCK_SEPARATOR.join(text for _, text in blocks)
+    return {
+        "schema": SYSTEM_PROMPT_FINGERPRINT_SCHEMA,
+        "ordered_blocks_sha256": ordered_prompt_hash(blocks),
+        "wire_system_sha256": domain_separated_hash(
+            PROMPT_WIRE_HASH_DOMAIN, [wire]
+        ),
+        "wire_present": bool(wire.strip()),
+        "wire_utf8_bytes": len(wire),
+        "block_count": len(blocks),
+        "cache_control_sequence": cache_controls,
+        "stable_prefix_block_count": stable_prefix_count,
+        "stable_prefix_sha256": ordered_prompt_hash(
+            stable_prefix, PROMPT_STABLE_PREFIX_HASH_DOMAIN
+        ),
+        "stable_prefix_utf8_bytes": len(stable_wire),
+        "volatile_block_count": len(blocks) - stable_prefix_count,
+        "cache_posture_valid": stable_prefix_count > 0 and not stable_after_volatile,
+        "blocks": block_receipts,
+    }
+
+
+def prompt_evidence_failure(code: str) -> dict[str, Any]:
+    return {
+        "schema": SYSTEM_PROMPT_EVIDENCE_SCHEMA,
+        "complete": False,
+        "error_codes": [code],
+        "state_schema_version": None,
+        "runtime_event_schema_versions": [],
+        "canonical_run_count": 0,
+        "root_run_count": 0,
+        "child_run_count": 0,
+        "run_created_count": 0,
+        "prepared_request_count": 0,
+        "in_flight_request_count": 0,
+        "compaction_attestation_count": 0,
+        "root_base_stable_prefix_sha256": None,
+        "all_agent_prompts_share_root_stable_prefix": False,
+        "request_ledger_sha256": None,
+        "runs": [],
+        "requests": [],
+        "compaction_attestations": [],
+    }
+
+
+def extract_system_prompt_evidence(
+    state_db: Path,
+    state_root: Path,
+    lane: str,
+    receipt: StreamReceipt,
+    terminal: dict[str, Any] | None,
+) -> dict[str, Any]:
+    try:
+        if state_db.is_symlink() or not state_db.exists():
+            raise PromptEvidenceError("state_db_missing")
+        resolved_root = state_root.resolve(strict=True)
+        resolved_db = state_db.resolve(strict=True)
+        try:
+            resolved_db.relative_to(resolved_root)
+        except ValueError as error:
+            raise PromptEvidenceError("state_db_outside_run_root") from error
+        if not stat.S_ISREG(resolved_db.stat().st_mode):
+            raise PromptEvidenceError("state_db_missing")
+        try:
+            connection = sqlite3.connect(
+                resolved_db.as_uri() + "?mode=ro",
+                uri=True,
+                timeout=5,
+            )
+        except sqlite3.Error as error:
+            raise PromptEvidenceError("sqlite_open_failed") from error
+        try:
+            connection.execute("PRAGMA query_only = ON")
+            state_schema = connection.execute("PRAGMA user_version").fetchone()
+            if (
+                not state_schema
+                or state_schema[0] not in SUPPORTED_STATE_SCHEMA_VERSIONS
+            ):
+                raise PromptEvidenceError("unsupported_state_schema")
+            quick_check = connection.execute("PRAGMA quick_check").fetchall()
+            foreign_keys = connection.execute("PRAGMA foreign_key_check").fetchall()
+            if quick_check != [("ok",)] or foreign_keys:
+                raise PromptEvidenceError("sqlite_integrity_failed")
+            rows = connection.execute(
+                """
+                SELECT run_id, sequence, event_id, schema_version,
+                       occurred_at_unix_ms, terminal, event_json
+                FROM agent_run_events
+                ORDER BY run_id ASC, sequence ASC
+                """
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise PromptEvidenceError("sqlite_read_failed") from error
+        finally:
+            connection.close()
+        if not rows:
+            raise PromptEvidenceError("run_created_invalid")
+
+        events_by_run: dict[str, list[dict[str, Any]]] = {}
+        runtime_schemas: set[int] = set()
+        for row in rows:
+            (
+                sql_run_id,
+                sql_sequence,
+                sql_event_id,
+                sql_schema,
+                sql_occurred_at,
+                sql_terminal,
+                raw_json,
+            ) = row
+            try:
+                stored = json.loads(raw_json)
+            except (TypeError, json.JSONDecodeError) as error:
+                raise PromptEvidenceError("event_json_invalid") from error
+            if (
+                not isinstance(stored, dict)
+                or stored.get("run_id") != sql_run_id
+                or stored.get("sequence") != sql_sequence
+                or stored.get("event_id") != sql_event_id
+                or stored.get("schema_version") != sql_schema
+                or stored.get("occurred_at_unix_ms") != sql_occurred_at
+                or not isinstance(stored.get("event"), dict)
+                or bool(sql_terminal)
+                != (stored["event"].get("kind") == "terminal")
+            ):
+                raise PromptEvidenceError("event_header_mismatch")
+            if sql_schema not in SUPPORTED_RUNTIME_EVENT_SCHEMA_VERSIONS:
+                raise PromptEvidenceError("unsupported_runtime_event_schema")
+            runtime_schemas.add(sql_schema)
+            events_by_run.setdefault(sql_run_id, []).append(stored)
+
+        run_metadata: dict[str, dict[str, Any]] = {}
+        run_created_count = 0
+        for run_id, events in events_by_run.items():
+            if [event.get("sequence") for event in events] != list(
+                range(1, len(events) + 1)
+            ):
+                raise PromptEvidenceError("event_sequence_gap")
+            created_events = [
+                event
+                for event in events
+                if event["event"].get("kind") == "run_created"
+            ]
+            terminal_events = [
+                event
+                for event in events
+                if event["event"].get("kind") == "terminal"
+            ]
+            if (
+                len(created_events) != 1
+                or created_events[0].get("sequence") != 1
+                or len(terminal_events) != 1
+            ):
+                raise PromptEvidenceError("run_created_invalid")
+            if events[-1]["event"].get("kind") != "terminal":
+                raise PromptEvidenceError("terminal_not_last")
+            run_created_count += 1
+            request = created_events[0]["event"].get("request")
+            terminal_outcome = terminal_events[0]["event"].get("outcome")
+            terminal_state = (
+                terminal_outcome.get("terminal")
+                if isinstance(terminal_outcome, dict)
+                else None
+            )
+            if not isinstance(request, dict):
+                raise PromptEvidenceError("run_created_invalid")
+            parent_run_id = request.get("parent_run_id")
+            actor = request.get("actor")
+            if (
+                request.get("run_id") != run_id
+                or parent_run_id is not None
+                and not isinstance(parent_run_id, str)
+                or not isinstance(actor, dict)
+                or actor.get("kind") not in {"root", "child"}
+                or optional_int(actor.get("depth")) is None
+                or not isinstance(request.get("model"), str)
+                or request.get("purpose") != "agent"
+            ):
+                raise PromptEvidenceError("run_created_invalid")
+            if (
+                not isinstance(terminal_outcome, dict)
+                or terminal_outcome.get("run_id") != run_id
+                or terminal_outcome.get("parent_run_id") != parent_run_id
+                or not isinstance(terminal_state, dict)
+                or terminal_state.get("state")
+                not in {
+                    "completed",
+                    "blocked",
+                    "failed",
+                    "cancelled",
+                    "interrupted",
+                    "recovery_required",
+                }
+            ):
+                raise PromptEvidenceError("terminal_outcome_invalid")
+            base_prompt = fingerprint_system_prompt(request.get("system_prompt"))
+            if not base_prompt["cache_posture_valid"]:
+                raise PromptEvidenceError("cache_posture_invalid")
+            run_metadata[run_id] = {
+                "parent_run_id": parent_run_id,
+                "actor_kind": actor["kind"],
+                "depth": actor["depth"],
+                "model": request["model"],
+                "base_prompt": base_prompt,
+                "terminal_state": terminal_state["state"],
+            }
+            if any(
+                event.get("parent_run_id") != parent_run_id for event in events
+            ):
+                raise PromptEvidenceError("event_parent_mismatch")
+
+        roots = [
+            run_id
+            for run_id, metadata in run_metadata.items()
+            if metadata["parent_run_id"] is None
+        ]
+        children = [
+            run_id
+            for run_id, metadata in run_metadata.items()
+            if metadata["parent_run_id"] is not None
+        ]
+        expected_children = 0 if lane == "single" else 1
+        if len(roots) != 1 or len(children) != expected_children:
+            raise PromptEvidenceError("run_graph_invalid")
+        root_run_id = roots[0]
+        if (
+            run_metadata[root_run_id]["actor_kind"] != "root"
+            or run_metadata[root_run_id]["depth"] != 0
+            or not terminal
+            or terminal.get("run_id") != root_run_id
+            or terminal.get("route_source") != "explicit_or_configured"
+        ):
+            raise PromptEvidenceError("run_graph_invalid")
+        expected_root_status = {
+            "completed": "completed",
+            "blocked": "failed",
+            "failed": "failed",
+            "cancelled": "interrupted",
+            "interrupted": "interrupted",
+            "recovery_required": "failed",
+        }[run_metadata[root_run_id]["terminal_state"]]
+        if terminal.get("status") != expected_root_status:
+            raise PromptEvidenceError("terminal_status_mismatch")
+        for child_run_id in children:
+            metadata = run_metadata[child_run_id]
+            parent = run_metadata.get(metadata["parent_run_id"])
+            if (
+                parent is None
+                or metadata["actor_kind"] != "child"
+                or metadata["depth"] != parent["depth"] + 1
+            ):
+                raise PromptEvidenceError("run_graph_invalid")
+        stream_started = {child_run_id for _, child_run_id in receipt.started_children}
+        stream_finished = {
+            child_run_id for _, child_run_id in receipt.finished_children
+        }
+        if set(children) != stream_started or set(children) != stream_finished:
+            raise PromptEvidenceError("stream_store_child_mismatch")
+        stored_child_statuses = [
+            run_metadata[child_run_id]["terminal_state"]
+            for _, child_run_id in receipt.finished_children
+        ]
+        if stored_child_statuses != receipt.child_finished_statuses:
+            raise PromptEvidenceError("terminal_status_mismatch")
+
+        prepared_by_attempt: dict[str, dict[str, Any]] = {}
+        active_agent: dict[str, str] = {}
+        active_compaction: dict[str, str] = {}
+        compactions: dict[tuple[str, str], dict[str, Any]] = {}
+        agent_stopped: set[str] = set()
+        stopped_compactions: set[tuple[str, str]] = set()
+
+        def prepare_attempt(
+            *,
+            run_id: str,
+            stored: dict[str, Any],
+            attempt_id: Any,
+            request: Any,
+            request_kind: str,
+            preparation_source: str,
+            compaction_id: str | None = None,
+            retry_of: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            metadata = run_metadata[run_id]
+            actor = request.get("actor") if isinstance(request, dict) else None
+            request_number = (
+                optional_int(request.get("request_number"))
+                if isinstance(request, dict)
+                else None
+            )
+            attempt_number = (
+                optional_int(request.get("attempt"))
+                if isinstance(request, dict)
+                else None
+            )
+            if (
+                not isinstance(attempt_id, str)
+                or not attempt_id
+                or attempt_id in prepared_by_attempt
+                or not isinstance(request, dict)
+                or request.get("run_id") != run_id
+                or request.get("parent_run_id") != metadata["parent_run_id"]
+                or actor
+                != {
+                    "kind": metadata["actor_kind"],
+                    "depth": metadata["depth"],
+                }
+                or request.get("model") != metadata["model"]
+                or request_number is None
+                or request_number < 1
+                or attempt_number is None
+                or attempt_number < 0
+            ):
+                raise PromptEvidenceError("request_ledger_invalid")
+            prompt = fingerprint_system_prompt(request.get("system_prompt"))
+            if not prompt["cache_posture_valid"]:
+                raise PromptEvidenceError("cache_posture_invalid")
+            if retry_of is None:
+                if attempt_number != 0:
+                    raise PromptEvidenceError("request_ledger_invalid")
+            else:
+                expected_request = {
+                    **retry_of["raw_request"],
+                    "attempt": retry_of["attempt"] + 1,
+                }
+                if request != expected_request:
+                    raise PromptEvidenceError("retry_causality_invalid")
+            prepared = {
+                "run_id": run_id,
+                "actor_kind": metadata["actor_kind"],
+                "depth": metadata["depth"],
+                "request_kind": request_kind,
+                "preparation_source": preparation_source,
+                "request_number": request_number,
+                "attempt": attempt_number,
+                "prepared_event_sequence": stored["sequence"],
+                "system_prompt": prompt,
+                "raw_request": request,
+                "compaction_id": compaction_id,
+                "state": "prepared",
+                "had_in_flight": False,
+            }
+            prepared_by_attempt[attempt_id] = prepared
+            return prepared
+
+        for run_id, events in events_by_run.items():
+            last_agent_request_number = 0
+            for stored in events[1:]:
+                event = stored["event"]
+                kind = event.get("kind")
+                if kind == "model_request_prepared":
+                    if (
+                        run_id in active_agent
+                        or run_id in active_compaction
+                        or run_id in agent_stopped
+                    ):
+                        raise PromptEvidenceError("request_ledger_invalid")
+                    prepared = prepare_attempt(
+                        run_id=run_id,
+                        stored=stored,
+                        attempt_id=event.get("attempt_id"),
+                        request=event.get("request"),
+                        request_kind="agent",
+                        preparation_source="model_request_prepared",
+                    )
+                    if prepared["request_number"] != last_agent_request_number + 1:
+                        raise PromptEvidenceError("request_ledger_invalid")
+                    last_agent_request_number = prepared["request_number"]
+                    active_agent[run_id] = event["attempt_id"]
+                elif kind == "model_request_in_flight":
+                    attempt_id = event.get("attempt_id")
+                    prepared = prepared_by_attempt.get(attempt_id)
+                    if (
+                        active_agent.get(run_id) != attempt_id
+                        or prepared is None
+                        or prepared["run_id"] != run_id
+                        or prepared["request_kind"] != "agent"
+                        or prepared["state"] != "prepared"
+                    ):
+                        raise PromptEvidenceError("attempt_order_invalid")
+                    prepared["state"] = "in_flight"
+                    prepared["had_in_flight"] = True
+                elif kind == "model_request_failed":
+                    attempt_id = event.get("attempt_id")
+                    prepared = prepared_by_attempt.get(attempt_id)
+                    if (
+                        active_agent.get(run_id) != attempt_id
+                        or prepared is None
+                        or prepared["run_id"] != run_id
+                        or prepared["request_kind"] != "agent"
+                        or prepared["state"] != "in_flight"
+                    ):
+                        raise PromptEvidenceError("retry_causality_invalid")
+                    retry = event.get("retry")
+                    if not isinstance(retry, dict):
+                        raise PromptEvidenceError("retry_causality_invalid")
+                    if retry.get("decision") == "retry":
+                        retry_prepared = retry.get("prepared")
+                        if not isinstance(retry_prepared, dict):
+                            raise PromptEvidenceError("retry_causality_invalid")
+                        next_attempt = prepare_attempt(
+                            run_id=run_id,
+                            stored=stored,
+                            attempt_id=retry_prepared.get("attempt_id"),
+                            request=retry_prepared.get("request"),
+                            request_kind="agent",
+                            preparation_source="model_request_failed_retry",
+                            retry_of=prepared,
+                        )
+                        prepared["state"] = "failed_retry_prepared"
+                        active_agent[run_id] = retry_prepared["attempt_id"]
+                        if (
+                            next_attempt["system_prompt"]["ordered_blocks_sha256"]
+                            != prepared["system_prompt"]["ordered_blocks_sha256"]
+                            or next_attempt["system_prompt"]["wire_system_sha256"]
+                            != prepared["system_prompt"]["wire_system_sha256"]
+                        ):
+                            raise PromptEvidenceError("retry_causality_invalid")
+                    elif retry.get("decision") == "stop":
+                        prepared["state"] = "failed_stopped"
+                        active_agent.pop(run_id, None)
+                        agent_stopped.add(run_id)
+                    else:
+                        raise PromptEvidenceError("retry_causality_invalid")
+                elif kind == "model_response_committed":
+                    attempt_id = event.get("attempt_id")
+                    prepared = prepared_by_attempt.get(attempt_id)
+                    if (
+                        active_agent.get(run_id) != attempt_id
+                        or prepared is None
+                        or prepared["run_id"] != run_id
+                        or prepared["request_kind"] != "agent"
+                        or prepared["state"] != "in_flight"
+                    ):
+                        raise PromptEvidenceError("attempt_order_invalid")
+                    prepared["state"] = "response_committed"
+                    active_agent.pop(run_id, None)
+                elif kind == "context_compaction_prepared":
+                    compaction_id = event.get("compaction_id")
+                    if (
+                        run_id in active_agent
+                        or run_id in active_compaction
+                        or not isinstance(compaction_id, str)
+                        or not compaction_id
+                        or (run_id, compaction_id) in compactions
+                        or (run_id, compaction_id) in stopped_compactions
+                        or run_id in agent_stopped
+                    ):
+                        raise PromptEvidenceError("compaction_causality_invalid")
+                    prepared = prepare_attempt(
+                        run_id=run_id,
+                        stored=stored,
+                        attempt_id=event.get("attempt_id"),
+                        request=event.get("request"),
+                        request_kind="context_compaction",
+                        preparation_source="context_compaction_prepared",
+                        compaction_id=compaction_id,
+                    )
+                    active_compaction[run_id] = event["attempt_id"]
+                    compactions[(run_id, compaction_id)] = {
+                        "run_id": run_id,
+                        "compaction_id": compaction_id,
+                        "ordered_blocks_sha256": prepared["system_prompt"][
+                            "ordered_blocks_sha256"
+                        ],
+                        "wire_system_sha256": prepared["system_prompt"][
+                            "wire_system_sha256"
+                        ],
+                        "prepared_attempt_count": 1,
+                        "retry_count": 0,
+                    }
+                elif kind == "context_compaction_in_flight":
+                    attempt_id = event.get("attempt_id")
+                    prepared = prepared_by_attempt.get(attempt_id)
+                    if (
+                        active_compaction.get(run_id) != attempt_id
+                        or prepared is None
+                        or prepared["run_id"] != run_id
+                        or prepared["request_kind"] != "context_compaction"
+                        or prepared["compaction_id"] != event.get("compaction_id")
+                        or prepared["state"] != "prepared"
+                    ):
+                        raise PromptEvidenceError("attempt_order_invalid")
+                    prepared["state"] = "in_flight"
+                    prepared["had_in_flight"] = True
+                elif kind == "context_compaction_attempt_failed":
+                    attempt_id = event.get("attempt_id")
+                    prepared = prepared_by_attempt.get(attempt_id)
+                    compaction_id = event.get("compaction_id")
+                    attestation = compactions.get((run_id, compaction_id))
+                    if (
+                        active_compaction.get(run_id) != attempt_id
+                        or prepared is None
+                        or prepared["run_id"] != run_id
+                        or prepared["request_kind"] != "context_compaction"
+                        or prepared["compaction_id"] != compaction_id
+                        or prepared["state"] != "in_flight"
+                        or attestation is None
+                    ):
+                        raise PromptEvidenceError("compaction_causality_invalid")
+                    retry = event.get("retry")
+                    if not isinstance(retry, dict):
+                        raise PromptEvidenceError("compaction_causality_invalid")
+                    if retry.get("decision") == "retry":
+                        retry_prepared = retry.get("prepared")
+                        if not isinstance(retry_prepared, dict):
+                            raise PromptEvidenceError("compaction_causality_invalid")
+                        next_attempt = prepare_attempt(
+                            run_id=run_id,
+                            stored=stored,
+                            attempt_id=retry_prepared.get("attempt_id"),
+                            request=retry_prepared.get("request"),
+                            request_kind="context_compaction",
+                            preparation_source=(
+                                "context_compaction_attempt_failed_retry"
+                            ),
+                            compaction_id=compaction_id,
+                            retry_of=prepared,
+                        )
+                        if (
+                            next_attempt["system_prompt"]["ordered_blocks_sha256"]
+                            != attestation["ordered_blocks_sha256"]
+                            or next_attempt["system_prompt"]["wire_system_sha256"]
+                            != attestation["wire_system_sha256"]
+                        ):
+                            raise PromptEvidenceError(
+                                "compaction_prompt_retry_mismatch"
+                            )
+                        prepared["state"] = "failed_retry_prepared"
+                        active_compaction[run_id] = retry_prepared["attempt_id"]
+                        attestation["prepared_attempt_count"] += 1
+                        attestation["retry_count"] += 1
+                    elif retry.get("decision") == "stop":
+                        prepared["state"] = "failed_stopped"
+                        active_compaction.pop(run_id, None)
+                        stopped_compactions.add((run_id, compaction_id))
+                    else:
+                        raise PromptEvidenceError("compaction_causality_invalid")
+                elif kind == "context_compaction_committed":
+                    compaction_id = event.get("compaction_id")
+                    if not isinstance(compaction_id, str) or not compaction_id:
+                        raise PromptEvidenceError(
+                            "compaction_causality_invalid"
+                        )
+                    attestation = compactions.get((run_id, compaction_id))
+                    if attestation is None:
+                        if (
+                            event.get("output") is not None
+                            or run_id in active_agent
+                            or run_id in active_compaction
+                            or run_id in agent_stopped
+                        ):
+                            raise PromptEvidenceError(
+                                "compaction_causality_invalid"
+                            )
+                        continue
+                    if event.get("output") is None:
+                        raise PromptEvidenceError(
+                            "compaction_causality_invalid"
+                        )
+                    attempt_id = active_compaction.get(run_id)
+                    prepared = prepared_by_attempt.get(attempt_id)
+                    if (
+                        prepared is None
+                        or prepared["request_kind"] != "context_compaction"
+                        or prepared["compaction_id"] != compaction_id
+                        or prepared["state"] != "in_flight"
+                    ):
+                        raise PromptEvidenceError("compaction_causality_invalid")
+                    prepared["state"] = "response_committed"
+                    active_compaction.pop(run_id, None)
+                elif kind == "terminal":
+                    if run_id in active_agent or run_id in active_compaction:
+                        raise PromptEvidenceError("request_ledger_invalid")
+
+        if (
+            not prepared_by_attempt
+            or active_agent
+            or active_compaction
+            or any(
+                not any(
+                    prepared["run_id"] == run_id
+                    for prepared in prepared_by_attempt.values()
+                )
+                for run_id in run_metadata
+            )
+        ):
+            raise PromptEvidenceError("request_ledger_invalid")
+
+        in_flight_attempts = {
+            attempt_id
+            for attempt_id, prepared in prepared_by_attempt.items()
+            if prepared["had_in_flight"]
+        }
+        root_started = sum(
+            prepared_by_attempt[attempt]["actor_kind"] == "root"
+            for attempt in in_flight_attempts
+        )
+        child_started = len(in_flight_attempts) - root_started
+        if (
+            optional_int(terminal.get("api_request_count"))
+            != len(in_flight_attempts)
+            or optional_int(terminal.get("api_request_root_started")) != root_started
+            or optional_int(terminal.get("api_request_child_started")) != child_started
+        ):
+            raise PromptEvidenceError("request_count_mismatch")
+
+        root_prefix = run_metadata[root_run_id]["base_prompt"][
+            "stable_prefix_sha256"
+        ]
+        agent_prompt_fingerprints = [
+            metadata["base_prompt"] for metadata in run_metadata.values()
+        ] + [
+            prepared["system_prompt"]
+            for prepared in prepared_by_attempt.values()
+            if prepared["request_kind"] == "agent"
+        ]
+        all_agent_prompts_share_root_prefix = all(
+            prompt["stable_prefix_sha256"] == root_prefix
+            for prompt in agent_prompt_fingerprints
+        )
+        if not all_agent_prompts_share_root_prefix:
+            raise PromptEvidenceError("cache_posture_mismatch")
+
+        ordered_runs = sorted(
+            run_metadata,
+            key=lambda run_id: (
+                run_metadata[run_id]["depth"],
+                redacted_reference(RUN_REFERENCE_HASH_DOMAIN, run_id),
+            ),
+        )
+        run_order = {run_id: index for index, run_id in enumerate(ordered_runs)}
+        ordered_prepared = sorted(
+            prepared_by_attempt.items(),
+            key=lambda item: (
+                run_order[item[1]["run_id"]],
+                item[1]["prepared_event_sequence"],
+                item[1]["attempt"],
+            ),
+        )
+        requests: list[dict[str, Any]] = []
+        request_counts = {run_id: 0 for run_id in run_metadata}
+        for ordinal, (attempt_id, prepared) in enumerate(ordered_prepared, start=1):
+            run_id = prepared["run_id"]
+            request_counts[run_id] += 1
+            requests.append(
+                {
+                    "ordinal": ordinal,
+                    "run_reference_sha256": redacted_reference(
+                        RUN_REFERENCE_HASH_DOMAIN, run_id
+                    ),
+                    "attempt_reference_sha256": redacted_reference(
+                        ATTEMPT_REFERENCE_HASH_DOMAIN, attempt_id
+                    ),
+                    "actor_kind": prepared["actor_kind"],
+                    "depth": prepared["depth"],
+                    "request_kind": prepared["request_kind"],
+                    "preparation_source": prepared["preparation_source"],
+                    "request_number": prepared["request_number"],
+                    "attempt": prepared["attempt"],
+                    "prepared_event_sequence": prepared["prepared_event_sequence"],
+                    "attempt_state": prepared["state"],
+                    "in_flight": prepared["had_in_flight"],
+                    "compaction_reference_sha256": (
+                        redacted_reference(
+                            COMPACTION_REFERENCE_HASH_DOMAIN,
+                            prepared["compaction_id"],
+                        )
+                        if prepared["compaction_id"] is not None
+                        else None
+                    ),
+                    "system_prompt": prepared["system_prompt"],
+                }
+            )
+        compaction_attestations = [
+            {
+                "run_reference_sha256": redacted_reference(
+                    RUN_REFERENCE_HASH_DOMAIN, attestation["run_id"]
+                ),
+                "compaction_reference_sha256": redacted_reference(
+                    COMPACTION_REFERENCE_HASH_DOMAIN,
+                    attestation["compaction_id"],
+                ),
+                "prepared_attempt_count": attestation[
+                    "prepared_attempt_count"
+                ],
+                "retry_count": attestation["retry_count"],
+                "ordered_blocks_sha256": attestation[
+                    "ordered_blocks_sha256"
+                ],
+                "wire_system_sha256": attestation["wire_system_sha256"],
+                "all_attempt_prompts_identical": True,
+            }
+            for attestation in sorted(
+                compactions.values(),
+                key=lambda item: (
+                    run_order[item["run_id"]],
+                    redacted_reference(
+                        COMPACTION_REFERENCE_HASH_DOMAIN,
+                        item["compaction_id"],
+                    ),
+                ),
+            )
+        ]
+        runs = []
+        for run_id in ordered_runs:
+            metadata = run_metadata[run_id]
+            runs.append(
+                {
+                    "run_reference_sha256": redacted_reference(
+                        RUN_REFERENCE_HASH_DOMAIN, run_id
+                    ),
+                    "parent_run_reference_sha256": (
+                        redacted_reference(
+                            RUN_REFERENCE_HASH_DOMAIN, metadata["parent_run_id"]
+                        )
+                        if metadata["parent_run_id"] is not None
+                        else None
+                    ),
+                    "actor_kind": metadata["actor_kind"],
+                    "depth": metadata["depth"],
+                    "prepared_request_count": request_counts[run_id],
+                    "base_system_prompt": metadata["base_prompt"],
+                }
+            )
+        ledger_bytes = json.dumps(
+            {
+                "requests": requests,
+                "compaction_attestations": compaction_attestations,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return {
+            "schema": SYSTEM_PROMPT_EVIDENCE_SCHEMA,
+            "complete": True,
+            "error_codes": [],
+            "state_schema_version": state_schema[0],
+            "runtime_event_schema_versions": sorted(runtime_schemas),
+            "canonical_run_count": len(run_metadata),
+            "root_run_count": 1,
+            "child_run_count": len(children),
+            "run_created_count": run_created_count,
+            "prepared_request_count": len(prepared_by_attempt),
+            "in_flight_request_count": len(in_flight_attempts),
+            "compaction_attestation_count": len(compaction_attestations),
+            "root_base_stable_prefix_sha256": root_prefix,
+            "all_agent_prompts_share_root_stable_prefix": (
+                all_agent_prompts_share_root_prefix
+            ),
+            "request_ledger_sha256": domain_separated_hash(
+                PROMPT_LEDGER_HASH_DOMAIN, [ledger_bytes]
+            ),
+            "runs": runs,
+            "requests": requests,
+            "compaction_attestations": compaction_attestations,
+        }
+    except PromptEvidenceError as error:
+        return prompt_evidence_failure(error.code)
+    except (OSError, UnicodeError, ValueError, TypeError):
+        return prompt_evidence_failure("prompt_evidence_unavailable")
+
+
 def official_cost_usd(
     model: str, cache_hit_tokens: int, cache_miss_tokens: int, output_tokens: int
 ) -> float | None:
@@ -1437,13 +2306,22 @@ def costs_close(left: float | None, right: float | None) -> bool:
 
 
 def classify_claim_outcome(
-    terminal_claimed_success: bool, claim_acceptance_passed: bool
-) -> tuple[bool, bool]:
-    verified_success = bool(claim_acceptance_passed)
-    false_success = bool(
-        terminal_claimed_success and not claim_acceptance_passed
+    terminal_claimed_success: bool,
+    task_shape_acceptance_passed: bool,
+    measurement_contract_passed: bool,
+    budget_contract_passed: bool,
+) -> tuple[bool, bool, bool]:
+    verified_success = bool(
+        terminal_claimed_success
+        and task_shape_acceptance_passed
+        and measurement_contract_passed
+        and budget_contract_passed
     )
-    return verified_success, false_success
+    false_success = bool(
+        terminal_claimed_success and not task_shape_acceptance_passed
+    )
+    measurement_invalid = not measurement_contract_passed
+    return verified_success, false_success, measurement_invalid
 
 
 def terminal_status_reason_valid(terminal: dict[str, Any] | None) -> bool:
@@ -1692,7 +2570,7 @@ def run_lane(
 ) -> dict[str, Any]:
     target = frozen.source
     with tempfile.TemporaryDirectory(
-        prefix=f"codewhale-deepseek-exec-{target.variant}-{lane}-{repetition_index}-"
+        prefix="codewhale-deepseek-exec-"
     ) as temporary:
         temporary_path = Path(temporary)
         workspace = temporary_path / "workspace"
@@ -1716,6 +2594,15 @@ def run_lane(
         # Drop the only environment container holding the credential before
         # verifier/diff work. Neither argv nor any record ever receives it.
         environment.clear()
+        receipt = process.stream
+        terminal = receipt.terminal
+        production_prompt_evidence = extract_system_prompt_evidence(
+            state_root / "codewhale" / "state.db",
+            state_root,
+            lane,
+            receipt,
+            terminal,
+        )
 
         verifier_input_snapshot = snapshot_workspace(workspace)
         verifier_input_hash = workspace_hash(verifier_input_snapshot)
@@ -1726,9 +2613,7 @@ def run_lane(
         verifier["workspace_revision_sha256"] = verifier_input_hash
         verifier["workspace_revision_stable"] = verifier_workspace_stable
         changed = changed_files(initial_snapshot, final_snapshot)
-        receipt = process.stream
         protocol_errors = receipt.protocol_errors()
-        terminal = receipt.terminal
         prompt_matches = bool(terminal and terminal.get("prompt_sha256") == prompt_sha256)
         # This A/B compares two current canonical Runtime binaries. Require
         # the same root/child request ledger from both sides; allowing one
@@ -1741,7 +2626,7 @@ def run_lane(
                 terminal, required=actor_accounting_required, lane=lane
             )
         )
-        measurement_valid = terminal_measurement_valid(
+        terminal_measurement_complete = terminal_measurement_valid(
             terminal,
             require_actor_accounting=actor_accounting_required,
             lane=lane,
@@ -1751,14 +2636,6 @@ def run_lane(
         )
         contract = lane_contract(lane, receipt, initial_snapshot)
         terminal_claimed_success = bool(terminal and terminal.get("status") == "completed")
-        runtime_success = bool(
-            terminal_claimed_success
-            and terminal is not None
-            and terminal.get("termination_reason") == "resolved"
-            and process.returncode == 0
-            and not protocol_errors
-            and receipt.error_count == 0
-        )
         task_evidence_passed = bool(
             verifier["passed"]
             and verifier.get("sha256") == assets.verifier_sha256
@@ -1766,8 +2643,8 @@ def run_lane(
             and fixture_matches_frozen
             and changed == EXPECTED_CHANGED_FILES
         )
-        task_contract_passed = bool(
-            task_evidence_passed and prompt_matches and contract["passed"]
+        task_shape_acceptance_passed = bool(
+            task_evidence_passed and contract["passed"]
         )
         accounting = terminal or {}
         runtime_reported_cost_usd = optional_number(accounting.get("cost_usd"))
@@ -1785,22 +2662,35 @@ def run_lane(
         cost_within_ceiling = (
             run_cost_usd is not None and run_cost_usd <= PER_RUN_COST_CEILING_USD
         )
-        claim_acceptance_passed = bool(
-            runtime_success
-            and task_evidence_passed
+        process_status_matches_terminal = bool(
+            terminal
+            and (
+                terminal_claimed_success
+                and process.returncode == 0
+                or not terminal_claimed_success
+                and process.returncode not in {None, 0}
+            )
+        )
+        measurement_contract_passed = bool(
+            terminal_measurement_complete
             and prompt_matches
-            and measurement_valid
             and execution_contract_valid
             and runtime_cost_matches
             and frozen_pair_matches
-            and contract["passed"]
-            and cost_within_ceiling
+            and production_prompt_evidence.get("complete") is True
+            and not protocol_errors
+            and process_status_matches_terminal
             and not process.timed_out
             and not process.spawn_error
         )
-        verified_success, false_success = classify_claim_outcome(
-            terminal_claimed_success, claim_acceptance_passed
+        budget_contract_passed = bool(cost_within_ceiling)
+        verified_success, false_success, measurement_invalid = classify_claim_outcome(
+            terminal_claimed_success,
+            task_shape_acceptance_passed,
+            measurement_contract_passed,
+            budget_contract_passed,
         )
+        claim_acceptance_passed = verified_success
         lane_passed = verified_success
         budget = execution_budget(lane, model)
         run_id = (
@@ -1824,7 +2714,10 @@ def run_lane(
             "status": "passed" if lane_passed else "failed",
             "verified_success": verified_success,
             "task_evidence_passed": task_evidence_passed,
-            "task_contract_passed": task_contract_passed,
+            "task_contract_passed": task_shape_acceptance_passed,
+            "task_shape_acceptance_passed": task_shape_acceptance_passed,
+            "measurement_invalid": measurement_invalid,
+            "budget_contract_passed": budget_contract_passed,
             "claim_acceptance_passed": claim_acceptance_passed,
             "false_success": false_success,
             "terminal_claimed_success": terminal_claimed_success,
@@ -1943,7 +2836,8 @@ def run_lane(
             "surface_model_usage_buckets": accounting.get(
                 "surface_model_usage_buckets"
             ),
-            "measurement_contract_passed": measurement_valid,
+            "production_system_prompt_evidence": production_prompt_evidence,
+            "measurement_contract_passed": measurement_contract_passed,
             "execution_contract_passed": execution_contract_valid,
             "evidence": {
                 "git_commit": target.revision
@@ -2073,6 +2967,7 @@ def aggregate_cell(
     outcomes_complete = all(
         isinstance(record.get("verified_success"), bool)
         and isinstance(record.get("false_success"), bool)
+        and isinstance(record.get("measurement_invalid"), bool)
         and record.get("status") in {"passed", "failed"}
         and record.get("status")
         == ("passed" if record.get("verified_success") is True else "failed")
@@ -2117,6 +3012,15 @@ def aggregate_cell(
         for record in cell_records
         if isinstance(record.get("prompt_sha256"), str)
     }
+    production_prompt_prefix_hashes = {
+        evidence.get("root_base_stable_prefix_sha256")
+        for record in cell_records
+        if isinstance(
+            evidence := record.get("production_system_prompt_evidence"), dict
+        )
+        and evidence.get("complete") is True
+        and isinstance(evidence.get("root_base_stable_prefix_sha256"), str)
+    }
     budget_stable = len(budget_hashes) == 1 and all(
         isinstance(record.get("execution_budget_sha256"), str)
         for record in cell_records
@@ -2135,6 +3039,20 @@ def aggregate_cell(
     )
     prompt_stable = len(prompt_hashes) == 1 and all(
         valid_sha256(record.get("prompt_sha256")) for record in cell_records
+    )
+    production_prompt_evidence_complete = all(
+        isinstance(
+            evidence := record.get("production_system_prompt_evidence"), dict
+        )
+        and evidence.get("complete") is True
+        and evidence.get("all_agent_prompts_share_root_stable_prefix") is True
+        and valid_sha256(evidence.get("root_base_stable_prefix_sha256"))
+        and valid_sha256(evidence.get("request_ledger_sha256"))
+        for record in cell_records
+    )
+    production_prompt_prefix_stable = bool(
+        production_prompt_evidence_complete
+        and len(production_prompt_prefix_hashes) == 1
     )
     revision_stable = all(
         record.get("target_revision") == target.revision for record in cell_records
@@ -2164,6 +3082,10 @@ def aggregate_cell(
         eligibility_reasons.append("cell_tool_catalog_not_stable")
     if not prompt_stable:
         eligibility_reasons.append("cell_prompt_not_stable")
+    if not production_prompt_evidence_complete:
+        eligibility_reasons.append("cell_system_prompt_evidence_incomplete")
+    elif not production_prompt_prefix_stable:
+        eligibility_reasons.append("cell_system_prompt_stable_prefix_not_stable")
     if not revision_stable:
         eligibility_reasons.append("cell_revision_not_stable")
 
@@ -2187,6 +3109,8 @@ def aggregate_cell(
             and binary_pair_stable
             and tool_catalog_stable
             and prompt_stable
+            and production_prompt_evidence_complete
+            and production_prompt_prefix_stable
             and revision_stable
         ),
         "cell_id": f"{target.variant}:{lane}",
@@ -2207,6 +3131,14 @@ def aggregate_cell(
         if tool_catalog_stable
         else None,
         "prompt_sha256": next(iter(prompt_hashes)) if prompt_stable else None,
+        "production_system_prompt_evidence_complete": (
+            production_prompt_evidence_complete
+        ),
+        "production_system_prompt_stable_prefix_sha256": (
+            next(iter(production_prompt_prefix_hashes))
+            if production_prompt_prefix_stable
+            else None
+        ),
         "execution_budget_sha256": next(iter(budget_hashes))
         if budget_stable
         else None,
@@ -2222,6 +3154,21 @@ def aggregate_cell(
         "false_success": {
             "count": false_successes,
             "rate": false_successes / completed if completed else 0.0,
+        },
+        "measurement_invalid": {
+            "count": sum(
+                record.get("measurement_invalid") is True
+                for record in cell_records
+            ),
+            "rate": (
+                sum(
+                    record.get("measurement_invalid") is True
+                    for record in cell_records
+                )
+                / completed
+                if completed
+                else 0.0
+            ),
         },
         "metrics": {
             name: summarize_numbers(values) for name, values in metric_values.items()
@@ -2295,10 +3242,28 @@ def comparison_record(
         and baseline.get("tool_catalog_sha256")
         != candidate.get("tool_catalog_sha256")
     )
-    prompt_changed = bool(
+    evaluation_prompt_changed = bool(
         baseline is not None
         and candidate is not None
         and baseline.get("prompt_sha256") != candidate.get("prompt_sha256")
+    )
+    production_system_prompt_stable_prefix_changed = bool(
+        baseline is not None
+        and candidate is not None
+        and valid_sha256(
+            baseline.get("production_system_prompt_stable_prefix_sha256")
+        )
+        and valid_sha256(
+            candidate.get("production_system_prompt_stable_prefix_sha256")
+        )
+        and baseline.get("production_system_prompt_stable_prefix_sha256")
+        != candidate.get("production_system_prompt_stable_prefix_sha256")
+    )
+    production_system_prompt_per_run_attested = bool(
+        baseline is not None
+        and candidate is not None
+        and baseline.get("production_system_prompt_evidence_complete") is True
+        and candidate.get("production_system_prompt_evidence_complete") is True
     )
 
     def cell_value(cell: dict[str, Any] | None, *path: str) -> Any:
@@ -2312,6 +3277,7 @@ def comparison_record(
     delta_paths = {
         "success_rate": ("success", "rate"),
         "false_success_rate": ("false_success", "rate"),
+        "measurement_invalid_rate": ("measurement_invalid", "rate"),
         "requests_started_mean": ("metrics", "requests_started", "mean"),
         "total_tokens_mean": ("metrics", "total_tokens", "mean"),
         "wall_time_ms_mean": ("metrics", "wall_time_ms", "mean"),
@@ -2328,10 +3294,17 @@ def comparison_record(
         "treatment": {
             "declaration": (
                 "candidate runtime revision, including intentional agent schema, "
-                "prompt, and tool-catalog changes"
+                "production system prompt, and tool-catalog changes; the fixed "
+                "evaluation task prompt is attested separately"
             ),
             "tool_catalog_changed": tool_catalog_changed,
-            "evaluation_prompt_changed": prompt_changed,
+            "evaluation_prompt_changed": evaluation_prompt_changed,
+            "production_system_prompt_stable_prefix_changed": (
+                production_system_prompt_stable_prefix_changed
+            ),
+            "production_system_prompt_per_run_attested": (
+                production_system_prompt_per_run_attested
+            ),
         },
         "candidate_minus_baseline": {
             name: candidate_minus_baseline(
@@ -2684,6 +3657,9 @@ def run_suite(args: argparse.Namespace) -> int:
             "task_runs_passed": sum(record["status"] == "passed" for record in results),
             "verified_successes": sum(record["verified_success"] for record in results),
             "false_successes": sum(record["false_success"] for record in results),
+            "measurement_invalid_runs": sum(
+                record["measurement_invalid"] for record in results
+            ),
             "cell_ids": [cell["cell_id"] for cell in cell_summaries],
             "comparison_lanes": [comparison["lane"] for comparison in comparisons],
             "suite_wall_time_ms": int((time.monotonic() - suite_started) * 1000),
@@ -2730,6 +3706,21 @@ def aggregate_fixture_records() -> list[dict[str, Any]]:
         record["prompt_sha256"] = sha256_bytes(
             lane_prompt(str(record["lane"])).encode("utf-8")
         )
+        record["measurement_invalid"] = False
+        record["production_system_prompt_evidence"] = {
+            "schema": SYSTEM_PROMPT_EVIDENCE_SCHEMA,
+            "complete": True,
+            "error_codes": [],
+            "root_base_stable_prefix_sha256": sha256_bytes(
+                f"production-prefix:{record['variant']}".encode("utf-8")
+            ),
+            "all_agent_prompts_share_root_stable_prefix": True,
+            "request_ledger_sha256": sha256_bytes(
+                f"request-ledger:{record['variant']}:{record['lane']}:{record['repetition_index']}".encode(
+                    "utf-8"
+                )
+            ),
+        }
     return records
 
 
@@ -2742,7 +3733,975 @@ def stream_event(event_type: str, **fields: Any) -> dict[str, Any]:
     }
 
 
+def self_test_system_prompt(stable: str, *volatile: str) -> dict[str, Any]:
+    return {
+        "blocks": [
+            {"text": stable, "cache_control": "stable"},
+            *[
+                {"text": text, "cache_control": "volatile"}
+                for text in volatile
+            ],
+        ]
+    }
+
+
+def self_test_model_request(
+    run_id: str,
+    parent_run_id: str | None,
+    kind: str,
+    depth: int,
+    request_number: int,
+    attempt: int,
+    prompt: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "parent_run_id": parent_run_id,
+        "actor": {"kind": kind, "depth": depth},
+        "model": DEFAULT_MODEL,
+        "system_prompt": prompt,
+        "messages": [],
+        "tools": [],
+        "reasoning_effort": "high",
+        "max_output_tokens": 64,
+        "streaming": True,
+        "request_number": request_number,
+        "attempt": attempt,
+    }
+
+
+def self_test_run_created_request(
+    run_id: str,
+    parent_run_id: str | None,
+    kind: str,
+    depth: int,
+    prompt: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "run_id": run_id,
+        "parent_run_id": parent_run_id,
+        "continued_from_run_id": None,
+        "purpose": "agent",
+        "model": DEFAULT_MODEL,
+        "input": "opaque task",
+        "system_prompt": prompt,
+        "transcript": {"entries": []},
+        "reasoning_effort": "high",
+        "max_output_tokens": 64,
+        "streaming": True,
+        "actor": {"kind": kind, "depth": depth},
+        "tool_policy": {"allowed": None, "denied": []},
+        "limits": {},
+        "environment": {"workspace": "/opaque"},
+        "context_policy": {},
+        "accounting_baseline": {},
+    }
+
+
+def self_test_stored_event(
+    run_id: str,
+    parent_run_id: str | None,
+    sequence: int,
+    event: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": 5,
+        "run_id": run_id,
+        "parent_run_id": parent_run_id,
+        "event_id": f"event-{run_id}-{sequence}",
+        "sequence": sequence,
+        "occurred_at_unix_ms": sequence,
+        "event": event,
+    }
+
+
+def write_self_test_prompt_store(
+    path: Path, stored_events: list[dict[str, Any]]
+) -> None:
+    connection = sqlite3.connect(path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE agent_run_events (
+                run_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                event_id TEXT NOT NULL,
+                schema_version INTEGER NOT NULL,
+                occurred_at_unix_ms INTEGER NOT NULL,
+                terminal INTEGER NOT NULL,
+                event_json TEXT NOT NULL,
+                PRIMARY KEY(run_id, sequence)
+            );
+            PRAGMA user_version = 9;
+            """
+        )
+        for stored in stored_events:
+            connection.execute(
+                """
+                INSERT INTO agent_run_events(
+                    run_id, sequence, event_id, schema_version,
+                    occurred_at_unix_ms, terminal, event_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    stored["run_id"],
+                    stored["sequence"],
+                    stored["event_id"],
+                    stored["schema_version"],
+                    stored["occurred_at_unix_ms"],
+                    int(stored["event"]["kind"] == "terminal"),
+                    json.dumps(stored, ensure_ascii=False),
+                ),
+            )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 class HarnessSelfTests(unittest.TestCase):
+    def test_system_prompt_fingerprint_is_ordered_redacted_and_cache_aware(self) -> None:
+        stable = "OPAQUE_STABLE_系统提示"
+        volatile = "OPAQUE_VOLATILE_会话事实"
+        prompt = self_test_system_prompt(stable, volatile)
+        fingerprint = fingerprint_system_prompt(prompt)
+        self.assertTrue(fingerprint["cache_posture_valid"])
+        self.assertEqual(fingerprint["stable_prefix_block_count"], 1)
+        self.assertEqual(
+            fingerprint["cache_control_sequence"], ["stable", "volatile"]
+        )
+        self.assertNotIn(stable, json.dumps(fingerprint, ensure_ascii=False))
+        self.assertNotIn(volatile, json.dumps(fingerprint, ensure_ascii=False))
+
+        reordered = fingerprint_system_prompt(
+            {
+                "blocks": [
+                    prompt["blocks"][1],
+                    prompt["blocks"][0],
+                ]
+            }
+        )
+        self.assertNotEqual(
+            fingerprint["ordered_blocks_sha256"],
+            reordered["ordered_blocks_sha256"],
+        )
+        self.assertFalse(reordered["cache_posture_valid"])
+        cache_changed = fingerprint_system_prompt(
+            {
+                "blocks": [
+                    {"text": stable, "cache_control": "stable"},
+                    {"text": volatile, "cache_control": "stable"},
+                ]
+            }
+        )
+        self.assertNotEqual(
+            fingerprint["ordered_blocks_sha256"],
+            cache_changed["ordered_blocks_sha256"],
+        )
+
+    def test_prompt_evidence_reads_root_child_retries_and_compaction_before_cleanup(
+        self,
+    ) -> None:
+        evidence: dict[str, Any]
+        temporary_path: Path
+        with tempfile.TemporaryDirectory(
+            prefix="codewhale-deepseek-exec-"
+        ) as temporary:
+            temporary_path = Path(temporary)
+            state_root = temporary_path / "state"
+            app_home = state_root / "codewhale"
+            app_home.mkdir(parents=True)
+            state_db = app_home / "state.db"
+            root_id = "OPAQUE_ROOT_RUN_ID"
+            child_id = "OPAQUE_CHILD_RUN_ID"
+            stable = "OPAQUE_STABLE_PROMPT_TEXT"
+            root_prompt = self_test_system_prompt(
+                stable, "OPAQUE_ROOT_VOLATILE"
+            )
+            child_prompt = self_test_system_prompt(
+                stable,
+                "OPAQUE_ROOT_VOLATILE",
+                "OPAQUE_CHILD_VOLATILE",
+            )
+            compressor_prompt = self_test_system_prompt(
+                "OPAQUE_COMPRESSOR_STABLE",
+                "OPAQUE_COMPRESSOR_VOLATILE",
+            )
+            root_request_0 = self_test_model_request(
+                root_id, None, "root", 0, 1, 0, root_prompt
+            )
+            root_request_1 = self_test_model_request(
+                root_id, None, "root", 0, 1, 1, root_prompt
+            )
+            compact_request_0 = self_test_model_request(
+                root_id, None, "root", 0, 2, 0, compressor_prompt
+            )
+            compact_request_1 = self_test_model_request(
+                root_id, None, "root", 0, 2, 1, compressor_prompt
+            )
+            child_request = self_test_model_request(
+                child_id, root_id, "child", 1, 1, 0, child_prompt
+            )
+            root_events = [
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    1,
+                    {
+                        "kind": "run_created",
+                        "request": self_test_run_created_request(
+                            root_id, None, "root", 0, root_prompt
+                        ),
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    2,
+                    {
+                        "kind": "model_request_prepared",
+                        "attempt_id": "OPAQUE_ROOT_ATTEMPT_0",
+                        "request": root_request_0,
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    3,
+                    {
+                        "kind": "model_request_in_flight",
+                        "attempt_id": "OPAQUE_ROOT_ATTEMPT_0",
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    4,
+                    {
+                        "kind": "model_request_failed",
+                        "attempt_id": "OPAQUE_ROOT_ATTEMPT_0",
+                        "failure": {},
+                        "accounting": {},
+                        "retry": {
+                            "decision": "retry",
+                            "prepared": {
+                                "attempt_id": "OPAQUE_ROOT_ATTEMPT_1",
+                                "request": root_request_1,
+                            },
+                        },
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    5,
+                    {
+                        "kind": "model_request_in_flight",
+                        "attempt_id": "OPAQUE_ROOT_ATTEMPT_1",
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    6,
+                    {
+                        "kind": "model_response_committed",
+                        "attempt_id": "OPAQUE_ROOT_ATTEMPT_1",
+                        "output": {},
+                        "accounting": {},
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    7,
+                    {
+                        "kind": "context_compaction_prepared",
+                        "compaction_id": "compact-1",
+                        "attempt_id": "OPAQUE_COMPACT_ATTEMPT_0",
+                        "trigger": "threshold",
+                        "plan": {},
+                        "request": compact_request_0,
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    8,
+                    {
+                        "kind": "context_compaction_in_flight",
+                        "compaction_id": "compact-1",
+                        "attempt_id": "OPAQUE_COMPACT_ATTEMPT_0",
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    9,
+                    {
+                        "kind": "context_compaction_attempt_failed",
+                        "compaction_id": "compact-1",
+                        "attempt_id": "OPAQUE_COMPACT_ATTEMPT_0",
+                        "failure": {},
+                        "accounting": {},
+                        "retry": {
+                            "decision": "retry",
+                            "prepared": {
+                                "attempt_id": "OPAQUE_COMPACT_ATTEMPT_1",
+                                "request": compact_request_1,
+                            },
+                        },
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    10,
+                    {
+                        "kind": "context_compaction_in_flight",
+                        "compaction_id": "compact-1",
+                        "attempt_id": "OPAQUE_COMPACT_ATTEMPT_1",
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    11,
+                    {
+                        "kind": "context_compaction_committed",
+                        "compaction_id": "compact-1",
+                        "trigger": "threshold",
+                        "projection": {},
+                        "output": {},
+                        "accounting": {},
+                        "before_tokens": 100,
+                        "after_tokens": 50,
+                    },
+                ),
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    12,
+                    {
+                        "kind": "terminal",
+                        "outcome": {
+                            "run_id": root_id,
+                            "parent_run_id": None,
+                            "terminal": {"state": "completed"},
+                        },
+                    },
+                ),
+            ]
+            child_events = [
+                self_test_stored_event(
+                    child_id,
+                    root_id,
+                    1,
+                    {
+                        "kind": "run_created",
+                        "request": self_test_run_created_request(
+                            child_id, root_id, "child", 1, child_prompt
+                        ),
+                    },
+                ),
+                self_test_stored_event(
+                    child_id,
+                    root_id,
+                    2,
+                    {
+                        "kind": "model_request_prepared",
+                        "attempt_id": "OPAQUE_CHILD_ATTEMPT_0",
+                        "request": child_request,
+                    },
+                ),
+                self_test_stored_event(
+                    child_id,
+                    root_id,
+                    3,
+                    {
+                        "kind": "model_request_in_flight",
+                        "attempt_id": "OPAQUE_CHILD_ATTEMPT_0",
+                    },
+                ),
+                self_test_stored_event(
+                    child_id,
+                    root_id,
+                    4,
+                    {
+                        "kind": "model_response_committed",
+                        "attempt_id": "OPAQUE_CHILD_ATTEMPT_0",
+                        "output": {},
+                        "accounting": {},
+                    },
+                ),
+                self_test_stored_event(
+                    child_id,
+                    root_id,
+                    5,
+                    {
+                        "kind": "terminal",
+                        "outcome": {
+                            "run_id": child_id,
+                            "parent_run_id": root_id,
+                            "terminal": {"state": "completed"},
+                        },
+                    },
+                ),
+            ]
+            write_self_test_prompt_store(state_db, [*root_events, *child_events])
+            receipt = StreamReceipt(
+                started_children=[("call-1", child_id)],
+                finished_children=[("call-1", child_id)],
+                child_finished_statuses=["completed"],
+            )
+            terminal = {
+                "run_id": root_id,
+                "route_source": "explicit_or_configured",
+                "status": "completed",
+                "api_request_count": 5,
+                "api_request_root_started": 4,
+                "api_request_child_started": 1,
+            }
+            evidence = extract_system_prompt_evidence(
+                state_db, state_root, "multi", receipt, terminal
+            )
+            self.assertTrue(evidence["complete"], evidence["error_codes"])
+            self.assertEqual(evidence["canonical_run_count"], 2)
+            self.assertEqual(evidence["prepared_request_count"], 5)
+            self.assertEqual(evidence["in_flight_request_count"], 5)
+            self.assertEqual(
+                {
+                    request["preparation_source"]
+                    for request in evidence["requests"]
+                },
+                {
+                    "model_request_prepared",
+                    "model_request_failed_retry",
+                    "context_compaction_prepared",
+                    "context_compaction_attempt_failed_retry",
+                },
+            )
+            self.assertTrue(
+                evidence["all_agent_prompts_share_root_stable_prefix"]
+            )
+            self.assertEqual(evidence["compaction_attestation_count"], 1)
+            compaction = evidence["compaction_attestations"][0]
+            self.assertEqual(compaction["prepared_attempt_count"], 2)
+            self.assertEqual(compaction["retry_count"], 1)
+            self.assertTrue(compaction["all_attempt_prompts_identical"])
+            self.assertNotEqual(
+                compaction["ordered_blocks_sha256"],
+                evidence["runs"][0]["base_system_prompt"][
+                    "ordered_blocks_sha256"
+                ],
+            )
+            self.assertEqual(
+                {
+                    request["attempt_state"]
+                    for request in evidence["requests"]
+                },
+                {
+                    "failed_retry_prepared",
+                    "response_committed",
+                },
+            )
+            serialized = json.dumps(evidence, ensure_ascii=False)
+            for secret in (
+                root_id,
+                child_id,
+                stable,
+                "OPAQUE_ROOT_VOLATILE",
+                "OPAQUE_CHILD_VOLATILE",
+                "OPAQUE_COMPRESSOR_STABLE",
+                "OPAQUE_COMPRESSOR_VOLATILE",
+                "OPAQUE_ROOT_ATTEMPT_0",
+                "OPAQUE_CHILD_ATTEMPT_0",
+                "compact-1",
+            ):
+                self.assertNotIn(secret, serialized)
+
+            canonical_events = [*root_events, *child_events]
+
+            def extract_variant(
+                mutated_events: list[dict[str, Any]],
+            ) -> dict[str, Any]:
+                state_db.unlink()
+                write_self_test_prompt_store(state_db, mutated_events)
+                return extract_system_prompt_evidence(
+                    state_db, state_root, "multi", receipt, terminal
+                )
+
+            def clone_events() -> list[dict[str, Any]]:
+                return json.loads(json.dumps(canonical_events))
+
+            negative_cases: list[tuple[str, list[dict[str, Any]]]] = []
+
+            parent_mismatch = clone_events()
+            next(
+                stored
+                for stored in parent_mismatch
+                if stored["run_id"] == child_id
+                and stored["sequence"] == 2
+            )["parent_run_id"] = "OPAQUE_WRONG_PARENT"
+            negative_cases.append(
+                ("event_parent_mismatch", parent_mismatch)
+            )
+
+            terminal_not_last = clone_events()
+            terminal_not_last.append(
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    13,
+                    {"kind": "content_delta", "text": "opaque"},
+                )
+            )
+            negative_cases.append(("terminal_not_last", terminal_not_last))
+
+            in_flight_before_prepared = clone_events()
+            root_second = next(
+                stored
+                for stored in in_flight_before_prepared
+                if stored["run_id"] == root_id and stored["sequence"] == 2
+            )
+            root_third = next(
+                stored
+                for stored in in_flight_before_prepared
+                if stored["run_id"] == root_id and stored["sequence"] == 3
+            )
+            root_second["event"], root_third["event"] = (
+                root_third["event"],
+                root_second["event"],
+            )
+            negative_cases.append(
+                ("attempt_order_invalid", in_flight_before_prepared)
+            )
+
+            cross_kind_attempt = clone_events()
+            next(
+                stored
+                for stored in cross_kind_attempt
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 8
+            )["event"]["kind"] = "model_request_in_flight"
+            negative_cases.append(
+                ("attempt_order_invalid", cross_kind_attempt)
+            )
+
+            cross_run_attempt = clone_events()
+            next(
+                stored
+                for stored in cross_run_attempt
+                if stored["run_id"] == child_id
+                and stored["sequence"] == 3
+            )["event"]["attempt_id"] = "OPAQUE_ROOT_ATTEMPT_1"
+            negative_cases.append(
+                ("attempt_order_invalid", cross_run_attempt)
+            )
+
+            invalid_retry_predecessor = clone_events()
+            next(
+                stored
+                for stored in invalid_retry_predecessor
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 4
+            )["event"]["attempt_id"] = "OPAQUE_UNKNOWN_ATTEMPT"
+            negative_cases.append(
+                ("retry_causality_invalid", invalid_retry_predecessor)
+            )
+
+            active_in_flight_at_completed_terminal = clone_events()
+            active_in_flight_at_completed_terminal = [
+                stored
+                for stored in active_in_flight_at_completed_terminal
+                if not (
+                    stored["run_id"] == child_id
+                    and stored["sequence"] == 4
+                )
+            ]
+            child_terminal = next(
+                stored
+                for stored in active_in_flight_at_completed_terminal
+                if stored["run_id"] == child_id
+                and stored["sequence"] == 5
+            )
+            child_terminal["sequence"] = 4
+            child_terminal["occurred_at_unix_ms"] = 4
+            child_terminal["event_id"] = "event-child-active-in-flight-terminal"
+            negative_cases.append(
+                (
+                    "request_ledger_invalid",
+                    active_in_flight_at_completed_terminal,
+                )
+            )
+
+            active_prepared_at_completed_terminal = clone_events()
+            active_prepared_at_completed_terminal = [
+                stored
+                for stored in active_prepared_at_completed_terminal
+                if not (
+                    stored["run_id"] == child_id
+                    and stored["sequence"] in {3, 4}
+                )
+            ]
+            child_terminal = next(
+                stored
+                for stored in active_prepared_at_completed_terminal
+                if stored["run_id"] == child_id
+                and stored["sequence"] == 5
+            )
+            child_terminal["sequence"] = 3
+            child_terminal["occurred_at_unix_ms"] = 3
+            child_terminal["event_id"] = "event-child-active-prepared-terminal"
+            negative_cases.append(
+                (
+                    "request_ledger_invalid",
+                    active_prepared_at_completed_terminal,
+                )
+            )
+
+            terminal_run_mismatch = clone_events()
+            next(
+                stored
+                for stored in terminal_run_mismatch
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 12
+            )["event"]["outcome"]["run_id"] = "OPAQUE_WRONG_OUTCOME_RUN"
+            negative_cases.append(
+                ("terminal_outcome_invalid", terminal_run_mismatch)
+            )
+
+            terminal_parent_mismatch = clone_events()
+            next(
+                stored
+                for stored in terminal_parent_mismatch
+                if stored["run_id"] == child_id
+                and stored["sequence"] == 5
+            )["event"]["outcome"][
+                "parent_run_id"
+            ] = "OPAQUE_WRONG_OUTCOME_PARENT"
+            negative_cases.append(
+                ("terminal_outcome_invalid", terminal_parent_mismatch)
+            )
+
+            terminal_status_mismatch = clone_events()
+            next(
+                stored
+                for stored in terminal_status_mismatch
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 12
+            )["event"]["outcome"]["terminal"] = {"state": "failed"}
+            negative_cases.append(
+                ("terminal_status_mismatch", terminal_status_mismatch)
+            )
+
+            local_compaction_during_active_agent = clone_events()
+            next(
+                stored
+                for stored in local_compaction_during_active_agent
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 6
+            )["event"] = {
+                "kind": "context_compaction_committed",
+                "compaction_id": "OPAQUE_LOCAL_COMPACTION",
+                "output": None,
+            }
+            negative_cases.append(
+                (
+                    "compaction_causality_invalid",
+                    local_compaction_during_active_agent,
+                )
+            )
+
+            model_compaction_commit_without_output = clone_events()
+            next(
+                stored
+                for stored in model_compaction_commit_without_output
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 11
+            )["event"]["output"] = None
+            negative_cases.append(
+                (
+                    "compaction_causality_invalid",
+                    model_compaction_commit_without_output,
+                )
+            )
+
+            new_model_after_stop = clone_events()
+            next(
+                stored
+                for stored in new_model_after_stop
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 6
+            )["event"] = {
+                "kind": "model_request_failed",
+                "attempt_id": "OPAQUE_ROOT_ATTEMPT_1",
+                "failure": {},
+                "accounting": {},
+                "retry": {"decision": "stop"},
+            }
+            next(
+                stored
+                for stored in new_model_after_stop
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 7
+            )["event"] = {
+                "kind": "model_request_prepared",
+                "attempt_id": "OPAQUE_AFTER_STOP_ATTEMPT",
+                "request": self_test_model_request(
+                    root_id,
+                    None,
+                    "root",
+                    0,
+                    2,
+                    0,
+                    root_prompt,
+                ),
+            }
+            negative_cases.append(
+                ("request_ledger_invalid", new_model_after_stop)
+            )
+
+            same_compaction_after_stop = clone_events()
+            next(
+                stored
+                for stored in same_compaction_after_stop
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 11
+            )["event"] = {
+                "kind": "context_compaction_attempt_failed",
+                "compaction_id": "compact-1",
+                "attempt_id": "OPAQUE_COMPACT_ATTEMPT_1",
+                "failure": {},
+                "accounting": {},
+                "retry": {"decision": "stop"},
+            }
+            root_terminal = next(
+                stored
+                for stored in same_compaction_after_stop
+                if stored["run_id"] == root_id
+                and stored["sequence"] == 12
+            )
+            root_terminal["sequence"] = 13
+            root_terminal["occurred_at_unix_ms"] = 13
+            root_terminal["event_id"] = "event-root-terminal-after-stop"
+            same_compaction_after_stop.append(
+                self_test_stored_event(
+                    root_id,
+                    None,
+                    12,
+                    {
+                        "kind": "context_compaction_prepared",
+                        "compaction_id": "compact-1",
+                        "attempt_id": "OPAQUE_COMPACT_REOPEN",
+                        "trigger": "threshold",
+                        "plan": {},
+                        "request": compact_request_0,
+                    },
+                )
+            )
+            negative_cases.append(
+                ("compaction_causality_invalid", same_compaction_after_stop)
+            )
+
+            for expected_code, mutated_events in negative_cases:
+                failed = extract_variant(mutated_events)
+                self.assertFalse(failed["complete"])
+                self.assertEqual(failed["error_codes"], [expected_code])
+                failed_serialized = json.dumps(failed, ensure_ascii=False)
+                for secret in (
+                    root_id,
+                    child_id,
+                    stable,
+                    "OPAQUE_COMPRESSOR_STABLE",
+                    "OPAQUE_UNKNOWN_ATTEMPT",
+                    "OPAQUE_WRONG_PARENT",
+                    "OPAQUE_WRONG_OUTCOME_RUN",
+                    "OPAQUE_WRONG_OUTCOME_PARENT",
+                    "OPAQUE_LOCAL_COMPACTION",
+                    "OPAQUE_AFTER_STOP_ATTEMPT",
+                    "OPAQUE_COMPACT_REOPEN",
+                ):
+                    self.assertNotIn(secret, failed_serialized)
+        self.assertFalse(temporary_path.exists())
+        self.assertTrue(evidence["complete"])
+
+    def test_prompt_evidence_consumes_rust_v5_contract_fixture(self) -> None:
+        # crates/protocol/tests/prompt_ledger_fixture.rs proves every record in
+        # this same file deserializes and round-trips as StoredRuntimeEvent v5.
+        stored_events = json.loads(
+            RUNTIME_EVENT_V5_PROMPT_LEDGER_FIXTURE.read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertIsInstance(stored_events, list)
+        created = [
+            stored
+            for stored in stored_events
+            if stored["event"]["kind"] == "run_created"
+        ]
+        root_created = next(
+            stored
+            for stored in created
+            if stored["parent_run_id"] is None
+        )
+        child_created = next(
+            stored
+            for stored in created
+            if stored["parent_run_id"] is not None
+        )
+        root_id = root_created["run_id"]
+        child_id = child_created["run_id"]
+        in_flight = [
+            stored
+            for stored in stored_events
+            if stored["event"]["kind"]
+            in {
+                "model_request_in_flight",
+                "context_compaction_in_flight",
+            }
+        ]
+        root_started = sum(
+            stored["run_id"] == root_id for stored in in_flight
+        )
+        child_started = len(in_flight) - root_started
+
+        with tempfile.TemporaryDirectory(
+            prefix="codewhale-deepseek-exec-"
+        ) as temporary:
+            state_root = Path(temporary) / "state"
+            app_home = state_root / "codewhale"
+            app_home.mkdir(parents=True)
+            state_db = app_home / "state.db"
+            write_self_test_prompt_store(state_db, stored_events)
+            evidence = extract_system_prompt_evidence(
+                state_db,
+                state_root,
+                "multi",
+                StreamReceipt(
+                    started_children=[("fixture-call", child_id)],
+                    finished_children=[("fixture-call", child_id)],
+                    child_finished_statuses=["failed"],
+                ),
+                {
+                    "run_id": root_id,
+                    "route_source": "explicit_or_configured",
+                    "status": "failed",
+                    "api_request_count": len(in_flight),
+                    "api_request_root_started": root_started,
+                    "api_request_child_started": child_started,
+                },
+            )
+
+        self.assertTrue(evidence["complete"], evidence["error_codes"])
+        self.assertEqual(evidence["runtime_event_schema_versions"], [5])
+        self.assertEqual(evidence["canonical_run_count"], 2)
+        self.assertEqual(evidence["prepared_request_count"], 4)
+        self.assertEqual(evidence["in_flight_request_count"], 4)
+        self.assertTrue(
+            evidence["all_agent_prompts_share_root_stable_prefix"]
+        )
+        self.assertEqual(evidence["compaction_attestation_count"], 1)
+        compaction = evidence["compaction_attestations"][0]
+        self.assertEqual(compaction["prepared_attempt_count"], 2)
+        self.assertEqual(compaction["retry_count"], 1)
+        self.assertTrue(compaction["all_attempt_prompts_identical"])
+        self.assertNotEqual(
+            compaction["ordered_blocks_sha256"],
+            evidence["runs"][0]["base_system_prompt"][
+                "ordered_blocks_sha256"
+            ],
+        )
+        self.assertEqual(
+            {
+                request["attempt_state"]
+                for request in evidence["requests"]
+            },
+            {"failed_retry_prepared", "failed_stopped"},
+        )
+
+        secrets: set[str] = {root_id, child_id}
+        for stored in stored_events:
+            event = stored["event"]
+            for field in ("attempt_id", "compaction_id"):
+                value = event.get(field)
+                if isinstance(value, str):
+                    secrets.add(value)
+            retry = event.get("retry")
+            prepared = (
+                retry.get("prepared") if isinstance(retry, dict) else None
+            )
+            if isinstance(prepared, dict):
+                attempt_id = prepared.get("attempt_id")
+                if isinstance(attempt_id, str):
+                    secrets.add(attempt_id)
+            request = event.get("request")
+            if not isinstance(request, dict) and isinstance(prepared, dict):
+                request = prepared.get("request")
+            prompt = (
+                request.get("system_prompt")
+                if isinstance(request, dict)
+                else None
+            )
+            blocks = (
+                prompt.get("blocks") if isinstance(prompt, dict) else None
+            )
+            if isinstance(blocks, list):
+                secrets.update(
+                    block["text"]
+                    for block in blocks
+                    if isinstance(block, dict)
+                    and isinstance(block.get("text"), str)
+                )
+        serialized = json.dumps(evidence, ensure_ascii=False)
+        for secret in secrets:
+            self.assertNotIn(secret, serialized)
+
+    def test_prompt_evidence_fails_closed_without_leaking_corrupt_store(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_root = Path(temporary) / "state"
+            app_home = state_root / "codewhale"
+            app_home.mkdir(parents=True)
+            state_db = app_home / "state.db"
+            run_id = "OPAQUE_CORRUPT_RUN"
+            prompt = self_test_system_prompt("OPAQUE_CORRUPT_PROMPT")
+            events = [
+                self_test_stored_event(
+                    run_id,
+                    None,
+                    1,
+                    {
+                        "kind": "run_created",
+                        "request": self_test_run_created_request(
+                            run_id, None, "root", 0, prompt
+                        ),
+                    },
+                ),
+                self_test_stored_event(
+                    run_id, None, 3, {"kind": "terminal", "outcome": {}}
+                ),
+            ]
+            write_self_test_prompt_store(state_db, events)
+            evidence = extract_system_prompt_evidence(
+                state_db,
+                state_root,
+                "single",
+                StreamReceipt(),
+                {
+                    "run_id": run_id,
+                    "route_source": "explicit_or_configured",
+                    "api_request_count": 0,
+                    "api_request_root_started": 0,
+                    "api_request_child_started": 0,
+                },
+            )
+            self.assertFalse(evidence["complete"])
+            self.assertEqual(evidence["error_codes"], ["event_sequence_gap"])
+            serialized = json.dumps(evidence, ensure_ascii=False)
+            self.assertNotIn(run_id, serialized)
+            self.assertNotIn("OPAQUE_CORRUPT_PROMPT", serialized)
+
     def test_actor_request_accounting_is_exact_when_present(self) -> None:
         terminal = {
             "api_request_count": 10,
@@ -3037,6 +4996,15 @@ class HarnessSelfTests(unittest.TestCase):
             1 / 3,
             places=9,
         )
+        self.assertFalse(comparison["treatment"]["evaluation_prompt_changed"])
+        self.assertTrue(
+            comparison["treatment"][
+                "production_system_prompt_stable_prefix_changed"
+            ]
+        )
+        self.assertTrue(
+            comparison["treatment"]["production_system_prompt_per_run_attested"]
+        )
         self.assertLess(
             comparison["candidate_minus_baseline"]["total_tokens_mean"]["absolute"],
             0,
@@ -3092,6 +5060,27 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertFalse(incomplete["product_metric_eligible"])
         self.assertIn(
             "cell_measurement_incomplete", incomplete["eligibility_reasons"]
+        )
+
+        missing_system_prompt = json.loads(json.dumps(mixed_records))
+        next(
+            record
+            for record in missing_system_prompt
+            if record["variant"] == "candidate" and record["lane"] == "single"
+        )["production_system_prompt_evidence"] = prompt_evidence_failure(
+            "state_db_missing"
+        )
+        incomplete = aggregate_cell(
+            candidate_target,
+            "single",
+            missing_system_prompt,
+            MIN_RUNS_PER_CELL,
+            True,
+        )
+        self.assertFalse(incomplete["product_metric_eligible"])
+        self.assertIn(
+            "cell_system_prompt_evidence_incomplete",
+            incomplete["eligibility_reasons"],
         )
 
         same_revision_candidate = json.loads(json.dumps(candidate))
@@ -3262,8 +5251,8 @@ class HarnessSelfTests(unittest.TestCase):
             self.assertTrue(blocked["evidence_complete"])
             self.assertIn("child_result_receipt_missing", blocked["reasons"])
             self.assertEqual(
-                classify_claim_outcome(True, blocked["passed"]),
-                (False, True),
+                classify_claim_outcome(True, blocked["passed"], True, True),
+                (False, True, False),
             )
 
             no_applied_effect = StreamReceipt()
@@ -3746,8 +5735,14 @@ class HarnessSelfTests(unittest.TestCase):
         canceled["status"] = "interrupted"
         canceled["termination_reason"] = "canceled"
         self.assertTrue(terminal_measurement_valid(sanitize_terminal(canceled)))
-        self.assertEqual(classify_claim_outcome(False, False), (False, False))
-        self.assertEqual(classify_claim_outcome(True, False), (False, True))
+        self.assertEqual(
+            classify_claim_outcome(False, False, True, True),
+            (False, False, False),
+        )
+        self.assertEqual(
+            classify_claim_outcome(True, False, True, True),
+            (False, True, False),
+        )
 
         exhausted = json.loads(json.dumps(failed))
         exhausted["termination_reason"] = "budget_exhausted"
@@ -3762,14 +5757,28 @@ class HarnessSelfTests(unittest.TestCase):
     def test_false_success_requires_a_rejected_completed_claim(self) -> None:
         verifier_passed = False
         lane_passed = True
-        claim_acceptance_passed = verifier_passed and lane_passed
+        task_shape_acceptance_passed = verifier_passed and lane_passed
         self.assertEqual(
-            classify_claim_outcome(True, claim_acceptance_passed),
-            (False, True),
+            classify_claim_outcome(
+                True, task_shape_acceptance_passed, True, True
+            ),
+            (False, True, False),
         )
         self.assertEqual(
-            classify_claim_outcome(False, claim_acceptance_passed),
-            (False, False),
+            classify_claim_outcome(
+                False, task_shape_acceptance_passed, True, True
+            ),
+            (False, False, False),
+        )
+        self.assertEqual(
+            classify_claim_outcome(True, True, False, True),
+            (False, False, True),
+            "measurement loss must not be mislabeled as false success",
+        )
+        self.assertEqual(
+            classify_claim_outcome(True, True, True, False),
+            (False, False, False),
+            "a measured budget rejection is neither false success nor measurement loss",
         )
 
     def test_atomic_output_publishes_complete_plan_without_incomplete_file(self) -> None:
