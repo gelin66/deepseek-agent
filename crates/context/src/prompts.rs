@@ -1037,6 +1037,25 @@ mod tests {
         assert!(prompt.blocks[0].text.contains("### 可用技能"));
         assert!(prompt.blocks[0].text.contains("### 使用规则"));
         assert!(prompt.blocks[0].text.contains("## 语言"));
+        assert_eq!(
+            prompt.blocks[0]
+                .text
+                .matches("每次读取、搜索或命令只用于关闭一个会影响下一步的事实缺口")
+                .count(),
+            1
+        );
+        assert_eq!(
+            prompt.blocks[0]
+                .text
+                .matches("父子不得重复调查同一事实缺口")
+                .count(),
+            1
+        );
+        assert!(
+            prompt.blocks[0]
+                .text
+                .contains("已经成功且没有未解决的验收缺口时立即完成")
+        );
         assert!(prompt.blocks[1].text.contains("/fixture/bin/zsh"));
         assert!(prompt.blocks[1].text.contains("- lang: zh-Hans"));
         assert!(!prompt.blocks[1].text.contains("- cwd: "));
@@ -1108,7 +1127,7 @@ mod tests {
         assert_eq!(
             block_hashes,
             [
-                "f46e6dcb87fb0113fe9ee4458b8ad9222de36f9ce791b89763d13482d3a13c6b",
+                "0af3aa98fc6cf4a05b8f97371c9a0681bca20763c80b697492d5898ccde3ad57",
                 "2caa65b9283dccb613c68ab9e334dee8999d36519d393cd45d42eccd9b25d3ca",
                 "70e9297a2ae78cb815d9a24c18d93f57eb8fe05cc12b005a9826e778ffd1c4fe",
                 "50f497cd9e457dacbe0e0b8ce8166bcaa7da57a705a5b3b781b2623a5a21dd00",
@@ -1130,7 +1149,7 @@ mod tests {
             .join("\0\0");
         assert_eq!(
             sha256(normalized_prompt.as_bytes()),
-            "04db7abff4496476511f3487f7f583c5e151f219df7fc2c811d272784895a311"
+            "ce1c45bc9ec2f6d58e8590c5b1827b9dc0d5b77bf6389076d3e584c0a126794f"
         );
 
         let no_tool_prompt = production_system_prompt(ProductionPromptRequest {

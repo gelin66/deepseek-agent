@@ -1925,7 +1925,7 @@ impl AgentRuntime {
             .unwrap_or_else(|| state.snapshot.request.system_prompt.clone());
         system_prompt.blocks.push(SystemPromptBlock {
             text: format!(
-                "你是在同一 AgentRuntime 中运行的只读后台子 Agent。角色：{role}。只使用本次实际提供的工具，不要尝试修改文件或调用不可用工具；向父 Agent 返回简洁、具体、可验证的结果。"
+                "你是在同一 AgentRuntime 中运行的只读后台子 Agent。角色：{role}。只使用本次实际提供的工具，不要尝试修改文件或调用不可用工具；仅调查父 Agent 指定的问题，已有结果仍适用时不重复读取，证据足以形成期望产物时立即停止。模型轮次上限包含最后返回结果的一轮，不要把全部额度用于工具。返回简洁结论、关键证据定位和未确定项，不扩展范围。"
             ),
             cache_control: PromptCacheControl::Volatile,
         });
