@@ -1456,7 +1456,11 @@ mod tests {
 
         assert_eq!(app.child_agents.active_count(), 0);
         let row = &app.child_agents.rows()[0];
-        assert_eq!(row.parent_run_id, continuation);
+        assert_eq!(
+            row.parent_run_id,
+            RunId::from("source-root"),
+            "the durable AgentOutcome owns the child parent identity"
+        );
         assert_eq!(row.call_id, "historical-call");
         assert_eq!(row.child_run_id, child);
         assert!(matches!(

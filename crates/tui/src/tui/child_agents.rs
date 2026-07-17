@@ -86,11 +86,15 @@ impl ChildAgents {
 
     pub(super) fn record_finished(
         &mut self,
-        parent_run_id: RunId,
+        fallback_parent_run_id: RunId,
         call_id: String,
         outcome: &AgentOutcome,
         handoff_content: &str,
     ) {
+        let parent_run_id = outcome
+            .parent_run_id
+            .clone()
+            .unwrap_or(fallback_parent_run_id);
         if let Some(row) = self
             .rows
             .iter_mut()

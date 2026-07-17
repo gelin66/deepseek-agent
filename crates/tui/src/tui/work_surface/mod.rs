@@ -253,13 +253,7 @@ mod tests {
         terminal
             .draw(|frame| super::render(frame, frame.area(), &mut app))
             .expect("draw");
-        let text = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let text = buffer_text(terminal.backend().buffer());
         assert_eq!(app.work_surface.total_rows, 4, "section plus three workers");
         assert!(text.contains("子 Agent 1"), "{text}");
         assert!(text.contains("子 Agent 3"), "{text}");

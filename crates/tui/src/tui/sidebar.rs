@@ -2674,7 +2674,7 @@ fn agent_tree_prefix(row: &SidebarAgentRow) -> String {
 fn sidebar_agent_status_is_terminal(status: &str) -> bool {
     matches!(
         status,
-        "done" | "canceled" | "failed" | "interrupted" | "budget"
+        "done" | "blocked" | "canceled" | "failed" | "interrupted" | "recovery" | "budget"
     )
 }
 
@@ -2842,6 +2842,7 @@ fn agent_status_marker(
     match status {
         "running" => ("[~]", theme.warning),
         "done" => ("[✓]", theme.success),
+        "blocked" | "recovery" => ("[!]", theme.warning),
         "failed" => ("[!]", theme.error_fg),
         "canceled" | "interrupted" => ("[-]", theme.text_muted),
         _ => ("[ ]", theme.text_muted),
