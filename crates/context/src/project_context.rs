@@ -412,15 +412,13 @@ impl RepoConstitution {
     fn render_block(&self, source: &Path) -> String {
         let mut body = String::new();
         if let Some(authority) = self.authority.as_ref().filter(|a| !a.is_empty()) {
-            body.push_str(
-                "When local sources conflict, trust them in this order (highest first):\n",
-            );
+            body.push_str("本地规则冲突时按以下顺序处理（从高到低）：\n");
             for (idx, item) in authority.iter().enumerate() {
                 body.push_str(&format!("{}. {item}\n", idx + 1));
             }
         }
         if let Some(invariants) = self.protected_invariants.as_ref().filter(|i| !i.is_empty()) {
-            body.push_str("\nProtected invariants — do not break:\n");
+            body.push_str("\n受保护的不变量——不得破坏：\n");
             for item in invariants {
                 match item {
                     ProtectedInvariant::Advisory(text) => {
@@ -437,7 +435,7 @@ impl RepoConstitution {
                             body.push_str(&format!("- {}\n", enforced.text));
                         } else {
                             body.push_str(&format!(
-                                "- {} (mechanically enforced for: {paths})\n",
+                                "- {}（机制强制范围：{paths}）\n",
                                 enforced.text
                             ));
                         }
@@ -446,7 +444,7 @@ impl RepoConstitution {
             }
         }
         if let Some(policy) = self.branch_policy.as_ref().filter(|s| !s.trim().is_empty()) {
-            body.push_str(&format!("\nBranch / release policy: {}\n", policy.trim()));
+            body.push_str(&format!("\n分支 / 发布规则：{}\n", policy.trim()));
         }
         if let Some(steps) = self
             .verification_policy
@@ -454,19 +452,19 @@ impl RepoConstitution {
             .and_then(|p| p.before_claiming_done.as_ref())
             .filter(|s| !s.is_empty())
         {
-            body.push_str("\nBefore claiming a task is done:\n");
+            body.push_str("\n声称任务完成前：\n");
             for step in steps {
                 body.push_str(&format!("- {step}\n"));
             }
         }
         if let Some(conditions) = self.escalate_when.as_ref().filter(|c| !c.is_empty()) {
-            body.push_str("\nStop and escalate to the user when:\n");
+            body.push_str("\n出现以下情况时停止并请用户决策：\n");
             for item in conditions {
                 body.push_str(&format!("- {item}\n"));
             }
         }
         format!(
-            "<codewhale_repo_constitution source=\"{}\">\nCodeWhale-specific repo authority policy (local law: subordinate to the global Constitution and the current user request, but above memory and old handoffs; WHALE.md is ignored and should be migrated, not treated as law).\n\n{}</codewhale_repo_constitution>",
+            "<codewhale_repo_constitution source=\"{}\">\n这是仓库级权限规则：低于用户当前请求和系统契约，高于记忆与历史接力。`WHALE.md` 不构成规则，应迁移而不是继续使用。\n\n{}</codewhale_repo_constitution>",
             source.display(),
             body.trim_end()
         )
@@ -595,16 +593,14 @@ pub fn generate_project_context_pack(workspace: &Path) -> Option<String> {
     let pack = build_project_context_pack(workspace)?;
     let json = serde_json::to_string_pretty(&pack).ok()?;
     Some(format!(
-        "## Project Context Pack\n\n<project_context_pack>\n{json}\n</project_context_pack>"
+        "## 项目上下文包\n\n<project_context_pack>\n{json}\n</project_context_pack>"
     ))
 }
 
 fn generate_bounded_project_overview(workspace: &Path) -> Option<String> {
     let pack = build_project_context_pack(workspace)?;
     let json = serde_json::to_string_pretty(&pack).ok()?;
-    Some(format!(
-        "## Bounded Project Overview\n\n```json\n{json}\n```"
-    ))
+    Some(format!("## 有界项目概览\n\n```json\n{json}\n```"))
 }
 
 fn build_project_context_pack(workspace: &Path) -> Option<ProjectContextPack> {
@@ -909,7 +905,7 @@ pub fn load_project_context(workspace: &Path) -> ProjectContext {
                 end -= 1;
             }
             rules_content.truncate(end);
-            rules_content.push_str("\n\n[…rules block truncated at 500 KB…]");
+            rules_content.push_str("\n\n[…规则块已在 500 KB 处截断…]");
             tracing::warn!(
                 target: "project_context",
                 total_bytes = rules_content.len(),
@@ -1200,10 +1196,10 @@ fn merge_global_and_project_instructions(
     project: &str,
 ) -> String {
     let global_label = global_source
-        .map(|p| format!("<!-- global: {} -->", p.display()))
-        .unwrap_or_else(|| "<!-- global -->".to_string());
+        .map(|p| format!("<!-- 全局：{} -->", p.display()))
+        .unwrap_or_else(|| "<!-- 全局 -->".to_string());
     format!(
-        "{global_label}\n{}\n\n<!-- project (overrides global where they conflict) -->\n{}",
+        "{global_label}\n{}\n\n<!-- 项目规则（冲突时覆盖全局规则） -->\n{}",
         global.trim_end(),
         project.trim_start(),
     )
@@ -1255,9 +1251,9 @@ fn generate_ephemeral_context(workspace: &Path) -> Option<String> {
     let overview = generate_bounded_project_overview(workspace)?;
 
     Some(format!(
-        "# Project Context (Auto-generated, ephemeral)\n\n\
-         > This context was generated in memory by CodeWhale.\n\
-         > No .codewhale/instructions.md file was written.\n\n\
+        "# 项目上下文（自动生成，仅当前运行有效）\n\n\
+         > 此上下文由 CodeWhale 在内存中生成。\n\
+         > 未写入 `.codewhale/instructions.md`。\n\n\
          {overview}"
     ))
 }

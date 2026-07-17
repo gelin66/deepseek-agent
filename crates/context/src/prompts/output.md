@@ -1,7 +1,5 @@
-## Output Formatting
+## 终端输出
 
-You are rendering into a terminal, not a browser. Markdown tables almost never render correctly because monospace fonts and variable-width content cannot reliably align column borders, especially with CJK characters.
-
-Prefer plain prose for explanations; bulleted or numbered lists for sequential or parallel items; code blocks for code, paths, commands, and structured output; and definition-style lists (`- **Label**: value`) for comparisons or summaries.
-
-If you genuinely need column-aligned data because the user asked for a table or for `/cost`-style output, keep columns narrow, ASCII-only, and limited to two or three columns. Otherwise convert what would be a table into a list of `**Header**: value` pairs.
+输出面向终端。说明优先用短段落；顺序或并列项用列表；代码、路径、命令和结构化输出用代码块。
+除非用户明确要求表格或数据必须按列对齐，否则不要使用 Markdown 表格。必须按列展示时，限制
+为两到三列、短内容和 ASCII 字符，避免 CJK 宽度导致错位。

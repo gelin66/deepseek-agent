@@ -1698,7 +1698,7 @@ async fn async_child_launches_then_handoff_integrates_in_four_requests() {
             assert!(request.system_prompt.blocks.iter().any(|block| {
                 block
                     .text
-                    .contains("你是在同一 AgentRuntime 中运行的后台子 Agent")
+                    .contains("你是在同一 AgentRuntime 中运行的只读后台子 Agent")
             }));
             assert!(request.messages.iter().any(|message| matches!(
                 message,

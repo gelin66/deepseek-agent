@@ -178,10 +178,7 @@ impl SkillRegistry {
                 // noise (e.g. a stray `.Trash` inside someone's
                 // `~/.agents/skills`).
                 if depth == 0 {
-                    registry.push_warning(format!(
-                        "Failed to read skills directory {}: {err}",
-                        dir.display()
-                    ));
+                    registry.push_warning(format!("无法读取技能目录 {}：{err}", dir.display()));
                 }
                 return;
             }
@@ -234,7 +231,7 @@ impl SkillRegistry {
                             .map(|s| s.path.clone());
                         if let Some(existing_path) = shadowed_by {
                             registry.push_warning(format!(
-                                "Skill `{}` at {} is shadowed by {}.",
+                                "技能 `{}`（{}）被同名技能 {} 覆盖。",
                                 skill.name,
                                 skill.path.display(),
                                 existing_path.display()
@@ -252,10 +249,8 @@ impl SkillRegistry {
                         if !Self::mark_discovered_dir(&path, visited) {
                             continue;
                         }
-                        registry.push_warning(format!(
-                            "Failed to parse {}: {reason}",
-                            skill_path.display()
-                        ));
+                        registry
+                            .push_warning(format!("无法解析 {}：{reason}", skill_path.display()));
                         // Still treat this directory as "claimed" — a
                         // malformed SKILL.md shouldn't cause us to
                         // double-load nested fixtures as skills.
@@ -266,8 +261,7 @@ impl SkillRegistry {
                     if !Self::mark_discovered_dir(&path, visited) {
                         continue;
                     }
-                    registry
-                        .push_warning(format!("Failed to read {}: {err}", skill_path.display()));
+                    registry.push_warning(format!("无法读取 {}：{err}", skill_path.display()));
                     continue;
                 }
                 Err(_) => {
@@ -296,7 +290,7 @@ impl SkillRegistry {
             let original = skill.name.clone();
             skill.name = normalized;
             self.push_warning(format!(
-                "Skill name `{original}` in {} is not a safe command name; using `{}` instead.",
+                "{} 中的技能名 `{original}` 不能安全用作命令名，已改用 `{}`。",
                 skill_path.display(),
                 skill.name
             ));
@@ -312,11 +306,11 @@ impl SkillRegistry {
         if trimmed.starts_with("---") {
             let start = content
                 .find("---")
-                .ok_or_else(|| "missing frontmatter opening delimiter".to_string())?;
+                .ok_or_else(|| "缺少 frontmatter 起始分隔符".to_string())?;
             let rest = &content[start + 3..];
             let end = rest
                 .find("---")
-                .ok_or_else(|| "missing frontmatter closing delimiter".to_string())?;
+                .ok_or_else(|| "缺少 frontmatter 结束分隔符".to_string())?;
             let frontmatter = &rest[..end];
             let body = &rest[end + 3..];
 
@@ -455,7 +449,7 @@ impl SkillRegistry {
                 .get("name")
                 .filter(|name| !name.is_empty())
                 .cloned()
-                .ok_or_else(|| "missing required frontmatter field: name".to_string())?;
+                .ok_or_else(|| "缺少必需的 frontmatter 字段：name".to_string())?;
 
             let description = metadata.get("description").cloned().unwrap_or_default();
 
@@ -489,9 +483,7 @@ impl SkillRegistry {
             .and_then(|c| c.get(1))
             .map(|m| m.as_str().trim().to_string())
             .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                "no frontmatter and no `# Heading` found to use as skill name".to_string()
-            })?;
+            .ok_or_else(|| "没有 frontmatter，也没有可用作技能名的 `# 标题`".to_string())?;
 
         Ok(Skill {
             name,
@@ -755,7 +747,7 @@ pub fn discover_from_directories(dirs: impl IntoIterator<Item = PathBuf>) -> Ski
         for skill in registry.skills {
             if let Some(existing) = merged.skills.iter().find(|s| s.name == skill.name) {
                 merged.push_warning(format!(
-                    "Skill `{}` at {} is shadowed by {}.",
+                    "技能 `{}`（{}）被同名技能 {} 覆盖。",
                     skill.name,
                     skill.path.display(),
                     existing.path.display()
@@ -791,17 +783,16 @@ pub fn discover_for_workspace_and_dir_with_home_and_mode(
 #[must_use]
 pub fn render_available_skills_context_for_workspace(workspace: &Path) -> Option<String> {
     let registry = discover_in_workspace(workspace);
-    render_skills_block(&registry, "en")
+    render_skills_block(&registry)
 }
 
 #[must_use]
 pub fn render_available_skills_context_for_workspace_with_mode(
     workspace: &Path,
     mode: SkillDiscoveryMode,
-    locale: &str,
 ) -> Option<String> {
     let registry = discover_in_workspace_with_mode(workspace, mode);
-    render_skills_block(&registry, locale)
+    render_skills_block(&registry)
 }
 
 /// Union variant: merge skills discovered in the `workspace` (cross-tool skill
@@ -815,7 +806,6 @@ pub fn render_available_skills_context_for_workspace_and_dir(
         workspace,
         skills_dir,
         SkillDiscoveryMode::Compatible,
-        "en",
     )
 }
 
@@ -824,26 +814,23 @@ pub fn render_available_skills_context_for_workspace_and_dir_with_mode(
     workspace: &Path,
     skills_dir: &Path,
     mode: SkillDiscoveryMode,
-    locale: &str,
 ) -> Option<String> {
     let registry = discover_for_workspace_and_dir_with_mode(workspace, skills_dir, mode);
-    render_skills_block(&registry, locale)
+    render_skills_block(&registry)
 }
 
-fn render_skills_block(registry: &SkillRegistry, locale: &str) -> Option<String> {
+fn render_skills_block(registry: &SkillRegistry) -> Option<String> {
     if registry.is_empty() {
         return None;
     }
 
     let mut out = String::new();
-    out.push_str("## Skills\n");
+    out.push_str("## 技能\n");
     out.push_str(
-        "A skill is a set of local instructions stored in a `SKILL.md` file. \
-Below is the list of skills available in this session. Each entry includes a \
-name, description, and file path so you can open the source for full \
-instructions when using a specific skill.\n\n",
+        "技能是存放在 `SKILL.md` 中的本地操作说明。下面只列出本次会话可用技能的名称、\
+说明和路径；需要使用某个技能时再打开对应文件。\n\n",
     );
-    out.push_str("### Available skills\n");
+    out.push_str("### 可用技能\n");
 
     let mut omitted = 0usize;
     for skill in registry.list() {
@@ -852,7 +839,7 @@ instructions when using a specific skill.\n\n",
         // installs, in which case `<dir>/<name>/SKILL.md` would not exist
         // and the model would fail to open it.
         let description = truncate_for_prompt(
-            skill.description_for_locale(locale),
+            skill.description_for_locale("zh-Hans"),
             MAX_SKILL_DESCRIPTION_CHARS,
         );
         let line = if description.is_empty() {
@@ -875,12 +862,12 @@ instructions when using a specific skill.\n\n",
 
     if omitted > 0 {
         out.push_str(&format!(
-            "- ... {omitted} additional skills omitted from this prompt budget.\n"
+            "- … 另有 {omitted} 个技能因提示词预算限制而省略。\n"
         ));
     }
 
     if !registry.warnings().is_empty() {
-        out.push_str("\n### Skill load warnings\n");
+        out.push_str("\n### 技能加载警告\n");
         for warning in registry.warnings().iter().take(8) {
             out.push_str("- ");
             out.push_str(&truncate_for_prompt(warning, MAX_SKILL_DESCRIPTION_CHARS));
@@ -889,11 +876,11 @@ instructions when using a specific skill.\n\n",
     }
 
     out.push_str(
-        "\n### How to use skills\n\
-- Skill bodies live on disk at the listed paths. When a skill is relevant, open only that skill's `SKILL.md` and the specific companion files it references.\n\
-- Trigger rules: use a skill when the user names it (`$SkillName`, `/skill <name>`, or plain text) or the task clearly matches its description. Do not carry skills across turns unless re-mentioned.\n\
-- Missing/blocked: if a named skill is missing or cannot be read, say so briefly and continue with the best fallback.\n\
-- Safety: do not execute scripts from a community skill unless the user explicitly asks or the skill has been trusted for script use.\n",
+        "\n### 使用规则\n\
+- 技能正文位于列出的路径。任务匹配时只打开该技能的 `SKILL.md` 及其明确引用的必要文件。\n\
+- 用户点名技能（`$SkillName`、`/skill <name>` 或自然语言）或任务明显匹配描述时使用；下一轮未再次提及时不要自动沿用。\n\
+- 点名技能缺失或不可读时简要说明，并使用最佳替代方案继续。\n\
+- 未经用户明确要求或信任，不要执行社区技能附带的脚本。\n",
     );
 
     Some(out)

@@ -1,19 +1,10 @@
-## Goal Continuation
+## 继续当前 Goal
 
-You are working toward an active session goal. Your task now is to make concrete
-progress toward the objective and audit whether the full goal is complete.
+当前会话有未结束的 Goal。继续产生可验证进展，并根据最新状态审计是否已经完整达成：
 
-Completion is unproven until you verify it against current-state evidence:
+1. 从 Goal 和用户最新指令提取具体要求；
+2. 用文件、命令输出、测试、运行行为或外部系统当前状态逐项验证；
+3. 不确定或间接证据一律不算完成，继续实现或补强证据；
+4. 只有全部目标确实达成时，才调用 `update_goal` 并设置 `status: "complete"`。
 
-1. Derive the concrete requirements from the goal and the latest user
-   instructions.
-2. Inspect authoritative evidence for each requirement: files, command output,
-   tests, runtime behavior, issue or PR state, rendered artifacts, or other
-   current sources.
-3. Treat uncertain or indirect evidence as not complete. Continue work or gather
-   stronger evidence.
-4. Only when the full objective is satisfied, call `update_goal` with
-   `status: "complete"` and concise evidence.
-
-If the goal cannot continue because of a real blocker, call `update_goal` with
-`status: "blocked"` and explain the blocker. Otherwise continue making progress.
+只有真实阻塞使工作无法继续时才设置 `status: "blocked"`；否则继续推进。

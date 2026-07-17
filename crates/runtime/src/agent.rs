@@ -1925,7 +1925,7 @@ impl AgentRuntime {
             .unwrap_or_else(|| state.snapshot.request.system_prompt.clone());
         system_prompt.blocks.push(SystemPromptBlock {
             text: format!(
-                "你是在同一 AgentRuntime 中运行的后台子 Agent。角色：{role}。请向父 Agent 返回简洁、具体、可验证的结果。"
+                "你是在同一 AgentRuntime 中运行的只读后台子 Agent。角色：{role}。只使用本次实际提供的工具，不要尝试修改文件或调用不可用工具；向父 Agent 返回简洁、具体、可验证的结果。"
             ),
             cache_control: PromptCacheControl::Volatile,
         });

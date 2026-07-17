@@ -68,18 +68,15 @@ impl AutonomyPreference {
     fn guidance(self) -> Option<&'static str> {
         match self {
             AutonomyPreference::Unspecified => None,
-            AutonomyPreference::Cautious => Some(
-                "The user leans cautious: prefer to confirm before taking actions that change \
-                 files, run commands, or are hard to reverse.",
-            ),
+            AutonomyPreference::Cautious => {
+                Some("用户偏向谨慎：修改文件、运行命令或执行难以撤销的操作前优先确认。")
+            }
             AutonomyPreference::Balanced => Some(
-                "The user prefers a balanced approach: act directly on clear, low-risk tasks and \
-                 confirm before risky, destructive, or ambiguous actions.",
+                "用户偏好平衡方式：明确、低风险的任务直接执行；高风险、破坏性或含糊操作先确认。",
             ),
-            AutonomyPreference::Autonomous => Some(
-                "The user prefers ambitious initiative wherever it is safe: batch routine work \
-                 and surface decisions rather than pausing for routine confirmations.",
-            ),
+            AutonomyPreference::Autonomous => {
+                Some("用户偏好在安全范围内主动推进：批量完成常规工作，只在需要决策时暂停。")
+            }
         }
     }
 }
@@ -183,13 +180,13 @@ impl UserConstitution {
         let mut body = String::new();
 
         if let Some(about) = bounded.about.as_deref() {
-            body.push_str("About the user:\n");
+            body.push_str("用户情况：\n");
             body.push_str(about.trim());
             body.push_str("\n\n");
         }
 
         if !bounded.working_style.is_empty() {
-            body.push_str("Working style:\n");
+            body.push_str("工作方式：\n");
             for item in &bounded.working_style {
                 let _ = writeln!(body, "- {item}");
             }
@@ -197,7 +194,7 @@ impl UserConstitution {
         }
 
         if !bounded.priorities.is_empty() {
-            body.push_str("Standing priorities:\n");
+            body.push_str("长期优先级：\n");
             for item in &bounded.priorities {
                 let _ = writeln!(body, "- {item}");
             }
@@ -206,15 +203,15 @@ impl UserConstitution {
 
         if let Some(guidance) = bounded.autonomy_preference.guidance() {
             body.push_str(
-                "Autonomy preference (guidance only — does not change approval policy, sandbox, \
-                 shell, network, trust, MCP permissions, or default mode):\n",
+                "自主程度偏好（仅作指导，不改变审批策略、沙箱、shell、网络、信任、MCP 权限或\
+                 默认模式）：\n",
             );
             body.push_str(guidance);
             body.push_str("\n\n");
         }
 
         if let Some(notes) = bounded.notes.as_deref() {
-            body.push_str("Additional notes (advisory, not enforceable policy):\n");
+            body.push_str("补充说明（仅作参考，不构成强制策略）：\n");
             body.push_str(notes.trim());
             body.push('\n');
         }
@@ -237,9 +234,8 @@ impl UserConstitution {
         );
         Some(format!(
             "<codewhale_user_constitution{source_attr}>\n\
-             User-global standing preferences (personal law: subordinate to the current user \
-             request and the global Constitution, but applies across all your projects). Treat as \
-             durable guidance, not as enforceable runtime policy.\n\n\
+             这是跨项目生效的用户长期偏好，低于用户当前请求和系统契约。它是持久指导，\
+             不是可执行的运行时策略。\n\n\
              {}\n\
              </codewhale_user_constitution>",
             self.render_body()
@@ -557,10 +553,10 @@ mod tests {
         let block = c.render_block(None).unwrap();
         assert!(block.starts_with("<codewhale_user_constitution"));
         assert!(block.ends_with("</codewhale_user_constitution>"));
-        assert!(block.contains("About the user:"));
-        assert!(block.contains("Working style:"));
-        assert!(block.contains("Standing priorities:"));
-        assert!(block.contains("Additional notes"));
+        assert!(block.contains("用户情况："));
+        assert!(block.contains("工作方式："));
+        assert!(block.contains("长期优先级："));
+        assert!(block.contains("补充说明"));
     }
 
     #[test]
@@ -571,8 +567,8 @@ mod tests {
         };
         let block = c.render_block(None).unwrap();
         // Rendered as guidance, explicitly disclaiming runtime mutation.
-        assert!(block.contains("guidance only"));
-        assert!(block.contains("does not change approval policy"));
+        assert!(block.contains("仅作指导"));
+        assert!(block.contains("不改变审批策略"));
         // It must never emit runtime config assignments.
         assert!(!block.contains("approval_policy ="));
         assert!(!block.contains("sandbox_mode ="));
@@ -587,7 +583,7 @@ mod tests {
             ..UserConstitution::default()
         };
         let block = c.render_block(None).unwrap();
-        assert!(!block.contains("Autonomy preference"));
+        assert!(!block.contains("自主程度偏好"));
     }
 
     #[test]
