@@ -19,7 +19,6 @@ pub mod debug;
 pub mod memory;
 pub mod plugins;
 pub mod project;
-pub mod session;
 pub mod skills;
 pub mod utility;
 
@@ -33,7 +32,6 @@ pub fn all_command_groups() -> &'static [&'static dyn CommandGroup] {
         .get_or_init(|| {
             vec![
                 &core::CoreCommands,
-                &session::SessionCommands,
                 &config::ConfigCommands,
                 &debug::DebugCommands,
                 &project::ProjectCommands,

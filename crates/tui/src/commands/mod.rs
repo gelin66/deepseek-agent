@@ -17,8 +17,6 @@ pub use traits::CommandInfo;
 
 // Long-standing public paths that predate the group layout.
 pub use groups::project::share;
-#[cfg(test)]
-pub(crate) use groups::session::rename_with_manager as rename_session_with_manager;
 
 // Voice capture plumbing shared with the hotbar and the UI event loop.
 pub use groups::core::voice;
@@ -1158,16 +1156,12 @@ mod tests {
     /// command, see it autocomplete, and then get an unhelpful "did you
     /// mean" suggestion. Also catches panics in handlers because the test
     /// runner unwinds the panic and reports the offending command.
-    /// `/save` and `/export` default their output paths to `cwd`-relative
-    /// filenames when no arg is supplied, which would scribble files into
-    /// `crates/tui/` when CI runs from there. Pass an explicit tempdir-
-    /// relative path for those two so the dispatch test stays sandboxed.
-    fn invocation_for(command_name: &str, alias_or_name: &str, tmpdir: &std::path::Path) -> String {
-        match command_name {
-            "save" => format!("/{alias_or_name} {}", tmpdir.join("session.json").display()),
-            "export" => format!("/{alias_or_name} {}", tmpdir.join("chat.md").display()),
-            _ => format!("/{alias_or_name}"),
-        }
+    fn invocation_for(
+        _command_name: &str,
+        alias_or_name: &str,
+        _tmpdir: &std::path::Path,
+    ) -> String {
+        format!("/{alias_or_name}")
     }
 
     /// `/restore` is covered by its own dedicated tests in
