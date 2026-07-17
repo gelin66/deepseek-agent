@@ -15,7 +15,6 @@ use crate::client::DeepSeekClient;
 use crate::config::Config;
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest};
-use crate::session_manager::SessionManager;
 use crate::tools::spec::{ToolError, ToolOutcome};
 use crate::tools::{ToolContext, ToolRegistryBuilder};
 
@@ -237,26 +236,12 @@ impl McpServer {
     }
 
     fn list_resources_response(&self) -> Value {
-        let mut resources = Vec::new();
-        resources.push(json!({
+        let resources = vec![json!({
             "uri": format!("file://{}", self.workspace.display()),
             "name": "workspace",
             "description": "Workspace root",
             "mimeType": "inode/directory",
-        }));
-
-        if let Ok(manager) = SessionManager::default_location()
-            && let Ok(sessions) = manager.list_sessions()
-        {
-            for session in sessions {
-                resources.push(json!({
-                    "uri": format!("deepseek://session/{}", session.id),
-                    "name": session.title,
-                    "description": format!("{} messages", session.message_count),
-                    "mimeType": "application/json",
-                }));
-            }
-        }
+        })];
 
         json!({ "resources": resources, "nextCursor": Value::Null })
     }
@@ -595,6 +580,7 @@ struct RpcError {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::fs;
 
     #[test]
     fn exposed_tools_map_aliases() {
@@ -621,5 +607,75 @@ mod tests {
             Some("apply_patch")
         );
         assert_eq!(map.get("shell").map(String::as_str), Some("exec_shell"));
+    }
+
+    #[test]
+    fn resources_list_exposes_only_workspace_and_never_scans_legacy_sessions() {
+        let _env = crate::test_support::lock_test_env();
+        let temp = tempfile::tempdir().expect("temporary MCP server root");
+        let home = temp.path().join("home");
+        let workspace = temp.path().join("workspace");
+        let sessions = home.join(".codewhale").join("sessions");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        fs::create_dir_all(&sessions).expect("create legacy sessions directory");
+        fs::write(
+            sessions.join("legacy-session.json"),
+            serde_json::to_vec_pretty(&json!({
+                "metadata": {
+                    "id": "legacy-session",
+                    "title": "legacy session must stay private",
+                    "created_at": "2026-07-17T00:00:00Z",
+                    "updated_at": "2026-07-17T00:00:00Z",
+                    "message_count": 1,
+                    "total_tokens": 1,
+                    "model": "deepseek-chat",
+                    "workspace": workspace,
+                }
+            }))
+            .expect("serialize legacy session"),
+        )
+        .expect("write legacy session");
+
+        let _home = crate::test_support::EnvVarGuard::set("HOME", &home);
+        let _codewhale_home = crate::test_support::EnvVarGuard::remove("CODEWHALE_HOME");
+        let mut server = McpServer::new(
+            workspace.clone(),
+            McpServerSettings {
+                expose_tools: Vec::new(),
+                require_approval: false,
+            },
+        )
+        .expect("construct MCP server");
+        let runtime = Runtime::new().expect("construct Tokio runtime");
+
+        let response = server
+            .handle_message(
+                &runtime,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "resources/list",
+                }),
+            )
+            .expect("resources/list response");
+        let resources = response["result"]["resources"]
+            .as_array()
+            .expect("resources array");
+
+        assert_eq!(
+            resources,
+            &[json!({
+                "uri": format!("file://{}", workspace.display()),
+                "name": "workspace",
+                "description": "Workspace root",
+                "mimeType": "inode/directory",
+            })]
+        );
+        assert!(
+            !response
+                .to_string()
+                .contains("deepseek://session/legacy-session"),
+            "resources/list must not expose legacy JSON sessions"
+        );
     }
 }
