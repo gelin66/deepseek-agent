@@ -336,6 +336,17 @@ pub(crate) async fn run_exec_runtime(
         } else {
             ExecStartupFailure::InvalidArguments
         };
+        // Schema v8 creation reservations are global to the RunStore. Generate
+        // this once per Start/Continue intent so distinct exec invocations
+        // cannot conflict, while any retry of this call reuses the same key.
+        let launch_request_id = if matches!(
+            &command,
+            RunCommand::Start(_) | RunCommand::Continue(_)
+        ) {
+            format!("exec-launch-{}", uuid::Uuid::new_v4())
+        } else {
+            "exec-launch".to_owned()
+        };
         let response = tokio::select! {
             biased;
             signal = recv_exec_signal(&mut signal_rx) => {
@@ -347,7 +358,7 @@ pub(crate) async fn run_exec_runtime(
             }
             response = tokio::time::timeout_at(
                 deadline,
-                application.execute(run_envelope("exec-launch", command)),
+                application.execute(run_envelope(&launch_request_id, command)),
             ) => match response {
                 Ok(response) => response,
                 Err(_) => {

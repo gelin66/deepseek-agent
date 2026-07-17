@@ -337,6 +337,145 @@ async fn completed_exec_resume_replays_the_same_terminal_without_another_model_r
     assert_eq!(terminal_event_count(&replay_after.events), 1);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sequential_fresh_runs_and_continue_share_one_store_without_creation_conflicts() {
+    let _serial = EXEC_TEST_LOCK.lock().await;
+    let server = MockServer::start().await;
+    mount_models(&server).await;
+    mount_chat(
+        &server,
+        sse_response(complete_sse("sequential-creation-marker")),
+    )
+    .await;
+
+    let first_prompt = "first fresh creation intent";
+    let second_prompt = "second fresh creation intent";
+    let continue_prompt = "continue only the second fresh run";
+    let (mut first_command, workspace, home) =
+        prepare_exec(&server.uri(), 30, first_prompt, "", None);
+    let codewhale_home = home.path().join(".codewhale");
+    first_command.env("CODEWHALE_HOME", &codewhale_home);
+    let first = run_with_timeout(first_command, PROCESS_TIMEOUT);
+    assert!(
+        first.status.success(),
+        "first fresh exec failed\nstdout:\n{}\nstderr:\n{}",
+        first.stdout,
+        first.stderr
+    );
+    let first_events = parse_strict_ndjson(&first.stdout);
+    let first_run_id = RunId::from(
+        assert_terminal_tail(&first_events, None)["run_id"]
+            .as_str()
+            .expect("first run id"),
+    );
+
+    std::thread::sleep(Duration::from_millis(5));
+    let second = run_with_timeout(
+        prepare_existing_exec(
+            &server.uri(),
+            workspace.path(),
+            home.path(),
+            second_prompt,
+            false,
+        ),
+        PROCESS_TIMEOUT,
+    );
+    assert!(
+        second.status.success(),
+        "second fresh exec hit a creation conflict\nstdout:\n{}\nstderr:\n{}",
+        second.stdout,
+        second.stderr
+    );
+    let second_events = parse_strict_ndjson(&second.stdout);
+    let second_run_id = RunId::from(
+        assert_terminal_tail(&second_events, None)["run_id"]
+            .as_str()
+            .expect("second run id"),
+    );
+    assert_ne!(second_run_id, first_run_id);
+
+    let state_db = codewhale_home.join("state.db");
+    let store = StateStore::open(Some(state_db.clone())).expect("open shared exec state db");
+    let second_before = store
+        .load(&second_run_id)
+        .await
+        .expect("load second fresh run")
+        .expect("second fresh run exists");
+    drop(store);
+
+    std::thread::sleep(Duration::from_millis(5));
+    let continued = run_with_timeout(
+        prepare_existing_exec(
+            &server.uri(),
+            workspace.path(),
+            home.path(),
+            continue_prompt,
+            true,
+        ),
+        PROCESS_TIMEOUT,
+    );
+    assert!(
+        continued.status.success(),
+        "continue exec hit a creation conflict\nstdout:\n{}\nstderr:\n{}",
+        continued.stdout,
+        continued.stderr
+    );
+    let continued_events = parse_strict_ndjson(&continued.stdout);
+    let continued_run_id = RunId::from(
+        assert_terminal_tail(&continued_events, None)["run_id"]
+            .as_str()
+            .expect("continued run id"),
+    );
+    assert_ne!(continued_run_id, first_run_id);
+    assert_ne!(continued_run_id, second_run_id);
+    assert_eq!(chat_request_count(&server).await, 3);
+
+    let store = StateStore::open(Some(state_db)).expect("reopen shared exec state db");
+    let first_replay = store
+        .load(&first_run_id)
+        .await
+        .expect("load first fresh run")
+        .expect("first fresh run exists");
+    let second_after = store
+        .load(&second_run_id)
+        .await
+        .expect("reload second fresh run")
+        .expect("second fresh run still exists");
+    let continued_replay = store
+        .load(&continued_run_id)
+        .await
+        .expect("load continued run")
+        .expect("continued run exists");
+    assert_eq!(
+        second_after.events, second_before.events,
+        "creating the continuation must not rewrite its source run"
+    );
+    assert_eq!(first_replay.snapshot.request.continued_from_run_id, None);
+    assert_eq!(second_after.snapshot.request.continued_from_run_id, None);
+    assert_eq!(continued_replay.snapshot.request.parent_run_id, None);
+    assert_eq!(
+        continued_replay.snapshot.request.continued_from_run_id,
+        Some(second_run_id.clone())
+    );
+    match &continued_replay.events[0].event {
+        RuntimeEventKind::RunCreated { request } => {
+            assert_eq!(request.input, continue_prompt);
+            assert_eq!(request.transcript, second_after.snapshot.transcript);
+        }
+        event => panic!("continued run must start with RunCreated, got {event:?}"),
+    }
+    let canonical_workspace =
+        std::fs::canonicalize(workspace.path()).expect("canonical shared workspace");
+    let roots = store
+        .list_root_runs(&canonical_workspace.display().to_string(), 10)
+        .await
+        .expect("list shared-store roots");
+    assert_eq!(roots.len(), 3);
+    assert!(roots.iter().any(|run| run.run_id == first_run_id));
+    assert!(roots.iter().any(|run| run.run_id == second_run_id));
+    assert!(roots.iter().any(|run| run.run_id == continued_run_id));
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn killed_in_flight_model_request_resumes_fail_closed_without_resending() {
@@ -1791,6 +1930,57 @@ fn prepare_resume_exec(
         .env("XDG_CONFIG_HOME", home.join(".config"))
         .env("XDG_DATA_HOME", home.join(".local/share"))
         .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("CODEWHALE_CONFIG_PATH", config_path)
+        .env("DEEPSEEK_API_KEY", TEST_KEY)
+        .env("CODEWHALE_BASE_URL", base_url)
+        .env("RUST_LOG", "warn")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn prepare_existing_exec(
+    base_url: &str,
+    workspace: &Path,
+    home: &Path,
+    prompt: &str,
+    continue_latest: bool,
+) -> Command {
+    let codewhale_home = home.join(".codewhale");
+    let config_path = codewhale_home.join("config.toml");
+    assert!(
+        config_path.is_file(),
+        "shared exec fixture config does not exist: {}",
+        config_path.display()
+    );
+    let mut command = Command::new(codewhale_tui_binary());
+    preserve_host_env(&mut command);
+    command
+        .current_dir(workspace)
+        .arg("--workspace")
+        .arg(workspace)
+        .arg("--no-project-config")
+        .arg("exec")
+        .arg("--auto")
+        .arg("--model")
+        .arg(TEST_MODEL)
+        .arg("--max-turns")
+        .arg("4")
+        .arg("--max-runtime-secs")
+        .arg("30")
+        .arg("--output-format")
+        .arg("stream-json");
+    if continue_latest {
+        command.arg("--continue");
+    }
+    command
+        .arg(prompt)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("CODEWHALE_HOME", &codewhale_home)
         .env("CODEWHALE_CONFIG_PATH", config_path)
         .env("DEEPSEEK_API_KEY", TEST_KEY)
         .env("CODEWHALE_BASE_URL", base_url)
