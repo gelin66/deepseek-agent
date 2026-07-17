@@ -18,7 +18,6 @@ mod help;
 mod hf;
 mod home;
 mod hooks;
-mod hotbar;
 mod links;
 mod model;
 mod modeldb;
@@ -95,10 +94,6 @@ impl CommandGroup for CoreCommands {
             Box::new(FunctionCommand::new(
                 workflow::WorkflowCmd::info(),
                 workflow::WorkflowCmd::execute,
-            )),
-            Box::new(FunctionCommand::new(
-                hotbar::HotbarCmd::info(),
-                hotbar::HotbarCmd::execute,
             )),
             Box::new(FunctionCommand::new(
                 setup::SetupCmd::info(),

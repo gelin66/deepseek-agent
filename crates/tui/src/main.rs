@@ -4023,7 +4023,7 @@ fn print_doctor_setup_report(
         );
     }
     println!(
-        "  · next actions: /constitution (standing law), /setup report (readiness), /setup provider or /provider setup <name> (provider credentials), /model (route), /config (runtime posture), /setup fleet (Operate/Fleet readiness), /fleet setup (explicit profile authoring), /setup hotbar (optional shortcuts), /setup tools (Tools/MCP readiness), /setup persistence (path review)"
+        "  · next actions: /constitution (standing law), /setup report (readiness), /setup provider or /provider setup <name> (provider credentials), /model (route), /config (runtime posture), /setup fleet (Operate/Fleet readiness), /fleet setup (explicit profile authoring), /setup tools (Tools/MCP readiness), /setup persistence (path review)"
     );
     for step in codewhale_config::SetupStep::ALL {
         let entry = state.steps.get(&step);
@@ -4383,7 +4383,6 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
             "provider_model": "/setup provider, /provider setup <name>, or /model",
             "runtime_posture": "/config",
             "operate_fleet": "/setup fleet (readiness), /fleet setup (explicit profile authoring)",
-            "hotbar": "/setup hotbar",
             "tools_mcp": "/setup tools",
             "persistence": "/setup persistence",
         },
@@ -4397,7 +4396,6 @@ fn setup_step_id(step: codewhale_config::SetupStep) -> &'static str {
         codewhale_config::SetupStep::ProviderModel => "provider_model",
         codewhale_config::SetupStep::TrustSandbox => "trust_sandbox",
         codewhale_config::SetupStep::ToolsMcp => "tools_mcp",
-        codewhale_config::SetupStep::Hotbar => "hotbar",
         codewhale_config::SetupStep::Persistence => "persistence",
         codewhale_config::SetupStep::Constitution => "constitution",
         codewhale_config::SetupStep::OperateFleet => "operate_fleet",
@@ -8140,7 +8138,6 @@ mod doctor_setup_state_tests {
             report["next_actions"]["operate_fleet"],
             "/setup fleet (readiness), /fleet setup (explicit profile authoring)"
         );
-        assert_eq!(report["next_actions"]["hotbar"], "/setup hotbar");
         assert_eq!(report["next_actions"]["tools_mcp"], "/setup tools");
         assert_eq!(report["next_actions"]["persistence"], "/setup persistence");
         assert_eq!(

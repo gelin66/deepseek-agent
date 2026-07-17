@@ -35,7 +35,6 @@ use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
 use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
-use crate::tui::hotbar::HotbarActionRegistry;
 use crate::tui::paste_burst::{FlushResult, PasteBurst};
 use crate::tui::scrolling::{MouseScrollState, TranscriptLineMeta, TranscriptScroll};
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
@@ -1472,7 +1471,6 @@ pub enum SidebarRowAction {
     /// The user confirms with Enter or cancels by editing/clearing the draft.
     #[allow(dead_code)] // destructive confirm path; mouse_ui already matches it (TUI-DOG-008)
     PrefillCommand(String),
-    HotbarSlot(u8),
     ToggleAgentDetails {
         agent_id: String,
     },
@@ -1499,7 +1497,6 @@ impl SidebarRowAction {
         match self {
             Self::Command(command) => Some(command.as_str()),
             Self::PrefillCommand(_)
-            | Self::HotbarSlot(_)
             | Self::ToggleAgentDetails { .. }
             | Self::OpenAgentDetail { .. }
             | Self::CancelAgent { .. }
@@ -1515,8 +1512,7 @@ impl SidebarRowAction {
             Self::CancelAgent { .. } => true,
             Self::ToggleAgentDetails { .. }
             | Self::OpenAgentDetail { .. }
-            | Self::InspectText { .. }
-            | Self::HotbarSlot(_) => false,
+            | Self::InspectText { .. } => false,
         }
     }
 }
@@ -1616,9 +1612,6 @@ pub(crate) struct PendingProviderSwitch {
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
     pub mode: AppMode,
-    /// Registered hotbar actions available for future slot config/render layers.
-    #[allow(dead_code)]
-    pub hotbar_actions: HotbarActionRegistry,
     /// Composer sub-state (input, cursor, history, menus).
     pub composer: ComposerState,
     /// Viewport sub-state (scroll, cache, selection).
@@ -1807,8 +1800,6 @@ pub struct App {
     pub launch: LaunchState,
     /// Mouse-selected launch action, consumed by the async UI loop.
     pub pending_launch_action: Option<crate::tui::underwater::LaunchAction>,
-    /// Mouse-selected hotbar slot, consumed by the async UI loop.
-    pub pending_hotbar_slot: Option<u8>,
     /// Whether the renderer should wrap each frame in DEC mode 2026
     /// synchronized output. Resolved from `Settings::synchronized_output`
     /// at construction; `auto`/`on` → `true`, `off` → `false`. The Ptyxis
@@ -1832,7 +1823,7 @@ pub struct App {
     pub billing_presentation: crate::route_billing::BillingPresentation,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
-    /// Voice input state — toggled by `/voice` and the voice hotbar action.
+    /// Voice input state toggled by `/voice`.
     pub voice_enabled: bool,
     /// Auto-send after transcription when the transcript ends with an
     /// explicit send instruction ("send it" / "发送"). Toggled by `/voice-send`.
@@ -2770,18 +2761,8 @@ impl App {
             crate::mcp::load_config_with_workspace(&mcp_config_path, &workspace)
                 .map(|cfg| cfg.servers.len())
                 .unwrap_or(0);
-        let mut hotbar_actions = HotbarActionRegistry::with_configured_routes(
-            config,
-            provider,
-            &model,
-            &provider_models,
-        );
-        // #2069: expose the already-discovered skills as bindable hotbar
-        // actions. Reuses the startup skill cache, so no extra filesystem I/O.
-        hotbar_actions.register_skills(&cached_skills);
         let mut app = Self {
             mode: initial_mode,
-            hotbar_actions,
             composer: ComposerState {
                 input: initial_input_text,
                 cursor_position: initial_input_cursor,
@@ -2880,7 +2861,6 @@ impl App {
             ocean_treatment,
             launch,
             pending_launch_action: None,
-            pending_hotbar_slot: None,
             synchronized_output_enabled,
             status_indicator,
             show_thinking,
@@ -6370,8 +6350,6 @@ pub enum AppAction {
     OpenFleetRoster,
     /// Open the `/fleet` profile authoring wizard.
     OpenFleetSetup,
-    /// Open the `/hotbar` setup wizard.
-    OpenHotbarSetup,
     /// Open the constitution-first `/setup` wizard shell.
     OpenSetupWizard,
     /// Open the constitution-first `/setup` wizard at a specific step.
@@ -6380,11 +6358,6 @@ pub enum AppAction {
     },
     /// Record that the bundled/default constitution should be used.
     UseBundledConstitution,
-    /// Disable the Hotbar: persist `hotbar = []` and clear the live slots.
-    DisableHotbar,
-    /// Restore the default recommended Hotbar slots: remove the `hotbar` key so
-    /// the resolver falls back to the built-in defaults.
-    RestoreHotbarDefaults,
     /// Open an external URL in the system browser.
     OpenExternalUrl {
         url: String,
@@ -6415,12 +6388,6 @@ pub enum AppAction {
         provider: ApiProvider,
         model: Option<String>,
     },
-    /// Switch provider+model through the same apply path as a `/model` route
-    /// row. Used by Hotbar route slots so dispatch does not hand-mutate config.
-    SwitchModelRoute {
-        provider: ApiProvider,
-        model: String,
-    },
     UpdateCompaction(CompactionConfig),
     UpdateStreamChunkTimeout(u64),
     UpdateSubagentRuntimeConfig {
@@ -6445,9 +6412,8 @@ pub enum AppAction {
         workspace: PathBuf,
     },
     /// Record from the microphone and route the transcription into the
-    /// composer (or auto-send it). Emitted by `/voice` and the voice hotbar
-    /// action; handled in the UI event loop where the live `Config` supplies
-    /// provider credentials.
+    /// composer (or auto-send it). Handled in the UI event loop where the live
+    /// `Config` supplies provider credentials.
     VoiceCapture,
     /// Export and share the current session as a web URL.
     ShareSession {

@@ -26,7 +26,6 @@ step. That step is discovery/readiness only:
 | Report config path presence (global + project) | Write or edit `mcp.json` contents |
 | Safe static health probe (missing command/url, broken absolute path, missing bearer env) | `codewhale mcp validate`, live connect, OAuth login |
 | Point at safe on-ramps (`/mcp`, `codewhale mcp init`, `codewhale doctor`) | Install community skills, trust skills, enable plugins |
-| Share Hotbar source counts from the same skill/MCP adapters (#3399) | Bind Hotbar slots (Hotbar step / `H`) |
 | Record optional/`needs_action` setup_state without blocking first-run | Anything that spawns processes or installs packages |
 
 Empty inventory is **not** an error: first-run users see “nothing configured

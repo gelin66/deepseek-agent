@@ -91,7 +91,7 @@ impl SetupWizardStep for StaticSetupStep {
     }
 }
 
-const STEP_SPECS: [StaticSetupStep; 9] = [
+const STEP_SPECS: [StaticSetupStep; 8] = [
     StaticSetupStep {
         id: SetupStep::Language,
         title_id: MessageId::SetupStepLanguageTitle,
@@ -120,12 +120,6 @@ const STEP_SPECS: [StaticSetupStep; 9] = [
         id: SetupStep::OperateFleet,
         title_id: MessageId::SetupStepOperateFleetTitle,
         why_id: MessageId::SetupStepOperateFleetWhy,
-        required: false,
-    },
-    StaticSetupStep {
-        id: SetupStep::Hotbar,
-        title_id: MessageId::SetupStepHotbarTitle,
-        why_id: MessageId::SetupStepHotbarWhy,
         required: false,
     },
     StaticSetupStep {
@@ -199,14 +193,10 @@ struct SetupRuntimeFacts {
     fleet_roster_result: String,
     operate_concurrency_result: String,
     operate_result: String,
-    hotbar_bindings_result: String,
-    hotbar_actions_result: String,
-    hotbar_result: String,
     tools_mcp_servers_result: String,
     tools_mcp_skills_result: String,
     tools_mcp_tools_result: String,
     tools_mcp_plugins_result: String,
-    tools_mcp_hotbar_result: String,
     tools_mcp_result: String,
     tools_mcp_needs_action: bool,
     tools_mcp_path_display: String,
@@ -246,14 +236,10 @@ impl Default for SetupRuntimeFacts {
             fleet_roster_result: "Fleet roster not loaded".to_string(),
             operate_concurrency_result: "concurrency not loaded".to_string(),
             operate_result: "operate readiness not loaded".to_string(),
-            hotbar_bindings_result: "Hotbar config not loaded".to_string(),
-            hotbar_actions_result: "Hotbar actions not loaded".to_string(),
-            hotbar_result: "hotbar not loaded".to_string(),
             tools_mcp_servers_result: "MCP config not loaded".to_string(),
             tools_mcp_skills_result: "skills dir not loaded".to_string(),
             tools_mcp_tools_result: "tools dir not loaded".to_string(),
             tools_mcp_plugins_result: "plugins dir not loaded".to_string(),
-            tools_mcp_hotbar_result: "hotbar source metadata not loaded".to_string(),
             tools_mcp_result: "tools/MCP not loaded".to_string(),
             tools_mcp_needs_action: false,
             tools_mcp_path_display: String::new(),
@@ -359,29 +345,6 @@ impl SetupRuntimeFacts {
             network
         );
         let operate = operate::SetupOperateFacts::from_app_config(app, config, provider_ready);
-        let known_hotbar_action_ids = app
-            .hotbar_actions
-            .iter()
-            .map(|action| action.id())
-            .collect::<Vec<_>>();
-        let hotbar_resolution = config.resolve_hotbar_bindings(&known_hotbar_action_ids);
-        let configured_hotbar_slots = config.hotbar.as_ref().map_or(0, Vec::len);
-        let hotbar_state = match config.hotbar.as_ref() {
-            None => "hidden",
-            Some(bindings) if bindings.is_empty() => "disabled",
-            Some(_) => "customized",
-        };
-        let active_hotbar_slots = hotbar_resolution.bindings.len();
-        let hotbar_warning_count = hotbar_resolution.warnings.len();
-        let hotbar_bindings_result = format!(
-            "{hotbar_state}; configured_slots={configured_hotbar_slots}; active_slots={active_hotbar_slots}; warnings={hotbar_warning_count}"
-        );
-        let hotbar_actions_result =
-            format!("{} bindable actions registered", app.hotbar_actions.len());
-        let hotbar_result = format!(
-            "state={hotbar_state}, configured_slots={configured_hotbar_slots}, active_slots={active_hotbar_slots}, actions={}, warnings={hotbar_warning_count}",
-            app.hotbar_actions.len()
-        );
         let codewhale_home = setup_codewhale_home_dir();
         let persistence = SetupPersistenceFacts::from_app_config(app, config, &codewhale_home);
         let tools_mcp =
@@ -390,7 +353,6 @@ impl SetupRuntimeFacts {
         let tools_mcp_skills_result = tools_mcp.skills_result;
         let tools_mcp_tools_result = tools_mcp.tools_result;
         let tools_mcp_plugins_result = tools_mcp.plugins_result;
-        let tools_mcp_hotbar_result = tools_mcp.hotbar_result;
         let tools_mcp_result = tools_mcp.result;
         let tools_mcp_needs_action = tools_mcp.needs_action;
         let tools_mcp_path_display = tools_mcp.mcp_path_display;
@@ -430,14 +392,10 @@ impl SetupRuntimeFacts {
             fleet_roster_result: operate.roster_result,
             operate_concurrency_result: operate.concurrency_result,
             operate_result: operate.result,
-            hotbar_bindings_result,
-            hotbar_actions_result,
-            hotbar_result,
             tools_mcp_servers_result,
             tools_mcp_skills_result,
             tools_mcp_tools_result,
             tools_mcp_plugins_result,
-            tools_mcp_hotbar_result,
             tools_mcp_result,
             tools_mcp_needs_action,
             tools_mcp_path_display,
@@ -1823,21 +1781,6 @@ impl SetupWizardView {
         })
     }
 
-    fn commit_hotbar_review(&mut self) -> ViewAction {
-        let mut state = self.state.clone();
-        state.set_step(
-            SetupStep::Hotbar,
-            StepEntry::new(StepStatus::Verified, false, CONSTITUTION_CHECKPOINT_VERSION)
-                .with_result(self.facts.hotbar_result.clone()),
-        );
-        self.state = state.clone();
-        self.move_next();
-        ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
-            state,
-            message: tr(self.locale, MessageId::SetupHotbarReviewed).to_string(),
-        })
-    }
-
     fn commit_tools_mcp_review(&mut self) -> ViewAction {
         // Optional step: empty/off inventories settle as Optional; broken
         // configured tools record NeedsAction without blocking first-run.
@@ -2272,9 +2215,6 @@ impl ModalView for SetupWizardView {
             KeyCode::Char('f') if self.selected_step() == SetupStep::OperateFleet => {
                 ViewAction::EmitAndClose(ViewEvent::SetupOpenFleetRequested)
             }
-            KeyCode::Char('h') if self.selected_step() == SetupStep::Hotbar => {
-                ViewAction::EmitAndClose(ViewEvent::SetupOpenHotbarRequested)
-            }
             KeyCode::Char('m') if self.selected_step() == SetupStep::TrustSandbox => {
                 ViewAction::EmitAndClose(ViewEvent::SetupOpenModeRequested)
             }
@@ -2319,9 +2259,6 @@ impl ModalView for SetupWizardView {
             }
             KeyCode::Enter if self.selected_step() == SetupStep::OperateFleet => {
                 self.commit_operate_fleet_review()
-            }
-            KeyCode::Enter if self.selected_step() == SetupStep::Hotbar => {
-                self.commit_hotbar_review()
             }
             KeyCode::Enter if self.selected_step() == SetupStep::ToolsMcp => {
                 self.commit_tools_mcp_review()
@@ -2421,11 +2358,6 @@ impl ModalView for SetupWizardView {
             hints.push(ActionHint::new(
                 "F",
                 tr(self.locale, MessageId::SetupActionFleet).to_string(),
-            ));
-        } else if self.selected_step() == SetupStep::Hotbar {
-            hints.push(ActionHint::new(
-                "H",
-                tr(self.locale, MessageId::SetupActionHotbar).to_string(),
             ));
         } else if self.selected_step() == SetupStep::TrustSandbox {
             hints.push(ActionHint::new(
@@ -2531,7 +2463,6 @@ impl SetupWizardView {
             SetupStep::TrustSandbox => self.runtime_posture_detail_lines(),
             SetupStep::Constitution => self.constitution_detail_lines(),
             SetupStep::OperateFleet => self.operate_fleet_detail_lines(),
-            SetupStep::Hotbar => self.hotbar_detail_lines(),
             SetupStep::ToolsMcp => self.tools_mcp_detail_lines(),
             SetupStep::Persistence => self.persistence_detail_lines(),
             SetupStep::Verification => self.verification_detail_lines(),
@@ -2742,23 +2673,6 @@ impl SetupWizardView {
         ]
     }
 
-    fn hotbar_detail_lines(&self) -> Vec<Line<'static>> {
-        vec![
-            self.detail_row(
-                MessageId::SetupHotbarBindingsLabel,
-                &self.facts.hotbar_bindings_result,
-            ),
-            self.detail_row(
-                MessageId::SetupHotbarActionsLabel,
-                &self.facts.hotbar_actions_result,
-            ),
-            self.setup_review_hint_line(
-                MessageId::SetupHotbarReviewHint,
-                Some("Press H to customize slots."),
-            ),
-        ]
-    }
-
     fn tools_mcp_detail_lines(&self) -> Vec<Line<'static>> {
         vec![
             self.detail_row(
@@ -2776,10 +2690,6 @@ impl SetupWizardView {
             self.detail_row(
                 MessageId::SetupToolsMcpPluginsLabel,
                 &self.facts.tools_mcp_plugins_result,
-            ),
-            self.detail_row(
-                MessageId::SetupToolsMcpHotbarLabel,
-                &self.facts.tools_mcp_hotbar_result,
             ),
             self.setup_review_hint_line(
                 MessageId::SetupToolsMcpReviewHint,
@@ -3124,7 +3034,6 @@ fn tools_mcp_on_ramp_text(locale: Locale, facts: &SetupRuntimeFacts) -> String {
         skills_result: facts.tools_mcp_skills_result.clone(),
         tools_result: facts.tools_mcp_tools_result.clone(),
         plugins_result: facts.tools_mcp_plugins_result.clone(),
-        hotbar_result: facts.tools_mcp_hotbar_result.clone(),
         result: facts.tools_mcp_result.clone(),
         overall_status: if facts.tools_mcp_needs_action {
             tools_mcp::InventoryStatus::NeedsConfig
@@ -3874,7 +3783,6 @@ mod tests {
                 SetupStep::TrustSandbox,
                 SetupStep::Constitution,
                 SetupStep::OperateFleet,
-                SetupStep::Hotbar,
                 SetupStep::ToolsMcp,
                 SetupStep::Persistence,
                 SetupStep::Verification,
@@ -4346,23 +4254,6 @@ mod tests {
         assert!(matches!(
             fleet_action,
             ViewAction::EmitAndClose(ViewEvent::SetupOpenFleetRequested)
-        ));
-    }
-
-    #[test]
-    fn hotbar_step_hands_off_to_existing_hotbar_setup() {
-        let mut view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::Hotbar,
-            SetupRuntimeFacts::default(),
-        );
-
-        let action = view.handle_key(key(KeyCode::Char('h')));
-
-        assert!(matches!(
-            action,
-            ViewAction::EmitAndClose(ViewEvent::SetupOpenHotbarRequested)
         ));
     }
 
@@ -5656,67 +5547,6 @@ mod tests {
             .expect("operate result");
         assert!(result.contains("plan limit not probed"), "{result}");
         assert!(message.contains("needs action"));
-        assert_eq!(view.selected_step(), SetupStep::Hotbar);
-    }
-
-    #[test]
-    fn hotbar_detail_lines_show_read_only_config_facts() {
-        let facts = SetupRuntimeFacts {
-            hotbar_bindings_result: "customized; configured_slots=2; active_slots=2; warnings=0"
-                .to_string(),
-            hotbar_actions_result: "13 bindable actions registered".to_string(),
-            ..SetupRuntimeFacts::default()
-        };
-        let view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::Hotbar,
-            facts,
-        );
-
-        let text = lines_to_text(view.hotbar_detail_lines());
-
-        assert!(text.contains("Hotbar bindings:"));
-        assert!(text.contains("configured_slots=2"));
-        assert!(text.contains("Bindable actions:"));
-        assert!(text.contains("13 bindable actions"));
-        assert!(text.contains("Enter records this setup snapshot. Press H to customize slots."));
-    }
-
-    #[test]
-    fn hotbar_review_records_optional_snapshot() {
-        let facts = SetupRuntimeFacts {
-            hotbar_result:
-                "state=customized, configured_slots=2, active_slots=2, actions=13, warnings=0"
-                    .to_string(),
-            ..SetupRuntimeFacts::default()
-        };
-        let mut view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::Hotbar,
-            facts,
-        );
-
-        let action = view.handle_key(key(KeyCode::Enter));
-
-        let ViewAction::Emit(ViewEvent::SetupStateCommitRequested { state, message }) = action
-        else {
-            panic!("expected setup-state commit event");
-        };
-        assert_eq!(state.status(SetupStep::Hotbar), StepStatus::Verified);
-        let entry = state
-            .steps
-            .get(&SetupStep::Hotbar)
-            .expect("hotbar setup entry");
-        assert!(!entry.required);
-        assert!(
-            entry
-                .result
-                .as_deref()
-                .is_some_and(|result| result.contains("state=customized"))
-        );
-        assert!(message.contains("Hotbar setup state recorded"));
         assert_eq!(view.selected_step(), SetupStep::ToolsMcp);
     }
 
@@ -5724,10 +5554,9 @@ mod tests {
     fn tools_mcp_detail_lines_show_read_only_inventory_facts() {
         let facts = SetupRuntimeFacts {
             tools_mcp_servers_result: "healthy — 2 configured (2 healthy, 0 needs_config, 0 off; global present at /tmp/mcp.json; project missing at /tmp/project/.codewhale/mcp.json); healthy: docs, search".to_string(),
-            tools_mcp_skills_result: "healthy — 3 discovered (hotbar skill sources), 3 on disk at /tmp/skills".to_string(),
+            tools_mcp_skills_result: "healthy — 3 discovered, 3 on disk at /tmp/skills".to_string(),
             tools_mcp_tools_result: "healthy — 1 entries, 0 script-plugin tools at /tmp/tools".to_string(),
             tools_mcp_plugins_result: "off — nothing configured yet (missing at /tmp/plugins); optional".to_string(),
-            tools_mcp_hotbar_result: "healthy — shared adapters: mcp_actions=0, skill_actions=3, plugin_actions=0 (deferred), slash_actions=12".to_string(),
             ..SetupRuntimeFacts::default()
         };
         let view = SetupWizardView::new_at_with_facts(
@@ -5747,8 +5576,6 @@ mod tests {
         assert!(text.contains("/tmp/skills"));
         assert!(text.contains("Tools dir:"));
         assert!(text.contains("Plugins:"));
-        assert!(text.contains("Hotbar sources:"));
-        assert!(text.contains("shared adapters"));
         assert!(text.contains("Enter records this setup snapshot."));
         assert!(text.contains("Press R for safe on-ramps"));
     }
@@ -5757,7 +5584,7 @@ mod tests {
     fn tools_mcp_review_records_optional_snapshot_when_empty() {
         let facts = SetupRuntimeFacts {
             tools_mcp_result:
-                "mcp=off, skills=off, tools=off, plugins=off, hotbar_sources=shared adapters: mcp_actions=0, overall=off, mode=read_only_safe_probe"
+                "mcp=off, skills=off, tools=off, plugins=off, overall=off, mode=read_only_safe_probe"
                     .to_string(),
             tools_mcp_needs_action: false,
             ..SetupRuntimeFacts::default()
@@ -5832,7 +5659,6 @@ mod tests {
             tools_mcp_skills_result: "off — missing".into(),
             tools_mcp_tools_result: "off — missing".into(),
             tools_mcp_plugins_result: "off — missing".into(),
-            tools_mcp_hotbar_result: "off — shared adapters".into(),
             tools_mcp_path_display: "~/.codewhale/mcp.json".into(),
             tools_mcp_skills_path_display: "~/.codewhale/skills".into(),
             tools_mcp_plugins_path_display: "~/.codewhale/plugins".into(),

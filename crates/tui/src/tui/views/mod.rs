@@ -46,7 +46,6 @@ pub enum ModalKind {
     ModePicker,
     FleetRoster,
     FleetSetup,
-    HotbarSetup,
     SetupWizard,
     FilePicker,
     StatusPicker,
@@ -691,12 +690,6 @@ pub enum ViewEvent {
         items: Vec<crate::config::StatusItem>,
         final_save: bool,
     },
-    /// Emitted by the `/hotbar` setup wizard when the user saves the draft
-    /// bindings. The host updates live config state; disk persistence is
-    /// handled by the follow-up persistence slice.
-    HotbarSetupSaved {
-        bindings: Vec<codewhale_config::HotbarBindingToml>,
-    },
     /// Emitted by the constitution-first setup shell when a staged setup-state
     /// record should be committed atomically to `$CODEWHALE_HOME/setup_state.json`.
     SetupStateCommitRequested {
@@ -775,18 +768,12 @@ pub enum ViewEvent {
     /// Emitted by the setup Operate/Fleet readiness card to hand off to the
     /// existing Fleet setup wizard without writing Fleet config itself.
     SetupOpenFleetRequested,
-    /// Emitted by the setup Hotbar card to hand off to the existing Hotbar
-    /// setup wizard without rewriting bindings itself.
-    SetupOpenHotbarRequested,
     /// Emitted by the setup Runtime Posture card to hand off to the existing
     /// work-mode picker.
     SetupOpenModeRequested,
     /// Emitted by the setup Runtime Posture card to hand off to the existing
     /// config view for approval/sandbox/network details.
     SetupOpenConfigRequested,
-    /// Emitted by the `/hotbar` setup wizard when the user chooses "Disable
-    /// Hotbar". The host persists `hotbar = []` and hides the panel.
-    HotbarDisableRequested,
     /// Emitted by the pager (`c` / `y`) to copy its body to the system
     /// clipboard. The host handler writes via `app.clipboard` and surfaces a
     /// status message — modal views cannot reach `app` directly. `label` is

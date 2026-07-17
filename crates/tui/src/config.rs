@@ -2043,11 +2043,6 @@ pub struct Config {
     #[serde(default)]
     pub auto: Option<AutoConfig>,
 
-    /// Optional 1-8 hotbar slot bindings (#2064). When absent, hotbar UI and
-    /// dispatch layers use the built-in defaults from `codewhale_config`.
-    #[serde(default)]
-    pub hotbar: Option<Vec<codewhale_config::HotbarBindingToml>>,
-
     /// Startup update-check behavior. When absent, the TUI keeps the default
     /// fire-and-forget latest-release check.
     #[serde(default)]
@@ -4581,15 +4576,6 @@ impl Config {
         self.update.clone().unwrap_or_default()
     }
 
-    /// Resolve durable hotbar bindings for render/dispatch layers.
-    #[must_use]
-    pub fn resolve_hotbar_bindings(
-        &self,
-        known_action_ids: &[&str],
-    ) -> codewhale_config::HotbarConfigResolution {
-        codewhale_config::resolve_hotbar_bindings(self.hotbar.as_deref(), known_action_ids)
-    }
-
     /// Resolve enabled features from defaults and config entries.
     #[must_use]
     pub fn features(&self) -> Features {
@@ -6191,7 +6177,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         memory: override_cfg.memory.or(base.memory),
         speech: override_cfg.speech.or(base.speech),
         auto: override_cfg.auto.or(base.auto),
-        hotbar: override_cfg.hotbar.or(base.hotbar),
         update: override_cfg.update.or(base.update),
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {

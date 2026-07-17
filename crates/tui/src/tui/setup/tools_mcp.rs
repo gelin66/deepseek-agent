@@ -11,7 +11,6 @@ use crate::config::Config;
 use crate::localization::{MessageId, tr};
 use crate::mcp::{McpConfig, McpManagerSnapshot, McpServerConfig, McpServerSnapshot};
 use crate::tui::app::App;
-use crate::tui::hotbar::actions::HotbarActionCategory;
 use crate::utils::display_path;
 use codewhale_config::Locale;
 
@@ -65,7 +64,6 @@ pub(super) struct SetupToolsMcpFacts {
     pub(super) skills_result: String,
     pub(super) tools_result: String,
     pub(super) plugins_result: String,
-    pub(super) hotbar_result: String,
     pub(super) result: String,
     pub(super) overall_status: InventoryStatus,
     pub(super) needs_action: bool,
@@ -81,7 +79,6 @@ impl Default for SetupToolsMcpFacts {
             skills_result: "skills dir not loaded".to_string(),
             tools_result: "tools dir not loaded".to_string(),
             plugins_result: "plugins dir not loaded".to_string(),
-            hotbar_result: "hotbar source metadata not loaded".to_string(),
             result: "tools/MCP not loaded".to_string(),
             overall_status: InventoryStatus::Off,
             needs_action: false,
@@ -100,7 +97,6 @@ impl SetupToolsMcpFacts {
         let tools_dir = codewhale_home.join("tools");
         let tools = tools_dir_inventory(&tools_dir);
         let plugins = plugins_inventory(app, config, codewhale_home);
-        let hotbar = hotbar_source_inventory(app);
 
         let overall = mcp
             .status
@@ -121,15 +117,13 @@ impl SetupToolsMcpFacts {
         let skills_result = format!("{} — {}", skills.status.as_str(), skills.detail);
         let tools_result = format!("{} — {}", tools.status.as_str(), tools.detail);
         let plugins_result = format!("{} — {}", plugins.status.as_str(), plugins.detail);
-        let hotbar_result = format!("{} — {}", hotbar.status.as_str(), hotbar.detail);
 
         let result = format!(
-            "mcp={}, skills={}, tools={}, plugins={}, hotbar_sources={}, overall={}, mode=read_only_safe_probe",
+            "mcp={}, skills={}, tools={}, plugins={}, overall={}, mode=read_only_safe_probe",
             mcp.status.as_str(),
             skills.status.as_str(),
             tools.status.as_str(),
             plugins.status.as_str(),
-            hotbar.detail,
             overall.as_str(),
         );
 
@@ -138,7 +132,6 @@ impl SetupToolsMcpFacts {
             skills_result,
             tools_result,
             plugins_result,
-            hotbar_result,
             result,
             overall_status: overall,
             needs_action,
@@ -155,7 +148,6 @@ pub(super) fn on_ramp_text(locale: Locale, facts: &SetupToolsMcpFacts) -> String
         .replace("{skills_result}", &facts.skills_result)
         .replace("{tools_result}", &facts.tools_result)
         .replace("{plugins_result}", &facts.plugins_result)
-        .replace("{hotbar_result}", &facts.hotbar_result)
         .replace("{mcp_path}", &facts.mcp_path_display)
         .replace("{skills_path}", &facts.skills_path_display)
         .replace("{plugins_path}", &facts.plugins_path_display)
@@ -414,7 +406,7 @@ fn skills_inventory(app: &App) -> InventoryRow {
     InventoryRow {
         status: InventoryStatus::Healthy,
         detail: format!(
-            "{discovered} discovered (hotbar skill sources), {on_disk} on disk at {path}; /skills lists names and trust"
+            "{discovered} discovered, {on_disk} on disk at {path}; /skills lists names and trust"
         ),
     }
 }
@@ -468,8 +460,8 @@ fn plugins_inventory(app: &App, config: &Config, codewhale_home: &Path) -> Inven
         count_manifest_plugins(&plugins_dir)
     };
 
-    // Script plugins under [tools].plugin_dir (distinct from slash commands;
-    // Hotbar Plugin source remains deferred/exploratory).
+    // Script plugins under [tools].plugin_dir remain distinct from manifest
+    // plugins and are inventoried without executing them.
     let script_dir = config
         .tools
         .as_ref()
@@ -486,7 +478,7 @@ fn plugins_inventory(app: &App, config: &Config, codewhale_home: &Path) -> Inven
         return InventoryRow {
             status: InventoryStatus::Off,
             detail: format!(
-                "nothing configured yet (missing at {path}); optional — `codewhale setup --plugins`; plugin commands stay distinct from slash and are deferred on Hotbar"
+                "nothing configured yet (missing at {path}); optional — `codewhale setup --plugins`"
             ),
         };
     }
@@ -501,9 +493,7 @@ fn plugins_inventory(app: &App, config: &Config, codewhale_home: &Path) -> Inven
     if manifest_total == 0 && script_count == 0 {
         return InventoryRow {
             status: InventoryStatus::Off,
-            detail: format!(
-                "dir present at {path} with 0 plugins; plugin commands not enumerated as slash commands (Hotbar plugin source deferred)"
-            ),
+            detail: format!("dir present at {path} with 0 plugins"),
         };
     }
 
@@ -518,37 +508,6 @@ fn plugins_inventory(app: &App, config: &Config, codewhale_home: &Path) -> Inven
 
 fn plugins_dir_for(_app: &App, _config: &Config, codewhale_home: &Path) -> PathBuf {
     codewhale_home.join("plugins")
-}
-
-fn hotbar_source_inventory(app: &App) -> InventoryRow {
-    // Reuse the same Hotbar action registry the setup Hotbar step and command
-    // palette already share — do not re-discover MCP/skills here.
-    let mut mcp = 0usize;
-    let mut skill = 0usize;
-    let mut plugin = 0usize;
-    let mut slash = 0usize;
-    for action in app.hotbar_actions.iter() {
-        match action.category() {
-            c if c == HotbarActionCategory::Mcp.as_str() => mcp += 1,
-            c if c == HotbarActionCategory::Skill.as_str() => skill += 1,
-            c if c == HotbarActionCategory::Plugin.as_str() => plugin += 1,
-            c if c == HotbarActionCategory::Slash.as_str() => slash += 1,
-            _ => {}
-        }
-    }
-    // Plugin source is deferred by design (#3399) — zero dispatchable plugin
-    // actions is healthy, not a failure.
-    let status = if mcp > 0 || skill > 0 {
-        InventoryStatus::Healthy
-    } else {
-        InventoryStatus::Off
-    };
-    InventoryRow {
-        status,
-        detail: format!(
-            "shared adapters: mcp_actions={mcp}, skill_actions={skill}, plugin_actions={plugin} (deferred), slash_actions={slash}"
-        ),
-    }
 }
 
 fn count_dir_entries(dir: &Path) -> usize {
@@ -595,7 +554,6 @@ mod tests {
     use crate::config::Config;
     use crate::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
     use crate::tui::app::TuiOptions;
-    use crate::tui::hotbar::actions::HotbarActionRegistry;
     use codewhale_config::Locale;
     use tempfile::TempDir;
 
@@ -633,7 +591,6 @@ mod tests {
         // leak into inventory assertions.
         app.skills_dir = skills_dir;
         app.cached_skills.clear();
-        app.hotbar_actions = HotbarActionRegistry::with_builtins();
         app
     }
 
@@ -713,10 +670,7 @@ mod tests {
         .expect("manifest");
 
         let mut app = test_app(tmp.path(), None, mcp_path, skills_dir);
-        // Simulate the same skill registration Hotbar uses at startup.
         app.cached_skills = vec![("alpha".into(), "alpha skill".into())];
-        app.hotbar_actions = HotbarActionRegistry::with_builtins();
-        app.hotbar_actions.register_skills(&app.cached_skills);
 
         let facts = SetupToolsMcpFacts::from_app_config(&app, &Config::default(), &home);
 
@@ -736,17 +690,12 @@ mod tests {
             "manifest plugins: {}",
             facts.plugins_result
         );
-        assert!(facts.hotbar_result.contains("skill_actions=1"));
         assert!(!facts.needs_action);
 
         // Redaction: never leak tokens, env values, or full command args.
         let blob = format!(
-            "{} {} {} {} {}",
-            facts.servers_result,
-            facts.skills_result,
-            facts.plugins_result,
-            facts.hotbar_result,
-            facts.result
+            "{} {} {} {}",
+            facts.servers_result, facts.skills_result, facts.plugins_result, facts.result
         );
         assert!(!blob.contains("sk-mcp-secret-token"));
         assert!(!blob.contains("sk-header-secret"));
@@ -923,7 +872,6 @@ mod tests {
             skills_result: "off — missing".into(),
             tools_result: "off — missing".into(),
             plugins_result: "off — missing".into(),
-            hotbar_result: "off — shared adapters: mcp_actions=0".into(),
             result: "overall=off".into(),
             overall_status: InventoryStatus::Off,
             needs_action: false,

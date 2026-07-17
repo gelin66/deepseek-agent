@@ -4,7 +4,7 @@
 
 This is the source-of-truth catalog of every keyboard shortcut the TUI recognizes. Bindings are grouped by **context** — the focus or modal state they fire in. A binding listed under "Composer" only takes effect when the composer is focused; one under "Transcript" only when the transcript has focus; and so on.
 
-Global key chords are not yet user-configurable — tracked for a future release (#436, #437). Hotbar slot actions are configurable with `[[hotbar]]` and `/hotbar`; the Hotbar activation chord remains `Alt-1` through `Alt-8`.
+Global key chords are not yet user-configurable — tracked for a future release (#436, #437).
 
 ## Global (any context)
 
@@ -25,7 +25,6 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `Alt-V` / `Option-V` (macOS) | Open the details pager for the selected, visible, or most recent tool/sub-agent card; terminals that emit the legacy Option-V glyph are also handled |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file-tree sidebar                          |
 | `Alt-G`              | Scroll transcript to top when the composer is empty             |
-| `Alt-1`-`Alt-8`      | Dispatch Hotbar slots 1-8 when no modal or inline picker is open |
 | `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` / `Alt-0` | Focus Pinned / Tasks / Agents / Context / Auto sidebar |
 | `Ctrl-Alt-0`         | Hide/show the pinned sidebar                                    |
 | `Esc`                | Close topmost modal · cancel slash menu · dismiss toast        |
@@ -54,33 +53,6 @@ Editing the message you're about to send.
 | `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
 | `Ctrl-O`                    | Open external editor for the composer draft when it has focus |
 | `! command`                 | Run a shell command through normal approval, sandbox, and output surfaces |
-
-### Hotbar
-
-Hotbar trigger semantics are intentionally `Alt-1` through `Alt-8` only. On macOS keyboards this is the Option/Alt key plus the number row. Bare `1`-`8` is normal text input in the composer and remains owned by pickers, onboarding, approval prompts, and modal views.
-
-Function keys and `Cmd-1` through `Cmd-8` are not the primary Hotbar chords. Many terminals reserve those keys for tabs, windows, or OS shortcuts, and some never forward them to terminal apps. If a terminal is configured to send `Alt-1` for a custom shortcut, the Hotbar receives the same reliable chord.
-
-Fresh configs resolve to this default bar unless `[[hotbar]]` overrides it or `hotbar = []` disables it:
-
-| Slot | Chord   | Default action     | Label     |
-|------|---------|--------------------|-----------|
-| 1    | `Alt-1` | `voice.toggle`     | `voice`   |
-| 2    | `Alt-2` | `session.compact`  | `compact` |
-| 3    | `Alt-3` | `mode.plan`        | `plan`    |
-| 4    | `Alt-4` | `mode.agent`       | `agent`   |
-| 5    | `Alt-5` | `mode.operate`     | `operate` |
-| 6    | `Alt-6` | `palette.open`     | `palette` |
-| 7    | `Alt-7` | `sidebar.toggle`   | `side`    |
-| 8    | `Alt-8` | `trust.toggle`     | `trust`   |
-
-| Focus state | Hotbar behavior |
-|-------------|-----------------|
-| Composer empty, text, or whitespace | `Alt-1`-`Alt-8` dispatches a configured slot |
-| Sidebar focused, hidden, or auto | `Alt-1`-`Alt-8` still dispatches a configured slot |
-| Slash menu or history search open | Blocked; the inline selector owns the key event |
-| Command palette, help, approval, file picker, session picker, Fleet setup, or any modal stack | Blocked; the modal owns the key event |
-| Onboarding | Blocked; onboarding owns numeric choices |
 
 ### `@` mentions
 

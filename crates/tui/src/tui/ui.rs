@@ -972,7 +972,7 @@ async fn run_deepseek_onboarding_loop(
     pending_terminal_events: &mut VecDeque<Event>,
 ) -> Result<bool> {
     while app.onboarding != OnboardingState::None {
-        draw_app_frame_inner(terminal, app, config, true)?;
+        draw_app_frame_inner(terminal, app, true)?;
         let Some(event) = next_terminal_event(
             input,
             pending_terminal_events,
@@ -1190,7 +1190,7 @@ async fn run_canonical_event_loop(
             || now.saturating_duration_since(last_frame)
                 >= Duration::from_millis(UI_UNDERWATER_ANIMATION_MS)
         {
-            draw_app_frame_inner(terminal, app, config, false)?;
+            draw_app_frame_inner(terminal, app, false)?;
             app.needs_redraw = false;
             last_frame = now;
         }
@@ -1708,7 +1708,7 @@ fn render_classic_header(area: Rect, buf: &mut Buffer, app: &App) {
     HeaderWidget::new(data).render(area, buf);
 }
 
-fn render(f: &mut Frame, app: &mut App, config: &Config) {
+fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
     let classic_shell = app.ocean_treatment.is_classic();
     app.sidebar_hover = crate::tui::app::SidebarHoverState::default();
@@ -1929,7 +1929,7 @@ fn render(f: &mut Frame, app: &mut App, config: &Config) {
         // default path.
         if let Some(sidebar_area) = sidebar_area {
             app.last_sidebar_area = Some(sidebar_area);
-            super::sidebar::render_sidebar(f, sidebar_area, app, config);
+            super::sidebar::render_sidebar(f, sidebar_area, app);
             let handle_area = Rect {
                 x: sidebar_area.x,
                 y: sidebar_area.y,
@@ -2136,7 +2136,6 @@ fn render(f: &mut Frame, app: &mut App, config: &Config) {
 fn draw_app_frame_inner(
     terminal: &mut AppTerminal,
     app: &mut App,
-    config: &Config,
     full_repaint: bool,
 ) -> Result<()> {
     terminal.backend_mut().set_palette_mode(app.ui_theme.mode);
@@ -2160,7 +2159,7 @@ fn draw_app_frame_inner(
             terminal.backend_mut().write_all(TERMINAL_ORIGIN_RESET)?;
             terminal.clear()?;
         }
-        terminal.draw(|f| render(f, app, config))?;
+        terminal.draw(|f| render(f, app))?;
         Ok(())
     })();
 

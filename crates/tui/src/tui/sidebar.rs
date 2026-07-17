@@ -4,11 +4,9 @@
 //! the chat transcript when the available width allows it. Each section
 //! reads from `App` snapshots; mutation lives in the main app loop.
 
-use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::time::{Duration, Instant};
 
-use crate::config::Config;
 use crate::tui::app::HuntVerdict;
 use codewhale_config::Locale;
 
@@ -45,10 +43,7 @@ const ACTIVE_TOOL_COMPLETED_ROW_TTL: Duration = Duration::from_secs(8);
 const ACTIVE_TOOL_STALE_RUNNING_ROW_TTL: Duration = Duration::from_secs(600);
 const TASK_STOP_TARGET_LABEL: &str = "[x]";
 const TASK_STOP_TARGET_SUFFIX: &str = " [x]";
-const HOTBAR_PANEL_HEIGHT: u16 = 4;
-const HOTBAR_ROW_COLUMNS: usize = 4;
-
-pub fn render_sidebar(f: &mut Frame, area: Rect, app: &mut App, config: &Config) {
+pub fn render_sidebar(f: &mut Frame, area: Rect, app: &mut App) {
     // Clear hover state at the start of each render
     app.sidebar_hover = SidebarHoverState::default();
     if area.width < 20 || area.height < 3 {
@@ -68,24 +63,18 @@ pub fn render_sidebar(f: &mut Frame, area: Rect, app: &mut App, config: &Config)
     }
 
     let work_has_content = sidebar_work_summary(app).has_useful_content();
-    // At compact heights the durable Work state outranks optional Hotbar
-    // chrome. The Hotbar returns automatically after the terminal grows.
-    let hotbar_enabled = hotbar_panel_enabled(app, config)
-        && !is_hotbar_disabled(config)
-        && !(work_has_content && area.height < 12);
-    let (main_area, hotbar_area) = split_sidebar_hotbar_area(area, hotbar_enabled);
     let fixed_focus = matches!(
         app.sidebar_focus,
         SidebarFocus::Tasks | SidebarFocus::Agents | SidebarFocus::Context
     );
     if fixed_focus && work_has_content {
-        if main_area.height < 7 {
-            render_sidebar_work_compact(f, main_area, app);
+        if area.height < 7 {
+            render_sidebar_work_compact(f, area, app);
         } else {
             let sections = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Min(3), Constraint::Length(4)])
-                .split(main_area);
+                .split(area);
             match app.sidebar_focus {
                 SidebarFocus::Tasks => render_sidebar_tasks(f, sections[0], app),
                 SidebarFocus::Agents => render_sidebar_subagents(f, sections[0], app),
@@ -96,41 +85,14 @@ pub fn render_sidebar(f: &mut Frame, area: Rect, app: &mut App, config: &Config)
         }
     } else {
         match app.sidebar_focus {
-            SidebarFocus::Auto => render_sidebar_auto(f, main_area, app),
-            SidebarFocus::Pinned => render_sidebar_pinned(f, main_area, app),
-            SidebarFocus::Tasks => render_sidebar_tasks(f, main_area, app),
-            SidebarFocus::Agents => render_sidebar_subagents(f, main_area, app),
-            SidebarFocus::Context => render_context_panel(f, main_area, app),
+            SidebarFocus::Auto => render_sidebar_auto(f, area, app),
+            SidebarFocus::Pinned => render_sidebar_pinned(f, area, app),
+            SidebarFocus::Tasks => render_sidebar_tasks(f, area, app),
+            SidebarFocus::Agents => render_sidebar_subagents(f, area, app),
+            SidebarFocus::Context => render_context_panel(f, area, app),
             SidebarFocus::Hidden => unreachable!("hidden sidebar returned before render dispatch"),
         }
     }
-    if let Some(hotbar_area) = hotbar_area {
-        render_hotbar_panel(f, hotbar_area, app, config);
-    }
-}
-
-fn split_sidebar_hotbar_area(area: Rect, show_hotbar: bool) -> (Rect, Option<Rect>) {
-    // Hide the Hotbar entirely when the user disabled it (`hotbar = []`) or when
-    // the sidebar is too short to fit it; give the main panel the full area.
-    if !show_hotbar || area.height < HOTBAR_PANEL_HEIGHT.saturating_add(3) {
-        return (area, None);
-    }
-
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(HOTBAR_PANEL_HEIGHT)])
-        .split(area);
-    (sections[0], Some(sections[1]))
-}
-
-/// The Hotbar is "disabled" when the user persisted an explicit empty
-/// `hotbar = []`. Since #3807 a missing `hotbar` key (`None`) also renders no
-/// panel — the Hotbar is hidden until the user opts in — but it resolves to
-/// zero bindings via [`hotbar_panel_enabled`] rather than the explicit-disabled
-/// state, which keeps `/hotbar on` (write default bindings) and `/hotbar off`
-/// (write `[]`) distinct on disk.
-fn is_hotbar_disabled(config: &Config) -> bool {
-    config.hotbar.as_deref().is_some_and(<[_]>::is_empty)
 }
 
 /// Build the Auto-mode panel stack. Empty panels collapse to zero height so
@@ -263,217 +225,6 @@ fn auto_sidebar_panels(state: AutoSidebarState) -> Vec<AutoSidebarPanel> {
     }
 
     visible
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HotbarSlotState {
-    Empty,
-    Inactive,
-    Active,
-    Unknown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HotbarPanelSlot {
-    slot: u8,
-    label: String,
-    full_text: String,
-    state: HotbarSlotState,
-}
-
-fn render_hotbar_panel(f: &mut Frame, area: Rect, app: &mut App, config: &Config) {
-    let slots = hotbar_panel_slots(app, config);
-    let content_width = area.width.saturating_sub(4) as usize;
-    // Title carries the modifier hint (⌥ on macOS, alt+ elsewhere) so users can
-    // see *which* key to hold without it eating the tight 4-char slot cells —
-    // it renders at every sidebar width and costs no slot-row height.
-    let title = format!("Hotbar  {}1-8", super::widgets::key_hint::alt_prefix());
-    render_sidebar_section(
-        f,
-        area,
-        &title,
-        hotbar_panel_lines(&slots, content_width, &app.ui_theme),
-        hotbar_panel_hover_texts(&slots),
-        hotbar_panel_row_actions(),
-        app,
-    );
-}
-
-fn hotbar_panel_row_actions() -> Vec<Option<SidebarRowAction>> {
-    (1..=codewhale_config::HOTBAR_SLOT_COUNT)
-        .step_by(HOTBAR_ROW_COLUMNS)
-        .map(|slot| Some(SidebarRowAction::HotbarSlot(slot)))
-        .collect()
-}
-
-fn hotbar_panel_enabled(app: &App, config: &Config) -> bool {
-    !resolved_hotbar_bindings(app, config).is_empty()
-}
-
-fn hotbar_panel_slots(app: &App, config: &Config) -> Vec<HotbarPanelSlot> {
-    let mut bindings = resolved_hotbar_bindings(app, config)
-        .into_iter()
-        .map(|binding| (binding.slot, binding))
-        .collect::<BTreeMap<_, _>>();
-
-    // Lead each hover tip with the platform-correct chord (⌥+1 / alt+1); keep
-    // the "Slot N" suffix so existing assertions and the "Slot" wording remain.
-    let alt_prefix = super::widgets::key_hint::alt_prefix();
-    (1..=codewhale_config::HOTBAR_SLOT_COUNT)
-        .map(|slot| {
-            let Some(binding) = bindings.remove(&slot) else {
-                return HotbarPanelSlot {
-                    slot,
-                    label: "-".to_string(),
-                    full_text: format!("{alt_prefix}{slot} · Slot {slot}: empty"),
-                    state: HotbarSlotState::Empty,
-                };
-            };
-
-            let Some(action) = app.hotbar_actions.get(&binding.action) else {
-                let label = hotbar_configured_label(binding.label.as_deref())
-                    .unwrap_or_else(|| "unknown".to_string());
-                return HotbarPanelSlot {
-                    slot,
-                    label,
-                    full_text: format!(
-                        "{alt_prefix}{slot} · Slot {slot}: unknown action {}",
-                        binding.action
-                    ),
-                    state: HotbarSlotState::Unknown,
-                };
-            };
-
-            let label = hotbar_configured_label(binding.label.as_deref())
-                .unwrap_or_else(|| action.short_label().to_string());
-            let active = action.is_active(app);
-            let state = if active {
-                HotbarSlotState::Active
-            } else {
-                HotbarSlotState::Inactive
-            };
-            let status = if active { " active" } else { "" };
-            HotbarPanelSlot {
-                slot,
-                label: label.clone(),
-                full_text: format!(
-                    "{alt_prefix}{slot} · Slot {slot}: {label}{status} ({}: {})",
-                    action.category(),
-                    action.id()
-                ),
-                state,
-            }
-        })
-        .collect()
-}
-
-fn resolved_hotbar_bindings(app: &App, config: &Config) -> Vec<codewhale_config::HotbarBinding> {
-    let known_action_ids = app
-        .hotbar_actions
-        .iter()
-        .map(|action| action.id())
-        .collect::<Vec<_>>();
-    config.resolve_hotbar_bindings(&known_action_ids).bindings
-}
-
-fn hotbar_configured_label(label: Option<&str>) -> Option<String> {
-    label
-        .map(str::trim)
-        .filter(|label| !label.is_empty())
-        .map(str::to_string)
-}
-
-fn hotbar_panel_lines(
-    slots: &[HotbarPanelSlot],
-    content_width: usize,
-    theme: &palette::UiTheme,
-) -> Vec<Line<'static>> {
-    let gap_count = HOTBAR_ROW_COLUMNS.saturating_sub(1);
-    let cell_width = content_width.saturating_sub(gap_count) / HOTBAR_ROW_COLUMNS;
-    let cell_width = cell_width.max(1);
-
-    slots
-        .chunks(HOTBAR_ROW_COLUMNS)
-        .map(|row| {
-            let mut spans = Vec::with_capacity(row.len().saturating_mul(2));
-            for (idx, slot) in row.iter().enumerate() {
-                if idx > 0 {
-                    spans.push(Span::raw(" "));
-                }
-                spans.push(Span::styled(
-                    hotbar_slot_cell_text(slot, cell_width),
-                    hotbar_slot_style(slot, theme),
-                ));
-            }
-            Line::from(spans)
-        })
-        .collect()
-}
-
-fn hotbar_panel_hover_texts(slots: &[HotbarPanelSlot]) -> Vec<String> {
-    slots
-        .chunks(HOTBAR_ROW_COLUMNS)
-        .map(|row| {
-            row.iter()
-                .map(|slot| slot.full_text.as_str())
-                .collect::<Vec<_>>()
-                .join(" | ")
-        })
-        .collect()
-}
-
-fn hotbar_slot_cell_text(slot: &HotbarPanelSlot, cell_width: usize) -> String {
-    let chord = format!("Alt{}", slot.slot);
-    let marker = match slot.state {
-        HotbarSlotState::Empty => "-",
-        HotbarSlotState::Inactive => "",
-        HotbarSlotState::Active => "*",
-        HotbarSlotState::Unknown => "?",
-    };
-    let text = if marker.is_empty() {
-        format!("{chord}:{}", slot.label)
-    } else if slot.state == HotbarSlotState::Empty {
-        format!("{chord}:{marker}")
-    } else {
-        format!("{chord}:{marker}{}", slot.label)
-    };
-    pad_to_display_width(clip_line_to_width(&text, cell_width), cell_width)
-}
-
-fn hotbar_slot_style(slot: &HotbarPanelSlot, theme: &palette::UiTheme) -> Style {
-    match slot.state {
-        HotbarSlotState::Empty => Style::default().fg(theme.text_dim),
-        HotbarSlotState::Inactive => Style::default().fg(theme.text_body),
-        HotbarSlotState::Active => Style::default()
-            .fg(theme.accent_primary)
-            .add_modifier(ratatui::style::Modifier::BOLD),
-        HotbarSlotState::Unknown => Style::default().fg(theme.error_fg),
-    }
-}
-
-fn clip_line_to_width(text: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    let mut out = String::new();
-    let mut width = 0usize;
-    for ch in text.chars() {
-        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + ch_width > max_width {
-            break;
-        }
-        out.push(ch);
-        width += ch_width;
-    }
-    out
-}
-
-fn pad_to_display_width(mut text: String, target_width: usize) -> String {
-    let width = unicode_width::UnicodeWidthStr::width(text.as_str());
-    if width < target_width {
-        text.push_str(&" ".repeat(target_width - width));
-    }
-    text
 }
 
 #[derive(Debug, Clone)]
@@ -3517,7 +3268,6 @@ fn agent_stop_action_for_click(action: &SidebarRowAction) -> Option<SidebarRowAc
         }),
         SidebarRowAction::Command(_)
         | SidebarRowAction::PrefillCommand(_)
-        | SidebarRowAction::HotbarSlot(_)
         | SidebarRowAction::OpenAgentDetail { .. }
         | SidebarRowAction::CancelAgent { .. }
         | SidebarRowAction::InspectText { .. } => None,
@@ -3528,17 +3278,15 @@ fn agent_stop_action_for_click(action: &SidebarRowAction) -> Option<SidebarRowAc
 mod tests {
     use super::{
         ACTIVE_TOOL_COMPLETED_ROW_TTL, ACTIVE_TOOL_STALE_RUNNING_ROW_TTL, AutoSidebarPanel,
-        AutoSidebarState, HotbarSlotState, SidebarAgentRow, SidebarFocus, SidebarHoverRow,
-        SidebarHoverSection, SidebarHoverState, SidebarSubagentSummary, SidebarToolRow,
-        SidebarWorkChecklistItem, SidebarWorkStrategyStep, SidebarWorkSummary, ToolRowOrder,
-        agent_row_hover_text, auto_sidebar_panels, background_task_spinner_prefix,
-        context_panel_cost_line, editorial_tool_rows, hotbar_panel_enabled,
-        hotbar_panel_hover_texts, hotbar_panel_lines, hotbar_panel_slots, is_hotbar_disabled,
-        normalize_activity_text, render_sidebar, sidebar_agent_rows, sidebar_hover_rows,
-        sidebar_work_summary, sort_sidebar_agent_rows_as_tree, subagent_output_handle,
-        subagent_panel_hover_texts, subagent_panel_lines, subagent_panel_rows,
-        task_panel_hover_texts, task_panel_lines, task_panel_row_sets, task_panel_rows,
-        work_panel_empty_hint, work_panel_hover_texts, work_panel_lines,
+        AutoSidebarState, SidebarAgentRow, SidebarFocus, SidebarHoverRow, SidebarHoverSection,
+        SidebarHoverState, SidebarSubagentSummary, SidebarToolRow, SidebarWorkChecklistItem,
+        SidebarWorkStrategyStep, SidebarWorkSummary, ToolRowOrder, agent_row_hover_text,
+        auto_sidebar_panels, background_task_spinner_prefix, context_panel_cost_line,
+        editorial_tool_rows, normalize_activity_text, render_sidebar, sidebar_agent_rows,
+        sidebar_hover_rows, sidebar_work_summary, sort_sidebar_agent_rows_as_tree,
+        subagent_output_handle, subagent_panel_hover_texts, subagent_panel_lines,
+        subagent_panel_rows, task_panel_hover_texts, task_panel_lines, task_panel_row_sets,
+        task_panel_rows, work_panel_empty_hint, work_panel_hover_texts, work_panel_lines,
     };
     use crate::config::Config;
     use crate::palette;
@@ -3547,8 +3295,8 @@ mod tests {
     use crate::tools::todo::TodoStatus;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{
-        AgentProgressMeta, App, AppMode, HuntVerdict, SidebarRowAction, TaskPanelEntry,
-        TaskPanelEntryKind, TuiOptions,
+        AgentProgressMeta, App, HuntVerdict, SidebarRowAction, TaskPanelEntry, TaskPanelEntryKind,
+        TuiOptions,
     };
     use crate::tui::history::{
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
@@ -3752,276 +3500,6 @@ mod tests {
     }
 
     #[test]
-    fn is_hotbar_disabled_only_for_an_explicit_empty_array() {
-        // A missing `hotbar` key means "use defaults" — NOT disabled.
-        assert!(!is_hotbar_disabled(&Config::default()));
-
-        // An explicit `hotbar = []` is the disabled state.
-        let disabled = Config {
-            hotbar: Some(Vec::new()),
-            ..Config::default()
-        };
-        assert!(is_hotbar_disabled(&disabled));
-
-        // Real bindings are never disabled.
-        let active = Config {
-            hotbar: Some(vec![codewhale_config::HotbarBindingToml {
-                slot: 1,
-                action: "mode.plan".to_string(),
-                label: None,
-            }]),
-            ..Config::default()
-        };
-        assert!(!is_hotbar_disabled(&active));
-    }
-
-    #[test]
-    fn hotbar_panel_hidden_for_fresh_default_config() {
-        // #3807: a fresh config has no `hotbar` key, so the panel is hidden
-        // until the user opts in. Slot resolution + active state are covered by
-        // `hotbar_panel_slots_resolve_configured_bindings_and_active_state`.
-        let mut app = create_test_app();
-        app.mode = AppMode::Agent;
-        app.sidebar_focus = SidebarFocus::Pinned;
-
-        assert!(
-            !hotbar_panel_enabled(&app, &Config::default()),
-            "fresh config must not enable the Hotbar panel"
-        );
-        assert!(
-            hotbar_panel_slots(&app, &Config::default())
-                .iter()
-                .all(|slot| slot.state == HotbarSlotState::Empty),
-            "fresh config resolves to no bound slots"
-        );
-    }
-
-    #[test]
-    fn hotbar_rows_register_one_typed_action_per_rendered_row() {
-        assert_eq!(
-            super::hotbar_panel_row_actions(),
-            vec![
-                Some(SidebarRowAction::HotbarSlot(1)),
-                Some(SidebarRowAction::HotbarSlot(5)),
-            ]
-        );
-    }
-
-    #[test]
-    fn hotbar_panel_slots_resolve_configured_bindings_and_active_state() {
-        let mut app = create_test_app();
-        app.mode = AppMode::Agent;
-        app.sidebar_focus = SidebarFocus::Pinned;
-        let config = Config {
-            hotbar: Some(
-                codewhale_config::default_hotbar_bindings()
-                    .into_iter()
-                    .map(|binding| codewhale_config::HotbarBindingToml {
-                        slot: binding.slot,
-                        action: binding.action,
-                        label: binding.label,
-                    })
-                    .collect(),
-            ),
-            ..Config::default()
-        };
-
-        assert!(hotbar_panel_enabled(&app, &config));
-
-        let slots = hotbar_panel_slots(&app, &config);
-
-        assert_eq!(slots.len(), 8);
-        assert_eq!(slots[0].slot, 1);
-        assert_eq!(slots[0].label, "voice");
-        assert_eq!(slots[0].state, HotbarSlotState::Inactive);
-        assert_eq!(slots[3].label, "agent");
-        assert_eq!(slots[3].state, HotbarSlotState::Active);
-        assert!(slots[3].full_text.contains("mode.agent"));
-        assert!(slots[3].full_text.contains("active"));
-        let slot_4_chord = format!("{}4", crate::tui::widgets::key_hint::alt_prefix());
-        assert!(slots[3].full_text.contains(&slot_4_chord));
-        assert_eq!(
-            slots[6].state,
-            HotbarSlotState::Active,
-            "sidebar toggle should be marked active when the sidebar is visible"
-        );
-        assert!(
-            slots.iter().all(|slot| !matches!(
-                slot.state,
-                HotbarSlotState::Empty | HotbarSlotState::Unknown
-            )),
-            "default config should fill all eight slots: {slots:?}"
-        );
-    }
-
-    #[test]
-    fn hotbar_panel_slots_handle_empty_partial_and_unknown_config() {
-        let app = create_test_app();
-        let empty_config = Config {
-            hotbar: Some(Vec::new()),
-            ..Config::default()
-        };
-
-        let empty_slots = hotbar_panel_slots(&app, &empty_config);
-
-        assert!(
-            empty_slots
-                .iter()
-                .all(|slot| slot.state == HotbarSlotState::Empty),
-            "explicit empty hotbar config should leave all slots empty: {empty_slots:?}"
-        );
-
-        let partial_config = Config {
-            hotbar: Some(vec![
-                codewhale_config::HotbarBindingToml {
-                    slot: 2,
-                    action: "mode.plan".to_string(),
-                    label: Some("Plan!".to_string()),
-                },
-                codewhale_config::HotbarBindingToml {
-                    slot: 5,
-                    action: "plugin.missing".to_string(),
-                    label: Some("Ghost".to_string()),
-                },
-            ]),
-            ..Config::default()
-        };
-
-        let partial_slots = hotbar_panel_slots(&app, &partial_config);
-
-        assert_eq!(partial_slots[0].state, HotbarSlotState::Empty);
-        assert_eq!(partial_slots[1].state, HotbarSlotState::Inactive);
-        assert_eq!(partial_slots[1].label, "Plan!");
-        assert_eq!(partial_slots[4].state, HotbarSlotState::Unknown);
-        assert_eq!(partial_slots[4].label, "Ghost");
-        assert!(
-            partial_slots[4]
-                .full_text
-                .contains("unknown action plugin.missing"),
-            "unknown action should remain inspectable: {partial_slots:?}"
-        );
-    }
-
-    #[test]
-    fn hotbar_panel_lines_keep_two_fixed_rows_and_hover_status() {
-        let mut app = create_test_app();
-        app.mode = AppMode::Agent;
-        app.sidebar_focus = SidebarFocus::Pinned;
-        let config = Config {
-            hotbar: Some(
-                codewhale_config::default_hotbar_bindings()
-                    .into_iter()
-                    .map(|binding| codewhale_config::HotbarBindingToml {
-                        slot: binding.slot,
-                        action: binding.action,
-                        label: binding.label,
-                    })
-                    .collect(),
-            ),
-            ..Config::default()
-        };
-        let slots = hotbar_panel_slots(&app, &config);
-
-        let lines = hotbar_panel_lines(&slots, 32, &app.ui_theme);
-        let text = lines_to_text(&lines);
-        let hover = hotbar_panel_hover_texts(&slots);
-
-        assert_eq!(text.len(), 2);
-        assert!(
-            text.iter()
-                .all(|line| unicode_width::UnicodeWidthStr::width(line.as_str()) <= 32),
-            "hotbar lines must stay within the sidebar content width: {text:?}"
-        );
-        assert!(
-            text[0].contains("Alt1"),
-            "first row should show slot 1: {text:?}"
-        );
-        assert!(
-            text[0].contains("Alt4:*"),
-            "active slot should be visibly marked in the fixed grid: {text:?}"
-        );
-        assert_eq!(hover.len(), 2);
-        let slot_4_chord = format!("{}4", crate::tui::widgets::key_hint::alt_prefix());
-        assert!(
-            hover[0].contains(&slot_4_chord) && hover[0].contains("Slot 4: agent active"),
-            "row hover text should expose active status: {hover:?}"
-        );
-    }
-
-    #[test]
-    fn sidebar_hotbar_render_smoke_omits_panel_when_empty_config() {
-        let mut app = create_test_app();
-        app.sidebar_focus = SidebarFocus::Pinned;
-        app.mode = AppMode::Agent;
-        let config = Config {
-            hotbar: Some(Vec::new()),
-            ..Config::default()
-        };
-
-        let backend = TestBackend::new(44, 12);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| render_sidebar(frame, frame.area(), &mut app, &config))
-            .expect("draw sidebar");
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-
-        assert!(
-            !rendered.contains("Hotbar"),
-            "empty hotbar config should not render hotbar panel: {rendered:?}"
-        );
-    }
-
-    #[test]
-    fn sidebar_hotbar_render_smoke_paints_default_slots() {
-        let mut app = create_test_app();
-        app.sidebar_focus = SidebarFocus::Pinned;
-        app.mode = AppMode::Agent;
-        // #3807: the panel is hidden on a fresh config, so opt in explicitly
-        // with the default bindings to smoke-test the rendered panel.
-        let config = Config {
-            hotbar: Some(codewhale_config::default_hotbar_bindings_toml()),
-            ..Config::default()
-        };
-
-        let backend = TestBackend::new(44, 12);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| render_sidebar(frame, frame.area(), &mut app, &config))
-            .expect("draw sidebar");
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-
-        assert!(
-            rendered.contains("Hotbar"),
-            "hotbar panel title missing: {rendered:?}"
-        );
-        let hotbar_range = format!("{}1-8", crate::tui::widgets::key_hint::alt_prefix());
-        assert!(
-            rendered.contains(&hotbar_range),
-            "hotbar panel title should expose the accelerator: {rendered:?}"
-        );
-        assert!(
-            rendered.contains("Alt1"),
-            "slot 1 default binding should render: {rendered:?}"
-        );
-        assert!(
-            rendered.contains("Alt4"),
-            "active agent-mode slot should render distinctly: {rendered:?}"
-        );
-    }
-
-    #[test]
     fn nonempty_todo_remains_visible_across_release_sizes_and_focuses() {
         // These sidebar widths are the actual splits produced by 120, 100,
         // and 80-column terminals (the compact 80-column case is 20 wide).
@@ -4040,14 +3518,10 @@ mod tests {
                     todos.add("inspect".to_string(), TodoStatus::Completed);
                     todos.add("patch".to_string(), TodoStatus::InProgress);
                 }
-                let config = Config {
-                    hotbar: Some(Vec::new()),
-                    ..Config::default()
-                };
                 let backend = TestBackend::new(sidebar_width, height);
                 let mut terminal = Terminal::new(backend).expect("terminal");
                 terminal
-                    .draw(|frame| render_sidebar(frame, frame.area(), &mut app, &config))
+                    .draw(|frame| render_sidebar(frame, frame.area(), &mut app))
                     .expect("draw sidebar");
                 let rendered = terminal
                     .backend()
@@ -4080,7 +3554,7 @@ mod tests {
         let backend = TestBackend::new(20, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|frame| render_sidebar(frame, frame.area(), &mut app, &Config::default()))
+            .draw(|frame| render_sidebar(frame, frame.area(), &mut app))
             .expect("draw sidebar");
         let rendered = terminal
             .backend()
@@ -4106,7 +3580,7 @@ mod tests {
         let backend = TestBackend::new(20, 8);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
-            .draw(|frame| render_sidebar(frame, frame.area(), &mut app, &Config::default()))
+            .draw(|frame| render_sidebar(frame, frame.area(), &mut app))
             .expect("draw sidebar");
         let rendered = terminal
             .backend()
@@ -4133,9 +3607,8 @@ mod tests {
 
         let backend = TestBackend::new(72, 18);
         let mut terminal = Terminal::new(backend).expect("terminal");
-        let config = Config::default();
         terminal
-            .draw(|frame| render_sidebar(frame, frame.area(), &mut app, &config))
+            .draw(|frame| render_sidebar(frame, frame.area(), &mut app))
             .expect("draw sidebar");
         let rendered = terminal
             .backend()

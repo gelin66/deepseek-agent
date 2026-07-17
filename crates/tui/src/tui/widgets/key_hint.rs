@@ -159,7 +159,7 @@ fn key_hint_style() -> Style {
 /// Platform-specific prefix for `Alt`-modified chords, matching how the rest
 /// of the TUI labels them: `⌥+` on macOS (the Option-key glyph every Mac app
 /// uses) and `alt+` on Linux/Windows. Callers that build their own key-hint
-/// strings (e.g. the hotbar slot labels) should use this so the modifier label
+/// strings should use this so the modifier label
 /// stays consistent with the help overlay and footer hints.
 pub fn alt_prefix() -> &'static str {
     ALT_PREFIX

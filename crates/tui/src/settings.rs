@@ -368,9 +368,9 @@ pub struct Settings {
     /// point to large directory trees (e.g. `/usr`, home directories) can
     /// significantly increase first-turn latency and memory usage.
     pub workspace_follow_symlinks: bool,
-    /// One-time Fleet + Hotbar introduction has been shown. Drives a single
-    /// launch nudge (see `App::maybe_show_feature_intro`) so returning users
-    /// see it exactly once and never on subsequent launches.
+    /// One-time product introduction has been shown. Drives a single launch
+    /// nudge (see `App::maybe_show_feature_intro`) so returning users see it
+    /// exactly once and never on subsequent launches.
     pub feature_intro_shown: bool,
     /// One-time YOLO deprecation toast has been shown. Suppresses the repeat
     /// toast after the first sighting per install (persisted across sessions).

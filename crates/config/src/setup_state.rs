@@ -53,8 +53,6 @@ pub enum SetupStep {
     /// concurrency review. Plan-limit detection remains a separate product
     /// decision; this step only records reviewed current facts.
     OperateFleet,
-    /// Hotbar shortcuts are optional, but now have a first-class setup card.
-    Hotbar,
     /// Tools / MCP / skills / plugins (later lanes; tracked for completeness).
     ToolsMcp,
     /// Persistence paths for setup state, config, constitution, memory, and notes.
@@ -65,13 +63,12 @@ pub enum SetupStep {
 
 impl SetupStep {
     /// All steps in canonical first-run order.
-    pub const ALL: [SetupStep; 9] = [
+    pub const ALL: [SetupStep; 8] = [
         SetupStep::Language,
         SetupStep::ProviderModel,
         SetupStep::TrustSandbox,
         SetupStep::Constitution,
         SetupStep::OperateFleet,
-        SetupStep::Hotbar,
         SetupStep::ToolsMcp,
         SetupStep::Persistence,
         SetupStep::Verification,

@@ -2,7 +2,7 @@
 //!
 //! Single seam over the Models.dev catalog layers and the configured-provider
 //! predicate shared with `/provider`. Precedence is **live Models.dev >
-//! bundled offline snapshot > legacy hardcoded fallback**. Pickers, hotbar
+//! bundled offline snapshot > legacy hardcoded fallback**. Pickers
 //! route slots, [`crate::model_inventory::ModelInventory`], slash completions,
 //! and subagent validation should read model lists from here.
 //!

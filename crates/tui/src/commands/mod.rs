@@ -18,7 +18,7 @@ pub use traits::CommandInfo;
 // Long-standing public paths that predate the group layout.
 pub use groups::project::share;
 
-// Voice capture plumbing shared with the hotbar and the UI event loop.
+// Voice capture plumbing shared with the UI event loop.
 pub use groups::core::voice;
 
 use crate::tui::app::{App, AppAction};
