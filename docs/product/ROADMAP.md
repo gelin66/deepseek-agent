@@ -7,7 +7,7 @@
   `a534a824670b60c807c5abf399ea8674d4beb527`；C1 实现提交 `1d127b78` 已建立并冻结
   canonical durable interaction/control contract。C2 的 Run API v3、RuntimeEvent writer
   v5/read v4-v5、State schema v8、continuation 和最小 context projection 已通过本机完整
-  验收与费用受限的官方 DeepSeek sender canary，当前待 review/commit 冻结；交互 TUI caller
+  验收与费用受限的官方 DeepSeek sender canary，并冻结为提交 `4a3311ac`；交互 TUI caller
   尚未切换，旧 engine/runtime-thread/compaction 路径尚未删除。M1 的
   导入基线 A/B 与 M2 的完整官方 surface canary 仍是独立证据债务
 - 上次更新：2026-07-17
@@ -87,7 +87,7 @@ diff、stdout/stderr 和原始日志保持稳定。最终门禁至少覆盖：
 | M1 | 建立原始 DeepSeek 能力基准 | 进行中（硬预算本地门禁已通过，导入基线真实编码 A/B 待完成） | 真实编码 A/B 在硬请求预算下可重复测量成功率、假成功、Token、时间和成本 |
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
-| M4 | 统一工具、事件、RunStore 和产品入口 | 进行中（M4-A/M4-B/M4-C C1 完成；C2 验收通过待冻结） | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
+| M4 | 统一工具、事件、RunStore 和产品入口 | 进行中（M4-A/M4-B/M4-C C1-C2 完成） | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
 | M5 | RepoGraph、ContextBroker 和现有 WIP 证据链迁移 | 待开始 | 现有 TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 待开始 | 根/子 Agent 同内核，并行任务产生净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
@@ -513,7 +513,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C C2 先建立切换所需的 continuation lineage 和最小 context projection：Run API v3
   区分同 run `resume` 与新 root `continue`，RuntimeEvent v5 持久化 compaction 阶段，State
   schema v8 以 durable creation reservation 防止 start/continue/compact 重复创建。该候选已
-  通过验收但尚未 commit 冻结，也不代表 compaction 已产生产品收益。
+  通过验收并冻结为提交 `4a3311ac`，但不代表 compaction 已产生产品收益。
 - M4-C 最后迁移交互 TUI，只保留命令输入与 `RuntimeEvent` 投影，删除 TUI 生产 turn loop。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
@@ -539,7 +539,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - 切换删除点：本切片删除旧协议语义；交互 TUI 的 `EngineEvent` control 回写、乐观 transcript
   双写、`RuntimeThreadStore` 和第二子 Agent loop 在后续 M4-C caller cutover 同步物理删除。
 
-#### M4-C C2：continuation 与最小 context projection（验收通过，待冻结）
+#### M4-C C2：continuation 与最小 context projection（已完成）
 
 - 真实问题：旧 `exec --continue` 把 continuation 与同 run recovery 混为一谈，canonical
   Runtime 也没有可持久恢复的 model-visible context projection；直接切换交互 TUI 会丢失长

@@ -3,8 +3,7 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M4-C C1 已冻结；C2 continuation/context projection 候选已通过验收、待
-  review/commit 冻结，交互 TUI 尚未切换
+- 状态：M4-C C1、C2 已冻结；C2 实现提交为 `4a3311ac`，交互 TUI 尚未切换
 - 更新日期：2026-07-17
 - schema：`Run API`（`schema_version = 3`）、`RuntimeEvent`（writer v5，reader v4-v5）、
   `State`（schema v8）

@@ -9,8 +9,8 @@
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
-- 当前阶段：M4-C C1 已冻结；C2 continuation/context projection 候选已通过验收、待
-  review/commit 冻结，交互 TUI caller 尚未迁移
+- 当前阶段：M4-C C1、C2 已冻结；C2 continuation/context projection 实现提交为
+  `4a3311ac`，交互 TUI caller 尚未迁移
 
 ## 1. 当前结论
 
@@ -85,7 +85,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-C2 候选把 continuation 与 recovery 分开：`resume` 继续同一个 run，`continue` 从一个终态
+C2 把 continuation 与 recovery 分开：`resume` 继续同一个 run，`continue` 从一个终态
 root 创建新的 root，并用 `continued_from_run_id` 记录 lineage；source 不被改写。完整
 canonical transcript 仍 append-only，compaction 只替换每次请求的 model-visible projection。
 当前会先本地裁剪旧的大型工具结果，必要时才发出计入预算和 accounting 的 tool-free 摘要
@@ -251,7 +251,7 @@ M4-C C1 实现提交为 `1d127b78`。conformance/Store replay 已证明 interact
 all-target check、全仓 clippy 和 workspace tests 均通过。该冻结不代表 TUI 已切换，也不构成
 编码能力或效率提升证据。
 
-M4-C C2 当前是已通过验收但未 commit 冻结的候选：Run API v3、RuntimeEvent writer
+M4-C C2 已冻结为提交 `4a3311ac`：Run API v3、RuntimeEvent writer
 v5/read v4-v5、State schema v8，以及 continuation、root list、manual/automatic context
 projection 已进入 exec/app-server 的 canonical 链路。focused、workspace Clippy
 `-D warnings`、串行完整 workspace tests、内存/SQLite parity，以及由外部监督进程
@@ -269,7 +269,7 @@ surface 兼容；尚无 compaction on/off 真实 A/B，不能声称 Token、成�
 当前源码不证明：
 
 - 交互 TUI 已统一；
-- C2 已完成冻结，或旧 TUI compaction/runtime-thread 路径已删除；
+- 旧 TUI compaction/runtime-thread 路径已删除；
 - 当前 compaction 已证明节省 Token、降低成本或提高任务成功率；
 - Provider 清理、全面汉化或中文 Agent prompt A/B 已完成；
 - RepoGraph、EvidenceReceipt、writer-worktree Orchestrator 已完成；
