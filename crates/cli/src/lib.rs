@@ -25,6 +25,11 @@ use codewhale_config::{
 };
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
 use codewhale_mcp::{McpServerDefinition, run_stdio_server};
+use codewhale_protocol::agent_runtime::RunPurpose;
+use codewhale_protocol::run_api::{
+    DEFAULT_RUN_LIST_LIMIT, MAX_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION, RootRunSummary, RunCommand,
+    RunCommandEnvelope, RunCommandResponse, RunCommandResult,
+};
 use codewhale_secrets::Secrets;
 use codewhale_state::{StateStore, ThreadListFilters};
 
@@ -206,12 +211,10 @@ enum Commands {
     /// Generate speech audio with Xiaomi MiMo TTS models via the TUI binary.
     #[command(visible_alias = "tts")]
     Speech(TuiPassthroughArgs),
-    /// List saved TUI sessions.
-    Sessions(TuiPassthroughArgs),
-    /// Resume a saved TUI session.
+    /// 列出当前工作区的 canonical Agent 运行。
+    Runs(RunsArgs),
+    /// 恢复指定 canonical Agent 运行，或使用 --last。
     Resume(TuiPassthroughArgs),
-    /// Fork a saved TUI session.
-    Fork(TuiPassthroughArgs),
     /// Create a default AGENTS.md in the current directory.
     Init(TuiPassthroughArgs),
     /// Bootstrap MCP config and/or skills directories.
@@ -377,6 +380,20 @@ struct MetricsArgs {
 struct RunArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
+}
+
+#[derive(Debug, Args)]
+struct RunsArgs {
+    /// 最多显示多少个用户 Agent 运行。
+    #[arg(
+        long,
+        default_value_t = DEFAULT_RUN_LIST_LIMIT,
+        value_parser = parse_run_list_limit
+    )]
+    limit: u32,
+    /// 输出 versioned canonical Run API JSON。
+    #[arg(long, default_value_t = false)]
+    json: bool,
 }
 
 #[derive(Debug, Args, Clone)]
@@ -1448,17 +1465,10 @@ fn run() -> Result<()> {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("speech", args))
         }
-        Some(Commands::Sessions(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("sessions", args))
-        }
+        Some(Commands::Runs(args)) => run_runs_command(&cli, args),
         Some(Commands::Resume(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            run_resume_command(&cli, &resolved_runtime, args)
-        }
-        Some(Commands::Fork(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("fork", args))
+            delegate_to_tui(&cli, &resolved_runtime, tui_args("resume", args))
         }
         Some(Commands::Init(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
@@ -2451,6 +2461,134 @@ fn run_sandbox_command(command: SandboxCommand) -> Result<()> {
     }
 }
 
+fn parse_run_list_limit(raw: &str) -> std::result::Result<u32, String> {
+    let limit = raw
+        .parse::<u32>()
+        .map_err(|_| format!("`--limit` 必须是 1 到 {MAX_RUN_LIST_LIMIT} 之间的整数"))?;
+    if !(1..=MAX_RUN_LIST_LIMIT).contains(&limit) {
+        return Err(format!(
+            "`--limit` 必须是 1 到 {MAX_RUN_LIST_LIMIT} 之间的整数"
+        ));
+    }
+    Ok(limit)
+}
+
+fn run_runs_command(cli: &Cli, args: RunsArgs) -> Result<()> {
+    let workspace = canonical_runs_workspace(cli.workspace.as_deref())?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("无法创建 canonical Run 查询运行时")?;
+    let application = AgentApplication::production(ProductionApplicationConfig::official())
+        .context("无法打开 canonical RunStore")?;
+    let response = runtime.block_on(application.execute(RunCommandEnvelope {
+        schema_version: RUN_API_SCHEMA_VERSION,
+        request_id: "cli-runs".to_owned(),
+        command: RunCommand::ListRoots {
+            workspace: workspace.clone(),
+            // ListRoots currently includes internal compaction roots. Query the
+            // bounded canonical window first, then apply the user-facing
+            // purpose filter before the requested limit.
+            limit: MAX_RUN_LIST_LIMIT,
+        },
+    }));
+
+    let RunCommandResponse {
+        schema_version,
+        request_id,
+        result,
+    } = response;
+    let (response_workspace, runs) = match result {
+        RunCommandResult::Runs { workspace, runs } => (workspace, runs),
+        RunCommandResult::Error { error } => {
+            bail!(
+                "无法列出当前工作区的 Agent 运行（{:?}）：{}",
+                error.code,
+                error.message
+            );
+        }
+        other => bail!("canonical Run API 返回了意外结果：{other:?}"),
+    };
+    let runs = runs
+        .into_iter()
+        .filter(|run| run.purpose == RunPurpose::Agent)
+        .take(args.limit as usize)
+        .collect::<Vec<_>>();
+
+    let mut output = io::stdout().lock();
+    if args.json {
+        let response = RunCommandResponse {
+            schema_version,
+            request_id,
+            result: RunCommandResult::Runs {
+                workspace: response_workspace,
+                runs,
+            },
+        };
+        serde_json::to_writer_pretty(&mut output, &response)
+            .context("无法编码 canonical Run API JSON")?;
+        writeln!(output)?;
+    } else {
+        write_runs_human(&mut output, &response_workspace, &runs)?;
+    }
+    Ok(())
+}
+
+fn canonical_runs_workspace(configured: Option<&Path>) -> Result<String> {
+    let workspace = match configured {
+        Some(path) => path.to_path_buf(),
+        None => std::env::current_dir().context("无法读取当前工作区")?,
+    };
+    let canonical = workspace
+        .canonicalize()
+        .with_context(|| format!("无法解析工作区路径 {}", workspace.display()))?;
+    canonical
+        .into_os_string()
+        .into_string()
+        .map_err(|_| anyhow!("canonical Run API 要求工作区路径是有效 UTF-8"))
+}
+
+fn write_runs_human(
+    output: &mut dyn Write,
+    workspace: &str,
+    runs: &[RootRunSummary],
+) -> io::Result<()> {
+    if runs.is_empty() {
+        writeln!(output, "当前工作区还没有 Agent 运行。")?;
+        return Ok(());
+    }
+
+    writeln!(output, "当前工作区 Agent 运行：{workspace}")?;
+    for run in runs {
+        let state = if run.terminal {
+            "已结束"
+        } else {
+            "进行中"
+        };
+        write!(
+            output,
+            "- {} ｜ {} ｜ 更新时间 {} ｜ 事件序号 {}",
+            run.run_id,
+            state,
+            format_run_timestamp(run.updated_at_unix_ms),
+            run.last_sequence
+        )?;
+        if let Some(source) = run.continued_from_run_id.as_ref() {
+            write!(output, " ｜ 延续自 {source}")?;
+        }
+        writeln!(output)?;
+    }
+    Ok(())
+}
+
+fn format_run_timestamp(unix_ms: u64) -> String {
+    i64::try_from(unix_ms)
+        .ok()
+        .and_then(chrono::DateTime::<chrono::Utc>::from_timestamp_millis)
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| unix_ms.to_string())
+}
+
 fn run_app_server_command(
     resolved_runtime: &ResolvedRuntimeOptions,
     args: AppServerArgs,
@@ -2617,57 +2755,6 @@ fn delegate_exec_to_tui(
             .map_err(|error| anyhow!("{}", tui_spawn_error(&tui, &error)))?;
         exit_with_tui_status(status)
     }
-}
-
-fn run_resume_command(
-    cli: &Cli,
-    resolved_runtime: &ResolvedRuntimeOptions,
-    args: TuiPassthroughArgs,
-) -> Result<()> {
-    let passthrough = tui_args("resume", args);
-    if should_pick_resume_in_dispatcher(&passthrough, cfg!(windows)) {
-        return run_dispatcher_resume_picker(cli, resolved_runtime);
-    }
-    delegate_to_tui(cli, resolved_runtime, passthrough)
-}
-
-fn run_dispatcher_resume_picker(
-    cli: &Cli,
-    resolved_runtime: &ResolvedRuntimeOptions,
-) -> Result<()> {
-    let mut sessions_cmd = build_tui_command(cli, resolved_runtime, vec!["sessions".to_string()])?;
-    let tui = PathBuf::from(sessions_cmd.get_program());
-    let status = sessions_cmd
-        .status()
-        .map_err(|err| anyhow!("{}", tui_spawn_error(&tui, &err)))?;
-    if !status.success() {
-        return exit_with_tui_status(status);
-    }
-
-    println!();
-    println!("Windows note: enter a session id or prefix from the list above.");
-    println!("You can also run `codewhale resume --last` to skip this prompt.");
-    print!("Session id/prefix (Enter to cancel): ");
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin()
-        .read_line(&mut input)
-        .context("failed to read session selection")?;
-    let session_id = input.trim();
-    if session_id.is_empty() {
-        bail!("No session selected.");
-    }
-
-    delegate_to_tui(
-        cli,
-        resolved_runtime,
-        vec!["resume".to_string(), session_id.to_string()],
-    )
-}
-
-fn should_pick_resume_in_dispatcher(passthrough: &[String], is_windows: bool) -> bool {
-    is_windows && passthrough == ["resume"]
 }
 
 fn build_tui_command(
@@ -3372,6 +3459,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_canonical_runs_and_enforces_run_api_limit() {
+        let cli = parse_ok(&["codewhale", "runs", "--limit", "200", "--json"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Runs(RunsArgs {
+                limit: MAX_RUN_LIST_LIMIT,
+                json: true
+            }))
+        ));
+
+        for limit in ["0", "201"] {
+            let error = Cli::try_parse_from(["codewhale", "runs", "--limit", limit])
+                .expect_err("out-of-range Run API limit must fail");
+            assert_eq!(error.kind(), ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
     fn app_server_stdio_conflicts_with_http_options() {
         for argv in [
             ["deepseek", "app-server", "--stdio", "--port", "9000"].as_slice(),
@@ -3439,6 +3544,12 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Commands::Resume(TuiPassthroughArgs { ref args })) if args == &["abc123"]
+        ));
+
+        let cli = parse_ok(&["deepseek", "resume", "--last"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Resume(TuiPassthroughArgs { ref args })) if args == &["--last"]
         ));
 
         let cli = parse_ok(&["deepseek", "setup", "--skills", "--local"]);
@@ -3718,26 +3829,6 @@ mod tests {
         ];
 
         reject_exec_global_flags(&args).expect("separator should stop global flag validation");
-    }
-
-    #[test]
-    fn dispatcher_resume_picker_only_handles_bare_windows_resume() {
-        assert!(should_pick_resume_in_dispatcher(
-            &["resume".to_string()],
-            true
-        ));
-        assert!(!should_pick_resume_in_dispatcher(
-            &["resume".to_string(), "--last".to_string()],
-            true
-        ));
-        assert!(!should_pick_resume_in_dispatcher(
-            &["resume".to_string(), "abc123".to_string()],
-            true
-        ));
-        assert!(!should_pick_resume_in_dispatcher(
-            &["resume".to_string()],
-            false
-        ));
     }
 
     #[test]
@@ -5248,7 +5339,7 @@ mod tests {
             "run",
             "doctor",
             "models",
-            "sessions",
+            "runs",
             "resume",
             "setup",
             "login",
@@ -5284,6 +5375,21 @@ mod tests {
                 "expected help to contain token: {token}"
             );
         }
+        for retired in ["sessions", "fork"] {
+            assert!(
+                !rendered.lines().any(|line| {
+                    line.strip_prefix("  ")
+                        .and_then(|line| line.split_whitespace().next())
+                        == Some(retired)
+                }),
+                "retired top-level command remained in help: {retired}"
+            );
+            let parsed = parse_ok(&["codewhale", retired]);
+            assert!(
+                parsed.command.is_none() && parsed.prompt == [retired],
+                "retired top-level command must not remain as a dispatcher alias: {retired}"
+            );
+        }
     }
 
     #[test]
@@ -5316,6 +5422,7 @@ mod tests {
                     "stream-json",
                 ],
             ),
+            ("runs", vec!["--limit", "--json"]),
             (
                 "app-server",
                 vec![
