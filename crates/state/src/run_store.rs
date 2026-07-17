@@ -906,6 +906,68 @@ pub(super) fn backfill_v6_pending_model_projections(
     Ok(())
 }
 
+/// Rebuild v9 materialized snapshots from the canonical event log.
+///
+/// RuntimeEvent v6 already persists the exact request catalog. State v10 only
+/// materializes the compact catalog needed to authorize a committed response
+/// after process recovery, so the event protocol itself does not change.
+pub(super) fn backfill_v10_model_catalog_snapshots(conn: &Connection) -> Result<(), RunStoreError> {
+    let run_ids = {
+        let mut statement = conn
+            .prepare("SELECT run_id FROM agent_runs ORDER BY run_id")
+            .map_err(backend)?;
+        let mut rows = statement.query([]).map_err(backend)?;
+        let mut run_ids = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            run_ids.push(RunId(row.get::<_, String>(0).map_err(backend)?));
+        }
+        run_ids
+    };
+
+    for run_id in run_ids {
+        let projection =
+            read_run_projection(conn, &run_id)?.ok_or_else(|| RunStoreError::NotFound {
+                run_id: run_id.clone(),
+            })?;
+        let events = read_events_after(conn, &run_id, 0)?;
+        let canonical = reduce_events(&events)?;
+        let (snapshot_sequence, snapshot_json) = conn
+            .query_row(
+                "SELECT last_sequence, snapshot_json FROM agent_run_snapshots WHERE run_id = ?1",
+                params![run_id.0],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(backend)?
+            .ok_or_else(|| corrupt(&run_id, "run snapshot is missing"))?;
+        let snapshot_sequence = from_store_u64(snapshot_sequence, &run_id, "snapshot sequence")?;
+        if snapshot_sequence != projection.last_sequence
+            || canonical.last_sequence != projection.last_sequence
+        {
+            return Err(corrupt(
+                &run_id,
+                "v10 migration found a snapshot/event sequence mismatch",
+            ));
+        }
+
+        let mut persisted: RunSnapshot = serde_json::from_str(&snapshot_json)
+            .map_err(|error| corrupt(&run_id, format!("run snapshot JSON is invalid: {error}")))?;
+        // Content/reasoning deltas may advance the table sequence without
+        // rewriting the otherwise projection-neutral snapshot JSON.
+        persisted.last_sequence = snapshot_sequence;
+        let mut legacy_shape = canonical.clone();
+        legacy_shape.last_model_advertised_tool_names.clear();
+        if persisted != canonical && persisted != legacy_shape {
+            return Err(corrupt(
+                &run_id,
+                "v9 snapshot disagrees with canonical event replay during v10 migration",
+            ));
+        }
+        upsert_snapshot(conn, &run_id, &canonical)?;
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl RunStore for StateStore {
     async fn reserve_creation(

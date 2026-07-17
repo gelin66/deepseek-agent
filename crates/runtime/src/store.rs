@@ -192,6 +192,12 @@ pub struct RunSnapshot {
     pub local_turns: u32,
     pub last_sequence: u64,
     pub last_model_output: Option<ModelOutput>,
+    /// Exact tool names advertised by the request that produced
+    /// `last_model_output`. The request event remains the canonical source;
+    /// this projection keeps response authorization crash-safe without
+    /// duplicating the full request in every snapshot.
+    #[serde(default)]
+    pub last_model_advertised_tool_names: Vec<String>,
     pub last_model_response_sequence: Option<u64>,
     pub last_model_activity_sequence: Option<u64>,
     pub last_model_failure: Option<StoppedModelFailure>,
@@ -339,6 +345,7 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
         local_turns: 0,
         last_sequence: 1,
         last_model_output: None,
+        last_model_advertised_tool_names: Vec::new(),
         last_model_response_sequence: None,
         last_model_activity_sequence: None,
         last_model_failure: None,
@@ -847,10 +854,17 @@ pub fn apply_event(
                     "model response committed before transport began",
                 ));
             }
+            let advertised_tool_names = pending
+                .request
+                .tools
+                .iter()
+                .map(|tool| tool.name.clone())
+                .collect();
             snapshot.pending_model = None;
             snapshot.usage.add_assign(output.usage);
             snapshot.accounting = (**accounting).clone();
             snapshot.last_model_output = Some((**output).clone());
+            snapshot.last_model_advertised_tool_names = advertised_tool_names;
             snapshot.last_model_response_sequence = Some(stored.sequence);
             snapshot.last_model_activity_sequence = Some(stored.sequence);
             snapshot.last_model_failure = None;
@@ -1382,8 +1396,6 @@ fn validate_context_compaction_retry(
     failure: &ModelAttemptFailure,
     retry: &ModelRetryDecision,
 ) -> Result<(), RunStoreError> {
-    let can_reserve_request =
-        snapshot.runtime_model_requests < snapshot.request.limits.max_model_requests;
     let attempt = pending.request.attempt;
     let retry_limit = snapshot.request.context_policy.max_retries;
     let policy_reason = if failure.actionable_output {
@@ -1392,14 +1404,16 @@ fn validate_context_compaction_retry(
         Some(ModelRetryStopReason::NotRetryable)
     } else if attempt >= retry_limit {
         Some(ModelRetryStopReason::RetryLimitReached)
-    } else if !can_reserve_request {
-        Some(ModelRetryStopReason::ModelRequestBudgetExceeded)
     } else {
         None
     };
     match retry {
         ModelRetryDecision::Stop { reason } => {
-            if policy_reason != Some(*reason) {
+            let valid = match policy_reason {
+                Some(expected) => *reason == expected,
+                None => *reason == ModelRetryStopReason::ModelRequestBudgetExceeded,
+            };
+            if !valid {
                 return Err(corrupt(
                     run_id,
                     "context compaction retry stop reason disagrees with policy",

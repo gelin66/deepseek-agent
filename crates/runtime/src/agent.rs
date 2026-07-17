@@ -85,7 +85,7 @@ impl AgentRuntime {
         request.parent_run_id = None;
         request.actor = AgentActor::default();
         let budget = Arc::new(RuntimeBudget::new(request.limits, 0, 0));
-        self.start_inner(request, budget)
+        self.start_inner(request, budget, None)
     }
 
     /// Reopen one canonical run. The persisted request, transcript, counters,
@@ -99,7 +99,13 @@ impl AgentRuntime {
         let task_run_id = run_id.clone();
         let join = tokio::spawn(async move {
             runtime
-                .run_launch(RunLaunch::Resume(task_run_id), None, receiver, ready_sender)
+                .run_launch(
+                    RunLaunch::Resume(task_run_id),
+                    None,
+                    None,
+                    receiver,
+                    ready_sender,
+                )
                 .await
         });
         RuntimeRun {
@@ -114,6 +120,7 @@ impl AgentRuntime {
         self: &Arc<Self>,
         mut request: RunRequest,
         budget: Arc<RuntimeBudget>,
+        terminal_model_request: Option<ModelRequestPermit>,
     ) -> RuntimeRun {
         if request.deadline_unix_ms.is_none() {
             request.deadline_unix_ms = request
@@ -132,6 +139,7 @@ impl AgentRuntime {
                 .run_launch(
                     RunLaunch::Create(Box::new(request)),
                     Some(budget),
+                    terminal_model_request,
                     receiver,
                     ready_sender,
                 )
@@ -149,6 +157,7 @@ impl AgentRuntime {
         self: Arc<Self>,
         launch: RunLaunch,
         budget: Option<Arc<RuntimeBudget>>,
+        terminal_model_request: Option<ModelRequestPermit>,
         mut control: mpsc::UnboundedReceiver<ControlCommand>,
         ready: oneshot::Sender<Result<(), RunStoreError>>,
     ) -> AgentOutcome {
@@ -220,6 +229,15 @@ impl AgentRuntime {
             .then_some(snapshot.last_context_compaction_failure.clone())
             .flatten();
         let recovered_child_ids = snapshot.pending_children.clone();
+        let terminal_request_is_already_admitted = recovery_model
+            .as_ref()
+            .is_some_and(|pending| pending.request.tools.is_empty())
+            || recovery_output.is_some() && snapshot.last_model_advertised_tool_names.is_empty();
+        let terminal_model_request = terminal_model_request.or_else(|| {
+            (snapshot.request.purpose == RunPurpose::Agent && !terminal_request_is_already_admitted)
+                .then(|| budget.reserve_terminal_model_request())
+                .flatten()
+        });
         let mut state = RunState {
             snapshot,
             lease,
@@ -237,6 +255,7 @@ impl AgentRuntime {
             recovery_failure,
             recovery_context_compaction_failure,
             recovered_child_ids,
+            terminal_model_request,
         };
 
         if resumed {
@@ -392,55 +411,81 @@ impl AgentRuntime {
                             .await;
                     }
                 };
-                let trigger = if estimated
-                    > u64::from(state.snapshot.request.context_policy.hard_input_tokens)
-                {
-                    ContextCompactionTrigger::PreflightLimit
-                } else {
-                    ContextCompactionTrigger::Threshold
-                };
-                match self
-                    .compact_context(
-                        &mut state,
-                        &budget,
-                        &mut control,
-                        deadline,
-                        trigger,
-                        trigger == ContextCompactionTrigger::PreflightLimit,
-                    )
-                    .await
-                {
-                    Ok(ContextCompactionControl::Terminal(terminal)) => {
-                        return self.finalize(&mut state, terminal, &budget).await;
-                    }
-                    Ok(
-                        ContextCompactionControl::Committed | ContextCompactionControl::NotNeeded,
-                    ) => {}
-                    Err(failure) => {
+                let hard_input_tokens =
+                    u64::from(state.snapshot.request.context_policy.hard_input_tokens);
+                let exceeds_hard_limit = estimated > hard_input_tokens;
+                if !budget.has_unreserved_model_request() {
+                    if exceeds_hard_limit {
                         return self
-                            .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                            .finalize(
+                                &mut state,
+                                TerminalState::Failed {
+                                    failure: RuntimeFailure::ContextLimitExceeded {
+                                        estimated_tokens: estimated,
+                                        hard_input_tokens,
+                                    },
+                                },
+                                &budget,
+                            )
                             .await;
+                    }
+                } else {
+                    let trigger = if exceeds_hard_limit {
+                        ContextCompactionTrigger::PreflightLimit
+                    } else {
+                        ContextCompactionTrigger::Threshold
+                    };
+                    match self
+                        .compact_context(
+                            &mut state,
+                            &budget,
+                            &mut control,
+                            deadline,
+                            trigger,
+                            trigger == ContextCompactionTrigger::PreflightLimit,
+                        )
+                        .await
+                    {
+                        Ok(ContextCompactionControl::Terminal(terminal)) => {
+                            return self.finalize(&mut state, terminal, &budget).await;
+                        }
+                        Ok(
+                            ContextCompactionControl::Committed
+                            | ContextCompactionControl::NotNeeded,
+                        ) => {}
+                        Err(failure) => {
+                            return self
+                                .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                                .await;
+                        }
                     }
                 }
             }
-            if state.recovery_output.is_none()
+            let terminal_turn_due = state.recovery_output.is_none()
                 && state.recovery_model.is_none()
-                && state.snapshot.local_turns >= state.snapshot.request.limits.max_turns
-            {
-                self.cancel_children(&mut state).await;
-                let limit = state.snapshot.request.limits.max_turns;
-                return self
-                    .finalize(
-                        &mut state,
-                        TerminalState::Failed {
-                            failure: RuntimeFailure::TurnBudgetExceeded { limit },
-                        },
-                        &budget,
-                    )
-                    .await;
+                && state.snapshot.local_turns.saturating_add(1)
+                    >= state.snapshot.request.limits.max_turns;
+            if terminal_turn_due && !state.pending_children.is_empty() {
+                match self.join_children(&mut state, &mut control, deadline).await {
+                    Ok(()) => {
+                        if let Err(failure) = self.flush_pending_steers(&mut state).await {
+                            return self
+                                .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                                .await;
+                        }
+                        continue;
+                    }
+                    Err(terminal) => {
+                        self.cancel_children(&mut state).await;
+                        return self.finalize(&mut state, terminal, &budget).await;
+                    }
+                }
             }
             let turn = if let Some(output) = state.recovery_output.take() {
-                Ok(ModelTurnControl::Output(ModelTurnOutput::from(output)))
+                Ok(ModelTurnControl::Output(ModelTurnOutput::new(
+                    output,
+                    state.snapshot.last_model_advertised_tool_names.clone(),
+                )))
             } else if let Some(pending) = state.recovery_model.take() {
                 self.model_turn(&mut state, &budget, &mut control, deadline, Some(pending))
                     .await
@@ -454,6 +499,26 @@ impl AgentRuntime {
                     return self.finalize(&mut state, terminal, &budget).await;
                 }
                 Ok(ModelTurnControl::Output(output)) => output,
+                Ok(ModelTurnControl::JoinChildren) => {
+                    match self.join_children(&mut state, &mut control, deadline).await {
+                        Ok(()) => {
+                            if let Err(failure) = self.flush_pending_steers(&mut state).await {
+                                return self
+                                    .finalize(
+                                        &mut state,
+                                        TerminalState::Failed { failure },
+                                        &budget,
+                                    )
+                                    .await;
+                            }
+                            continue;
+                        }
+                        Err(terminal) => {
+                            self.cancel_children(&mut state).await;
+                            return self.finalize(&mut state, terminal, &budget).await;
+                        }
+                    }
+                }
                 Err(failure) => {
                     self.cancel_children(&mut state).await;
                     return self
@@ -481,6 +546,24 @@ impl AgentRuntime {
                 self.cancel_children(&mut state).await;
                 return self
                     .finalize(&mut state, invalid_model(message), &budget)
+                    .await;
+            }
+            if let Some(call) = turn.tool_calls.iter().find(|call| {
+                !turn
+                    .advertised_tool_names
+                    .iter()
+                    .any(|advertised| advertised == &call.name)
+            }) {
+                self.cancel_children(&mut state).await;
+                return self
+                    .finalize(
+                        &mut state,
+                        invalid_model(format!(
+                            "tool '{}' was not advertised by this model request",
+                            call.name
+                        )),
+                        &budget,
+                    )
                     .await;
             }
             if turn.tool_calls.is_empty() {
@@ -600,7 +683,7 @@ impl AgentRuntime {
     async fn compact_context(
         &self,
         state: &mut RunState,
-        budget: &RuntimeBudget,
+        budget: &Arc<RuntimeBudget>,
         control: &mut mpsc::UnboundedReceiver<ControlCommand>,
         deadline: Option<u64>,
         trigger: ContextCompactionTrigger,
@@ -684,14 +767,14 @@ impl AgentRuntime {
                     return Ok(ContextCompactionControl::Committed);
                 }
                 ContextCompactionPreparation::Model { plan, request } => {
-                    if !budget.reserve_model_request() {
+                    let Some(permit) = budget.reserve_model_request() else {
                         return Err(RuntimeFailure::ModelRequestBudgetExceeded {
                             limit: state.snapshot.request.limits.max_model_requests,
                         });
-                    }
+                    };
                     let compaction_id = ContextCompactionId::new();
                     let attempt_id = AttemptId::new();
-                    self.publish(
+                    self.publish_with_model_permit(
                         state,
                         RuntimeEventKind::ContextCompactionPrepared {
                             compaction_id: compaction_id.clone(),
@@ -700,6 +783,7 @@ impl AgentRuntime {
                             plan: Box::new(plan.clone()),
                             request: Box::new(request.clone()),
                         },
+                        permit,
                     )
                     .await?;
                     prepared = Some(PendingContextCompaction {
@@ -753,6 +837,7 @@ impl AgentRuntime {
                             ModelRetryDecision::Stop {
                                 reason: ModelRetryStopReason::ActionableOutput,
                             },
+                            None,
                         )
                         .await?;
                         return self.context_compaction_stopped(state, force);
@@ -778,7 +863,7 @@ impl AgentRuntime {
                     actionable_output,
                     output,
                 } => {
-                    let retry = self.plan_context_compaction_failure(
+                    let (retry, permit) = self.plan_context_compaction_failure(
                         state,
                         budget,
                         &pending,
@@ -791,6 +876,7 @@ impl AgentRuntime {
                         &error,
                         output,
                         retry.clone(),
+                        permit,
                     )
                     .await?;
                     match retry {
@@ -983,33 +1069,42 @@ impl AgentRuntime {
     fn plan_context_compaction_failure(
         &self,
         state: &RunState,
-        budget: &RuntimeBudget,
+        budget: &Arc<RuntimeBudget>,
         pending: &PendingContextCompaction,
         error: &ModelPortError,
         actionable_output: bool,
-    ) -> ModelRetryDecision {
+    ) -> (ModelRetryDecision, Option<ModelRequestPermit>) {
         let reason = if actionable_output {
             Some(ModelRetryStopReason::ActionableOutput)
         } else if !error.retryable {
             Some(ModelRetryStopReason::NotRetryable)
         } else if pending.request.attempt >= state.snapshot.request.context_policy.max_retries {
             Some(ModelRetryStopReason::RetryLimitReached)
-        } else if !budget.reserve_model_request() {
-            Some(ModelRetryStopReason::ModelRequestBudgetExceeded)
         } else {
             None
         };
         if let Some(reason) = reason {
-            return ModelRetryDecision::Stop { reason };
+            return (ModelRetryDecision::Stop { reason }, None);
         }
+        let Some(permit) = budget.reserve_model_request() else {
+            return (
+                ModelRetryDecision::Stop {
+                    reason: ModelRetryStopReason::ModelRequestBudgetExceeded,
+                },
+                None,
+            );
+        };
         let mut request = pending.request.clone();
         request.attempt = request.attempt.saturating_add(1);
-        ModelRetryDecision::Retry {
-            prepared: PreparedModelRetry {
-                attempt_id: AttemptId::new(),
-                request: Box::new(request),
+        (
+            ModelRetryDecision::Retry {
+                prepared: PreparedModelRetry {
+                    attempt_id: AttemptId::new(),
+                    request: Box::new(request),
+                },
             },
-        }
+            Some(permit),
+        )
     }
 
     async fn commit_context_compaction_failure(
@@ -1019,9 +1114,10 @@ impl AgentRuntime {
         error: &ModelPortError,
         output: Option<ModelOutput>,
         retry: ModelRetryDecision,
+        permit: Option<ModelRequestPermit>,
     ) -> Result<(), RuntimeFailure> {
         let accounting = self.cumulative_accounting(state, false).await;
-        self.publish(
+        self.publish_inner(
             state,
             RuntimeEventKind::ContextCompactionAttemptFailed {
                 compaction_id: pending.compaction_id.clone(),
@@ -1031,6 +1127,7 @@ impl AgentRuntime {
                 accounting: Box::new(accounting),
                 retry,
             },
+            permit,
         )
         .await?;
         Ok(())
@@ -1083,7 +1180,7 @@ impl AgentRuntime {
     async fn model_turn(
         &self,
         state: &mut RunState,
-        budget: &RuntimeBudget,
+        budget: &Arc<RuntimeBudget>,
         control: &mut mpsc::UnboundedReceiver<ControlCommand>,
         deadline: Option<u64>,
         mut prepared: Option<PendingModelAction>,
@@ -1102,18 +1199,28 @@ impl AgentRuntime {
                 debug_assert_eq!(pending.state, DurableActionState::Prepared);
                 (pending.attempt_id, pending.request)
             } else {
-                if !budget.reserve_model_request() {
-                    return Ok(ModelTurnControl::Terminal(TerminalState::Failed {
-                        failure: RuntimeFailure::ModelRequestBudgetExceeded {
-                            limit: state.snapshot.request.limits.max_model_requests,
-                        },
-                    }));
-                }
                 let context = effective_context(
                     &state.snapshot.transcript,
                     state.snapshot.context_projection.as_ref(),
                 )
                 .map_err(context_projection_failure)?;
+                let terminal_turn_due = request_number >= state.snapshot.request.limits.max_turns;
+                let (permit, terminal_turn) = if terminal_turn_due {
+                    (state.terminal_model_request.take(), true)
+                } else if let Some(permit) = budget.reserve_model_request() {
+                    (Some(permit), false)
+                } else if !state.pending_children.is_empty() {
+                    return Ok(ModelTurnControl::JoinChildren);
+                } else {
+                    (state.terminal_model_request.take(), true)
+                };
+                let Some(permit) = permit else {
+                    return Ok(ModelTurnControl::Terminal(TerminalState::Failed {
+                        failure: RuntimeFailure::ModelRequestBudgetExceeded {
+                            limit: state.snapshot.request.limits.max_model_requests,
+                        },
+                    }));
+                };
                 let request = ModelRequest {
                     run_id: state.run_id().clone(),
                     parent_run_id: state.snapshot.request.parent_run_id.clone(),
@@ -1121,12 +1228,16 @@ impl AgentRuntime {
                     model: state.snapshot.request.model.clone(),
                     system_prompt: context.system_prompt,
                     messages: context.messages,
-                    tools: self.tool_definitions(
-                        &state.snapshot.request.tool_policy,
-                        state.snapshot.request.actor.depth,
-                        state.snapshot.request.limits.max_depth,
-                        state.snapshot.request.environment.interactive,
-                    ),
+                    tools: if terminal_turn {
+                        Vec::new()
+                    } else {
+                        self.tool_definitions(
+                            &state.snapshot.request.tool_policy,
+                            state.snapshot.request.actor.depth,
+                            state.snapshot.request.limits.max_depth,
+                            state.snapshot.request.environment.interactive,
+                        )
+                    },
                     reasoning_effort: state.snapshot.request.reasoning_effort,
                     max_output_tokens: state.snapshot.request.max_output_tokens,
                     streaming: state.snapshot.request.streaming,
@@ -1134,12 +1245,13 @@ impl AgentRuntime {
                     attempt: 0,
                 };
                 let attempt_id = AttemptId::new();
-                self.publish(
+                self.publish_with_model_permit(
                     state,
                     RuntimeEventKind::ModelRequestPrepared {
                         attempt_id: attempt_id.clone(),
                         request: Box::new(request.clone()),
                     },
+                    permit,
                 )
                 .await?;
                 (attempt_id, request)
@@ -1155,7 +1267,12 @@ impl AgentRuntime {
                 .await?
             {
                 ModelAttemptControl::Output(output) => {
-                    return Ok(ModelTurnControl::Output(ModelTurnOutput::from(output)));
+                    let advertised_tool_names =
+                        request.tools.iter().map(|tool| tool.name.clone()).collect();
+                    return Ok(ModelTurnControl::Output(ModelTurnOutput::new(
+                        output,
+                        advertised_tool_names,
+                    )));
                 }
                 ModelAttemptControl::Failed {
                     error,
@@ -1169,16 +1286,22 @@ impl AgentRuntime {
                         &error,
                         actionable_output,
                     );
-                    self.commit_model_failure(
-                        state,
-                        &attempt_id,
-                        &error,
-                        actionable_output,
-                        plan.decision(),
-                    )
-                    .await?;
                     match plan {
-                        ModelFailurePlan::Retry { .. } => {
+                        ModelFailurePlan::Retry {
+                            prepared: retry_prepared,
+                            permit,
+                        } => {
+                            self.commit_model_failure(
+                                state,
+                                &attempt_id,
+                                &error,
+                                actionable_output,
+                                ModelRetryDecision::Retry {
+                                    prepared: retry_prepared,
+                                },
+                                Some(permit),
+                            )
+                            .await?;
                             prepared = state.snapshot.pending_model.clone();
                             if prepared.is_none() {
                                 return Err(RuntimeFailure::Store {
@@ -1189,7 +1312,16 @@ impl AgentRuntime {
                             }
                             continue 'attempts;
                         }
-                        ModelFailurePlan::Stop { terminal, .. } => {
+                        ModelFailurePlan::Stop { reason, terminal } => {
+                            self.commit_model_failure(
+                                state,
+                                &attempt_id,
+                                &error,
+                                actionable_output,
+                                ModelRetryDecision::Stop { reason },
+                                None,
+                            )
+                            .await?;
                             return Ok(ModelTurnControl::Terminal(terminal));
                         }
                     }
@@ -1378,9 +1510,10 @@ impl AgentRuntime {
         error: &ModelPortError,
         actionable_output: bool,
         retry: ModelRetryDecision,
+        permit: Option<ModelRequestPermit>,
     ) -> Result<(), RuntimeFailure> {
         let accounting = self.cumulative_accounting(state, false).await;
-        self.publish(
+        self.publish_inner(
             state,
             RuntimeEventKind::ModelRequestFailed {
                 attempt_id: attempt_id.clone(),
@@ -1388,6 +1521,7 @@ impl AgentRuntime {
                 accounting: Box::new(accounting),
                 retry,
             },
+            permit,
         )
         .await?;
         Ok(())
@@ -1411,7 +1545,7 @@ impl AgentRuntime {
     fn plan_model_failure(
         &self,
         state: &RunState,
-        budget: &RuntimeBudget,
+        budget: &Arc<RuntimeBudget>,
         request: &ModelRequest,
         primary: &mut Option<ModelPortError>,
         error: &ModelPortError,
@@ -1431,8 +1565,6 @@ impl AgentRuntime {
             Some(ModelRetryStopReason::FailureChanged)
         } else if request.attempt >= state.snapshot.request.limits.max_model_retries {
             Some(ModelRetryStopReason::RetryLimitReached)
-        } else if !budget.reserve_model_request() {
-            Some(ModelRetryStopReason::ModelRequestBudgetExceeded)
         } else {
             None
         };
@@ -1450,6 +1582,16 @@ impl AgentRuntime {
             };
             return ModelFailurePlan::Stop { reason, terminal };
         }
+        let Some(permit) = budget.reserve_model_request() else {
+            return ModelFailurePlan::Stop {
+                reason: ModelRetryStopReason::ModelRequestBudgetExceeded,
+                terminal: TerminalState::Failed {
+                    failure: RuntimeFailure::ModelRequestBudgetExceeded {
+                        limit: state.snapshot.request.limits.max_model_requests,
+                    },
+                },
+            };
+        };
 
         let mut next_request = request.clone();
         next_request.attempt = next_request.attempt.saturating_add(1);
@@ -1457,7 +1599,7 @@ impl AgentRuntime {
             attempt_id: AttemptId::new(),
             request: Box::new(next_request),
         };
-        ModelFailurePlan::Retry { prepared }
+        ModelFailurePlan::Retry { prepared, permit }
     }
 
     async fn execute_call(
@@ -1862,6 +2004,15 @@ impl AgentRuntime {
                 state.snapshot.request.limits.max_concurrent_children
             )));
         };
+        let Some(child_terminal_model_request) = budget.reserve_terminal_model_request() else {
+            return Ok(ToolOutcome::rejected(
+                format!(
+                    "model_request_capacity：共享逻辑模型请求预算 {} 无法为子 Agent 保留最终产物请求",
+                    state.snapshot.request.limits.max_model_requests
+                ),
+                ToolRetryDisposition::NotRetryable,
+            ));
+        };
         let child_run_id = RunId::new();
         let child_depth = state.snapshot.request.actor.depth.saturating_add(1);
         self.publish(
@@ -1935,7 +2086,8 @@ impl AgentRuntime {
         });
         let mut child_limits = state.snapshot.request.limits;
         if let Some(max_steps) = arguments.get("max_steps").and_then(Value::as_u64) {
-            child_limits.max_turns = child_limits.max_turns.min(max_steps.max(1) as u32);
+            let max_steps = u32::try_from(max_steps.max(1)).unwrap_or(u32::MAX);
+            child_limits.max_turns = child_limits.max_turns.min(max_steps);
         }
         if let Some(max_depth) = arguments.get("max_depth").and_then(Value::as_u64) {
             let requested_absolute =
@@ -1998,7 +2150,11 @@ impl AgentRuntime {
             context_projection,
             accounting_baseline: ModelAccounting::default(),
         };
-        let child = self.start_inner(child_request, budget.clone());
+        let child = self.start_inner(
+            child_request,
+            budget.clone(),
+            Some(child_terminal_model_request),
+        );
         state.pending_children.push(PendingChild {
             call_id: call.id.clone(),
             run_id: child_run_id.clone(),
@@ -2321,6 +2477,24 @@ impl AgentRuntime {
         state: &mut RunState,
         event: RuntimeEventKind,
     ) -> Result<StoredRuntimeEvent, RuntimeFailure> {
+        self.publish_inner(state, event, None).await
+    }
+
+    async fn publish_with_model_permit(
+        &self,
+        state: &mut RunState,
+        event: RuntimeEventKind,
+        permit: ModelRequestPermit,
+    ) -> Result<StoredRuntimeEvent, RuntimeFailure> {
+        self.publish_inner(state, event, Some(permit)).await
+    }
+
+    async fn publish_inner(
+        &self,
+        state: &mut RunState,
+        event: RuntimeEventKind,
+        permit: Option<ModelRequestPermit>,
+    ) -> Result<StoredRuntimeEvent, RuntimeFailure> {
         let pending = match event {
             RuntimeEventKind::Terminal { outcome } => PendingRuntimeEvent::terminal(*outcome),
             event => PendingRuntimeEvent::new(event),
@@ -2341,6 +2515,9 @@ impl AgentRuntime {
                 });
             }
         };
+        if let Some(permit) = permit {
+            permit.consume();
+        }
         apply_event(&mut state.snapshot, &stored).map_err(|error| RuntimeFailure::Store {
             message: format!(
                 "persisted event could not update the live canonical projection: {error}"
@@ -2469,6 +2646,7 @@ struct RunState {
     recovery_failure: Option<StoppedModelFailure>,
     recovery_context_compaction_failure: Option<StoppedContextCompactionFailure>,
     recovered_child_ids: Vec<RunId>,
+    terminal_model_request: Option<ModelRequestPermit>,
 }
 
 impl RunState {
@@ -2542,14 +2720,16 @@ struct ModelTurnOutput {
     content: String,
     tool_calls: Vec<ModelToolCall>,
     finish_reason: ModelFinishReason,
+    advertised_tool_names: Vec<String>,
 }
 
-impl From<ModelOutput> for ModelTurnOutput {
-    fn from(output: ModelOutput) -> Self {
+impl ModelTurnOutput {
+    fn new(output: ModelOutput, advertised_tool_names: Vec<String>) -> Self {
         Self {
             content: output.content,
             tool_calls: output.tool_calls,
             finish_reason: output.finish_reason,
+            advertised_tool_names,
         }
     }
 }
@@ -2570,22 +2750,13 @@ enum ModelFailurePlan {
     },
     Retry {
         prepared: PreparedModelRetry,
+        permit: ModelRequestPermit,
     },
-}
-
-impl ModelFailurePlan {
-    fn decision(&self) -> ModelRetryDecision {
-        match self {
-            Self::Stop { reason, .. } => ModelRetryDecision::Stop { reason: *reason },
-            Self::Retry { prepared, .. } => ModelRetryDecision::Retry {
-                prepared: prepared.clone(),
-            },
-        }
-    }
 }
 
 enum ModelTurnControl {
     Output(ModelTurnOutput),
+    JoinChildren,
     Terminal(TerminalState),
 }
 
@@ -2628,8 +2799,19 @@ impl RuntimeBudget {
         }
     }
 
-    fn reserve_model_request(&self) -> bool {
-        reserve(&self.model_requests, self.limits.max_model_requests)
+    fn reserve_model_request(self: &Arc<Self>) -> Option<ModelRequestPermit> {
+        reserve(&self.model_requests, self.limits.max_model_requests).then(|| ModelRequestPermit {
+            budget: self.clone(),
+            consumed: false,
+        })
+    }
+
+    fn reserve_terminal_model_request(self: &Arc<Self>) -> Option<ModelRequestPermit> {
+        self.reserve_model_request()
+    }
+
+    fn has_unreserved_model_request(&self) -> bool {
+        self.model_requests.load(Ordering::Acquire) < self.limits.max_model_requests
     }
 
     fn reserve_tool(&self) -> bool {
@@ -2640,6 +2822,27 @@ impl RuntimeBudget {
         reserve(&self.children, self.limits.max_concurrent_children).then(|| ChildLease {
             budget: self.clone(),
         })
+    }
+}
+
+#[derive(Debug)]
+struct ModelRequestPermit {
+    budget: Arc<RuntimeBudget>,
+    consumed: bool,
+}
+
+impl ModelRequestPermit {
+    fn consume(mut self) {
+        self.consumed = true;
+    }
+}
+
+impl Drop for ModelRequestPermit {
+    fn drop(&mut self) {
+        if !self.consumed {
+            let previous = self.budget.model_requests.fetch_sub(1, Ordering::AcqRel);
+            debug_assert!(previous > 0, "model request permit accounting underflow");
+        }
     }
 }
 

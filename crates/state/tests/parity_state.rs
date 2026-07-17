@@ -18,7 +18,7 @@ fn assert_workflow_trace_schema(conn: &Connection) {
         .expect("read user_version");
     // v5 adds the canonical AgentRuntime event store without replacing the
     // existing thread/workflow data in this same state database.
-    assert_eq!(user_version, 9);
+    assert_eq!(user_version, 10);
 
     for table in [
         "workflow_runs",

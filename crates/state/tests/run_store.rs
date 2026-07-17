@@ -13,9 +13,9 @@ use codewhale_runtime::{
     OperationId, PendingRuntimeEvent, RootRunRecord, RunId, RunLease, RunPurpose, RunReplay,
     RunRequest, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeFailure,
     StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus,
-    ToolEvidence, ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus, ToolOperationStatus,
-    ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus, ToolTransportStatus, Usage,
-    reduce_events,
+    ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus,
+    ToolOperationStatus, ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus,
+    ToolTransportStatus, Usage, reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -373,6 +373,95 @@ fn insert_v5_run(
         ],
     )
     .expect("insert v5 snapshot");
+}
+
+async fn persist_committed_catalog_run(path: &PathBuf, run_id: &str) -> RunId {
+    let store = StateStore::open(Some(path.clone())).expect("open current state store");
+    let created = store
+        .create(request(run_id, "/tmp/v10-catalog-migration"))
+        .await
+        .expect("create catalog migration run");
+    let attempt_id = AttemptId("catalog-migration-attempt".to_owned());
+    let mut prepared = model_request(&created);
+    prepared.tools = vec![ToolDefinition {
+        name: "read".to_owned(),
+        description: "read".to_owned(),
+        input_schema: serde_json::json!({"type": "object"}),
+    }];
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("catalog-migration-prepared".to_owned()),
+                event: RuntimeEventKind::ModelRequestPrepared {
+                    attempt_id: attempt_id.clone(),
+                    request: Box::new(prepared),
+                },
+            },
+        )
+        .await
+        .expect("append catalog request");
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("catalog-migration-in-flight".to_owned()),
+                event: RuntimeEventKind::ModelRequestInFlight {
+                    attempt_id: attempt_id.clone(),
+                },
+            },
+        )
+        .await
+        .expect("append catalog in-flight");
+    store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("catalog-migration-committed".to_owned()),
+                event: RuntimeEventKind::ModelResponseCommitted {
+                    attempt_id,
+                    output: Box::new(ModelOutput {
+                        content: "已提交响应".to_owned(),
+                        reasoning_content: None,
+                        tool_calls: Vec::new(),
+                        finish_reason: ModelFinishReason::Stop,
+                        usage: Usage::default(),
+                    }),
+                    accounting: Box::new(ModelAccounting::default()),
+                },
+            },
+        )
+        .await
+        .expect("append committed catalog response");
+    created.lease.run_id
+}
+
+fn downgrade_catalog_snapshot_to_v9(path: &PathBuf, corrupt: bool) {
+    let conn = Connection::open(path).expect("open current database for v9 downgrade");
+    let snapshot_json: String = conn
+        .query_row(
+            "SELECT snapshot_json FROM agent_run_snapshots LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read current materialized snapshot");
+    let mut snapshot: serde_json::Value =
+        serde_json::from_str(&snapshot_json).expect("decode materialized snapshot");
+    let object = snapshot.as_object_mut().expect("snapshot JSON object");
+    object.remove("last_model_advertised_tool_names");
+    if corrupt {
+        object.insert(
+            "runtime_model_requests".to_owned(),
+            serde_json::Value::from(99),
+        );
+    }
+    conn.execute(
+        "UPDATE agent_run_snapshots SET snapshot_json = ?1",
+        [serde_json::to_string(&snapshot).expect("encode v9 snapshot")],
+    )
+    .expect("write v9 materialized snapshot");
+    conn.pragma_update(None, "user_version", 9)
+        .expect("downgrade schema marker to v9");
 }
 
 #[tokio::test]
@@ -1512,7 +1601,7 @@ async fn v5_migration_replays_and_backfills_prepared_and_in_flight_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 9);
+    assert_eq!(user_version, 10);
     for (run_id, expected_state) in [
         ("v5-prepared", DurableActionState::Prepared),
         ("v5-in-flight", DurableActionState::InFlight),
@@ -1550,6 +1639,67 @@ async fn v5_migration_replays_and_backfills_prepared_and_in_flight_runs() {
         );
         assert_eq!(replay.snapshot.last_sequence, replay.events.len() as u64);
     }
+}
+
+#[tokio::test]
+async fn v9_migration_rebuilds_committed_response_catalog_from_canonical_events() {
+    let path = temp_state_path("v9_model_catalog_migration");
+    let run_id = persist_committed_catalog_run(&path, "v9-catalog-run").await;
+    downgrade_catalog_snapshot_to_v9(&path, false);
+
+    let store = StateStore::open(Some(path.clone())).expect("migrate v9 catalog snapshot");
+    let replay = store
+        .load(&run_id)
+        .await
+        .expect("load migrated catalog run")
+        .expect("migrated catalog run exists");
+    assert_eq!(
+        replay.snapshot.last_model_advertised_tool_names,
+        vec!["read"]
+    );
+    assert_eq!(
+        replay.snapshot,
+        reduce_events(&replay.events).expect("canonical replay after v10 migration")
+    );
+
+    let conn = Connection::open(path).expect("inspect migrated catalog database");
+    let user_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read migrated v10 version");
+    assert_eq!(user_version, 10);
+    let snapshot_json: String = conn
+        .query_row(
+            "SELECT snapshot_json FROM agent_run_snapshots WHERE run_id = ?1",
+            [run_id.0],
+            |row| row.get(0),
+        )
+        .expect("read rebuilt catalog snapshot");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&snapshot_json).expect("decode rebuilt snapshot")
+            ["last_model_advertised_tool_names"],
+        serde_json::json!(["read"])
+    );
+}
+
+#[tokio::test]
+async fn corrupt_v9_snapshot_rolls_back_the_v10_catalog_migration() {
+    let path = temp_state_path("v9_corrupt_catalog_migration");
+    persist_committed_catalog_run(&path, "v9-corrupt-catalog-run").await;
+    downgrade_catalog_snapshot_to_v9(&path, true);
+
+    let error =
+        StateStore::open(Some(path.clone())).expect_err("corrupt v9 catalog snapshot must fail");
+    assert!(
+        error
+            .to_string()
+            .contains("failed to rebuild model catalog snapshot projections")
+    );
+
+    let conn = Connection::open(path).expect("inspect rolled-back v10 migration");
+    let user_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read rolled-back v9 version");
+    assert_eq!(user_version, 9);
 }
 
 #[test]
@@ -1612,7 +1762,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 9);
+        assert_eq!(user_version, 10);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -1624,9 +1774,13 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 10)
+    conn.pragma_update(None, "user_version", 11)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
-    assert!(error.to_string().contains("newer than supported version 9"));
+    assert!(
+        error
+            .to_string()
+            .contains("newer than supported version 10")
+    );
 }

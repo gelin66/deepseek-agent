@@ -24,7 +24,7 @@ use serde_json::Value;
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 9;
+const STATE_SCHEMA_VERSION: u32 = 10;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -715,6 +715,13 @@ impl StateStore {
             .context("failed to initialize durable run creation intent schema")?;
             tx.pragma_update(None, "user_version", 9)
                 .context("failed to commit run creation intent schema version")?;
+            user_version = 9;
+        }
+        if user_version < 10 {
+            run_store::backfill_v10_model_catalog_snapshots(&tx)
+                .context("failed to rebuild model catalog snapshot projections")?;
+            tx.pragma_update(None, "user_version", 10)
+                .context("failed to commit model catalog snapshot schema version")?;
         }
         tx.commit()
             .context("failed to commit state schema migration")?;

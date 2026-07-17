@@ -67,10 +67,12 @@ fn creation_intent() -> codewhale_runtime::CreationIntent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrashScenario {
+    ModelPrepared,
     ModelInFlight,
     ToolInFlight,
     ToolInFlightControlRequested,
     ModelResponseCommitted,
+    TerminalModelResponseCommitted,
     InteractionRequested,
     InteractionResolved,
     SteerQueued,
@@ -85,10 +87,12 @@ enum CrashScenario {
 impl CrashScenario {
     fn as_str(self) -> &'static str {
         match self {
+            Self::ModelPrepared => "model_prepared",
             Self::ModelInFlight => "model_in_flight",
             Self::ToolInFlight => "tool_in_flight",
             Self::ToolInFlightControlRequested => "tool_in_flight_control_requested",
             Self::ModelResponseCommitted => "model_response_committed",
+            Self::TerminalModelResponseCommitted => "terminal_model_response_committed",
             Self::InteractionRequested => "interaction_requested",
             Self::InteractionResolved => "interaction_resolved",
             Self::SteerQueued => "steer_queued",
@@ -103,10 +107,12 @@ impl CrashScenario {
 
     fn parse(value: &str) -> Self {
         match value {
+            "model_prepared" => Self::ModelPrepared,
             "model_in_flight" => Self::ModelInFlight,
             "tool_in_flight" => Self::ToolInFlight,
             "tool_in_flight_control_requested" => Self::ToolInFlightControlRequested,
             "model_response_committed" => Self::ModelResponseCommitted,
+            "terminal_model_response_committed" => Self::TerminalModelResponseCommitted,
             "interaction_requested" => Self::InteractionRequested,
             "interaction_resolved" => Self::InteractionResolved,
             "steer_queued" => Self::SteerQueued,
@@ -367,6 +373,7 @@ impl ModelPort for MarkerModel {
             self.scenario,
             CrashScenario::InteractionRequested | CrashScenario::InteractionResolved
         ) && request_number == 0
+            || self.scenario == CrashScenario::TerminalModelResponseCommitted
         {
             ModelOutput {
                 content: String::new(),
@@ -582,10 +589,16 @@ impl RuntimeEventSink for CrashSink {
             });
         }
         let should_abort = match self.scenario {
+            CrashScenario::ModelPrepared => {
+                matches!(event.event, RuntimeEventKind::ModelRequestPrepared { .. })
+            }
             CrashScenario::ModelInFlight => {
                 matches!(event.event, RuntimeEventKind::ModelRequestInFlight { .. })
             }
             CrashScenario::ModelResponseCommitted => {
+                matches!(event.event, RuntimeEventKind::ModelResponseCommitted { .. })
+            }
+            CrashScenario::TerminalModelResponseCommitted => {
                 matches!(event.event, RuntimeEventKind::ModelResponseCommitted { .. })
             }
             CrashScenario::InteractionRequested => {
@@ -665,6 +678,13 @@ fn runtime_request() -> RunRequest {
 
 fn scenario_request(scenario: CrashScenario) -> RunRequest {
     let mut request = runtime_request();
+    if matches!(
+        scenario,
+        CrashScenario::ModelPrepared | CrashScenario::TerminalModelResponseCommitted
+    ) {
+        request.limits.max_turns = 1;
+        request.limits.max_model_requests = 1;
+    }
     request.environment.interactive = matches!(
         scenario,
         CrashScenario::InteractionRequested | CrashScenario::InteractionResolved
