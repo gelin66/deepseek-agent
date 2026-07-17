@@ -128,7 +128,6 @@ use crate::features::{Feature, render_feature_table};
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig, McpServerOAuthConfig};
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
-use crate::session_manager::{SessionManager, create_saved_session, truncate_id};
 use crate::tui::history::summarize_tool_output;
 
 #[cfg(windows)]
@@ -220,10 +219,6 @@ struct Cli {
     /// Skip onboarding screens
     #[arg(long)]
     skip_onboarding: bool,
-
-    /// Start a fresh session, ignoring any crash-recovery checkpoint
-    #[arg(long = "fresh")]
-    fresh: bool,
 
     /// Skip loading project-level config from $WORKSPACE/.codewhale/config.toml
     #[arg(long = "no-project-config")]
@@ -5507,102 +5502,6 @@ fn run_xai_device_auth(config_path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-fn resolve_session_id(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
-    if last {
-        return latest_session_id_for_workspace(workspace)?.ok_or_else(|| {
-            anyhow!(
-                "No saved sessions found for workspace {}. Use `codewhale sessions` to list all sessions, or `codewhale resume <SESSION_ID>` to resume one explicitly.",
-                workspace.display()
-            )
-        });
-    }
-    if let Some(id) = session_id {
-        return Ok(id);
-    }
-    pick_session_id()
-}
-
-fn latest_session_id_for_workspace(workspace: &Path) -> std::io::Result<Option<String>> {
-    let manager = SessionManager::default_location()?;
-    Ok(manager
-        .get_latest_session_for_workspace(workspace)?
-        .map(|session| session.id))
-}
-
-fn fork_session(session_id: Option<String>, last: bool, workspace: &Path) -> Result<String> {
-    let manager = SessionManager::default_location()?;
-    let saved = if last {
-        let Some(meta) = manager.get_latest_session_for_workspace(workspace)? else {
-            bail!(
-                "No saved sessions found for workspace {}.",
-                workspace.display()
-            );
-        };
-        manager.load_session(&meta.id)?
-    } else {
-        let id = resolve_session_id(session_id, false, workspace)?;
-        manager.load_session_by_prefix(&id)?
-    };
-
-    let system_prompt = saved
-        .system_prompt
-        .as_ref()
-        .map(|text| SystemPrompt::Text(text.clone()));
-    let mut forked = create_saved_session(
-        &saved.messages,
-        &saved.metadata.model,
-        &saved.metadata.workspace,
-        saved.metadata.total_tokens,
-        system_prompt.as_ref(),
-    );
-    forked.metadata.copy_cost_from(&saved.metadata);
-    forked.metadata.mark_forked_from(&saved.metadata);
-    manager.save_session(&forked)?;
-
-    let source_title = saved.metadata.title.trim();
-    let source_label = if source_title.is_empty() {
-        "session".to_string()
-    } else {
-        format!("\"{source_title}\"")
-    };
-    println!(
-        "Forked {source_label} ({source_id}) → new session {new_id}",
-        source_id = truncate_id(&saved.metadata.id),
-        new_id = truncate_id(&forked.metadata.id),
-    );
-
-    Ok(forked.metadata.id)
-}
-
-fn pick_session_id() -> Result<String> {
-    let manager = SessionManager::default_location()?;
-    let sessions = manager.list_sessions()?;
-    if sessions.is_empty() {
-        bail!("No saved sessions found.");
-    }
-
-    println!("Select a session to resume:");
-    for (idx, session) in sessions.iter().enumerate() {
-        println!("  {:>2}. {} ({})", idx + 1, session.title, session.id);
-    }
-    print!("Enter a number (or press Enter to cancel): ");
-    io::stdout().flush()?;
-
-    let mut input = String::new();
-    io::stdin().read_line(&mut input)?;
-    let input = input.trim();
-    if input.is_empty() {
-        bail!("No session selected.");
-    }
-    let idx: usize = input
-        .parse()
-        .map_err(|_| anyhow::anyhow!("Invalid input"))?;
-    let session = sessions
-        .get(idx.saturating_sub(1))
-        .ok_or_else(|| anyhow::anyhow!("Selection out of range"))?;
-    Ok(session.id.clone())
-}
-
 async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
     use crate::client::DeepSeekClient;
 
@@ -6759,124 +6658,6 @@ fn default_mouse_capture_enabled(
         return false;
     }
     true
-}
-
-/// Load a recent crash-recovery checkpoint, pruning stale checkpoints first.
-fn load_recent_checkpoint(
-    manager: &session_manager::SessionManager,
-) -> Option<(session_manager::SavedSession, std::time::Duration)> {
-    let session = manager.load_checkpoint().ok().flatten()?;
-
-    let checkpoint_path = manager
-        .sessions_dir()
-        .join("checkpoints")
-        .join("latest.json");
-    let metadata = std::fs::metadata(&checkpoint_path).ok()?;
-    let mtime = metadata.modified().ok()?;
-    let age = std::time::SystemTime::now().duration_since(mtime).ok()?;
-    if age > std::time::Duration::from_secs(24 * 3600) {
-        let _ = manager.clear_checkpoint();
-        return None;
-    }
-
-    Some((session, age))
-}
-
-fn checkpoint_age_label(age: std::time::Duration) -> String {
-    if age.as_secs() < 60 {
-        format!("{}s ago", age.as_secs())
-    } else if age.as_secs() < 3600 {
-        format!("{}m ago", age.as_secs() / 60)
-    } else {
-        format!("{}h ago", age.as_secs() / 3600)
-    }
-}
-
-/// Check for a crash-recovery checkpoint and return the session ID if explicit
-/// recovery was requested *and* the checkpoint belongs to the current
-/// workspace.
-///
-/// The checkpoint must exist and its file mtime must be within 24 hours.
-/// **The checkpoint's workspace must also match the resolved launch workspace
-/// after canonicalisation.** If the workspace doesn't match, the checkpoint is
-/// persisted as a regular session (so the user can find it via
-/// `codewhale sessions` / `codewhale resume <id>`) and cleared, but not loaded.
-fn recover_interrupted_checkpoint_for_resume(launch_workspace: &Path) -> Option<String> {
-    let manager = session_manager::SessionManager::default_location().ok()?;
-    let (session, age) = load_recent_checkpoint(&manager)?;
-
-    // Refuse to silently restore a session from another workspace. Compare
-    // against the resolved launch workspace, not the shell cwd, so callers
-    // using `--workspace` cannot accidentally recover a checkpoint from the
-    // directory their shell happened to be in.
-    let session_workspace = session.metadata.workspace.clone();
-    let workspace_matches =
-        session_manager::workspace_scope_matches(&session_workspace, launch_workspace);
-
-    if !workspace_matches {
-        // Persist the checkpoint so the user can find it via `codewhale
-        // sessions`, then clear it so the next launch in this folder doesn't
-        // re-trip the nag. Print a one-line notice pointing at the explicit
-        // resume command — but DO NOT auto-load the session here.
-        let _ = manager.save_session(&session);
-        let _ = manager.clear_checkpoint();
-        eprintln!(
-            "Note: an interrupted session from another workspace ({}) is \
-             available. Run `codewhale sessions` to list saved sessions. Starting \
-             fresh in {}.",
-            session_workspace.display(),
-            launch_workspace.display(),
-        );
-        return None;
-    }
-
-    let session_id = session.metadata.id.clone();
-
-    // Persist the checkpoint as a regular session so the TUI can load it by id.
-    if manager.save_session(&session).is_err() {
-        return None;
-    }
-
-    // Clear the checkpoint now that it has been recovered.
-    let _ = manager.clear_checkpoint();
-
-    let age_str = checkpoint_age_label(age);
-    eprintln!("Recovered interrupted session ({age_str}). Use --fresh to start fresh.",);
-
-    Some(session_id)
-}
-
-/// Preserve an interrupted checkpoint on a normal fresh launch without
-/// attaching it to the new TUI instance. This keeps "open another codewhale in
-/// the same folder" from re-entering the previous in-flight session while still
-/// leaving an explicit resume path.
-fn preserve_interrupted_checkpoint_for_explicit_resume(launch_workspace: &Path) {
-    let Some(manager) = session_manager::SessionManager::default_location().ok() else {
-        return;
-    };
-    let Some((session, age)) = load_recent_checkpoint(&manager) else {
-        return;
-    };
-
-    let session_workspace = session.metadata.workspace.clone();
-    let _ = manager.save_session(&session);
-    let _ = manager.clear_checkpoint();
-
-    let age_str = checkpoint_age_label(age);
-    if session_manager::workspace_scope_matches(&session_workspace, launch_workspace) {
-        eprintln!(
-            "Found an in-flight session snapshot ({age_str}). Starting a new \
-             session. Run `codewhale --continue` to resume it."
-        );
-    } else {
-        eprintln!(
-            "Note: an interrupted session from another workspace ({}) is \
-             available. Run `codewhale sessions` to list saved sessions. Starting \
-             fresh in {}.",
-            session_workspace.display(),
-            launch_workspace.display(),
-        );
-    }
 }
 
 /// Load project-level config from `$WORKSPACE/.codewhale/config.toml`, with
@@ -11031,97 +10812,6 @@ mod setup_helper_tests {
         // Should print and return Ok without error.
         run_setup_clean(&dir, true).unwrap();
         assert!(!dir.exists());
-    }
-
-    fn with_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
-        let prev_home = std::env::var_os("HOME");
-        let prev_userprofile = std::env::var_os("USERPROFILE");
-        unsafe {
-            std::env::set_var("HOME", home);
-            std::env::set_var("USERPROFILE", home);
-        }
-        let result = f();
-        unsafe {
-            match prev_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match prev_userprofile {
-                Some(value) => std::env::set_var("USERPROFILE", value),
-                None => std::env::remove_var("USERPROFILE"),
-            }
-        }
-        result
-    }
-
-    #[test]
-    fn plain_launch_preserves_checkpoint_but_starts_fresh() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().unwrap();
-        let workspace = tmp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-
-        with_home(tmp.path(), || {
-            let manager = SessionManager::default_location().expect("manager");
-            let messages = vec![Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: "in flight".to_string(),
-                    cache_control: None,
-                }],
-            }];
-            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
-            let session_id = session.metadata.id.clone();
-            manager.save_checkpoint(&session).expect("save checkpoint");
-
-            preserve_interrupted_checkpoint_for_explicit_resume(&workspace);
-
-            assert!(
-                manager
-                    .load_checkpoint()
-                    .expect("load checkpoint")
-                    .is_none(),
-                "normal launch should clear latest checkpoint after preserving it"
-            );
-            assert!(
-                manager.load_session(&session_id).is_ok(),
-                "normal launch should keep an explicit resume target"
-            );
-        });
-    }
-
-    #[test]
-    fn continue_recovers_same_workspace_checkpoint() {
-        let _guard = crate::test_support::lock_test_env();
-        let tmp = TempDir::new().unwrap();
-        let workspace = tmp.path().join("workspace");
-        std::fs::create_dir_all(&workspace).unwrap();
-
-        with_home(tmp.path(), || {
-            let manager = SessionManager::default_location().expect("manager");
-            let messages = vec![Message {
-                role: "user".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: "continue me".to_string(),
-                    cache_control: None,
-                }],
-            }];
-            let session = create_saved_session(&messages, "test-model", &workspace, 0, None);
-            let session_id = session.metadata.id.clone();
-            manager.save_checkpoint(&session).expect("save checkpoint");
-
-            let recovered = recover_interrupted_checkpoint_for_resume(&workspace);
-
-            assert_eq!(recovered.as_deref(), Some(session_id.as_str()));
-            assert!(
-                manager
-                    .load_checkpoint()
-                    .expect("load checkpoint")
-                    .is_none(),
-                "--continue should consume the checkpoint"
-            );
-            assert!(manager.load_session(&session_id).is_ok());
-        });
     }
 
     #[test]
