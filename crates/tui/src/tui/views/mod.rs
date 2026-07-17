@@ -33,8 +33,6 @@ pub enum ModalKind {
     Elevation,
     UserInput,
     PlanPrompt,
-    CommandPalette,
-    Help,
     SubAgents,
     Pager,
     LiveTranscript,
@@ -631,7 +629,7 @@ pub enum ViewEvent {
     },
     /// Emitted by the `/provider` picker when the user selects a provider
     /// that already has credentials — the handler should perform the same
-    /// switch as `AppAction::SwitchProvider`.
+    /// switch through the owning application service.
     ProviderPickerApplied {
         provider: crate::config::ApiProvider,
         provider_id: Option<String>,
@@ -3054,10 +3052,6 @@ impl ModalView for ConfigView {
     }
 }
 
-pub mod help;
-
-pub use help::HelpView;
-
 pub struct SubAgentsView {
     agents: Vec<SubAgentResult>,
     scroll: usize,
@@ -3523,11 +3517,10 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionHint, ConfigListItem, ConfigScope, ConfigView, EmptyState, HelpView,
-        ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent, ViewStack,
-        action_footer_lines, canonical_config_choice, centered_modal_area, config_choice_values,
-        config_label_for_key, render_modal_footer, render_underwater_surface, subagent_view_agents,
-        truncate_view_text,
+        ActionHint, ConfigListItem, ConfigScope, ConfigView, EmptyState, ListDetailLayout,
+        ModalKind, ModalView, ViewAction, ViewEvent, ViewStack, action_footer_lines,
+        canonical_config_choice, centered_modal_area, config_choice_values, config_label_for_key,
+        render_modal_footer, render_underwater_surface, subagent_view_agents, truncate_view_text,
     };
     use crate::config::Config;
     use crate::localization::{MessageId, tr};
@@ -4940,9 +4933,9 @@ base_url = "https://api.xiaomimimo.com/v1"
     #[test]
     fn default_modal_does_not_consume_paste() {
         let mut stack = ViewStack::new();
-        stack.push(HelpView::new());
+        stack.push(BareModal);
         assert!(!stack.handle_paste("hello"));
-        assert_eq!(stack.top_kind(), Some(ModalKind::Help));
+        assert_eq!(stack.top_kind(), Some(ModalKind::Pager));
     }
 
     struct BareModal;
