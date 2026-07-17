@@ -9,7 +9,8 @@
   v5/read v4-v5、State schema v8、continuation 和最小 context projection 已通过本机完整
   验收与费用受限的官方 DeepSeek sender canary，并冻结为提交 `4a3311ac`；后续
   `35fc3cc4` 已把 durable creation delivery 提升为 Run API v4 / State schema v9。交互 TUI
-  caller 尚未切换，旧 engine/runtime-thread/compaction 路径尚未删除。M1 的
+  caller 尚未切换；当前 canonical RuntimeEvent v6 已分离逻辑模型请求预算与物理 API
+  admission 拒绝，旧 engine/runtime-thread/compaction 路径尚未删除。M1 的
   导入基线 A/B 与 M2 的完整官方 surface canary 仍是独立证据债务
 - 上次更新：2026-07-18
 
@@ -592,6 +593,21 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   engine/session/task/runtime-thread 与 `crates/tui/src/compaction.rs`，它们必须在后续 caller
   cutover 同步删除。M5 再以 A/B 决定 evidence-aware compaction/ContextBroker 的保留设计，
   不在 C2 堆叠第二套摘要器。
+
+#### RuntimeEvent v6：请求预算终态 taxonomy 纠偏（已完成）
+
+- 真实问题：旧 `RequestBudgetExceeded` 同时表示 Runtime 逻辑请求 gate 和 DeepSeek 物理
+  admission rejection，导致未发送第 N+1 个物理请求时仍投影
+  `llm_api_request_budget_exhausted`，与 `exhausted_denied = 0` 冲突。
+- 验收条件：逻辑 gate 与物理拒绝使用不同 failure kind/error code；达到
+  `started == limit` 不算物理耗尽；RunStore 原样重放；评测 Harness 交叉校验终态和账本。
+- 单一 owner：failure kind 属于 `crates/protocol`，判定属于 `crates/runtime`，物理拒绝事实
+  仍只属于 `crates/deepseek` accounting，exec 只做薄投影。
+- 替换和删除：RuntimeEvent writer/reader 断代切换到 v6，删除泛化
+  `request_budget_exceeded` 及 retry stop reason，不保留 alias。
+- 测试证据：protocol serde、root Runtime conformance、exec projection、SQLite raw
+  persistence/reopen replay 和 Harness self-test 覆盖两类终态及“达到上限但没有拒绝”的
+  反例。
 
 ### 删除/替代
 

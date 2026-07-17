@@ -40,8 +40,8 @@ FIXTURE_ROOT = ROOT / "eval" / "fixtures" / "deepseek-exec"
 FIXTURE_WORKSPACE = FIXTURE_ROOT / "workspace"
 VERIFIER = FIXTURE_ROOT / "verifier.py"
 AGGREGATE_FIXTURE = FIXTURE_ROOT / "aggregate-runs.json"
-RUNTIME_EVENT_V5_PROMPT_LEDGER_FIXTURE = (
-    FIXTURE_ROOT / "runtime-event-v5-prompt-ledger.json"
+RUNTIME_EVENT_V6_PROMPT_LEDGER_FIXTURE = (
+    FIXTURE_ROOT / "runtime-event-v6-prompt-ledger.json"
 )
 
 SCHEMA = "codewhale.eval.deepseek-exec.v2"
@@ -74,7 +74,7 @@ SCHEDULE_POLICY = "deterministic_pair_order_balance_v1"
 SYSTEM_PROMPT_EVIDENCE_SCHEMA = "codewhale.eval.system-prompt-evidence.v1"
 SYSTEM_PROMPT_FINGERPRINT_SCHEMA = "codewhale.eval.system-prompt-fingerprint.v1"
 SUPPORTED_STATE_SCHEMA_VERSIONS = {9}
-SUPPORTED_RUNTIME_EVENT_SCHEMA_VERSIONS = {5}
+SUPPORTED_RUNTIME_EVENT_SCHEMA_VERSIONS = {6}
 PROMPT_HASH_DOMAIN = b"codewhale.eval.system-prompt/v1\0"
 PROMPT_BLOCK_HASH_DOMAIN = b"codewhale.eval.system-prompt-block/v1\0"
 PROMPT_STABLE_PREFIX_HASH_DOMAIN = (
@@ -2332,6 +2332,27 @@ def terminal_status_reason_valid(terminal: dict[str, Any] | None) -> bool:
     return isinstance(reason, str) and TERMINAL_REASON_STATUS.get(reason) == status
 
 
+def request_budget_failure_taxonomy_valid(
+    terminal: dict[str, Any] | None,
+    error_code: str | None,
+) -> bool:
+    if not terminal:
+        return False
+    exhausted = optional_bool(terminal.get("api_request_budget_exhausted"))
+    rejected = optional_int(terminal.get("api_request_rejected_exhausted"))
+    if exhausted is None or rejected is None or rejected < 0:
+        return False
+    if exhausted != (rejected > 0):
+        return False
+
+    reason = terminal.get("termination_reason")
+    if error_code == "llm_api_request_budget_exhausted":
+        return reason == "budget_exhausted" and exhausted and rejected > 0
+    if error_code == "runtime_model_request_budget_exhausted":
+        return reason == "budget_exhausted" and not exhausted and rejected == 0
+    return not exhausted
+
+
 def terminal_execution_contract_valid(
     terminal: dict[str, Any] | None,
     requested_model: str,
@@ -2679,6 +2700,9 @@ def run_lane(
             and frozen_pair_matches
             and production_prompt_evidence.get("complete") is True
             and not protocol_errors
+            and request_budget_failure_taxonomy_valid(
+                accounting, receipt.error_code
+            )
             and process_status_matches_terminal
             and not process.timed_out
             and not process.spawn_error
@@ -3805,7 +3829,7 @@ def self_test_stored_event(
     event: dict[str, Any],
 ) -> dict[str, Any]:
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "run_id": run_id,
         "parent_run_id": parent_run_id,
         "event_id": f"event-{run_id}-{sequence}",
@@ -4525,11 +4549,11 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertFalse(temporary_path.exists())
         self.assertTrue(evidence["complete"])
 
-    def test_prompt_evidence_consumes_rust_v5_contract_fixture(self) -> None:
+    def test_prompt_evidence_consumes_rust_v6_contract_fixture(self) -> None:
         # crates/protocol/tests/prompt_ledger_fixture.rs proves every record in
-        # this same file deserializes and round-trips as StoredRuntimeEvent v5.
+        # this same file deserializes and round-trips as StoredRuntimeEvent v6.
         stored_events = json.loads(
-            RUNTIME_EVENT_V5_PROMPT_LEDGER_FIXTURE.read_text(
+            RUNTIME_EVENT_V6_PROMPT_LEDGER_FIXTURE.read_text(
                 encoding="utf-8"
             )
         )
@@ -4593,7 +4617,7 @@ class HarnessSelfTests(unittest.TestCase):
             )
 
         self.assertTrue(evidence["complete"], evidence["error_codes"])
-        self.assertEqual(evidence["runtime_event_schema_versions"], [5])
+        self.assertEqual(evidence["runtime_event_schema_versions"], [6])
         self.assertEqual(evidence["canonical_run_count"], 2)
         self.assertEqual(evidence["prepared_request_count"], 4)
         self.assertEqual(evidence["in_flight_request_count"], 4)
@@ -5749,6 +5773,39 @@ class HarnessSelfTests(unittest.TestCase):
         exhausted["api_request_budget_exhausted"] = True
         exhausted["api_request_rejected_exhausted"] = 1
         self.assertTrue(terminal_measurement_valid(sanitize_terminal(exhausted)))
+        self.assertTrue(
+            request_budget_failure_taxonomy_valid(
+                sanitize_terminal(exhausted),
+                "llm_api_request_budget_exhausted",
+            )
+        )
+        self.assertFalse(
+            request_budget_failure_taxonomy_valid(
+                sanitize_terminal(exhausted),
+                "runtime_model_request_budget_exhausted",
+            )
+        )
+
+        logical = json.loads(json.dumps(failed))
+        logical["termination_reason"] = "budget_exhausted"
+        logical["api_request_count"] = MAX_API_REQUESTS_PER_LANE
+        logical["api_request_completed"] = MAX_API_REQUESTS_PER_LANE
+        self.assertFalse(logical["api_request_budget_exhausted"])
+        self.assertEqual(logical["api_request_rejected_exhausted"], 0)
+        self.assertTrue(terminal_measurement_valid(sanitize_terminal(logical)))
+        self.assertTrue(
+            request_budget_failure_taxonomy_valid(
+                sanitize_terminal(logical),
+                "runtime_model_request_budget_exhausted",
+            ),
+            "reaching the physical limit without a rejected send is not API exhaustion",
+        )
+        self.assertFalse(
+            request_budget_failure_taxonomy_valid(
+                sanitize_terminal(logical),
+                "llm_api_request_budget_exhausted",
+            )
+        )
 
         for reason, status in TERMINAL_REASON_STATUS.items():
             typed = {"termination_reason": reason, "status": status}

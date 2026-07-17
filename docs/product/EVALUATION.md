@@ -94,6 +94,8 @@ A/B 对照。
 - 修改后使用旧证据；
 - reasoning-only/空响应；
 - step budget 耗尽；
+- Runtime 逻辑模型请求预算耗尽与 DeepSeek 物理 API admission 拒绝必须使用不同 typed
+  failure；前者不得虚报物理预算耗尽；
 - 项目没有标准测试命令；
 - 分析/文档任务不应被机械测试门卡死。
 
@@ -183,6 +185,13 @@ worktree_conflicts
 changed_files
 evidence
 ```
+
+物理 API 请求预算的 `budget_exhausted` 只表示确实观察到 admission rejection，必须严格
+等价于 `exhausted_denied > 0`。`started == limit` 只表示额度已经全部使用，不表示发生了
+拒绝。Runtime 在 ModelPort 前拒绝第 N+1 个逻辑模型请求时，终态 error code 必须是
+`runtime_model_request_budget_exhausted`，物理 accounting 仍为未耗尽；只有物理 admission
+拒绝才使用 `llm_api_request_budget_exhausted`。评测 Harness 必须校验该交叉关系，不能用
+泛化的“预算失败”掩盖错误归因。
 
 复杂度另行记录：
 

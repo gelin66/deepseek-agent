@@ -1,6 +1,6 @@
 [
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-root-run",
     "parent_run_id": null,
     "event_id": "run_created",
@@ -37,7 +37,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-root-run",
     "parent_run_id": null,
     "event_id": "root-model-prepared-0",
@@ -82,7 +82,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-root-run",
     "parent_run_id": null,
     "event_id": "root-model-in-flight-0",
@@ -94,7 +94,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-root-run",
     "parent_run_id": null,
     "event_id": "root-model-failed-0",
@@ -196,7 +196,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-root-run",
     "parent_run_id": null,
     "event_id": "root-model-in-flight-1",
@@ -208,7 +208,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-root-run",
     "parent_run_id": null,
     "event_id": "root-model-failed-1",
@@ -275,7 +275,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-root-run",
     "parent_run_id": null,
     "event_id": "terminal",
@@ -347,7 +347,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-child-run",
     "parent_run_id": "fixture-root-run",
     "event_id": "run_created",
@@ -384,7 +384,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-child-run",
     "parent_run_id": "fixture-root-run",
     "event_id": "child-compaction-prepared-0",
@@ -442,7 +442,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-child-run",
     "parent_run_id": "fixture-root-run",
     "event_id": "child-compaction-in-flight-0",
@@ -455,7 +455,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-child-run",
     "parent_run_id": "fixture-root-run",
     "event_id": "child-compaction-failed-0",
@@ -554,7 +554,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-child-run",
     "parent_run_id": "fixture-root-run",
     "event_id": "child-compaction-in-flight-1",
@@ -567,7 +567,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-child-run",
     "parent_run_id": "fixture-root-run",
     "event_id": "child-compaction-failed-1",
@@ -635,7 +635,7 @@
     }
   },
   {
-    "schema_version": 5,
+    "schema_version": 6,
     "run_id": "fixture-child-run",
     "parent_run_id": "fixture-root-run",
     "event_id": "terminal",

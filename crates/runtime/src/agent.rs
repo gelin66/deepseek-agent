@@ -259,8 +259,8 @@ impl AgentRuntime {
             }
             if let Some(stopped) = state.recovery_failure.take() {
                 let failure = match stopped.reason {
-                    ModelRetryStopReason::RequestBudgetExceeded => {
-                        RuntimeFailure::RequestBudgetExceeded {
+                    ModelRetryStopReason::ModelRequestBudgetExceeded => {
+                        RuntimeFailure::ModelRequestBudgetExceeded {
                             limit: state.snapshot.request.limits.max_model_requests,
                         }
                     }
@@ -685,7 +685,7 @@ impl AgentRuntime {
                 }
                 ContextCompactionPreparation::Model { plan, request } => {
                     if !budget.reserve_model_request() {
-                        return Err(RuntimeFailure::RequestBudgetExceeded {
+                        return Err(RuntimeFailure::ModelRequestBudgetExceeded {
                             limit: state.snapshot.request.limits.max_model_requests,
                         });
                     }
@@ -995,7 +995,7 @@ impl AgentRuntime {
         } else if pending.request.attempt >= state.snapshot.request.context_policy.max_retries {
             Some(ModelRetryStopReason::RetryLimitReached)
         } else if !budget.reserve_model_request() {
-            Some(ModelRetryStopReason::RequestBudgetExceeded)
+            Some(ModelRetryStopReason::ModelRequestBudgetExceeded)
         } else {
             None
         };
@@ -1054,8 +1054,12 @@ impl AgentRuntime {
                 message: "stopped context compaction has no durable failure".to_owned(),
             })?;
         if stopped.failure.code == "deepseek_request_budget_exhausted" {
-            return Err(RuntimeFailure::RequestBudgetExceeded {
-                limit: state.snapshot.request.limits.max_model_requests,
+            return Err(RuntimeFailure::ApiRequestBudgetExceeded {
+                limit: state
+                    .snapshot
+                    .accounting
+                    .hard_request_limit
+                    .unwrap_or(state.snapshot.request.limits.max_model_requests),
             });
         }
         if force {
@@ -1100,7 +1104,7 @@ impl AgentRuntime {
             } else {
                 if !budget.reserve_model_request() {
                     return Ok(ModelTurnControl::Terminal(TerminalState::Failed {
-                        failure: RuntimeFailure::RequestBudgetExceeded {
+                        failure: RuntimeFailure::ModelRequestBudgetExceeded {
                             limit: state.snapshot.request.limits.max_model_requests,
                         },
                     }));
@@ -1428,14 +1432,14 @@ impl AgentRuntime {
         } else if request.attempt >= state.snapshot.request.limits.max_model_retries {
             Some(ModelRetryStopReason::RetryLimitReached)
         } else if !budget.reserve_model_request() {
-            Some(ModelRetryStopReason::RequestBudgetExceeded)
+            Some(ModelRetryStopReason::ModelRequestBudgetExceeded)
         } else {
             None
         };
         if let Some(reason) = stop_reason {
-            let terminal = if reason == ModelRetryStopReason::RequestBudgetExceeded {
+            let terminal = if reason == ModelRetryStopReason::ModelRequestBudgetExceeded {
                 TerminalState::Failed {
-                    failure: RuntimeFailure::RequestBudgetExceeded {
+                    failure: RuntimeFailure::ModelRequestBudgetExceeded {
                         limit: state.snapshot.request.limits.max_model_requests,
                     },
                 }
@@ -2403,7 +2407,7 @@ impl AgentRuntime {
             && (accounting.budget_exhausted || accounting.exhausted_denied > 0)
         {
             terminal = TerminalState::Failed {
-                failure: RuntimeFailure::RequestBudgetExceeded {
+                failure: RuntimeFailure::ApiRequestBudgetExceeded {
                     limit: accounting
                         .hard_request_limit
                         .unwrap_or(state.snapshot.request.limits.max_model_requests),

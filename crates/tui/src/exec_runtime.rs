@@ -33,6 +33,7 @@ use serde_json::Value;
 use crate::config::{Config, MAX_SUBAGENTS};
 use crate::core::termination::RunTerminationReason;
 use crate::exec_output::ExecTerminalReceipt;
+use crate::localization::{MessageId, tr};
 
 use super::{
     EXEC_OUTPUT_CLOSE_TIMEOUT_SECS, EXEC_OUTPUT_QUEUE_CAPACITY, EXEC_TOTAL_SHUTDOWN_TIMEOUT_SECS,
@@ -1416,9 +1417,21 @@ fn project_failure(
     bool,
 ) {
     match failure {
-        RuntimeFailure::RequestBudgetExceeded { limit } => (
+        RuntimeFailure::ModelRequestBudgetExceeded { limit } => (
             RunTerminationReason::BudgetExhausted,
-            Some(format!("DeepSeek API 请求预算已用尽（上限：{limit}）")),
+            Some(
+                tr(MessageId::ExecModelRequestBudgetExhausted)
+                    .replace("{limit}", &limit.to_string()),
+            ),
+            "runtime_model_request_budget_exhausted",
+            "state",
+            false,
+        ),
+        RuntimeFailure::ApiRequestBudgetExceeded { limit } => (
+            RunTerminationReason::BudgetExhausted,
+            Some(
+                tr(MessageId::ExecApiRequestBudgetExhausted).replace("{limit}", &limit.to_string()),
+            ),
             "llm_api_request_budget_exhausted",
             "state",
             false,
@@ -1923,6 +1936,25 @@ mod tests {
 
         assert!(signal_cancel_won(&result, &phase));
         assert_eq!(commit_exec_terminal_signal(&phase), Some(143));
+    }
+
+    #[test]
+    fn exec_projects_logical_and_physical_request_budgets_separately() {
+        let logical = project_failure(&RuntimeFailure::ModelRequestBudgetExceeded { limit: 8 });
+        assert_eq!(logical.0, RunTerminationReason::BudgetExhausted);
+        assert_eq!(
+            logical.1.as_deref(),
+            Some("Agent 模型请求预算已用尽（上限：8）")
+        );
+        assert_eq!(logical.2, "runtime_model_request_budget_exhausted");
+
+        let physical = project_failure(&RuntimeFailure::ApiRequestBudgetExceeded { limit: 10 });
+        assert_eq!(physical.0, RunTerminationReason::BudgetExhausted);
+        assert_eq!(
+            physical.1.as_deref(),
+            Some("DeepSeek API 物理请求预算已用尽（上限：10）")
+        );
+        assert_eq!(physical.2, "llm_api_request_budget_exhausted");
     }
 
     #[test]

@@ -717,5 +717,7 @@
     "ApprovalRepoLawWarning": "仓库法则要求确认——即使在完全访问模式下也不例外。",
     "ApprovalRepoLawRuleLabel": "规则  ",
     "FilePickerMatchSingular": "@ 附加 · 1 个匹配",
-    "FilePickerMatchesPlural": "@ 附加 · {count} 个匹配"
+    "FilePickerMatchesPlural": "@ 附加 · {count} 个匹配",
+    "ExecModelRequestBudgetExhausted": "Agent 模型请求预算已用尽（上限：{limit}）",
+    "ExecApiRequestBudgetExhausted": "DeepSeek API 物理请求预算已用尽（上限：{limit}）"
 }

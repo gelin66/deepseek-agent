@@ -10,7 +10,7 @@
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - 当前阶段：M4-C C1、C2 已冻结；C2 continuation/context projection 实现提交为
-  `4a3311ac`，交互 TUI caller 尚未迁移
+  `4a3311ac`；当前 canonical RuntimeEvent 为 v6，交互 TUI caller 尚未迁移
 
 ## 1. 当前结论
 
@@ -85,11 +85,19 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
+当前 RuntimeEvent v6 将逻辑模型请求预算和物理 API 请求预算分开：Runtime 在进入
+ModelPort 前拒绝第 N+1 个逻辑请求时持久化
+`model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
+`exhausted_denied > 0` 时才持久化 `api_request_budget_exceeded`。`started == limit`
+不等于物理耗尽，Runtime 不为证明耗尽而故意发送额外请求。旧泛化
+`request_budget_exceeded` 不再接受。
+
 C2 把 continuation 与 recovery 分开：`resume` 继续同一个 run，`continue` 从一个终态
 root 创建新的 root，并用 `continued_from_run_id` 记录 lineage；source 不被改写。完整
 canonical transcript 仍 append-only，compaction 只替换每次请求的 model-visible projection。
 当前会先本地裁剪旧的大型工具结果，必要时才发出计入预算和 accounting 的 tool-free 摘要
-请求；prepared/in-flight/failed/committed 均是 RuntimeEvent v5 的持久事实。
+请求；prepared/in-flight/failed/committed 由 RuntimeEvent v5 引入，并继续由当前 v6
+持久化。
 
 ### DeepSeek backend
 
@@ -134,6 +142,7 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
 - 当前 canonical RunStore schema 为 v9；
+- 当前 canonical RuntimeEvent writer/reader 为 v6；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation

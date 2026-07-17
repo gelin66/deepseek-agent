@@ -6,7 +6,7 @@
 - 状态：M4-C C1、C2 已冻结；C2 实现提交为 `4a3311ac`，后续 durable creation delivery
   为 `35fc3cc4`，交互 TUI 尚未切换
 - 更新日期：2026-07-18
-- schema：`Run API`（`schema_version = 4`）、`RuntimeEvent`（writer v5，reader v4-v5）、
+- schema：`Run API`（`schema_version = 4`）、`RuntimeEvent`（writer/reader v6）、
   `State`（schema v9）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
@@ -320,9 +320,19 @@ RuntimeEvent v5 在 v4 基础上增加：
 - `ContextCompactionAttemptFailed`：失败、重试决定和已知 accounting；
 - `ContextCompactionCommitted`：新的 model-visible projection 与前后 Token 估算已提交。
 
-当前 writer 只写 v5；reducer/Store reader 接受 v4-v5，以便读取 C1 已持久事件，不继续写旧
-版本。prepared 尚未进入 in-flight 时可恢复一次；in-flight 后无法证明请求未发送或账单完整
-时必须 fail closed 为 `RecoveryRequired`，不能盲目重发摘要请求。
+RuntimeEvent v6 删除泛化的 `request_budget_exceeded` failure kind，改为两个互斥事实：
+
+- `model_request_budget_exceeded`：`RuntimeBudget` 在进入 ModelPort 前拒绝第 N+1 个逻辑
+  请求；不会故意发送超额物理请求，物理 accounting 的
+  `api_request_budget_exhausted=false`、`api_request_rejected_exhausted=0`；
+- `api_request_budget_exceeded`：DeepSeek transport 的物理 admission 确实观察到预算拒绝，
+  必须有 `api_request_rejected_exhausted > 0`，并投影
+  `api_request_budget_exhausted=true`。
+
+达到物理 `started == limit` 本身不代表耗尽。当前 writer 和 reducer/Store reader 只接受
+v6，不保留旧 failure alias。RunStore 原样持久化这两个 kind，不根据计数重新猜测终态。
+prepared 尚未进入 in-flight 时可恢复一次；in-flight 后无法证明请求未发送或账单完整时必须
+fail closed 为 `RecoveryRequired`，不能盲目重发摘要请求。
 
 ## 6. 并发、控制与恢复
 

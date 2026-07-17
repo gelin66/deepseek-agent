@@ -1958,6 +1958,43 @@ async fn nested_child_uses_same_runtime_and_integrates_in_seven_requests() {
 }
 
 #[tokio::test]
+async fn logical_model_request_gate_does_not_report_physical_api_exhaustion() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = calls.clone();
+    let model = Arc::new(MockModel::new(move |_| {
+        assert_eq!(
+            observed_calls.fetch_add(1, Ordering::AcqRel),
+            0,
+            "the logical gate must reject request N+1 before ModelPort"
+        );
+        ScriptResponse::Events(vec![completed(
+            "",
+            None,
+            vec![call("read-once", "read", "{}")],
+            ModelFinishReason::ToolCalls,
+        )])
+    }));
+    let (runtime, tools, _, _) = fixture(model);
+    let mut limited = request("one logical model request");
+    limited.limits.max_model_requests = 1;
+
+    let outcome = runtime.start(limited).wait().await.unwrap();
+
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::Failed {
+            failure: RuntimeFailure::ModelRequestBudgetExceeded { limit: 1 }
+        }
+    ));
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(tools.calls.lock().unwrap().len(), 1);
+    assert_eq!(outcome.runtime_model_requests, 1);
+    assert_eq!(outcome.accounting.total_started(), 1);
+    assert_eq!(outcome.accounting.exhausted_denied, 0);
+    assert!(!outcome.accounting.budget_exhausted);
+}
+
+#[tokio::test]
 async fn typed_finish_failures_and_accounting_fail_closed() {
     for (reason, expected) in [
         (ModelFinishReason::Length, "output_limit"),
@@ -2003,9 +2040,12 @@ async fn typed_finish_failures_and_accounting_fail_closed() {
     assert!(matches!(
         outcome.terminal,
         TerminalState::Failed {
-            failure: RuntimeFailure::RequestBudgetExceeded { .. }
+            failure: RuntimeFailure::ApiRequestBudgetExceeded { limit: 128 }
         }
     ));
+    assert_eq!(outcome.accounting.total_started(), 1);
+    assert_eq!(outcome.accounting.exhausted_denied, 1);
+    assert!(outcome.accounting.budget_exhausted);
 }
 
 #[tokio::test]

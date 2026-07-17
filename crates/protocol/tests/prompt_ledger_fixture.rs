@@ -6,7 +6,7 @@ use codewhale_protocol::agent_runtime::{
 };
 
 const FIXTURE: &str =
-    include_str!("../../../eval/fixtures/deepseek-exec/runtime-event-v5-prompt-ledger.json");
+    include_str!("../../../eval/fixtures/deepseek-exec/runtime-event-v6-prompt-ledger.json");
 
 fn stable_prefix(prompt: &SystemPrompt) -> Vec<&str> {
     prompt
@@ -27,9 +27,9 @@ fn assert_retry_only_advances_attempt(initial: &ModelRequest, retry: &ModelReque
 }
 
 #[test]
-fn runtime_event_v5_prompt_ledger_fixture_matches_rust_contract() {
+fn runtime_event_v6_prompt_ledger_fixture_matches_rust_contract() {
     let events: Vec<StoredRuntimeEvent> =
-        serde_json::from_str(FIXTURE).expect("fixture must use the Rust RuntimeEvent v5 schema");
+        serde_json::from_str(FIXTURE).expect("fixture must use the Rust RuntimeEvent v6 schema");
     assert!(!events.is_empty());
 
     for event in &events {

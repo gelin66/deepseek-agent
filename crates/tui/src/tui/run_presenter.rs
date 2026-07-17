@@ -626,7 +626,7 @@ fn model_retry_stop_reason_label(reason: ModelRetryStopReason) -> &'static str {
         ModelRetryStopReason::NotRetryable => "错误不可重试",
         ModelRetryStopReason::FailureChanged => "失败类型已变化",
         ModelRetryStopReason::RetryLimitReached => "已达到重试上限",
-        ModelRetryStopReason::RequestBudgetExceeded => "已超出请求预算",
+        ModelRetryStopReason::ModelRequestBudgetExceeded => "已超出模型请求预算",
     }
 }
 

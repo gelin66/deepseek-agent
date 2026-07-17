@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 
-use codewhale_protocol::agent_runtime::{ReasoningEffort, RunLimits, ToolPolicy};
+use codewhale_protocol::agent_runtime::{
+    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ReasoningEffort, RunLimits, ToolPolicy,
+};
 use codewhale_protocol::run_api::{
     PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
 };
@@ -9,10 +11,11 @@ use codewhale_runtime::{
     ActorRequestAccounting, AgentOutcome, AttemptId, CommandId, CreatedRun, DurableActionState,
     InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall,
     OperationId, PendingRuntimeEvent, RootRunRecord, RunId, RunLease, RunPurpose, RunReplay,
-    RunRequest, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent,
-    TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus, ToolEvidence,
-    ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus, ToolOperationStatus, ToolOutcome,
-    ToolRetryDisposition, ToolSideEffectStatus, ToolTransportStatus, Usage, reduce_events,
+    RunRequest, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeFailure,
+    StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus,
+    ToolEvidence, ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus, ToolOperationStatus,
+    ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus, ToolTransportStatus, Usage,
+    reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -209,9 +212,10 @@ fn v5_event(
     event: RuntimeEventKind,
 ) -> StoredRuntimeEvent {
     StoredRuntimeEvent {
-        // State schema v5 persisted RuntimeEvent v4. Keep this historical
-        // fixture independent from the current event writer version.
-        schema_version: 4,
+        // This fixture isolates the State schema v5 -> current migration.
+        // RuntimeEvent readers intentionally accept v6 only after the
+        // incompatible budget-failure taxonomy cutover.
+        schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
         run_id: run_id.clone(),
         parent_run_id: None,
         event_id: RuntimeEventId(event_id.to_owned()),
@@ -608,6 +612,92 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
         reduce_events(&reopened_replay.events).expect("reduce reopened sqlite event log"),
         reopened_replay.snapshot
     );
+}
+
+#[tokio::test]
+async fn sqlite_replay_preserves_disjoint_request_budget_failures_verbatim() {
+    for (label, failure, expected_kind) in [
+        (
+            "logical",
+            RuntimeFailure::ModelRequestBudgetExceeded { limit: 8 },
+            "model_request_budget_exceeded",
+        ),
+        (
+            "physical",
+            RuntimeFailure::ApiRequestBudgetExceeded { limit: 10 },
+            "api_request_budget_exceeded",
+        ),
+    ] {
+        let path = temp_state_path(&format!("budget-taxonomy-{label}"));
+        let store = StateStore::open(Some(path.clone())).expect("open budget taxonomy store");
+        let created = store
+            .create(request(
+                &format!("budget-{label}-run"),
+                "/tmp/budget-taxonomy",
+            ))
+            .await
+            .expect("create budget taxonomy run");
+        let expected = AgentOutcome {
+            run_id: created.lease.run_id.clone(),
+            parent_run_id: None,
+            terminal: TerminalState::Failed {
+                failure: failure.clone(),
+            },
+            accounting: ModelAccounting::default(),
+            runtime_model_requests: 8,
+            runtime_retries: 0,
+            tool_calls: 0,
+        };
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::terminal(expected.clone()),
+            )
+            .await
+            .expect("persist budget terminal");
+
+        let replay = store
+            .load(&created.lease.run_id)
+            .await
+            .expect("load budget terminal")
+            .expect("budget run exists");
+        assert_eq!(replay.snapshot.terminal.as_ref(), Some(&expected));
+        assert_eq!(
+            replay.events.last().map(|event| &event.event),
+            Some(&RuntimeEventKind::Terminal {
+                outcome: Box::new(expected.clone()),
+            })
+        );
+
+        drop(store);
+        let conn = Connection::open(&path).expect("inspect budget terminal JSON");
+        let raw: String = conn
+            .query_row(
+                "SELECT event_json FROM agent_run_events WHERE terminal = 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read raw budget terminal");
+        let raw: serde_json::Value =
+            serde_json::from_str(&raw).expect("budget terminal JSON is valid");
+        assert_eq!(
+            raw["event"]["outcome"]["terminal"]["failure"]["kind"],
+            expected_kind
+        );
+        assert_ne!(
+            raw["event"]["outcome"]["terminal"]["failure"]["kind"],
+            "request_budget_exceeded"
+        );
+        drop(conn);
+
+        let reopened = StateStore::open(Some(path)).expect("reopen budget taxonomy store");
+        let reopened = reopened
+            .load(&created.lease.run_id)
+            .await
+            .expect("load reopened budget terminal")
+            .expect("reopened budget run exists");
+        assert_eq!(reopened.snapshot.terminal, Some(expected));
+    }
 }
 
 #[tokio::test]

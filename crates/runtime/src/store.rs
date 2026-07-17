@@ -1312,7 +1312,7 @@ fn validate_retry_stop(
         retry_policy_stop_reason(pending, failure, primary_failure, max_model_retries);
     let valid = match policy_reason {
         Some(expected) => reason == expected,
-        None => reason == ModelRetryStopReason::RequestBudgetExceeded,
+        None => reason == ModelRetryStopReason::ModelRequestBudgetExceeded,
     };
     if !valid {
         return Err(corrupt(
@@ -1393,7 +1393,7 @@ fn validate_context_compaction_retry(
     } else if attempt >= retry_limit {
         Some(ModelRetryStopReason::RetryLimitReached)
     } else if !can_reserve_request {
-        Some(ModelRetryStopReason::RequestBudgetExceeded)
+        Some(ModelRetryStopReason::ModelRequestBudgetExceeded)
     } else {
         None
     };

@@ -780,6 +780,9 @@ pub enum MessageId {
     // Fuzzy file picker (@ attach overlay).
     FilePickerMatchSingular,
     FilePickerMatchesPlural,
+    // Canonical exec terminal summaries.
+    ExecModelRequestBudgetExhausted,
+    ExecApiRequestBudgetExhausted,
 }
 
 #[allow(dead_code)]
@@ -1503,6 +1506,8 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ApprovalRepoLawRuleLabel,
     MessageId::FilePickerMatchSingular,
     MessageId::FilePickerMatchesPlural,
+    MessageId::ExecModelRequestBudgetExhausted,
+    MessageId::ExecApiRequestBudgetExhausted,
 ];
 
 pub fn tr(id: MessageId) -> Cow<'static, str> {

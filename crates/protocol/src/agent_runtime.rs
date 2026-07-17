@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 4;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 5;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 6;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 6;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -882,7 +882,12 @@ pub struct ModelAccounting {
     pub transport_retries: u64,
     pub runtime_retries: u64,
     pub sealed_denied: u64,
+    /// Number of physical API admission attempts rejected because the shared
+    /// hard request budget had no remaining slot.
     pub exhausted_denied: u64,
+    /// True only when physical API admission rejected at least one request as
+    /// exhausted. Reaching `hard_request_limit` without attempting another
+    /// physical request does not set this flag.
     pub budget_exhausted: bool,
     pub sealed: bool,
     pub complete: bool,
@@ -1041,7 +1046,10 @@ pub enum RuntimeFailure {
     OutputLimit,
     ContentFiltered,
     InsufficientSystemResource,
-    RequestBudgetExceeded {
+    ModelRequestBudgetExceeded {
+        limit: u32,
+    },
+    ApiRequestBudgetExceeded {
         limit: u32,
     },
     TurnBudgetExceeded {
@@ -1513,7 +1521,7 @@ pub enum ModelRetryStopReason {
     NotRetryable,
     FailureChanged,
     RetryLimitReached,
-    RequestBudgetExceeded,
+    ModelRequestBudgetExceeded,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1958,6 +1966,45 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<RuntimeEventKind>(encoded).unwrap(),
             event
+        );
+    }
+
+    #[test]
+    fn request_budget_failures_have_disjoint_v6_wire_kinds() {
+        let logical = RuntimeFailure::ModelRequestBudgetExceeded { limit: 8 };
+        let physical = RuntimeFailure::ApiRequestBudgetExceeded { limit: 10 };
+
+        let logical_json = serde_json::to_value(&logical).unwrap();
+        let physical_json = serde_json::to_value(&physical).unwrap();
+        assert_eq!(
+            logical_json,
+            serde_json::json!({
+                "kind": "model_request_budget_exceeded",
+                "limit": 8
+            })
+        );
+        assert_eq!(
+            physical_json,
+            serde_json::json!({
+                "kind": "api_request_budget_exceeded",
+                "limit": 10
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<RuntimeFailure>(logical_json).unwrap(),
+            logical
+        );
+        assert_eq!(
+            serde_json::from_value::<RuntimeFailure>(physical_json).unwrap(),
+            physical
+        );
+        assert!(
+            serde_json::from_value::<RuntimeFailure>(serde_json::json!({
+                "kind": "request_budget_exceeded",
+                "limit": 8
+            }))
+            .is_err(),
+            "RuntimeEvent v6 must not accept the deleted ambiguous wire kind"
         );
     }
 }
