@@ -75,21 +75,19 @@ fn plugins(app: &mut App, arg: Option<&str>) -> CommandResult {
 }
 
 fn list_plugins(
-    app: &App,
+    _app: &App,
     plugin_dir: &std::path::Path,
     discovered: &[(PathBuf, crate::tools::plugin::PluginMetadata)],
 ) -> CommandResult {
     if discovered.is_empty() {
         return CommandResult::message(
-            tr(app.ui_locale, MessageId::CmdPluginNoneFound)
-                .replace("{dir}", &plugin_dir.display().to_string()),
+            tr(MessageId::CmdPluginNoneFound).replace("{dir}", &plugin_dir.display().to_string()),
         );
     }
 
     let mut out = String::new();
     out.push_str(
-        &tr(app.ui_locale, MessageId::CmdPluginListHeader)
-            .replace("{count}", &discovered.len().to_string()),
+        &tr(MessageId::CmdPluginListHeader).replace("{count}", &discovered.len().to_string()),
     );
     out.push('\n');
 
@@ -107,14 +105,12 @@ fn list_plugins(
 }
 
 fn show_plugin_detail(
-    app: &App,
+    _app: &App,
     name: &str,
     discovered: &[(PathBuf, crate::tools::plugin::PluginMetadata)],
 ) -> CommandResult {
     let Some((path, meta)) = discovered.iter().find(|(_, m)| m.name == name) else {
-        return CommandResult::error(
-            tr(app.ui_locale, MessageId::CmdPluginNotFound).replace("{name}", name),
-        );
+        return CommandResult::error(tr(MessageId::CmdPluginNotFound).replace("{name}", name));
     };
 
     let schema = serde_json::to_string_pretty(&meta.input_schema).unwrap_or_default();
@@ -125,21 +121,19 @@ fn show_plugin_detail(
     out.push_str(&format!("{:=<40}\n", ""));
     out.push_str(&format!(
         "{}\n",
-        tr(app.ui_locale, MessageId::CmdPluginDetailDescription)
-            .replace("{description}", &meta.description)
+        tr(MessageId::CmdPluginDetailDescription).replace("{description}", &meta.description)
     ));
     out.push_str(&format!(
         "{}\n",
-        tr(app.ui_locale, MessageId::CmdPluginDetailSchema).replace("{schema}", &schema)
+        tr(MessageId::CmdPluginDetailSchema).replace("{schema}", &schema)
     ));
     out.push_str(&format!(
         "{}\n",
-        tr(app.ui_locale, MessageId::CmdPluginDetailApproval).replace("{approval}", approval)
+        tr(MessageId::CmdPluginDetailApproval).replace("{approval}", approval)
     ));
     out.push_str(&format!(
         "{}\n",
-        tr(app.ui_locale, MessageId::CmdPluginDetailPath)
-            .replace("{path}", &path.display().to_string())
+        tr(MessageId::CmdPluginDetailPath).replace("{path}", &path.display().to_string())
     ));
 
     CommandResult::message(out)
@@ -179,7 +173,6 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::tui::app::{App, TuiOptions};
-    use codewhale_config::Locale;
     use tempfile::TempDir;
 
     fn create_test_app_with_plugin_dir(plugin_dir: &std::path::Path) -> (App, TempDir) {
@@ -237,10 +230,9 @@ mod tests {
         .unwrap();
 
         let (mut app, _tmp) = create_test_app_with_plugin_dir(dir.path());
-        app.ui_locale = Locale::En;
         let result = plugins(&mut app, None);
         let msg = result.message.expect("should return list");
-        assert!(msg.contains("Plugin tools (2):"));
+        assert!(msg.contains("插件工具（2）："));
         assert!(msg.contains("greet"));
         assert!(msg.contains("Say hello"));
         assert!(msg.contains("audit"));
@@ -253,10 +245,9 @@ mod tests {
     fn test_plugins_empty_directory() {
         let dir = TempDir::new().unwrap();
         let (mut app, _tmp) = create_test_app_with_plugin_dir(dir.path());
-        app.ui_locale = Locale::En;
         let result = plugins(&mut app, None);
         let msg = result.message.expect("should return message");
-        assert!(msg.contains("No plugin tools discovered"));
+        assert!(msg.contains("未发现插件工具"));
         assert!(msg.contains(&dir.path().canonicalize().unwrap().display().to_string()));
         assert!(!result.is_error);
     }
@@ -292,11 +283,10 @@ mod tests {
         .unwrap();
 
         let (mut app, _tmp) = create_test_app_with_plugin_dir(dir.path());
-        app.ui_locale = Locale::En;
         let result = plugins(&mut app, Some("missing"));
         assert!(result.is_error);
         let msg = result.message.expect("should return error");
         assert!(msg.contains("missing"));
-        assert!(msg.contains("not found"));
+        assert!(msg.contains("未找到"));
     }
 }

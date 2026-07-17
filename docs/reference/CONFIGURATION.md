@@ -36,12 +36,15 @@ Release verification for these surfaces lives in
 Use it when checking `/setup`, `/constitution`, doctor, context reports, and
 the update checkpoint agree.
 
-### Managing the user-global constitution (`/setup` and `/constitution`)
+### User-global constitution (legacy control surface)
 
-On first launch CodeWhale runs a short **constitution-first** setup path:
-language → provider/model readiness → runtime posture → create or confirm your
-constitution. The bundled/default constitution is always valid, so you can
-defer; reopen the hub any time with `/setup`.
+On first launch CodeWhale uses a fixed Simplified Chinese onboarding path:
+Welcome → API-key gate (when required) → workspace-trust gate (when required)
+→ setup tips/checkpoint. There is no language screen or runtime language
+choice. The canonical command surface does not expose `/setup` or
+`/constitution`. The constitution editor described below belongs to the
+unmigrated legacy control surface and is scheduled for deletion; do not rely on
+it as a current entry point.
 
 On the **Constitution** step:
 
@@ -1167,13 +1170,6 @@ Common settings keys:
   currently typed directory segment in deterministic alphabetical order.
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
-- `locale` (`auto`, `en`, `ja`, `zh-Hans`, `pt-BR`; default `auto`): UI chrome
-  locale. `auto` checks `LC_ALL`, `LC_MESSAGES`, then `LANG`; unsupported or
-  missing locales fall back to English. The runtime also exposes the resolved
-  locale in the system prompt as the fallback natural language for V4 reasoning
-  and replies when the latest user message is ambiguous. Clear user language
-  still takes priority; Chinese turns should produce Chinese `reasoning_content`
-  and Chinese final replies even when the resolved locale is English.
 - `background_color` (`#RRGGBB`, `RRGGBB`, or `default`): optional main TUI
   background color applied to the root, header, transcript, and footer
   surfaces while preserving panel contrast.
@@ -1203,9 +1199,12 @@ preview entry while its Workflow control surface is still being built. Switch
 between them with `/mode`. For compatibility, older settings files with
 `default_mode = "normal"` still load as `agent`.
 
-Imported localization planning documents were removed from the active product
-tree. Existing locale code remains current implementation detail until the TUI
-is migrated to the shared Runtime event surface.
+The human-facing interface is fixed to Simplified Chinese. `locale` and
+`language` are not supported settings; `LANG`, `LC_ALL`, and `LC_MESSAGES` do
+not select UI or model-prompt language. The only UI message catalog is
+`zh-Hans`, resolved through `tr(MessageId)`. Commands, configuration keys,
+protocol fields, model IDs, paths, code, diffs, stdout/stderr, and raw logs
+retain their machine contract or original bytes.
 
 Readability semantics:
 

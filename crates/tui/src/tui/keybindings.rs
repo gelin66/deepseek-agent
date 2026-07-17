@@ -29,24 +29,22 @@ pub enum KeybindingSection {
     Editing,
     Submission,
     Modes,
-    Sessions,
     Clipboard,
     Help,
 }
 
 impl KeybindingSection {
-    pub fn label(self, locale: codewhale_config::Locale) -> Cow<'static, str> {
+    pub fn label(self) -> Cow<'static, str> {
         use crate::localization::{MessageId, tr};
         let id = match self {
             Self::Navigation => MessageId::HelpSectionNavigation,
             Self::Editing => MessageId::HelpSectionEditing,
             Self::Submission => MessageId::HelpSectionActions,
             Self::Modes => MessageId::HelpSectionModes,
-            Self::Sessions => MessageId::HelpSectionSessions,
             Self::Clipboard => MessageId::HelpSectionClipboard,
             Self::Help => MessageId::HelpSectionHelp,
         };
-        tr(locale, id)
+        tr(id)
     }
 
     /// Stable ordering for help rendering — matches the variant declaration
@@ -57,9 +55,8 @@ impl KeybindingSection {
             Self::Editing => 1,
             Self::Submission => 2,
             Self::Modes => 3,
-            Self::Sessions => 4,
-            Self::Clipboard => 5,
-            Self::Help => 6,
+            Self::Clipboard => 4,
+            Self::Help => 5,
         }
     }
 }
@@ -289,7 +286,6 @@ mod tests {
             KeybindingSection::Editing,
             KeybindingSection::Submission,
             KeybindingSection::Modes,
-            KeybindingSection::Sessions,
             KeybindingSection::Clipboard,
             KeybindingSection::Help,
         ];
@@ -377,8 +373,8 @@ mod tests {
             crate::localization::MessageId::KbThinkingPager
         );
         assert_eq!(
-            crate::localization::tr(codewhale_config::Locale::En, ctrl_o.description_id,),
-            "Open Turn Inspector"
+            crate::localization::tr(ctrl_o.description_id),
+            "打开回合检查器"
         );
     }
 
@@ -422,7 +418,6 @@ mod tests {
             KeybindingSection::Editing,
             KeybindingSection::Submission,
             KeybindingSection::Modes,
-            KeybindingSection::Sessions,
             KeybindingSection::Clipboard,
             KeybindingSection::Help,
         ];

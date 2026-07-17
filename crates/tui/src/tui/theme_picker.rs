@@ -34,7 +34,6 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_panel_scroll_rail, render_underwater_surface,
 };
-use codewhale_config::Locale;
 
 pub struct ThemePickerView {
     controller: SettingsPickerController,
@@ -47,8 +46,6 @@ pub struct ThemePickerView {
     ocean_treatment: crate::tui::ocean::OceanTreatment,
     row_hitboxes: RefCell<Vec<(Rect, usize)>>,
     last_mouse_selected: Option<usize>,
-    /// UI locale captured from the app at construction (#4057 wave 2).
-    locale: Locale,
 }
 
 fn theme_options(original_name: &str) -> Vec<SettingOption> {
@@ -79,18 +76,13 @@ impl ThemePickerView {
     #[cfg(test)]
     #[must_use]
     pub fn new(original_name: String) -> Self {
-        Self::new_with_treatment(
-            original_name,
-            crate::tui::ocean::OceanTreatment::Ombre,
-            Locale::En,
-        )
+        Self::new_with_treatment(original_name, crate::tui::ocean::OceanTreatment::Ombre)
     }
 
     #[must_use]
     pub fn new_with_treatment(
         original_name: String,
         ocean_treatment: crate::tui::ocean::OceanTreatment,
-        locale: Locale,
     ) -> Self {
         let options = theme_options(&original_name);
         let mut controller = SettingsPickerController::new(options, original_name.clone());
@@ -108,7 +100,6 @@ impl ThemePickerView {
             ocean_treatment,
             row_hitboxes: RefCell::new(Vec::new()),
             last_mouse_selected: None,
-            locale,
         }
     }
 
@@ -119,13 +110,8 @@ impl ThemePickerView {
     pub fn boxed_with_treatment(
         original_name: String,
         ocean_treatment: crate::tui::ocean::OceanTreatment,
-        locale: Locale,
     ) -> Box<dyn ModalView> {
-        Box::new(Self::new_with_treatment(
-            original_name,
-            ocean_treatment,
-            locale,
-        ))
+        Box::new(Self::new_with_treatment(original_name, ocean_treatment))
     }
 
     fn current(&self) -> ThemeId {
@@ -257,8 +243,7 @@ impl ModalView for ThemePickerView {
         // after Enter. We keep the live `surface_bg` (not the shared ink) and
         // the bare `Clear` so the preview backdrop reads as intended.
         let live = self.ui_theme_for(self.current());
-        let inner =
-            render_underwater_surface(area, buf, tr(self.locale, MessageId::ThemeSurfaceTitle));
+        let inner = render_underwater_surface(area, buf, tr(MessageId::ThemeSurfaceTitle));
 
         let content = render_modal_footer(
             inner,
@@ -281,11 +266,11 @@ impl ModalView for ThemePickerView {
         lines.push(Line::from(""));
 
         let treatment = if matches!(self.current(), ThemeId::Terminal) {
-            tr(self.locale, MessageId::ThemeTreatmentOmbreUnavailable)
+            tr(MessageId::ThemeTreatmentOmbreUnavailable)
         } else if self.ocean_treatment.is_flat() {
-            tr(self.locale, MessageId::ThemeTreatmentFlatActive)
+            tr(MessageId::ThemeTreatmentFlatActive)
         } else {
-            tr(self.locale, MessageId::ThemeTreatmentOmbreActive)
+            tr(MessageId::ThemeTreatmentOmbreActive)
         };
         lines.push(Line::from(Span::styled(
             treatment,
@@ -408,6 +393,24 @@ mod tests {
             }
             _ => None,
         }
+    }
+
+    fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(unicode_width::UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        row
+    }
+
+    fn buffer_text(buf: &Buffer, area: Rect) -> String {
+        (area.top()..area.bottom())
+            .map(|y| buffer_row_text(buf, area, y))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -563,31 +566,21 @@ mod tests {
         let flat = ThemePickerView::new_with_treatment(
             "dark".to_string(),
             crate::tui::ocean::OceanTreatment::Flat,
-            Locale::En,
         );
         let mut flat_buf = ratatui::buffer::Buffer::empty(area);
         flat.render(area, &mut flat_buf);
-        let flat_text = flat_buf
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(flat_text.contains("Treatment  Flat — active"));
+        let flat_text = buffer_text(&flat_buf, area);
+        assert!(flat_text.contains("效果  Flat — 已启用"));
 
         let terminal = ThemePickerView::new_with_treatment(
             "terminal".to_string(),
             crate::tui::ocean::OceanTreatment::Ombre,
-            Locale::En,
         );
         let mut terminal_buf = ratatui::buffer::Buffer::empty(area);
         terminal.render(area, &mut terminal_buf);
-        let terminal_text = terminal_buf
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(terminal_text.contains("Ombre unavailable"));
-        assert!(terminal_text.contains("Terminal owns the background"));
+        let terminal_text = buffer_text(&terminal_buf, area);
+        assert!(terminal_text.contains("Ombre 不可用"));
+        assert!(terminal_text.contains("背景由终端接管"));
     }
 
     #[test]
@@ -602,17 +595,13 @@ mod tests {
 
             let mut buf = ratatui::buffer::Buffer::empty(area);
             view.render(area, &mut buf);
-            let text = buf
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
+            let text = buffer_text(&buf, area);
             assert!(
                 text.contains(expected.display_name()),
                 "{} was not represented in its live preview surface",
                 expected.name()
             );
-            assert!(text.contains("Treatment"));
+            assert!(text.contains("效果"));
             assert!(text.contains("Enter save"));
         }
     }
@@ -624,11 +613,7 @@ mod tests {
         let mut buf = ratatui::buffer::Buffer::empty(area);
         v.render(area, &mut buf);
         let rows = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
+            .map(|y| buffer_row_text(&buf, area, y))
             .collect::<Vec<_>>();
         let text = rows.join("\n");
 
@@ -663,13 +648,7 @@ mod tests {
             stack.push(ThemePickerView::new("system".to_string()));
             stack.render(area, &mut buf);
 
-            let rows: Vec<String> = (0..h)
-                .map(|y| {
-                    (0..w)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect();
+            let rows: Vec<String> = (0..h).map(|y| buffer_row_text(&buf, area, y)).collect();
             let text = rows.join("\n");
 
             for label in ["preview", "save", "revert"] {

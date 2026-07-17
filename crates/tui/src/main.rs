@@ -23,7 +23,7 @@ use crate::dependencies::ExternalTool;
 use codewhale_context::{project_context, prompts, skills as skill_context};
 
 use rust_i18n::i18n;
-i18n!("locales", fallback = ["en"]);
+i18n!("locales", fallback = ["zh-Hans"]);
 
 mod acp_server;
 mod artifacts;
@@ -3928,7 +3928,6 @@ fn doctor_inherited_setup_facts(
         .is_some_and(|path| path.exists());
 
     codewhale_config::InheritedConfigFacts {
-        language: None,
         has_provider_route: !config.default_model().trim().is_empty(),
         has_credentials_or_local_runtime: doctor_has_credentials_or_local_runtime(config),
         trust_chosen: !crate::tui::onboarding::needs_trust(workspace),
@@ -4341,7 +4340,6 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
             "source": constitution_source_id(state.constitution_source),
             "validity": constitution_validity_id(state.constitution_validity),
             "checkpoint_completed_for": state.constitution_checkpoint_completed_for.clone(),
-            "language": state.constitution_language.clone(),
             "preview_hash_present": state.constitution_preview_hash.is_some(),
             "preview_version": state.constitution_preview_version,
             "autonomy_preference": doctor_constitution_autonomy_preference_id(),
@@ -4392,7 +4390,6 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
 
 fn setup_step_id(step: codewhale_config::SetupStep) -> &'static str {
     match step {
-        codewhale_config::SetupStep::Language => "language",
         codewhale_config::SetupStep::ProviderModel => "provider_model",
         codewhale_config::SetupStep::TrustSandbox => "trust_sandbox",
         codewhale_config::SetupStep::ToolsMcp => "tools_mcp",
@@ -8271,14 +8268,6 @@ mod doctor_setup_state_tests {
         fs::create_dir_all(&workspace).expect("workspace");
         let mut state = codewhale_config::SetupState::default();
         state.set_step(
-            codewhale_config::SetupStep::Language,
-            codewhale_config::StepEntry::new(
-                codewhale_config::StepStatus::Verified,
-                true,
-                crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
-            ),
-        );
-        state.set_step(
             codewhale_config::SetupStep::ProviderModel,
             codewhale_config::StepEntry::new(
                 codewhale_config::StepStatus::Verified,
@@ -8378,14 +8367,6 @@ mod doctor_setup_state_tests {
         let workspace = tmp.path().join("workspace");
         fs::create_dir_all(&workspace).expect("workspace");
         let mut state = codewhale_config::SetupState::default();
-        state.set_step(
-            codewhale_config::SetupStep::Language,
-            codewhale_config::StepEntry::new(
-                codewhale_config::StepStatus::Verified,
-                true,
-                crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
-            ),
-        );
         state.set_step(
             codewhale_config::SetupStep::ProviderModel,
             codewhale_config::StepEntry::new(

@@ -1,9 +1,10 @@
 //! Local-only release runtime QA through real pseudo-terminals.
 //!
 //! These scenarios cover the live TUI checks that unit tests cannot prove:
-//! six-worker fanout liveness/cancellation, multi-terminal route isolation,
-//! and queued steering via Ctrl+S. Every provider is a loopback wiremock
-//! server and every process receives a sealed HOME.
+//! canonical six-child fanout liveness/cancellation, DeepSeek-only
+//! multi-terminal isolation, durable steering, and configured theme ANSI
+//! output. Every DeepSeek endpoint is a loopback wiremock server and every
+//! process receives a sealed HOME.
 
 #![cfg(unix)]
 
@@ -24,9 +25,8 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 const BOOT_TIMEOUT: Duration = Duration::from_secs(20);
 const INTERACTION_TIMEOUT: Duration = Duration::from_secs(15);
 const PASTE_GUARD_SETTLE: Duration = Duration::from_millis(180);
-const COMPOSER_READY_TEXT: &str = "Write a task";
-const MUSE_MODEL: &str = "muse-spark-1.1";
-const GPT_MODEL: &str = "gpt-5.6-terra";
+const COMPOSER_READY_TEXT: &str = "编写任务或使用 /。";
+const DEEPSEEK_FLASH_MODEL: &str = "deepseek-v4-flash";
 const DEEPSEEK_TEST_MODEL: &str = "deepseek-v4-pro";
 static RELEASE_RUNTIME_QA_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -71,6 +71,29 @@ fn text_sse(model: &str, text: &str) -> String {
     .join("")
 }
 
+fn text_json(model: &str, text: &str) -> Value {
+    json!({
+        "id": "chatcmpl-local-qa",
+        "object": "chat.completion",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": text
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 4,
+            "total_tokens": 16,
+            "prompt_cache_hit_tokens": 0,
+            "prompt_cache_miss_tokens": 12
+        }
+    })
+}
+
 fn fanout_tool_call_sse() -> String {
     fanout_tool_call_sse_n(6)
 }
@@ -85,9 +108,8 @@ fn fanout_tool_call_sse_n(count: usize) -> String {
                 "function": {
                     "name": "agent",
                     "arguments": serde_json::to_string(&json!({
-                        "message": format!("stay busy worker {worker} until the parent QA turn is cancelled"),
-                        "agent_type": "explorer",
-                        "session_name": format!("qa-worker-{worker}")
+                        "prompt": format!("stay busy worker {worker} until the parent QA turn is cancelled"),
+                        "type": "explorer"
                     }))
                     .expect("agent arguments")
                 }
@@ -222,13 +244,6 @@ fn type_and_submit(harness: &mut Harness, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn type_and_tab(harness: &mut Harness, text: &str) -> Result<()> {
-    harness.send(keys::key::text(text))?;
-    harness.wait_for_text(text, Duration::from_secs(3))?;
-    harness.send(b"\t")?;
-    Ok(())
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn underwater_footer_moves_from_working_through_one_shot_completion() -> Result<()> {
     let _guard = RELEASE_RUNTIME_QA_LOCK.lock().await;
@@ -257,131 +272,70 @@ async fn underwater_footer_moves_from_working_through_one_shot_completion() -> R
     // strip ABOVE the composer, so the bottom row is no longer the phase
     // owner. Assert the phase words anywhere in the frame — the mock reply
     // ("local phase proof") and the prompt contain none of them.
-    tui.wait_for(|frame| frame.contains("working"), INTERACTION_TIMEOUT)?;
+    tui.wait_for(|frame| frame.contains("工作中"), INTERACTION_TIMEOUT)?;
     tui.wait_for(
-        |frame| frame.contains("finishing") || frame.contains("✓ done"),
+        |frame| frame.contains("收尾中") || frame.contains("✓ 完成"),
         INTERACTION_TIMEOUT,
     )?;
-    tui.wait_for(|frame| frame.contains("✓ done"), INTERACTION_TIMEOUT)?;
+    tui.wait_for(|frame| frame.contains("✓ 完成"), INTERACTION_TIMEOUT)?;
 
     let _ = tui.shutdown();
     Ok(())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn underwater_theme_picker_emits_each_live_palette_to_the_terminal() -> Result<()> {
+async fn underwater_configured_themes_emit_each_palette_to_the_terminal() -> Result<()> {
     let _guard = RELEASE_RUNTIME_QA_LOCK.lock().await;
     let ws = make_sealed_workspace()?;
-    let mut tui = common_tui_builder(&ws)
-        .env("CODEWHALE_PROVIDER", "deepseek")
-        .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
-        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
-        .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
-        .env("COLORTERM", "truecolor")
-        .env("RUST_BACKTRACE", "1")
-        .spawn()?;
-    enter_launch_session(&mut tui)?;
-    // A bracketed paste plus trailing space makes this an explicit command
-    // invocation, outside both autocomplete and unbracketed burst handling.
-    tui.paste("/theme ")?;
-    tui.wait_for_text("/theme", Duration::from_secs(3))?;
-    std::thread::sleep(PASTE_GUARD_SETTLE);
-    tui.pump();
-    tui.send(keys::key::enter())?;
-    std::thread::sleep(Duration::from_millis(300));
-    tui.pump();
-    if let Some(status) = tui.wait_for_exit(Duration::from_millis(1)) {
-        let logs = std::fs::read_dir(ws.home().join(".codewhale/logs"))
-            .ok()
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-            .collect::<Vec<_>>()
-            .join("\n");
-        return Err(anyhow!(
-            "theme picker process exited with {status}:\n{}\nlogs:\n{logs}",
-            tui.debug_dump(),
-        ));
-    }
-    if tui
-        .wait_for_text("Pick a theme", Duration::from_secs(1))
-        .is_err()
-    {
-        // A PTY can deliver the first Enter inside the paste guard's trailing
-        // suppression window. Once that window expires, the next deliberate
-        // Enter must execute the retained draft.
-        std::thread::sleep(PASTE_GUARD_SETTLE);
-        tui.pump();
-        tui.send(keys::key::enter())?;
-        tui.wait_for_text("Pick a theme", INTERACTION_TIMEOUT)?;
-    }
-
-    let labels = [
-        "System",
-        "Terminal",
-        "Whale (Dark)",
-        "Whale Light",
-        "Grayscale",
-        "Catppuccin Mocha",
-        "Tokyo Night",
-        "Dracula",
-        "Gruvbox Dark",
-        "Claude",
-        "Matrix",
-        "Solarized Light",
+    let themes = [
+        "system",
+        "terminal",
+        "dark",
+        "light",
+        "grayscale",
+        "catppuccin-mocha",
+        "tokyo-night",
+        "dracula",
+        "gruvbox-dark",
+        "claude",
+        "matrix",
+        "solarized-light",
     ];
     let mut previous_signature = None;
-    for (index, label) in labels.iter().enumerate() {
-        let selected = format!("▶ {}.", index + 1);
-        tui.wait_for(
-            |frame| frame.text().contains(&selected),
-            INTERACTION_TIMEOUT,
+    for (index, theme) in themes.iter().enumerate() {
+        std::fs::write(
+            ws.home().join(".codewhale").join("settings.toml"),
+            format!("theme = \"{theme}\"\n"),
         )?;
+        let mut tui = common_tui_builder(&ws)
+            .env("CODEWHALE_PROVIDER", "deepseek")
+            .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
+            .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
+            .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
+            .env("COLORTERM", "truecolor")
+            .env("RUST_BACKTRACE", "1")
+            .spawn()?;
+        enter_launch_session(&mut tui)?;
         let frame = tui.frame();
         let signature = (
             frame.colors_at(0, 0).expect("theme surface cell"),
+            frame.first_symbol_colors("c").expect("header brand cell"),
+            frame.first_symbol_colors("─").expect("section rule cell"),
             frame
-                .first_symbol_colors("▶")
-                .expect("selected theme pointer cell"),
-        );
-        assert!(
-            frame.text().contains(label),
-            "missing theme row {label}:\n{}",
-            frame.debug_dump()
+                .first_symbol_colors("❯")
+                .expect("composer prompt cell"),
         );
         if let Some(previous) = previous_signature {
             assert_ne!(
                 signature,
                 previous,
-                "live ANSI palette did not change from {} to {label}",
-                labels[index - 1]
+                "configured ANSI palette did not change from {} to {theme}",
+                themes[index - 1]
             );
         }
         previous_signature = Some(signature);
-        if index + 1 < labels.len() {
-            tui.send(b"\x1b[B")?;
-            std::thread::sleep(Duration::from_millis(250));
-            tui.pump();
-            if let Some(status) = tui.wait_for_exit(Duration::from_millis(1)) {
-                let logs = std::fs::read_dir(ws.home().join(".codewhale/logs"))
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Result::ok)
-                    .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                return Err(anyhow!(
-                    "theme preview exited with {status}:\n{}\nlogs:\n{logs}",
-                    tui.debug_dump()
-                ));
-            }
-        }
+        let _ = tui.shutdown();
     }
-
-    tui.send(b"\x1b")?;
-    let _ = tui.shutdown();
     Ok(())
 }
 
@@ -394,100 +348,83 @@ fn chat_requests(requests: &[Request]) -> Vec<Value> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn release_multi_terminal_muse_and_gpt_routes_stay_isolated() -> Result<()> {
+async fn release_multi_terminal_deepseek_routes_stay_isolated() -> Result<()> {
     let _guard = RELEASE_RUNTIME_QA_LOCK.lock().await;
-    let meta_server = MockServer::start().await;
-    let openai_server = MockServer::start().await;
-    mount_text_model(&meta_server, MUSE_MODEL, "meta-route-ok").await;
-    mount_models(&openai_server, &["gpt-5.6-luna", GPT_MODEL]).await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(sse_response(text_sse(GPT_MODEL, "openai-route-ok")))
-        .mount(&openai_server)
-        .await;
+    let flash_server = MockServer::start().await;
+    let pro_server = MockServer::start().await;
+    mount_text_model(&flash_server, DEEPSEEK_FLASH_MODEL, "flash-route-ok").await;
+    mount_text_model(&pro_server, DEEPSEEK_TEST_MODEL, "pro-route-ok").await;
 
     let ws = make_sealed_workspace()?;
-    let openai_base_url = openai_server.uri();
-    let meta_base_url = meta_server.uri();
-    let shared_openai_env = [
-        ("OPENAI_API_KEY", "openai-local-test-key"),
-        ("OPENAI_BASE_URL", openai_base_url.as_str()),
-        ("OPENAI_MODEL", "gpt-5.6-luna"),
-    ];
-    let shared_meta_env = [
-        ("META_MODEL_API_KEY", "meta-local-test-key"),
-        ("MODEL_API_KEY", "meta-local-test-key"),
-        ("META_MODEL_API_BASE_URL", meta_base_url.as_str()),
-        ("META_MODEL_API_MODEL", MUSE_MODEL),
-    ];
+    let mut flash_tui = common_tui_builder(&ws)
+        .env("CODEWHALE_PROVIDER", "deepseek")
+        .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
+        .env("DEEPSEEK_BASE_URL", flash_server.uri())
+        .env("DEEPSEEK_MODEL", DEEPSEEK_FLASH_MODEL)
+        .spawn()?;
+    let mut pro_tui = common_tui_builder(&ws)
+        .env("CODEWHALE_PROVIDER", "deepseek")
+        .env("DEEPSEEK_API_KEY", "deepseek-local-test-key")
+        .env("DEEPSEEK_BASE_URL", pro_server.uri())
+        .env("DEEPSEEK_MODEL", DEEPSEEK_TEST_MODEL)
+        .spawn()?;
+    enter_launch_session(&mut flash_tui)?;
+    enter_launch_session(&mut pro_tui)?;
 
-    let mut meta_builder = common_tui_builder(&ws).env("CODEWHALE_PROVIDER", "meta");
-    let mut openai_builder = common_tui_builder(&ws).env("CODEWHALE_PROVIDER", "openai");
-    for (key, value) in shared_openai_env.into_iter().chain(shared_meta_env) {
-        meta_builder = meta_builder.env(key, value);
-        openai_builder = openai_builder.env(key, value);
-    }
-
-    let mut meta_tui = meta_builder.spawn()?;
-    let mut openai_tui = openai_builder.spawn()?;
-    enter_launch_session(&mut meta_tui)?;
-    enter_launch_session(&mut openai_tui)?;
-
-    // Change terminal B's model through the live command path while terminal A
-    // remains open on Meta. Both processes share one sealed settings file.
-    type_and_submit(&mut openai_tui, "/model gpt-5.6-terra")?;
-    openai_tui.wait_for(
-        |frame| frame.row(0).contains(GPT_MODEL),
-        INTERACTION_TIMEOUT,
-    )?;
     assert!(
-        meta_tui.frame().contains(MUSE_MODEL),
-        "terminal A route changed when terminal B selected a model:\n{}",
-        meta_tui.debug_dump()
+        flash_tui.frame().contains(DEEPSEEK_FLASH_MODEL),
+        "terminal A did not retain its DeepSeek model:\n{}",
+        flash_tui.debug_dump()
+    );
+    assert!(
+        pro_tui.frame().contains(DEEPSEEK_TEST_MODEL),
+        "terminal B did not retain its DeepSeek model:\n{}",
+        pro_tui.debug_dump()
     );
 
-    type_and_submit(&mut meta_tui, "route probe from meta terminal")?;
-    type_and_submit(&mut openai_tui, "route probe from openai terminal")?;
-    meta_tui.wait_for_text("meta-route-ok", INTERACTION_TIMEOUT)?;
-    openai_tui.wait_for_text("openai-route-ok", INTERACTION_TIMEOUT)?;
+    type_and_submit(&mut flash_tui, "route probe from flash terminal")?;
+    type_and_submit(&mut pro_tui, "route probe from pro terminal")?;
+    flash_tui.wait_for_text("flash-route-ok", INTERACTION_TIMEOUT)?;
+    pro_tui.wait_for_text("pro-route-ok", INTERACTION_TIMEOUT)?;
 
-    let meta_requests = meta_server.received_requests().await.unwrap_or_default();
-    let openai_requests = openai_server.received_requests().await.unwrap_or_default();
-    let meta_chat = chat_requests(&meta_requests);
-    let openai_chat = chat_requests(&openai_requests);
+    let flash_requests = flash_server.received_requests().await.unwrap_or_default();
+    let pro_requests = pro_server.received_requests().await.unwrap_or_default();
+    let flash_chat = chat_requests(&flash_requests);
+    let pro_chat = chat_requests(&pro_requests);
     assert_eq!(
-        meta_chat.len(),
+        flash_chat.len(),
         1,
-        "unexpected Meta chat requests: {meta_chat:#?}"
+        "unexpected DeepSeek Flash chat requests: {flash_chat:#?}"
     );
     assert_eq!(
-        openai_chat.len(),
+        pro_chat.len(),
         1,
-        "unexpected OpenAI chat requests: {openai_chat:#?}"
+        "unexpected DeepSeek Pro chat requests: {pro_chat:#?}"
     );
-    assert_eq!(meta_chat[0]["model"], MUSE_MODEL);
-    assert_eq!(openai_chat[0]["model"], GPT_MODEL);
+    assert_eq!(flash_chat[0]["model"], DEEPSEEK_FLASH_MODEL);
+    assert_eq!(pro_chat[0]["model"], DEEPSEEK_TEST_MODEL);
     assert!(
-        meta_chat[0]
+        flash_chat[0]
             .to_string()
-            .contains("route probe from meta terminal")
+            .contains("route probe from flash terminal")
     );
-    assert!(!meta_chat[0].to_string().contains("openai terminal"));
+    assert!(!flash_chat[0].to_string().contains("pro terminal"));
     assert!(
-        openai_chat[0]
+        pro_chat[0]
             .to_string()
-            .contains("route probe from openai terminal")
+            .contains("route probe from pro terminal")
     );
-    assert!(!openai_chat[0].to_string().contains("meta terminal"));
+    assert!(!pro_chat[0].to_string().contains("flash terminal"));
 
-    let _ = meta_tui.shutdown();
-    let _ = openai_tui.shutdown();
+    let _ = flash_tui.shutdown();
+    let _ = pro_tui.shutdown();
     Ok(())
 }
 
 #[derive(Clone)]
 struct FanoutResponder {
     child_requests: Arc<AtomicUsize>,
+    root_fanout_requests: Arc<AtomicUsize>,
 }
 
 impl Respond for FanoutResponder {
@@ -497,12 +434,15 @@ impl Respond for FanoutResponder {
 
         if raw.contains("stay busy worker") && !raw.contains("launch six QA workers") {
             self.child_requests.fetch_add(1, Ordering::SeqCst);
-            return sse_response(text_sse(DEEPSEEK_TEST_MODEL, "child-finished-too-soon"))
+            return json_response(text_json(DEEPSEEK_TEST_MODEL, "child-finished-too-soon"))
                 .set_delay(Duration::from_secs(20));
         }
 
         if raw.contains("launch six QA workers") {
-            return sse_response(fanout_tool_call_sse());
+            if self.root_fanout_requests.fetch_add(1, Ordering::SeqCst) == 0 {
+                return sse_response(fanout_tool_call_sse());
+            }
+            return sse_response(text_sse(DEEPSEEK_TEST_MODEL, "fanout-parent-finished"));
         }
 
         sse_response(text_sse(DEEPSEEK_TEST_MODEL, "unexpected-request"))
@@ -510,15 +450,17 @@ impl Respond for FanoutResponder {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn release_six_worker_fanout_keeps_typing_render_and_esc_cancel_live() -> Result<()> {
+async fn release_six_child_fanout_keeps_typing_render_and_esc_cancel_live() -> Result<()> {
     let _guard = RELEASE_RUNTIME_QA_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server, &[DEEPSEEK_TEST_MODEL]).await;
     let child_requests = Arc::new(AtomicUsize::new(0));
+    let root_fanout_requests = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(FanoutResponder {
             child_requests: Arc::clone(&child_requests),
+            root_fanout_requests,
         })
         .mount(&server)
         .await;
@@ -526,7 +468,7 @@ async fn release_six_worker_fanout_keeps_typing_render_and_esc_cancel_live() -> 
     let ws = make_sealed_workspace()?;
     std::fs::write(
         ws.home().join(".codewhale").join("config.toml"),
-        "[subagents]\nmax_concurrent = 6\nlaunch_concurrency = 6\nmax_admitted = 6\n",
+        "[subagents]\nmax_concurrent = 6\nmax_depth = 1\n",
     )?;
     let mut tui = common_tui_builder(&ws)
         .env("CODEWHALE_PROVIDER", "deepseek")
@@ -543,38 +485,38 @@ async fn release_six_worker_fanout_keeps_typing_render_and_esc_cancel_live() -> 
     )?;
     wait_for_counter(&mut tui, &child_requests, 6, INTERACTION_TIMEOUT)?;
     tui.wait_for(
-        |frame| {
-            let text = frame.text();
-            text.to_ascii_lowercase().contains("workers 6")
-                && (text.matches("Agent ").count() >= 6
-                    || text.matches("delegate scout [running]").count() >= 6)
-        },
+        |frame| frame.text().matches("子 Agent 已启动：").count() >= 6,
         Duration::from_secs(5),
     )?;
 
     let fanout_frame = tui.debug_dump();
     assert!(
-        fanout_frame.to_ascii_lowercase().contains("workers 6"),
-        "all six workers were not visible in the owned Work surface:\n{fanout_frame}"
+        fanout_frame.matches("子 Agent 已启动：").count() >= 6,
+        "all six canonical ChildStarted events were not visible:\n{fanout_frame}"
     );
 
-    // The provider is deliberately holding every child open. Prove keyboard
+    // The loopback DeepSeek endpoint is deliberately holding every child open. Prove keyboard
     // input and rendering remain live during the storm, then interrupt the
     // still-live orchestration turn directly with Esc.
     tui.send(keys::key::text("fanout-live-marker"))?;
     tui.wait_for_text("fanout-live-marker", Duration::from_secs(3))?;
     let before_cancel = tui.debug_dump();
     assert!(
-        before_cancel.contains("Agent") || before_cancel.contains("agent"),
-        "fanout UI did not expose agent activity:\n{before_cancel}"
+        before_cancel.contains("子 Agent 已启动："),
+        "canonical fanout UI did not expose child activity:\n{before_cancel}"
     );
 
+    // In the canonical composer the first Esc clears a non-empty recoverable
+    // draft. A second Esc with an empty composer submits the durable
+    // interrupt, so neither action is hidden behind legacy queue semantics.
+    tui.send(b"\x1b")?;
+    tui.wait_for_text(COMPOSER_READY_TEXT, Duration::from_secs(3))?;
     let cancel_started = Instant::now();
     tui.send(b"\x1b")?;
     tui.wait_for(
         |frame| {
-            let text = frame.text().to_ascii_lowercase();
-            text.contains("cancelled") || text.contains("interrupted")
+            let text = frame.text();
+            text.contains("已取消") || text.contains("已中断")
         },
         Duration::from_secs(5),
     )?;
@@ -601,7 +543,7 @@ impl Respond for SteeringResponder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let body = request.body_json::<Value>().unwrap_or(Value::Null);
         let raw = body.to_string();
-        if raw.contains("queued steering from ctrl-s") {
+        if raw.contains("queued steering from enter") {
             self.steer_requests.fetch_add(1, Ordering::SeqCst);
             return sse_response(text_sse(DEEPSEEK_TEST_MODEL, "steering-applied"));
         }
@@ -617,7 +559,7 @@ impl Respond for SteeringResponder {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn release_queued_steering_ctrl_s_sends_now_with_clear_status() -> Result<()> {
+async fn release_queued_steering_enter_applies_with_clear_status() -> Result<()> {
     let _guard = RELEASE_RUNTIME_QA_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server, &[DEEPSEEK_TEST_MODEL]).await;
@@ -644,21 +586,14 @@ async fn release_queued_steering_ctrl_s_sends_now_with_clear_status() -> Result<
     type_and_submit(&mut tui, "initial slow turn")?;
     wait_for_counter(&mut tui, &initial_requests, 1, Duration::from_secs(3))?;
 
-    type_and_tab(&mut tui, "queued steering from ctrl-s")?;
-    tui.wait_for_text("Ctrl+S send now", Duration::from_secs(5))?;
-    assert!(
-        tui.frame().contains("queued steering from ctrl-s"),
-        "queued steering preview was not readable:\n{}",
-        tui.debug_dump()
-    );
-
     let steer_started = Instant::now();
-    tui.send(b"\x13")?;
+    type_and_submit(&mut tui, "queued steering from enter")?;
+    tui.wait_for_text("追加指令已排队", Duration::from_secs(3))?;
     wait_for_counter(&mut tui, &steer_requests, 1, INTERACTION_TIMEOUT)?;
     tui.wait_for_text("steering-applied", INTERACTION_TIMEOUT)?;
     assert!(
         steer_started.elapsed() < Duration::from_secs(10),
-        "Ctrl+S steering was not incorporated promptly"
+        "canonical queued steering was not incorporated promptly"
     );
 
     let _ = tui.shutdown();
@@ -668,6 +603,7 @@ async fn release_queued_steering_ctrl_s_sends_now_with_clear_status() -> Result<
 #[derive(Clone)]
 struct BenchFanoutResponder {
     child_requests: Arc<AtomicUsize>,
+    root_fanout_requests: Arc<AtomicUsize>,
     workers: usize,
 }
 
@@ -678,12 +614,15 @@ impl Respond for BenchFanoutResponder {
 
         if raw.contains("stay busy worker") && !raw.contains("launch benchmark QA workers") {
             self.child_requests.fetch_add(1, Ordering::SeqCst);
-            return sse_response(text_sse(DEEPSEEK_TEST_MODEL, "child-finished-too-soon"))
+            return json_response(text_json(DEEPSEEK_TEST_MODEL, "child-finished-too-soon"))
                 .set_delay(Duration::from_secs(60));
         }
 
         if raw.contains("launch benchmark QA workers") {
-            return sse_response(fanout_tool_call_sse_n(self.workers));
+            if self.root_fanout_requests.fetch_add(1, Ordering::SeqCst) == 0 {
+                return sse_response(fanout_tool_call_sse_n(self.workers));
+            }
+            return sse_response(text_sse(DEEPSEEK_TEST_MODEL, "fanout-parent-finished"));
         }
 
         sse_response(text_sse(DEEPSEEK_TEST_MODEL, "unexpected-request"))
@@ -710,10 +649,12 @@ async fn release_bench_thirty_two_worker_fanout_stays_live() -> Result<()> {
     let server = MockServer::start().await;
     mount_models(&server, &[DEEPSEEK_TEST_MODEL]).await;
     let child_requests = Arc::new(AtomicUsize::new(0));
+    let root_fanout_requests = Arc::new(AtomicUsize::new(0));
     Mock::given(method("POST"))
         .and(path("/v1/chat/completions"))
         .respond_with(BenchFanoutResponder {
             child_requests: Arc::clone(&child_requests),
+            root_fanout_requests,
             workers: WORKERS,
         })
         .mount(&server)
@@ -722,9 +663,7 @@ async fn release_bench_thirty_two_worker_fanout_stays_live() -> Result<()> {
     let ws = make_sealed_workspace()?;
     std::fs::write(
         ws.home().join(".codewhale").join("config.toml"),
-        format!(
-            "[subagents]\nmax_concurrent = {WORKERS}\nlaunch_concurrency = {WORKERS}\nmax_admitted = {WORKERS}\n"
-        ),
+        format!("[subagents]\nmax_concurrent = {WORKERS}\nmax_depth = 1\n"),
     )?;
     let mut tui = common_tui_builder(&ws)
         .env("CODEWHALE_PROVIDER", "deepseek")
@@ -744,8 +683,8 @@ async fn release_bench_thirty_two_worker_fanout_stays_live() -> Result<()> {
     )?;
     wait_for_counter(&mut tui, &child_requests, WORKERS, Duration::from_secs(60))?;
     let all_children_live = spawn_started.elapsed();
-    tui.wait_for_text(&format!("{WORKERS} running"), Duration::from_secs(10))?;
-    let sidebar_visible = spawn_started.elapsed();
+    tui.wait_for_text("子 Agent 已启动：", Duration::from_secs(10))?;
+    let child_projection_visible = spawn_started.elapsed();
     let rss_storm = pid.and_then(rss_kib);
 
     // Echo latency under storm: three samples.
@@ -766,8 +705,8 @@ async fn release_bench_thirty_two_worker_fanout_stays_live() -> Result<()> {
     tui.send(b"\x1b")?;
     tui.wait_for(
         |frame| {
-            let text = frame.text().to_ascii_lowercase();
-            text.contains("cancelled") || text.contains("interrupted")
+            let text = frame.text();
+            text.contains("已取消") || text.contains("已中断")
         },
         Duration::from_secs(10),
     )?;
@@ -778,7 +717,7 @@ async fn release_bench_thirty_two_worker_fanout_stays_live() -> Result<()> {
     let rss_after = pid.and_then(rss_kib);
 
     println!(
-        "BENCH32: children_live={all_children_live:?} sidebar={sidebar_visible:?} \
+        "BENCH32: children_live={all_children_live:?} child_projection={child_projection_visible:?} \
          echo={echo_samples:?} cancel={cancel_latency:?} \
          rss_idle_kib={rss_idle:?} rss_storm_kib={rss_storm:?} rss_after_kib={rss_after:?}"
     );

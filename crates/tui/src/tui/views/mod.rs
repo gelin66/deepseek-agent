@@ -22,7 +22,6 @@ use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 use crate::tui::history::{HistoryCell, SubAgentCell, summarize_tool_output};
 use crate::tui::widgets::agent_card::AgentLifecycle;
-use codewhale_config::Locale;
 
 pub mod fleet_roster;
 pub mod fleet_setup;
@@ -715,7 +714,6 @@ pub enum ViewEvent {
     SetupConstitutionModelDraftRequested {
         draft: crate::tui::setup::GuidedConstitutionDraft,
         freeform_note: Option<String>,
-        locale: codewhale_config::Locale,
     },
     /// Emitted by the fleet setup Review step (`m`) to ask the configured
     /// model to draft the agent profile the wizard describes. The host
@@ -737,7 +735,6 @@ pub enum ViewEvent {
         /// as `provider`: the ratified profile must preserve the operator's
         /// explicit choice, not whatever the model echoed.
         reasoning_effort: Option<String>,
-        locale: codewhale_config::Locale,
     },
     /// Emitted by the `/fleet` roster view (`s` / Enter) to hand off to the
     /// setup wizard for authoring or overriding a roster member. The roster
@@ -966,14 +963,11 @@ enum ConfigScope {
 }
 
 impl ConfigScope {
-    fn label(self, locale: Locale) -> Cow<'static, str> {
-        tr(
-            locale,
-            match self {
-                ConfigScope::Session => MessageId::ConfigScopeSession,
-                ConfigScope::Saved => MessageId::ConfigScopeSaved,
-            },
-        )
+    fn label(self) -> Cow<'static, str> {
+        tr(match self {
+            ConfigScope::Session => MessageId::ConfigScopeSession,
+            ConfigScope::Saved => MessageId::ConfigScopeSaved,
+        })
     }
 
     fn persist(self) -> bool {
@@ -1006,23 +1000,20 @@ enum ConfigSection {
 }
 
 impl ConfigSection {
-    fn label(self, locale: Locale) -> Cow<'static, str> {
-        tr(
-            locale,
-            match self {
-                ConfigSection::Provider => MessageId::ConfigSectionProvider,
-                ConfigSection::Model => MessageId::ConfigSectionModel,
-                ConfigSection::Permissions => MessageId::ConfigSectionPermissions,
-                ConfigSection::Network => MessageId::ConfigSectionNetwork,
-                ConfigSection::Display => MessageId::ConfigSectionDisplay,
-                ConfigSection::Composer => MessageId::ConfigSectionComposer,
-                ConfigSection::Sidebar => MessageId::ConfigSectionSidebar,
-                ConfigSection::History => MessageId::ConfigSectionHistory,
-                ConfigSection::Mcp => MessageId::ConfigSectionMcp,
-                ConfigSection::Fleet => MessageId::ConfigSectionFleet,
-                ConfigSection::Experimental => MessageId::ConfigSectionExperimental,
-            },
-        )
+    fn label(self) -> Cow<'static, str> {
+        tr(match self {
+            ConfigSection::Provider => MessageId::ConfigSectionProvider,
+            ConfigSection::Model => MessageId::ConfigSectionModel,
+            ConfigSection::Permissions => MessageId::ConfigSectionPermissions,
+            ConfigSection::Network => MessageId::ConfigSectionNetwork,
+            ConfigSection::Display => MessageId::ConfigSectionDisplay,
+            ConfigSection::Composer => MessageId::ConfigSectionComposer,
+            ConfigSection::Sidebar => MessageId::ConfigSectionSidebar,
+            ConfigSection::History => MessageId::ConfigSectionHistory,
+            ConfigSection::Mcp => MessageId::ConfigSectionMcp,
+            ConfigSection::Fleet => MessageId::ConfigSectionFleet,
+            ConfigSection::Experimental => MessageId::ConfigSectionExperimental,
+        })
     }
 }
 
@@ -1051,7 +1042,6 @@ pub struct ConfigView {
     editing: Option<ConfigEdit>,
     filter: String,
     status: Option<String>,
-    locale: Locale,
     effective_cost_currency: String,
     effective_low_motion: bool,
     effective_fancy_animations: bool,
@@ -1168,7 +1158,7 @@ impl ConfigView {
                 value: settings
                     .default_model
                     .as_deref()
-                    .unwrap_or(&*tr(app.ui_locale, MessageId::ConfigDefaultValue))
+                    .unwrap_or(&*tr(MessageId::ConfigDefaultValue))
                     .to_string(),
                 editable: true,
                 scope: ConfigScope::Saved,
@@ -1177,7 +1167,7 @@ impl ConfigView {
                 section: ConfigSection::Model,
                 key: "reasoning_effort".to_string(),
                 value: settings.reasoning_effort.as_deref().map_or_else(
-                    || tr(app.ui_locale, MessageId::ConfigDefaultReasoning).to_string(),
+                    || tr(MessageId::ConfigDefaultReasoning).to_string(),
                     |value| {
                         crate::tui::app::ReasoningEffort::from_setting_for_provider(
                             value,
@@ -1222,17 +1212,11 @@ impl ConfigView {
             },
             ConfigRow {
                 section: ConfigSection::Display,
-                key: "locale".to_string(),
-                value: settings.locale.clone(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                section: ConfigSection::Display,
                 key: "background_color".to_string(),
-                value: settings.background_color.clone().unwrap_or_else(|| {
-                    tr(app.ui_locale, MessageId::ConfigDefaultValue).to_string()
-                }),
+                value: settings
+                    .background_color
+                    .clone()
+                    .unwrap_or_else(|| tr(MessageId::ConfigDefaultValue).to_string()),
                 editable: true,
                 scope: ConfigScope::Saved,
             },
@@ -1468,7 +1452,6 @@ impl ConfigView {
             editing: None,
             filter: String::new(),
             status: None,
-            locale: app.ui_locale,
             effective_cost_currency: cost_currency_config_value(app),
             effective_low_motion: app.low_motion,
             effective_fancy_animations: app.fancy_animations,
@@ -1482,7 +1465,7 @@ impl ConfigView {
     }
 
     fn tr(&self, id: MessageId) -> Cow<'static, str> {
-        tr(self.locale, id)
+        tr(id)
     }
 
     /// Keep the user's place when the host rebuilds this view after applying
@@ -1515,25 +1498,21 @@ impl ConfigView {
             return true;
         }
 
-        let section = row.section.label(self.locale).to_lowercase();
-        let section_en = row.section.label(Locale::En).to_lowercase();
+        let section = row.section.label().to_lowercase();
         let label = config_label_for_key(&row.key).to_lowercase();
         let key = row.key.to_lowercase();
         let raw_value = row.value.to_lowercase();
         let value = self.row_display_value(row).to_lowercase();
-        let scope = row.scope.label(self.locale).to_lowercase();
-        let scope_en = row.scope.label(Locale::En).to_lowercase();
+        let scope = row.scope.label().to_lowercase();
         let hint = config_hint_for_key(&row.key).to_lowercase();
 
         filter.split_whitespace().all(|term| {
             section.contains(term)
-                || section_en.contains(term)
                 || label.contains(term)
                 || key.contains(term)
                 || raw_value.contains(term)
                 || value.contains(term)
                 || scope.contains(term)
-                || scope_en.contains(term)
                 || hint.contains(term)
         })
     }
@@ -1928,12 +1907,7 @@ impl ConfigView {
         let key = row.key.clone();
         let original_value = row.value.clone();
         let initial_value = match config_default_placeholder_message(&key) {
-            Some(message_id)
-                if original_value == tr(self.locale, message_id)
-                    || original_value == tr(Locale::En, message_id) =>
-            {
-                String::new()
-            }
+            Some(message_id) if original_value == tr(message_id) => String::new(),
             _ => original_value.clone(),
         };
 
@@ -2010,9 +1984,9 @@ impl ConfigView {
         }
 
         if config_choice_values(&row.key, self.api_provider).is_some() {
-            if config_default_placeholder_message(&row.key).is_some_and(|message_id| {
-                row.value == tr(self.locale, message_id) || row.value == tr(Locale::En, message_id)
-            }) {
+            if config_default_placeholder_message(&row.key)
+                .is_some_and(|message_id| row.value == tr(message_id))
+            {
                 return "Provider default".to_string();
             }
             let canonical = canonical_config_choice(&row.key, &row.value);
@@ -2085,7 +2059,7 @@ fn config_base_url_row_value(app: &App) -> String {
             }
             config.deepseek_base_url()
         })
-        .unwrap_or_else(|_| tr(app.ui_locale, MessageId::ConfigUnavailable).to_string())
+        .unwrap_or_else(|_| tr(MessageId::ConfigUnavailable).to_string())
 }
 
 fn cost_currency_config_value(app: &App) -> String {
@@ -2175,7 +2149,6 @@ fn config_label_for_key(key: &str) -> String {
         "managed_allow_shell" => "Shell access (managed)",
         "stream_chunk_timeout_secs" => "Stream timeout",
         "theme" => "Theme",
-        "locale" => "Language",
         "background_color" => "Background",
         "ocean_treatment" => "Ocean treatment",
         "work_surface_placement" => "Work surface placement",
@@ -2260,9 +2233,8 @@ fn config_hint_for_key(key: &str) -> &'static str {
         | "paste_burst_detection" => "on/off, true/false, yes/no, 1/0",
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
         "tool_collapse" => "compact | expanded | calm",
-        // Derived from the shipped theme/locale registries so these hints
-        // cannot go stale as new entries land (they previously advertised
-        // 4 of 12 themes and 4 of 8 locales).
+        // Derived from the shipped theme registry so this hint cannot go
+        // stale as new entries land.
         "theme" => {
             static THEME_HINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
             THEME_HINT.get_or_init(|| {
@@ -2272,10 +2244,6 @@ fn config_hint_for_key(key: &str) -> &'static str {
                     .collect::<Vec<_>>()
                     .join(" | ")
             })
-        }
-        "locale" => {
-            static LOCALE_HINT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-            LOCALE_HINT.get_or_init(|| crate::localization::configured_locale_values(" | "))
         }
         "background_color" => "#RRGGBB | default",
         "work_surface_placement" => "top | left | right",
@@ -2378,15 +2346,6 @@ fn config_choice_values(key: &str, provider: ApiProvider) -> Option<Vec<String>>
                     .collect(),
             );
         }
-        "locale" => {
-            let mut values = vec!["auto".to_string()];
-            values.extend(
-                Locale::shipped()
-                    .iter()
-                    .map(|locale| locale.tag().to_string()),
-            );
-            return Some(values);
-        }
         _ => return None,
     };
     Some(values.into_iter().map(str::to_string).collect())
@@ -2487,10 +2446,7 @@ fn config_choice_detail(key: &str, value: &str) -> &'static str {
     }
 }
 
-fn render_config_editor_value_line(
-    edit: &ConfigEdit,
-    locale: Locale,
-) -> ratatui::text::Line<'static> {
+fn render_config_editor_value_line(edit: &ConfigEdit) -> ratatui::text::Line<'static> {
     use ratatui::{
         style::Style,
         text::{Line, Span},
@@ -2498,7 +2454,7 @@ fn render_config_editor_value_line(
 
     let mut spans = Vec::new();
     spans.push(Span::styled(
-        tr(locale, MessageId::ConfigEditNewLabel),
+        tr(MessageId::ConfigEditNewLabel),
         Style::default().fg(palette::TEXT_MUTED),
     ));
 
@@ -2771,7 +2727,7 @@ impl ModalView for ConfigView {
                     self.tr(MessageId::ConfigEditScopeLabel),
                     Style::default().fg(palette::TEXT_MUTED),
                 ),
-                Span::raw(edit.scope.label(self.locale)),
+                Span::raw(edit.scope.label()),
             ]));
             lines.push(Line::from(vec![
                 Span::styled(
@@ -2847,7 +2803,7 @@ impl ModalView for ConfigView {
                     )));
                 }
             } else {
-                lines.push(render_config_editor_value_line(edit, self.locale));
+                lines.push(render_config_editor_value_line(edit));
                 if spacious {
                     lines.push(Line::from(""));
                 }
@@ -2980,7 +2936,7 @@ impl ModalView for ConfigView {
                 match item {
                     ConfigListItem::Section(section) => {
                         lines.push(Line::from(Span::styled(
-                            format!("  {}", section.label(self.locale)),
+                            format!("  {}", section.label()),
                             Style::default().fg(palette::WHALE_INFO).bold(),
                         )));
                     }
@@ -3003,8 +2959,7 @@ impl ModalView for ConfigView {
                         let key = truncate_view_text(&label, key_column_width);
                         let value =
                             truncate_view_text(&self.row_display_value(row), value_column_width);
-                        let scope =
-                            truncate_view_text(&row.scope.label(self.locale), scope_column_width);
+                        let scope = truncate_view_text(&row.scope.label(), scope_column_width);
                         let mut line = Line::from(format!(
                             "  {key:<key_column_width$} {value:<value_column_width$} {scope:<scope_column_width$}"
                         ));
@@ -3646,7 +3601,6 @@ mod tests {
     use crate::tui::history::{HistoryCell, SubAgentCell};
     use crate::tui::views::{CommandPaletteAction, SubAgentsView};
     use crate::tui::widgets::agent_card::{AgentLifecycle, FanoutCard};
-    use codewhale_config::Locale;
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -3688,13 +3642,7 @@ mod tests {
             stack.push(make());
             stack.render(area, &mut buf);
 
-            let rows: Vec<String> = (0..h)
-                .map(|y| {
-                    (0..w)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect();
+            let rows: Vec<String> = (0..h).map(|y| buffer_row_text(&buf, area, y)).collect();
             let text = rows.join("\n");
 
             for label in required_labels {
@@ -3724,7 +3672,7 @@ mod tests {
         // "Search" is the hardcoded English search-row label; asserting it (plus
         // the opacity/overflow checks) proves the modal renders fully and its
         // footer wraps inside bounds rather than clipping.
-        assert_modal_usable_and_opaque(|| create_config_view(Locale::En), &["Search"]);
+        assert_modal_usable_and_opaque(create_config_view, &["Search"]);
     }
 
     #[test]
@@ -3928,7 +3876,7 @@ mod tests {
 
     fn cost_currency_row_for_settings(
         settings_toml: &str,
-    ) -> (String, String, crate::pricing::CostCurrency, Locale) {
+    ) -> (String, String, crate::pricing::CostCurrency) {
         let _guard = ConfigSettingsEnvGuard::new(settings_toml);
         let app = create_test_app();
         let view = ConfigView::new_for_app(&app);
@@ -3942,7 +3890,6 @@ mod tests {
             row.value.clone(),
             view.row_display_value(row),
             app.cost_currency,
-            app.ui_locale,
         )
     }
 
@@ -4047,15 +3994,14 @@ mod tests {
         view.visible_items()
             .into_iter()
             .filter_map(|item| match item {
-                ConfigListItem::Section(section) => Some(section.label(view.locale)),
+                ConfigListItem::Section(section) => Some(section.label()),
                 ConfigListItem::Row(_) => None,
             })
             .collect()
     }
 
-    fn create_config_view(locale: Locale) -> ConfigView {
-        let mut app = create_test_app();
-        app.ui_locale = locale;
+    fn create_config_view() -> ConfigView {
+        let app = create_test_app();
         ConfigView::new_for_app(&app)
     }
 
@@ -4095,22 +4041,22 @@ mod tests {
 
     #[test]
     fn config_view_groups_rows_by_expected_sections() {
-        let view = create_config_view(Locale::En);
+        let view = create_config_view();
         assert_eq!(
             visible_section_labels(&view),
             vec![
-                "Provider",
-                "Model",
-                "Permissions",
-                "Network",
-                "Display",
-                "Composer",
-                "Sidebar",
-                "History",
+                "提供商",
+                "模型",
+                "权限",
+                "网络",
+                "显示",
+                "编辑器",
+                "侧边栏",
+                "历史",
                 "MCP",
-                "Fleet",
-                "Experimental",
-                "Fleet",
+                "舰队",
+                "实验",
+                "舰队",
             ]
         );
     }
@@ -4133,7 +4079,7 @@ mod tests {
         assert!(keys.contains(&"allow_shell"));
         assert!(keys.contains(&"stream_chunk_timeout_secs"));
         assert!(keys.contains(&"theme"));
-        assert!(keys.contains(&"locale"));
+        assert!(!keys.contains(&"locale"));
         assert!(keys.contains(&"background_color"));
         assert!(keys.contains(&"fancy_animations"));
         assert!(keys.contains(&"status_indicator"));
@@ -4408,25 +4354,25 @@ max_spawn_depth = 2
 
     #[test]
     fn config_view_experimental_section_is_searchable() {
-        let mut view = create_config_view(Locale::En);
+        let mut view = create_config_view();
 
-        view.update_filter(|filter| filter.push_str("experimental"));
-        assert_eq!(visible_section_labels(&view), vec!["Experimental"]);
+        view.update_filter(|filter| filter.push_str("实验"));
+        assert_eq!(visible_section_labels(&view), vec!["实验"]);
         assert_eq!(visible_row_keys(&view), vec!["features.vision_model"]);
 
         view.clear_filter();
         type_filter(&mut view, "feature vision");
-        assert_eq!(visible_section_labels(&view), vec!["Experimental"]);
+        assert_eq!(visible_section_labels(&view), vec!["实验"]);
         assert_eq!(visible_row_keys(&view), vec!["features.vision_model"]);
 
         view.clear_filter();
         type_filter(&mut view, "goal");
-        assert_eq!(visible_section_labels(&view), vec!["Fleet"]);
+        assert_eq!(visible_section_labels(&view), vec!["舰队"]);
         assert_eq!(visible_row_keys(&view), vec!["goal_command"]);
 
         view.clear_filter();
         type_filter(&mut view, "workflow");
-        assert_eq!(visible_section_labels(&view), vec!["Fleet"]);
+        assert_eq!(visible_section_labels(&view), vec!["舰队"]);
         assert_eq!(visible_row_keys(&view), vec!["workflow"]);
 
         view.clear_filter();
@@ -4495,11 +4441,10 @@ base_url = "https://api.xiaomimimo.com/v1"
     }
 
     #[test]
-    fn config_view_cost_currency_shows_saved_and_effective_runtime_currency() {
-        let _guard = ConfigSettingsEnvGuard::new("locale = \"zh-Hans\"\ncost_currency = \"usd\"\n");
+    fn config_view_cost_currency_uses_saved_runtime_currency() {
+        let _guard = ConfigSettingsEnvGuard::new("cost_currency = \"usd\"\n");
         let app = create_test_app();
-        assert_eq!(app.ui_locale, Locale::ZhHans);
-        assert_eq!(app.cost_currency, crate::pricing::CostCurrency::Cny);
+        assert_eq!(app.cost_currency, crate::pricing::CostCurrency::Usd);
 
         let view = ConfigView::new_for_app(&app);
         let row = view
@@ -4509,19 +4454,16 @@ base_url = "https://api.xiaomimimo.com/v1"
             .expect("cost_currency row");
 
         assert_eq!(row.value, "usd");
-        assert_eq!(view.row_display_value(row), "usd (实际 cny)");
+        assert_eq!(view.row_display_value(row), "usd");
         assert_eq!(Settings::load().expect("settings").cost_currency, "usd");
     }
 
     #[test]
     fn config_view_cost_currency_aliases_matching_effective_currency_are_silent() {
         for alias in ["rmb", "yuan", "¥"] {
-            let (saved_value, display_value, effective_currency, locale) =
-                cost_currency_row_for_settings(&format!(
-                    "locale = \"zh-Hans\"\ncost_currency = \"{alias}\"\n"
-                ));
+            let (saved_value, display_value, effective_currency) =
+                cost_currency_row_for_settings(&format!("cost_currency = \"{alias}\"\n"));
 
-            assert_eq!(locale, Locale::ZhHans);
             assert_eq!(effective_currency, crate::pricing::CostCurrency::Cny);
             assert_eq!(saved_value, alias);
             assert_eq!(display_value, alias);
@@ -4530,21 +4472,9 @@ base_url = "https://api.xiaomimimo.com/v1"
 
     #[test]
     fn config_view_cost_currency_matching_cny_setting_is_silent() {
-        let (saved_value, display_value, effective_currency, locale) =
-            cost_currency_row_for_settings("locale = \"zh-Hans\"\ncost_currency = \"cny\"\n");
+        let (saved_value, display_value, effective_currency) =
+            cost_currency_row_for_settings("cost_currency = \"cny\"\n");
 
-        assert_eq!(locale, Locale::ZhHans);
-        assert_eq!(effective_currency, crate::pricing::CostCurrency::Cny);
-        assert_eq!(saved_value, "cny");
-        assert_eq!(display_value, "cny");
-    }
-
-    #[test]
-    fn config_view_cost_currency_non_zh_hans_locale_uses_saved_currency() {
-        let (saved_value, display_value, effective_currency, locale) =
-            cost_currency_row_for_settings("locale = \"en\"\ncost_currency = \"cny\"\n");
-
-        assert_eq!(locale, Locale::En);
         assert_eq!(effective_currency, crate::pricing::CostCurrency::Cny);
         assert_eq!(saved_value, "cny");
         assert_eq!(display_value, "cny");
@@ -4579,8 +4509,8 @@ base_url = "https://api.xiaomimimo.com/v1"
     }
 
     #[test]
-    fn config_view_editing_localized_default_placeholders_starts_blank() {
-        let _guard = ConfigSettingsEnvGuard::new("locale = \"zh-Hans\"\n");
+    fn config_view_editing_default_placeholders_starts_blank() {
+        let _guard = ConfigSettingsEnvGuard::new("");
         let app = create_test_app();
         let mut view = ConfigView::new_for_app(&app);
 
@@ -4597,7 +4527,7 @@ base_url = "https://api.xiaomimimo.com/v1"
             view.start_edit();
 
             let edit = view.editing.as_ref().expect("editing should start");
-            assert_eq!(edit.original_value, tr(Locale::ZhHans, message_id));
+            assert_eq!(edit.original_value, tr(message_id));
             assert!(
                 edit.buffer.is_empty(),
                 "localized default placeholder should not become edit text for {key}"
@@ -4609,12 +4539,12 @@ base_url = "https://api.xiaomimimo.com/v1"
 
     #[test]
     fn config_view_filter_matches_group_and_rows() {
-        let mut view = create_config_view(Locale::En);
+        let mut view = create_config_view();
 
-        type_filter(&mut view, "side");
+        type_filter(&mut view, "侧边栏");
 
-        assert_eq!(view.filter, "side");
-        assert_eq!(visible_section_labels(&view), vec!["Sidebar"]);
+        assert_eq!(view.filter, "侧边栏");
+        assert_eq!(visible_section_labels(&view), vec!["侧边栏"]);
         assert_eq!(
             visible_row_keys(&view),
             vec!["sidebar_width", "sidebar_focus", "context_panel"]
@@ -4623,13 +4553,13 @@ base_url = "https://api.xiaomimimo.com/v1"
     }
 
     #[test]
-    fn localized_config_view_filter_matches_english_section_and_scope_labels() {
-        let mut view = create_config_view(Locale::PtBr);
+    fn config_view_filter_matches_simplified_chinese_section_and_scope_labels() {
+        let mut view = create_config_view();
 
-        type_filter(&mut view, "sidebar saved");
+        type_filter(&mut view, "侧边栏 已保存");
 
-        assert_eq!(view.filter, "sidebar saved");
-        assert_eq!(visible_section_labels(&view), vec!["Barra lateral"]);
+        assert_eq!(view.filter, "侧边栏 已保存");
+        assert_eq!(visible_section_labels(&view), vec!["侧边栏"]);
         assert_eq!(
             visible_row_keys(&view),
             vec!["sidebar_width", "sidebar_focus", "context_panel"]
@@ -4652,7 +4582,7 @@ base_url = "https://api.xiaomimimo.com/v1"
 
     #[test]
     fn config_view_filter_matches_friendly_labels_and_hints() {
-        let mut view = create_config_view(Locale::En);
+        let mut view = create_config_view();
 
         type_filter(&mut view, "shell access");
         assert_eq!(visible_row_keys(&view), vec!["allow_shell"]);
@@ -4668,7 +4598,7 @@ base_url = "https://api.xiaomimimo.com/v1"
 
     #[test]
     fn config_view_renders_friendly_setting_labels() {
-        let view = create_config_view(Locale::En);
+        let view = create_config_view();
         let area = Rect::new(0, 0, 100, 40);
         let mut buf = Buffer::empty(area);
 
@@ -4687,9 +4617,8 @@ base_url = "https://api.xiaomimimo.com/v1"
     }
 
     #[test]
-    fn localized_config_view_renders_at_narrow_width() {
-        let mut app = create_test_app();
-        app.ui_locale = Locale::PtBr;
+    fn simplified_chinese_config_view_renders_at_narrow_width() {
+        let app = create_test_app();
         let view = ConfigView::new_for_app(&app);
         let area = Rect::new(0, 0, 60, 18);
         let mut buf = Buffer::empty(area);
@@ -4698,8 +4627,8 @@ base_url = "https://api.xiaomimimo.com/v1"
 
         let dump = buffer_text(&buf, area);
         assert!(
-            dump.contains("Configuração") || dump.contains("Configura"),
-            "missing localized config title:\n{dump}"
+            dump.contains("配置"),
+            "missing simplified Chinese config title:\n{dump}"
         );
         assert!(
             !dump.contains("MISSING"),
@@ -4709,7 +4638,7 @@ base_url = "https://api.xiaomimimo.com/v1"
 
     #[test]
     fn config_view_selected_row_uses_muted_selection_highlight() {
-        let mut view = create_config_view(Locale::En);
+        let mut view = create_config_view();
         view.selected = view
             .rows
             .iter()
@@ -4749,8 +4678,8 @@ base_url = "https://api.xiaomimimo.com/v1"
 
     #[test]
     fn config_view_keeps_scope_column_aligned_for_long_keys() {
-        let mut view = create_config_view(Locale::ZhHans);
-        type_filter(&mut view, "composer");
+        let mut view = create_config_view();
+        type_filter(&mut view, "编辑器");
         let area = Rect::new(0, 0, 100, 24);
         let mut buf = Buffer::empty(area);
 
@@ -4768,7 +4697,10 @@ base_url = "https://api.xiaomimimo.com/v1"
                     || line.contains("Bracketed paste")
                     || line.contains("Paste detection")
             })
-            .filter_map(|line| line.find('已'))
+            .filter_map(|line| {
+                line.find('已')
+                    .map(|byte_idx| UnicodeWidthStr::width(&line[..byte_idx]))
+            })
             .collect::<Vec<_>>();
         assert!(
             scope_columns.len() >= 3,
@@ -5043,8 +4975,7 @@ base_url = "https://api.xiaomimimo.com/v1"
         // The dense bottom status line must truncate on a word boundary with an
         // ellipsis instead of leaving a mid-word fragment clipped by the
         // terminal (#3987).
-        let mut app = create_test_app();
-        app.ui_locale = Locale::En;
+        let app = create_test_app();
         let mut view = ConfigView::new_for_app(&app);
         view.status = Some(
             "CFGSTATUS persisted the configuration override to disk successfully \
@@ -5057,11 +4988,7 @@ base_url = "https://api.xiaomimimo.com/v1"
         view.render(area, &mut buf);
 
         let rows: Vec<String> = (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol())
-                    .collect::<String>()
-            })
+            .map(|y| buffer_row_text(&buf, area, y))
             .collect();
 
         // No rendered row may overflow the available columns.
@@ -5107,8 +5034,7 @@ base_url = "https://api.xiaomimimo.com/v1"
 
     #[test]
     fn config_view_escape_cancels_editing() {
-        let mut app = create_test_app();
-        app.ui_locale = Locale::En;
+        let app = create_test_app();
         let mut view = ConfigView::new_for_app(&app);
         view.selected = view
             .rows
@@ -5123,7 +5049,7 @@ base_url = "https://api.xiaomimimo.com/v1"
         assert!(view.editing.is_none());
         assert_eq!(
             view.status.as_deref(),
-            Some(&*tr(Locale::En, MessageId::ConfigEditCancelled))
+            Some(&*tr(MessageId::ConfigEditCancelled))
         );
     }
 
@@ -5134,7 +5060,7 @@ base_url = "https://api.xiaomimimo.com/v1"
     #[test]
     fn default_modal_does_not_consume_paste() {
         let mut stack = ViewStack::new();
-        stack.push(HelpView::new_for_locale(codewhale_config::Locale::En));
+        stack.push(HelpView::new());
         assert!(!stack.handle_paste("hello"));
         assert_eq!(stack.top_kind(), Some(ModalKind::Help));
     }
@@ -5220,18 +5146,21 @@ base_url = "https://api.xiaomimimo.com/v1"
     fn buffer_text(buf: &Buffer, area: Rect) -> String {
         let mut out = String::new();
         for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                out.push_str(buf[(x, y)].symbol());
-            }
+            out.push_str(&buffer_row_text(buf, area, y));
             out.push('\n');
         }
         out
     }
 
     fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
-        (area.left()..area.right())
-            .map(|x| buf[(x, y)].symbol())
-            .collect()
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        row
     }
 
     /// 40x12 regression: the compact tier must surrender secondary chrome
@@ -5240,7 +5169,7 @@ base_url = "https://api.xiaomimimo.com/v1"
     /// table budget instead of silently clipping rows.
     #[test]
     fn config_view_compact_heights_always_show_a_selectable_setting() {
-        let mut view = create_config_view(Locale::En);
+        let mut view = create_config_view();
         for (width, height, label) in [(40u16, 12u16, "40x12"), (60, 16, "60x16")] {
             let area = Rect::new(0, 0, width, height);
             let mut buf = Buffer::empty(area);
@@ -5299,7 +5228,7 @@ base_url = "https://api.xiaomimimo.com/v1"
     /// (and its hint) above the wrapped footer.
     #[test]
     fn config_view_compact_edit_surface_keeps_value_line_visible() {
-        let mut view = create_config_view(Locale::En);
+        let mut view = create_config_view();
         view.selected = view
             .rows
             .iter()

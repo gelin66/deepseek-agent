@@ -37,8 +37,7 @@ pub fn visible_slash_menu_entries(app: &App, limit: usize) -> Vec<SlashMenuEntry
                 .to_ascii_lowercase();
             SlashMenuEntry {
                 name: format!("/{}", info.name),
-                description: crate::localization::tr(app.ui_locale, info.description_id)
-                    .into_owned(),
+                description: crate::localization::tr(info.description_id).into_owned(),
                 is_skill: false,
                 alias_hint: info
                     .aliases

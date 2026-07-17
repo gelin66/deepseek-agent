@@ -4,7 +4,8 @@
 //! the `.codewhale/agents/<id>.toml` profile surface:
 //!
 //! - **Minimal payload out.** The request carries exactly the two wizard
-//!   answers (role, target model), the UI language tag, and an optional
+//!   answers (role, target model), the fixed Simplified Chinese language tag,
+//!   and an optional
 //!   redacted workspace fingerprint (fixed-vocabulary manifest/language
 //!   names, test-command names, branch name, dirty count — never file
 //!   contents, env values, secrets, or absolute paths; see
@@ -26,8 +27,6 @@ use std::path::Path;
 use crate::fleet::profile::{FleetProfileDraft, UntrustedProfileParse};
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
-use codewhale_config::Locale;
-
 /// Output budget for the one-shot profile draft. Profiles are small; this is
 /// a real ceiling on a misbehaving provider, not a target.
 pub(crate) const PROFILE_DRAFT_MAX_TOKENS: u32 = 1200;
@@ -152,8 +151,8 @@ pub(crate) fn workspace_fingerprint(workspace: &Path) -> String {
         .collect()
 }
 
-/// System prompt for the profile drafter. English regardless of UI locale
-/// (the language tag directs the output language); deterministic so tests can
+/// System prompt for the profile drafter. English instructions with a fixed
+/// output-language tag; deterministic so tests can
 /// pin the guardrails.
 fn profile_drafting_system_prompt() -> String {
     concat!(
@@ -184,19 +183,11 @@ fn profile_drafting_system_prompt() -> String {
     .to_string()
 }
 
-/// User prompt: the two wizard answers, the language tag, and (when present)
+/// User prompt: the two wizard answers, the fixed language tag, and (when present)
 /// the redacted workspace fingerprint — appended as data, never instructions.
-fn profile_drafting_user_prompt(
-    role: &str,
-    model: &str,
-    locale: Locale,
-    workspace_fingerprint: &str,
-) -> String {
+fn profile_drafting_user_prompt(role: &str, model: &str, workspace_fingerprint: &str) -> String {
     let mut prompt = format!(
-        "Language tag: {}\n\nWizard answers:\n- role: {}\n- target model: {}\n",
-        locale.tag(),
-        role,
-        model,
+        "Language tag: zh-Hans\n\nWizard answers:\n- role: {role}\n- target model: {model}\n",
     );
     let fingerprint = workspace_fingerprint.trim();
     if !fingerprint.is_empty() {
@@ -213,7 +204,6 @@ pub(crate) fn profile_drafting_request(
     request_model: &str,
     role: &str,
     model: &str,
-    locale: Locale,
     workspace_fingerprint: &str,
 ) -> MessageRequest {
     MessageRequest {
@@ -221,7 +211,7 @@ pub(crate) fn profile_drafting_request(
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
-                text: profile_drafting_user_prompt(role, model, locale, workspace_fingerprint),
+                text: profile_drafting_user_prompt(role, model, workspace_fingerprint),
                 cache_control: None,
             }],
         }],
@@ -261,11 +251,9 @@ pub(crate) async fn draft_fleet_profile_with_model<C: LlmClient>(
     request_model: &str,
     role: &str,
     model: &str,
-    locale: Locale,
     workspace_fingerprint: &str,
 ) -> Result<Box<FleetProfileDraft>, String> {
-    let request =
-        profile_drafting_request(request_model, role, model, locale, workspace_fingerprint);
+    let request = profile_drafting_request(request_model, role, model, workspace_fingerprint);
     let response = client
         .create_message(request)
         .await
@@ -305,7 +293,7 @@ mod tests {
 
     #[test]
     fn profile_drafting_request_sends_only_answers_and_language() {
-        let request = profile_drafting_request("glm-5.2", "reviewer", "cheap", Locale::En, "");
+        let request = profile_drafting_request("glm-5.2", "reviewer", "cheap", "");
 
         assert_eq!(request.model, "glm-5.2");
         assert_eq!(request.max_tokens, PROFILE_DRAFT_MAX_TOKENS);
@@ -320,11 +308,8 @@ mod tests {
         let [ContentBlock::Text { text, .. }] = message.content.as_slice() else {
             panic!("expected exactly one text block");
         };
-        assert_eq!(
-            text,
-            &profile_drafting_user_prompt("reviewer", "cheap", Locale::En, "")
-        );
-        assert!(text.contains("Language tag: en"));
+        assert_eq!(text, &profile_drafting_user_prompt("reviewer", "cheap", ""));
+        assert!(text.contains("Language tag: zh-Hans"));
         assert!(text.contains("role: reviewer"));
         assert!(text.contains("target model: cheap"));
         // With no fingerprint the section is absent entirely.
@@ -337,7 +322,6 @@ mod tests {
             "glm-5.2",
             "reviewer",
             "cheap",
-            Locale::En,
             "languages: rust; manifests: Cargo.toml; test commands: cargo test",
         );
         let [message] = request.messages.as_slice() else {
@@ -460,16 +444,9 @@ mod tests {
             r#"{"id":"reviewer","display_name":"Reviewer","description":"Reviews diffs for correctness.","role_hint":"reviewer","model":"glm-5-air","instructions":"Read the diff. Report findings. Stop."}"#,
         ));
 
-        let draft = draft_fleet_profile_with_model(
-            &mock,
-            "glm-5.2",
-            "reviewer",
-            "glm-5-air",
-            Locale::En,
-            "",
-        )
-        .await
-        .expect("valid draft should parse");
+        let draft = draft_fleet_profile_with_model(&mock, "glm-5.2", "reviewer", "glm-5-air", "")
+            .await
+            .expect("valid draft should parse");
 
         assert_eq!(draft.id, "reviewer");
         assert_eq!(draft.role_hint, "reviewer");
@@ -485,16 +462,9 @@ mod tests {
             r#"{"id":"rogue","role_hint":"reviewer","description":"x","permissions":{"allow_shell":true}}"#,
         ));
 
-        let err = draft_fleet_profile_with_model(
-            &mock,
-            "mock-model",
-            "reviewer",
-            "cheap",
-            Locale::En,
-            "",
-        )
-        .await
-        .expect_err("permission smuggling must fail the parse");
+        let err = draft_fleet_profile_with_model(&mock, "mock-model", "reviewer", "cheap", "")
+            .await
+            .expect_err("permission smuggling must fail the parse");
         assert!(err.contains("not a valid profile"), "{err}");
     }
 
@@ -503,16 +473,9 @@ mod tests {
         let mock = MockLlmClient::new(Vec::new());
         mock.push_message_response(text_response("I would rather chat about whales."));
 
-        let err = draft_fleet_profile_with_model(
-            &mock,
-            "mock-model",
-            "reviewer",
-            "cheap",
-            Locale::En,
-            "",
-        )
-        .await
-        .expect_err("prose without JSON must be rejected");
+        let err = draft_fleet_profile_with_model(&mock, "mock-model", "reviewer", "cheap", "")
+            .await
+            .expect_err("prose without JSON must be rejected");
         assert!(err.contains("not a valid profile"), "{err}");
     }
 
@@ -532,16 +495,9 @@ mod tests {
         );
         mock.push_message_response(response);
 
-        let draft = draft_fleet_profile_with_model(
-            &mock,
-            "mock-model",
-            "reviewer",
-            "cheap",
-            Locale::En,
-            "",
-        )
-        .await
-        .expect("text block should parse");
+        let draft = draft_fleet_profile_with_model(&mock, "mock-model", "reviewer", "cheap", "")
+            .await
+            .expect("text block should parse");
         assert_eq!(draft.id, "real");
     }
 }

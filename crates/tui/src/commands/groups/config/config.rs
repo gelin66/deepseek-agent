@@ -23,7 +23,6 @@ use crate::tui::app::{
 use crate::tui::approval::ApprovalMode;
 use crate::tui::ui::{SidebarRenderState, sidebar_render_state};
 use anyhow::Result;
-use codewhale_config::resolve_locale;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -182,18 +181,6 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
     if let Some(subagent_key) = key.strip_prefix("subagents.") {
         return show_subagents_setting(app, subagent_key);
     }
-    fn locale_display(l: codewhale_config::Locale) -> &'static str {
-        match l {
-            codewhale_config::Locale::En => "en",
-            codewhale_config::Locale::ZhHans => "zh-Hans",
-            codewhale_config::Locale::ZhHant => "zh-Hant",
-            codewhale_config::Locale::Ja => "ja",
-            codewhale_config::Locale::PtBr => "pt-BR",
-            codewhale_config::Locale::Es419 => "es-419",
-            codewhale_config::Locale::Vi => "vi",
-            codewhale_config::Locale::Ko => "ko",
-        }
-    }
     fn density_display(d: crate::tui::app::ComposerDensity) -> &'static str {
         match d {
             crate::tui::app::ComposerDensity::Compact => "compact",
@@ -249,7 +236,6 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
             Some(config.deepseek_base_url())
         }
         "stream_chunk_timeout_secs" => Some(app.stream_chunk_timeout_secs.to_string()),
-        "locale" | "language" => Some(locale_display(app.ui_locale).to_string()),
         "theme" | "ui_theme" => {
             Some(crate::palette::theme_label_for_mode(app.ui_theme.mode).to_string())
         }
@@ -380,9 +366,9 @@ fn show_single_setting(app: &App, key: &str) -> CommandResult {
 }
 
 /// Show persistent settings
-pub fn show_settings(app: &mut App) -> CommandResult {
+pub fn show_settings(_app: &mut App) -> CommandResult {
     match Settings::load() {
-        Ok(settings) => CommandResult::message(settings.display(app.ui_locale)),
+        Ok(settings) => CommandResult::message(settings.display()),
         Err(e) => CommandResult::error(format!("Failed to load settings: {e}")),
     }
 }
@@ -739,7 +725,7 @@ fn config_editability_audit(app: &App) -> CommandResult {
         .clone()
         .unwrap_or_else(|| "(unset)".to_string());
     let effective_permissions = if app.mode == AppMode::Plan {
-        "Read Only"
+        "只读"
     } else {
         app.approval_mode.permission_chip_label()
     };
@@ -1809,11 +1795,6 @@ pub fn set_config_value(app: &mut App, key: &str, value: &str, persist: bool) ->
             app.show_tool_details = settings.show_tool_details;
             app.mark_history_updated();
         }
-        "locale" | "language" => {
-            app.ui_locale = resolve_locale(&settings.locale);
-            app.mark_history_updated();
-            app.needs_redraw = true;
-        }
         "theme" | "ui_theme" | "background_color" | "background" | "bg" => {
             app.theme_id = crate::palette::ThemeId::from_name(&settings.theme)
                 .unwrap_or(crate::palette::ThemeId::System);
@@ -2555,7 +2536,7 @@ tool =
         let msg = result.message.unwrap();
 
         assert!(result.is_error);
-        assert!(msg.contains("Error: Configured ask rules"));
+        assert!(msg.contains("错误：Configured ask rules"));
         assert!(msg.contains(&format!("Permissions path: {}", permissions_path.display())));
         assert!(msg.contains("File exists: yes"));
         assert!(msg.contains("File status: malformed"));
@@ -3408,7 +3389,7 @@ max_concurrent = 4
         assert!(!result.is_error);
         assert!(msg.contains("Config editability audit"));
         assert!(msg.contains(&format!("Config path: {}", config_path.display())));
-        assert!(msg.contains("effective_permissions | Never | runtime"));
+        assert!(msg.contains("effective_permissions | 从不询问 | runtime"));
         assert!(msg.contains("permission_posture | (unset) | TUI settings"));
         assert!(msg.contains("approval_policy | (unset) | persisted config"));
         assert!(msg.contains("stream_chunk_timeout_secs | 45 | runtime+persisted"));
@@ -3423,7 +3404,7 @@ max_concurrent = 4
             .message
             .expect("Plan audit message");
         assert!(
-            plan_msg.contains("effective_permissions | Read Only | runtime"),
+            plan_msg.contains("effective_permissions | 只读 | runtime"),
             "{plan_msg}"
         );
     }
@@ -3851,7 +3832,7 @@ max_concurrent = 4
         assert_eq!(
             msg,
             format!(
-                "approval_mode = Ask (saved to {} as approval_policy = \"on-request\")",
+                "approval_mode = 询问 (saved to {} as approval_policy = \"on-request\")",
                 config_path.display()
             )
         );
@@ -3968,7 +3949,7 @@ max_concurrent = 4
         let mut app = create_test_app();
         let result = trust(&mut app, Some("add"));
         let msg = result.message.expect("error message");
-        assert!(msg.starts_with("Error:"), "got {msg:?}");
+        assert!(msg.starts_with("错误："), "got {msg:?}");
     }
 
     #[test]

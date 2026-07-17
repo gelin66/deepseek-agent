@@ -42,7 +42,6 @@ use crate::tui::views::{
     ActionHint, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
     render_underwater_surface,
 };
-use codewhale_config::Locale;
 
 /// Thinking-effort rows shown for DeepSeek-style providers, in the order
 /// DeepSeek behaviorally distinguishes them.
@@ -187,8 +186,6 @@ pub struct ModelPickerView {
     configured_providers: Vec<ApiProvider>,
     row_hitboxes: RefCell<Vec<(Rect, Pane, usize)>>,
     last_mouse_selected: Option<(Pane, usize)>,
-    /// UI locale captured from the app at construction (#4057 wave 2).
-    locale: Locale,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -284,7 +281,6 @@ impl ModelPickerView {
             configured_providers,
             row_hitboxes: RefCell::new(Vec::new()),
             last_mouse_selected: None,
-            locale: app.ui_locale,
         };
         view.restore_memory(app.model_picker_memory.as_ref());
         view
@@ -1570,14 +1566,13 @@ impl ModelPickerView {
         let inner = render_underwater_surface(
             area,
             buf,
-            tr(self.locale, MessageId::RouteSurfaceTitle)
-                .replace("{view}", self.view.title_label()),
+            tr(MessageId::RouteSurfaceTitle).replace("{view}", self.view.title_label()),
         );
 
         // Say what the action does in model language. Provider changes are an
         // implementation detail of applying a cross-provider model row.
         let view_action: std::borrow::Cow<'static, str> = match self.view {
-            ModelListView::Configured => tr(self.locale, MessageId::RouteBrowseCatalog),
+            ModelListView::Configured => tr(MessageId::RouteBrowseCatalog),
             other => other.next().title_label().into(),
         };
         let content = render_modal_footer(
@@ -1587,8 +1582,8 @@ impl ModelPickerView {
                 ActionHint::new("↑↓", "move"),
                 ActionHint::new("Tab", "switch"),
                 ActionHint::new(
-                    tr(self.locale, MessageId::RouteActionType),
-                    tr(self.locale, MessageId::RouteActionSearchAnyModel),
+                    tr(MessageId::RouteActionType),
+                    tr(MessageId::RouteActionSearchAnyModel),
                 ),
                 ActionHint::new("Enter", "apply"),
                 ActionHint::new("A", view_action),
@@ -1606,7 +1601,7 @@ impl ModelPickerView {
         Paragraph::new(vec![
             Line::from(vec![
                 Span::styled(
-                    format!("─ {} ", tr(self.locale, MessageId::RoutePanelHeader)),
+                    format!("─ {} ", tr(MessageId::RoutePanelHeader)),
                     Style::default().fg(palette::WHALE_ACCENT_PRIMARY).bold(),
                 ),
                 Span::styled(
@@ -1629,7 +1624,7 @@ impl ModelPickerView {
             Line::from(""),
             Line::from(vec![
                 Span::styled(
-                    format!("  {} ", tr(self.locale, MessageId::RouteProviderLabel)),
+                    format!("  {} ", tr(MessageId::RouteProviderLabel)),
                     Style::default().fg(palette::WHALE_INFO),
                 ),
                 Span::styled(
@@ -1639,7 +1634,7 @@ impl ModelPickerView {
                     Style::default().fg(palette::TEXT_PRIMARY),
                 ),
                 Span::styled(
-                    format!(" · {}", tr(self.locale, MessageId::RouteModelFirstAtomic)),
+                    format!(" · {}", tr(MessageId::RouteModelFirstAtomic)),
                     Style::default().fg(palette::TEXT_MUTED),
                 ),
             ]),
@@ -1850,7 +1845,6 @@ mod tests {
         app.auto_model = false;
         app.reasoning_effort = ReasoningEffort::Max;
         app.api_provider = crate::config::ApiProvider::Deepseek;
-        app.ui_locale = codewhale_config::Locale::En;
         app.model_ids_passthrough = false;
         app.provider_models.clear();
         (app, config, (env_guards, lock))
@@ -1866,9 +1860,14 @@ mod tests {
     }
 
     fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
-        (area.x..area.x.saturating_add(area.width))
-            .map(|x| buf[(x, y)].symbol())
-            .collect()
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(unicode_width::UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        row
     }
 
     fn row_containing(buf: &Buffer, area: Rect, needle: &str) -> Option<u16> {
@@ -3732,22 +3731,16 @@ mod tests {
             stack.push(ModelPickerView::new(&app, &config));
             stack.render(area, &mut buf);
 
-            let rows: Vec<String> = (0..h)
-                .map(|y| {
-                    (0..w)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect();
+            let rows: Vec<String> = (0..h).map(|y| buffer_row_text(&buf, area, y)).collect();
             let text = rows.join("\n");
 
             // Footer keeps every action (it wraps instead of clipping).
             for label in [
                 "move",
                 "switch",
-                "search any model",
+                "搜索任意模型",
                 "apply",
-                "browse catalog",
+                "浏览目录",
                 "cancel",
             ] {
                 assert!(

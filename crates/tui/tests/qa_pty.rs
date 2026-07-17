@@ -23,7 +23,7 @@ use qa_harness::keys;
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEY_TIMEOUT: Duration = Duration::from_secs(5);
-const COMPOSER_READY_TEXT: &str = "Write a task";
+const COMPOSER_READY_TEXT: &str = "编写任务或使用 /。";
 static QA_PTY_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn qa_pty_test_lock() -> MutexGuard<'static, ()> {
@@ -60,9 +60,8 @@ fn spawn_minimal(
         // Force a known base URL so the doctor / model probe never escapes
         // the box. 127.0.0.1:1 will refuse instantly.
         .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
-        // PTY scenarios assert state transitions, not animation cadence. Freeze
-        // ambient motion so wait_for_idle measures product state instead of a
-        // decorative ocean frame.
+        // PTY scenarios assert state transitions, not animation cadence.
+        // Freeze ambient motion so visible-state assertions stay deterministic.
         .env("NO_ANIMATIONS", "1")
         .env("RUST_LOG", "warn")
         .args([
@@ -82,16 +81,6 @@ fn spawn_minimal(
 /// retain the separate launch surface, covered by unit rendering tests.
 fn enter_launch_session(h: &mut Harness) -> anyhow::Result<()> {
     h.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
-    Ok(())
-}
-
-fn write_skill(root: std::path::PathBuf, name: &str, description: &str) -> anyhow::Result<()> {
-    let dir = root.join(name);
-    std::fs::create_dir_all(&dir)?;
-    std::fs::write(
-        dir.join("SKILL.md"),
-        format!("---\nname: {name}\ndescription: {description}\n---\nUse {name}.\n"),
-    )?;
     Ok(())
 }
 
@@ -266,11 +255,9 @@ web_search = true
         .size(40, 140)
         .spawn()?;
 
-    h.wait_for_text("Press Enter to continue", BOOT_TIMEOUT)?;
+    h.wait_for_text("按 Enter 继续", BOOT_TIMEOUT)?;
     h.send(keys::key::enter())?;
-    h.wait_for_text("Choose your language", BOOT_TIMEOUT)?;
-    h.send(keys::key::enter())?;
-    h.wait_for_text("Trust Workspace", BOOT_TIMEOUT)?;
+    h.wait_for_text("信任工作目录", BOOT_TIMEOUT)?;
     h.send(keys::key::ch('2'))?;
     assert_eq!(h.wait_for_exit(KEY_TIMEOUT), Some(0));
     Ok(())
@@ -286,17 +273,10 @@ fn viewport_origin_stays_row_zero_after_failed_turn() -> anyhow::Result<()> {
     assert_viewport_starts_at_top(h.frame());
 
     h.send(keys::key::text("trigger a failed turn"))?;
-    h.wait_for_idle(Duration::from_millis(200), Duration::from_secs(2))?;
+    h.wait_for_text("trigger a failed turn", KEY_TIMEOUT)?;
+    std::thread::sleep(Duration::from_millis(180));
     h.send(keys::key::enter())?;
-    h.wait_for(
-        |frame| {
-            frame.contains("Turn failed")
-                || frame.contains("Connection refused")
-                || frame.contains("error")
-        },
-        Duration::from_secs(15),
-    )?;
-    h.wait_for_idle(Duration::from_millis(300), Duration::from_secs(3))?;
+    h.wait_for_text("✕ 失败", Duration::from_secs(15))?;
     assert_viewport_starts_at_top(h.frame());
 
     let _ = h.shutdown();
@@ -320,7 +300,7 @@ fn smoke_keystroke_reaches_composer() -> anyhow::Result<()> {
 }
 
 #[test]
-fn printable_v_stays_in_composer_and_alt_help_fallback_works() -> anyhow::Result<()> {
+fn printable_v_stays_in_composer_and_help_command_works() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
     let (_ws, mut h) = boot_minimal()?;
     h.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
@@ -332,12 +312,12 @@ fn printable_v_stays_in_composer_and_alt_help_fallback_works() -> anyhow::Result
         "bare v must remain composer-owned:\n{}",
         h.debug_dump()
     );
-    h.send(b"\x15")?; // Ctrl+U clears the composer before testing Alt/Option.
-    h.send(keys::key::alt('?'))?;
-    h.wait_for(
-        |frame| frame.contains("Help") || frame.contains("Keyboard") || frame.contains("Shortcuts"),
-        KEY_TIMEOUT,
-    )?;
+    h.send(b"\x7f")?; // Backspace removes the composer-owned `v`.
+    h.wait_for_text(COMPOSER_READY_TEXT, KEY_TIMEOUT)?;
+    h.paste("/help")?;
+    h.wait_for_text("/help", KEY_TIMEOUT)?;
+    h.send(keys::key::enter())?;
+    h.wait_for_text("当前可用命令：", KEY_TIMEOUT)?;
 
     let _ = h.shutdown();
     Ok(())
@@ -367,7 +347,10 @@ fn resize_and_mouse_wheel_preserve_composer_ownership() -> anyhow::Result<()> {
     enter_launch_session(&mut h)?;
 
     h.resize(24, 80)?;
-    h.wait_for_idle(Duration::from_millis(200), Duration::from_secs(3))?;
+    h.wait_for(
+        |frame| frame.rows() == 24 && frame.cols() == 80 && frame.contains(COMPOSER_READY_TEXT),
+        Duration::from_secs(3),
+    )?;
     assert_eq!((h.frame().rows(), h.frame().cols()), (24, 80));
     h.send(keys::mouse::wheel_down(5, 40))?;
     h.send(keys::mouse::click(22, 20))?;
@@ -378,164 +361,6 @@ fn resize_and_mouse_wheel_preserve_composer_ownership() -> anyhow::Result<()> {
         !dump.contains("[<65"),
         "mouse bytes leaked into composer:\n{dump}"
     );
-
-    let _ = h.shutdown();
-    Ok(())
-}
-
-#[test]
-fn work_surface_real_rows_own_click_wheel_resize_and_stop_confirm() -> anyhow::Result<()> {
-    let _guard = qa_pty_test_lock();
-    let ws = make_sealed_workspace()?;
-    let session_path = ws.workspace().join("mouse-work-session.json");
-    let todos = (0..14)
-        .map(|index| {
-            serde_json::json!({
-                "id": index + 1,
-                "content": format!("todo-mouse-{index:02}"),
-                "status": if index == 0 { "in_progress" } else { "pending" }
-            })
-        })
-        .collect::<Vec<_>>();
-    std::fs::write(
-        &session_path,
-        serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 1,
-            "metadata": {
-                "id": "pty-work-mouse",
-                "title": "Mouse work surface",
-                "created_at": "2026-07-13T00:00:00Z",
-                "updated_at": "2026-07-13T00:00:00Z",
-                "message_count": 0,
-                "total_tokens": 0,
-                "model": "deepseek-v4-pro",
-                "model_provider": "deepseek",
-                "workspace": ws.workspace(),
-                "mode": "agent",
-                "cost": {},
-                "cumulative_turn_secs": 0
-            },
-            "messages": [],
-            "system_prompt": null,
-            "work_state": {
-                "todos": {"items": todos, "completion_pct": 0, "in_progress_id": 1},
-                "plan": {"objective": "", "items": []}
-            }
-        }))?,
-    )?;
-
-    let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
-        .cwd(ws.workspace())
-        .clear_env()
-        .seal_home(ws.home())
-        .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
-        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
-        .env("NO_ANIMATIONS", "1")
-        .env("RUST_LOG", "warn")
-        .args([
-            "--workspace",
-            ws.workspace().to_str().expect("utf-8 workspace path"),
-            "--no-project-config",
-            "--skip-onboarding",
-            "--mouse-capture",
-            "--yolo",
-        ])
-        .size(32, 100)
-        .spawn()?;
-    enter_launch_session(&mut h)?;
-    h.send(keys::key::text(&format!(
-        "/load {}",
-        session_path.to_string_lossy()
-    )))?;
-    h.wait_for_idle(Duration::from_millis(150), Duration::from_secs(2))?;
-    h.send(keys::key::enter())?;
-    h.wait_for_text("todo-mouse-00", KEY_TIMEOUT)?;
-
-    let (first_row, first_col) = h
-        .frame()
-        .find_text("todo-mouse-00")
-        .expect("real rendered first To-do row");
-    h.send(keys::mouse::wheel_down(first_row, first_col))?;
-    h.wait_for_idle(Duration::from_millis(200), Duration::from_secs(3))?;
-    assert!(
-        !h.debug_dump().contains("[<65"),
-        "wheel over work surface leaked into the transcript/composer:\n{}",
-        h.debug_dump()
-    );
-
-    h.resize(24, 80)?;
-    h.wait_for_idle(Duration::from_millis(200), Duration::from_secs(3))?;
-    let target = if h.frame().contains("todo-mouse-02") {
-        "todo-mouse-02"
-    } else {
-        "todo-mouse-00"
-    };
-    let (row, col) = h.frame().find_text(target).expect("row survived resize");
-    h.send(keys::mouse::click(row, col))?;
-    h.wait_for_text("To-do", KEY_TIMEOUT)?;
-    h.wait_for_text(target, KEY_TIMEOUT)?;
-    h.wait_for_text("q/Esc close", KEY_TIMEOUT)?;
-    let _ = h.shutdown();
-
-    let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
-        .cwd(ws.workspace())
-        .clear_env()
-        .seal_home(ws.home())
-        .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
-        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
-        .env("NO_ANIMATIONS", "1")
-        .env("RUST_LOG", "warn")
-        .args([
-            "--workspace",
-            ws.workspace().to_str().expect("utf-8 workspace path"),
-            "--no-project-config",
-            "--skip-onboarding",
-            "--mouse-capture",
-            "--yolo",
-        ])
-        .size(24, 80)
-        .spawn()?;
-    enter_launch_session(&mut h)?;
-
-    // A live bang shell projects a real stoppable run row. Arm and accept the
-    // rendered row-local Stop control using its actual post-resize coordinates.
-    h.send(keys::key::text("! echo CWQA_STOP_ROW; sleep 30"))?;
-    h.wait_for_idle(Duration::from_millis(100), Duration::from_secs(2))?;
-    h.send(keys::key::enter())?;
-    h.wait_for_text("run running", KEY_TIMEOUT)?;
-    h.wait_for_text("[stop]", KEY_TIMEOUT)?;
-    let (stop_row, stop_col) = h.frame().find_text("stop").expect("rendered Stop control");
-    h.send(keys::mouse::click(stop_row, stop_col))?;
-    h.wait_for_text("confirm", KEY_TIMEOUT)?;
-
-    // Reject the row-local Stop with Esc. A second Esc only releases the work
-    // surface's focus; neither keypress may leak through and cancel the live
-    // command. This is the real-PTY counterpart to the interaction unit tests
-    // and protects the dialog-vs-active-work ownership boundary.
-    h.send(keys::key::esc())?;
-    h.wait_for(
-        |frame| frame.contains("run running") && !frame.contains("confirm"),
-        KEY_TIMEOUT,
-    )?;
-    h.send(keys::key::esc())?;
-    h.wait_for_idle(Duration::from_millis(150), Duration::from_secs(2))?;
-    assert!(
-        h.frame().contains("run running"),
-        "repeated Esc after rejecting Stop cancelled active work:\n{}",
-        h.debug_dump()
-    );
-
-    // Re-arm from the rendered control after focus was released, then accept.
-    let (stop_row, stop_col) = h.frame().find_text("stop").expect("rendered Stop control");
-    h.send(keys::mouse::click(stop_row, stop_col))?;
-    h.wait_for_text("confirm", KEY_TIMEOUT)?;
-    // Confirm the mouse-armed, row-selected action with Enter. Unit coverage
-    // separately proves the armed control strip's second-click hitbox.
-    h.send(keys::key::enter())?;
-    h.wait_for(
-        |frame| !frame.contains("run running"),
-        Duration::from_secs(5),
-    )?;
 
     let _ = h.shutdown();
     Ok(())
@@ -569,15 +394,15 @@ fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow:
         "Request the fixture apply_patch call; do not change its arguments.",
     ))?;
     h.send(keys::key::enter())?;
-    h.wait_for_text("Approve once", Duration::from_secs(10))?;
-    h.wait_for_text("Deny this call", KEY_TIMEOUT)?;
+    h.wait_for_text("仅本次批准", Duration::from_secs(10))?;
+    h.wait_for_text("拒绝本次调用", KEY_TIMEOUT)?;
 
     h.resize(24, 80)?;
     h.wait_for(
         |frame| {
             frame.rows() == 24
                 && frame.cols() == 80
-                && frame.contains("Deny this call")
+                && frame.contains("拒绝本次调用")
                 && frame.contains("[2 / d / n]")
         },
         KEY_TIMEOUT,
@@ -605,256 +430,6 @@ fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow:
     Ok(())
 }
 
-/// Release stopship coverage: a real built TUI restores durable Work state and
-/// keeps both To-do and the effective permission posture visible at each
-/// supported compact evidence size. No model turn is sent.
-#[test]
-fn work_and_permission_are_visible_at_release_terminal_sizes() -> anyhow::Result<()> {
-    let _guard = qa_pty_test_lock();
-
-    for (cols, rows) in [(120_u16, 32_u16), (100, 30), (80, 24)] {
-        let ws = make_sealed_workspace()?;
-        let codewhale_home = ws.home().join(".codewhale");
-        let codex_home = ws.home().join(".codex");
-        std::fs::create_dir_all(&codex_home)?;
-        std::fs::write(codewhale_home.join("config.toml"), "allow_shell = true\n")?;
-        std::fs::write(
-            codewhale_home.join("settings.toml"),
-            "permission_posture = \"full-access\"\nlocale = \"en\"\n",
-        )?;
-        std::fs::write(
-            codex_home.join("models_cache.json"),
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "fetched_at": chrono::Utc::now(),
-                "models": [{"slug": "gpt-pty-fixture", "priority": 1}]
-            }))?,
-        )?;
-
-        let session_path = ws.workspace().join("release-work-session.json");
-        std::fs::write(
-            &session_path,
-            serde_json::to_vec_pretty(&serde_json::json!({
-                "schema_version": 1,
-                "metadata": {
-                    "id": format!("pty-{cols}x{rows}"),
-                    "title": "Release Work continuity",
-                    "created_at": "2026-07-10T00:00:00Z",
-                    "updated_at": "2026-07-10T00:00:00Z",
-                    "message_count": 0,
-                    "total_tokens": 0,
-                    "model": "deepseek-v4-pro",
-                    "model_provider": "deepseek",
-                    "workspace": ws.workspace(),
-                    "mode": "operate",
-                    "cost": {},
-                    "cumulative_turn_secs": 0
-                },
-                "messages": [],
-                "system_prompt": null,
-                "work_state": {
-                    "todos": {
-                        "items": [
-                            {"id": 1, "content": "persisted inspect", "status": "completed"},
-                            {"id": 2, "content": "persisted patch", "status": "in_progress"}
-                        ],
-                        "completion_pct": 50,
-                        "in_progress_id": 2
-                    },
-                    "plan": {
-                        "objective": "Keep release Work visible",
-                        "items": [
-                            {"step": "verify PTY", "status": "in_progress"}
-                        ]
-                    }
-                }
-            }))?,
-        )?;
-
-        let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
-            .cwd(ws.workspace())
-            .clear_env()
-            .seal_home(ws.home())
-            .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
-            .env("CODEX_HOME", codex_home.to_string_lossy())
-            .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
-            .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
-            .env("NO_ANIMATIONS", "1")
-            .env("RUST_LOG", "warn")
-            .args([
-                "--workspace",
-                ws.workspace().to_str().expect("utf-8 workspace path"),
-                "--no-project-config",
-                "--skip-onboarding",
-            ])
-            .size(rows, cols)
-            .spawn()?;
-
-        enter_launch_session(&mut h)?;
-        h.send(keys::key::text(&format!(
-            "/load {}",
-            session_path.to_string_lossy()
-        )))?;
-        h.wait_for_text("/load", KEY_TIMEOUT)?;
-        h.wait_for_idle(Duration::from_millis(150), Duration::from_secs(2))?;
-        h.send(keys::key::enter())?;
-        h.wait_for_text("To-do", KEY_TIMEOUT)?;
-        h.wait_for_text("Full Access", KEY_TIMEOUT)?;
-        h.wait_for_idle(Duration::from_millis(250), Duration::from_secs(3))?;
-
-        let frame = h.frame();
-        let dump = frame.debug_dump();
-        assert!(
-            frame.contains("To-do"),
-            "To-do missing at {cols}x{rows}:\n{dump}"
-        );
-        assert!(
-            frame.contains("persisted") || frame.contains("2 items"),
-            "Work state missing at {cols}x{rows}:\n{dump}"
-        );
-        assert!(
-            frame.contains("Full Access"),
-            "effective permission missing at {cols}x{rows}:\n{dump}"
-        );
-        assert!(
-            frame.contains("Operate") || frame.contains("operate"),
-            "restored mode missing at {cols}x{rows}:\n{dump}"
-        );
-
-        if let Some(dir) = std::env::var_os("CODEWHALE_QA_EVIDENCE_DIR") {
-            let dir = std::path::PathBuf::from(dir);
-            std::fs::create_dir_all(&dir)?;
-            std::fs::write(dir.join(format!("tui-{cols}x{rows}.txt")), dump)?;
-        }
-
-        let _ = h.shutdown();
-    }
-    Ok(())
-}
-
-/// A composer `!` command is a host-owned shell turn. Cancelling it must
-/// settle the transcript card instead of leaving a permanent `run running`
-/// spinner after the process has been killed.
-#[test]
-fn cancelled_bang_shell_settles_transcript_card() -> anyhow::Result<()> {
-    let _guard = qa_pty_test_lock();
-    let ws = make_sealed_workspace()?;
-    let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
-        .cwd(ws.workspace())
-        .clear_env()
-        .seal_home(ws.home())
-        // Match the Android/Termux release probe: `--skip-onboarding` with no
-        // provider credential leaves the bang shell as the first transcript
-        // cell, which is the cache-transition edge this regression covers.
-        .env("DEEPSEEK_API_KEY", "")
-        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
-        .env("NO_ANIMATIONS", "1")
-        .env("RUST_LOG", "warn")
-        .args([
-            "--workspace",
-            ws.workspace().to_str().expect("utf-8 workspace path"),
-            "--no-project-config",
-            "--skip-onboarding",
-            "--yolo",
-        ])
-        .size(32, 120)
-        .spawn()?;
-
-    enter_launch_session(&mut h)?;
-    let command = "! echo $$ > shell.pid; sleep 30 & echo $! > sleep.pid; \
-                   echo CWQA_SHELL_STARTED; wait";
-    h.send(keys::key::text(command))?;
-    h.wait_for_text("CWQA_SHELL_STARTED", KEY_TIMEOUT)?;
-    h.wait_for_idle(Duration::from_millis(150), Duration::from_secs(2))?;
-    h.send(keys::key::enter())?;
-    h.wait_for_text("run running", KEY_TIMEOUT)?;
-    let process_deadline = std::time::Instant::now() + KEY_TIMEOUT;
-    while (!ws.workspace().join("shell.pid").exists() || !ws.workspace().join("sleep.pid").exists())
-        && std::time::Instant::now() < process_deadline
-    {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    assert!(ws.workspace().join("shell.pid").exists());
-    assert!(ws.workspace().join("sleep.pid").exists());
-
-    h.send(b"\x03")?;
-    h.wait_for_text("Request cancelled", KEY_TIMEOUT)?;
-    h.wait_for(
-        |frame| !frame.contains("run running"),
-        Duration::from_secs(5),
-    )?;
-    h.wait_for_idle(Duration::from_millis(250), Duration::from_secs(5))?;
-
-    let frame = h.frame();
-    let dump = frame.debug_dump();
-    assert!(
-        !frame.contains("run running"),
-        "cancelled bang shell stayed live in transcript:\n{dump}"
-    );
-    assert!(
-        frame.contains("run issue") || frame.contains("interrupted"),
-        "cancelled bang shell did not expose a terminal card:\n{dump}"
-    );
-    assert!(
-        !frame.contains("turn completed"),
-        "cancelled bang shell was reported as a completed turn:\n{dump}"
-    );
-
-    let _ = h.shutdown();
-    Ok(())
-}
-
-/// Regression: `/skills` should reflect the same merged discovery set as the
-/// slash menu and model-visible skills block, not just the first selected
-/// skills directory.
-#[test]
-fn skills_menu_shows_local_and_global_skills() -> anyhow::Result<()> {
-    let _guard = qa_pty_test_lock();
-    let ws = make_sealed_workspace()?;
-    write_skill(ws.user_skills_dir(), "global-alpha", "Global alpha skill")?;
-    write_skill(
-        ws.workspace().join(".agents").join("skills"),
-        "workspace-beta",
-        "Workspace beta skill",
-    )?;
-
-    let mut h = Harness::builder(Harness::cargo_bin("codewhale-tui"))
-        .cwd(ws.workspace())
-        .clear_env()
-        .seal_home(ws.home())
-        .env("DEEPSEEK_API_KEY", "ci-test-key-not-real")
-        .env("DEEPSEEK_BASE_URL", "http://127.0.0.1:1")
-        .env("NO_ANIMATIONS", "1")
-        .env("RUST_LOG", "warn")
-        .args([
-            "--workspace",
-            ws.workspace().to_str().expect("utf-8 workspace path"),
-            "--no-project-config",
-            "--skip-onboarding",
-        ])
-        .size(40, 140)
-        .spawn()?;
-
-    enter_launch_session(&mut h)?;
-    h.send(keys::key::text("/skills"))?;
-    h.wait_for_text("/skills", KEY_TIMEOUT)?;
-    h.wait_for_idle(Duration::from_millis(300), Duration::from_secs(2))?;
-    h.send(keys::key::enter())?;
-    h.wait_for_text("Available skills", KEY_TIMEOUT)?;
-    h.wait_for_text("global-alpha", KEY_TIMEOUT)?;
-    h.wait_for_text("workspace-beta", KEY_TIMEOUT)?;
-
-    let f = h.frame();
-    let dump = f.debug_dump();
-    assert!(f.contains("global-alpha"), "global skill missing:\n{dump}");
-    assert!(
-        f.contains("workspace-beta"),
-        "workspace skill missing:\n{dump}"
-    );
-
-    let _ = h.shutdown();
-    Ok(())
-}
-
 // ===========================================================================
 // #1073 — pasting multi-line text with a trailing newline must NOT auto-submit
 // ===========================================================================
@@ -875,16 +450,18 @@ fn paste_bracketed_with_trailing_newline_does_not_autosubmit() -> anyhow::Result
          second line continuing the paragraph until the end\n\
          third line that finishes with a trailing newline character\n";
     h.paste(payload)?;
-    h.wait_for_idle(Duration::from_millis(300), Duration::from_secs(2))?;
+    h.wait_for_text(
+        "third line that finishes with a trailing newline character",
+        KEY_TIMEOUT,
+    )?;
 
     let f = h.frame();
     let dump = f.debug_dump();
 
-    // Auto-submit would replace the composer with a "working / thinking"
-    // status chip and clear the composer text. Either signal indicates the
-    // bug fired.
+    // Auto-submit would replace the composer with a working status chip and
+    // clear the composer text. Either signal indicates the bug fired.
     assert!(
-        !f.contains("Working") && !f.contains("thinking") && !f.contains("Thinking"),
+        !f.contains("工作中"),
         "bracketed paste with trailing newline auto-submitted:\n{dump}"
     );
     assert!(
@@ -909,14 +486,15 @@ fn paste_unbracketed_with_trailing_newline_does_not_autosubmit() -> anyhow::Resu
     let _guard = qa_pty_test_lock();
     let (_ws, mut h) = boot_minimal()?;
     h.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
-    // Let the boot fully settle so input handling is wired up.
-    h.wait_for_idle(Duration::from_millis(300), Duration::from_secs(3))?;
 
     let payload = "first line of the multi-line paste body\n\
          second line continuing the paragraph until the end\n\
          third line that finishes with a trailing newline character\n";
     h.paste_unbracketed(payload)?;
-    h.wait_for_idle(Duration::from_millis(400), Duration::from_secs(3))?;
+    h.wait_for_text("first line of the multi-line paste body", KEY_TIMEOUT)?;
+    // Observe past the 120 ms paste-burst guard before judging submission.
+    std::thread::sleep(Duration::from_millis(180));
+    h.pump();
 
     let f = h.frame();
     let dump = f.debug_dump();

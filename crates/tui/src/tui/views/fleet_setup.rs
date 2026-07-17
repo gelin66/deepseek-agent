@@ -168,7 +168,6 @@ const THINKING_CHOICES: &[Choice] = &[
 #[derive(Debug, Clone)]
 pub struct FleetSetupSnapshot {
     workspace: PathBuf,
-    locale: codewhale_config::Locale,
     /// Whether the active provider has a key or local runtime — gates the
     /// model-draft offer, mirroring the constitution card's `provider_ready`.
     provider_ready: bool,
@@ -230,7 +229,6 @@ impl FleetSetupSnapshot {
 
         Self {
             workspace: app.workspace.clone(),
-            locale: app.ui_locale,
             provider_ready: active_route_readiness.can_attempt(),
             provider,
             model,
@@ -448,9 +446,8 @@ impl FleetSetupView {
         }
         draft.reasoning_effort = reasoning_effort;
         let (title, header) = (
-            tr(self.snapshot.locale, MessageId::FleetDraftTitle)
-                .replace("{model_label}", &model_label),
-            tr(self.snapshot.locale, MessageId::FleetDraftHeader)
+            tr(MessageId::FleetDraftTitle).replace("{model_label}", &model_label),
+            tr(MessageId::FleetDraftHeader)
                 .replace("{name}", &draft.file_name())
                 .replace("{model_label}", &model_label),
         );
@@ -602,8 +599,7 @@ impl FleetSetupView {
     /// save keypress, forcing an Esc-then-g round trip to actually save.
     fn preview_starter_profile_action(&mut self) -> ViewAction {
         let draft = self.starter_profile_draft();
-        let header = tr(self.snapshot.locale, MessageId::FleetPreviewHeader)
-            .replace("{name}", &draft.file_name());
+        let header = tr(MessageId::FleetPreviewHeader).replace("{name}", &draft.file_name());
         self.model_draft_preview = Some(format!("{header}{}", draft.render_toml()));
         self.model_draft = Some(draft);
         self.model_draft_label = Some("CodeWhale starter".to_string());
@@ -738,7 +734,6 @@ impl ModalView for FleetSetupView {
                     // selection, but the event stays self-describing.
                     provider: route.map(|(provider, _)| provider),
                     reasoning_effort: self.selected_reasoning_effort(),
-                    locale: self.snapshot.locale,
                 })
             }
             KeyCode::Char('g') if self.step == Step::Review => match self.model_draft.clone() {
@@ -1255,7 +1250,6 @@ mod tests {
     fn snapshot() -> FleetSetupSnapshot {
         FleetSetupSnapshot {
             workspace: PathBuf::from("/tmp/codewhale-test-workspace"),
-            locale: codewhale_config::Locale::En,
             provider_ready: true,
             provider: "DeepSeek".to_string(),
             model: "deepseek-v4-pro".to_string(),
@@ -1322,7 +1316,6 @@ mod tests {
             model,
             provider,
             reasoning_effort,
-            locale,
         }) = action
         else {
             panic!("expected model draft request");
@@ -1333,7 +1326,6 @@ mod tests {
         // concrete provider route.
         assert_eq!(provider, None);
         assert_eq!(reasoning_effort, None);
-        assert_eq!(locale, codewhale_config::Locale::En);
     }
 
     #[test]
@@ -1443,7 +1435,7 @@ mod tests {
             view.install_model_draft(sample_draft(), "GLM-5.2".to_string(), None, None);
         assert!(title.contains("GLM-5.2"));
         assert!(content.contains("id = \"reviewer\""), "{content}");
-        assert!(content.contains("Nothing is saved until"), "{content}");
+        assert!(content.contains("按 g 之前不会保存"), "{content}");
 
         let action = view.handle_key(key(KeyCode::Char('g')));
         let ViewAction::EmitAndClose(ViewEvent::FleetProfileDraftCommitRequested { draft }) =
@@ -1626,7 +1618,7 @@ mod tests {
         // explicitly (#4093) — the saved profile must not be ambiguously
         // scoped to whatever provider happens to be active at launch time.
         assert!(content.contains("provider = \"deepseek\""), "{content}");
-        assert!(content.contains("Nothing is saved until"));
+        assert!(content.contains("按 Enter 或 g 之前不会保存"));
         for forbidden in ["base_url", "api_key"] {
             assert!(
                 !content.contains(forbidden),

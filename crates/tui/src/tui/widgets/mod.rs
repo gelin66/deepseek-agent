@@ -37,7 +37,6 @@ use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolS
 use crate::tui::scrolling::TranscriptLineMeta;
 use crate::tui::ui_text::{char_display_width, text_display_width};
 use crate::tui::underwater::ShellPhase;
-use codewhale_config::Locale;
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -1802,7 +1801,6 @@ impl<'a> ApprovalWidget<'a> {
     fn build_inline_content(&self, area: Rect) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
         let risk = self.request.risk;
         let stakes = self.request.stakes();
-        let locale = self.view.locale();
         let repo_law = self.request.is_repo_law_prompt();
         let palette_colors = if repo_law {
             repo_law_approval_palette()
@@ -1819,9 +1817,9 @@ impl<'a> ApprovalWidget<'a> {
                 format!(
                     " {} ",
                     if repo_law {
-                        tr(locale, MessageId::ApprovalRepoLawBadge)
+                        tr(MessageId::ApprovalRepoLawBadge)
                     } else {
-                        stakes_badge_text(stakes, locale)
+                        stakes_badge_text(stakes)
                     }
                 ),
                 Style::default()
@@ -1834,7 +1832,7 @@ impl<'a> ApprovalWidget<'a> {
                 if repo_law {
                     format!(
                         "{} · {}",
-                        tr(locale, MessageId::ApprovalRepoLawTitle),
+                        tr(MessageId::ApprovalRepoLawTitle),
                         self.request.tool_name
                     )
                 } else {
@@ -1856,7 +1854,7 @@ impl<'a> ApprovalWidget<'a> {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    tr(locale, MessageId::ApprovalRepoLawWarning),
+                    tr(MessageId::ApprovalRepoLawWarning),
                     Style::default()
                         .fg(palette::WHALE_ERROR)
                         .add_modifier(Modifier::BOLD),
@@ -1865,7 +1863,7 @@ impl<'a> ApprovalWidget<'a> {
             body.push(Line::from(vec![
                 Span::raw("  "),
                 Span::styled(
-                    tr(locale, MessageId::ApprovalRepoLawRuleLabel),
+                    tr(MessageId::ApprovalRepoLawRuleLabel),
                     Style::default().fg(palette::TEXT_HINT),
                 ),
                 Span::styled(
@@ -1879,9 +1877,9 @@ impl<'a> ApprovalWidget<'a> {
         // is the load-bearing content, so on a short terminal it is the
         // secondary context (about/impacts/category) that scrolls away, never
         // the command.
-        let details = self.request.prominent_detail_items(locale);
+        let details = self.request.prominent_detail_items();
         if details.is_empty() {
-            push_params_detail_line(&mut body, self.request, locale, area.width);
+            push_params_detail_line(&mut body, self.request, area.width);
         } else {
             let mut rendered_detail = false;
             for detail in details.iter().take(4) {
@@ -1912,7 +1910,7 @@ impl<'a> ApprovalWidget<'a> {
                 rendered_detail = true;
             }
             if !rendered_detail {
-                push_params_detail_line(&mut body, self.request, locale, area.width);
+                push_params_detail_line(&mut body, self.request, area.width);
             }
         }
 
@@ -1920,7 +1918,7 @@ impl<'a> ApprovalWidget<'a> {
         if let Some(ref summary) = self.request.intent_summary {
             let max_width = area.width.saturating_sub(14) as usize;
             if max_width > 0 {
-                let intent_label = tr(locale, MessageId::ApprovalIntentLabel);
+                let intent_label = tr(MessageId::ApprovalIntentLabel);
                 let summary_lines: Vec<&str> = summary.lines().collect();
                 let intent_lines = 3usize;
                 for (i, sline) in summary_lines.iter().take(intent_lines).enumerate() {
@@ -1944,7 +1942,7 @@ impl<'a> ApprovalWidget<'a> {
                     ]));
                 }
                 if summary_lines.len() > intent_lines {
-                    let more = tr(locale, MessageId::ApprovalMoreLines)
+                    let more = tr(MessageId::ApprovalMoreLines)
                         .replace("{count}", &(summary_lines.len() - intent_lines).to_string());
                     body.push(Line::from(vec![
                         Span::raw("  "),
@@ -1959,7 +1957,7 @@ impl<'a> ApprovalWidget<'a> {
         // extra policy prose was noise that made every edit read like an
         // emergency.
         if critical {
-            push_destructive_approval_semantics(&mut body, locale, false);
+            push_destructive_approval_semantics(&mut body, false);
         }
 
         // Secondary context: what it is and what it touches. Only critical
@@ -1969,29 +1967,26 @@ impl<'a> ApprovalWidget<'a> {
         if critical || details.is_empty() {
             body.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(label_about(locale), Style::default().fg(palette::TEXT_HINT)),
+                Span::styled(label_about(), Style::default().fg(palette::TEXT_HINT)),
                 Span::styled(
-                    self.request.description_for_locale(locale),
+                    self.request.description(),
                     Style::default().fg(palette::TEXT_BODY),
                 ),
             ]));
         }
         if critical {
-            for impact in self.request.impacts_for_locale(locale).into_iter().take(4) {
+            for impact in self.request.impacts().into_iter().take(4) {
                 body.push(Line::from(vec![
                     Span::raw("  "),
-                    Span::styled(
-                        label_impact(locale),
-                        Style::default().fg(palette::TEXT_HINT),
-                    ),
+                    Span::styled(label_impact(), Style::default().fg(palette::TEXT_HINT)),
                     Span::styled(impact, Style::default().fg(palette::TEXT_BODY)),
                 ]));
             }
             // Category line — localized risk category.
-            let (cat_label, cat_color) = category_label_for(self.request.category, locale);
+            let (cat_label, cat_color) = category_label_for(self.request.category);
             body.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(label_type(locale), Style::default().fg(palette::TEXT_HINT)),
+                Span::styled(label_type(), Style::default().fg(palette::TEXT_HINT)),
                 Span::styled(
                     cat_label,
                     Style::default().fg(cat_color).add_modifier(Modifier::BOLD),
@@ -2009,7 +2004,6 @@ impl<'a> ApprovalWidget<'a> {
             self.request,
             self.view,
             risk,
-            locale,
             palette_colors.accent,
             palette_colors.shortcut,
         );
@@ -2066,14 +2060,14 @@ impl Renderable for ApprovalWidget<'_> {
             let summary = format!(
                 " {} — {}  [Tab to expand] ",
                 if repo_law {
-                    tr(self.view.locale(), MessageId::ApprovalRepoLawTitle)
+                    tr(MessageId::ApprovalRepoLawTitle)
                 } else {
                     Cow::Borrowed(self.request.tool_name.as_str())
                 },
                 if repo_law {
-                    tr(self.view.locale(), MessageId::ApprovalRepoLawBadge)
+                    tr(MessageId::ApprovalRepoLawBadge)
                 } else {
-                    stakes_badge_text(stakes, self.view.locale())
+                    stakes_badge_text(stakes)
                 },
             );
             let line = Line::from(Span::styled(
@@ -2182,7 +2176,7 @@ impl Renderable for ApprovalWidget<'_> {
             buf.set_string(
                 region.x,
                 body_rect.y.saturating_add(shown),
-                approval_truncation_hint(self.view.locale()),
+                approval_truncation_hint(),
                 Style::default().fg(palette::TEXT_HINT),
             );
         } else {
@@ -2254,7 +2248,6 @@ fn build_approval_controls(
     request: &ApprovalRequest,
     view: &ApprovalView,
     risk: RiskLevel,
-    locale: Locale,
     accent: Color,
     shortcut: Color,
 ) -> Vec<Line<'static>> {
@@ -2263,13 +2256,13 @@ fn build_approval_controls(
     controls.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(
-            approval_proceed_question(locale),
+            approval_proceed_question(),
             Style::default()
                 .fg(palette::TEXT_BODY)
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
-    let options = approval_options_for_request(request, risk, locale);
+    let options = approval_options_for_request(request, risk);
     for (i, opt) in options.iter().enumerate() {
         let is_selected = i == view.selected();
         let label_color = if opt.dangerous {
@@ -2297,12 +2290,9 @@ fn build_approval_controls(
     }
     controls.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled(
-            footer_controls(locale),
-            Style::default().fg(palette::TEXT_MUTED),
-        ),
+        Span::styled(footer_controls(), Style::default().fg(palette::TEXT_MUTED)),
         if request.can_save_ask_rule() {
-            Span::styled(save_ask_rule_hint(locale), Style::default().fg(shortcut))
+            Span::styled(save_ask_rule_hint(), Style::default().fg(shortcut))
         } else {
             Span::raw("")
         },
@@ -2313,18 +2303,12 @@ fn build_approval_controls(
     controls
 }
 
-fn approval_proceed_question(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "是否继续？",
-        _ => "Do you want to proceed?",
-    }
+fn approval_proceed_question() -> &'static str {
+    "是否继续？"
 }
 
-fn approval_truncation_hint(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "  … 已截断 · 按 [v] 查看完整内容",
-        _ => "  … truncated · press [v] for full details",
-    }
+fn approval_truncation_hint() -> &'static str {
+    "  … 已截断 · 按 [v] 查看完整内容"
 }
 
 /// Approval palette per risk variant.
@@ -2379,28 +2363,25 @@ fn approval_option_style(is_selected: bool, color: Color) -> Style {
     }
 }
 
-fn stakes_badge_text(
-    stakes: crate::tui::approval::ApprovalStakes,
-    locale: Locale,
-) -> Cow<'static, str> {
+fn stakes_badge_text(stakes: crate::tui::approval::ApprovalStakes) -> Cow<'static, str> {
     use crate::tui::approval::ApprovalStakes;
     match stakes {
-        ApprovalStakes::Routine => tr(locale, MessageId::ApprovalRiskReview),
-        ApprovalStakes::Elevated => tr(locale, MessageId::ApprovalRiskElevated),
-        ApprovalStakes::Critical => tr(locale, MessageId::ApprovalRiskDestructive),
+        ApprovalStakes::Routine => tr(MessageId::ApprovalRiskReview),
+        ApprovalStakes::Elevated => tr(MessageId::ApprovalRiskElevated),
+        ApprovalStakes::Critical => tr(MessageId::ApprovalRiskDestructive),
     }
 }
 
-fn category_label_for(category: ToolCategory, locale: Locale) -> (Cow<'static, str>, Color) {
+fn category_label_for(category: ToolCategory) -> (Cow<'static, str>, Color) {
     let label = match category {
-        ToolCategory::Safe => tr(locale, MessageId::ApprovalCategorySafe),
-        ToolCategory::FileWrite => tr(locale, MessageId::ApprovalCategoryFileWrite),
-        ToolCategory::Shell => tr(locale, MessageId::ApprovalCategoryShell),
-        ToolCategory::Network => tr(locale, MessageId::ApprovalCategoryNetwork),
-        ToolCategory::McpRead => tr(locale, MessageId::ApprovalCategoryMcpRead),
-        ToolCategory::McpAction => tr(locale, MessageId::ApprovalCategoryMcpAction),
-        ToolCategory::Agent => tr(locale, MessageId::ApprovalCategoryAgent),
-        ToolCategory::Unknown => tr(locale, MessageId::ApprovalCategoryUnknown),
+        ToolCategory::Safe => tr(MessageId::ApprovalCategorySafe),
+        ToolCategory::FileWrite => tr(MessageId::ApprovalCategoryFileWrite),
+        ToolCategory::Shell => tr(MessageId::ApprovalCategoryShell),
+        ToolCategory::Network => tr(MessageId::ApprovalCategoryNetwork),
+        ToolCategory::McpRead => tr(MessageId::ApprovalCategoryMcpRead),
+        ToolCategory::McpAction => tr(MessageId::ApprovalCategoryMcpAction),
+        ToolCategory::Agent => tr(MessageId::ApprovalCategoryAgent),
+        ToolCategory::Unknown => tr(MessageId::ApprovalCategoryUnknown),
     };
     let color = match category {
         ToolCategory::Safe => palette::STATUS_SUCCESS,
@@ -2415,20 +2396,20 @@ fn category_label_for(category: ToolCategory, locale: Locale) -> (Cow<'static, s
     (label, color)
 }
 
-fn label_type(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalFieldType)
+fn label_type() -> Cow<'static, str> {
+    tr(MessageId::ApprovalFieldType)
 }
 
-fn label_about(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalFieldAbout)
+fn label_about() -> Cow<'static, str> {
+    tr(MessageId::ApprovalFieldAbout)
 }
 
-fn label_impact(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalFieldImpact)
+fn label_impact() -> Cow<'static, str> {
+    tr(MessageId::ApprovalFieldImpact)
 }
 
-fn label_params(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalFieldParams)
+fn label_params() -> Cow<'static, str> {
+    tr(MessageId::ApprovalFieldParams)
 }
 
 fn push_detail_line(lines: &mut Vec<Line<'static>>, label: &str, value: &str) {
@@ -2447,7 +2428,6 @@ fn push_detail_line(lines: &mut Vec<Line<'static>>, label: &str, value: &str) {
 fn push_params_detail_line(
     lines: &mut Vec<Line<'static>>,
     request: &ApprovalRequest,
-    locale: Locale,
     card_width: u16,
 ) {
     let params_str = request.params_display();
@@ -2456,10 +2436,7 @@ fn push_params_detail_line(
         crate::utils::truncate_with_ellipsis(&params_str, params_width.max(20), "...");
     lines.push(Line::from(vec![
         Span::raw("  "),
-        Span::styled(
-            label_params(locale),
-            Style::default().fg(palette::TEXT_HINT),
-        ),
+        Span::styled(label_params(), Style::default().fg(palette::TEXT_HINT)),
         Span::styled(
             params_truncated,
             Style::default().fg(palette::TEXT_SECONDARY),
@@ -2476,7 +2453,7 @@ fn push_ask_rule_save_preview(
     lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(
-            "Save:   ",
+            tr(MessageId::ApprovalSaveRulesLabel),
             Style::default().fg(shortcut).add_modifier(Modifier::BOLD),
         ),
         Span::styled(preview.summary(), Style::default().fg(palette::TEXT_BODY)),
@@ -2493,7 +2470,8 @@ fn push_ask_rule_save_preview(
         lines.push(Line::from(vec![
             Span::raw("    "),
             Span::styled(
-                format!("... {} more", preview.omitted),
+                tr(MessageId::ApprovalMoreAskRules)
+                    .replace("{count}", &preview.omitted.to_string()),
                 Style::default().fg(palette::TEXT_HINT),
             ),
         ]));
@@ -2546,13 +2524,9 @@ fn push_shell_command_lines(
     }
 }
 
-fn push_destructive_approval_semantics(
-    lines: &mut Vec<Line<'static>>,
-    locale: Locale,
-    compact: bool,
-) {
+fn push_destructive_approval_semantics(lines: &mut Vec<Line<'static>>, compact: bool) {
     if compact {
-        let (label, value) = destructive_approval_compact_semantics(locale);
+        let (label, value) = destructive_approval_compact_semantics();
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(label, Style::default().fg(palette::TEXT_HINT)),
@@ -2561,7 +2535,7 @@ fn push_destructive_approval_semantics(
         return;
     }
 
-    for (label, value) in destructive_approval_semantics(locale) {
+    for (label, value) in destructive_approval_semantics() {
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(label, Style::default().fg(palette::TEXT_HINT)),
@@ -2570,47 +2544,26 @@ fn push_destructive_approval_semantics(
     }
 }
 
-fn destructive_approval_compact_semantics(locale: Locale) -> (&'static str, &'static str) {
-    match locale {
-        Locale::ZhHans => ("规则: ", "批准策略要求确认；拒绝跳过本次，Esc 中止整轮。"),
-        _ => (
-            "Policy: ",
-            "Approval policy requires review; d denies, Esc aborts.",
+fn destructive_approval_compact_semantics() -> (&'static str, &'static str) {
+    ("规则: ", "批准策略要求确认；拒绝跳过本次，Esc 中止整轮。")
+}
+
+fn destructive_approval_semantics() -> [(&'static str, &'static str); 2] {
+    [
+        (
+            "规则: ",
+            "当前批准策略、审查规则或显式询问规则要求用户确认。",
         ),
-    }
+        ("取消: ", "拒绝只跳过本次工具调用；Esc 会中止整轮。"),
+    ]
 }
 
-fn destructive_approval_semantics(locale: Locale) -> [(&'static str, &'static str); 2] {
-    match locale {
-        Locale::ZhHans => [
-            (
-                "规则: ",
-                "当前批准策略、审查规则或显式询问规则要求用户确认。",
-            ),
-            ("取消: ", "拒绝只跳过本次工具调用；Esc 会中止整轮。"),
-        ],
-        _ => [
-            (
-                "Policy: ",
-                "The active approval policy, a review rule, or an explicit ask-rule requires confirmation.",
-            ),
-            (
-                "Cancel: ",
-                "Deny rejects only this tool call; Esc aborts the whole turn.",
-            ),
-        ],
-    }
+fn footer_controls() -> Cow<'static, str> {
+    tr(MessageId::ApprovalControlsHint)
 }
 
-fn footer_controls(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalControlsHint)
-}
-
-fn save_ask_rule_hint(locale: Locale) -> &'static str {
-    match locale {
-        Locale::ZhHans => "  s 批准并保存询问规则",
-        _ => "  s approve + save ask rule",
-    }
+fn save_ask_rule_hint() -> &'static str {
+    "  s 批准并保存询问规则"
 }
 
 #[derive(Clone)]
@@ -2620,21 +2573,21 @@ struct ApprovalOptionRow {
     dangerous: bool,
 }
 
-fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 3] {
+fn approval_options_for(risk: RiskLevel) -> [ApprovalOptionRow; 3] {
     let dangerous = matches!(risk, RiskLevel::Destructive);
     [
         ApprovalOptionRow {
-            label: option_approve_once(locale),
+            label: option_approve_once(),
             key_hint: "1 / y",
             dangerous,
         },
         ApprovalOptionRow {
-            label: option_deny(locale),
+            label: option_deny(),
             key_hint: "2 / d / n",
             dangerous: false,
         },
         ApprovalOptionRow {
-            label: option_abort(locale),
+            label: option_abort(),
             key_hint: "Esc",
             dangerous: false,
         },
@@ -2642,21 +2595,21 @@ fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 
 }
 
 /// Workflow elevated-plan card options (#4126): Approve / Edit plan / Cancel.
-fn workflow_approval_options(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 3] {
+fn workflow_approval_options(risk: RiskLevel) -> [ApprovalOptionRow; 3] {
     let dangerous = matches!(risk, RiskLevel::Destructive);
     [
         ApprovalOptionRow {
-            label: workflow_option_approve(locale),
+            label: workflow_option_approve(),
             key_hint: "1 / y",
             dangerous,
         },
         ApprovalOptionRow {
-            label: workflow_option_edit_plan(locale),
+            label: workflow_option_edit_plan(),
             key_hint: "2 / e",
             dangerous: false,
         },
         ApprovalOptionRow {
-            label: workflow_option_cancel(locale),
+            label: workflow_option_cancel(),
             key_hint: "3 / Esc",
             dangerous: false,
         },
@@ -2666,62 +2619,50 @@ fn workflow_approval_options(risk: RiskLevel, locale: Locale) -> [ApprovalOption
 fn approval_options_for_request(
     request: &ApprovalRequest,
     risk: RiskLevel,
-    locale: Locale,
 ) -> Vec<ApprovalOptionRow> {
     if request.tool_name == "workflow" {
-        workflow_approval_options(risk, locale).to_vec()
+        workflow_approval_options(risk).to_vec()
     } else {
-        approval_options_for(risk, locale).to_vec()
+        approval_options_for(risk).to_vec()
     }
 }
 
-fn workflow_option_approve(locale: Locale) -> Cow<'static, str> {
-    match locale {
-        Locale::ZhHans => Cow::Borrowed("批准"),
-        _ => Cow::Borrowed("Approve"),
-    }
+fn workflow_option_approve() -> Cow<'static, str> {
+    Cow::Borrowed("批准")
 }
 
-fn workflow_option_edit_plan(locale: Locale) -> Cow<'static, str> {
-    match locale {
-        Locale::ZhHans => Cow::Borrowed("编辑计划"),
-        _ => Cow::Borrowed("Edit plan"),
-    }
+fn workflow_option_edit_plan() -> Cow<'static, str> {
+    Cow::Borrowed("编辑计划")
 }
 
-fn workflow_option_cancel(locale: Locale) -> Cow<'static, str> {
-    match locale {
-        Locale::ZhHans => Cow::Borrowed("取消"),
-        _ => Cow::Borrowed("Cancel"),
-    }
+fn workflow_option_cancel() -> Cow<'static, str> {
+    Cow::Borrowed("取消")
 }
 
-fn option_approve_once(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionApproveOnce)
+fn option_approve_once() -> Cow<'static, str> {
+    tr(MessageId::ApprovalOptionApproveOnce)
 }
 
-fn option_deny(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionDeny)
+fn option_deny() -> Cow<'static, str> {
+    tr(MessageId::ApprovalOptionDeny)
 }
 
-fn option_abort(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionAbortTurn)
+fn option_abort() -> Cow<'static, str> {
+    tr(MessageId::ApprovalOptionAbortTurn)
 }
 
 pub struct ElevationWidget<'a> {
     request: &'a ElevationRequest,
     selected: usize,
-    locale: Locale,
     hitboxes: Option<&'a std::cell::RefCell<Vec<Rect>>>,
 }
 
 impl<'a> ElevationWidget<'a> {
     #[allow(dead_code)]
-    pub fn new(request: &'a ElevationRequest, selected: usize, locale: Locale) -> Self {
+    pub fn new(request: &'a ElevationRequest, selected: usize) -> Self {
         Self {
             request,
             selected,
-            locale,
             hitboxes: None,
         }
     }
@@ -2729,13 +2670,11 @@ impl<'a> ElevationWidget<'a> {
     pub fn new_with_hitboxes(
         request: &'a ElevationRequest,
         selected: usize,
-        locale: Locale,
         hitboxes: &'a std::cell::RefCell<Vec<Rect>>,
     ) -> Self {
         Self {
             request,
             selected,
-            locale,
             hitboxes: Some(hitboxes),
         }
     }
@@ -2760,14 +2699,14 @@ impl Renderable for ElevationWidget<'_> {
         let mut lines = vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                tr(self.locale, MessageId::ElevationTitleSandboxDenied),
+                tr(MessageId::ElevationTitleSandboxDenied),
                 Style::default()
                     .fg(palette::STATUS_ERROR)
                     .add_modifier(Modifier::BOLD),
             )]),
             Line::from(""),
             Line::from(vec![
-                Span::raw(tr(self.locale, MessageId::ElevationFieldTool)),
+                Span::raw(tr(MessageId::ElevationFieldTool)),
                 Span::styled(
                     &self.request.tool_name,
                     Style::default()
@@ -2780,14 +2719,14 @@ impl Renderable for ElevationWidget<'_> {
         if let Some(ref command) = self.request.command {
             let cmd_display = crate::utils::truncate_with_ellipsis(command, 45, "...");
             lines.push(Line::from(vec![
-                Span::raw(tr(self.locale, MessageId::ElevationFieldCmd)),
+                Span::raw(tr(MessageId::ElevationFieldCmd)),
                 Span::styled(cmd_display, Style::default().fg(palette::TEXT_MUTED)),
             ]));
         }
 
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::raw(tr(self.locale, MessageId::ElevationFieldReason)),
+            Span::raw(tr(MessageId::ElevationFieldReason)),
             Span::styled(
                 &self.request.denial_reason,
                 Style::default().fg(palette::STATUS_WARNING),
@@ -2796,7 +2735,7 @@ impl Renderable for ElevationWidget<'_> {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            tr(self.locale, MessageId::ElevationImpactHeader),
+            tr(MessageId::ElevationImpactHeader),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         if self
@@ -2806,7 +2745,7 @@ impl Renderable for ElevationWidget<'_> {
             .any(|option| matches!(option, ElevationOption::WithNetwork))
         {
             lines.push(Line::from(Span::styled(
-                tr(self.locale, MessageId::ElevationImpactNetwork),
+                tr(MessageId::ElevationImpactNetwork),
                 Style::default().fg(palette::TEXT_PRIMARY),
             )));
         }
@@ -2817,17 +2756,17 @@ impl Renderable for ElevationWidget<'_> {
             .any(|option| matches!(option, ElevationOption::WithWriteAccess(_)))
         {
             lines.push(Line::from(Span::styled(
-                tr(self.locale, MessageId::ElevationImpactWrite),
+                tr(MessageId::ElevationImpactWrite),
                 Style::default().fg(palette::TEXT_PRIMARY),
             )));
         }
         lines.push(Line::from(Span::styled(
-            tr(self.locale, MessageId::ElevationImpactFullAccess),
+            tr(MessageId::ElevationImpactFullAccess),
             Style::default().fg(palette::TEXT_PRIMARY),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            tr(self.locale, MessageId::ElevationPromptProceed),
+            tr(MessageId::ElevationPromptProceed),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines.push(Line::from(""));
@@ -2878,18 +2817,15 @@ impl Renderable for ElevationWidget<'_> {
                     format!("[{key}] "),
                     Style::default().fg(palette::STATUS_SUCCESS),
                 ),
-                Span::styled(tr(self.locale, label_id), style.fg(label_color)),
+                Span::styled(tr(label_id), style.fg(label_color)),
             ]));
             lines.push(Line::from(vec![
                 Span::raw("      "),
-                Span::styled(
-                    tr(self.locale, desc_id),
-                    Style::default().fg(palette::TEXT_MUTED),
-                ),
+                Span::styled(tr(desc_id), Style::default().fg(palette::TEXT_MUTED)),
             ]));
         }
 
-        let title = tr(self.locale, MessageId::ElevationTitleRequired);
+        let title = tr(MessageId::ElevationTitleRequired);
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
@@ -3147,7 +3083,7 @@ fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>
     if let Some(receipt) = receipt {
         let receipt_text = receipt.trim();
         if app.composer.vim_enabled {
-            let vim_label = app.composer.vim_mode.label_localized(app.ui_locale);
+            let vim_label = app.composer.vim_mode.label_localized();
             let vim_width = UnicodeWidthStr::width(&*vim_label);
             let sep_width = UnicodeWidthStr::width(" · ");
             if vim_width + sep_width + 4 <= max_width {
@@ -3172,10 +3108,7 @@ fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>
     let mut spans: Vec<Span> = Vec::new();
     if app.composer.vim_enabled {
         spans.push(Span::styled(
-            truncate_display_width(
-                &app.composer.vim_mode.label_localized(app.ui_locale),
-                max_width,
-            ),
+            truncate_display_width(&app.composer.vim_mode.label_localized(), max_width),
             vim_mode_style(app.composer.vim_mode),
         ));
     }
@@ -3235,7 +3168,7 @@ fn composer_top_padding(content_lines: usize, rows_budget: usize) -> usize {
 
 /// Placeholder text shown when the composer input is empty.
 #[cfg(test)]
-const COMPOSER_PLACEHOLDER: &str = "Write a task or use /.";
+const COMPOSER_PLACEHOLDER: &str = "编写任务或使用 /。";
 
 /// How many visual rows the empty-input placeholder occupies after wrapping.
 #[cfg(test)]
@@ -3602,11 +3535,11 @@ mod tests {
         ACTIVE_REVISION_DOMAIN, ApprovalWidget, COMPOSER_PANEL_HEIGHT, COMPOSER_PLACEHOLDER,
         ChatWidget, ComposerWidget, Renderable, SlashMenuEntry, active_entry_revision,
         ambient_ping_pong, apply_detail_target_highlight, apply_selection_to_line,
-        apply_send_flash, build_empty_state_lines, composer_content_geometry, composer_height,
-        composer_max_height, composer_min_input_rows, composer_top_padding, cursor_row_col,
-        empty_composer_visual_rows, fish_flee_offset, fish_heading, fish_mark,
-        history_entry_revision, layout_input, layout_input_with_scroll, pad_lines_to_bottom,
-        placeholder_visual_lines, receipt_is_settling, revision_in_domain,
+        apply_send_flash, build_empty_state_lines, composer_content_geometry,
+        composer_empty_hint_text, composer_height, composer_max_height, composer_min_input_rows,
+        composer_top_padding, cursor_row_col, empty_composer_visual_rows, fish_flee_offset,
+        fish_heading, fish_mark, history_entry_revision, layout_input, layout_input_with_scroll,
+        pad_lines_to_bottom, placeholder_visual_lines, receipt_is_settling, revision_in_domain,
         should_render_empty_state, tool_run_summary_revision, wrap_input_lines,
         wrap_input_lines_for_mouse, wrap_text,
     };
@@ -3620,7 +3553,6 @@ mod tests {
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus,
     };
     use crate::tui::scrolling::{TranscriptLineMeta, TranscriptScroll};
-    use codewhale_config::Locale;
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
@@ -3656,7 +3588,6 @@ mod tests {
             initial_input: None,
         };
         let mut app = App::new(options, &Config::default());
-        app.ui_locale = Locale::En;
         app.composer.vim_enabled = false;
         app
     }
@@ -3664,8 +3595,13 @@ mod tests {
     fn buffer_text(buf: &Buffer, area: Rect) -> String {
         let mut text = String::new();
         for y in area.y..area.y.saturating_add(area.height) {
-            for x in area.x..area.x.saturating_add(area.width) {
-                text.push_str(buf[(x, y)].symbol());
+            let mut x = area.x;
+            while x < area.x.saturating_add(area.width) {
+                let symbol = buf[(x, y)].symbol();
+                text.push_str(symbol);
+                x = x.saturating_add(
+                    u16::try_from(UnicodeWidthStr::width(symbol).max(1)).unwrap_or(u16::MAX),
+                );
             }
             text.push('\n');
         }
@@ -3718,8 +3654,13 @@ mod tests {
 
     fn row_text(buf: &Buffer, area: Rect, row: u16) -> String {
         let mut text = String::new();
-        for x in area.x..area.x.saturating_add(area.width) {
-            text.push_str(buf[(x, row)].symbol());
+        let mut x = area.x;
+        while x < area.x.saturating_add(area.width) {
+            let symbol = buf[(x, row)].symbol();
+            text.push_str(symbol);
+            x = x.saturating_add(
+                u16::try_from(UnicodeWidthStr::width(symbol).max(1)).unwrap_or(u16::MAX),
+            );
         }
         text
     }
@@ -4432,7 +4373,14 @@ mod tests {
         };
         let rendered = buffer_text(&buf, area);
 
-        assert_eq!(buf[(cursor_x, cursor_y)].symbol(), "W");
+        assert_eq!(
+            buf[(cursor_x, cursor_y)].symbol(),
+            composer_empty_hint_text(&app)
+                .chars()
+                .next()
+                .expect("composer placeholder must not be empty")
+                .to_string()
+        );
         assert!(
             rendered.contains(COMPOSER_PLACEHOLDER),
             "placeholder hint should render on the prompt row: {rendered}"
@@ -4632,30 +4580,27 @@ mod tests {
     }
 
     #[test]
-    fn localized_composer_placeholders_render_at_narrow_widths() {
-        for locale in [Locale::Ja, Locale::ZhHans, Locale::PtBr] {
-            let mut app = create_test_app();
-            app.ui_locale = locale;
-            app.composer_density = ComposerDensity::Comfortable;
-            let slash_menu_entries = Vec::<SlashMenuEntry>::new();
-            let mention_menu_entries = Vec::<String>::new();
-            let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
-            let area = Rect {
-                x: 0,
-                y: 0,
-                width: 18,
-                height: 5,
-            };
-            let mut buf = Buffer::empty(area);
+    fn simplified_chinese_composer_placeholder_renders_at_narrow_width() {
+        let mut app = create_test_app();
+        app.composer_density = ComposerDensity::Comfortable;
+        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
+        let mention_menu_entries = Vec::<String>::new();
+        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 18,
+            height: 5,
+        };
+        let mut buf = Buffer::empty(area);
 
-            widget.render(area, &mut buf);
-            let Some((cursor_x, cursor_y)) = widget.cursor_pos(area) else {
-                panic!("localized composer should expose cursor position");
-            };
+        widget.render(area, &mut buf);
+        let Some((cursor_x, cursor_y)) = widget.cursor_pos(area) else {
+            panic!("composer should expose cursor position");
+        };
 
-            assert!(cursor_x < area.width, "{locale:?} cursor x overflow");
-            assert!(cursor_y < area.height, "{locale:?} cursor y overflow");
-        }
+        assert!(cursor_x < area.width, "cursor x overflow");
+        assert!(cursor_y < area.height, "cursor y overflow");
     }
 
     #[test]
@@ -4765,7 +4710,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("codewhale · /tmp/codewhale-test-workspace · no git · mcp 2"));
+        assert!(rendered.contains("codewhale · /tmp/codewhale-test-workspace · 无 git · mcp 2"));
         assert!(!rendered.contains("/fleet"));
         assert!(!rendered.contains("Model  /model"));
         assert!(!rendered.contains("Rules  /constitution"));
@@ -4786,7 +4731,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        let context = "codewhale · /tmp/codewhale-test-workspace · no git · mcp 0";
+        let context = "codewhale · /tmp/codewhale-test-workspace · 无 git · mcp 0";
         let context_line = text_lines
             .iter()
             .find(|line| line.trim_start() == context)
@@ -4816,7 +4761,7 @@ mod tests {
             "wide idle water should contain three fish:\n{rendered}"
         );
 
-        let context = "codewhale · /tmp/codewhale-test-workspace · no git · mcp 0";
+        let context = "codewhale · /tmp/codewhale-test-workspace · 无 git · mcp 0";
         let context_x = ((100usize - UnicodeWidthStr::width(context)) / 2) as u16;
         let context_cell = (0..area.height)
             .find_map(|y| (buf[(context_x, y)].symbol() == "c").then_some((context_x, y)))
@@ -4951,12 +4896,41 @@ mod tests {
             for y in rect.y..rect.bottom() {
                 for x in rect.x..rect.right() {
                     let mut cell = buf[(x, y)].clone();
+                    let original = cell.symbol().to_string();
                     crate::tui::color_compat::adapt_cell_symbol_for_ascii(&mut cell);
-                    assert!(
-                        cell.symbol().is_ascii(),
-                        "{surface} cell ({x},{y}) {:?} lacks an ASCII-safe alternative",
-                        buf[(x, y)].symbol()
-                    );
+                    if original != cell.symbol() {
+                        assert!(
+                            cell.symbol().is_ascii(),
+                            "{surface} cell ({x},{y}) {original:?} maps to non-ASCII {:?}",
+                            cell.symbol()
+                        );
+                    } else if !cell.symbol().is_ascii() {
+                        assert!(
+                            cell.symbol().chars().all(|ch| {
+                                ch.is_alphanumeric()
+                                    || ch.is_whitespace()
+                                    || matches!(
+                                        ch,
+                                        '，' | '。'
+                                            | '：'
+                                            | '；'
+                                            | '？'
+                                            | '！'
+                                            | '（'
+                                            | '）'
+                                            | '【'
+                                            | '】'
+                                            | '《'
+                                            | '》'
+                                            | '“'
+                                            | '”'
+                                            | '‘'
+                                            | '’'
+                                    )
+                            }),
+                            "{surface} cell ({x},{y}) {original:?} is neither language text nor ASCII-safe decoration"
+                        );
+                    }
                 }
             }
         }
@@ -5447,9 +5421,22 @@ mod tests {
 
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
-        assert!(rendered.contains("REPO LAW"), "{rendered}");
-        assert!(rendered.contains("Repository constitution"), "{rendered}");
-        assert!(rendered.contains("even in Full Access"), "{rendered}");
+        assert!(
+            rendered.contains(&*crate::localization::tr(
+                crate::localization::MessageId::ApprovalRepoLawBadge
+            )),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(&*crate::localization::tr(
+                crate::localization::MessageId::ApprovalRepoLawTitle
+            )),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("即使在完全访问模式下也不例外"),
+            "{rendered}"
+        );
         assert!(rendered.contains("Cargo.toml"), "{rendered}");
         assert!((0..area.height).any(|y| {
             let cell = &buf[(1, y)];
@@ -5623,14 +5610,14 @@ mod tests {
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
-        assert!(rendered.contains("Command:"), "{rendered}");
+        assert!(rendered.contains("命令:"), "{rendered}");
         assert!(
             rendered.contains("printf > src/generated.txt"),
             "{rendered}"
         );
         assert!(rendered.contains("alpha"), "{rendered}");
         assert!(rendered.contains("beta"), "{rendered}");
-        assert!(rendered.contains("Dir"), "{rendered}");
+        assert!(rendered.contains("目录"), "{rendered}");
         assert!(rendered.contains("/tmp/project"), "{rendered}");
     }
 
@@ -5646,9 +5633,9 @@ mod tests {
 
         let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
 
-        assert!(rendered.contains("s approve + save ask rule"), "{rendered}");
-        assert!(rendered.contains("Save:"), "{rendered}");
-        assert!(rendered.contains("1 ask rule"), "{rendered}");
+        assert!(rendered.contains("s 批准并保存询问规则"), "{rendered}");
+        assert!(rendered.contains("保存："), "{rendered}");
+        assert!(rendered.contains("1 条询问规则"), "{rendered}");
         assert!(
             rendered.contains("tool=exec_shell command=cargo test --workspace"),
             "{rendered}"
@@ -5688,8 +5675,11 @@ mod tests {
 
             let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
 
-            assert!(rendered.contains("Save:"), "{tool_name}:\n{rendered}");
-            assert!(rendered.contains("1 ask rule"), "{tool_name}:\n{rendered}");
+            assert!(rendered.contains("保存："), "{tool_name}:\n{rendered}");
+            assert!(
+                rendered.contains("1 条询问规则"),
+                "{tool_name}:\n{rendered}"
+            );
             assert!(
                 rendered.contains(expected_rule),
                 "{tool_name} should preview {expected_rule}:\n{rendered}"
@@ -5721,8 +5711,8 @@ diff --git a/src/b.rs b/src/b.rs\n\
 
         let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
 
-        assert!(rendered.contains("Save:"), "{rendered}");
-        assert!(rendered.contains("2 ask rules"), "{rendered}");
+        assert!(rendered.contains("保存："), "{rendered}");
+        assert!(rendered.contains("2 条询问规则"), "{rendered}");
         assert!(
             rendered.contains("tool=apply_patch path=src/a.rs"),
             "{rendered}"
@@ -5753,12 +5743,12 @@ diff --git a/src/b.rs b/src/b.rs\n\
 
         let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
 
-        assert!(rendered.contains("5 ask rules"), "{rendered}");
+        assert!(rendered.contains("5 条询问规则"), "{rendered}");
         assert!(
             rendered.contains("tool=apply_patch path=src/a.rs"),
             "{rendered}"
         );
-        assert!(rendered.contains("... 1 more"), "{rendered}");
+        assert!(rendered.contains("… 另有 1 条"), "{rendered}");
         assert!(
             !rendered.contains("tool=apply_patch path=src/e.rs"),
             "truncated rule should not render directly:\n{rendered}"
@@ -5789,15 +5779,15 @@ diff --git a/src/b.rs b/src/b.rs\n\
             let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
 
             assert!(
-                !rendered.contains("s approve + save ask rule"),
+                !rendered.contains("s 批准并保存询问规则"),
                 "S shortcut should stay hidden:\n{rendered}"
             );
             assert!(
-                !rendered.contains("Save:"),
+                !rendered.contains("保存："),
                 "save preview should stay hidden:\n{rendered}"
             );
             assert!(
-                !rendered.contains("ask rule"),
+                !rendered.contains("询问规则"),
                 "ask-rule details should stay hidden:\n{rendered}"
             );
         }
@@ -5823,7 +5813,7 @@ diff --git a/src/b.rs b/src/b.rs\n\
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
-        assert!(rendered.contains("Preview:"), "{rendered}");
+        assert!(rendered.contains("预览:"), "{rendered}");
         assert!(rendered.contains("+ fn main() {"), "{rendered}");
         assert!(
             rendered.contains("visible before approval"),
@@ -5852,7 +5842,7 @@ diff --git a/src/b.rs b/src/b.rs\n\
 
         // The change preview renders (bounded), and the action row is reserved
         // off the bottom of the band so it can never be clipped (#3799).
-        assert!(rendered.contains("Preview:"), "{rendered}");
+        assert!(rendered.contains("预览:"), "{rendered}");
         assert!(rendered.contains("[1 / y]"), "{rendered}");
         assert!(rendered.contains("[2 / d / n]"), "{rendered}");
     }
@@ -5879,9 +5869,9 @@ diff --git a/src/b.rs b/src/b.rs\n\
         widget.render(area, &mut buf);
         let rendered = buffer_text(&buf, area);
 
-        assert!(rendered.contains("Intent:"), "{rendered}");
+        assert!(rendered.contains("意图："), "{rendered}");
         assert!(rendered.contains("fallback build path"), "{rendered}");
-        assert!(rendered.contains("Command:"), "{rendered}");
+        assert!(rendered.contains("命令:"), "{rendered}");
         assert!(rendered.contains("cargo build ||"), "{rendered}");
         assert!(rendered.contains("echo fallback"), "{rendered}");
     }
@@ -5918,7 +5908,7 @@ diff --git a/src/b.rs b/src/b.rs\n\
         );
         // The command is the prioritized body content, so it stays visible even
         // when the band is short and secondary context scrolls away.
-        assert!(rendered.contains("Command:"), "{rendered}");
+        assert!(rendered.contains("命令:"), "{rendered}");
         assert!(rendered.contains("cargo clippy"), "{rendered}");
         // Action row is reserved off the bottom and always visible (#3799).
         assert!(rendered.contains("[1 / y]"), "{rendered}");

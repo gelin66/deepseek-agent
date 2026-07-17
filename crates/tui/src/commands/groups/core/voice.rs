@@ -439,30 +439,28 @@ pub async fn capture_and_transcribe(
     app: &mut App,
     config: &Config,
 ) -> Result<VoiceCaptureOutcome, String> {
-    let locale = app.ui_locale;
-
     if !is_available() {
-        return Err(tr(locale, MessageId::VoiceErrNoRecorder).to_string());
+        return Err(tr(MessageId::VoiceErrNoRecorder).to_string());
     }
     let api_key = config
         .deepseek_api_key()
-        .map_err(|_| tr(locale, MessageId::VoiceErrNoAuth).to_string())?;
+        .map_err(|_| tr(MessageId::VoiceErrNoAuth).to_string())?;
     let base_url = config.deepseek_base_url();
 
-    app.status_message = Some(tr(locale, MessageId::VoiceRecording).to_string());
+    app.status_message = Some(tr(MessageId::VoiceRecording).to_string());
     let (samples, _duration) = tokio::task::spawn_blocking(record_audio)
         .await
         .ok()
         .flatten()
-        .ok_or_else(|| tr(locale, MessageId::VoiceErrTooShort).to_string())?;
+        .ok_or_else(|| tr(MessageId::VoiceErrTooShort).to_string())?;
 
-    app.status_message = Some(tr(locale, MessageId::VoiceProcessing).to_string());
+    app.status_message = Some(tr(MessageId::VoiceProcessing).to_string());
     let text = if app.voice_control_enabled {
         process_voice_control(&api_key, &base_url, &samples, &app.composer.input).await
     } else {
         transcribe(&api_key, &base_url, &samples).await
     }
-    .map_err(|e| format!("{}: {e}", tr(locale, MessageId::VoiceErrNetwork)))?;
+    .map_err(|e| format!("{}: {e}", tr(MessageId::VoiceErrNetwork)))?;
 
     let clean = text.trim();
     if app.voice_send_enabled {
@@ -479,13 +477,13 @@ pub async fn capture_and_transcribe(
                 remainder.to_string()
             };
             if outgoing.is_empty() {
-                return Err(tr(locale, MessageId::VoiceErrEmptySend).to_string());
+                return Err(tr(MessageId::VoiceErrEmptySend).to_string());
             }
             return Ok(VoiceCaptureOutcome::Send(outgoing));
         }
     }
     if clean.is_empty() {
-        return Err(tr(locale, MessageId::VoiceErrEmptySend).to_string());
+        return Err(tr(MessageId::VoiceErrEmptySend).to_string());
     }
     Ok(VoiceCaptureOutcome::Insert(clean.to_string()))
 }
@@ -495,44 +493,37 @@ pub async fn capture_and_transcribe(
 /// Handle the `/voice` command: toggle voice input. Toggling on requests a
 /// one-shot recording + transcription via [`AppAction::VoiceCapture`].
 pub fn voice(app: &mut App) -> CommandResult {
-    let locale = app.ui_locale;
-
     if app.voice_enabled {
         app.voice_enabled = false;
-        return CommandResult::message(tr(locale, MessageId::VoiceDisabled));
+        return CommandResult::message(tr(MessageId::VoiceDisabled));
     }
     if !is_available() {
-        return CommandResult::error(tr(locale, MessageId::VoiceErrNoRecorder));
+        return CommandResult::error(tr(MessageId::VoiceErrNoRecorder));
     }
     app.voice_enabled = true;
-    CommandResult::with_message_and_action(
-        tr(locale, MessageId::VoiceEnabled),
-        AppAction::VoiceCapture,
-    )
+    CommandResult::with_message_and_action(tr(MessageId::VoiceEnabled), AppAction::VoiceCapture)
 }
 
 /// Handle the `/voice-send` command: toggle auto-send after transcription.
 pub fn voice_send(app: &mut App) -> CommandResult {
-    let locale = app.ui_locale;
     app.voice_send_enabled = !app.voice_send_enabled;
 
     let msg = if app.voice_send_enabled {
-        tr(locale, MessageId::VoiceSendEnabled)
+        tr(MessageId::VoiceSendEnabled)
     } else {
-        tr(locale, MessageId::VoiceSendDisabled)
+        tr(MessageId::VoiceSendDisabled)
     };
     CommandResult::message(msg)
 }
 
 /// Handle the `/voice-control` command: toggle AI-assisted dictation.
 pub fn voice_control(app: &mut App) -> CommandResult {
-    let locale = app.ui_locale;
     app.voice_control_enabled = !app.voice_control_enabled;
 
     let msg = if app.voice_control_enabled {
-        tr(locale, MessageId::VoiceControlEnabled)
+        tr(MessageId::VoiceControlEnabled)
     } else {
-        tr(locale, MessageId::VoiceControlDisabled)
+        tr(MessageId::VoiceControlDisabled)
     };
     CommandResult::message(msg)
 }

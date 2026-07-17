@@ -120,11 +120,13 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 
 | Chord                | Action                                              |
 |----------------------|-----------------------------------------------------|
-| `Enter`              | Advance to next step (Welcome → Language → API/trust gates → setup checkpoint) |
+| `Enter`              | Advance to the next required step (Welcome → API-key gate → workspace-trust gate → setup tips/checkpoint; optional gates are skipped when already satisfied) |
 | `Esc`                | Step back one screen                                |
-| `1`–`7`              | Pick a language (Language step)                    |
 | `y` / `Y`            | Trust the workspace (Trust step)                   |
 | `n` / `N`            | Skip the trust prompt                              |
+
+The onboarding interface is always Simplified Chinese. It has no language
+selection step or runtime language shortcut.
 
 ## v0.8.29 audit notes
 

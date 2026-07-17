@@ -30,7 +30,7 @@
 use crate::localization::{MessageId, tr};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, ElevationWidget, Renderable};
-use codewhale_config::{Locale, ToolAskRule};
+use codewhale_config::ToolAskRule;
 use codewhale_tools::sandbox::SandboxPolicy;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -97,10 +97,10 @@ impl ApprovalMode {
     #[must_use]
     pub fn permission_chip_label(self) -> &'static str {
         match self {
-            Self::Suggest => "Ask",
-            Self::Auto => "Auto-Review",
-            Self::Bypass => "Full Access",
-            Self::Never => "Never",
+            Self::Suggest => "询问",
+            Self::Auto => "自动审查",
+            Self::Bypass => "完全访问",
+            Self::Never => "从不询问",
         }
     }
 }
@@ -169,12 +169,7 @@ pub struct AskRuleSavePreview {
 impl AskRuleSavePreview {
     #[must_use]
     pub fn summary(&self) -> String {
-        let noun = if self.rule_count == 1 {
-            "rule"
-        } else {
-            "rules"
-        };
-        format!("{} ask {noun}", self.rule_count)
+        tr(MessageId::ApprovalAskRuleCount).replace("{count}", &self.rule_count.to_string())
     }
 }
 
@@ -257,23 +252,12 @@ impl ApprovalRequest {
         serde_json::to_string(&truncated).unwrap_or_else(|_| truncated.to_string())
     }
 
-    pub fn description_for_locale(&self, locale: Locale) -> String {
-        match locale {
-            Locale::ZhHans => localized_description_zh_hans(self.category),
-            _ if self.category == ToolCategory::Shell => {
-                "Review the Bash command before it runs.".to_string()
-            }
-            _ => self.description.clone(),
-        }
+    pub fn description(&self) -> String {
+        localized_description(self.category)
     }
 
-    pub fn impacts_for_locale(&self, locale: Locale) -> Vec<String> {
-        match locale {
-            Locale::ZhHans => {
-                build_impact_summary_zh_hans(&self.tool_name, self.category, &self.params)
-            }
-            _ => self.impacts.clone(),
-        }
+    pub fn impacts(&self) -> Vec<String> {
+        build_localized_impact_summary(&self.tool_name, self.category, &self.params)
     }
 
     #[must_use]
@@ -303,16 +287,15 @@ impl ApprovalRequest {
 
     /// Extract the most important params for the approval card.
     #[must_use]
-    pub fn prominent_detail_items(&self, locale: Locale) -> Vec<ApprovalDetail> {
+    pub fn prominent_detail_items(&self) -> Vec<ApprovalDetail> {
         build_prominent_details(&self.tool_name, self.category, &self.params)
             .into_iter()
             .map(|mut detail| {
                 let is_preview = detail.label == "Preview";
-                detail.label = localize_detail_label(&detail.label, locale).to_string();
+                detail.label = localize_detail_label(&detail.label).to_string();
                 if is_preview && let Some(lines) = detail.shell_lines.as_mut() {
                     for line in lines.iter_mut() {
-                        *line =
-                            localize_preview_shell_line(&self.tool_name, line, locale).to_string();
+                        *line = localize_preview_shell_line(&self.tool_name, line).to_string();
                     }
                     detail.value = lines.join("\n");
                 }
@@ -570,46 +553,44 @@ fn build_impact_summary(tool_name: &str, category: ToolCategory, params: &Value)
     }
 }
 
-fn localized_description_zh_hans(category: ToolCategory) -> String {
-    let locale = Locale::ZhHans;
+fn localized_description(category: ToolCategory) -> String {
     match category {
-        ToolCategory::Safe => tr(locale, MessageId::ApprovalDescSafe).to_string(),
-        ToolCategory::FileWrite => tr(locale, MessageId::ApprovalDescFileWrite).to_string(),
-        ToolCategory::Shell => tr(locale, MessageId::ApprovalDescShell).to_string(),
-        ToolCategory::Network => tr(locale, MessageId::ApprovalDescNetwork).to_string(),
-        ToolCategory::McpRead => tr(locale, MessageId::ApprovalDescMcpRead).to_string(),
-        ToolCategory::McpAction => tr(locale, MessageId::ApprovalDescMcpAction).to_string(),
-        ToolCategory::Agent => tr(locale, MessageId::ApprovalDescAgent).to_string(),
-        ToolCategory::Unknown => tr(locale, MessageId::ApprovalDescUnknown).to_string(),
+        ToolCategory::Safe => tr(MessageId::ApprovalDescSafe).to_string(),
+        ToolCategory::FileWrite => tr(MessageId::ApprovalDescFileWrite).to_string(),
+        ToolCategory::Shell => tr(MessageId::ApprovalDescShell).to_string(),
+        ToolCategory::Network => tr(MessageId::ApprovalDescNetwork).to_string(),
+        ToolCategory::McpRead => tr(MessageId::ApprovalDescMcpRead).to_string(),
+        ToolCategory::McpAction => tr(MessageId::ApprovalDescMcpAction).to_string(),
+        ToolCategory::Agent => tr(MessageId::ApprovalDescAgent).to_string(),
+        ToolCategory::Unknown => tr(MessageId::ApprovalDescUnknown).to_string(),
     }
 }
 
-fn build_impact_summary_zh_hans(
+fn build_localized_impact_summary(
     tool_name: &str,
     category: ToolCategory,
     params: &Value,
 ) -> Vec<String> {
-    let locale = Locale::ZhHans;
     match category {
         ToolCategory::Safe => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactSafe).to_string()];
+            let mut impacts = vec![tr(MessageId::ApprovalImpactSafe).to_string()];
             if let Some(path) = param_preview(params, &["path", "ref_id", "uri"], 72) {
                 impacts.push(format!("读取：{path}"));
             }
             impacts
         }
         ToolCategory::FileWrite => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactFileWrite).to_string()];
+            let mut impacts = vec![tr(MessageId::ApprovalImpactFileWrite).to_string()];
             if let Some(path) = param_preview(params, &["path", "target", "destination"], 72) {
                 impacts.push(format!("写入：{path}"));
             }
             impacts
         }
         ToolCategory::Shell => {
-            vec![tr(locale, MessageId::ApprovalImpactShell).to_string()]
+            vec![tr(MessageId::ApprovalImpactShell).to_string()]
         }
         ToolCategory::Network => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactNetwork).to_string()];
+            let mut impacts = vec![tr(MessageId::ApprovalImpactNetwork).to_string()];
             if let Some(target) =
                 param_preview(params, &["url", "q", "query", "location", "repo"], 96)
             {
@@ -618,28 +599,28 @@ fn build_impact_summary_zh_hans(
             impacts
         }
         ToolCategory::McpRead => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactMcpRead).to_string()];
+            let mut impacts = vec![tr(MessageId::ApprovalImpactMcpRead).to_string()];
             if let Some(target) = mcp_target_hint(tool_name) {
                 impacts.push(format!("MCP 目标：{target}"));
             }
             impacts
         }
         ToolCategory::McpAction => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactMcpAction).to_string()];
+            let mut impacts = vec![tr(MessageId::ApprovalImpactMcpAction).to_string()];
             if let Some(target) = mcp_target_hint(tool_name) {
                 impacts.push(format!("MCP 目标：{target}"));
             }
             impacts
         }
         ToolCategory::Agent => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactAgent).to_string()];
+            let mut impacts = vec![tr(MessageId::ApprovalImpactAgent).to_string()];
             if let Some(kind) = param_preview(params, &["type"], 40) {
                 impacts.push(format!("子代理类型：{kind}"));
             }
             impacts
         }
         ToolCategory::Unknown => {
-            let mut impacts = vec![tr(locale, MessageId::ApprovalImpactUnknown).to_string()];
+            let mut impacts = vec![tr(MessageId::ApprovalImpactUnknown).to_string()];
             if let Some(target) = param_preview(
                 params,
                 &["path", "cmd", "command", "url", "q", "query", "ref_id"],
@@ -805,7 +786,7 @@ fn prefixed_preview_lines(
 ) -> Vec<String> {
     let mut lines = vec![header.to_string()];
     if content.is_empty() {
-        lines.push(format!("{prefix}<empty>"));
+        lines.push(format!("{prefix}{}", tr(MessageId::ApprovalEmptyContent)));
         return lines;
     }
 
@@ -814,7 +795,9 @@ fn prefixed_preview_lines(
         lines.push(format!("{prefix}{line}"));
     }
     if total > max_lines {
-        lines.push(format!("... (+{} more lines)", total - max_lines));
+        lines.push(
+            tr(MessageId::ApprovalMoreLines).replace("{count}", &(total - max_lines).to_string()),
+        );
     }
     lines
 }
@@ -872,7 +855,7 @@ fn apply_patch_preview_lines(patch: &str) -> Option<Vec<String>> {
         }
         append_preview_truncation(
             &mut lines,
-            format!("... (+{omitted} more patch lines)"),
+            tr(MessageId::ApprovalMorePatchLines).replace("{count}", &omitted.to_string()),
             PREVIEW_LIMIT,
         );
     }
@@ -888,12 +871,17 @@ fn changes_preview_lines(changes: &[Value]) -> Option<Vec<String>> {
         let path = change
             .get("path")
             .and_then(Value::as_str)
-            .unwrap_or("<file>");
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| tr(MessageId::ApprovalUnknownFile));
         let content = change.get("content").and_then(Value::as_str).unwrap_or("");
         if idx > 0 && !push_preview_line(&mut lines, String::new(), PREVIEW_LIMIT) {
             break;
         }
-        if !push_preview_line(&mut lines, format!("file: {path}"), PREVIEW_LIMIT) {
+        if !push_preview_line(
+            &mut lines,
+            format!("{}：{path}", tr(MessageId::ApprovalLabelFile)),
+            PREVIEW_LIMIT,
+        ) {
             break;
         }
         rendered_changes += 1;
@@ -913,7 +901,7 @@ fn changes_preview_lines(changes: &[Value]) -> Option<Vec<String>> {
     if skipped_changes > 0 {
         append_preview_truncation(
             &mut lines,
-            format!("... (+{skipped_changes} more files)"),
+            tr(MessageId::ApprovalMoreFiles).replace("{count}", &skipped_changes.to_string()),
             PREVIEW_LIMIT,
         );
     }
@@ -940,41 +928,36 @@ fn param_text(params: &Value, keys: &[&str]) -> Option<String> {
     None
 }
 
-fn localize_detail_label(label: &str, locale: Locale) -> Cow<'static, str> {
-    match locale {
-        Locale::ZhHans => match label {
-            "Command" => tr(locale, MessageId::ApprovalLabelCommand),
-            "Dir" => tr(locale, MessageId::ApprovalLabelDir),
-            "File" => tr(locale, MessageId::ApprovalLabelFile),
-            "Preview" => tr(locale, MessageId::ApprovalLabelPreview),
-            "proposed content" => tr(locale, MessageId::ApprovalLabelProposedContent),
-            "replace this" => tr(locale, MessageId::ApprovalLabelReplaceThis),
-            "with this" => tr(locale, MessageId::ApprovalLabelWithThis),
-            "replacement content" => tr(locale, MessageId::ApprovalLabelReplacementContent),
-            "Path" => tr(locale, MessageId::ApprovalLabelPath),
-            "Target" => tr(locale, MessageId::ApprovalLabelTarget),
-            "Input" => tr(locale, MessageId::ApprovalLabelInput),
-            "Action" => tr(locale, MessageId::ApprovalLabelAction),
-            "Type" => tr(locale, MessageId::ApprovalLabelType),
-            "Prompt" => tr(locale, MessageId::ApprovalLabelPrompt),
-            "Goal" => "目标".into(),
-            "Children" => "子任务".into(),
-            "Writes" => "写入".into(),
-            "Shell" => "Shell".into(),
-            "Network" => "网络".into(),
-            "Budget" => "预算".into(),
-            _ => label.to_string().into(),
-        },
+fn localize_detail_label(label: &str) -> Cow<'static, str> {
+    match label {
+        "Command" => tr(MessageId::ApprovalLabelCommand),
+        "Dir" => tr(MessageId::ApprovalLabelDir),
+        "File" => tr(MessageId::ApprovalLabelFile),
+        "Preview" => tr(MessageId::ApprovalLabelPreview),
+        "proposed content" => tr(MessageId::ApprovalLabelProposedContent),
+        "replace this" => tr(MessageId::ApprovalLabelReplaceThis),
+        "with this" => tr(MessageId::ApprovalLabelWithThis),
+        "replacement content" => tr(MessageId::ApprovalLabelReplacementContent),
+        "Path" => tr(MessageId::ApprovalLabelPath),
+        "Target" => tr(MessageId::ApprovalLabelTarget),
+        "Input" => tr(MessageId::ApprovalLabelInput),
+        "Action" => tr(MessageId::ApprovalLabelAction),
+        "Type" => tr(MessageId::ApprovalLabelType),
+        "Prompt" => tr(MessageId::ApprovalLabelPrompt),
+        "Goal" => "目标".into(),
+        "Children" => "子任务".into(),
+        "Writes" => "写入".into(),
+        "Shell" => "Shell".into(),
+        "Network" => "网络".into(),
+        "Budget" => "预算".into(),
         _ => label.to_string().into(),
     }
 }
 
-fn localize_preview_shell_line(tool_name: &str, line: &str, locale: Locale) -> Cow<'static, str> {
+fn localize_preview_shell_line(tool_name: &str, line: &str) -> Cow<'static, str> {
     match tool_name {
-        "write_file" if line == "proposed content" => localize_detail_label(line, locale),
-        "edit_file" if matches!(line, "replace this" | "with this") => {
-            localize_detail_label(line, locale)
-        }
+        "write_file" if line == "proposed content" => localize_detail_label(line),
+        "edit_file" if matches!(line, "replace this" | "with this") => localize_detail_label(line),
         _ => line.to_string().into(),
     }
 }
@@ -1128,7 +1111,11 @@ fn format_printf_write_file_preview(preview: PrintfWriteFilePreview) -> Vec<Stri
         out.push(format!("  {line}"));
     }
     if total > MAX_PREVIEW_LINES {
-        out.push(format!("  ... (+{} more lines)", total - MAX_PREVIEW_LINES));
+        out.push(format!(
+            "  {}",
+            tr(MessageId::ApprovalMoreLines)
+                .replace("{count}", &(total - MAX_PREVIEW_LINES).to_string())
+        ));
     }
     out
 }
@@ -1220,7 +1207,6 @@ pub struct ApprovalView {
     request: ApprovalRequest,
     selected: usize,
     row_hitboxes: RefCell<Vec<Rect>>,
-    locale: Locale,
     timeout: Option<Duration>,
     requested_at: Instant,
     /// Whether the approval card is collapsed to a single-line banner.
@@ -1228,17 +1214,11 @@ pub struct ApprovalView {
 }
 
 impl ApprovalView {
-    #[cfg(test)]
     pub fn new(request: ApprovalRequest) -> Self {
-        Self::new_for_locale(request, Locale::En)
-    }
-
-    pub fn new_for_locale(request: ApprovalRequest, locale: Locale) -> Self {
         Self {
             request,
             selected: 0,
             row_hitboxes: RefCell::new(Vec::new()),
-            locale,
             timeout: None,
             requested_at: Instant::now(),
             collapsed: false,
@@ -1287,10 +1267,6 @@ impl ApprovalView {
         self.request.risk
     }
 
-    pub(crate) fn locale(&self) -> Locale {
-        self.locale
-    }
-
     /// Commit the given option and close the approval modal.
     fn commit_option(&mut self, option: ApprovalOption) -> ViewAction {
         self.selected = option.index_for(&self.request.tool_name);
@@ -1321,14 +1297,13 @@ impl ApprovalView {
     fn emit_params_pager(&self) -> ViewAction {
         // The compact prompt keeps the about/impact dossier out of the
         // default band; the pager is where that context now lives.
-        let locale = self.locale();
-        let about_label = tr(locale, MessageId::ApprovalLabelAbout);
-        let impact_label = tr(locale, MessageId::ApprovalLabelImpact);
+        let about_label = tr(MessageId::ApprovalLabelAbout);
+        let impact_label = tr(MessageId::ApprovalLabelImpact);
         let mut content = String::new();
         content.push_str(&about_label);
-        content.push_str(&self.request.description_for_locale(locale));
+        content.push_str(&self.request.description());
         content.push('\n');
-        for impact in self.request.impacts_for_locale(locale) {
+        for impact in self.request.impacts() {
             content.push_str(&impact_label);
             content.push_str(&impact);
             content.push('\n');
@@ -1339,7 +1314,11 @@ impl ApprovalView {
                 .unwrap_or_else(|_| self.request.params.to_string()),
         );
         ViewAction::Emit(ViewEvent::OpenTextPager {
-            title: format!("Tool Params: {}", self.request.tool_name),
+            title: format!(
+                "{}{}",
+                tr(MessageId::ApprovalFieldParams),
+                self.request.tool_name
+            ),
             content,
         })
     }
@@ -1622,16 +1601,14 @@ impl ElevationRequest {
 pub struct ElevationView {
     request: ElevationRequest,
     selected: usize,
-    locale: Locale,
     row_hitboxes: RefCell<Vec<Rect>>,
 }
 
 impl ElevationView {
-    pub fn new(request: ElevationRequest, locale: Locale) -> Self {
+    pub fn new(request: ElevationRequest) -> Self {
         Self {
             request,
             selected: 0,
-            locale,
             row_hitboxes: RefCell::new(Vec::new()),
         }
     }
@@ -1730,12 +1707,8 @@ impl ModalView for ElevationView {
     }
 
     fn render(&self, area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
-        let elevation_widget = ElevationWidget::new_with_hitboxes(
-            &self.request,
-            self.selected,
-            self.locale,
-            &self.row_hitboxes,
-        );
+        let elevation_widget =
+            ElevationWidget::new_with_hitboxes(&self.request, self.selected, &self.row_hitboxes);
         elevation_widget.render(area, buf);
     }
 }
@@ -2011,11 +1984,11 @@ mod tests {
                 .all(|line| !line.contains("cargo test")),
             "command detail should not be duplicated in the impact summary"
         );
-        let details = request.prominent_detail_items(Locale::En);
+        let details = request.prominent_detail_items();
         assert!(
             details
                 .iter()
-                .any(|detail| detail.label == "Command" && detail.value.contains("cargo test"))
+                .any(|detail| detail.label == "命令" && detail.value.contains("cargo test"))
         );
     }
 
@@ -2037,7 +2010,7 @@ mod tests {
         );
         assert!(!request.impacts.iter().any(|line| line == "Server: my"));
 
-        let zh_impacts = request.impacts_for_locale(Locale::ZhHans);
+        let zh_impacts = request.impacts();
         assert!(
             zh_impacts
                 .iter()
@@ -2057,9 +2030,9 @@ mod tests {
             "test_key",
         );
 
-        let details = request.prominent_detail_items(Locale::En);
+        let details = request.prominent_detail_items();
 
-        assert_eq!(details[0].label, "Command");
+        assert_eq!(details[0].label, "命令");
         assert_eq!(details[0].value, command);
         assert!(
             details[0]
@@ -2068,7 +2041,7 @@ mod tests {
                 .is_some_and(|lines| lines.iter().any(|line| line.contains("cat /tmp/x"))),
             "shell preview should preserve the dangerous tail of long commands"
         );
-        assert_eq!(details[1].label, "Dir");
+        assert_eq!(details[1].label, "目录");
         assert_eq!(details[1].value, "/tmp/project");
     }
 
@@ -2082,12 +2055,12 @@ mod tests {
             "test_key",
         );
 
-        let details = request.prominent_detail_items(Locale::En);
+        let details = request.prominent_detail_items();
 
-        assert_eq!(details[0].label, "File");
+        assert_eq!(details[0].label, "文件");
         assert_eq!(details[0].value, "src/main.rs");
         assert!(details[0].shell_lines.is_none());
-        assert_eq!(details[1].label, "Preview");
+        assert_eq!(details[1].label, "预览");
         let preview = details[1].shell_lines.as_ref().expect("preview lines");
         assert!(preview.iter().any(|line| line == "+ fn main() {}"));
     }
@@ -2106,10 +2079,10 @@ mod tests {
             "tool:edit_file",
         );
 
-        let details = request.prominent_detail_items(Locale::En);
+        let details = request.prominent_detail_items();
         let preview = details
             .iter()
-            .find(|detail| detail.label == "Preview")
+            .find(|detail| detail.label == "预览")
             .and_then(|detail| detail.shell_lines.as_ref())
             .expect("edit preview");
 
@@ -2134,10 +2107,10 @@ mod tests {
             "tool:apply_patch",
         );
 
-        let details = request.prominent_detail_items(Locale::En);
+        let details = request.prominent_detail_items();
         let preview = details
             .iter()
-            .find(|detail| detail.label == "Preview")
+            .find(|detail| detail.label == "预览")
             .and_then(|detail| detail.shell_lines.as_ref())
             .expect("patch preview");
 
@@ -2171,10 +2144,10 @@ mod tests {
             "tool:apply_patch",
         );
 
-        let details = request.prominent_detail_items(Locale::En);
+        let details = request.prominent_detail_items();
         let preview = details
             .iter()
-            .find(|detail| detail.label == "Preview")
+            .find(|detail| detail.label == "预览")
             .and_then(|detail| detail.shell_lines.as_ref())
             .expect("changes preview");
 
@@ -2182,10 +2155,10 @@ mod tests {
             preview.len() <= 7,
             "preview should stay bounded: {preview:?}"
         );
-        assert!(preview.iter().any(|line| line == "file: src/lib.rs"));
+        assert!(preview.iter().any(|line| line == "文件：src/lib.rs"));
         assert_eq!(
             preview.last().map(String::as_str),
-            Some("... (+2 more files)")
+            Some("…（另有 2 个文件）")
         );
     }
 
@@ -2210,10 +2183,10 @@ mod tests {
             "tool:apply_patch",
         );
 
-        let details = request.prominent_detail_items(Locale::En);
+        let details = request.prominent_detail_items();
         let preview = details
             .iter()
-            .find(|detail| detail.label == "Preview")
+            .find(|detail| detail.label == "预览")
             .and_then(|detail| detail.shell_lines.as_ref())
             .expect("changes preview");
 
@@ -2221,10 +2194,10 @@ mod tests {
             preview.len() <= 7,
             "preview should stay bounded: {preview:?}"
         );
-        assert!(preview.iter().any(|line| line == "file: src/lib.rs"));
+        assert!(preview.iter().any(|line| line == "文件：src/lib.rs"));
         assert_eq!(
             preview.last().map(String::as_str),
-            Some("... (+1 more files)")
+            Some("…（另有 1 个文件）")
         );
     }
 
@@ -2251,7 +2224,7 @@ mod tests {
         );
         assert_eq!(
             preview.last().map(String::as_str),
-            Some("... (+5 more patch lines)")
+            Some("…（另有 5 行补丁内容）")
         );
     }
 
@@ -2274,7 +2247,7 @@ mod tests {
         assert_eq!(preview.len(), 7);
         assert_eq!(
             preview.last().map(String::as_str),
-            Some("... (+4 more patch lines)")
+            Some("…（另有 4 行补丁内容）")
         );
     }
 
@@ -2288,7 +2261,7 @@ mod tests {
             "tool:write_file",
         );
         let write_preview = write
-            .prominent_detail_items(Locale::ZhHans)
+            .prominent_detail_items()
             .into_iter()
             .find(|detail| detail.label == "预览")
             .and_then(|detail| detail.shell_lines)
@@ -2317,7 +2290,7 @@ mod tests {
             "tool:edit_file",
         );
         let edit_preview = edit
-            .prominent_detail_items(Locale::ZhHans)
+            .prominent_detail_items()
             .into_iter()
             .find(|detail| detail.label == "预览")
             .and_then(|detail| detail.shell_lines)
@@ -2326,6 +2299,21 @@ mod tests {
         assert!(edit_preview.iter().any(|line| line == "替换为"));
         assert!(edit_preview.iter().any(|line| line == "- with this"));
         assert!(edit_preview.iter().any(|line| line == "+ replace this"));
+
+        let empty = ApprovalRequest::new(
+            "test-id",
+            "write_file",
+            "Write an empty file",
+            &json!({"path": "src/empty.rs", "content": ""}),
+            "tool:write_file",
+        );
+        let empty_preview = empty
+            .prominent_detail_items()
+            .into_iter()
+            .find(|detail| detail.label == "预览")
+            .and_then(|detail| detail.shell_lines)
+            .expect("localized empty write preview");
+        assert_eq!(empty_preview, vec!["拟写入内容", "+ <空>"]);
     }
 
     #[test]
@@ -2377,7 +2365,7 @@ mod tests {
 
         let preview = request.ask_rule_save_preview().expect("save preview");
         assert_eq!(preview.rule_count, 1);
-        assert_eq!(preview.summary(), "1 ask rule");
+        assert_eq!(preview.summary(), "1 条询问规则");
         assert_eq!(
             preview.entries,
             vec!["tool=exec_shell command=cargo test --workspace"]
@@ -2513,7 +2501,7 @@ diff --git a/src/b.rs b/src/b.rs
         );
         assert!(request.can_save_ask_rule());
         let preview = request.ask_rule_save_preview().expect("save preview");
-        assert_eq!(preview.summary(), "2 ask rules");
+        assert_eq!(preview.summary(), "2 条询问规则");
         assert_eq!(
             preview.entries,
             vec![
@@ -2638,7 +2626,7 @@ diff --git a/src/b.rs b/src/b.rs
 
         let preview = build_ask_rule_save_preview(&rules, 2).expect("save preview");
         assert_eq!(preview.rule_count, 4);
-        assert_eq!(preview.summary(), "4 ask rules");
+        assert_eq!(preview.summary(), "4 条询问规则");
         assert_eq!(
             preview.entries,
             vec![
@@ -2899,10 +2887,12 @@ diff --git a/src/b.rs b/src/b.rs
     fn test_approval_view_view_params() {
         let mut view = ApprovalView::new(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('v')));
-        assert!(matches!(
-            action,
-            ViewAction::Emit(ViewEvent::OpenTextPager { .. })
-        ));
+        let ViewAction::Emit(ViewEvent::OpenTextPager { title, content }) = action else {
+            panic!("应打开完整参数页");
+        };
+        assert_eq!(title, "参数：read_file");
+        assert!(content.contains("\"path\""));
+        assert!(!title.contains("Tool Params"));
 
         let mut view = ApprovalView::new(benign_request());
         let action = view.handle_key(create_key_event(KeyCode::Char('V')));
@@ -3127,17 +3117,18 @@ diff --git a/src/b.rs b/src/b.rs
 
         let view = ApprovalView::new(request);
         let lines = render_lines(&view, 100, 40);
-        let joined = lines.join("\n");
-        assert!(joined.contains("APPROVAL"), "{joined}");
-        assert!(!joined.contains("DESTRUCTIVE"), "{joined}");
+        let rendered = lines.join("\n");
+        let joined = compact_rendered_text(&lines);
+        assert!(joined.contains("需要批准"), "{joined}");
+        assert!(!joined.contains("破坏性"), "{joined}");
         assert!(
-            !joined.contains("not classified"),
+            !joined.contains("未分类工具"),
             "agent must not render the unknown-tool warning:\n{joined}"
         );
-        assert!(joined.contains("Action"), "{joined}");
+        assert!(joined.contains("操作"), "{joined}");
         assert!(joined.contains("start"), "{joined}");
         assert!(joined.contains("explore"), "{joined}");
-        assert!(joined.contains("map the workspace"), "{joined}");
+        assert!(rendered.contains("map the workspace"), "{rendered}");
     }
 
     #[test]
@@ -3160,12 +3151,13 @@ diff --git a/src/b.rs b/src/b.rs
         let view = ApprovalView::new(benign_request());
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
-        assert!(joined.contains("REVIEW"), "missing REVIEW badge:\n{joined}");
+        let compact = compact_rendered_text(&lines);
+        assert!(compact.contains("审查"), "missing review badge:\n{joined}");
         assert_approval_key_badges_visible(&joined);
         // The selection prose moved into the per-option key badges; the footer
         // keeps only the escape-hatch hints.
         assert!(
-            joined.contains("full params"),
+            compact.contains("完整参数"),
             "footer controls hint missing:\n{joined}"
         );
         assert!(joined.contains("read_file"));
@@ -3173,7 +3165,7 @@ diff --git a/src/b.rs b/src/b.rs
 
     #[test]
     fn approval_footer_hints_use_muted_contrast_tier() {
-        // #3380: the footer key hints ("v: full params · Esc: abort") must
+        // #3380: the footer key hints ("v：完整参数 · Esc：终止") must
         // render one contrast tier above TEXT_HINT — TEXT_MUTED, the same
         // color the app-wide ActionHint modal footers use for labels.
         use crate::palette;
@@ -3185,14 +3177,20 @@ diff --git a/src/b.rs b/src/b.rs
         let mut buf = Buffer::empty(Rect::new(0, 0, w, h));
         ModalView::render(&view, Rect::new(0, 0, w, h), &mut buf);
 
-        let target: Vec<String> = "full params".chars().map(|c| c.to_string()).collect();
         let mut found = None;
         for y in 0..h {
-            let symbols: Vec<String> = (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect();
-            for x in 0..=(w as usize - target.len()) {
-                if symbols[x..x + target.len()] == target[..] {
-                    found = Some((u16::try_from(x).expect("column fits"), y));
+            let mut compact = String::new();
+            let mut columns = Vec::new();
+            for x in 0..w {
+                let symbol = buf[(x, y)].symbol();
+                if symbol != " " {
+                    compact.push_str(symbol);
+                    columns.push(x);
                 }
+            }
+            if let Some(byte_offset) = compact.find("完整参数") {
+                let char_offset = compact[..byte_offset].chars().count();
+                found = Some((columns[char_offset], y));
             }
         }
         let (x, y) = found.expect("footer key hints must be rendered");
@@ -3211,26 +3209,30 @@ diff --git a/src/b.rs b/src/b.rs
         let view = ApprovalView::new(destructive_request());
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
-        assert!(joined.contains("APPROVAL"), "missing calm badge:\n{joined}");
+        let compact = compact_rendered_text(&lines);
         assert!(
-            !joined.contains("DESTRUCTIVE"),
+            compact.contains("需要批准"),
+            "missing calm badge:\n{joined}"
+        );
+        assert!(
+            !compact.contains("破坏性"),
             "routine write must not scream DESTRUCTIVE:\n{joined}"
         );
         assert_approval_key_badges_visible(&joined);
         assert!(
-            joined.contains("full params"),
+            compact.contains("完整参数"),
             "footer controls hint missing:\n{joined}"
         );
         assert!(
-            !joined.contains("active approval policy"),
+            !compact.contains("当前批准策略"),
             "policy prose is critical-only:\n{joined}"
         );
         assert!(
-            !joined.contains("Impact:"),
+            !compact.contains("影响："),
             "impact dossier is critical-only:\n{joined}"
         );
         assert!(
-            !joined.contains("Type:"),
+            !compact.contains("类型："),
             "category taxonomy is critical-only:\n{joined}"
         );
         assert!(joined.contains("write_file"));
@@ -3243,17 +3245,18 @@ diff --git a/src/b.rs b/src/b.rs
         let view = ApprovalView::new(critical_request());
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
+        let compact = compact_rendered_text(&lines);
         assert!(
-            joined.contains("DESTRUCTIVE"),
+            compact.contains("破坏性"),
             "missing DESTRUCTIVE badge:\n{joined}"
         );
         assert_approval_key_badges_visible(&joined);
         assert!(
-            joined.contains("active approval policy"),
+            compact.contains("当前批准策略"),
             "missing policy/review-rule semantics:\n{joined}"
         );
         assert!(
-            joined.contains("Deny rejects only this tool call"),
+            compact.contains("拒绝只跳过本次工具调用") && compact.contains("Esc会中止整轮"),
             "missing deny-vs-abort semantics:\n{joined}"
         );
         assert!(joined.contains("rm -rf"));
@@ -3261,7 +3264,7 @@ diff --git a/src/b.rs b/src/b.rs
 
     #[test]
     fn render_elevated_zh_hans_is_calm_and_localized() {
-        let view = ApprovalView::new_for_locale(destructive_request(), Locale::ZhHans);
+        let view = ApprovalView::new(destructive_request());
         let lines = render_lines(&view, 100, 40);
         let joined = compact_rendered_text(&lines);
         assert!(
@@ -3288,7 +3291,7 @@ diff --git a/src/b.rs b/src/b.rs
 
     #[test]
     fn render_critical_zh_hans_localizes_security_copy() {
-        let view = ApprovalView::new_for_locale(critical_request(), Locale::ZhHans);
+        let view = ApprovalView::new(critical_request());
         let lines = render_lines(&view, 100, 40);
         let joined = compact_rendered_text(&lines);
         assert!(
@@ -3336,7 +3339,7 @@ diff --git a/src/b.rs b/src/b.rs
     fn test_elevation_view_initial_state() {
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "network blocked", true, false);
-        let view = ElevationView::new(request, Locale::En);
+        let view = ElevationView::new(request);
         assert_eq!(view.selected, 0);
     }
 
@@ -3344,7 +3347,7 @@ diff --git a/src/b.rs b/src/b.rs
     fn test_elevation_view_keybindings() {
         let request =
             ElevationRequest::for_shell("test-id", "cargo test", "write blocked", false, true);
-        let mut view = ElevationView::new(request, Locale::En);
+        let mut view = ElevationView::new(request);
 
         let action = view.handle_key(create_key_event(KeyCode::Char('n')));
         assert!(matches!(
@@ -3357,7 +3360,7 @@ diff --git a/src/b.rs b/src/b.rs
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "write blocked", false, true);
-        let mut view = ElevationView::new(request, Locale::En);
+        let mut view = ElevationView::new(request);
         let action = view.handle_key(create_key_event(KeyCode::Char('w')));
         assert!(matches!(
             action,
@@ -3369,7 +3372,7 @@ diff --git a/src/b.rs b/src/b.rs
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request, Locale::En);
+        let mut view = ElevationView::new(request);
         let action = view.handle_key(create_key_event(KeyCode::Char('f')));
         assert!(matches!(
             action,
@@ -3381,7 +3384,7 @@ diff --git a/src/b.rs b/src/b.rs
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request, Locale::En);
+        let mut view = ElevationView::new(request);
         let action = view.handle_key(create_key_event(KeyCode::Esc));
         assert!(matches!(
             action,
@@ -3393,7 +3396,7 @@ diff --git a/src/b.rs b/src/b.rs
 
         let request =
             ElevationRequest::for_shell("test-id", "cargo build", "blocked", false, false);
-        let mut view = ElevationView::new(request, Locale::En);
+        let mut view = ElevationView::new(request);
         let action = view.handle_key(create_key_event(KeyCode::Char('a')));
         assert!(matches!(
             action,
@@ -3407,7 +3410,7 @@ diff --git a/src/b.rs b/src/b.rs
     #[test]
     fn test_elevation_view_navigation() {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
-        let mut view = ElevationView::new(request, Locale::En);
+        let mut view = ElevationView::new(request);
 
         assert_eq!(view.selected, 0);
 
@@ -3427,7 +3430,7 @@ diff --git a/src/b.rs b/src/b.rs
     #[test]
     fn test_elevation_view_enter_uses_selected_option() {
         let request = ElevationRequest::for_shell("test-id", "cargo build", "blocked", true, false);
-        let mut view = ElevationView::new(request, Locale::En);
+        let mut view = ElevationView::new(request);
 
         view.handle_key(create_key_event(KeyCode::Down));
         assert_eq!(view.selected, 1);
@@ -3465,25 +3468,8 @@ diff --git a/src/b.rs b/src/b.rs
     }
 
     #[test]
-    fn test_elevation_render_en_has_expected_strings() {
-        let view = ElevationView::new(elevation_shell_request(), Locale::En);
-        let lines = render_elevation_lines(&view, 70, 22);
-        let joined = compact_elevation_text(&lines);
-        assert!(
-            joined.contains("SandboxDenied"),
-            "missing en title:\n{joined}"
-        );
-        assert!(joined.contains("Tool:"), "missing en tool label:\n{joined}");
-        assert!(joined.contains("Cmd:"), "missing en cmd label:\n{joined}");
-        assert!(
-            joined.contains("Reason:"),
-            "missing en reason label:\n{joined}"
-        );
-    }
-
-    #[test]
-    fn test_elevation_render_zh_hans_localizes_copy() {
-        let view = ElevationView::new(elevation_shell_request(), Locale::ZhHans);
+    fn test_elevation_render_uses_simplified_chinese_copy() {
+        let view = ElevationView::new(elevation_shell_request());
         let lines = render_elevation_lines(&view, 70, 22);
         let joined = compact_elevation_text(&lines);
         assert!(joined.contains("沙箱拒绝"), "missing zh title:\n{joined}");
@@ -3518,58 +3504,6 @@ diff --git a/src/b.rs b/src/b.rs
                 "English leak '{artifact}' in zh rendering:\n{joined}"
             );
         }
-    }
-
-    #[test]
-    fn test_elevation_render_ja_has_translated_copy() {
-        let view = ElevationView::new(elevation_shell_request(), Locale::Ja);
-        let lines = render_elevation_lines(&view, 70, 22);
-        let joined = compact_elevation_text(&lines);
-        assert!(
-            joined.contains("サンドボックス拒否"),
-            "missing ja title:\n{joined}"
-        );
-        assert!(
-            joined.contains("ツール："),
-            "missing ja tool label:\n{joined}"
-        );
-        assert!(
-            joined.contains("コマンド："),
-            "missing ja cmd label:\n{joined}"
-        );
-        assert!(
-            joined.contains("理由："),
-            "missing ja reason label:\n{joined}"
-        );
-        for eng in &["SandboxDenied", "Tool:", "Cmd:", "Reason:"] as &[&str] {
-            assert!(
-                !joined.contains(eng),
-                "English leak '{eng}' in ja:\n{joined}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_elevation_render_zh_hant_has_translated_copy() {
-        let view = ElevationView::new(elevation_shell_request(), Locale::ZhHant);
-        let lines = render_elevation_lines(&view, 70, 22);
-        let joined = compact_elevation_text(&lines);
-        assert!(
-            joined.contains("沙箱拒絕"),
-            "missing zh-Hant title:\n{joined}"
-        );
-        assert!(
-            joined.contains("工具："),
-            "missing zh-Hant tool label:\n{joined}"
-        );
-        assert!(
-            joined.contains("命令："),
-            "missing zh-Hant cmd label:\n{joined}"
-        );
-        assert!(
-            joined.contains("原因："),
-            "missing zh-Hant reason label:\n{joined}"
-        );
     }
 
     // ========================================================================
@@ -3728,24 +3662,24 @@ diff --git a/src/b.rs b/src/b.rs
             "tool:workflow",
         );
         assert_eq!(request.category, ToolCategory::Agent);
-        let details = request.prominent_detail_items(Locale::En);
+        let details = request.prominent_detail_items();
         let labels: Vec<_> = details.iter().map(|d| d.label.as_str()).collect();
-        assert!(labels.contains(&"Goal"), "{labels:?}");
-        assert!(labels.contains(&"Children"), "{labels:?}");
-        assert!(labels.contains(&"Writes"), "{labels:?}");
+        assert!(labels.contains(&"目标"), "{labels:?}");
+        assert!(labels.contains(&"子任务"), "{labels:?}");
+        assert!(labels.contains(&"写入"), "{labels:?}");
         assert!(labels.contains(&"Shell"), "{labels:?}");
-        assert!(labels.contains(&"Network"), "{labels:?}");
-        assert!(labels.contains(&"Budget"), "{labels:?}");
+        assert!(labels.contains(&"网络"), "{labels:?}");
+        assert!(labels.contains(&"预算"), "{labels:?}");
         assert!(
             details
                 .iter()
-                .any(|d| d.label == "Goal" && d.value.contains("ship the fix")),
+                .any(|d| d.label == "目标" && d.value.contains("ship the fix")),
             "{details:?}"
         );
         assert!(
             details
                 .iter()
-                .any(|d| d.label == "Writes" && d.value == "yes"),
+                .any(|d| d.label == "写入" && d.value == "yes"),
             "{details:?}"
         );
         assert!(

@@ -36,15 +36,17 @@ The default shell is the underwater system (`src/tui/underwater.rs`,
 
 ## Localization rules
 
-- Every user-visible string goes through `tr(locale, MessageId::…)`. No
-  hardcoded English in render paths — the raw-parity tests
-  (`shipped_complete_packs_have_raw_key_parity_with_english`,
-  `message_id_list_english_pack_stay_in_exact_sync`) enforce the key sets,
-  and they exist because the old gate was blinded by the English fallback.
-- Adding a string = enum variant + `ALL_MESSAGE_IDS` entry + `en.json` key
-  + a translation in every complete pack. See `locales/AGENTS.md`.
+- The product has one user-facing language: Simplified Chinese. Do not add a
+  locale type, language setting, environment detection, language picker,
+  alternate pack, or post-hoc output translation.
+- Every user-visible string goes through `tr(MessageId::…)`. No hardcoded
+  English in render paths. Adding a string requires an enum variant,
+  `ALL_MESSAGE_IDS` entry, and `zh-Hans.json` key; the exact-parity test keeps
+  those three sources synchronized. See `locales/AGENTS.md`.
 - Glyphs (`▸ · ▾ ─`), key names (`Enter`, `Alt+?`), and commands
   (`/fleet setup`) are composed in code, not embedded in translations.
+- Protocol values, config keys, tool names, paths, source code, and raw tool
+  output remain in their native machine-facing form.
 
 ## Verification
 
@@ -78,9 +80,6 @@ Real-terminal QA gotchas (learned the hard way):
 
 - `run_verifiers_background_*` can flake under full-suite parallelism;
   rerun in isolation before blaming a change.
-- The workflow *history* card renders with `Locale::En` until locale is
-  threaded through `ToolCell::lines_with_mode` (~30 call sites) — known
-  debt, not a bug to "fix" casually.
 - The `classic` treatment exists in code but persisted settings normalize
   it away; do not expand it without a product decision.
 - See the do-not-delete module list in the repo-root `AGENTS.md` before

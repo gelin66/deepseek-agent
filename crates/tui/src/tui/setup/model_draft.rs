@@ -7,7 +7,8 @@
 //! policy. The contract:
 //!
 //! - **Minimal payload out.** The request carries exactly the six guided
-//!   answer labels, an optional bounded own-words note, and the UI language
+//!   answer labels, an optional bounded own-words note, and the fixed output
+//!   language
 //!   tag — no config, env, repo contents, keys, or memory.
 //!   [`drafting_user_prompt`] is a pure function of those inputs, and tests
 //!   pin its full text so nothing can ride along.
@@ -19,14 +20,12 @@
 //! - **Drafting is not ratifying.** The caller shows the rendered preview and
 //!   still requires the explicit ratify keypress before anything persists.
 
-use codewhale_config::{
-    Locale, UntrustedDraftParse, UserConstitution, user_constitution::MAX_NOTES_LEN,
-};
+use codewhale_config::{UntrustedDraftParse, UserConstitution, user_constitution::MAX_NOTES_LEN};
 
 use crate::llm_client::LlmClient;
 use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 
-use super::{GuidedConstitutionDraft, autonomy_label};
+use super::{GuidedConstitutionDraft, autonomy_prompt_value};
 
 /// Output budget for the one-shot draft. Roomy enough for a full constitution
 /// (bounds cap the persisted form far below this), small enough to be a real
@@ -34,7 +33,7 @@ use super::{GuidedConstitutionDraft, autonomy_label};
 pub(crate) const DRAFT_MAX_TOKENS: u32 = 1600;
 
 /// System prompt for the constitution drafter. English regardless of UI
-/// locale (the language tag directs the output language); deterministic so
+/// The language tag directs the output language; deterministic so
 /// tests can pin the guardrails.
 fn drafting_system_prompt() -> String {
     concat!(
@@ -45,7 +44,6 @@ fn drafting_system_prompt() -> String {
         "these fields:\n",
         "{\n",
         "  \"schema_version\": 1,\n",
-        "  \"language\": \"<the language tag you were given>\",\n",
         "  \"about\": \"<who the user is and their working context, at most 1000 characters>\",\n",
         "  \"working_style\": [\"<3 to 5 items, each at most 280 characters>\"],\n",
         "  \"priorities\": [\"<2 to 4 items, each at most 280 characters>\"],\n",
@@ -91,22 +89,17 @@ fn bounded_own_words(note: &str) -> Option<String> {
 }
 
 /// User prompt: the six guided answers, optional own-words data, and the
-/// language tag, nothing else. Canonical English labels keep the request stable
-/// across UI locales; the language tag controls the output language.
-fn drafting_user_prompt(
-    draft: GuidedConstitutionDraft,
-    freeform_note: Option<&str>,
-    locale: Locale,
-) -> String {
+/// fixed language tag, nothing else. Canonical English machine values keep the
+/// request stable while the language tag controls the output language.
+fn drafting_user_prompt(draft: GuidedConstitutionDraft, freeform_note: Option<&str>) -> String {
     let mut prompt = format!(
-        "Language tag: {}\n\nGuided answers:\n- purpose: {}\n- initiative: {}\n- evidence: {}\n- communication: {}\n- privacy: {}\n- principles: {}",
-        locale.tag(),
-        draft.purpose.label(Locale::En),
-        autonomy_label(draft.autonomy, Locale::En),
-        draft.evidence.label(Locale::En),
-        draft.communication.label(Locale::En),
-        draft.privacy.label(Locale::En),
-        draft.principles.label(Locale::En),
+        "Language tag: zh-Hans\n\nGuided answers:\n- purpose: {}\n- initiative: {}\n- evidence: {}\n- communication: {}\n- privacy: {}\n- principles: {}",
+        draft.purpose.as_prompt_value(),
+        autonomy_prompt_value(draft.autonomy),
+        draft.evidence.as_prompt_value(),
+        draft.communication.as_prompt_value(),
+        draft.privacy.as_prompt_value(),
+        draft.principles.as_prompt_value(),
     );
     if let Some(note) = freeform_note.and_then(bounded_own_words) {
         let encoded = serde_json::to_string(&note).unwrap_or_else(|_| "\"\"".to_string());
@@ -122,14 +115,13 @@ pub(crate) fn drafting_request(
     request_model: &str,
     draft: GuidedConstitutionDraft,
     freeform_note: Option<&str>,
-    locale: Locale,
 ) -> MessageRequest {
     MessageRequest {
         model: request_model.to_string(),
         messages: vec![Message {
             role: "user".to_string(),
             content: vec![ContentBlock::Text {
-                text: drafting_user_prompt(draft, freeform_note, locale),
+                text: drafting_user_prompt(draft, freeform_note),
                 cache_control: None,
             }],
         }],
@@ -171,9 +163,8 @@ pub(crate) async fn draft_constitution_with_model<C: LlmClient>(
     request_model: &str,
     draft: GuidedConstitutionDraft,
     freeform_note: Option<String>,
-    locale: Locale,
 ) -> Result<Box<UserConstitution>, String> {
-    let request = drafting_request(request_model, draft, freeform_note.as_deref(), locale);
+    let request = drafting_request(request_model, draft, freeform_note.as_deref());
     let response = client
         .create_message(request)
         .await
@@ -216,7 +207,7 @@ mod tests {
     #[test]
     fn drafting_request_sends_only_answers_and_language() {
         let draft = GuidedConstitutionDraft::default();
-        let request = drafting_request("glm-5.2", draft, None, Locale::En);
+        let request = drafting_request("glm-5.2", draft, None);
 
         assert_eq!(request.model, "glm-5.2");
         assert_eq!(request.max_tokens, DRAFT_MAX_TOKENS);
@@ -232,8 +223,8 @@ mod tests {
         let [ContentBlock::Text { text, .. }] = message.content.as_slice() else {
             panic!("expected exactly one text block");
         };
-        assert_eq!(text, &drafting_user_prompt(draft, None, Locale::En));
-        assert!(text.contains("Language tag: en"));
+        assert_eq!(text, &drafting_user_prompt(draft, None));
+        assert!(text.contains("Language tag: zh-Hans"));
         assert!(text.contains("purpose: coding workbench"));
         assert!(text.contains("initiative: balanced"));
         assert!(!text.contains("own words"));
@@ -247,7 +238,7 @@ mod tests {
             "x".repeat(MAX_NOTES_LEN + 16),
             "\u{0007}do not include me"
         );
-        let request = drafting_request("glm-5.2", draft, Some(&own_words), Locale::En);
+        let request = drafting_request("glm-5.2", draft, Some(&own_words));
 
         let [message] = request.messages.as_slice() else {
             panic!("expected exactly one user message");
@@ -283,7 +274,7 @@ mod tests {
         assert!(system.contains("procedures for how work"));
         assert!(system.contains("continuity that should hold across sessions"));
 
-        let zh = drafting_user_prompt(GuidedConstitutionDraft::default(), None, Locale::ZhHans);
+        let zh = drafting_user_prompt(GuidedConstitutionDraft::default(), None);
         assert!(zh.contains("Language tag: zh-Hans"));
         // Canonical answer labels stay English; only the output language moves.
         assert!(zh.contains("purpose: coding workbench"));
@@ -293,7 +284,7 @@ mod tests {
     async fn model_draft_round_trips_through_the_untrusted_gate() {
         let mock = MockLlmClient::new(Vec::new()).with_model("glm-5.2");
         mock.push_message_response(text_response(
-            r#"{"schema_version":1,"language":"en","about":"A GLM-5.2 user shipping Rust.","working_style":["Keep diffs scoped."],"priorities":["Evidence over vibes."],"autonomy_preference":"balanced","notes":"Advisory only."}"#,
+            r#"{"schema_version":1,"about":"A GLM-5.2 user shipping Rust.","working_style":["Keep diffs scoped."],"priorities":["Evidence over vibes."],"autonomy_preference":"balanced","notes":"Advisory only."}"#,
         ));
 
         let constitution = draft_constitution_with_model(
@@ -301,7 +292,6 @@ mod tests {
             "glm-5.2",
             GuidedConstitutionDraft::default(),
             None,
-            Locale::En,
         )
         .await
         .expect("valid draft should parse");
@@ -330,7 +320,6 @@ mod tests {
             "mock-model",
             GuidedConstitutionDraft::default(),
             None,
-            Locale::En,
         )
         .await
         .expect("fenced draft should parse");
@@ -347,7 +336,6 @@ mod tests {
             "mock-model",
             GuidedConstitutionDraft::default(),
             None,
-            Locale::En,
         )
         .await
         .expect_err("prose without JSON must be rejected");
@@ -364,7 +352,6 @@ mod tests {
             "mock-model",
             GuidedConstitutionDraft::default(),
             None,
-            Locale::En,
         )
         .await
         .expect_err("empty draft must be rejected");
@@ -384,7 +371,6 @@ mod tests {
             "mock-model",
             GuidedConstitutionDraft::default(),
             None,
-            Locale::En,
         )
         .await
         .expect("oversized draft should be bounded, not rejected");
@@ -412,7 +398,6 @@ mod tests {
             "mock-model",
             GuidedConstitutionDraft::default(),
             None,
-            Locale::En,
         )
         .await
         .expect("text block should parse");

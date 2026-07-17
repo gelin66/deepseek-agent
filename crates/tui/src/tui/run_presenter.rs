@@ -7,8 +7,10 @@
 use std::time::Instant;
 
 use codewhale_protocol::agent_runtime::{
-    InteractionId, ModelAccounting, ModelOutput, RunPurpose, RuntimeEventKind, TerminalState,
-    ToolArguments, ToolOutcome, TranscriptEntry, UserInteractionRequest, UserInteractionResponse,
+    DurableControlAction, InteractionId, ModelAccounting, ModelAttemptFailure, ModelErrorCategory,
+    ModelOutput, ModelRetryDecision, ModelRetryStopReason, RunPurpose, RuntimeEventKind,
+    TerminalState, ToolArguments, ToolOutcome, TranscriptEntry, UserInteractionRequest,
+    UserInteractionResponse,
 };
 use serde_json::Value;
 
@@ -99,8 +101,12 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
             app.status_message = Some("正在压缩上下文…".to_owned());
             None
         }
-        RuntimeEventKind::ContextCompactionAttemptFailed { retry, .. } => {
-            app.status_message = Some(format!("上下文压缩失败，处理决定：{retry:?}"));
+        RuntimeEventKind::ContextCompactionAttemptFailed { failure, retry, .. } => {
+            app.status_message = Some(format!(
+                "上下文压缩失败：{}；{}",
+                model_failure_label(&failure),
+                model_retry_label(&retry)
+            ));
             None
         }
         RuntimeEventKind::ContextCompactionCommitted {
@@ -128,7 +134,11 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
         }
         RuntimeEventKind::ModelRequestFailed { failure, retry, .. } => {
             discard_uncommitted_streams(app);
-            app.status_message = Some(format!("DeepSeek 请求失败：{failure:?}；{retry:?}"));
+            app.status_message = Some(format!(
+                "DeepSeek 请求失败：{}；{}",
+                model_failure_label(&failure),
+                model_retry_label(&retry)
+            ));
             None
         }
         RuntimeEventKind::ModelResponseCommitted {
@@ -234,7 +244,7 @@ fn present_canonical_event(app: &mut App, event: RuntimeEventKind) -> Option<Pre
             None
         }
         RuntimeEventKind::ControlRequested { action, .. } => {
-            app.status_message = Some(format!("控制请求已受理：{action:?}"));
+            app.status_message = Some(format!("控制请求已受理：{}", control_action_label(action)));
             None
         }
         RuntimeEventKind::Terminal { outcome } => {
@@ -576,14 +586,66 @@ fn terminal_label(terminal: &TerminalState) -> &'static str {
     }
 }
 
+fn model_failure_label(failure: &ModelAttemptFailure) -> String {
+    format!(
+        "{}（代码：{}；类别：{}）",
+        failure.message,
+        failure.code,
+        model_error_category_label(failure.category)
+    )
+}
+
+fn model_error_category_label(category: ModelErrorCategory) -> &'static str {
+    match category {
+        ModelErrorCategory::Transport => "传输错误",
+        ModelErrorCategory::Timeout => "请求超时",
+        ModelErrorCategory::StreamStall => "流式响应停滞",
+        ModelErrorCategory::RateLimit => "请求限流",
+        ModelErrorCategory::Authentication => "身份验证失败",
+        ModelErrorCategory::Protocol => "协议错误",
+        ModelErrorCategory::Service => "服务错误",
+        ModelErrorCategory::Cancelled => "请求已取消",
+        ModelErrorCategory::Unknown => "未知错误",
+    }
+}
+
+fn model_retry_label(retry: &ModelRetryDecision) -> String {
+    match retry {
+        ModelRetryDecision::Stop { reason } => {
+            format!("停止重试：{}", model_retry_stop_reason_label(*reason))
+        }
+        ModelRetryDecision::Retry { prepared } => {
+            format!("将重试（尝试 ID：{}）", prepared.attempt_id.0)
+        }
+    }
+}
+
+fn model_retry_stop_reason_label(reason: ModelRetryStopReason) -> &'static str {
+    match reason {
+        ModelRetryStopReason::ActionableOutput => "已收到可执行输出",
+        ModelRetryStopReason::NotRetryable => "错误不可重试",
+        ModelRetryStopReason::FailureChanged => "失败类型已变化",
+        ModelRetryStopReason::RetryLimitReached => "已达到重试上限",
+        ModelRetryStopReason::RequestBudgetExceeded => "已超出请求预算",
+    }
+}
+
+fn control_action_label(action: DurableControlAction) -> &'static str {
+    match action {
+        DurableControlAction::Interrupt => "中断",
+        DurableControlAction::Cancel => "取消",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use codewhale_protocol::agent_runtime::{
-        AgentOutcome, AttemptId, CommandId, DurableControlAction, ModelAccounting,
-        ModelFinishReason, ModelOutput, ModelToolCall, OperationId, RunId, RunRequest,
-        RuntimeEventId, StoredRuntimeEvent, TerminalState, ToolInvocation, TranscriptEntry, Usage,
+        AgentActor, AgentOutcome, AttemptId, CommandId, DurableControlAction, ModelAccounting,
+        ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall, OperationId,
+        PreparedModelRetry, ReasoningEffort, RunId, RunRequest, RuntimeEventId, StoredRuntimeEvent,
+        SystemPrompt, TerminalState, ToolInvocation, TranscriptEntry, Usage,
     };
 
     use super::*;
@@ -1119,5 +1181,83 @@ mod tests {
             terminal_app.runtime_turn_status.as_deref(),
             Some("completed")
         );
+    }
+
+    #[test]
+    fn model_failure_and_retry_status_do_not_expose_debug_enum_names() {
+        let run_id = RunId::from("failure-run");
+        let failure = ModelAttemptFailure {
+            code: "deepseek_transport".to_owned(),
+            category: ModelErrorCategory::Transport,
+            message: "connection reset by peer".to_owned(),
+            retryable: true,
+            actionable_output: false,
+        };
+        let retry = ModelRetryDecision::Stop {
+            reason: ModelRetryStopReason::RetryLimitReached,
+        };
+        let mut app = app();
+        apply_events(
+            &mut app,
+            vec![
+                created(&run_id, Vec::new()),
+                stored(
+                    &run_id,
+                    2,
+                    RuntimeEventKind::ModelRequestFailed {
+                        attempt_id: AttemptId("attempt-1".to_owned()),
+                        failure,
+                        accounting: Box::new(ModelAccounting::default()),
+                        retry,
+                    },
+                ),
+            ],
+        );
+
+        let status = app.status_message.expect("失败状态");
+        assert_eq!(
+            status,
+            "DeepSeek 请求失败：connection reset by peer（代码：deepseek_transport；类别：传输错误）；停止重试：已达到重试上限"
+        );
+        for leaked in [
+            "ModelAttemptFailure",
+            "Transport",
+            "Stop",
+            "RetryLimitReached",
+        ] {
+            assert!(!status.contains(leaked), "泄漏了协议枚举名：{leaked}");
+        }
+    }
+
+    #[test]
+    fn retry_and_control_actions_have_explicit_chinese_labels() {
+        let retry = ModelRetryDecision::Retry {
+            prepared: PreparedModelRetry {
+                attempt_id: AttemptId("attempt-retry-2".to_owned()),
+                request: Box::new(ModelRequest {
+                    run_id: RunId::from("retry-run"),
+                    parent_run_id: None,
+                    actor: AgentActor::default(),
+                    model: "deepseek-chat".to_owned(),
+                    system_prompt: SystemPrompt::from_text("系统"),
+                    messages: Vec::new(),
+                    tools: Vec::new(),
+                    reasoning_effort: ReasoningEffort::Auto,
+                    max_output_tokens: None,
+                    streaming: true,
+                    request_number: 2,
+                    attempt: 2,
+                }),
+            },
+        };
+        assert_eq!(
+            model_retry_label(&retry),
+            "将重试（尝试 ID：attempt-retry-2）"
+        );
+        assert_eq!(
+            control_action_label(DurableControlAction::Interrupt),
+            "中断"
+        );
+        assert_eq!(control_action_label(DurableControlAction::Cancel), "取消");
     }
 }

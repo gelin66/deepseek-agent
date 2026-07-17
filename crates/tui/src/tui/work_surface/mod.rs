@@ -20,7 +20,8 @@ mod tests {
     use std::path::PathBuf;
 
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
-    use ratatui::{Terminal, backend::TestBackend};
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+    use unicode_width::UnicodeWidthStr;
 
     use crate::config::Config;
     use crate::tools::todo::TodoStatus;
@@ -48,9 +49,21 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        let mut app = App::new(options, &Config::default());
-        app.ui_locale = codewhale_config::Locale::En;
-        app
+        App::new(options, &Config::default())
+    }
+
+    fn buffer_text(buf: &Buffer) -> String {
+        let mut text = String::new();
+        for y in buf.area.y..buf.area.bottom() {
+            let mut x = buf.area.x;
+            while x < buf.area.right() {
+                let symbol = buf[(x, y)].symbol();
+                text.push_str(symbol);
+                x = x.saturating_add(UnicodeWidthStr::width(symbol).max(1) as u16);
+            }
+            text.push('\n');
+        }
+        text
     }
 
     fn add_task(app: &mut App, id: &str) {
@@ -438,14 +451,8 @@ mod tests {
         terminal
             .draw(|frame| super::render(frame, frame.area(), &mut app))
             .expect("draw");
-        let text = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(text.contains("confirm"), "{text}");
+        let text = buffer_text(terminal.backend().buffer());
+        assert!(text.contains("确认"), "{text}");
         assert!(text.contains("Esc"), "{text}");
         let confirmed =
             super::interaction::activate_stop(&mut app, &worker.id, stop).expect("fire");

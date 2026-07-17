@@ -72,7 +72,6 @@ mod subagent_routing;
 pub mod theme_picker;
 pub mod transcript;
 pub mod transcript_cache;
-pub mod translation;
 pub mod ui;
 mod ui_text;
 pub mod underwater;

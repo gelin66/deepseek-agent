@@ -20,7 +20,6 @@ use crate::tui::ui_text::{concise_shell_command_label, truncate_line_to_width};
 use crate::tui::widgets::tool_card::tool_activity_label_for_name;
 use crate::tui::widgets::{FooterProps, FooterToast, FooterWidget, Renderable};
 use crate::tui::workspace_context;
-use codewhale_config::Locale;
 
 pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     if area.width == 0 || area.height == 0 {
@@ -36,11 +35,8 @@ pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     // within ~2s. Mirrors codex-rs's `FooterMode::QuitShortcutReminder`.
     let quit_prompt = if app.quit_is_armed() {
         Some(FooterToast {
-            text: crate::localization::tr(
-                app.ui_locale,
-                crate::localization::MessageId::FooterPressCtrlCAgain,
-            )
-            .to_string(),
+            text: crate::localization::tr(crate::localization::MessageId::FooterPressCtrlCAgain)
+                .to_string(),
             color: palette::STATUS_WARNING,
         })
     } else {
@@ -88,7 +84,7 @@ pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
                 .clone()
                 .or_else(|| active_tool_status_label(app, true))
                 .unwrap_or_else(|| {
-                    let base = crate::tui::widgets::footer_working_label(dot_frame, app.ui_locale);
+                    let base = crate::tui::widgets::footer_working_label(dot_frame);
                     if elapsed_secs > 0 {
                         format!("{base} ({elapsed_secs}s)")
                     } else {
@@ -582,7 +578,7 @@ pub(crate) fn active_tool_status_label(app: &App, include_counts: bool) -> Optio
 
     let mut snapshot = ActiveToolStatusSnapshot::default();
     for cell in active.entries() {
-        collect_active_tool_status(cell, &mut snapshot, app.ui_locale);
+        collect_active_tool_status(cell, &mut snapshot);
     }
     if snapshot.total() == 0 {
         return None;
@@ -613,11 +609,7 @@ pub(crate) fn active_tool_status_label(app: &App, include_counts: bool) -> Optio
     Some(parts.join(" \u{00B7} "))
 }
 
-fn collect_active_tool_status(
-    cell: &HistoryCell,
-    snapshot: &mut ActiveToolStatusSnapshot,
-    locale: Locale,
-) {
+fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatusSnapshot) {
     let HistoryCell::Tool(tool) = cell else {
         return;
     };
@@ -673,7 +665,7 @@ fn collect_active_tool_status(
                 return;
             }
             snapshot.record(
-                tool_activity_label_for_name(&generic.name, locale),
+                tool_activity_label_for_name(&generic.name),
                 generic.status,
                 None,
             );
@@ -716,7 +708,7 @@ pub(crate) fn render_footer_from(
     };
 
     let agents = if has(S::Agents) && !agents_sidebar_surface_visible(app) {
-        crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale)
+        crate::tui::widgets::footer_agents_chip(running_agent_count(app))
     } else {
         Vec::new()
     };
@@ -979,8 +971,7 @@ pub(crate) fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'s
     // duplicate it in the footer. The footer carries unique info only:
     // in-flight sub-agents, reasoning replay tokens, cache hit rate, and
     // session cost.
-    let agents_spans =
-        crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
+    let agents_spans = crate::tui::widgets::footer_agents_chip(running_agent_count(app));
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
     let cost_spans = footer_cost_spans(app);

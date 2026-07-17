@@ -25,7 +25,6 @@ use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::widgets::Renderable;
-use codewhale_config::Locale;
 
 /// Maximum worker rows rendered under the selected phase.
 const MAX_VISIBLE_ROWS: usize = 8;
@@ -105,9 +104,9 @@ impl WorkflowRowStatus {
     /// English because it doubles as the machine-readable `status` token in
     /// [`WorkflowPanel::to_run_json`]; this method is for rendered rows only.
     #[must_use]
-    pub fn display_label(self, locale: Locale) -> std::borrow::Cow<'static, str> {
+    pub fn display_label(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::Waiting => tr(locale, MessageId::WorkflowStatusWaiting),
+            Self::Waiting => tr(MessageId::WorkflowStatusWaiting),
             other => std::borrow::Cow::Borrowed(other.label()),
         }
     }
@@ -399,9 +398,6 @@ pub struct WorkflowPanel {
     pub source_path: Option<PathBuf>,
     /// Spillover / full-output path when the tool result was large.
     pub spillover_path: Option<PathBuf>,
-    /// UI locale for rendered copy. Defaults to English; hosts with app
-    /// access set it after construction (#4057 wave 2).
-    pub locale: Locale,
 }
 
 /// Extra fields the history card can show that are not part of the live panel
@@ -435,7 +431,6 @@ impl WorkflowPanel {
             result_summary: None,
             source_path: None,
             spillover_path: None,
-            locale: Locale::En,
         }
     }
 
@@ -805,7 +800,7 @@ impl WorkflowPanel {
                     "{mark} {label} ({status})",
                     mark = role_mark(row.profile.as_deref()),
                     label = short_label(&row.label, 16),
-                    status = row.status.display_label(self.locale)
+                    status = row.status.display_label()
                 )
             })
             .collect();
@@ -845,7 +840,7 @@ impl WorkflowPanel {
                         label = short_label(&row.label, 14),
                         track = lane_track(row, max_elapsed, 16, now_ms()),
                         elapsed = format_elapsed(row_elapsed_ms(row, now_ms())),
-                        status = row.status.display_label(self.locale),
+                        status = row.status.display_label(),
                     ),
                     content_width,
                 ),
@@ -858,7 +853,7 @@ impl WorkflowPanel {
             let (failed, cancelled) = self.failure_cancel_counts();
             lines.push(Line::from(Span::styled(
                 truncate_line_to_width(
-                    &tr(self.locale, MessageId::WorkflowDebrief)
+                    &tr(MessageId::WorkflowDebrief)
                         .replace("{done}", &done.to_string())
                         .replace("{total}", &total.to_string())
                         .replace("{failed}", &failed.to_string())
@@ -1046,7 +1041,6 @@ impl WorkflowPanel {
                 at_ms,
             } => {
                 // New run replaces preserved completed state.
-                let locale = self.locale;
                 *self = Self::new(
                     run_id,
                     workflow_goal
@@ -1054,7 +1048,6 @@ impl WorkflowPanel {
                         .unwrap_or_else(|| "workflow".to_string()),
                     at_ms,
                 );
-                self.locale = locale;
                 self.budget_total = token_budget;
                 self.budget_remaining = token_budget;
                 self.source_path = source_path;
@@ -1452,7 +1445,7 @@ impl WorkflowPanel {
         let text = format!(
             "  {mark} {status:<9} {label} · {role} · {model} · {worktree} · {lane} · {elapsed}{schema}",
             mark = role_mark(row.profile.as_deref()),
-            status = row.status.display_label(self.locale),
+            status = row.status.display_label(),
             label = short_label(&row.label, 18),
             lane = lane_track(row, elapsed_ms.max(1), 10, now_ms),
         );
@@ -1763,7 +1756,13 @@ mod tests {
                 glyphs.extend(span.content.chars());
             }
         }
-        for ch in glyphs.into_iter().filter(|ch| !ch.is_ascii()) {
+        // Localized words such as “等待中” are content, not decorative
+        // glyphs. Keep checking every non-ASCII symbol so an unmapped arrow,
+        // status mark, gate, or lane ornament still fails this contract.
+        for ch in glyphs
+            .into_iter()
+            .filter(|ch| !ch.is_ascii() && !ch.is_alphanumeric())
+        {
             let mut cell = ratatui::buffer::Cell::default();
             cell.set_symbol(&ch.to_string());
             crate::tui::color_compat::adapt_cell_symbol_for_ascii(&mut cell);

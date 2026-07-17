@@ -23,8 +23,6 @@
 //! module is the vocabulary, not the layout engine. Keeping it small means
 //! a future visual refresh only has to touch the constants here.
 
-use codewhale_config::Locale;
-
 /// Tool family — the verb the agent is performing. Used to pick a glyph
 /// and label for the card header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,13 +134,13 @@ fn family_message_id(family: ToolFamily) -> crate::localization::MessageId {
 /// Compact activity/status label for arbitrary tool names. Known built-ins use
 /// the semantic verb; unknown tools keep the `tool NAME` form.
 #[must_use]
-pub fn tool_activity_label_for_name(name: &str, locale: Locale) -> String {
+pub fn tool_activity_label_for_name(name: &str) -> String {
     let family = tool_family_for_name(name);
     let mid = family_message_id(family);
     if matches!(family, ToolFamily::Generic) {
-        format!("{} {name}", crate::localization::tr(locale, mid))
+        format!("{} {name}", crate::localization::tr(mid))
     } else {
-        crate::localization::tr(locale, mid).to_string()
+        crate::localization::tr(mid).to_string()
     }
 }
 
@@ -337,7 +335,6 @@ mod tests {
         tool_header_summary_for_name,
     };
     use crate::localization::{MessageId, tr};
-    use codewhale_config::Locale;
 
     #[test]
     fn legacy_titles_route_to_expected_families() {
@@ -382,17 +379,11 @@ mod tests {
             "future_private_tool"
         );
 
+        assert_eq!(tool_activity_label_for_name("exec_shell"), "运行");
+        assert_eq!(tool_activity_label_for_name("run_verifiers"), "验证");
         assert_eq!(
-            tool_activity_label_for_name("exec_shell", Locale::En),
-            "run"
-        );
-        assert_eq!(
-            tool_activity_label_for_name("run_verifiers", Locale::En),
-            "verify"
-        );
-        assert_eq!(
-            tool_activity_label_for_name("future_private_tool", Locale::En),
-            "tool future_private_tool"
+            tool_activity_label_for_name("future_private_tool"),
+            "工具 future_private_tool"
         );
     }
 
@@ -475,68 +466,28 @@ mod tests {
     }
 
     #[test]
-    fn tool_family_labels_localized_no_english_leak() {
-        let checks: &[(MessageId, &str, &str)] = &[
-            (MessageId::ToolFamilyRead, "read", "đọc,读,読,读取,ler,leer"),
-            (
-                MessageId::ToolFamilyPatch,
-                "patch",
-                "vá,補,パ,修补,corrigir,parchear",
-            ),
-            (
-                MessageId::ToolFamilyRun,
-                "run",
-                "chạy,執,実,运行,executar,ejecutar",
-            ),
-            (
-                MessageId::ToolFamilyFind,
-                "find",
-                "tìm,搜,検,搜索,buscar,buscar",
-            ),
-            (
-                MessageId::ToolFamilyDelegate,
-                "delegate",
-                "ủy,委,委,委,delegar,delegar",
-            ),
-            (
-                MessageId::ToolFamilyVerify,
-                "verify",
-                "xác minh,驗,検,验,verificar,verificar",
-            ),
-            (
-                MessageId::ToolFamilyThink,
-                "think",
-                "suy nghĩ,思,思,思,pensar,pensar",
-            ),
-            (
-                MessageId::ToolFamilyGeneric,
-                "tool",
-                "công cụ,工具,ツール,工具,ferramenta,herramienta",
-            ),
+    fn tool_family_labels_use_simplified_chinese() {
+        let checks: &[(MessageId, &str)] = &[
+            (MessageId::ToolFamilyRead, "read"),
+            (MessageId::ToolFamilyPatch, "patch"),
+            (MessageId::ToolFamilyRun, "run"),
+            (MessageId::ToolFamilyFind, "find"),
+            (MessageId::ToolFamilyDelegate, "delegate"),
+            (MessageId::ToolFamilyVerify, "verify"),
+            (MessageId::ToolFamilyThink, "think"),
+            (MessageId::ToolFamilyGeneric, "tool"),
         ];
-        for locale in [
-            Locale::Ja,
-            Locale::ZhHans,
-            Locale::ZhHant,
-            Locale::PtBr,
-            Locale::Es419,
-            Locale::Vi,
-        ] {
-            for (id, eng, _) in checks {
-                let msg = tr(locale, *id);
-                assert!(
-                    !msg.eq_ignore_ascii_case(eng),
-                    "{} leaked exact English '{}' for '{:?}': {msg}",
-                    locale.tag(),
-                    eng,
-                    id
-                );
-            }
+        for (id, english) in checks {
+            let msg = tr(*id);
+            assert!(
+                !msg.eq_ignore_ascii_case(english),
+                "leaked exact English '{english}' for '{id:?}': {msg}"
+            );
         }
     }
 
     #[test]
-    fn tool_family_activity_label_localized_no_english_leak() {
+    fn tool_family_activity_labels_use_simplified_chinese() {
         let known = [
             "exec_shell",
             "read_file",
@@ -545,23 +496,12 @@ mod tests {
             "run_verifiers",
         ];
         let english_labels = ["run", "read", "patch", "find", "verify"];
-        for locale in [
-            Locale::Ja,
-            Locale::ZhHans,
-            Locale::ZhHant,
-            Locale::PtBr,
-            Locale::Es419,
-            Locale::Vi,
-        ] {
-            for (tool, eng) in known.iter().zip(english_labels.iter()) {
-                let label = tool_activity_label_for_name(tool, locale);
-                assert!(
-                    !label.eq_ignore_ascii_case(eng),
-                    "{} leaked English '{}' for tool '{tool}': {label}",
-                    locale.tag(),
-                    eng,
-                );
-            }
+        for (tool, english) in known.iter().zip(english_labels.iter()) {
+            let label = tool_activity_label_for_name(tool);
+            assert!(
+                !label.eq_ignore_ascii_case(english),
+                "leaked English '{english}' for tool '{tool}': {label}",
+            );
         }
     }
 }

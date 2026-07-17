@@ -8,7 +8,6 @@ use std::fmt::Write;
 use std::time::{Duration, Instant};
 
 use crate::tui::app::HuntVerdict;
-use codewhale_config::Locale;
 
 use ratatui::{
     Frame,
@@ -2291,7 +2290,6 @@ fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &mut App) {
     let (lines, row_actions) = subagent_panel_rows(
         &summary,
         &rows,
-        app.ui_locale,
         content_width,
         usable_rows.max(1),
         &app.ui_theme,
@@ -2543,12 +2541,11 @@ fn sidebar_progress_status_text(progress: &str) -> &'static str {
 pub fn subagent_panel_lines(
     summary: &SidebarSubagentSummary,
     rows: &[SidebarAgentRow],
-    locale: Locale,
     content_width: usize,
     max_rows: usize,
     theme: &palette::UiTheme,
 ) -> Vec<Line<'static>> {
-    subagent_panel_rows(summary, rows, locale, content_width, max_rows, theme).0
+    subagent_panel_rows(summary, rows, content_width, max_rows, theme).0
 }
 
 /// Render an indented sidebar detail line that never exceeds `content_width`
@@ -2597,7 +2594,6 @@ fn subagent_output_handle(row: &SidebarAgentRow) -> Option<String> {
 fn subagent_panel_rows(
     summary: &SidebarSubagentSummary,
     rows: &[SidebarAgentRow],
-    _locale: Locale,
     content_width: usize,
     max_rows: usize,
     theme: &palette::UiTheme,
@@ -3302,7 +3298,6 @@ mod tests {
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
     };
     use crate::tui::spinner::{BRAILLE_SPINNER_FRAME_MS, LIVE_MARKER_DELAY_MS, LIVE_STATIC_MARKER};
-    use codewhale_config::Locale;
     use ratatui::{Terminal, backend::TestBackend, text::Line};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -3596,7 +3591,6 @@ mod tests {
     #[test]
     fn pinned_sidebar_renders_agents_section_when_subagents_are_active() {
         let mut app = create_test_app();
-        app.ui_locale = Locale::En;
         app.sidebar_focus = SidebarFocus::Pinned;
         app.subagent_cache
             .push(cached_agent("agent-active-1", Some("critic")));
@@ -4964,8 +4958,7 @@ mod tests {
             expanded: true,
         }];
 
-        let (lines, actions) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 48, 8, &palette::UI_THEME);
+        let (lines, actions) = subagent_panel_rows(&summary, &rows, 48, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         assert_eq!(lines.len(), actions.len());
 
@@ -5019,8 +5012,7 @@ mod tests {
             expanded: false,
         }];
 
-        let (lines, actions) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 48, 8, &palette::UI_THEME);
+        let (lines, actions) = subagent_panel_rows(&summary, &rows, 48, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         assert_eq!(lines.len(), actions.len());
 
@@ -5067,8 +5059,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let (lines, _) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 72, 10, &palette::UI_THEME);
+        let (lines, _) = subagent_panel_rows(&summary, &rows, 72, 10, &palette::UI_THEME);
         let text = lines_to_text(&lines);
 
         assert!(
@@ -5117,8 +5108,7 @@ mod tests {
             expanded: false,
         }];
 
-        let (lines, actions) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 72, 8, &palette::UI_THEME);
+        let (lines, actions) = subagent_panel_rows(&summary, &rows, 72, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         let agent_idx = text
             .iter()
@@ -5237,8 +5227,7 @@ mod tests {
             cached_running: 1,
             ..SidebarSubagentSummary::default()
         };
-        let (lines, _) =
-            subagent_panel_rows(&summary, &sorted, Locale::En, 64, 8, &palette::UI_THEME);
+        let (lines, _) = subagent_panel_rows(&summary, &sorted, 64, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         let parent_idx = text
             .iter()
@@ -5301,8 +5290,7 @@ mod tests {
             progress_only_count: 2,
             ..SidebarSubagentSummary::default()
         };
-        let (lines, _) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 64, 8, &palette::UI_THEME);
+        let (lines, _) = subagent_panel_rows(&summary, &rows, 64, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         let parent_idx = text
             .iter()
@@ -5617,7 +5605,7 @@ mod tests {
     #[test]
     fn navigator_empty_state_says_no_agents() {
         let summary = SidebarSubagentSummary::default();
-        let lines = subagent_panel_lines(&summary, &[], Locale::En, 32, 8, &palette::UI_THEME);
+        let lines = subagent_panel_lines(&summary, &[], 32, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         assert_eq!(text, vec!["No agents".to_string()]);
     }
@@ -5672,7 +5660,6 @@ mod tests {
         let text = lines_to_text(&subagent_panel_lines(
             &summary,
             &rows,
-            Locale::En,
             64,
             12,
             &palette::UI_THEME,
@@ -5695,7 +5682,6 @@ mod tests {
         let wide_text = lines_to_text(&subagent_panel_lines(
             &summary,
             &rows,
-            Locale::En,
             96,
             12,
             &palette::UI_THEME,
@@ -5721,7 +5707,6 @@ mod tests {
         let text = lines_to_text(&subagent_panel_lines(
             &summary,
             &[],
-            Locale::En,
             64,
             8,
             &palette::UI_THEME,
@@ -5747,7 +5732,6 @@ mod tests {
         let text = lines_to_text(&subagent_panel_lines(
             &summary,
             &[],
-            Locale::En,
             32,
             8,
             &palette::UI_THEME,
@@ -5771,7 +5755,7 @@ mod tests {
             foreground_rlm_running: false,
             role_counts,
         };
-        let lines = subagent_panel_lines(&summary, &[], Locale::En, 16, 8, &palette::UI_THEME);
+        let lines = subagent_panel_lines(&summary, &[], 16, 8, &palette::UI_THEME);
         let role_line: &str = lines[1]
             .spans
             .first()
@@ -5792,7 +5776,6 @@ mod tests {
         let text = lines_to_text(&subagent_panel_lines(
             &summary,
             &[],
-            Locale::En,
             64,
             8,
             &palette::UI_THEME,
@@ -6005,8 +5988,7 @@ mod tests {
             expanded: true,
         }];
 
-        let (lines, _) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 72, 8, &palette::UI_THEME);
+        let (lines, _) = subagent_panel_rows(&summary, &rows, 72, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         assert!(
             text.iter().any(|line| line.contains("model kimi-k2.6")),
@@ -6040,8 +6022,7 @@ mod tests {
             expanded: true,
         }];
 
-        let (lines, actions) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 72, 8, &palette::UI_THEME);
+        let (lines, actions) = subagent_panel_rows(&summary, &rows, 72, 8, &palette::UI_THEME);
         assert_eq!(lines.len(), actions.len());
         assert!(
             actions.iter().any(|action| matches!(
@@ -6086,8 +6067,7 @@ mod tests {
             expanded: true,
         }];
 
-        let (lines, _) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 72, 8, &palette::UI_THEME);
+        let (lines, _) = subagent_panel_rows(&summary, &rows, 72, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         // The expanded detail line (the indented second row) carries the
         // objective and elapsed time, not just "running". Elapsed time is
@@ -6131,8 +6111,7 @@ mod tests {
             expanded: true,
         }];
 
-        let (lines, _) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 72, 8, &palette::UI_THEME);
+        let (lines, _) = subagent_panel_rows(&summary, &rows, 72, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         // No line should be blank, and at least one carries the status.
         assert!(
@@ -6181,14 +6160,8 @@ mod tests {
 
         let content_width = 28usize;
         let max_rows = 6usize;
-        let (lines, actions) = subagent_panel_rows(
-            &summary,
-            &rows,
-            Locale::En,
-            content_width,
-            max_rows,
-            &palette::UI_THEME,
-        );
+        let (lines, actions) =
+            subagent_panel_rows(&summary, &rows, content_width, max_rows, &palette::UI_THEME);
 
         // Header + role-mix precede the per-agent loop, which is capped by
         // max_rows, so the total stays small and actions stay parallel.
@@ -6257,8 +6230,7 @@ mod tests {
         }];
 
         // Wide render: the tool-call trail and step count are both visible.
-        let (wide, wide_actions) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 200, 8, &palette::UI_THEME);
+        let (wide, wide_actions) = subagent_panel_rows(&summary, &rows, 200, 8, &palette::UI_THEME);
         let wide_text = lines_to_text(&wide);
         assert_eq!(
             wide.len(),
@@ -6286,14 +6258,8 @@ mod tests {
 
         // Narrow render of the same busy worker: bounded, no overflow, no panic.
         let content_width = 24usize;
-        let (narrow, narrow_actions) = subagent_panel_rows(
-            &summary,
-            &rows,
-            Locale::En,
-            content_width,
-            8,
-            &palette::UI_THEME,
-        );
+        let (narrow, narrow_actions) =
+            subagent_panel_rows(&summary, &rows, content_width, 8, &palette::UI_THEME);
         assert_eq!(narrow.len(), narrow_actions.len());
         for line in &narrow {
             assert!(
@@ -6334,14 +6300,8 @@ mod tests {
         }];
 
         for content_width in [1usize, 2, 3, 5, 8, 12, 16, 20, 24, 32, 48] {
-            let (lines, actions) = subagent_panel_rows(
-                &summary,
-                &rows,
-                Locale::En,
-                content_width,
-                8,
-                &palette::UI_THEME,
-            );
+            let (lines, actions) =
+                subagent_panel_rows(&summary, &rows, content_width, 8, &palette::UI_THEME);
             assert_eq!(lines.len(), actions.len(), "width {content_width}");
             for line in &lines {
                 assert!(
@@ -6353,8 +6313,7 @@ mod tests {
         }
 
         // At a usable-narrow width the status verb must remain legible.
-        let (lines, _) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 24, 8, &palette::UI_THEME);
+        let (lines, _) = subagent_panel_rows(&summary, &rows, 24, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
         assert!(
             text.iter().any(|line| line.contains("running")),
@@ -6391,7 +6350,7 @@ mod tests {
                 ..SidebarAgentRow::default()
             }];
 
-            let (lines, _) = subagent_panel_rows(&summary, &rows, Locale::En, 48, 8, theme);
+            let (lines, _) = subagent_panel_rows(&summary, &rows, 48, 8, theme);
             let text = lines_to_text(&lines);
 
             // The label line carries the status marker in the state color.
@@ -6437,8 +6396,7 @@ mod tests {
             ..SidebarAgentRow::default()
         }];
 
-        let (lines, actions) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 72, 8, &palette::UI_THEME);
+        let (lines, actions) = subagent_panel_rows(&summary, &rows, 72, 8, &palette::UI_THEME);
         let text = lines_to_text(&lines);
 
         // A handle line references the documented full-transcript var handle.
@@ -6770,14 +6728,8 @@ mod tests {
         // a wide glyph into a replacement char — which is what would corrupt the
         // panel border or visually drift the status columns.
         for content_width in [1usize, 2, 3, 5, 8, 12, 16, 20, 24, 40, 80] {
-            let (lines, actions) = subagent_panel_rows(
-                &summary,
-                &rows,
-                Locale::En,
-                content_width,
-                8,
-                &palette::UI_THEME,
-            );
+            let (lines, actions) =
+                subagent_panel_rows(&summary, &rows, content_width, 8, &palette::UI_THEME);
             assert_eq!(lines.len(), actions.len(), "width {content_width}");
             for line in &lines {
                 assert!(
@@ -6797,14 +6749,8 @@ mod tests {
         // the status marker `[~]`, the compact stop target `[x]`, and the CJK
         // display name all survive, and the row still resolves to its agent id.
         for content_width in [40usize, 80] {
-            let (lines, actions) = subagent_panel_rows(
-                &summary,
-                &rows,
-                Locale::En,
-                content_width,
-                8,
-                &palette::UI_THEME,
-            );
+            let (lines, actions) =
+                subagent_panel_rows(&summary, &rows, content_width, 8, &palette::UI_THEME);
             let text = lines_to_text(&lines);
 
             let label_idx = text
@@ -6861,14 +6807,8 @@ mod tests {
         }];
 
         for content_width in [12usize, 20, 28, 40, 80] {
-            let (lines, _) = subagent_panel_rows(
-                &summary,
-                &rows,
-                Locale::En,
-                content_width,
-                8,
-                &palette::UI_THEME,
-            );
+            let (lines, _) =
+                subagent_panel_rows(&summary, &rows, content_width, 8, &palette::UI_THEME);
             for line in &lines {
                 assert!(
                     subagent_line_width(line) <= content_width,
@@ -6884,8 +6824,7 @@ mod tests {
         }
 
         // The label keeps its semantic status-marker prefix across widths.
-        let (lines, _) =
-            subagent_panel_rows(&summary, &rows, Locale::En, 40, 8, &palette::UI_THEME);
+        let (lines, _) = subagent_panel_rows(&summary, &rows, 40, 8, &palette::UI_THEME);
         let label_text = lines_to_text(&lines);
         let label = label_text
             .iter()

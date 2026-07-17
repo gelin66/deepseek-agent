@@ -354,11 +354,11 @@ fn activate_skill(app: &mut App, name: &str) -> CommandResult {
 
         if available.is_empty() {
             CommandResult::error(format!(
-                "Skill '{name}' not found. No skills installed.\n\nUse /skills to see how to add skills.{warnings}"
+                "未找到技能「{name}」，当前没有已安装的技能。\n\n输入 /skills 查看如何添加技能。{warnings}"
             ))
         } else {
             CommandResult::error(format!(
-                "Skill '{}' not found.\n\nAvailable skills: {}{}",
+                "未找到技能「{}」。\n\n可用技能：{}{}",
                 name,
                 available.join(", "),
                 warnings
@@ -1279,7 +1279,7 @@ mod tests {
         let result = run_skill(&mut app, Some("nonexistent"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains("not found"));
+        assert!(msg.contains("未找到技能「nonexistent」"));
     }
 
     #[test]

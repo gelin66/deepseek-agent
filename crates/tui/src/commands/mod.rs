@@ -21,6 +21,7 @@ pub use groups::project::share;
 // Voice capture plumbing shared with the UI event loop.
 pub use groups::core::voice;
 
+use crate::localization::{MessageId, tr};
 use crate::tui::app::{App, AppAction};
 
 /// Result of executing a command
@@ -74,7 +75,7 @@ impl CommandResult {
     /// Create an error message result
     pub fn error(msg: impl Into<String>) -> Self {
         Self {
-            message: Some(format!("Error: {}", msg.into())),
+            message: Some(format!("错误：{}", msg.into())),
             action: None,
             is_error: true,
         }
@@ -112,9 +113,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
     if let Some(skill_input) = trimmed.strip_prefix('$') {
         let skill_input = skill_input.trim_start();
         if skill_input.is_empty() {
-            return CommandResult::error(
-                "Type a skill name after $. For example: $getting-started",
-            );
+            return CommandResult::error("$ 后需要填写技能名，例如：$getting-started");
         }
         let parts: Vec<&str> = skill_input.splitn(2, char::is_whitespace).collect();
         let skill_name = parts.first().copied().unwrap_or("");
@@ -126,7 +125,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
             return result;
         }
         return CommandResult::error(format!(
-            "Unknown skill: ${skill_name}. Type /skills to see installed skills."
+            "未知技能：${skill_name}。输入 /skills 查看已安装的技能。"
         ));
     }
 
@@ -151,19 +150,16 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
     // registry and remain documented in docs/architecture/command-dispatch.md.
     match command.as_str() {
         "jihua" => {
-            return groups::config::dispatch(app, "jihua", arg).unwrap_or_else(|| {
-                CommandResult::error("The /jihua alias could not be dispatched.")
-            });
+            return groups::config::dispatch(app, "jihua", arg)
+                .unwrap_or_else(|| CommandResult::error("无法分发 /jihua 别名。"));
         }
         "zidong" => {
-            return groups::config::dispatch(app, "zidong", arg).unwrap_or_else(|| {
-                CommandResult::error("The /zidong alias could not be dispatched.")
-            });
+            return groups::config::dispatch(app, "zidong", arg)
+                .unwrap_or_else(|| CommandResult::error("无法分发 /zidong 别名。"));
         }
         "slop" | "canzha" => {
-            return groups::config::dispatch(app, "debt", arg).unwrap_or_else(|| {
-                CommandResult::error("The /debt command could not be dispatched.")
-            });
+            return groups::config::dispatch(app, "debt", arg)
+                .unwrap_or_else(|| CommandResult::error("无法分发 /debt 命令。"));
         }
         _ => {}
     }
@@ -176,13 +172,13 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
         // Permanent legacy migration hints. These are deliberately excluded
         // from registry/autocomplete and only appear when users type old names.
         "set" => CommandResult::error(
-            "The /set command was retired. Use /config to edit settings and /settings to inspect current values.",
+            "/set 命令已停用。请使用 /config 修改设置，使用 /settings 查看当前值。",
         ),
-        "deepseek" => CommandResult::error(
-            "The /deepseek command was renamed. Use /links (aliases: /dashboard, /api).",
-        ),
+        "deepseek" => {
+            CommandResult::error("/deepseek 命令已更名为 /links（别名：/dashboard、/api）。")
+        }
         "doctor" => CommandResult::error(
-            "The /doctor command is a CLI diagnostic. Run `codewhale doctor` or `codewhale doctor --json`; use `/setup` in the TUI for readiness and verification.",
+            "/doctor 是 CLI 诊断命令。请运行 `codewhale doctor` 或 `codewhale doctor --json`；在 TUI 中使用 `/setup` 检查配置与就绪状态。",
         ),
 
         _ => {
@@ -192,10 +188,10 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
                 return result;
             }
             let suggestions = suggest_command_names(command.as_str(), 3);
+            let unknown =
+                tr(MessageId::HelpUnknownCommand).replace("{topic}", &format!("/{command}"));
             if suggestions.is_empty() {
-                CommandResult::error(format!(
-                    "Unknown command: /{command}. Type /help for available commands."
-                ))
+                CommandResult::error(format!("{unknown}。输入 /help 查看可用命令。"))
             } else {
                 let list = suggestions
                     .into_iter()
@@ -203,7 +199,7 @@ pub fn execute(cmd: &str, app: &mut App) -> CommandResult {
                     .collect::<Vec<_>>()
                     .join(", ");
                 CommandResult::error(format!(
-                    "Unknown command: /{command}. Did you mean: {list}? Type /help for available commands."
+                    "{unknown}。你是否想输入：{list}？输入 /help 查看可用命令。"
                 ))
             }
         }
@@ -303,11 +299,7 @@ fn suggest_command_names(input: &str, limit: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::config::{ApiProvider, Config};
-    use crate::localization::MessageId;
-    use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
-    use crate::tools::todo::TodoStatus;
     use crate::tui::app::{App, AppAction, SidebarFocus, TuiOptions};
-    use codewhale_config::Locale;
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
     use std::sync::MutexGuard;
@@ -406,11 +398,7 @@ mod tests {
             .find(|cmd| cmd.name == "sidebar")
             .expect("sidebar command should exist");
         assert_eq!(sidebar.description_id, MessageId::CmdSidebarDescription);
-        assert!(
-            sidebar
-                .description_for(Locale::En)
-                .contains("right sidebar")
-        );
+        assert!(sidebar.description().contains("右侧边栏"));
         assert!(command_infos().iter().any(|cmd| cmd.name == "links"));
         let hf = command_infos()
             .into_iter()
@@ -418,10 +406,11 @@ mod tests {
             .expect("hf command should exist");
         assert_eq!(hf.aliases, &["huggingface"]);
         assert_eq!(hf.description_id, MessageId::CmdHfDescription);
-        assert!(hf.description_for(Locale::En).contains("Hugging Face"));
+        assert!(hf.description().contains("Hugging Face"));
         assert!(command_infos().iter().any(|cmd| cmd.name == "memory"));
         assert!(!command_infos().iter().any(|cmd| cmd.name == "set"));
         assert!(!command_infos().iter().any(|cmd| cmd.name == "deepseek"));
+        assert!(!command_infos().iter().any(|cmd| cmd.name == "translate"));
     }
 
     #[test]
@@ -479,90 +468,6 @@ mod tests {
         };
         assert!(message.contains("`agent`"));
         assert!(message.contains("max_depth: 0"));
-    }
-
-    #[test]
-    fn relay_slash_command_routes_to_session_relay_instruction() {
-        let mut app = create_test_app();
-        app.hunt.quarry = Some("Unify the work surface".to_string());
-        app.hunt.token_budget = Some(12_000);
-        {
-            let mut todos = app.todos.try_lock().expect("todo lock");
-            todos.add("inspect workspace".to_string(), TodoStatus::Completed);
-            todos.add("patch relay command".to_string(), TodoStatus::InProgress);
-        }
-        {
-            let mut plan = app.plan_state.try_lock().expect("plan lock");
-            plan.update(UpdatePlanArgs {
-                objective: Some("Keep relays grounded".to_string()),
-                explanation: Some("RLM-style strategy".to_string()),
-                sources_used: vec!["transcript context".to_string()],
-                critical_files: vec!["crates/tui/src/commands/mod.rs".to_string()],
-                constraints: vec!["Do not invent verification".to_string()],
-                verification_plan: Some("Check relay prompt assertions".to_string()),
-                handoff_packet: Some("Next thread should read the To-do list".to_string()),
-                plan: vec![PlanItemArg {
-                    step: "keep To-do primary".to_string(),
-                    status: StepStatus::InProgress,
-                }],
-                ..UpdatePlanArgs::default()
-            });
-        }
-
-        let result = execute("/relay verify install", &mut app);
-        assert!(!result.is_error);
-        assert!(
-            result
-                .message
-                .as_deref()
-                .unwrap_or_default()
-                .contains(".deepseek/handoff.md")
-        );
-        let Some(AppAction::SendMessage(message)) = result.action else {
-            panic!("expected SendMessage action");
-        };
-        assert!(message.contains("session relay"));
-        assert!(message.contains("接力"));
-        assert!(message.contains("Write or update `.deepseek/handoff.md`"));
-        assert!(message.contains("# Session relay"));
-        assert!(message.contains("Requested relay focus: verify install"));
-        assert!(message.contains("Goal objective: Unify the work surface"));
-        assert!(message.contains("Goal token budget: 12000"));
-        assert!(message.contains("To-do (primary progress surface, 50% complete)"));
-        assert!(message.contains("#1 [completed] inspect workspace"));
-        assert!(message.contains("#2 [in_progress] patch relay command"));
-        assert!(message.contains("Optional strategy metadata from update_plan"));
-        assert!(message.contains("Objective: Keep relays grounded"));
-        assert!(message.contains("Explanation: RLM-style strategy"));
-        assert!(message.contains("Source: transcript context"));
-        assert!(message.contains("Critical file: crates/tui/src/commands/mod.rs"));
-        assert!(message.contains("Constraint: Do not invent verification"));
-        assert!(message.contains("Verification plan: Check relay prompt assertions"));
-        assert!(message.contains("Handoff packet: Next thread should read the To-do list"));
-        assert!(message.contains("[in_progress] keep To-do primary"));
-        assert!(
-            !message.contains("Work checklist"),
-            "relay copy should use To-do vocabulary: {message}"
-        );
-    }
-
-    #[test]
-    fn relay_command_has_bilingual_aliases() {
-        let relay = command_infos()
-            .into_iter()
-            .find(|cmd| cmd.name == "relay")
-            .expect("relay command should exist");
-        assert_eq!(relay.aliases, &["batonpass", "接力"]);
-        assert!(relay.description_for(Locale::ZhHans).contains("接力"));
-        assert!(relay.description_for(Locale::ZhHant).contains("接力"));
-
-        let mut app = create_test_app();
-        let result = execute("/接力 next hand", &mut app);
-        assert!(!result.is_error);
-        let Some(AppAction::SendMessage(message)) = result.action else {
-            panic!("expected SendMessage action");
-        };
-        assert!(message.contains("Requested relay focus: next hand"));
     }
 
     /// AT-008: No built-in command name or alias is registered twice,
@@ -738,10 +643,10 @@ mod tests {
                 command.usage
             );
 
-            let description = command.description_for(Locale::En);
+            let description = command.description();
             assert!(
                 !description.trim().is_empty(),
-                "/{} must have non-empty English help text",
+                "/{} must have non-empty help text",
                 command.name
             );
 
@@ -1024,7 +929,7 @@ mod tests {
         let set_msg = set_result
             .message
             .expect("legacy command should return an error message");
-        assert!(set_msg.contains("The /set command was retired"));
+        assert!(set_msg.contains("/set 命令已停用"));
         assert!(set_msg.contains("/config"));
         assert!(set_msg.contains("/settings"));
         assert!(set_result.action.is_none());
@@ -1033,7 +938,7 @@ mod tests {
         let deepseek_msg = deepseek_result
             .message
             .expect("legacy command should return an error message");
-        assert!(deepseek_msg.contains("The /deepseek command was renamed"));
+        assert!(deepseek_msg.contains("/deepseek 命令已更名"));
         assert!(deepseek_msg.contains("/links"));
         assert!(deepseek_msg.contains("/dashboard"));
         assert!(deepseek_msg.contains("/api"));
@@ -1109,7 +1014,7 @@ mod tests {
     }
 
     /// Smoke test: every entry in `command_infos()` must dispatch to a real handler.
-    /// A dispatch miss surfaces as the fall-through `Unknown command:` error
+    /// A dispatch miss surfaces as the fall-through `未知命令：` error
     /// message in `execute`. This catches the case where a new command is
     /// added to `command_infos()` (so it shows up in `/help` and the palette) but
     /// the matching arm in `execute` is forgotten — the user would type the
@@ -1145,14 +1050,6 @@ mod tests {
         assert!(message.contains("max_depth: 2"));
 
         let mut app = create_test_app();
-        let result = execute("   /relay   ship   command   harness   ", &mut app);
-        assert!(!result.is_error);
-        let Some(AppAction::SendMessage(message)) = result.action else {
-            panic!("expected /relay to send a model instruction");
-        };
-        assert!(message.contains("Requested relay focus: ship   command   harness"));
-
-        let mut app = create_test_app();
         let result = execute("/rlm 3 inspect   this   corpus", &mut app);
         assert!(!result.is_error);
         let Some(AppAction::SendMessage(message)) = result.action else {
@@ -1165,23 +1062,24 @@ mod tests {
     #[test]
     fn representative_command_groups_keep_dispatch_surfaces() {
         let mut app = create_test_app();
-        let help = execute("/help clear", &mut app)
+        let help = execute("/help queue", &mut app)
             .message
-            .expect("/help clear should return text");
-        assert!(help.contains("clear"));
-        assert!(help.contains("/clear"));
+            .expect("/help queue should return text");
+        assert!(help.contains("queue"));
+        assert!(help.contains("/queue"));
 
         let mut app = create_test_app();
         let result = execute("/config", &mut app);
         assert!(matches!(result.action, Some(AppAction::OpenConfigView)));
 
         let mut app = create_test_app();
-        let result = execute("/relay command boundary", &mut app);
+        let result = execute("/agent 0 command boundary", &mut app);
         assert!(!result.is_error);
         assert!(matches!(
             result.action,
             Some(AppAction::SendMessage(message))
-                if message.contains("Requested relay focus: command boundary")
+                if message.contains(r#"prompt: "command boundary""#)
+                    && message.contains("max_depth: 0")
         ));
 
         let mut app = create_test_app();
@@ -1204,7 +1102,7 @@ mod tests {
     }
 
     /// Smoke test: every entry in `command_infos()` must dispatch to a real handler.
-    /// A dispatch miss surfaces as the fall-through `Unknown command:` error
+    /// A dispatch miss surfaces as the fall-through `未知命令：` error
     /// message in `execute`. This catches the case where a new command is
     /// added to `command_infos()` (so it shows up in `/help` and the palette) but
     /// the matching arm in `execute` is forgotten — the user would type the
@@ -1222,7 +1120,7 @@ mod tests {
             let result = execute(&invocation, &mut app);
             if let Some(msg) = &result.message {
                 assert!(
-                    !msg.contains("Unknown command"),
+                    !msg.contains("未知命令"),
                     "/{} fell through to the unknown-command branch: {msg}",
                     command.name,
                 );
@@ -1244,7 +1142,7 @@ mod tests {
                 let result = execute(&invocation, &mut app);
                 if let Some(msg) = &result.message {
                     assert!(
-                        !msg.contains("Unknown command"),
+                        !msg.contains("未知命令"),
                         "/{alias} (alias of /{}) fell through to unknown: {msg}",
                         command.name,
                     );
@@ -1257,10 +1155,7 @@ mod tests {
     fn balance_command_has_own_help_text() {
         let info = get_command_info("balance").expect("balance command should be registered");
         assert_eq!(info.description_id, MessageId::CmdBalanceDescription);
-        assert!(
-            info.description_for(Locale::En)
-                .contains("provider account balance")
-        );
+        assert!(info.description().contains("账户余额"));
     }
 
     #[test]
@@ -1302,8 +1197,8 @@ mod tests {
         let msg = result
             .message
             .expect("unknown command should return an error message");
-        assert!(msg.contains("Unknown command: /modle"));
-        assert!(msg.contains("Did you mean:"));
+        assert!(msg.contains("未知命令：/modle"));
+        assert!(msg.contains("你是否想输入："));
         assert!(msg.contains("/model"));
     }
 
@@ -1314,8 +1209,8 @@ mod tests {
         let msg = result
             .message
             .expect("unknown command should return an error message");
-        assert!(msg.contains("Unknown command: /zzzzzz"));
-        assert!(msg.contains("Type /help for available commands."));
+        assert!(msg.contains("未知命令：/zzzzzz"));
+        assert!(msg.contains("输入 /help 查看可用命令。"));
     }
 
     #[test]
@@ -1324,7 +1219,7 @@ mod tests {
         let result = execute("$", &mut app);
         assert!(result.is_error);
         let msg = result.message.expect("should return error message");
-        assert!(msg.contains("Type a skill name after $"));
+        assert!(msg.contains("$ 后需要填写技能名"));
     }
 
     #[test]
@@ -1333,7 +1228,7 @@ mod tests {
         let result = execute("$definitely-not-a-real-skill-12345", &mut app);
         assert!(result.is_error);
         let msg = result.message.expect("should return error message");
-        assert!(msg.contains("Unknown skill: $definitely-not-a-real-skill-12345"));
+        assert!(msg.contains("未知技能：$definitely-not-a-real-skill-12345"));
         assert!(msg.contains("/skills"));
     }
 

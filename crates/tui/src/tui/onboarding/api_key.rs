@@ -146,10 +146,9 @@ mod tests {
     use super::*;
     use crate::config::{ApiProvider, Config};
     use crate::tui::app::TuiOptions;
-    use codewhale_config::Locale;
     use std::path::PathBuf;
 
-    fn test_app_with_locale(locale: Locale) -> App {
+    fn test_app() -> App {
         let options = TuiOptions {
             model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("."),
@@ -172,8 +171,7 @@ mod tests {
             initial_input: None,
         };
         let mut app = App::new(options, &Config::default());
-        app.ui_locale = locale;
-        app.onboarding_provider = ApiProvider::Zai;
+        app.onboarding_provider = ApiProvider::Deepseek;
         app
     }
 
@@ -188,7 +186,7 @@ mod tests {
             "CODEWHALE_CONFIG_PATH",
             config.to_string_lossy().as_ref(),
         );
-        let mut app = test_app_with_locale(Locale::En);
+        let mut app = test_app();
         app.config_path = Some(config.clone());
         let body: String = lines(&app)
             .iter()
@@ -207,24 +205,20 @@ mod tests {
     }
 
     #[test]
-    fn api_key_screen_renders_in_selected_locale() {
-        // The most-visible regression of the missing onboarding-localization:
-        // after the user picks 简体中文 at step 2, step 3 used to remain
-        // English. Pin that the rendered lines actually contain the
-        // translated strings for each locale we ship.
-        let zh = test_app_with_locale(Locale::ZhHans);
-        let body: String = lines(&zh)
+    fn api_key_screen_renders_in_simplified_chinese() {
+        let app = test_app();
+        let body: String = lines(&app)
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
             body.contains("连接你的 API 密钥"),
-            "title is provider-neutral and localized for zh-Hans"
+            "title should use the fixed Simplified Chinese catalog"
         );
         assert!(
-            body.contains("z.ai/model-api"),
-            "expected default provider credential URL, got: {body}"
+            body.contains("platform.deepseek.com/api_keys"),
+            "expected official DeepSeek credential URL, got: {body}"
         );
         assert!(
             body.contains("密钥"),
@@ -233,28 +227,6 @@ mod tests {
         assert!(
             body.contains("Enter 保存"),
             "expected zh-Hans footer, got: {body}"
-        );
-
-        let ja = test_app_with_locale(Locale::Ja);
-        let body: String = lines(&ja)
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            body.contains("キー"),
-            "expected ja 'key' label, got: {body}"
-        );
-
-        let en = test_app_with_locale(Locale::En);
-        let body: String = lines(&en)
-            .iter()
-            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            body.contains("Press Enter to save"),
-            "expected en footer, got: {body}"
         );
     }
 }

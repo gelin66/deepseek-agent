@@ -25,7 +25,6 @@ use crate::tui::views::{
     ActionHint, CommandPaletteAction, ModalKind, ModalView, ViewAction, ViewEvent,
     centered_modal_area, render_modal_footer, render_modal_surface,
 };
-use codewhale_config::Locale;
 use codewhale_context::skills;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -56,7 +55,6 @@ impl CommandPaletteEntry {
 }
 
 pub struct CommandPaletteView {
-    locale: Locale,
     entries: Vec<CommandPaletteEntry>,
     filtered: Vec<usize>,
     query: String,
@@ -64,7 +62,6 @@ pub struct CommandPaletteView {
 }
 
 pub fn build_entries(
-    locale: Locale,
     skills_dir: &Path,
     skills_scan_codewhale_only: bool,
     workspace: &Path,
@@ -78,7 +75,7 @@ pub fn build_entries(
                 continue;
             }
             let mut description =
-                palette_description_for_unshadowed_aliases(command, locale, user_registry);
+                palette_description_for_unshadowed_aliases(command, user_registry);
             if command.requires_argument() {
                 description.push_str("  ");
                 description.push_str(command.usage);
@@ -232,10 +229,9 @@ pub fn build_entries(
 
 fn palette_description_for_unshadowed_aliases(
     command: &commands::CommandInfo,
-    locale: Locale,
     user_registry: &commands::user_registry::UserCommandRegistry,
 ) -> String {
-    let desc = command.description_for(locale);
+    let desc = command.description();
     let aliases = command
         .aliases
         .iter()
@@ -243,7 +239,7 @@ fn palette_description_for_unshadowed_aliases(
         .filter(|alias| user_registry.get(alias).is_none())
         .collect::<Vec<_>>();
     if aliases.len() == command.aliases.len() {
-        return command.palette_description_for(locale);
+        return command.palette_description();
     }
     if aliases.is_empty() {
         desc.to_string()
@@ -491,7 +487,6 @@ fn command_runs_directly(name: &str) -> bool {
     matches!(
         name,
         "help"
-            | "clear"
             | "exit"
             | "provider"
             | "model"
@@ -684,14 +679,8 @@ fn visible_entry_window(
 }
 
 impl CommandPaletteView {
-    #[cfg(test)]
     pub fn new(entries: Vec<CommandPaletteEntry>) -> Self {
-        Self::new_for_locale(Locale::En, entries)
-    }
-
-    pub fn new_for_locale(locale: Locale, entries: Vec<CommandPaletteEntry>) -> Self {
         let mut view = Self {
-            locale,
             entries,
             filtered: Vec::new(),
             query: String::new(),
@@ -882,8 +871,8 @@ impl ModalView for CommandPaletteView {
 
         let title = format!(
             " {} — {} ",
-            tr(self.locale, MessageId::CommandPaletteTitle),
-            tr(self.locale, MessageId::CommandPaletteSubtitle)
+            tr(MessageId::CommandPaletteTitle),
+            tr(MessageId::CommandPaletteSubtitle)
         );
         let block = modal_block().title(Line::from(Span::styled(
             title,
@@ -1233,7 +1222,6 @@ mod tests {
         .expect("write configured skill");
 
         let entries = build_entries(
-            Locale::En,
             configured_dir.as_path(),
             false,
             workspace.as_path(),
@@ -1276,7 +1264,6 @@ mod tests {
         .expect("write codewhale skill");
 
         let entries = build_entries(
-            Locale::En,
             workspace.join(".codewhale").join("skills").as_path(),
             true,
             workspace.as_path(),
@@ -1296,7 +1283,6 @@ mod tests {
     #[test]
     fn command_palette_command_entries_include_links_and_config_but_not_removed_commands() {
         let entries = build_entries(
-            Locale::En,
             Path::new("."),
             false,
             Path::new("."),
@@ -1329,7 +1315,6 @@ mod tests {
         .expect("write user command");
 
         let entries = build_entries(
-            Locale::En,
             tmp.path().join("skills").as_path(),
             false,
             workspace.as_path(),
@@ -1362,7 +1347,6 @@ mod tests {
         .expect("write hidden user command");
 
         let entries = build_entries(
-            Locale::En,
             tmp.path().join("skills").as_path(),
             false,
             workspace.as_path(),
@@ -1390,7 +1374,6 @@ mod tests {
         .expect("write user command");
 
         let entries = build_entries(
-            Locale::En,
             tmp.path().join("skills").as_path(),
             false,
             workspace.as_path(),
@@ -1424,7 +1407,6 @@ mod tests {
         let skills_dir = tmp.path().join("skills");
         let mcp_config_path = tmp.path().join("mcp.json");
         let entries = build_entries(
-            Locale::En,
             skills_dir.as_path(),
             false,
             tmp.path(),
@@ -1469,9 +1451,7 @@ mod tests {
             let entry = matching[0];
             assert_eq!(entry.command, command.palette_command());
             assert!(
-                entry
-                    .description
-                    .contains(&*command.description_for(Locale::En)),
+                entry.description.contains(&*command.description()),
                 "/{} palette description should include command help text",
                 command.name
             );
@@ -1489,7 +1469,6 @@ mod tests {
     #[test]
     fn command_palette_hides_toolbox_commands_until_searched() {
         let entries = build_entries(
-            Locale::En,
             Path::new("."),
             false,
             Path::new("."),
@@ -1526,7 +1505,6 @@ mod tests {
     #[test]
     fn command_palette_runs_model_command_to_open_picker() {
         let entries = build_entries(
-            Locale::En,
             Path::new("."),
             false,
             Path::new("."),
@@ -1548,7 +1526,6 @@ mod tests {
     #[test]
     fn command_palette_runs_change_without_requiring_version() {
         let entries = build_entries(
-            Locale::En,
             Path::new("."),
             false,
             Path::new("."),
@@ -1610,7 +1587,6 @@ mod tests {
             ],
         };
         let entries = build_entries(
-            Locale::En,
             Path::new("."),
             false,
             Path::new("."),
@@ -1665,7 +1641,6 @@ mod tests {
             }],
         };
         let entries = build_entries(
-            Locale::En,
             Path::new("."),
             false,
             Path::new("."),
@@ -1711,6 +1686,17 @@ mod tests {
     /// overlay to remain readable and fully operable at.
     const BLOCKER_SIZES: [(u16, u16); 4] = [(80, 24), (100, 30), (120, 32), (160, 40)];
 
+    fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        row
+    }
+
     fn sample_palette_view() -> CommandPaletteView {
         let entries = vec![
             palette_entry(PaletteSection::Command, "/config", "open config", "/config"),
@@ -1737,9 +1723,7 @@ mod tests {
             stack.push(sample_palette_view());
             stack.render(area, &mut buf);
 
-            let rows: Vec<String> = (0..h)
-                .map(|y| (0..w).map(|x| buf[(x, y)].symbol().to_string()).collect())
-                .collect();
+            let rows: Vec<String> = (0..h).map(|y| buffer_row_text(&buf, area, y)).collect();
             let text = rows.join("\n");
 
             // Footer keeps every action.

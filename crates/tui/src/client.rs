@@ -32,10 +32,7 @@ use crate::llm_client::{
     sanitize_http_error_body, with_retry,
 };
 use crate::logging;
-use crate::models::{
-    ContentBlock, Message, MessageRequest, MessageResponse, ServerToolUsage, SystemPrompt, Tool,
-    Usage,
-};
+use crate::models::{MessageRequest, MessageResponse, ServerToolUsage, SystemPrompt, Tool, Usage};
 
 pub(super) fn to_api_tool_name(name: &str) -> String {
     let mut out = String::new();
@@ -1056,64 +1053,6 @@ pub async fn verify_provider_api_key(
     }
 }
 
-fn translation_system_prompt(target_language: &str) -> String {
-    format!(
-        "You are a professional translator. Your ONLY task is to translate text to {target_language}. \
-         Rules:\n\
-         1. Output ONLY the translation, nothing else — no explanations, no notes, no quotes.\n\
-         2. Preserve all code blocks (```...```), URLs, file paths, command names, \
-         and technical terms like API names, function names, and library names untranslated.\n\
-         3. Keep Markdown formatting (headings, lists, bold, italics, links) intact.\n\
-         4. Translate all natural-language prose naturally and professionally.\n\
-         5. Do NOT add any prefix, suffix, or commentary.\n\
-         6. If the input is already in {target_language} or contains no prose to translate, \
-         return it as-is."
-    )
-}
-
-fn translation_message_request(text: &str, model: String, target_language: &str) -> MessageRequest {
-    MessageRequest {
-        model,
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: text.to_string(),
-                cache_control: None,
-            }],
-        }],
-        max_tokens: 4096,
-        system: Some(SystemPrompt::Text(translation_system_prompt(
-            target_language,
-        ))),
-        tools: None,
-        tool_choice: None,
-        metadata: None,
-        thinking: None,
-        reasoning_effort: Some("off".to_string()),
-        stream: Some(false),
-        temperature: Some(0.1),
-        top_p: None,
-    }
-}
-
-fn translation_text_from_response(response: &MessageResponse) -> Result<String> {
-    let translated = response
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("")
-        .trim()
-        .to_string();
-    if translated.is_empty() {
-        bail!("translate: Anthropic Messages response did not contain text content");
-    }
-    Ok(translated)
-}
-
 fn xiaomi_mimo_base_url_uses_token_plan(base_url: &str) -> bool {
     let normalized = base_url.trim().to_ascii_lowercase();
     let without_scheme = normalized
@@ -1197,64 +1136,6 @@ impl DeepSeekClient {
                 yield event;
             }
         })
-    }
-
-    /// Translate text to the requested target language using a focused
-    /// non-streaming chat completion call on the supplied model.
-    ///
-    /// This is a lightweight translation service — no tool calls, no
-    /// streaming, no conversation history. The dedicated translation agent
-    /// receives the source text and returns only the translated result.
-    pub async fn translate(
-        &self,
-        text: &str,
-        model: &str,
-        target_language: &str,
-    ) -> Result<String> {
-        let model = wire_model_for_provider(self.api_provider, model);
-        let request = translation_message_request(text, model.clone(), target_language);
-        if api_provider_uses_anthropic_messages(self.api_provider) {
-            let response = self.handle_anthropic_message(request).await?;
-            return translation_text_from_response(&response);
-        }
-        if self.deepseek_tool_plan(None).is_some() {
-            let response = self.create_message_chat(&request).await?;
-            return translation_text_from_response(&response);
-        }
-
-        // Preserve the established compatibility request for every custom or
-        // non-DeepSeek route; only official DeepSeek is owned by the planner.
-        let url = api_url_with_suffix(
-            &self.base_url,
-            "chat/completions",
-            self.path_suffix.as_deref(),
-        );
-        let mut body = serde_json::json!({
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": translation_system_prompt(target_language)
-                },
-                {
-                    "role": "user",
-                    "content": text
-                }
-            ],
-            "max_tokens": 4096,
-            "temperature": 0.1,
-            "stream": false
-        });
-        apply_reasoning_effort(&mut body, Some("off"), self.api_provider);
-
-        let (response, _request_lease) = self.send_json_with_retry(&url, &body).await?;
-        let value: serde_json::Value = response.json().await?;
-        let translated = value["choices"][0]["message"]["content"]
-            .as_str()
-            .ok_or_else(|| anyhow::anyhow!("translate: unexpected API response shape"))?
-            .trim()
-            .to_string();
-        Ok(translated)
     }
 
     /// List available models from the provider.
@@ -4087,56 +3968,6 @@ mod tests {
         assert!(
             headers.get("api-key").is_none(),
             "OpenModel Messages route must not inherit MiMo auth headers"
-        );
-    }
-
-    #[tokio::test]
-    async fn deepseek_anthropic_translate_uses_messages_endpoint() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "id": "msg_1",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Hola"}],
-                "model": "deepseek-chat",
-                "stop_reason": "end_turn",
-                "stop_sequence": null,
-                "usage": {"input_tokens": 3, "output_tokens": 1}
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = deepseek_anthropic_client(&server);
-        let translated = client
-            .translate("Hello", "deepseek-chat", "Spanish")
-            .await
-            .expect("translation succeeds");
-
-        assert_eq!(translated, "Hola");
-        let requests = server.received_requests().await.expect("recorded requests");
-        assert_eq!(requests.len(), 1);
-        let body: Value = serde_json::from_slice(&requests[0].body).expect("json body");
-        assert_eq!(
-            body.pointer("/messages/0/role").and_then(Value::as_str),
-            Some("user")
-        );
-        assert_eq!(
-            body.pointer("/messages/0/content/0/text")
-                .and_then(Value::as_str),
-            Some("Hello")
-        );
-        assert!(
-            body.get("thinking").is_none(),
-            "translation disables thinking: {body}"
-        );
-        assert!(
-            body.get("system")
-                .and_then(Value::as_str)
-                .is_some_and(|system| system.contains("Spanish")),
-            "target language should be in system prompt: {body}"
         );
     }
 

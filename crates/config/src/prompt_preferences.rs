@@ -11,18 +11,10 @@ use crate::{codewhale_home, codewhale_home_is_explicit, legacy_deepseek_home};
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 
 /// The small settings subset needed before a presentation client exists.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PromptPreferences {
     /// Whether model reasoning should be projected to human-facing output.
     pub show_thinking: bool,
-}
-
-impl Default for PromptPreferences {
-    fn default() -> Self {
-        Self {
-            show_thinking: false,
-        }
-    }
 }
 
 /// One settings-path decision and at most one file read, reusable by hosts.
@@ -456,7 +448,7 @@ mod tests {
         let path = tmp.path().join("settings.toml");
         std::fs::write(
             &path,
-            "locale = []\nshow_thinking = true\nsidebar_width_percent = \"wide\"\n",
+            "future_setting = []\nshow_thinking = true\nsidebar_width_percent = \"wide\"\n",
         )
         .expect("unrelated typed-invalid setting");
         let source = load_settings_source_from_candidates(candidates(Some(path), None, None))
@@ -467,17 +459,5 @@ mod tests {
                 show_thinking: true,
             }
         );
-    }
-
-    #[test]
-    fn locale_setting_is_outside_prompt_preferences() {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("settings.toml");
-        std::fs::write(&path, "locale = \"auto\"\nshow_thinking = true\n").expect("settings");
-        let source = load_settings_source_from_candidates(candidates(Some(path), None, None))
-            .expect("source");
-        let preferences = source.prompt_preferences();
-
-        assert!(preferences.show_thinking);
     }
 }

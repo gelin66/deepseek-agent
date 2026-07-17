@@ -4,8 +4,6 @@
 //! dispatch intent. Commands from the retired TUI engine must not be surfaced
 //! here until they have an equivalent `AgentApplication` command.
 
-use codewhale_config::Locale;
-
 use crate::localization::{MessageId, tr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,14 +105,16 @@ pub(crate) fn parse(input: &str) -> CanonicalSlashParse {
                 .any(|alias| alias.eq_ignore_ascii_case(&name))
     }) else {
         return CanonicalSlashParse::Error(if name.is_empty() {
-            "请输入命令；使用 /help 查看当前可用命令。".to_owned()
+            tr(MessageId::CanonicalCommandRequired).into_owned()
         } else {
-            format!("未知命令：/{name}。使用 /help 查看当前可用命令。")
+            tr(MessageId::CanonicalCommandUnknown).replace("{name}", &name)
         });
     };
 
     if arguments.is_some() {
-        return CanonicalSlashParse::Error(format!("/{} 不接受参数。", info.name));
+        return CanonicalSlashParse::Error(
+            tr(MessageId::CanonicalCommandNoArguments).replace("{name}", info.name),
+        );
     }
     CanonicalSlashParse::Command(info.command)
 }
@@ -149,11 +149,8 @@ pub(crate) fn matching_command_infos(
     matches
 }
 
-pub(crate) fn help_text(locale: Locale) -> String {
-    let mut lines = vec![match locale {
-        Locale::ZhHans | Locale::ZhHant => "当前可用命令：".to_owned(),
-        _ => "Available commands:".to_owned(),
-    }];
+pub(crate) fn help_text() -> String {
+    let mut lines = vec![tr(MessageId::CanonicalCommandListTitle).into_owned()];
     for info in COMMANDS {
         let aliases = if info.aliases.is_empty() {
             String::new()
@@ -163,18 +160,13 @@ pub(crate) fn help_text(locale: Locale) -> String {
                 .iter()
                 .map(|alias| format!("/{alias}"))
                 .collect::<Vec<_>>();
-            match locale {
-                Locale::ZhHans | Locale::ZhHant => {
-                    format!("（别名：{}）", aliases.join("、"))
-                }
-                _ => format!(" (alias: {})", aliases.join(", ")),
-            }
+            tr(MessageId::CanonicalCommandAliases).replace("{aliases}", &aliases.join("、"))
         };
         lines.push(format!(
             "/{}{} — {}",
             info.name,
             aliases,
-            tr(locale, info.description_id)
+            tr(info.description_id)
         ));
     }
     lines.join("\n")
@@ -228,7 +220,7 @@ mod tests {
 
     #[test]
     fn help_is_derived_from_the_complete_command_contract() {
-        let help = help_text(Locale::ZhHans);
+        let help = help_text();
         for info in command_infos() {
             assert!(help.contains(&format!("/{}", info.name)));
         }
@@ -242,8 +234,7 @@ mod tests {
             for alias in info.aliases {
                 assert!(names.insert(*alias), "duplicate command alias: {alias}");
             }
-            assert!(!tr(Locale::ZhHans, info.description_id).trim().is_empty());
-            assert!(!tr(Locale::En, info.description_id).trim().is_empty());
+            assert!(!tr(info.description_id).trim().is_empty());
         }
     }
 }

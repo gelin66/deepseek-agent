@@ -25,7 +25,6 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
     render_modal_footer, render_modal_surface,
 };
-use codewhale_config::Locale;
 use unicode_width::UnicodeWidthStr;
 
 const STATUS_PICKER_SELECTION_BG: ratatui::style::Color = ratatui::style::Color::Rgb(54, 72, 104);
@@ -43,12 +42,11 @@ pub struct StatusPickerView {
     cursor: usize,
     /// Snapshot of `app.status_items` at open time so Esc reverts cleanly.
     original: Vec<StatusItem>,
-    locale: Locale,
 }
 
 impl StatusPickerView {
     #[must_use]
-    pub fn new(active: &[StatusItem], provider: ApiProvider, locale: Locale) -> Self {
+    pub fn new(active: &[StatusItem], provider: ApiProvider) -> Self {
         let rows: Vec<StatusItem> = StatusItem::all()
             .iter()
             .filter(|item| item.is_available_for(provider))
@@ -60,7 +58,6 @@ impl StatusPickerView {
             selected,
             cursor: 0,
             original: active.to_vec(),
-            locale,
         }
     }
 
@@ -183,7 +180,7 @@ impl ModalView for StatusPickerView {
 
         let block = Block::default()
             .title(Line::from(Span::styled(
-                tr(self.locale, MessageId::StatusPickerTitle),
+                tr(MessageId::StatusPickerTitle),
                 Style::default()
                     .fg(palette::WHALE_INFO)
                     .add_modifier(Modifier::BOLD),
@@ -200,14 +197,11 @@ impl ModalView for StatusPickerView {
             inner,
             buf,
             &[
-                ActionHint::new(
-                    "Space",
-                    tr(self.locale, MessageId::StatusPickerActionToggle),
-                ),
-                ActionHint::new("a", tr(self.locale, MessageId::StatusPickerActionAll)),
-                ActionHint::new("n", tr(self.locale, MessageId::StatusPickerActionNone)),
-                ActionHint::new("Enter", tr(self.locale, MessageId::StatusPickerActionSave)),
-                ActionHint::new("Esc", tr(self.locale, MessageId::StatusPickerActionCancel)),
+                ActionHint::new("Space", tr(MessageId::StatusPickerActionToggle)),
+                ActionHint::new("a", tr(MessageId::StatusPickerActionAll)),
+                ActionHint::new("n", tr(MessageId::StatusPickerActionNone)),
+                ActionHint::new("Enter", tr(MessageId::StatusPickerActionSave)),
+                ActionHint::new("Esc", tr(MessageId::StatusPickerActionCancel)),
             ],
         );
 
@@ -216,7 +210,7 @@ impl ModalView for StatusPickerView {
 
         let mut lines: Vec<Line> = Vec::with_capacity(visible_rows + 2);
         lines.push(Line::from(Span::styled(
-            tr(self.locale, MessageId::StatusPickerInstruction),
+            tr(MessageId::StatusPickerInstruction),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines.push(Line::from(""));
@@ -308,19 +302,18 @@ fn status_row_text(pointer: &str, mark: &str, item: &StatusItem, width: usize) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codewhale_config::Locale;
 
     #[test]
     fn opens_with_active_items_pre_selected() {
         let active = StatusItem::default_footer();
-        let view = StatusPickerView::new(&active, ApiProvider::Deepseek, Locale::En);
+        let view = StatusPickerView::new(&active, ApiProvider::Deepseek);
         assert_eq!(view.current_selection(), active);
     }
 
     #[test]
     fn space_toggles_current_row_and_emits_live_preview() {
         let active = StatusItem::default_footer();
-        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek, Locale::En);
+        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         match action {
             ViewAction::Emit(ViewEvent::StatusItemsUpdated { items, final_save }) => {
@@ -334,7 +327,7 @@ mod tests {
     #[test]
     fn enter_emits_final_save() {
         let active = StatusItem::default_footer();
-        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek, Locale::En);
+        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek);
         let action = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match action {
             ViewAction::EmitAndClose(ViewEvent::StatusItemsUpdated { final_save, .. }) => {
@@ -347,7 +340,7 @@ mod tests {
     #[test]
     fn esc_reverts_to_snapshot() {
         let active = StatusItem::default_footer();
-        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek, Locale::En);
+        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek);
         view.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
         view.move_down();
         view.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
@@ -364,7 +357,7 @@ mod tests {
     #[test]
     fn select_all_and_select_none_keys_work() {
         let active: Vec<StatusItem> = Vec::new();
-        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek, Locale::En);
+        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE));
         match action {
             ViewAction::Emit(ViewEvent::StatusItemsUpdated { items, .. }) => {
@@ -384,7 +377,7 @@ mod tests {
     #[test]
     fn arrow_keys_wrap_cursor_at_edges() {
         let active = StatusItem::default_footer();
-        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek, Locale::En);
+        let mut view = StatusPickerView::new(&active, ApiProvider::Deepseek);
         assert_eq!(view.cursor, 0);
         view.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
         assert_eq!(view.cursor, StatusItem::all().len() - 1);
@@ -422,14 +415,14 @@ mod tests {
     #[test]
     fn balance_excluded_for_non_deepseek_provider() {
         let active = StatusItem::default_footer();
-        let view = StatusPickerView::new(&active, ApiProvider::Openrouter, Locale::En);
+        let view = StatusPickerView::new(&active, ApiProvider::Openrouter);
         assert!(!view.rows.contains(&StatusItem::Balance));
         assert!(view.rows.contains(&StatusItem::Mode));
     }
 
     #[test]
     fn status_picker_displays_localized_title_for_zh_hans() {
-        assert_eq!(tr(Locale::ZhHans, MessageId::StatusPickerTitle), " 状态行 ");
+        assert_eq!(tr(MessageId::StatusPickerTitle), " 状态行 ");
     }
 
     /// The four terminal sizes the v0.8.66 modal blocker (#3732) requires
@@ -449,23 +442,13 @@ mod tests {
                 }
             }
             let mut stack = ViewStack::new();
-            stack.push(StatusPickerView::new(
-                &active,
-                ApiProvider::Deepseek,
-                Locale::En,
-            ));
+            stack.push(StatusPickerView::new(&active, ApiProvider::Deepseek));
             stack.render(area, &mut buf);
 
-            let rows: Vec<String> = (0..h)
-                .map(|y| {
-                    (0..w)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect();
+            let rows: Vec<String> = (0..h).map(|y| buffer_row_text(&buf, area, y)).collect();
             let text = rows.join("\n");
 
-            for label in ["toggle", "all", "none", "save", "cancel"] {
+            for label in ["切换", "全部", "无", "保存", "取消"] {
                 assert!(text.contains(label), "{w}x{h}: missing footer '{label}'");
             }
             assert!(
@@ -486,28 +469,25 @@ mod tests {
         }
     }
 
-    #[test]
-    fn status_picker_no_english_leak_in_non_en_locales() {
-        for locale in [
-            Locale::Ja,
-            Locale::ZhHans,
-            Locale::ZhHant,
-            Locale::PtBr,
-            Locale::Es419,
-            Locale::Vi,
-        ] {
-            let title = tr(locale, MessageId::StatusPickerTitle);
-            assert!(
-                !title.contains("Status"),
-                "{} leaks English in title: {title}",
-                locale.tag()
-            );
-            let instruction = tr(locale, MessageId::StatusPickerInstruction);
-            assert!(
-                !instruction.contains("footer"),
-                "{} leaks English in instruction: {instruction}",
-                locale.tag()
-            );
+    fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(UnicodeWidthStr::width(symbol).max(1) as u16);
         }
+        row
+    }
+
+    #[test]
+    fn status_picker_uses_simplified_chinese() {
+        let title = tr(MessageId::StatusPickerTitle);
+        assert!(!title.contains("Status"), "title leaks English: {title}");
+        let instruction = tr(MessageId::StatusPickerInstruction);
+        assert!(
+            !instruction.contains("footer"),
+            "instruction leaks English: {instruction}"
+        );
     }
 }

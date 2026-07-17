@@ -24,7 +24,6 @@ use crate::tui::{
     approval::ApprovalMode,
     views::ModalKind,
 };
-use codewhale_config::Locale;
 
 /// Responsive density tier. It changes how much truth is shown, never the
 /// underlying state grammar.
@@ -56,11 +55,7 @@ pub enum LaunchAction {
 /// Translate launch-menu input into one product action. Direct reliable keys
 /// and row navigation share this path, so the printed key column cannot drift
 /// away from the handler.
-pub fn handle_launch_key(
-    launch: &mut crate::tui::app::LaunchState,
-    key: KeyEvent,
-    locale: Locale,
-) -> LaunchAction {
+pub fn handle_launch_key(launch: &mut crate::tui::app::LaunchState, key: KeyEvent) -> LaunchAction {
     if let Some(input) = launch.worktree_input.as_mut() {
         return match key.code {
             KeyCode::Esc => {
@@ -122,11 +117,11 @@ pub fn handle_launch_key(
         0 => LaunchAction::NewSession,
         1 if launch.worktree_available => {
             launch.worktree_input = Some(String::new());
-            launch.status = Some(tr(locale, MessageId::LaunchWorktreePrompt).into_owned());
+            launch.status = Some(tr(MessageId::LaunchWorktreePrompt).into_owned());
             LaunchAction::None
         }
         1 => {
-            launch.status = Some(tr(locale, MessageId::LaunchWorktreeNeedsGit).into_owned());
+            launch.status = Some(tr(MessageId::LaunchWorktreeNeedsGit).into_owned());
             LaunchAction::None
         }
         2 => LaunchAction::Resume,
@@ -231,15 +226,15 @@ impl ShellPhase {
     }
 
     #[must_use]
-    pub fn label(self, locale: Locale) -> Cow<'static, str> {
+    pub fn label(self) -> Cow<'static, str> {
         match self {
-            Self::Idle => tr(locale, MessageId::PhaseIdle),
-            Self::Typing => tr(locale, MessageId::PhaseDraft),
-            Self::Working => tr(locale, MessageId::PhaseWorking),
-            Self::Verifying => tr(locale, MessageId::PhaseVerifying),
-            Self::Waiting | Self::Approval => tr(locale, MessageId::PhaseWaitingOnYou),
-            Self::Done => tr(locale, MessageId::PhaseDone),
-            Self::Failed => tr(locale, MessageId::PhaseFailed),
+            Self::Idle => tr(MessageId::PhaseIdle),
+            Self::Typing => tr(MessageId::PhaseDraft),
+            Self::Working => tr(MessageId::PhaseWorking),
+            Self::Verifying => tr(MessageId::PhaseVerifying),
+            Self::Waiting | Self::Approval => tr(MessageId::PhaseWaitingOnYou),
+            Self::Done => tr(MessageId::PhaseDone),
+            Self::Failed => tr(MessageId::PhaseFailed),
         }
     }
 
@@ -311,10 +306,9 @@ fn completion_elapsed_ms(app: &App) -> Option<u128> {
 }
 
 pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'static, str>) {
-    let locale = app.ui_locale;
     match phase {
-        ShellPhase::Idle => ("·", phase.label(locale)),
-        ShellPhase::Typing => ("›", phase.label(locale)),
+        ShellPhase::Idle => ("·", phase.label()),
+        ShellPhase::Typing => ("›", phase.label()),
         ShellPhase::Working => {
             let frame = if app.low_motion || !app.fancy_animations {
                 WORKING_BUBBLE_FRAMES[4]
@@ -326,7 +320,7 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
                 let index = (elapsed.as_millis() / 300) as usize % WORKING_BUBBLE_FRAMES.len();
                 WORKING_BUBBLE_FRAMES[index]
             };
-            (frame, phase.label(locale))
+            (frame, phase.label())
         }
         ShellPhase::Verifying => {
             // Metered braille tick on the shared live clock — checking, not
@@ -335,28 +329,25 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
                 app.turn_started_at,
                 app.low_motion || !app.fancy_animations,
             );
-            (frame, phase.label(locale))
+            (frame, phase.label())
         }
-        ShellPhase::Waiting | ShellPhase::Approval => ("◆", phase.label(locale)),
+        ShellPhase::Waiting | ShellPhase::Approval => ("◆", phase.label()),
         ShellPhase::Done => match completion_elapsed_ms(app) {
             Some(elapsed) if elapsed < COMPLETION_RELEASE_MS => {
                 let index = ((elapsed / 140) as usize + 4).min(WORKING_BUBBLE_FRAMES.len() - 1);
-                (
-                    WORKING_BUBBLE_FRAMES[index],
-                    tr(locale, MessageId::PhaseFinishing),
-                )
+                (WORKING_BUBBLE_FRAMES[index], tr(MessageId::PhaseFinishing))
             }
-            _ => ("✓", phase.label(locale)),
+            _ => ("✓", phase.label()),
         },
-        ShellPhase::Failed => ("✕", phase.label(locale)),
+        ShellPhase::Failed => ("✕", phase.label()),
     }
 }
 
-fn mode_label(locale: Locale, mode: AppMode) -> Cow<'static, str> {
+fn mode_label(mode: AppMode) -> Cow<'static, str> {
     match mode {
-        AppMode::Agent | AppMode::Auto | AppMode::Yolo => tr(locale, MessageId::ChipModeAct),
-        AppMode::Plan => tr(locale, MessageId::ChipModePlan),
-        AppMode::Operate => tr(locale, MessageId::ChipModeOperate),
+        AppMode::Agent | AppMode::Auto | AppMode::Yolo => tr(MessageId::ChipModeAct),
+        AppMode::Plan => tr(MessageId::ChipModePlan),
+        AppMode::Operate => tr(MessageId::ChipModeOperate),
     }
 }
 
@@ -364,19 +355,18 @@ fn mode_label(locale: Locale, mode: AppMode) -> Cow<'static, str> {
 /// never from the English `permission_chip_label()` strings — so localizing
 /// (or rewording) the upstream chip labels can never silently break the chip.
 fn permission_label(app: &App) -> Cow<'static, str> {
-    let locale = app.ui_locale;
     if app.mode == AppMode::Plan {
-        return tr(locale, MessageId::ChipPermissionReadOnly);
+        return tr(MessageId::ChipPermissionReadOnly);
     }
     match app.approval_mode {
-        ApprovalMode::Suggest => tr(locale, MessageId::ChipPermissionAsk),
-        ApprovalMode::Auto => tr(locale, MessageId::ChipPermissionAuto),
+        ApprovalMode::Suggest => tr(MessageId::ChipPermissionAsk),
+        ApprovalMode::Auto => tr(MessageId::ChipPermissionAuto),
         // Keep the effective permission explicit. `bypass` is an
         // implementation detail and, more importantly, can imply that
         // repository law no longer applies. Full Access never bypasses
         // constitution rules.
-        ApprovalMode::Bypass => tr(locale, MessageId::ChipPermissionFullAccess),
-        ApprovalMode::Never => tr(locale, MessageId::ChipPermissionNever),
+        ApprovalMode::Bypass => tr(MessageId::ChipPermissionFullAccess),
+        ApprovalMode::Never => tr(MessageId::ChipPermissionNever),
     }
 }
 
@@ -476,17 +466,14 @@ pub fn render_launch_screen(area: Rect, buf: &mut Buffer, app: &App) {
             break;
         }
         let selected = app.launch.selected == index;
-        let mut label = tr(app.ui_locale, *label_id).into_owned();
+        let mut label = tr(*label_id).into_owned();
         if index == 1 && !app.launch.worktree_available {
-            label.push_str(&format!(
-                " · {}",
-                tr(app.ui_locale, MessageId::LaunchMenuUnavailable)
-            ));
+            label.push_str(&format!(" · {}", tr(MessageId::LaunchMenuUnavailable)));
         }
         if index == 2 {
             label.push_str(&format!(
                 " · {}",
-                tr(app.ui_locale, MessageId::LaunchMenuSavedCount)
+                tr(MessageId::LaunchMenuSavedCount)
                     .replace("{count}", &app.launch.workspace_session_count.to_string())
             ));
         }
@@ -533,7 +520,7 @@ pub fn render_launch_screen(area: Rect, buf: &mut Buffer, app: &App) {
     let prompt = if let Some(input) = app.launch.worktree_input.as_deref() {
         format!(
             "{}  {}{}",
-            tr(app.ui_locale, MessageId::LaunchWorktreeNameLabel),
+            tr(MessageId::LaunchWorktreeNameLabel),
             input,
             if app.low_motion { "_" } else { "▌" }
         )
@@ -542,11 +529,11 @@ pub fn render_launch_screen(area: Rect, buf: &mut Buffer, app: &App) {
     } else if area.width < 60 {
         format!(
             "j/k:{} · Enter:{}",
-            tr(app.ui_locale, MessageId::LaunchHintMove),
-            tr(app.ui_locale, MessageId::LaunchHintOpen)
+            tr(MessageId::LaunchHintMove),
+            tr(MessageId::LaunchHintOpen)
         )
     } else {
-        tr(app.ui_locale, MessageId::LaunchTipFlags).into_owned()
+        tr(MessageId::LaunchTipFlags).into_owned()
     };
     render_launch_line(
         area,
@@ -563,15 +550,15 @@ pub fn render_launch_screen(area: Rect, buf: &mut Buffer, app: &App) {
     );
 
     let saved_sessions = if app.launch.workspace_session_count == 1 {
-        tr(app.ui_locale, MessageId::LaunchSavedSessionSingular).into_owned()
+        tr(MessageId::LaunchSavedSessionSingular).into_owned()
     } else {
-        tr(app.ui_locale, MessageId::LaunchSavedSessionsPlural)
+        tr(MessageId::LaunchSavedSessionsPlural)
             .replace("{count}", &app.launch.workspace_session_count.to_string())
     };
     let status = format!(
         "{} · {} · {}",
         app.model_display_label(),
-        mode_label(app.ui_locale, app.mode),
+        mode_label(app.mode),
         saved_sessions
     );
     render_launch_line(
@@ -638,7 +625,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
         Span::styled(route_label, Style::default().fg(app.ui_theme.text_muted)),
         Span::styled(" · ", Style::default().fg(app.ui_theme.text_dim)),
         Span::styled(
-            mode_label(app.ui_locale, app.mode),
+            mode_label(app.mode),
             Style::default().fg(match app.mode {
                 AppMode::Plan => app.ui_theme.mode_plan,
                 AppMode::Operate => app.ui_theme.mode_operate,
@@ -722,7 +709,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
             ),
             Span::styled(" · ", Style::default().fg(app.ui_theme.text_dim)),
             Span::styled(
-                mode_label(app.ui_locale, app.mode),
+                mode_label(app.mode),
                 Style::default().fg(app.ui_theme.accent_primary),
             ),
         ];
@@ -804,7 +791,7 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     );
     let workspace = crate::utils::display_path(&app.workspace);
     let branch = identity.branch.as_deref().map_or_else(
-        || tr(app.ui_locale, MessageId::EmptyStateNoGit),
+        || tr(MessageId::EmptyStateNoGit),
         |branch| Cow::Owned(branch.to_string()),
     );
     let context = if tier == ShellTier::Compact {
@@ -812,7 +799,7 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     } else {
         format!(
             "codewhale · {workspace} · {branch} · {} {}",
-            tr(app.ui_locale, MessageId::EmptyStateMcpLabel),
+            tr(MessageId::EmptyStateMcpLabel),
             app.mcp_configured_count
         )
     };
@@ -954,7 +941,6 @@ mod tests {
             handle_launch_key(
                 &mut state,
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                Locale::En,
             ),
             LaunchAction::NewSession
         );
@@ -962,7 +948,6 @@ mod tests {
             handle_launch_key(
                 &mut state,
                 KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
-                Locale::En,
             ),
             LaunchAction::Resume
         );
@@ -972,7 +957,6 @@ mod tests {
             handle_launch_key(
                 &mut state,
                 KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
-                Locale::En,
             ),
             LaunchAction::Changelog
         );
@@ -986,7 +970,6 @@ mod tests {
             handle_launch_key(
                 &mut state,
                 KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-                Locale::En,
             ),
             LaunchAction::None
         );
@@ -995,7 +978,6 @@ mod tests {
                 handle_launch_key(
                     &mut state,
                     KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-                    Locale::En,
                 ),
                 LaunchAction::None
             );
@@ -1004,7 +986,6 @@ mod tests {
             handle_launch_key(
                 &mut state,
                 KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-                Locale::En,
             ),
             LaunchAction::CreateWorktree("repair-pty".to_string())
         );
@@ -1018,15 +999,11 @@ mod tests {
             handle_launch_key(
                 &mut state,
                 KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-                Locale::En,
             ),
             LaunchAction::None
         );
         assert!(state.worktree_input.is_none());
-        assert_eq!(
-            state.status.as_deref(),
-            Some("New worktree requires a Git repository.")
-        );
+        assert_eq!(state.status.as_deref(), Some("新建工作树需要 Git 仓库。"));
     }
 
     #[test]
@@ -1151,10 +1128,10 @@ mod tests {
     }
 
     #[test]
-    fn phase_labels_keep_explicit_english_locale() {
-        assert_eq!(ShellPhase::Idle.label(Locale::En), "idle");
-        assert_eq!(ShellPhase::Working.label(Locale::En), "working");
-        assert_eq!(ShellPhase::Verifying.label(Locale::En), "verifying");
-        assert_eq!(ShellPhase::Done.label(Locale::En), "done");
+    fn phase_labels_are_simplified_chinese() {
+        assert_eq!(ShellPhase::Idle.label(), "空闲");
+        assert_eq!(ShellPhase::Working.label(), "工作中");
+        assert_eq!(ShellPhase::Verifying.label(), "校验中");
+        assert_eq!(ShellPhase::Done.label(), "完成");
     }
 }

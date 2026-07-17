@@ -46,6 +46,7 @@ use tracing;
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
 use crate::config::{ApiProvider, Config, UpdateConfig};
+use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::prompts;
 use crate::settings::Settings;
@@ -213,23 +214,6 @@ fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
 
-type PendingToolUses = Vec<(String, String, serde_json::Value)>;
-
-#[derive(Debug)]
-enum TranslationEvent {
-    AssistantMessage {
-        history_index: Option<usize>,
-        original_text: String,
-        translated: anyhow::Result<String>,
-        thinking: Option<String>,
-        tool_uses: PendingToolUses,
-    },
-    Thinking {
-        placeholder: String,
-        translated: anyhow::Result<String>,
-    },
-}
-
 // Reset scroll region (`\x1b[r`), origin mode (`\x1b[?6l`), and home the cursor
 // (`\x1b[H`) before letting ratatui's diff renderer repaint. The destructive
 // `\x1b[2J\x1b[3J` pair was previously appended here to also wipe the visible
@@ -386,7 +370,7 @@ impl TerminalInputPump {
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     return Err(io::Error::new(
                         io::ErrorKind::BrokenPipe,
-                        "terminal input pump disconnected",
+                        "终端输入线程已断开",
                     ));
                 }
             }
@@ -436,7 +420,7 @@ impl TerminalInputPump {
                 self.paused.store(false, Ordering::Release);
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "terminal input pump did not pause before launching editor",
+                    "启动编辑器前无法暂停终端输入线程",
                 ));
             }
             thread::sleep(TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL);
@@ -586,7 +570,7 @@ fn complete_trust_directory_onboarding(app: &mut App) -> Result<(), String> {
 }
 
 fn back_from_api_key_onboarding(app: &mut App) {
-    app.onboarding = OnboardingState::Language;
+    app.onboarding = OnboardingState::Welcome;
     app.api_key_input.clear();
     app.api_key_cursor = 0;
     app.status_message = None;
@@ -595,10 +579,14 @@ fn back_from_api_key_onboarding(app: &mut App) {
 fn surface_prompt_override_notices(app: &mut App) {
     for notice in prompts::take_prompt_override_notices() {
         app.add_message(HistoryCell::System {
-            content: format!("Warning: {notice}"),
+            content: prompt_override_warning(&notice),
         });
         app.push_status_toast(notice, StatusToastLevel::Warning, Some(12_000));
     }
+}
+
+fn prompt_override_warning(notice: &str) -> String {
+    format!("警告：{notice}")
 }
 
 /// Run the interactive TUI event loop.
@@ -649,8 +637,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let task_abandoned = Arc::clone(&probe_abandoned);
     let task_enabled = Arc::clone(&probe_enabled);
     let enable_raw = tokio::task::spawn_blocking(move || {
-        let result =
-            enable_raw_mode().map_err(|e| anyhow::anyhow!("Failed to enable raw mode: {e}"));
+        let result = enable_raw_mode().map_err(raw_mode_enable_error);
         if result.is_ok() && raw_mode_probe_handshake(&task_enabled, &task_abandoned) {
             // The probe timed out while we were blocked; the caller already
             // gave up, so undo the late enable instead of leaking raw mode.
@@ -670,13 +657,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 let _ = disable_raw_mode();
             }
             tracing::warn!(
-                "Terminal probe timed out after {}ms - terminal may be unresponsive",
+                "终端探测在 {}ms 后超时，终端可能无响应",
                 probe_timeout.as_millis()
             );
-            return Err(anyhow::anyhow!(
-                "Terminal probe timed out after {}ms",
-                probe_timeout.as_millis()
-            ));
+            return Err(terminal_probe_timeout_error(probe_timeout));
         }
     }
 
@@ -791,12 +775,16 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     {
         return Ok(());
     }
-    app.workspace = app
-        .workspace
-        .canonicalize()
-        .with_context(|| format!("无法规范化 TUI 工作区：{}", app.workspace.display()))?;
+    app.workspace = app.workspace.canonicalize().with_context(|| {
+        tr(MessageId::CanonicalWorkspaceCanonicalizeFailed)
+            .replace("{path}", &app.workspace.display().to_string())
+    })?;
     if !app.workspace.is_dir() {
-        anyhow::bail!("TUI 工作区不是目录：{}", app.workspace.display());
+        anyhow::bail!(
+            "{}",
+            tr(MessageId::CanonicalWorkspaceNotDirectory)
+                .replace("{path}", &app.workspace.display().to_string())
+        );
     }
     let workspace_identity = app.workspace.display().to_string();
     let settings = Settings::load().unwrap_or_default();
@@ -819,7 +807,9 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
                 .latest_root(workspace_identity.clone())
                 .await?
                 .map(|run| run.run_id)
-                .ok_or_else(|| anyhow::anyhow!("当前工作区没有可恢复的 Agent 运行"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(tr(MessageId::CanonicalNoRecoverableRun).into_owned())
+                })?
         } else {
             RunId::from(resume_id)
         };
@@ -833,7 +823,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
             StartupCreationRecovery::Recovered { run_id, active } => {
                 suppress_automatic_initial_submit = true;
                 app.is_loading = active;
-                app.status_message = Some(format!("正在恢复中断的运行：{run_id}"));
+                app.status_message = Some(
+                    app.tr(MessageId::CanonicalRecoveringInterruptedRun)
+                        .replace("{run_id}", &run_id.to_string()),
+                );
             }
             StartupCreationRecovery::Warning(message) => {
                 suppress_automatic_initial_submit = true;
@@ -854,8 +847,10 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
             canonical_commands::parse(&app.input),
             CanonicalSlashParse::NotCommand
         ) {
-            app.status_message =
-                Some("启动参数中的交互命令已保留在输入框，请按 Enter 确认执行".to_owned());
+            app.status_message = Some(
+                app.tr(MessageId::CanonicalInitialCommandConfirmation)
+                    .into_owned(),
+            );
         } else if let Some(input) = app.submit_input() {
             let _ = run_client
                 .submit(canonical_start_command(&app, config, input))
@@ -925,15 +920,15 @@ async fn recover_creation_at_startup(
                 .creation
                 .as_deref()
                 .expect("unknown-billing guard requires creation context");
-            let run = error
-                .run_id
-                .as_ref()
-                .map_or_else(|| "未知".to_owned(), ToString::to_string);
-            Ok(StartupCreationRecovery::Warning(format!(
-                "检测到上次自动选模创建未确认（creation：{}，run：{run}）。计费状态未知，\
-                 已禁止自动重发原请求；如需开始新任务，请检查后在输入框按 Enter 明确提交。",
-                creation.creation_request_id
-            )))
+            let run = error.run_id.as_ref().map_or_else(
+                || tr(MessageId::CanonicalUnknownValue).into_owned(),
+                ToString::to_string,
+            );
+            Ok(StartupCreationRecovery::Warning(
+                tr(MessageId::CanonicalUnknownBillingCreation)
+                    .replace("{creation}", &creation.creation_request_id)
+                    .replace("{run}", &run),
+            ))
         }
         Err(TuiRunClientError::AmbiguousPendingCreations {
             workspace,
@@ -946,12 +941,17 @@ async fn recover_creation_at_startup(
                 .cloned()
                 .collect::<Vec<_>>()
                 .join("、");
-            let suffix = if count > 3 { " 等" } else { "" };
-            Ok(StartupCreationRecovery::Warning(format!(
-                "工作区 {workspace:?} 有 {count} 个中断的创建请求，未自动选择（{preview}{suffix}）。\
-                 CLI 初始提示未自动发送；请通过本地 Run API 按 creation ID 恢复，\
-                 或在输入框按 Enter 明确开始新任务。"
-            )))
+            let message_id = if count > 3 {
+                MessageId::CanonicalAmbiguousPendingCreationsMore
+            } else {
+                MessageId::CanonicalAmbiguousPendingCreations
+            };
+            Ok(StartupCreationRecovery::Warning(
+                tr(message_id)
+                    .replace("{workspace}", &format!("{workspace:?}"))
+                    .replace("{count}", &count.to_string())
+                    .replace("{preview}", &preview),
+            ))
         }
         Err(error) => Err(error),
     }
@@ -961,9 +961,8 @@ async fn recover_creation_at_startup(
 /// `AgentApplication`.
 ///
 /// This loop deliberately has no provider picker, model call, Engine command,
-/// session writer, or runtime-thread owner. It persists only the selected
-/// locale, the official DeepSeek key, workspace trust, and the onboarding
-/// marker.
+/// session writer, or runtime-thread owner. It persists only the official
+/// DeepSeek key, workspace trust, and the onboarding marker.
 async fn run_deepseek_onboarding_loop(
     terminal: &mut AppTerminal,
     app: &mut App,
@@ -995,35 +994,12 @@ async fn run_deepseek_onboarding_loop(
                     KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
                         back_from_api_key_onboarding(app);
                     }
-                    KeyCode::Esc if app.onboarding == OnboardingState::Language => {
-                        app.onboarding = OnboardingState::Welcome;
-                        app.status_message = None;
-                    }
                     KeyCode::Esc if app.onboarding == OnboardingState::TrustDirectory => {
                         return Ok(true);
-                    }
-                    KeyCode::Char(character)
-                        if app.onboarding == OnboardingState::Language
-                            && character.is_ascii_digit() =>
-                    {
-                        if let Some((_, tag, _, _)) = onboarding::language::LANGUAGE_OPTIONS
-                            .iter()
-                            .find(|(hotkey, _, _, _)| *hotkey == character)
-                        {
-                            match app.set_locale_from_onboarding(tag) {
-                                Ok(()) => onboarding::advance_onboarding_after_language(app),
-                                Err(error) => {
-                                    app.status_message = Some(format!("保存界面语言失败：{error}"));
-                                }
-                            }
-                        }
                     }
                     KeyCode::Enter => match app.onboarding {
                         OnboardingState::Welcome => {
                             onboarding::advance_onboarding_from_welcome(app);
-                        }
-                        OnboardingState::Language => {
-                            onboarding::advance_onboarding_after_language(app);
                         }
                         OnboardingState::ApiKey => {
                             let key = app.api_key_input.trim().to_owned();
@@ -1058,7 +1034,7 @@ async fn run_deepseek_onboarding_loop(
                         }
                         OnboardingState::TrustDirectory => {
                             app.status_message =
-                                Some("按 1 或 Y 信任当前工作区；按 2 或 N 退出。".to_owned());
+                                Some(app.tr(MessageId::OnboardTrustConfirmHint).into_owned());
                         }
                         OnboardingState::Tips => {
                             app.finish_onboarding_without_feature_intro();
@@ -1073,7 +1049,10 @@ async fn run_deepseek_onboarding_loop(
                         if app.onboarding == OnboardingState::TrustDirectory =>
                     {
                         if let Err(error) = complete_trust_directory_onboarding(app) {
-                            app.status_message = Some(format!("保存工作区信任失败：{error}"));
+                            app.status_message = Some(
+                                app.tr(MessageId::OnboardTrustSaveFailed)
+                                    .replace("{error}", &error),
+                            );
                         }
                     }
                     KeyCode::Char('n' | 'N' | '2')
@@ -1164,7 +1143,7 @@ async fn run_canonical_event_loop(
         while let Ok(stored) = run_events.try_recv() {
             for effect in projection
                 .apply(stored)
-                .map_err(|error| anyhow::anyhow!("canonical TUI projection failed: {error}"))?
+                .map_err(canonical_projection_error)?
             {
                 if let Some(action) = present_effect(app, effect) {
                     apply_presenter_action(app, action, &mut presented_interaction_id);
@@ -1255,12 +1234,15 @@ async fn handle_canonical_key(
         if run_client.snapshot().await.current_active_root.is_some() {
             run_client.cancel().await?;
             *exit_after_terminal = true;
-            app.status_message = Some("正在取消当前运行，等待 canonical 终态…".to_owned());
+            app.status_message = Some(app.tr(MessageId::CanonicalCancelAwaitTerminal).into_owned());
             app.needs_redraw = true;
             return Ok(false);
         }
         if app.is_loading {
-            app.status_message = Some("等待 canonical 终态事件后才能退出".to_owned());
+            app.status_message = Some(
+                app.tr(MessageId::CanonicalWaitTerminalBeforeExit)
+                    .into_owned(),
+            );
             app.needs_redraw = true;
             return Ok(false);
         }
@@ -1269,11 +1251,11 @@ async fn handle_canonical_key(
     if control && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')) {
         if run_client.snapshot().await.current_active_root.is_some() {
             run_client.interrupt().await?;
-            app.status_message = Some("中断请求已受理，等待 canonical 终态…".to_owned());
+            app.status_message = Some(app.tr(MessageId::CanonicalInterruptAccepted).into_owned());
         } else if !app.input.is_empty() {
             app.clear_input_recoverable();
         } else if app.is_loading {
-            app.status_message = Some("等待 canonical 终态事件…".to_owned());
+            app.status_message = Some(app.tr(MessageId::CanonicalWaitTerminal).into_owned());
         } else {
             return Ok(true);
         }
@@ -1288,7 +1270,10 @@ async fn handle_canonical_key(
                 .await?;
             app.is_loading = true;
         } else {
-            app.status_message = Some("当前没有可压缩的终态运行".to_owned());
+            app.status_message = Some(
+                app.tr(MessageId::CanonicalNoTerminalRunToCompact)
+                    .into_owned(),
+            );
         }
         app.needs_redraw = true;
         return Ok(false);
@@ -1314,11 +1299,15 @@ async fn handle_canonical_key(
                     if run_client.snapshot().await.current_active_root.is_some() {
                         run_client.cancel().await?;
                         *exit_after_terminal = true;
-                        app.status_message = Some("正在取消当前运行，完成后退出…".to_owned());
+                        app.status_message =
+                            Some(app.tr(MessageId::CanonicalCancelBeforeExit).into_owned());
                         return Ok(false);
                     }
                     if app.is_loading {
-                        app.status_message = Some("等待 canonical 终态事件后才能退出".to_owned());
+                        app.status_message = Some(
+                            app.tr(MessageId::CanonicalWaitTerminalBeforeExit)
+                                .into_owned(),
+                        );
                         return Ok(false);
                     }
                     return Ok(true);
@@ -1331,24 +1320,24 @@ async fn handle_canonical_key(
                             .await?;
                         app.is_loading = true;
                     } else {
-                        app.status_message = Some("当前没有可压缩的终态运行".to_owned());
+                        app.status_message = Some(
+                            app.tr(MessageId::CanonicalNoTerminalRunToCompact)
+                                .into_owned(),
+                        );
                     }
                 }
                 CanonicalSlashParse::Command(CanonicalSlashCommand::Help) => {
                     app.add_message(HistoryCell::System {
-                        content: canonical_commands::help_text(app.ui_locale),
+                        content: canonical_commands::help_text(),
                     });
-                    app.status_message = Some("已显示 canonical 交互命令".to_owned());
+                    app.status_message = Some(app.tr(MessageId::CanonicalHelpShown).into_owned());
                 }
                 CanonicalSlashParse::Command(CanonicalSlashCommand::Cost) => {
                     let total = app.displayed_session_cost_for_currency(app.cost_currency);
-                    let content = crate::localization::tr(
-                        app.ui_locale,
-                        crate::localization::MessageId::CmdCostReport,
-                    )
-                    .replace("{cost}", &app.format_cost_amount_precise(total));
+                    let content = tr(MessageId::CmdCostReport)
+                        .replace("{cost}", &app.format_cost_amount_precise(total));
                     app.add_message(HistoryCell::System { content });
-                    app.status_message = Some("已显示 canonical 用量费用".to_owned());
+                    app.status_message = Some(app.tr(MessageId::CanonicalCostShown).into_owned());
                 }
                 CanonicalSlashParse::Error(message) => {
                     app.insert_str(&input);
@@ -1361,13 +1350,16 @@ async fn handle_canonical_key(
                             Ok(_) => {}
                             Err(error) => {
                                 app.insert_str(&input);
-                                app.status_message = Some(format!("追加指令提交失败：{error}"));
+                                app.status_message = Some(
+                                    app.tr(MessageId::CanonicalSteerSubmitFailed)
+                                        .replace("{error}", &error.to_string()),
+                                );
                             }
                         }
                     } else if app.is_loading {
                         app.insert_str(&input);
                         app.status_message =
-                            Some("等待 canonical 终态事件后再发送下一条输入".to_owned());
+                            Some(app.tr(MessageId::CanonicalWaitBeforeNextInput).into_owned());
                     } else {
                         match run_client
                             .submit(canonical_start_command(app, config, input.clone()))
@@ -1376,7 +1368,10 @@ async fn handle_canonical_key(
                             Ok(_) => app.is_loading = true,
                             Err(error) => {
                                 app.insert_str(&input);
-                                app.status_message = Some(format!("运行提交失败：{error}"));
+                                app.status_message = Some(
+                                    app.tr(MessageId::CanonicalRunSubmitFailed)
+                                        .replace("{error}", &error.to_string()),
+                                );
                             }
                         }
                     }
@@ -1400,9 +1395,10 @@ async fn handle_canonical_key(
                 app.clear_input_recoverable();
             } else if run_client.snapshot().await.current_active_root.is_some() {
                 run_client.interrupt().await?;
-                app.status_message = Some("中断请求已受理，等待 canonical 终态…".to_owned());
+                app.status_message =
+                    Some(app.tr(MessageId::CanonicalInterruptAccepted).into_owned());
             } else if app.is_loading {
-                app.status_message = Some("等待 canonical 终态事件…".to_owned());
+                app.status_message = Some(app.tr(MessageId::CanonicalWaitTerminal).into_owned());
             } else {
                 return Ok(true);
             }
@@ -1482,7 +1478,10 @@ async fn handle_canonical_view_events(
                     .await?;
             }
             _ => {
-                app.status_message = Some("该旧界面动作没有 canonical Run 语义，未执行".to_owned());
+                app.status_message = Some(
+                    app.tr(MessageId::CanonicalLegacyActionUnavailable)
+                        .into_owned(),
+                );
             }
         }
     }
@@ -1515,8 +1514,7 @@ fn apply_presenter_action(
                             super::approval::RiskLevel::Destructive
                         }
                     };
-                    app.view_stack
-                        .push(ApprovalView::new_for_locale(approval, app.ui_locale));
+                    app.view_stack.push(ApprovalView::new(approval));
                 }
                 UserInteractionPrompt::UserInput { request } => {
                     app.view_stack
@@ -1526,7 +1524,10 @@ fn apply_presenter_action(
         }
         PresenterAction::InteractionResolved { interaction_id, .. } => {
             if presented_interaction_id.as_ref() != Some(&interaction_id) {
-                app.status_message = Some(format!("忽略不匹配的交互回执：{}", interaction_id.0));
+                app.status_message = Some(
+                    app.tr(MessageId::CanonicalMismatchedInteractionReceipt)
+                        .replace("{interaction_id}", &interaction_id.0),
+                );
                 return;
             }
             *presented_interaction_id = None;
@@ -1552,6 +1553,18 @@ fn apply_presenter_action(
 fn raw_mode_probe_handshake(publish: &AtomicBool, check: &AtomicBool) -> bool {
     publish.store(true, Ordering::SeqCst);
     check.load(Ordering::SeqCst)
+}
+
+fn raw_mode_enable_error(error: io::Error) -> anyhow::Error {
+    anyhow::anyhow!("启用终端 raw mode 失败：{error}")
+}
+
+fn terminal_probe_timeout_error(timeout: Duration) -> anyhow::Error {
+    anyhow::anyhow!("终端探测在 {}ms 后超时", timeout.as_millis())
+}
+
+fn canonical_projection_error(error: impl std::fmt::Display) -> anyhow::Error {
+    anyhow::anyhow!("canonical TUI 事件投影失败：{error}")
 }
 
 fn terminal_probe_timeout(config: &Config) -> Duration {
@@ -3023,6 +3036,32 @@ fn parse_semver(v: &str) -> Option<(u32, u32, u32)> {
     let minor = parts.next()?.parse::<u32>().ok()?;
     let patch = parts.next().unwrap_or("0").parse::<u32>().ok()?;
     Some((major, minor, patch))
+}
+
+#[cfg(test)]
+mod localized_canonical_surface_tests {
+    use super::*;
+
+    #[test]
+    fn framework_error_prefixes_are_simplified_chinese_and_keep_raw_details() {
+        let raw_mode = raw_mode_enable_error(io::Error::other("raw-detail")).to_string();
+        assert_eq!(raw_mode, "启用终端 raw mode 失败：raw-detail");
+
+        let timeout = terminal_probe_timeout_error(Duration::from_millis(1250)).to_string();
+        assert_eq!(timeout, "终端探测在 1250ms 后超时");
+
+        let projection = canonical_projection_error("sequence-detail").to_string();
+        assert_eq!(projection, "canonical TUI 事件投影失败：sequence-detail");
+
+        let warning = prompt_override_warning("override-detail");
+        assert_eq!(warning, "警告：override-detail");
+
+        for text in [&raw_mode, &timeout, &projection, &warning] {
+            assert!(!text.contains("Warning:"));
+            assert!(!text.contains("failed:"));
+            assert!(!text.contains("timed out"));
+        }
+    }
 }
 
 mod activity_detail;

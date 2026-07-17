@@ -100,9 +100,8 @@ impl HarnessBuilder {
                 .env("XDG_DATA_HOME", home.join(".local/share").to_string_lossy())
                 .env("XDG_CACHE_HOME", home.join(".cache").to_string_lossy())
                 .env("USERPROFILE", home.to_string_lossy())
-                // Behavioral PTY selectors are intentionally language-stable.
-                // Pin them through the normal locale contract instead of
-                // creating both current and legacy settings homes.
+                // Keep the sealed terminal UTF-8 capable. Product language is
+                // fixed to Simplified Chinese and does not derive from locale.
                 .env("LANG", "en_US.UTF-8")
                 .env("LC_ALL", "en_US.UTF-8")
                 .env("CODEWHALE_CONFIG_PATH", codewhale_config.to_string_lossy());
@@ -259,11 +258,6 @@ pub fn make_sealed_workspace() -> Result<SealedWorkspace> {
     let home = tmp.path().join("home");
     std::fs::create_dir_all(&workspace).context("mkdir workspace")?;
     std::fs::create_dir_all(home.join(".codewhale")).context("mkdir home/.codewhale")?;
-    std::fs::write(
-        home.join(".codewhale").join("settings.toml"),
-        "locale = \"en\"\n",
-    )
-    .context("write deterministic PTY locale")?;
     Ok(SealedWorkspace {
         _tmp: tmp,
         workspace,

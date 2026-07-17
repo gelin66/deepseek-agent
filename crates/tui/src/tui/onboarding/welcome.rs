@@ -46,7 +46,8 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            app.tr(MessageId::OnboardWelcomeEnter).to_string(),
+            app.tr(MessageId::OnboardWelcomeEnter)
+                .replace("{key}", "Enter"),
             Style::default().fg(palette::TEXT_PRIMARY),
         )),
         Line::from(Span::styled(
@@ -57,7 +58,7 @@ pub fn lines(app: &App) -> Vec<Line<'static>> {
 }
 
 fn welcome_step_labels(app: &App) -> Vec<String> {
-    let mut steps = vec![app.tr(MessageId::OnboardWelcomeStepLanguage).to_string()];
+    let mut steps = Vec::new();
     if app.onboarding_needs_api_key {
         steps.push(app.tr(MessageId::OnboardWelcomeStepApiKey).to_string());
     }
@@ -73,10 +74,9 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::tui::app::TuiOptions;
-    use codewhale_config::Locale;
     use std::path::PathBuf;
 
-    fn test_app_with_locale(locale: Locale) -> App {
+    fn test_app() -> App {
         let options = TuiOptions {
             model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("."),
@@ -98,9 +98,7 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        let mut app = App::new(options, &Config::default());
-        app.ui_locale = locale;
-        app
+        App::new(options, &Config::default())
     }
 
     fn body(app: &App) -> String {
@@ -117,47 +115,50 @@ mod tests {
     }
 
     #[test]
-    fn welcome_copy_centers_constitution_first_setup() {
-        let mut app = test_app_with_locale(Locale::En);
+    fn welcome_copy_describes_the_real_first_run_flow() {
+        let mut app = test_app();
         app.onboarding_needs_api_key = false;
         app.trust_mode = true;
         let body = body(&app);
 
-        // The dual meaning of "code" opens the arc: software and law.
-        assert!(body.contains("Code means two things"));
-        assert!(body.contains("the law this agent works under"));
-        assert!(body.contains("only these screens will appear"));
-        assert!(body.contains("Next: choose language -> setup tips."));
-        assert!(body.contains("/constitution"));
-        assert!(!body.contains("add an API key"));
-        assert!(!body.contains("land in the chat"));
+        assert!(body.contains("面向 DeepSeek 的本地编码 Agent"));
+        assert!(body.contains("只检查必要的 API 密钥与工作区信任"));
+        assert!(body.contains("只会显示下面这些页面"));
+        assert!(body.contains("接下来：设置提示。"));
+        assert!(body.contains("直接用自然语言描述要完成的任务"));
+        for retired in ["/setup", "/constitution", "/provider", "/model", "Ctrl+K"] {
+            assert!(
+                !body.contains(retired),
+                "欢迎页不得宣传不可用入口：{retired}"
+            );
+        }
+        assert!(!body.contains("连接 API 密钥"));
+        assert!(body.contains("按 Enter 继续。"));
     }
 
     #[test]
     fn welcome_steps_include_optional_api_key_and_trust_screens() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let mut app = test_app_with_locale(Locale::En);
+        let mut app = test_app();
         app.workspace = tmp.path().to_path_buf();
         app.onboarding_needs_api_key = true;
         app.trust_mode = false;
 
         let body = body(&app);
 
-        assert!(body.contains(
-            "Next: choose language -> connect API key -> trust workspace -> setup tips."
-        ));
+        assert!(body.contains("接下来：连接 API 密钥 -> 信任工作区 -> 设置提示。"));
     }
 
     #[test]
-    fn welcome_copy_uses_locale_registry() {
-        let mut app = test_app_with_locale(Locale::ZhHans);
+    fn welcome_copy_uses_simplified_chinese_registry() {
+        let mut app = test_app();
         app.onboarding_needs_api_key = false;
         app.trust_mode = true;
 
         let body = body(&app);
 
-        assert!(body.contains("代码在这里有两层含义"));
-        assert!(body.contains("接下来：选择语言 -> 设置提示。"));
+        assert!(body.contains("面向 DeepSeek 的本地编码 Agent"));
+        assert!(body.contains("接下来：设置提示。"));
         assert!(!body.contains("Press Enter"));
     }
 }

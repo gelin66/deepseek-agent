@@ -17,7 +17,6 @@ const FEATURE_PATH: &str = concat!(
 const INFORMATIONAL_SCENARIO: &str =
     "Core informational commands write visible transcript messages";
 const STATE_SCENARIO: &str = "Core state commands report visible changes";
-const CLEAR_SCENARIO: &str = "Clear replaces prior transcript with visible confirmation";
 const PERSISTENT_WORK_SCENARIO: &str = "Persistent work commands report visible dispatch requests";
 
 #[derive(Default, cucumber::World)]
@@ -45,7 +44,6 @@ impl std::fmt::Debug for CoreCommandWorld {
 fn core_command_workspace(world: &mut CoreCommandWorld) {
     let tmpdir = TempDir::new().expect("core command TempDir");
     let mut app = create_test_app_with_tmpdir(&tmpdir);
-    app.ui_locale = codewhale_config::Locale::En;
     app.api_provider = ApiProvider::Deepseek;
     app.model = "deepseek-v4-pro".to_string();
     app.auto_model = false;
@@ -54,15 +52,6 @@ fn core_command_workspace(world: &mut CoreCommandWorld) {
     world.home_path = Some(tmpdir.path().join("home"));
     world.app = Some(Box::new(app));
     world.tmpdir = Some(tmpdir);
-}
-
-#[given("a CodeWhale core command workspace with one visible user message")]
-fn core_command_workspace_with_one_visible_user_message(world: &mut CoreCommandWorld) {
-    core_command_workspace(world);
-    let app = world.app.as_deref_mut().expect("app should exist");
-    app.add_message(HistoryCell::User {
-        content: "Remember the whale migration".to_string(),
-    });
 }
 
 #[when(regex = r#"^the user runs the core command "([^"]+)"$"#)]
@@ -81,16 +70,6 @@ fn message_window_should_include(world: &mut CoreCommandWorld, expected: String)
     );
 }
 
-#[then(regex = r#"^the message window should not include "([^"]+)"$"#)]
-fn message_window_should_not_include(world: &mut CoreCommandWorld, forbidden: String) {
-    let visible = visible_message_window(world);
-
-    assert!(
-        !visible.contains(&forbidden),
-        "message window should not include {forbidden:?}\nvisible transcript:\n{visible}"
-    );
-}
-
 #[tokio::test(flavor = "current_thread")]
 async fn core_informational_commands_write_visible_transcript_messages() {
     run_scenario(INFORMATIONAL_SCENARIO, 11).await;
@@ -99,11 +78,6 @@ async fn core_informational_commands_write_visible_transcript_messages() {
 #[tokio::test(flavor = "current_thread")]
 async fn core_state_commands_report_visible_changes() {
     run_scenario(STATE_SCENARIO, 8).await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn clear_replaces_prior_transcript_with_visible_confirmation() {
-    run_scenario(CLEAR_SCENARIO, 4).await;
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -33,7 +33,6 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, render_modal_footer, render_panel_scroll_rail,
     render_underwater_surface,
 };
-use codewhale_config::Locale;
 
 /// Two top-level sections rendered in the overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,10 +42,10 @@ enum HelpSection {
 }
 
 impl HelpSection {
-    fn label(self, locale: Locale) -> Cow<'static, str> {
+    fn label(self) -> Cow<'static, str> {
         match self {
-            Self::Command => tr(locale, MessageId::HelpSlashCommands),
-            Self::Keybinding => tr(locale, MessageId::HelpKeybindings),
+            Self::Command => tr(MessageId::HelpSlashCommands),
+            Self::Keybinding => tr(MessageId::HelpKeybindings),
         }
     }
 
@@ -82,7 +81,6 @@ enum HelpRenderRow {
 }
 
 pub struct HelpView {
-    locale: Locale,
     entries: Vec<HelpEntry>,
     /// Indices into `entries`, in display order, after filtering.
     filtered: Vec<usize>,
@@ -99,13 +97,8 @@ impl Default for HelpView {
 
 impl HelpView {
     pub fn new() -> Self {
-        Self::new_for_locale(Locale::En)
-    }
-
-    pub fn new_for_locale(locale: Locale) -> Self {
-        let entries = build_entries(locale);
+        let entries = build_entries();
         let mut view = Self {
-            locale,
             entries,
             filtered: Vec::new(),
             query: String::new(),
@@ -117,7 +110,7 @@ impl HelpView {
     }
 
     fn tr(&self, id: MessageId) -> Cow<'static, str> {
-        tr(self.locale, id)
+        tr(id)
     }
 
     fn refilter(&mut self) {
@@ -208,12 +201,12 @@ impl HelpView {
     }
 }
 
-fn build_entries(locale: Locale) -> Vec<HelpEntry> {
+fn build_entries() -> Vec<HelpEntry> {
     let mut entries = Vec::new();
 
     for command in commands::command_infos() {
         let label = format!("/{}", command.name);
-        let localized = command.description_for(locale);
+        let localized = command.description();
         let description = if command.aliases.is_empty() {
             localized.to_string()
         } else {
@@ -251,8 +244,8 @@ fn build_entries(locale: Locale) -> Vec<HelpEntry> {
         let label = crate::tui::shell_key_routing::display_chord(binding.chord).into_owned();
         let description = format!(
             "[{}] {}",
-            binding.section.label(locale),
-            tr(locale, binding.description_id)
+            binding.section.label(),
+            tr(binding.description_id)
         );
         let haystack = format!(
             "{} {}",
@@ -485,7 +478,7 @@ impl ModalView for HelpView {
                             .filter(|idx| self.entries[**idx].section == section)
                             .count();
                         lines.push(Line::from(Span::styled(
-                            format!("  {} ({})", section.label(self.locale), count),
+                            format!("  {} ({})", section.label(), count),
                             Style::default()
                                 .fg(palette::WHALE_ACCENT_PRIMARY)
                                 .add_modifier(Modifier::BOLD),
@@ -571,29 +564,29 @@ mod tests {
     #[test]
     fn substring_filter_finds_keybinding_by_chord() {
         let mut view = HelpView::new();
-        type_filter(&mut view, "ctrl+r");
-        assert!(!view.filtered.is_empty(), "Ctrl+R should match");
+        type_filter(&mut view, "ctrl+p");
+        assert!(!view.filtered.is_empty(), "Ctrl+P should match");
         assert!(
             view.filtered
                 .iter()
-                .any(|idx| view.entries[*idx].label.eq_ignore_ascii_case("ctrl+r")),
-            "Ctrl+R chord must surface in the filtered set"
+                .any(|idx| view.entries[*idx].label.eq_ignore_ascii_case("ctrl+p")),
+            "Ctrl+P chord must surface in the filtered set"
         );
     }
 
     #[test]
     fn multiple_terms_act_as_and() {
         let mut view = HelpView::new();
-        type_filter(&mut view, "session picker");
+        type_filter(&mut view, "工作 选择器");
         assert!(
             !view.filtered.is_empty(),
-            "expected at least one entry mentioning both `session` and `picker`"
+            "expected at least one entry mentioning both `工作` and `选择器`"
         );
         for idx in &view.filtered {
             let haystack = &view.entries[*idx].haystack;
             assert!(
-                haystack.contains("session") && haystack.contains("picker"),
-                "entry {:?} leaked through `session picker` AND filter",
+                haystack.contains("工作") && haystack.contains("选择器"),
+                "entry {:?} leaked through `工作 选择器` AND filter",
                 view.entries[*idx]
             );
         }
@@ -790,18 +783,18 @@ mod tests {
 
         let dump = buffer_text(&buf, area);
         // Title border + section headings should always render.
-        assert!(dump.contains("Help"), "missing help title:\n{dump}");
+        assert!(dump.contains("帮助"), "missing help title:\n{dump}");
         assert!(
-            dump.contains("Type to filter"),
+            dump.contains("输入以筛选"),
             "missing filter prompt:\n{dump}"
         );
         assert!(
-            dump.contains("Slash commands"),
+            dump.contains("斜杠命令"),
             "missing slash-command section heading:\n{dump}"
         );
         // Footer hint should advertise close key on the bottom border.
         assert!(
-            dump.contains("Esc close"),
+            dump.contains("Esc 关闭"),
             "missing Esc close footer hint:\n{dump}"
         );
     }
@@ -816,7 +809,7 @@ mod tests {
 
         let dump = buffer_text(&buf, area);
         assert!(
-            dump.contains("Filter: mode [act"),
+            dump.contains("筛选: mode [act"),
             "filter echo missing:\n{dump}"
         );
         assert!(
@@ -835,7 +828,7 @@ mod tests {
 
     #[test]
     fn localized_help_chrome_renders_without_missing_markers() {
-        let view = HelpView::new_for_locale(Locale::ZhHans);
+        let view = HelpView::new();
         let area = Rect::new(0, 0, 48, 18);
         let mut buf = Buffer::empty(area);
         view.render(area, &mut buf);
@@ -853,7 +846,7 @@ mod tests {
 
     #[test]
     fn localized_help_keybinding_descriptions_use_zh_hans() {
-        let entries = build_entries(Locale::ZhHans);
+        let entries = build_entries();
         let kb_entries: Vec<_> = entries
             .iter()
             .filter(|e| e.section == HelpSection::Keybinding)
@@ -888,24 +881,13 @@ mod tests {
                 }
             }
             let mut stack = ViewStack::new();
-            stack.push(HelpView::new_for_locale(Locale::En));
+            stack.push(HelpView::new());
             stack.render(area, &mut buf);
 
-            let rows: Vec<String> = (0..h)
-                .map(|y| {
-                    (0..w)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect();
+            let rows: Vec<String> = (0..h).map(|y| buffer_row_text(&buf, area, y)).collect();
             let text = rows.join("\n");
 
-            for label in [
-                "type to filter",
-                "Up/Down move",
-                "PgUp/PgDn jump",
-                "Esc close",
-            ] {
+            for label in ["输入以筛选", "Up/Down 移动", "PgUp/PgDn 跳转", "Esc 关闭"] {
                 assert!(text.contains(label), "{w}x{h}: missing footer '{label}'");
             }
             assert!(
@@ -929,11 +911,20 @@ mod tests {
     fn buffer_text(buf: &Buffer, area: Rect) -> String {
         let mut out = String::new();
         for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                out.push_str(buf[(x, y)].symbol());
-            }
+            out.push_str(&buffer_row_text(buf, area, y));
             out.push('\n');
         }
         out
+    }
+
+    fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        row
     }
 }

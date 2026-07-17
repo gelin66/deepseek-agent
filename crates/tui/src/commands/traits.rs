@@ -5,7 +5,6 @@ use std::collections::HashMap;
 
 use crate::localization::{MessageId, tr};
 use crate::tui::app::App;
-use codewhale_config::Locale;
 
 use super::CommandResult;
 
@@ -29,8 +28,6 @@ pub(crate) const ADVANCED_DISCOVERY_COMMANDS: &[&str] = &[
     "balance",
     "change",
     "debt",
-    "diff",
-    "edit",
     "goal",
     "hf",
     "hooks",
@@ -40,15 +37,11 @@ pub(crate) const ADVANCED_DISCOVERY_COMMANDS: &[&str] = &[
     "network",
     "plugin",
     "profile",
-    "purge",
-    "relay",
-    "rename",
     "rlm",
     "settings",
     "share",
     "sidebar",
     "theme",
-    "translate",
     "trust",
     "verbose",
     "workspace",
@@ -88,12 +81,12 @@ impl CommandInfo {
         }
     }
 
-    pub fn description_for(&self, locale: Locale) -> Cow<'static, str> {
-        tr(locale, self.description_id)
+    pub fn description(&self) -> Cow<'static, str> {
+        tr(self.description_id)
     }
 
-    pub fn palette_description_for(&self, locale: Locale) -> String {
-        let desc = self.description_for(locale);
+    pub fn palette_description(&self) -> String {
+        let desc = self.description();
         if self.aliases.is_empty() {
             desc.to_string()
         } else {

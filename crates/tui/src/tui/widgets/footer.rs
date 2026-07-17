@@ -35,7 +35,6 @@ use unicode_width::UnicodeWidthStr;
 use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, AppMode, SidebarFocus};
-use codewhale_config::Locale;
 
 use super::Renderable;
 
@@ -165,9 +164,9 @@ pub fn footer_working_strip_string(width: usize, frame: u64) -> String {
 /// `String` so callers can drop it into a `Span::styled` without lifetime
 /// gymnastics.
 #[must_use]
-pub fn footer_working_label(frame: u64, locale: Locale) -> String {
+pub fn footer_working_label(frame: u64) -> String {
     let dots = (frame % 4) as usize;
-    let base = tr(locale, MessageId::FooterWorking);
+    let base = tr(MessageId::FooterWorking);
     let mut out = String::with_capacity(base.len() + dots);
     out.push_str(&base);
     for _ in 0..dots {
@@ -193,14 +192,14 @@ pub fn footer_shell_label_chip(label: String) -> Vec<Span<'static>> {
 /// the locale registry so CJK locales can render the count without the
 /// English plural-`s` artefact.
 #[must_use]
-pub fn footer_agents_chip(running: usize, locale: Locale) -> Vec<Span<'static>> {
+pub fn footer_agents_chip(running: usize) -> Vec<Span<'static>> {
     if running == 0 {
         return Vec::new();
     }
     let text = if running == 1 {
-        tr(locale, MessageId::FooterAgentSingular).to_string()
+        tr(MessageId::FooterAgentSingular).to_string()
     } else {
-        tr(locale, MessageId::FooterAgentsPlural).replace("{count}", &running.to_string())
+        tr(MessageId::FooterAgentsPlural).replace("{count}", &running.to_string())
     };
     vec![Span::styled(text, Style::default().fg(palette::WHALE_INFO))]
 }
@@ -212,11 +211,11 @@ pub fn footer_agents_chip(running: usize, locale: Locale) -> Vec<Span<'static>> 
 /// reuses [`crate::tui::notifications::humanize_duration`] for
 /// consistent w/d/h/m formatting.
 #[must_use]
-pub fn footer_worked_chip(elapsed: std::time::Duration, locale: Locale) -> Vec<Span<'static>> {
+pub fn footer_worked_chip(elapsed: std::time::Duration) -> Vec<Span<'static>> {
     if elapsed < std::time::Duration::from_secs(60) {
         return Vec::new();
     }
-    let label = tr(locale, MessageId::FooterWorkedChip).replace(
+    let label = tr(MessageId::FooterWorkedChip).replace(
         "{duration}",
         &crate::tui::notifications::humanize_duration(elapsed),
     );
@@ -296,7 +295,7 @@ impl FooterProps {
         // that's been open and idle for 4 minutes shouldn't claim
         // "worked 4m". The chip stays empty until enough turns add up
         // to cross the 60s threshold inside `footer_worked_chip`.
-        let worked = footer_worked_chip(app.cumulative_turn_duration, app.ui_locale);
+        let worked = footer_worked_chip(app.cumulative_turn_duration);
         Self {
             model: app.model_display_label(),
             mode_label,
@@ -341,7 +340,7 @@ fn mode_style(app: &App) -> (&'static str, Color) {
 
 pub fn footer_permission_chip(app: &App) -> Vec<Span<'static>> {
     let label = if app.mode == AppMode::Plan {
-        "Read Only"
+        "只读"
     } else {
         app.approval_mode.permission_chip_label()
     };
@@ -792,7 +791,6 @@ mod tests {
     use crate::config::Config;
     use crate::palette;
     use crate::tui::app::{App, AppMode, TuiOptions};
-    use codewhale_config::Locale;
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
@@ -801,6 +799,17 @@ mod tests {
     };
     use std::path::PathBuf;
     use unicode_width::UnicodeWidthStr;
+
+    fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        let mut text = String::new();
+        let mut x = area.x;
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            text.push_str(symbol);
+            x = x.saturating_add(UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        text
+    }
 
     fn make_app() -> App {
         let options = TuiOptions {
@@ -908,22 +917,20 @@ mod tests {
         // so 90s renders as `1m 30s`, not `1m`.)
         app.cumulative_turn_duration = std::time::Duration::from_secs(90);
 
-        // Pin the locale to English so the assertion below is deterministic.
-        app.ui_locale = codewhale_config::Locale::En;
         let props = idle_props_for(&app);
         let text: String = props
             .worked
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>();
-        assert_eq!(text, "worked 1m 30s");
+        assert_eq!(text, "已运行1m 30s");
     }
 
     #[test]
     fn footer_worked_chip_hidden_below_one_minute() {
         use std::time::Duration;
         for secs in [0, 1, 30, 59] {
-            let chip = super::footer_worked_chip(Duration::from_secs(secs), Locale::En);
+            let chip = super::footer_worked_chip(Duration::from_secs(secs));
             assert!(
                 chip.is_empty(),
                 "worked chip must be hidden at {secs}s; got {chip:?}"
@@ -935,20 +942,19 @@ mod tests {
     fn footer_worked_chip_shows_humanized_label_above_threshold() {
         use std::time::Duration;
         // 1 minute on the dot — boundary, must render.
-        let chip = super::footer_worked_chip(Duration::from_secs(60), Locale::En);
+        let chip = super::footer_worked_chip(Duration::from_secs(60));
         let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "worked 1m");
+        assert_eq!(text, "已运行1m");
 
         // 3h 12m — the issue's golden example.
-        let chip = super::footer_worked_chip(Duration::from_secs(11_550), Locale::En);
+        let chip = super::footer_worked_chip(Duration::from_secs(11_550));
         let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "worked 3h 12m");
+        assert_eq!(text, "已运行3h 12m");
 
         // Multi-day session — exercises the d/h band.
-        let chip =
-            super::footer_worked_chip(Duration::from_secs(2 * 86_400 + 5 * 3600), Locale::En);
+        let chip = super::footer_worked_chip(Duration::from_secs(2 * 86_400 + 5 * 3600));
         let text: String = chip.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "worked 2d 5h");
+        assert_eq!(text, "已运行2d 5h");
     }
 
     #[test]
@@ -1007,28 +1013,28 @@ mod tests {
     // ---- agents chip wording ----
     #[test]
     fn footer_agents_chip_is_empty_when_no_agents_running() {
-        let chip = super::footer_agents_chip(0, Locale::En);
+        let chip = super::footer_agents_chip(0);
         assert!(chip.is_empty(), "0 agents in flight → no chip");
     }
 
     #[test]
     fn footer_agents_chip_uses_singular_for_one() {
-        let chip = super::footer_agents_chip(1, Locale::En);
+        let chip = super::footer_agents_chip(1);
         assert_eq!(chip.len(), 1);
-        assert_eq!(chip[0].content.as_ref(), "1 agent");
+        assert_eq!(chip[0].content.as_ref(), "1 个子代理");
     }
 
     #[test]
     fn footer_agents_chip_uses_plural_for_many() {
-        let chip = super::footer_agents_chip(3, Locale::En);
+        let chip = super::footer_agents_chip(3);
         assert_eq!(chip.len(), 1);
-        assert_eq!(chip[0].content.as_ref(), "3 agents");
+        assert_eq!(chip[0].content.as_ref(), "3 个子代理");
     }
 
     #[test]
     fn footer_agents_chip_renders_into_widget() {
         let app = make_app();
-        let agents = super::footer_agents_chip(2, Locale::En);
+        let agents = super::footer_agents_chip(2);
         let props = FooterProps::from_app(
             &app,
             None,
@@ -1044,9 +1050,9 @@ mod tests {
         let area = ratatui::layout::Rect::new(0, 0, 60, 1);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         widget.render(area, &mut buf);
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        let rendered = buffer_row_text(&buf, area, 0);
         assert!(
-            rendered.contains("2 agents"),
+            rendered.contains("2 个子代理"),
             "expected agents chip in render: {rendered:?}",
         );
     }
@@ -1274,16 +1280,16 @@ mod tests {
         // The label sequence `working` → `working.` → `working..` →
         // `working...` then wraps back. Each frame is a discrete tick;
         // the cycle is exactly 4 frames so adjacent ticks visibly differ.
-        assert_eq!(super::footer_working_label(0, Locale::En), "working");
-        assert_eq!(super::footer_working_label(1, Locale::En), "working.");
-        assert_eq!(super::footer_working_label(2, Locale::En), "working..");
-        assert_eq!(super::footer_working_label(3, Locale::En), "working...");
+        assert_eq!(super::footer_working_label(0), "工作中");
+        assert_eq!(super::footer_working_label(1), "工作中.");
+        assert_eq!(super::footer_working_label(2), "工作中..");
+        assert_eq!(super::footer_working_label(3), "工作中...");
         assert_eq!(
-            super::footer_working_label(4, Locale::En),
-            "working",
+            super::footer_working_label(4),
+            "工作中",
             "wraps back at frame 4",
         );
-        assert_eq!(super::footer_working_label(7, Locale::En), "working...");
+        assert_eq!(super::footer_working_label(7), "工作中...");
     }
 
     /// Render the footer at `width` and return the visible single-line text.
@@ -1291,11 +1297,7 @@ mod tests {
         let area = ratatui::layout::Rect::new(0, 0, width, 1);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         FooterWidget::new(props).render(area, &mut buf);
-        (0..area.width)
-            .map(|x| buf[(x, 0)].symbol())
-            .collect::<String>()
-            .trim_end()
-            .to_string()
+        buffer_row_text(&buf, area, 0).trim_end().to_string()
     }
 
     #[test]
@@ -1306,17 +1308,17 @@ mod tests {
         app.mode = AppMode::Agent;
         assert_eq!(
             super::spans_text(&super::footer_permission_chip(&app)),
-            "perm Full Access"
+            "perm 完全访问"
         );
         app.mode = AppMode::Operate;
         assert_eq!(
             super::spans_text(&super::footer_permission_chip(&app)),
-            "perm Full Access"
+            "perm 完全访问"
         );
         app.mode = AppMode::Plan;
         assert_eq!(
             super::spans_text(&super::footer_permission_chip(&app)),
-            "perm Read Only"
+            "perm 只读"
         );
     }
 
@@ -1352,7 +1354,7 @@ mod tests {
         assert_eq!(super::spans_text(&props.work), "To-do 2 · 50%");
         let line = render_at_width(props, 59);
         assert!(line.contains("To-do 2 · 50%"), "{line:?}");
-        assert!(line.contains("perm Full Access"), "{line:?}");
+        assert!(line.contains("perm 完全访问"), "{line:?}");
 
         app.sidebar_focus = crate::tui::app::SidebarFocus::Hidden;
         let hidden = FooterProps::from_app(
@@ -1393,7 +1395,7 @@ mod tests {
         for width in [120, 100, 80] {
             let line = render_at_width(props.clone(), width);
             assert!(
-                line.contains("perm Read Only"),
+                line.contains("perm 只读"),
                 "effective safety posture missing at {width} cols: {line:?}"
             );
             assert!(line.width() <= usize::from(width));
@@ -1403,12 +1405,9 @@ mod tests {
     #[test]
     fn ask_auto_and_full_access_render_at_release_widths() {
         for (posture, expected) in [
-            (crate::tui::approval::ApprovalMode::Suggest, "perm Ask"),
-            (crate::tui::approval::ApprovalMode::Auto, "perm Auto-Review"),
-            (
-                crate::tui::approval::ApprovalMode::Bypass,
-                "perm Full Access",
-            ),
+            (crate::tui::approval::ApprovalMode::Suggest, "perm 询问"),
+            (crate::tui::approval::ApprovalMode::Auto, "perm 自动审查"),
+            (crate::tui::approval::ApprovalMode::Bypass, "perm 完全访问"),
         ] {
             let mut app = make_app();
             app.mode = AppMode::Operate;

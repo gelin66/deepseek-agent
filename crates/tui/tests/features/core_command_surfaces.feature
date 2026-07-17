@@ -6,31 +6,21 @@ Feature: Core command visible surfaces
   Scenario: Core informational commands write visible transcript messages
     Given a CodeWhale core command workspace
     When the user runs the core command "/help links"
-    Then the message window should include "Usage: /links"
-    And the message window should include "Aliases: dashboard, api"
+    Then the message window should include "用法： /links"
+    And the message window should include "别名： dashboard, api"
     When the user runs the core command "/links"
     Then the message window should include "https://platform.deepseek.com"
     When the user runs the core command "/workspace"
     Then the message window should include "Current workspace:"
     When the user runs the core command "/home"
-    Then the message window should include "codewhale Home Dashboard"
+    Then the message window should include "codewhale 主面板"
     And the message window should include "/links"
 
   Scenario: Core state commands report visible changes
     Given a CodeWhale core command workspace
     When the user runs the core command "/model auto"
-    Then the message window should include "Model changed:"
+    Then the message window should include "模型已切换："
     And the message window should include "auto"
-    When the user runs the core command "/translate"
-    Then the message window should include "Output translation enabled"
-    When the user runs the core command "/translate"
-    Then the message window should include "Output translation disabled"
-
-  Scenario: Clear replaces prior transcript with visible confirmation
-    Given a CodeWhale core command workspace with one visible user message
-    When the user runs the core command "/clear"
-    Then the message window should include "Conversation cleared"
-    And the message window should not include "Remember the whale migration"
 
   Scenario: Persistent work commands report visible dispatch requests
     Given a CodeWhale core command workspace

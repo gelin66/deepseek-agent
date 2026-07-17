@@ -6,9 +6,6 @@
 //!
 //! - creating a streaming thinking entry on first chunk
 //! - appending chunks to the live entry
-//! - showing a localized placeholder while a translation is in-flight
-//!   (and animating its elapsed/spinner suffix)
-//! - replacing the placeholder when the translation arrives
 //! - finalizing the entry (stopping the spinner, stamping duration)
 //!   when a thinking block ends
 //! - stashing the reasoning buffer onto `app.last_reasoning` so the
@@ -97,108 +94,6 @@ fn append_at(app: &mut App, entry_idx: usize, text: &str, now: Instant) {
     };
     if mutated {
         bump_thinking_revision_throttled(app, now);
-    }
-}
-
-/// Build the spinner-decorated placeholder shown in the thinking entry
-/// while a translation is in flight (`Thinking… (1.2s |)`).
-pub(super) fn translation_placeholder_frame(app: &App) -> String {
-    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
-    let elapsed = app
-        .thinking_started_at
-        .or(app.turn_started_at)
-        .map(|started| started.elapsed().as_secs_f32())
-        .unwrap_or_default();
-    let frame = match (elapsed.mul_add(2.0, 0.0) as usize) % 4 {
-        0 => "|",
-        1 => "/",
-        2 => "-",
-        _ => "\\",
-    };
-    format!("{base} ({elapsed:.1}s {frame})")
-}
-
-/// If the given entry is empty or still showing the translation
-/// placeholder prefix, replace it with the latest animated frame.
-pub(super) fn set_placeholder(app: &mut App, entry_idx: usize) {
-    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
-    let next = translation_placeholder_frame(app);
-    let mutated = if let Some(active) = app.active_cell.as_mut()
-        && let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(entry_idx)
-        && (content.is_empty() || content.starts_with(base))
-    {
-        if *content != next {
-            *content = next;
-            true
-        } else {
-            false
-        }
-    } else {
-        false
-    };
-    if mutated {
-        app.bump_active_cell_revision();
-    }
-}
-
-/// Advance the spinner suffix on every existing translation placeholder
-/// in `active_cell`. Returns true when at least one cell was updated so
-/// the dispatch loop can schedule another tick.
-pub(super) fn animate_pending_translation(app: &mut App, translation_pending: bool) -> bool {
-    if !app.translation_enabled {
-        return false;
-    }
-    let thinking_streaming = app.streaming_thinking_active_entry.is_some();
-    if !translation_pending && !thinking_streaming {
-        return false;
-    }
-    let base = crate::localization::thinking_translation_placeholder(app.ui_locale);
-    let next = translation_placeholder_frame(app);
-
-    if let Some(active) = app.active_cell.as_mut() {
-        for idx in (0..active.entry_count()).rev() {
-            if let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
-                && content.starts_with(base)
-                && *content != next
-            {
-                *content = next.clone();
-                app.bump_active_cell_revision();
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Replace a translation placeholder with the finished translated text.
-/// Searches the active cell first, then the finalized history (covers
-/// the case where the translation lands after the thinking block was
-/// already moved into history).
-pub(super) fn replace_pending_translation(
-    app: &mut App,
-    placeholder: &str,
-    translated_text: String,
-) {
-    if let Some(active) = app.active_cell.as_mut() {
-        for idx in (0..active.entry_count()).rev() {
-            if let Some(HistoryCell::Thinking { content, .. }) = active.entry_mut(idx)
-                && content.starts_with(placeholder)
-            {
-                *content = translated_text;
-                app.bump_active_cell_revision();
-                return;
-            }
-        }
-    }
-
-    for idx in (0..app.history.len()).rev() {
-        if let Some(HistoryCell::Thinking { content, .. }) = app.history.get_mut(idx)
-            && content.starts_with(placeholder)
-        {
-            *content = translated_text;
-            app.bump_history_cell(idx);
-            return;
-        }
     }
 }
 

@@ -1,7 +1,6 @@
 //! Onboarding flow rendering and helpers.
 
 pub mod api_key;
-pub mod language;
 pub mod trust_directory;
 pub mod welcome;
 
@@ -16,6 +15,7 @@ use ratatui::{
 };
 
 use crate::config::ApiProvider;
+use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, OnboardingState};
 
@@ -48,7 +48,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let lines = match app.onboarding {
         OnboardingState::Welcome => welcome::lines(app),
-        OnboardingState::Language => language::lines(app),
         OnboardingState::Provider => provider_lines(app),
         OnboardingState::ApiKey => api_key::lines(app),
         OnboardingState::TrustDirectory => trust_directory::lines(app),
@@ -59,7 +58,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     if !lines.is_empty() {
         let mut panel = Block::default()
             .title(Line::from(Span::styled(
-                " CodeWhale ",
+                app.tr(MessageId::OnboardPanelTitle).to_string(),
                 Style::default()
                     .fg(palette::WHALE_ACCENT_PRIMARY)
                     .add_modifier(Modifier::BOLD),
@@ -71,7 +70,9 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
         if !app.onboarding_workspace_trust_gate {
             let (step, total) = onboarding_step(app);
             panel = panel.title_bottom(Line::from(Span::styled(
-                format!(" Step {step}/{total} "),
+                app.tr(MessageId::OnboardStepProgress)
+                    .replace("{step}", &step.to_string())
+                    .replace("{total}", &total.to_string()),
                 Style::default()
                     .fg(palette::TEXT_MUTED)
                     .add_modifier(Modifier::BOLD),
@@ -86,8 +87,8 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
 fn onboarding_step(app: &App) -> (usize, usize) {
     let needs_trust = needs_trust_at(app.config_path.as_deref(), &app.workspace);
-    // Welcome + Language + Tips are always shown.
-    let mut total = 3;
+    // Welcome + Tips are always shown.
+    let mut total = 2;
     if app.onboarding_needs_api_key {
         total += 1;
     }
@@ -97,13 +98,12 @@ fn onboarding_step(app: &App) -> (usize, usize) {
 
     let step = match app.onboarding {
         OnboardingState::Welcome => 1,
-        OnboardingState::Language => 2,
-        OnboardingState::Provider | OnboardingState::ApiKey => 3,
+        OnboardingState::Provider | OnboardingState::ApiKey => 2,
         OnboardingState::TrustDirectory => {
             if app.onboarding_needs_api_key {
-                4
-            } else {
                 3
+            } else {
+                2
             }
         }
         OnboardingState::Tips => total,
@@ -114,9 +114,20 @@ fn onboarding_step(app: &App) -> (usize, usize) {
 }
 
 pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
-    use crate::localization::MessageId;
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span};
+
+    let commands_line = app
+        .tr(MessageId::OnboardTipsLine2)
+        .replace("{help}", "/help")
+        .replace("{compact}", "/compact");
+    let cost_line = app
+        .tr(MessageId::OnboardTipsLine3)
+        .replace("{cost}", "/cost");
+    let exit_line = app
+        .tr(MessageId::OnboardTipsLine4)
+        .replace("{exit}", "/exit")
+        .replace("{quit}", "/quit");
 
     vec![
         Line::from(Span::styled(
@@ -127,12 +138,13 @@ pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
         )),
         Line::from(""),
         Line::from(Span::raw(app.tr(MessageId::OnboardTipsLine1).to_string())),
-        Line::from(Span::raw(app.tr(MessageId::OnboardTipsLine2).to_string())),
-        Line::from(Span::raw(app.tr(MessageId::OnboardTipsLine3).to_string())),
-        Line::from(Span::raw(app.tr(MessageId::OnboardTipsLine4).to_string())),
+        Line::from(Span::raw(commands_line)),
+        Line::from(Span::raw(cost_line)),
+        Line::from(Span::raw(exit_line)),
         Line::from(vec![
             Span::styled(
-                app.tr(MessageId::OnboardTipsFooterEnter).to_string(),
+                app.tr(MessageId::OnboardTipsFooterEnter)
+                    .replace("{key}", "Enter"),
                 Style::default()
                     .fg(palette::TEXT_PRIMARY)
                     .add_modifier(Modifier::BOLD),
@@ -159,7 +171,10 @@ pub fn is_onboarded() -> bool {
 
 pub fn mark_onboarded() -> std::io::Result<PathBuf> {
     let home = crate::config::effective_home_dir().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::NotFound, "Home directory not found")
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            tr(MessageId::OnboardHomeDirectoryNotFound).into_owned(),
+        )
     })?;
     mark_onboarded_at_home(&home)
 }
@@ -210,40 +225,26 @@ pub enum ApiKeyValidation {
 pub fn validate_api_key_for_onboarding(api_key: &str) -> ApiKeyValidation {
     let trimmed = api_key.trim();
     if trimmed.is_empty() {
-        return ApiKeyValidation::Reject("API key cannot be empty.".to_string());
+        return ApiKeyValidation::Reject(tr(MessageId::OnboardApiKeyEmpty).into_owned());
     }
     if trimmed.contains(char::is_whitespace) {
-        return ApiKeyValidation::Reject(
-            "API key appears malformed (contains whitespace).".to_string(),
-        );
+        return ApiKeyValidation::Reject(tr(MessageId::OnboardApiKeyWhitespace).into_owned());
     }
     if trimmed.len() < 16 {
         return ApiKeyValidation::Accept {
-            warning: Some(
-                "API key looks short. Double-check it, but unusual formats are allowed."
-                    .to_string(),
-            ),
+            warning: Some(tr(MessageId::OnboardApiKeyShortWarning).into_owned()),
         };
     }
     if !trimmed.contains('-') {
         return ApiKeyValidation::Accept {
-            warning: Some(
-                "API key format looks unusual. Check that the full key was copied.".to_string(),
-            ),
+            warning: Some(tr(MessageId::OnboardApiKeyUnusualWarning).into_owned()),
         };
     }
     ApiKeyValidation::Accept { warning: None }
 }
 
-/// Welcome → Language transition. Clears the status message bar.
+/// Leave the welcome screen and route directly to the next required step.
 pub fn advance_onboarding_from_welcome(app: &mut App) {
-    app.status_message = None;
-    app.onboarding = OnboardingState::Language;
-}
-
-/// Language → next step. Routes to Provider/ApiKey when the session lacks a
-/// key, to TrustDirectory when the workspace is untrusted, otherwise to Tips.
-pub fn advance_onboarding_after_language(app: &mut App) {
     app.status_message = None;
     if app.onboarding_needs_api_key {
         app.onboarding = OnboardingState::ApiKey;
@@ -287,7 +288,6 @@ pub fn move_onboarding_provider_selection(app: &mut App, delta: i32) {
 }
 
 fn provider_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
-    use crate::localization::MessageId;
     use ratatui::style::Modifier;
     use ratatui::text::{Line, Span};
 
@@ -362,11 +362,13 @@ pub fn sync_api_key_validation_status(app: &mut App, show_empty_error: bool) {
 mod tests {
     use super::*;
     use crate::config::Config;
+    use crate::localization::tr;
     use crate::tui::app::{App, TuiOptions};
-    use codewhale_config::Locale;
+    use crate::tui::canonical_commands::command_infos;
+    use std::collections::HashSet;
     use std::path::PathBuf;
 
-    fn test_app_with_locale(locale: Locale) -> App {
+    fn test_app() -> App {
         let options = TuiOptions {
             model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("."),
@@ -388,35 +390,62 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        let mut app = App::new(options, &Config::default());
-        app.ui_locale = locale;
-        app
+        App::new(options, &Config::default())
     }
 
     fn flattened(lines: Vec<ratatui::text::Line<'static>>) -> String {
         lines
             .into_iter()
-            .flat_map(|line| {
+            .map(|line| {
                 line.spans
                     .into_iter()
                     .map(|span| span.content.to_string())
-                    .collect::<Vec<_>>()
+                    .collect::<String>()
             })
             .collect::<Vec<_>>()
             .join("\n")
     }
 
     #[test]
-    fn tips_copy_points_to_setup_and_constitution() {
-        let app = test_app_with_locale(Locale::En);
+    fn tips_copy_only_advertises_canonical_commands() {
+        let app = test_app();
         let body = flattened(tips_lines(&app));
 
-        assert!(body.contains("/setup"));
-        assert!(body.contains("/constitution"));
-        assert!(body.contains("/provider"));
-        assert!(body.contains("/model"));
-        assert!(body.contains("open setup if it needs attention"));
-        assert!(!body.contains("open the workspace"));
+        let advertised = body
+            .split_whitespace()
+            .filter(|word| word.starts_with('/'))
+            .map(|word| {
+                word.trim_matches(|ch: char| {
+                    !ch.is_ascii_alphanumeric() && !matches!(ch, '/' | '-' | '_')
+                })
+                .to_string()
+            })
+            .collect::<HashSet<_>>();
+        let canonical = command_infos()
+            .iter()
+            .flat_map(|info| {
+                std::iter::once(format!("/{}", info.name))
+                    .chain(info.aliases.iter().map(|alias| format!("/{alias}")))
+            })
+            .collect::<HashSet<_>>();
+
+        assert_eq!(advertised, canonical);
+        assert!(body.contains("直接用自然语言描述任务"));
+        for retired in ["/setup", "/constitution", "/provider", "/model", "Ctrl+K"] {
+            assert!(
+                !body.contains(retired),
+                "首次启动页不得宣传不可用入口：{retired}"
+            );
+        }
+        assert!(body.contains("按 Enter 进入任务输入区"));
+    }
+
+    #[test]
+    fn visible_permission_labels_are_simplified_chinese() {
+        assert_eq!(tr(MessageId::ChipPermissionAsk), "询问");
+        assert_eq!(tr(MessageId::ChipPermissionAuto), "自动审查");
+        assert_eq!(tr(MessageId::ChipPermissionFullAccess), "完全访问");
+        assert_eq!(tr(MessageId::ChipPermissionNever), "从不询问");
     }
 
     #[test]

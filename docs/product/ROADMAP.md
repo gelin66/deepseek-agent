@@ -10,7 +10,7 @@
   验收与费用受限的官方 DeepSeek sender canary，并冻结为提交 `4a3311ac`；交互 TUI caller
   尚未切换，旧 engine/runtime-thread/compaction 路径尚未删除。M1 的
   导入基线 A/B 与 M2 的完整官方 surface canary 仍是独立证据债务
-- 上次更新：2026-07-17
+- 上次更新：2026-07-18
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -63,21 +63,33 @@
 
 1. 先确认该入口是否属于 DeepSeek 专用产品的保留链路；
 2. 替代并删除无关 Provider 的选择、配置、帮助和错误分支；
-3. 再用现有统一 locale 资源汉化保留的人类界面，不建立第二套 i18n；
+3. 再用唯一 `zh-Hans` 消息目录汉化保留的人类界面，不建立 locale 状态或第二套 i18n；
 4. 独立开发并评测中文原生模型提示词包，不把 UI 翻译混入 Runtime 语义。
 
-人类界面默认 `zh-Hans`；命令和 flags、工具名、Schema/API 字段、模型 ID、路径、代码、
-diff、stdout/stderr 和原始日志保持稳定。最终门禁至少覆盖：
+人类界面固定 `zh-Hans`，不提供语言配置、检测、选择、切换、其他语言包或后处理翻译；
+命令和 flags、工具名、Schema/API 字段、模型 ID、路径、代码、diff、stdout/stderr 和
+原始日志保持稳定。最终门禁至少覆盖：
 
 - 隔离 HOME 下的首次启动、`--help`、Setup/Doctor、认证失败、限流、超时、SSE、上下文和
   请求预算耗尽都提供中文摘要与可执行建议；
-- `exec` 文本输出默认中文，NDJSON/机器事件的字段与 golden fixture 不因 locale 改变；
+- `exec` 文本输出固定中文，NDJSON/机器事件字段与 golden fixture 不受界面文案影响；
 - 单 Agent 和多 Agent 的成功、失败、取消、恢复链路均无非白名单英文，子 Agent 与恢复
-  会话继承 locale；
+  会话使用同一固定中文投影；
 - 80/120 列终端下 CJK 宽度、截断和换行正确；
 - 英文泄漏门禁只扫描保留的用户渲染路径，并维护技术字面量白名单，不做全仓 ASCII 扫描；
 - 中文提示词包与当前版本做同任务 A/B，记录 verified success、工具错误率、轮次、Token、
   时延和成本；无能力回归且关键指标有净提升后才默认启用，版本必须可追溯和回滚。
+
+2026-07-18 已完成固定语言基础设施候选：删除 Locale 状态与传播、环境语言检测、首次启动
+语言步骤、7 个非简体中文语言包、运行时语言切换、`/translate` 以及对应的额外模型翻译
+请求；保留唯一 `zh-Hans` 消息目录，并修复 canonical 首启、审批、命令与 CJK 终端宽度
+验收。当前证据为 TUI 单元测试 4,989 通过、2 个预先忽略、0 失败，canonical Run 20/20、
+canonical PTY 5/5、QA PTY 9/9、release runtime QA 5/5（1 个重型 fanout 用例预先忽略）、
+TUI all-targets check、完整 workspace test 和 focused gate 通过。严格 workspace clippy 仍被
+约 1,700 项旧 TUI 死代码/不可达模块告警阻断；不得以 `allow` 压制，应由 M4-C 切换真实
+调用方后物理删除。该切片只证明语言状态与翻译后处理已收敛，不代表保留界面已经没有全部
+英文，也不代表生产 Agent 系统提示已经完成中文重构；旧 Provider/Fleet/Workflow/TUI
+文案应随 M4-C/M7 调用方迁移删除，保留界面再进入消息目录，生产提示词必须另做同任务 A/B。
 
 ## 3. 里程碑总览
 
@@ -663,8 +675,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - stable prefix/cache；
 - 并行只读工具；
 - Agent 数量和预算；
-- 开发中文原生 Agent 提示词包，分别调优规划、工具策略、失败恢复、压缩和子 Agent 协作；
-  保留英文/当前提示词为同任务 A/B 基线，按版本发布并可回滚；
+- 开发中文原生 Agent 提示词组合，分别调优规划、工具策略、失败恢复、压缩和子 Agent 协作；
+  以当前生产提示和归档基线做同任务 A/B，候选按版本评测并可回滚；
 - 只有基准证明需要时才加入 embedding。
 
 ### 剩余清理
@@ -687,7 +699,7 @@ Telegram、Feishu、bridge-core、remote-setup 调用面和 Tencent Lighthouse �
 - 正式产品名、二进制名、配置目录和 User-Agent；
 - 自己的 origin/upstream 远程策略；
 - DeepSeek-only 配置向导；
-- 默认 `zh-Hans` 的 CLI/TUI/Headless 文本界面与中文帮助、Doctor、错误恢复和多 Agent 状态；
+- 固定 `zh-Hans` 的 CLI/TUI/Headless 文本界面与中文帮助、Doctor、错误恢复和多 Agent 状态；
 - 保持 NDJSON/API 字段、命令参数、工具名、模型 ID、路径、代码和原始输出稳定；
 - 中文原生 Agent 提示词包通过同任务 A/B 后默认启用，提示词版本可追溯并可回滚；
 - 本地开发、安装、卸载和数据迁移；

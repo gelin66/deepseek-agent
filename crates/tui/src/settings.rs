@@ -2953,7 +2953,7 @@ mod tests {
         );
         let display = loaded.display();
         assert!(
-            display.contains(&format!("配置文件: {}", primary.display())),
+            display.contains(&format!("配置文件： {}", primary.display())),
             "settings display should surface the canonical codewhale path:\n{display}"
         );
     }

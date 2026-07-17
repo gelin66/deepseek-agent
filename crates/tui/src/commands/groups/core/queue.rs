@@ -3,7 +3,6 @@
 use crate::commands::traits::{CommandInfo, RegisterCommand};
 use crate::localization::{MessageId, tr};
 use crate::tui::app::App;
-use codewhale_config::Locale;
 
 use super::CommandResult;
 
@@ -29,7 +28,6 @@ impl RegisterCommand for QueueCmd {
 }
 
 pub fn queue(app: &mut App, args: Option<&str>) -> CommandResult {
-    let locale = app.ui_locale;
     let arg = args.unwrap_or("").trim();
     if arg.is_empty() || arg.eq_ignore_ascii_case("list") {
         return list_queue(app);
@@ -42,12 +40,11 @@ pub fn queue(app: &mut App, args: Option<&str>) -> CommandResult {
         "edit" => edit_queue(app, parts.next()),
         "drop" | "remove" | "rm" => drop_queue(app, parts.next()),
         "clear" => clear_queue(app),
-        _ => CommandResult::error(tr(locale, MessageId::CmdQueueUsage)),
+        _ => CommandResult::error(tr(MessageId::CmdQueueUsage)),
     }
 }
 
 fn list_queue(app: &mut App) -> CommandResult {
-    let locale = app.ui_locale;
     let mut lines = Vec::new();
     let queued = app.queued_message_count();
 
@@ -58,12 +55,12 @@ fn list_queue(app: &mut App) -> CommandResult {
 
     if queued == 0 {
         if lines.is_empty() {
-            return CommandResult::message(tr(locale, MessageId::CmdQueueNoMessages));
+            return CommandResult::message(tr(MessageId::CmdQueueNoMessages));
         }
         return CommandResult::message(lines.join("\n"));
     }
 
-    lines.push(tr(locale, MessageId::CmdQueueListHeader).replace("{count}", &queued.to_string()));
+    lines.push(tr(MessageId::CmdQueueListHeader).replace("{count}", &queued.to_string()));
     for (idx, message) in app.queued_messages.iter().enumerate() {
         lines.push(format!(
             "{}. {}",
@@ -72,74 +69,70 @@ fn list_queue(app: &mut App) -> CommandResult {
         ));
     }
 
-    lines.push(tr(locale, MessageId::CmdQueueTip).to_string());
+    lines.push(tr(MessageId::CmdQueueTip).to_string());
 
     CommandResult::message(lines.join("\n"))
 }
 
 fn edit_queue(app: &mut App, index: Option<&str>) -> CommandResult {
-    let locale = app.ui_locale;
     if app.queued_draft.is_some() {
-        return CommandResult::error(tr(locale, MessageId::CmdQueueAlreadyEditing));
+        return CommandResult::error(tr(MessageId::CmdQueueAlreadyEditing));
     }
-    let index = match parse_index(index, locale) {
+    let index = match parse_index(index) {
         Ok(index) => index,
         Err(err) => return CommandResult::error(err),
     };
 
     let Some(message) = app.remove_queued_message(index) else {
-        return CommandResult::error(tr(locale, MessageId::CmdQueueNotFound));
+        return CommandResult::error(tr(MessageId::CmdQueueNotFound));
     };
 
     app.input = message.display.clone();
     app.cursor_position = app.input.len();
     app.queued_draft = Some(message);
-    let status =
-        tr(locale, MessageId::CmdQueueEditingStatus).replace("{index}", &(index + 1).to_string());
+    let status = tr(MessageId::CmdQueueEditingStatus).replace("{index}", &(index + 1).to_string());
     app.status_message = Some(status);
 
     CommandResult::message(
-        tr(locale, MessageId::CmdQueueEditingMessage).replace("{index}", &(index + 1).to_string()),
+        tr(MessageId::CmdQueueEditingMessage).replace("{index}", &(index + 1).to_string()),
     )
 }
 
 fn drop_queue(app: &mut App, index: Option<&str>) -> CommandResult {
-    let locale = app.ui_locale;
-    let index = match parse_index(index, locale) {
+    let index = match parse_index(index) {
         Ok(index) => index,
         Err(err) => return CommandResult::error(err),
     };
 
     if app.remove_queued_message(index).is_none() {
-        return CommandResult::error(tr(locale, MessageId::CmdQueueNotFound));
+        return CommandResult::error(tr(MessageId::CmdQueueNotFound));
     }
 
     CommandResult::message(
-        tr(locale, MessageId::CmdQueueDropped).replace("{index}", &(index + 1).to_string()),
+        tr(MessageId::CmdQueueDropped).replace("{index}", &(index + 1).to_string()),
     )
 }
 
 fn clear_queue(app: &mut App) -> CommandResult {
-    let locale = app.ui_locale;
     let queued = app.queued_message_count();
     let had_draft = app.queued_draft.take().is_some();
     app.queued_messages.clear();
     if queued == 0 && !had_draft {
-        return CommandResult::message(tr(locale, MessageId::CmdQueueAlreadyEmpty));
+        return CommandResult::message(tr(MessageId::CmdQueueAlreadyEmpty));
     }
 
-    CommandResult::message(tr(locale, MessageId::CmdQueueCleared))
+    CommandResult::message(tr(MessageId::CmdQueueCleared))
 }
 
-fn parse_index(input: Option<&str>, locale: Locale) -> Result<usize, String> {
+fn parse_index(input: Option<&str>) -> Result<usize, String> {
     let Some(input) = input else {
-        return Err(tr(locale, MessageId::CmdQueueMissingIndex).to_string());
+        return Err(tr(MessageId::CmdQueueMissingIndex).to_string());
     };
     let raw = input
         .parse::<usize>()
-        .map_err(|_| tr(locale, MessageId::CmdQueueIndexPositive).to_string())?;
+        .map_err(|_| tr(MessageId::CmdQueueIndexPositive).to_string())?;
     if raw == 0 {
-        return Err(tr(locale, MessageId::CmdQueueIndexMin).to_string());
+        return Err(tr(MessageId::CmdQueueIndexMin).to_string());
     }
     Ok(raw - 1)
 }
@@ -192,18 +185,16 @@ mod tests {
     fn test_queue_list_empty() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         let result = queue(&mut app, None);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains(&*tr(app.ui_locale, MessageId::CmdQueueNoMessages)));
+        assert!(msg.contains(&*tr(MessageId::CmdQueueNoMessages)));
     }
 
     #[test]
     fn test_queue_list_with_messages() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         app.queued_messages
             .push_back(QueuedMessage::new("First message".to_string(), None));
         app.queued_messages
@@ -211,9 +202,7 @@ mod tests {
         let result = queue(&mut app, Some("list"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(
-            msg.contains(&tr(app.ui_locale, MessageId::CmdQueueListHeader).replace("{count}", "2"))
-        );
+        assert!(msg.contains(&tr(MessageId::CmdQueueListHeader).replace("{count}", "2")));
         assert!(msg.contains("1. First message"));
         assert!(msg.contains("2. Second message"));
     }
@@ -222,14 +211,13 @@ mod tests {
     fn test_queue_edit_missing_index() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         app.queued_messages
             .push_back(QueuedMessage::new("Test".to_string(), None));
         let result = queue(&mut app, Some("edit"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(&*tr(Locale::En, MessageId::CmdQueueMissingIndex)),
+            msg.contains(&*tr(MessageId::CmdQueueMissingIndex)),
             "msg={msg:?}"
         );
     }
@@ -238,12 +226,11 @@ mod tests {
     fn test_queue_edit_invalid_index() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         let result = queue(&mut app, Some("edit abc"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(&*tr(Locale::En, MessageId::CmdQueueIndexPositive)),
+            msg.contains(&*tr(MessageId::CmdQueueIndexPositive)),
             "msg={msg:?}"
         );
     }
@@ -252,12 +239,11 @@ mod tests {
     fn test_queue_edit_not_found() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         let result = queue(&mut app, Some("edit 1"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(&*tr(Locale::En, MessageId::CmdQueueNotFound)),
+            msg.contains(&*tr(MessageId::CmdQueueNotFound)),
             "msg={msg:?}"
         );
     }
@@ -266,7 +252,6 @@ mod tests {
     fn test_queue_edit_already_editing() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         app.queued_messages
             .push_back(QueuedMessage::new("First".to_string(), None));
         app.queued_messages
@@ -278,7 +263,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(&*tr(Locale::En, MessageId::CmdQueueAlreadyEditing)),
+            msg.contains(&*tr(MessageId::CmdQueueAlreadyEditing)),
             "msg={msg:?}"
         );
     }
@@ -287,7 +272,6 @@ mod tests {
     fn test_queue_edit_success() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         app.queued_messages
             .push_back(QueuedMessage::new("Original message".to_string(), None));
         let result = queue(&mut app, Some("edit 1"));
@@ -301,7 +285,6 @@ mod tests {
     fn test_queue_drop_success() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         app.queued_messages
             .push_back(QueuedMessage::new("To drop".to_string(), None));
         let initial_count = app.queued_messages.len();
@@ -309,7 +292,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(&tr(Locale::En, MessageId::CmdQueueDropped).replace("{index}", "1")),
+            msg.contains(&tr(MessageId::CmdQueueDropped).replace("{index}", "1")),
             "msg={msg:?}"
         );
         assert_eq!(app.queued_messages.len(), initial_count - 1);
@@ -319,7 +302,6 @@ mod tests {
     fn test_queue_clear() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         app.queued_messages
             .push_back(QueuedMessage::new("Message 1".to_string(), None));
         app.queued_messages
@@ -328,7 +310,7 @@ mod tests {
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(&*tr(Locale::En, MessageId::CmdQueueCleared)),
+            msg.contains(&*tr(MessageId::CmdQueueCleared)),
             "msg={msg:?}"
         );
         assert!(app.queued_messages.is_empty());
@@ -338,12 +320,11 @@ mod tests {
     fn test_queue_clear_already_empty() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::En;
         let result = queue(&mut app, Some("clear"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
         assert!(
-            msg.contains(&*tr(Locale::En, MessageId::CmdQueueAlreadyEmpty)),
+            msg.contains(&*tr(MessageId::CmdQueueAlreadyEmpty)),
             "msg={msg:?}"
         );
     }
@@ -352,7 +333,6 @@ mod tests {
     fn queue_messages_are_localized() {
         let tmpdir = TempDir::new().unwrap();
         let mut app = create_test_app_with_tmpdir(&tmpdir);
-        app.ui_locale = Locale::ZhHans;
         app.queued_messages
             .push_back(QueuedMessage::new("M1".to_string(), None));
         app.queued_messages

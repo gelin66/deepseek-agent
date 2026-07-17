@@ -1,10 +1,9 @@
-//! Lightweight localization registry for high-visibility TUI strings.
+//! Simplified Chinese message registry for user-facing TUI strings.
 //!
-//! This intentionally covers UI chrome only. It does not change model prompts,
-//! model output language, provider behavior, or media payload semantics.
+//! Machine-facing identifiers, protocol values, paths, and raw tool output do
+//! not pass through this registry.
 use std::borrow::Cow;
 
-use codewhale_config::Locale;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,13 +75,9 @@ pub enum MessageId {
     CmdAnchorDescription,
     CmdChangeDescription,
     CmdChangeHeader,
-    CmdChangeTranslationQueued,
-    CmdChangeTranslationUnavailable,
     CmdChangePreviousVersion,
     CmdBalanceDescription,
-    CmdClearDescription,
     CmdCompactDescription,
-    CmdPurgeDescription,
     CmdConfigDescription,
     CmdAuthDescription,
     CmdConstitutionDescription,
@@ -138,8 +133,6 @@ pub enum MessageId {
     CmdQueueMissingIndex,
     CmdQueueIndexPositive,
     CmdQueueIndexMin,
-    CmdRelayDescription,
-    CmdRenameDescription,
     CmdRestoreDescription,
     CmdRetryDescription,
     CmdReviewDescription,
@@ -159,12 +152,6 @@ pub enum MessageId {
     CmdWorkflowDescription,
     CmdSetupDescription,
     CmdSubagentsDescription,
-    CmdTranslateDescription,
-    CmdTranslateOff,
-    CmdTranslateOn,
-    TranslationInProgress,
-    TranslationComplete,
-    TranslationFailed,
     CmdTrustDescription,
     CmdLspDescription,
     CmdShareDescription,
@@ -172,6 +159,12 @@ pub enum MessageId {
     CmdUndoDescription,
     CmdVerboseDescription,
     CmdCostReport,
+    // Canonical foreground slash-command presentation.
+    CanonicalCommandRequired,
+    CanonicalCommandUnknown,
+    CanonicalCommandNoArguments,
+    CanonicalCommandListTitle,
+    CanonicalCommandAliases,
     FooterAgentSingular,
     FooterAgentsPlural,
     HeaderAgentsChip,
@@ -267,21 +260,19 @@ pub enum MessageId {
     HomeOperateModeFleetTip,
     HomeGoalModeTip,
     // Onboarding screens — welcome.
+    OnboardPanelTitle,
+    OnboardStepProgress,
+    OnboardHomeDirectoryNotFound,
     OnboardWelcomeVersion,
     OnboardWelcomeLead,
     OnboardWelcomeSetupBlurb,
     OnboardWelcomeSteps,
-    OnboardWelcomeStepLanguage,
     OnboardWelcomeStepApiKey,
     OnboardWelcomeStepTrust,
     OnboardWelcomeStepTips,
     OnboardWelcomeDefaults,
     OnboardWelcomeEnter,
     OnboardWelcomeExit,
-    // Onboarding screens — language picker.
-    OnboardLanguageTitle,
-    OnboardLanguageBlurb,
-    OnboardLanguageFooter,
     OnboardProviderTitle,
     OnboardProviderBlurb,
     OnboardProviderFooter,
@@ -294,6 +285,10 @@ pub enum MessageId {
     OnboardApiKeyPlaceholder,
     OnboardApiKeyLabel,
     OnboardApiKeyFooter,
+    OnboardApiKeyEmpty,
+    OnboardApiKeyWhitespace,
+    OnboardApiKeyShortWarning,
+    OnboardApiKeyUnusualWarning,
     // Onboarding screens — workspace trust prompt.
     OnboardTrustTitle,
     OnboardTrustQuestion,
@@ -303,6 +298,8 @@ pub enum MessageId {
     OnboardTrustFooterPrefix,
     OnboardTrustFooterMiddle,
     OnboardTrustFooterSuffix,
+    OnboardTrustConfirmHint,
+    OnboardTrustSaveFailed,
     // Onboarding screens — final tips screen.
     OnboardTipsTitle,
     OnboardTipsLine1,
@@ -311,6 +308,29 @@ pub enum MessageId {
     OnboardTipsLine4,
     OnboardTipsFooterEnter,
     OnboardTipsFooterAction,
+    // Retained canonical TUI foreground.
+    CanonicalWorkspaceCanonicalizeFailed,
+    CanonicalWorkspaceNotDirectory,
+    CanonicalNoRecoverableRun,
+    CanonicalRecoveringInterruptedRun,
+    CanonicalInitialCommandConfirmation,
+    CanonicalUnknownValue,
+    CanonicalUnknownBillingCreation,
+    CanonicalAmbiguousPendingCreations,
+    CanonicalAmbiguousPendingCreationsMore,
+    CanonicalCancelAwaitTerminal,
+    CanonicalWaitTerminalBeforeExit,
+    CanonicalInterruptAccepted,
+    CanonicalWaitTerminal,
+    CanonicalNoTerminalRunToCompact,
+    CanonicalCancelBeforeExit,
+    CanonicalHelpShown,
+    CanonicalCostShown,
+    CanonicalSteerSubmitFailed,
+    CanonicalWaitBeforeNextInput,
+    CanonicalRunSubmitFailed,
+    CanonicalLegacyActionUnavailable,
+    CanonicalMismatchedInteractionReceipt,
     // Constitution-first setup wizard.
     SetupWizardTitle,
     SetupWizardWhy,
@@ -344,8 +364,6 @@ pub enum MessageId {
     SetupStatusVerified,
     SetupStatusSkipped,
     SetupStatusFailed,
-    SetupStepLanguageTitle,
-    SetupStepLanguageWhy,
     SetupStepProviderModelTitle,
     SetupStepProviderModelWhy,
     SetupStepTrustSandboxTitle,
@@ -367,7 +385,6 @@ pub enum MessageId {
     SetupCheckpointDeferred,
     SetupStepSkipped,
     SetupStepRetryRecorded,
-    SetupLanguageReviewed,
     SetupConstitutionChoiceLabel,
     SetupConstitutionSourceLabel,
     SetupConstitutionValidityLabel,
@@ -500,6 +517,13 @@ pub enum MessageId {
     ApprovalChooseAction,
     ApprovalIntentLabel,
     ApprovalMoreLines,
+    ApprovalSaveRulesLabel,
+    ApprovalAskRuleCount,
+    ApprovalMoreAskRules,
+    ApprovalEmptyContent,
+    ApprovalMorePatchLines,
+    ApprovalMoreFiles,
+    ApprovalUnknownFile,
     // Sandbox elevation dialog.
     ElevationTitleSandboxDenied,
     ElevationTitleRequired,
@@ -666,6 +690,8 @@ pub enum MessageId {
     PhaseDone,
     PhaseFailed,
     PhaseFinishing,
+    PhaseRunningCountDuration,
+    PhaseRunningCount,
     // Underwater header chips: mode and permission words.
     ChipModeAct,
     ChipModePlan,
@@ -823,9 +849,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdAnchorDescription,
     MessageId::CmdAttachDescription,
     MessageId::CmdBalanceDescription,
-    MessageId::CmdClearDescription,
     MessageId::CmdCompactDescription,
-    MessageId::CmdPurgeDescription,
     MessageId::CmdConfigDescription,
     MessageId::CmdAuthDescription,
     MessageId::CmdConstitutionDescription,
@@ -882,8 +906,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdQueueMissingIndex,
     MessageId::CmdQueueIndexPositive,
     MessageId::CmdQueueIndexMin,
-    MessageId::CmdRelayDescription,
-    MessageId::CmdRenameDescription,
     MessageId::CmdRestoreDescription,
     MessageId::CmdRetryDescription,
     MessageId::CmdReviewDescription,
@@ -902,12 +924,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdWorkflowDescription,
     MessageId::CmdSetupDescription,
     MessageId::CmdSubagentsDescription,
-    MessageId::CmdTranslateDescription,
-    MessageId::CmdTranslateOff,
-    MessageId::CmdTranslateOn,
-    MessageId::TranslationInProgress,
-    MessageId::TranslationComplete,
-    MessageId::TranslationFailed,
     MessageId::CmdTrustDescription,
     MessageId::CmdLspDescription,
     MessageId::CmdShareDescription,
@@ -916,10 +932,13 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdVerboseDescription,
     MessageId::CmdChangeDescription,
     MessageId::CmdChangeHeader,
-    MessageId::CmdChangeTranslationQueued,
-    MessageId::CmdChangeTranslationUnavailable,
     MessageId::CmdChangePreviousVersion,
     MessageId::CmdCostReport,
+    MessageId::CanonicalCommandRequired,
+    MessageId::CanonicalCommandUnknown,
+    MessageId::CanonicalCommandNoArguments,
+    MessageId::CanonicalCommandListTitle,
+    MessageId::CanonicalCommandAliases,
     MessageId::FooterAgentSingular,
     MessageId::FooterAgentsPlural,
     MessageId::HeaderAgentsChip,
@@ -1014,20 +1033,19 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HomeOperateModeTip,
     MessageId::HomeOperateModeFleetTip,
     MessageId::HomeGoalModeTip,
+    MessageId::OnboardPanelTitle,
+    MessageId::OnboardStepProgress,
+    MessageId::OnboardHomeDirectoryNotFound,
     MessageId::OnboardWelcomeVersion,
     MessageId::OnboardWelcomeLead,
     MessageId::OnboardWelcomeSetupBlurb,
     MessageId::OnboardWelcomeSteps,
-    MessageId::OnboardWelcomeStepLanguage,
     MessageId::OnboardWelcomeStepApiKey,
     MessageId::OnboardWelcomeStepTrust,
     MessageId::OnboardWelcomeStepTips,
     MessageId::OnboardWelcomeDefaults,
     MessageId::OnboardWelcomeEnter,
     MessageId::OnboardWelcomeExit,
-    MessageId::OnboardLanguageTitle,
-    MessageId::OnboardLanguageBlurb,
-    MessageId::OnboardLanguageFooter,
     MessageId::OnboardProviderTitle,
     MessageId::OnboardProviderBlurb,
     MessageId::OnboardProviderFooter,
@@ -1040,6 +1058,10 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::OnboardApiKeyPlaceholder,
     MessageId::OnboardApiKeyLabel,
     MessageId::OnboardApiKeyFooter,
+    MessageId::OnboardApiKeyEmpty,
+    MessageId::OnboardApiKeyWhitespace,
+    MessageId::OnboardApiKeyShortWarning,
+    MessageId::OnboardApiKeyUnusualWarning,
     MessageId::OnboardTrustTitle,
     MessageId::OnboardTrustQuestion,
     MessageId::OnboardTrustLocationPrefix,
@@ -1048,6 +1070,8 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::OnboardTrustFooterPrefix,
     MessageId::OnboardTrustFooterMiddle,
     MessageId::OnboardTrustFooterSuffix,
+    MessageId::OnboardTrustConfirmHint,
+    MessageId::OnboardTrustSaveFailed,
     MessageId::OnboardTipsTitle,
     MessageId::OnboardTipsLine1,
     MessageId::OnboardTipsLine2,
@@ -1055,6 +1079,28 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::OnboardTipsLine4,
     MessageId::OnboardTipsFooterEnter,
     MessageId::OnboardTipsFooterAction,
+    MessageId::CanonicalWorkspaceCanonicalizeFailed,
+    MessageId::CanonicalWorkspaceNotDirectory,
+    MessageId::CanonicalNoRecoverableRun,
+    MessageId::CanonicalRecoveringInterruptedRun,
+    MessageId::CanonicalInitialCommandConfirmation,
+    MessageId::CanonicalUnknownValue,
+    MessageId::CanonicalUnknownBillingCreation,
+    MessageId::CanonicalAmbiguousPendingCreations,
+    MessageId::CanonicalAmbiguousPendingCreationsMore,
+    MessageId::CanonicalCancelAwaitTerminal,
+    MessageId::CanonicalWaitTerminalBeforeExit,
+    MessageId::CanonicalInterruptAccepted,
+    MessageId::CanonicalWaitTerminal,
+    MessageId::CanonicalNoTerminalRunToCompact,
+    MessageId::CanonicalCancelBeforeExit,
+    MessageId::CanonicalHelpShown,
+    MessageId::CanonicalCostShown,
+    MessageId::CanonicalSteerSubmitFailed,
+    MessageId::CanonicalWaitBeforeNextInput,
+    MessageId::CanonicalRunSubmitFailed,
+    MessageId::CanonicalLegacyActionUnavailable,
+    MessageId::CanonicalMismatchedInteractionReceipt,
     MessageId::SetupWizardTitle,
     MessageId::SetupWizardWhy,
     MessageId::SetupWizardProgress,
@@ -1087,8 +1133,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::SetupStatusVerified,
     MessageId::SetupStatusSkipped,
     MessageId::SetupStatusFailed,
-    MessageId::SetupStepLanguageTitle,
-    MessageId::SetupStepLanguageWhy,
     MessageId::SetupStepProviderModelTitle,
     MessageId::SetupStepProviderModelWhy,
     MessageId::SetupStepTrustSandboxTitle,
@@ -1110,7 +1154,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::SetupCheckpointDeferred,
     MessageId::SetupStepSkipped,
     MessageId::SetupStepRetryRecorded,
-    MessageId::SetupLanguageReviewed,
     MessageId::SetupConstitutionChoiceLabel,
     MessageId::SetupConstitutionSourceLabel,
     MessageId::SetupConstitutionValidityLabel,
@@ -1238,6 +1281,13 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ApprovalChooseAction,
     MessageId::ApprovalIntentLabel,
     MessageId::ApprovalMoreLines,
+    MessageId::ApprovalSaveRulesLabel,
+    MessageId::ApprovalAskRuleCount,
+    MessageId::ApprovalMoreAskRules,
+    MessageId::ApprovalEmptyContent,
+    MessageId::ApprovalMorePatchLines,
+    MessageId::ApprovalMoreFiles,
+    MessageId::ApprovalUnknownFile,
     MessageId::ElevationTitleSandboxDenied,
     MessageId::ElevationTitleRequired,
     MessageId::ElevationFieldTool,
@@ -1380,6 +1430,8 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::PhaseDone,
     MessageId::PhaseFailed,
     MessageId::PhaseFinishing,
+    MessageId::PhaseRunningCountDuration,
+    MessageId::PhaseRunningCount,
     MessageId::ChipModeAct,
     MessageId::ChipModePlan,
     MessageId::ChipModeOperate,
@@ -1453,86 +1505,8 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::FilePickerMatchesPlural,
 ];
 
-pub fn tr(locale: Locale, id: MessageId) -> Cow<'static, str> {
-    rust_i18n::t!(format!("{id:?}"), locale = locale.tag())
-}
-
-pub fn thinking_translation_placeholder(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Thinking; translating when complete...",
-        Locale::Ja => "思考中です。完了後に日本語へ翻訳します...",
-        Locale::ZhHans => "正在思考，完成后翻译为简体中文...",
-        Locale::ZhHant => "正在思考，完成後翻譯為繁體中文...",
-        Locale::PtBr => "Pensando; traduzindo ao concluir...",
-        Locale::Es419 => "Pensando; traduciendo al finalizar...",
-        Locale::Vi => "Đang suy nghĩ; sẽ dịch sau khi hoàn thành...",
-        Locale::Ko => "생각하는 중입니다. 완료되면 번역합니다...",
-    }
-}
-
-pub fn thinking_translation_in_progress(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Translating thinking content...",
-        Locale::Ja => "思考内容を翻訳中...",
-        Locale::ZhHans => "正在翻译思考内容...",
-        Locale::ZhHant => "正在翻譯思考內容...",
-        Locale::PtBr => "Traduzindo o conteúdo de raciocínio...",
-        Locale::Es419 => "Traduciendo el contenido de razonamiento...",
-        Locale::Vi => "Đang dịch nội dung suy nghĩ...",
-        Locale::Ko => "생각 내용을 번역하는 중...",
-    }
-}
-
-pub fn thinking_translation_complete(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Thinking translation complete",
-        Locale::Ja => "思考内容の翻訳が完了しました",
-        Locale::ZhHans => "思考内容翻译完成",
-        Locale::ZhHant => "思考內容翻譯完成",
-        Locale::PtBr => "Tradução do raciocínio concluída",
-        Locale::Es419 => "Traducción del razonamiento completada",
-        Locale::Vi => "Đã dịch xong nội dung suy nghĩ",
-        Locale::Ko => "생각 내용 번역 완료",
-    }
-}
-
-pub fn thinking_translation_failed(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Thinking translation failed",
-        Locale::Ja => "思考内容の翻訳に失敗しました",
-        Locale::ZhHans => "思考内容翻译失败",
-        Locale::ZhHant => "思考內容翻譯失敗",
-        Locale::PtBr => "Falha ao traduzir o raciocínio",
-        Locale::Es419 => "Falló la traducción del razonamiento",
-        Locale::Vi => "Dịch nội dung suy nghĩ thất bại",
-        Locale::Ko => "생각 내용 번역 실패",
-    }
-}
-
-pub fn hidden_translation_failed(locale: Locale) -> &'static str {
-    match locale {
-        Locale::En => "Translation failed; original text is hidden.",
-        Locale::Ja => "翻訳に失敗しました。原文は非表示です。",
-        Locale::ZhHans => "翻译失败，原文已隐藏。",
-        Locale::ZhHant => "翻譯失敗，原文已隱藏。",
-        Locale::PtBr => "A tradução falhou; o texto original está oculto.",
-        Locale::Es419 => "La traducción falló; el texto original está oculto.",
-        Locale::Vi => "Dịch thất bại; văn bản gốc đã bị ẩn.",
-        Locale::Ko => "번역에 실패했습니다. 원문은 숨겨져 있습니다.",
-    }
-}
-
-/// Human-facing list of accepted `locale` setting values, derived from the
-/// shipped packs so config hints and error messages cannot go stale as new
-/// locales land. `separator` is `", "` for prose and `" | "` for hints.
-#[must_use]
-pub fn configured_locale_values(separator: &str) -> String {
-    let mut out = String::from("auto");
-    for locale in Locale::shipped() {
-        out.push_str(separator);
-        out.push_str(locale.tag());
-    }
-    out
+pub fn tr(id: MessageId) -> Cow<'static, str> {
+    rust_i18n::t!(format!("{id:?}"), locale = "zh-Hans")
 }
 
 #[allow(dead_code)]
@@ -1573,55 +1547,34 @@ mod tests {
         widgets::{Paragraph, Widget, Wrap},
     };
 
-    pub fn missing_message_ids(locale: Locale) -> Vec<MessageId> {
+    pub fn missing_message_ids() -> Vec<MessageId> {
         ALL_MESSAGE_IDS
             .iter()
             .copied()
-            .filter(|id| tr(locale, *id).eq(&format!("{id:?}")))
+            .filter(|id| tr(*id).eq(&format!("{id:?}")))
             .collect()
     }
 
-    fn locale_json_source(locale: Locale) -> &'static str {
-        match locale {
-            Locale::En => include_str!("../locales/en.json"),
-            Locale::Ja => include_str!("../locales/ja.json"),
-            Locale::ZhHans => include_str!("../locales/zh-Hans.json"),
-            Locale::ZhHant => include_str!("../locales/zh-Hant.json"),
-            Locale::PtBr => include_str!("../locales/pt-BR.json"),
-            Locale::Es419 => include_str!("../locales/es-419.json"),
-            Locale::Vi => include_str!("../locales/vi.json"),
-            Locale::Ko => include_str!("../locales/ko.json"),
-        }
+    fn message_source() -> &'static str {
+        include_str!("../locales/zh-Hans.json")
     }
 
     #[test]
-    fn shipped_complete_packs_have_no_missing_core_messages() {
-        for locale in Locale::shipped_complete() {
-            assert!(
-                missing_message_ids(*locale).is_empty(),
-                "{} is missing messages",
-                locale.tag()
-            );
-        }
+    fn message_pack_has_no_missing_core_messages() {
+        assert!(missing_message_ids().is_empty());
     }
 
-    fn raw_locale_keys(locale: Locale) -> std::collections::BTreeSet<String> {
-        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(locale_json_source(
-            locale,
-        ))
-        .unwrap_or_else(|err| panic!("{} locale json should parse: {err}", locale.tag()))
-        .keys()
-        .cloned()
-        .collect()
+    fn raw_message_keys() -> std::collections::BTreeSet<String> {
+        serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(message_source())
+            .expect("zh-Hans message catalog should parse")
+            .keys()
+            .cloned()
+            .collect()
     }
 
-    /// `missing_message_ids` is blind to keys that exist in en but not in a
-    /// "complete" pack — the English fallback returns the English string, so
-    /// nothing looks missing. Keep the enum, en.json, and ALL_MESSAGE_IDS in
-    /// exact sync so every other parity gate actually sees every message.
     #[test]
-    fn message_id_list_english_pack_stay_in_exact_sync() {
-        let en = raw_locale_keys(Locale::En);
+    fn message_id_list_and_catalog_stay_in_exact_sync() {
+        let catalog = raw_message_keys();
         let ids: std::collections::BTreeSet<String> =
             ALL_MESSAGE_IDS.iter().map(|id| format!("{id:?}")).collect();
         assert_eq!(
@@ -1629,149 +1582,39 @@ mod tests {
             ALL_MESSAGE_IDS.len(),
             "ALL_MESSAGE_IDS contains duplicates"
         );
-        let unlisted: Vec<_> = en.difference(&ids).collect();
+        let unlisted: Vec<_> = catalog.difference(&ids).collect();
         assert!(
             unlisted.is_empty(),
-            "en.json keys absent from ALL_MESSAGE_IDS — every parity test is blind to them: {unlisted:?}"
+            "zh-Hans keys absent from ALL_MESSAGE_IDS: {unlisted:?}"
         );
-        let untranslatable: Vec<_> = ids.difference(&en).collect();
+        let missing: Vec<_> = ids.difference(&catalog).collect();
         assert!(
-            untranslatable.is_empty(),
-            "ALL_MESSAGE_IDS entries without an en.json string: {untranslatable:?}"
-        );
-    }
-
-    /// Raw key-set parity for every pack that claims completeness, in both
-    /// directions. This is the test that fails when a new en key ships
-    /// without translations instead of silently falling back to English.
-    #[test]
-    fn shipped_complete_packs_have_raw_key_parity_with_english() {
-        let en = raw_locale_keys(Locale::En);
-        for locale in Locale::shipped_complete() {
-            if *locale == Locale::En {
-                continue;
-            }
-            let pack = raw_locale_keys(*locale);
-            let missing: Vec<_> = en.difference(&pack).collect();
-            assert!(
-                missing.is_empty(),
-                "{} claims completeness but lacks {} key(s); the English fallback hides these at runtime: {missing:?}",
-                locale.tag(),
-                missing.len()
-            );
-            let extra: Vec<_> = pack.difference(&en).collect();
-            assert!(
-                extra.is_empty(),
-                "{} defines key(s) en.json lacks: {extra:?}",
-                locale.tag()
-            );
-        }
-    }
-
-    #[test]
-    fn zh_hant_is_scoped_as_partial_pack() {
-        assert!(
-            Locale::ZhHant.is_partial_pack(),
-            "zh-Hant must be marked partial until it reaches en.json parity"
-        );
-        let en_keys = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
-            locale_json_source(Locale::En),
-        )
-        .expect("en locale json");
-        let zh_hant_keys = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
-            locale_json_source(Locale::ZhHant),
-        )
-        .expect("zh-Hant locale json");
-        assert!(
-            zh_hant_keys.len() < en_keys.len(),
-            "partial zh-Hant should not claim full parity"
-        );
-        assert!(
-            !Locale::shipped_complete().contains(&Locale::ZhHant),
-            "parity gates must exclude partial zh-Hant"
+            missing.is_empty(),
+            "ALL_MESSAGE_IDS entries without a zh-Hans string: {missing:?}"
         );
     }
 
     #[test]
-    fn shipped_setup_strings_are_explicitly_localized() {
+    fn setup_strings_are_explicitly_present() {
         let setup_keys = ALL_MESSAGE_IDS
             .iter()
             .map(|id| format!("{id:?}"))
             .filter(|id| id.starts_with("Setup"))
             .collect::<Vec<_>>();
 
-        for locale in Locale::shipped_complete() {
-            let messages = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(
-                locale_json_source(*locale),
-            )
-            .unwrap_or_else(|err| panic!("{} locale json should parse: {err}", locale.tag()));
-            for key in &setup_keys {
-                assert!(
-                    messages.contains_key(key),
-                    "{} should define {key} explicitly",
-                    locale.tag()
-                );
-            }
+        let messages =
+            serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(message_source())
+                .expect("zh-Hans message catalog");
+        for key in setup_keys {
+            assert!(messages.contains_key(&key), "zh-Hans should define {key}");
         }
     }
 
     #[test]
-    fn mode_picker_strings_are_translated_in_non_english_locales() {
-        // The mode hints are full sentences; every shipped non-English locale
-        // must provide a real translation rather than leaking the English
-        // string through the fallback chain.
-        let sentences = [
-            MessageId::AppModeAgentHint,
-            MessageId::AppModeAutoHint,
-            MessageId::AppModePlanHint,
-            MessageId::AppModeYoloHint,
-            MessageId::AppModeOperateHint,
-        ];
-        for locale in Locale::shipped_complete() {
-            if *locale == Locale::En {
-                continue;
-            }
-            for id in sentences {
-                let localized = tr(*locale, id);
-                assert!(!localized.is_empty(), "{} empty for {id:?}", locale.tag());
-                assert_ne!(
-                    localized,
-                    tr(Locale::En, id),
-                    "{} should translate {id:?}",
-                    locale.tag()
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn zh_hant_mode_keybinding_strings_are_native() {
-        for id in [MessageId::KbAltJumpPlanAgentYolo] {
-            let localized = tr(Locale::ZhHant, id);
-            assert!(!localized.is_empty(), "zh-Hant empty for {id:?}");
-            assert_ne!(
-                localized,
-                tr(Locale::En, id),
-                "zh-Hant should translate {id:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn provider_description_is_present_for_all_locales() {
-        for locale in Locale::shipped_complete() {
-            let description = tr(*locale, MessageId::CmdProviderDescription);
-            assert!(
-                !description.is_empty(),
-                "{} provider description should not be empty",
-                locale.tag()
-            );
-            assert!(
-                !description.contains("codewhale |"),
-                "{} provider description should not name codewhale as a backend: {description}",
-                locale.tag()
-            );
-        }
+    fn provider_description_is_present() {
+        let description = tr(MessageId::CmdProviderDescription);
+        assert!(!description.is_empty());
+        assert!(!description.contains("codewhale |"));
     }
 
     #[test]

@@ -36,7 +36,7 @@ use sha2::{Digest, Sha256};
 const BOOT_TIMEOUT: Duration = Duration::from_secs(20);
 const RUN_TIMEOUT: Duration = Duration::from_secs(20);
 const EXIT_TIMEOUT: Duration = Duration::from_secs(5);
-const COMPOSER_READY_TEXT: &str = "Write a task";
+const COMPOSER_READY_TEXT: &str = "编写任务或使用 /。";
 const PROMPT: &str = "请审计真实 PTY 路径。\n第二行：确认 canonical RunStore。";
 const COMPLETION_MARKER: &str = "CANONICAL-PTY-DONE";
 const ONBOARDING_KEY: &str = "sk-offline-canonical-onboarding-key";
@@ -84,10 +84,7 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
     tui.wait_for_text("第二行", Duration::from_secs(5))?;
     tui.send(keys::key::enter())?;
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
-    tui.wait_for(
-        |frame| frame.contains("✓ done") || frame.contains("运行已结束：已完成"),
-        RUN_TIMEOUT,
-    )?;
+    tui.wait_for(|frame| frame.contains("✓ 完成"), RUN_TIMEOUT)?;
 
     tui.send(b"\x04")?; // Ctrl+D exits only after the canonical Terminal event.
     assert_eq!(
@@ -148,13 +145,9 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
         .spawn()?;
 
     onboarding
-        .wait_for_text("Code means two things", BOOT_TIMEOUT)
+        .wait_for_text("这是面向 DeepSeek 的本地编码 Agent", BOOT_TIMEOUT)
         .context("wait for first-run welcome")?;
     onboarding.send(keys::key::enter())?;
-    onboarding
-        .wait_for_text("Choose your language", Duration::from_secs(5))
-        .context("wait for language picker")?;
-    onboarding.send(b"4")?;
     onboarding
         .wait_for_text("连接你的 API 密钥", Duration::from_secs(5))
         .context("wait for DeepSeek key entry")?;
@@ -165,7 +158,7 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
         .context("wait for workspace trust")?;
     onboarding.send(b"y")?;
     onboarding
-        .wait_for_text("从设置开始", Duration::from_secs(5))
+        .wait_for_text("直接用自然语言描述任务", Duration::from_secs(5))
         .context("wait for first-run tips")?;
     onboarding.send(keys::key::enter())?;
     onboarding
@@ -228,10 +221,7 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
     tui.paste(PROMPT)?;
     tui.send(keys::key::enter())?;
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
-    tui.wait_for(
-        |frame| frame.contains("✓ done") || frame.contains("✓ 完成"),
-        RUN_TIMEOUT,
-    )?;
+    tui.wait_for(|frame| frame.contains("✓ 完成"), RUN_TIMEOUT)?;
     tui.send(b"\x04")?;
     assert_eq!(
         tui.wait_for_exit(EXIT_TIMEOUT),
@@ -293,10 +283,7 @@ fn restart_recovers_unique_explicit_creation_with_same_reserved_run() -> anyhow:
         .spawn()?;
 
     tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
-    tui.wait_for(
-        |frame| frame.contains("✓ done") || frame.contains("运行已结束：已完成"),
-        RUN_TIMEOUT,
-    )?;
+    tui.wait_for(|frame| frame.contains("✓ 完成"), RUN_TIMEOUT)?;
     tui.send(b"\x04")?;
     assert_eq!(
         tui.wait_for_exit(EXIT_TIMEOUT),
@@ -432,13 +419,17 @@ fn canonical_local_commands_are_truthful_and_never_post_to_deepseek() -> anyhow:
     tui.send(b"\t")?;
     tui.wait_for_text("/help", Duration::from_secs(5))?;
     tui.send(keys::key::enter())?;
-    tui.wait_for_text("Available commands:", Duration::from_secs(5))?;
+    tui.wait_for_text("当前可用命令：", Duration::from_secs(5))?;
     tui.wait_for_text("/compact", Duration::from_secs(5))?;
     tui.wait_for_text("/cost", Duration::from_secs(5))?;
 
-    tui.paste("/provider")?;
-    tui.send(keys::key::enter())?;
-    tui.wait_for_text("未知命令：/provider", Duration::from_secs(5))?;
+    for command in ["/provider", "/load", "/skills"] {
+        tui.paste(command)?;
+        tui.send(keys::key::enter())?;
+        tui.wait_for_text(&format!("未知命令：{command}"), Duration::from_secs(5))?;
+        tui.send(vec![0x7f; command.chars().count()])?;
+        tui.wait_for_text(COMPOSER_READY_TEXT, Duration::from_secs(5))?;
+    }
     assert_eq!(
         fixture.post_count(),
         0,

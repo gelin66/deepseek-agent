@@ -22,28 +22,26 @@ pub fn help(app: &mut App, topic: Option<&str>) -> CommandResult {
             let mut help = format!(
                 "{}\n\n  {}\n\n  {} {}",
                 cmd.name,
-                cmd.description_for(app.ui_locale),
-                tr(app.ui_locale, MessageId::HelpUsageLabel),
+                cmd.description(),
+                tr(MessageId::HelpUsageLabel),
                 cmd.usage
             );
             if !cmd.aliases.is_empty() {
                 let _ = write!(
                     help,
                     "\n  {} {}",
-                    tr(app.ui_locale, MessageId::HelpAliasesLabel),
+                    tr(MessageId::HelpAliasesLabel),
                     cmd.aliases.join(", ")
                 );
             }
             return CommandResult::message(help);
         }
-        return CommandResult::error(
-            tr(app.ui_locale, MessageId::HelpUnknownCommand).replace("{topic}", topic),
-        );
+        return CommandResult::error(tr(MessageId::HelpUnknownCommand).replace("{topic}", topic));
     }
 
     // Show help overlay
     if app.view_stack.top_kind() != Some(ModalKind::Help) {
-        app.view_stack.push(HelpView::new_for_locale(app.ui_locale));
+        app.view_stack.push(HelpView::new());
     }
     CommandResult::ok()
 }
@@ -84,7 +82,7 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
                 .insert(app.api_provider.as_str().to_string(), "auto".to_string());
             let persist_warning =
                 provider_model_selection_persist_warning(app.api_provider, "auto");
-            let mut message = tr(app.ui_locale, MessageId::ModelChanged)
+            let mut message = tr(MessageId::ModelChanged)
                 .replace("{old}", &old_model)
                 .replace("{new}", "auto");
             if let Some(warning) = persist_warning {
@@ -149,7 +147,7 @@ pub fn model(app: &mut App, model_name: Option<&str>) -> CommandResult {
         app.provider_models
             .insert(app.api_provider.as_str().to_string(), model_id.clone());
         let persist_warning = provider_model_selection_persist_warning(app.api_provider, &model_id);
-        let mut message = tr(app.ui_locale, MessageId::ModelChanged)
+        let mut message = tr(MessageId::ModelChanged)
             .replace("{old}", &old_model)
             .replace("{new}", &model_id);
         if let Some(warning) = persist_warning {
@@ -181,7 +179,7 @@ pub fn subagents(app: &mut App) -> CommandResult {
         let agents = subagent_view_agents(app, &app.subagent_cache);
         app.view_stack.push(SubAgentsView::new(agents));
     }
-    app.status_message = Some(tr(app.ui_locale, MessageId::SubagentsFetching).to_string());
+    app.status_message = Some(tr(MessageId::SubagentsFetching).to_string());
     CommandResult::action(AppAction::ListSubAgents)
 }
 
@@ -397,11 +395,10 @@ fn provider_link_info(provider_id: &str) -> ProviderLinkInfo {
 
 /// Show provider dashboard, token, and docs links.
 pub fn deepseek_links(app: &mut App) -> CommandResult {
-    let locale = app.ui_locale;
     let active_provider = app.api_provider.as_str();
     let mut message = format!(
         "{}\n─────────────────────────────\n",
-        tr(locale, MessageId::LinksTitle)
+        tr(MessageId::LinksTitle)
     );
 
     for provider in codewhale_config::provider::providers_sorted_for_display() {
@@ -419,24 +416,14 @@ pub fn deepseek_links(app: &mut App) -> CommandResult {
             active_marker
         );
         if let Some(key_url) = links.key_url {
-            let _ = writeln!(
-                message,
-                "{} `{}`",
-                tr(locale, MessageId::LinksDashboard),
-                key_url
-            );
+            let _ = writeln!(message, "{} `{}`", tr(MessageId::LinksDashboard), key_url);
         } else {
-            let _ = writeln!(
-                message,
-                "{} {}",
-                tr(locale, MessageId::LinksDashboard),
-                links.note
-            );
+            let _ = writeln!(message, "{} {}", tr(MessageId::LinksDashboard), links.note);
         }
         let _ = writeln!(
             message,
             "{}      `{}`",
-            tr(locale, MessageId::LinksDocs),
+            tr(MessageId::LinksDocs),
             links.docs_url
         );
         let env_vars = provider.env_vars();
@@ -447,36 +434,30 @@ pub fn deepseek_links(app: &mut App) -> CommandResult {
         }
     }
 
-    let _ = writeln!(message, "\n{}", tr(locale, MessageId::LinksTip));
+    let _ = writeln!(message, "\n{}", tr(MessageId::LinksTip));
     CommandResult::message(message)
 }
 
 /// Show home dashboard with stats and quick actions
 pub fn home_dashboard(app: &mut App) -> CommandResult {
-    let locale = app.ui_locale;
     let mut stats = String::new();
 
     // Basic info
-    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeDashboardTitle));
+    let _ = writeln!(stats, "{}", tr(MessageId::HomeDashboardTitle));
     let _ = writeln!(stats, "============================================");
 
     // Model & mode
-    let _ = writeln!(
-        stats,
-        "{}      {}",
-        tr(locale, MessageId::HomeModel),
-        app.model
-    );
+    let _ = writeln!(stats, "{}      {}", tr(MessageId::HomeModel), app.model);
     let _ = writeln!(
         stats,
         "{}       {}",
-        tr(locale, MessageId::HomeMode),
+        tr(MessageId::HomeMode),
         app.mode.label()
     );
     let _ = writeln!(
         stats,
         "{}  {}",
-        tr(locale, MessageId::HomeWorkspace),
+        tr(MessageId::HomeWorkspace),
         app.workspace.display()
     );
 
@@ -487,20 +468,20 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
     let _ = writeln!(
         stats,
         "{}    {} messages",
-        tr(locale, MessageId::HomeHistory),
+        tr(MessageId::HomeHistory),
         history_count
     );
     let _ = writeln!(
         stats,
         "{}     {} (session)",
-        tr(locale, MessageId::HomeTokens),
+        tr(MessageId::HomeTokens),
         total_tokens
     );
     if queued_messages > 0 {
         let _ = writeln!(
             stats,
             "{}     {} messages",
-            tr(locale, MessageId::HomeQueued),
+            tr(MessageId::HomeQueued),
             queued_messages
         );
     }
@@ -511,7 +492,7 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
         let _ = writeln!(
             stats,
             "{} {} active",
-            tr(locale, MessageId::HomeSubagents),
+            tr(MessageId::HomeSubagents),
             subagent_count
         );
     }
@@ -521,62 +502,47 @@ pub fn home_dashboard(app: &mut App) -> CommandResult {
         let _ = writeln!(
             stats,
             "{}      {} (active)",
-            tr(locale, MessageId::HomeSkill),
+            tr(MessageId::HomeSkill),
             skill
         );
     }
 
     // Quick actions section
-    let _ = writeln!(stats, "\n{}", tr(locale, MessageId::HomeQuickActions));
+    let _ = writeln!(stats, "\n{}", tr(MessageId::HomeQuickActions));
     let _ = writeln!(stats, "--------------------------------------------");
-    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickLinks));
-    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickSkills));
-    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickConfig));
-    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickSettings));
-    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickModel));
-    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickSubagents));
-    let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeQuickHelp));
+    let _ = writeln!(stats, "{}", tr(MessageId::HomeQuickLinks));
+    let _ = writeln!(stats, "{}", tr(MessageId::HomeQuickSkills));
+    let _ = writeln!(stats, "{}", tr(MessageId::HomeQuickConfig));
+    let _ = writeln!(stats, "{}", tr(MessageId::HomeQuickSettings));
+    let _ = writeln!(stats, "{}", tr(MessageId::HomeQuickModel));
+    let _ = writeln!(stats, "{}", tr(MessageId::HomeQuickSubagents));
+    let _ = writeln!(stats, "{}", tr(MessageId::HomeQuickHelp));
 
     // Mode-specific tips
-    let _ = writeln!(stats, "\n{}", tr(locale, MessageId::HomeModeTips));
+    let _ = writeln!(stats, "\n{}", tr(MessageId::HomeModeTips));
     let _ = writeln!(stats, "--------------------------------------------");
     match app.mode {
         AppMode::Agent | AppMode::Auto => {
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeAgentModeTip));
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeAgentModeReviewTip));
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeAgentModeYoloTip));
+            let _ = writeln!(stats, "{}", tr(MessageId::HomeAgentModeTip));
+            let _ = writeln!(stats, "{}", tr(MessageId::HomeAgentModeReviewTip));
+            let _ = writeln!(stats, "{}", tr(MessageId::HomeAgentModeYoloTip));
         }
         AppMode::Yolo => {
             // Compatibility residual: YOLO is invisible Act + Full Access.
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeYoloModeTip));
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeYoloModeCaution));
+            let _ = writeln!(stats, "{}", tr(MessageId::HomeYoloModeTip));
+            let _ = writeln!(stats, "{}", tr(MessageId::HomeYoloModeCaution));
         }
         AppMode::Operate => {
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeOperateModeTip));
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomeOperateModeFleetTip));
+            let _ = writeln!(stats, "{}", tr(MessageId::HomeOperateModeTip));
+            let _ = writeln!(stats, "{}", tr(MessageId::HomeOperateModeFleetTip));
         }
         AppMode::Plan => {
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomePlanModeTip));
-            let _ = writeln!(stats, "{}", tr(locale, MessageId::HomePlanModeChecklistTip));
+            let _ = writeln!(stats, "{}", tr(MessageId::HomePlanModeTip));
+            let _ = writeln!(stats, "{}", tr(MessageId::HomePlanModeChecklistTip));
         }
     }
 
     CommandResult::message(stats)
-}
-
-/// Toggle output translation to the current system language on/off.
-///
-/// When enabled, the model is instructed to respond in the current locale and an
-/// interception layer translates any remaining English output before it
-/// reaches the user.
-pub fn translate(app: &mut App) -> CommandResult {
-    app.translation_enabled = !app.translation_enabled;
-    let locale = app.ui_locale;
-    if app.translation_enabled {
-        CommandResult::message(tr(locale, MessageId::CmdTranslateOn))
-    } else {
-        CommandResult::message(tr(locale, MessageId::CmdTranslateOff))
-    }
 }
 
 #[cfg(test)]
@@ -650,7 +616,6 @@ mod tests {
             initial_input: None,
         };
         let mut app = App::new(options, &Config::default());
-        app.ui_locale = codewhale_config::Locale::En;
         app.api_provider = crate::config::ApiProvider::Deepseek;
         app.model = "deepseek-v4-pro".to_string();
         app.auto_model = false;
@@ -663,19 +628,19 @@ mod tests {
         let mut app = create_test_app();
         let result = help(&mut app, Some("nonexistent"));
         assert!(result.message.is_some());
-        assert!(result.message.unwrap().contains("Unknown command"));
+        assert!(result.message.unwrap().contains("未知命令"));
         assert!(result.action.is_none());
     }
 
     #[test]
     fn test_help_known_command() {
         let mut app = create_test_app();
-        let result = help(&mut app, Some("clear"));
+        let result = help(&mut app, Some("queue"));
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains("clear"));
-        assert!(msg.contains("Clear conversation history"));
-        assert!(msg.contains("Usage: /clear"));
+        assert!(msg.contains("queue"));
+        assert!(msg.contains("查看或编辑已排队的消息"));
+        assert!(msg.contains("用法： /queue [list|send <n>|edit <n>|drop <n>|clear]"));
     }
 
     #[test]
@@ -684,8 +649,8 @@ mod tests {
         let result = help(&mut app, Some("config"));
         let msg = result.message.expect("help topic should return message");
         assert!(msg.contains("config"));
-        assert!(msg.contains("Inspect and change settings"));
-        assert!(msg.contains("Usage: /config"));
+        assert!(msg.contains("查看与修改设置"));
+        assert!(msg.contains("用法： /config"));
     }
 
     #[test]
@@ -694,9 +659,9 @@ mod tests {
         let result = help(&mut app, Some("links"));
         let msg = result.message.expect("help topic should return message");
         assert!(msg.contains("links"));
-        assert!(msg.contains("Show provider token, dashboard, and docs links"));
-        assert!(msg.contains("Usage: /links"));
-        assert!(msg.contains("Aliases: dashboard, api"));
+        assert!(msg.contains("显示服务商令牌、控制台与文档链接"));
+        assert!(msg.contains("用法： /links"));
+        assert!(msg.contains("别名： dashboard, api"));
     }
 
     #[test]
@@ -705,8 +670,8 @@ mod tests {
         let result = help(&mut app, Some("memory"));
         let msg = result.message.expect("help topic should return message");
         assert!(msg.contains("memory"));
-        assert!(msg.contains("persistent user-memory file"));
-        assert!(msg.contains("Usage: /memory [show|path|clear|edit|help]"));
+        assert!(msg.contains("持久用户记忆文件"));
+        assert!(msg.contains("用法： /memory [show|path|clear|edit|help]"));
     }
 
     #[test]
@@ -1083,7 +1048,7 @@ mod tests {
         assert_eq!(app.view_stack.top_kind(), Some(ModalKind::SubAgents));
         assert_eq!(
             app.status_message,
-            Some("Fetching Fleet status...".to_string())
+            Some("正在获取 Fleet 工作器状态...".to_string())
         );
     }
 
@@ -1093,7 +1058,7 @@ mod tests {
         let result = deepseek_links(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains("Provider Links"));
+        assert!(msg.contains("服务商链接"));
         assert!(msg.contains("DeepSeek (deepseek) <- current"));
         assert!(msg.contains("https://platform.deepseek.com/api_keys"));
         assert!(msg.contains("Xiaomi MiMo (xiaomi-mimo)"));
@@ -1145,14 +1110,14 @@ mod tests {
         let result = home_dashboard(&mut app);
         assert!(result.message.is_some());
         let msg = result.message.unwrap();
-        assert!(msg.contains("codewhale Home Dashboard"));
-        assert!(msg.contains("Model:"));
-        assert!(msg.contains("Mode:"));
-        assert!(msg.contains("Workspace:"));
-        assert!(msg.contains("History:"));
-        assert!(msg.contains("Tokens:"));
-        assert!(msg.contains("Quick Actions"));
-        assert!(msg.contains("Mode Tips"));
+        assert!(msg.contains("codewhale 主面板"));
+        assert!(msg.contains("模型："));
+        assert!(msg.contains("模式："));
+        assert!(msg.contains("工作区："));
+        assert!(msg.contains("历史："));
+        assert!(msg.contains("令牌："));
+        assert!(msg.contains("快捷操作"));
+        assert!(msg.contains("模式提示"));
         assert!(result.action.is_none());
     }
 
@@ -1166,7 +1131,7 @@ mod tests {
             ));
         let result = home_dashboard(&mut app);
         let msg = result.message.unwrap();
-        assert!(msg.contains("Queued:"));
+        assert!(msg.contains("队列："));
     }
 
     #[test]
@@ -1183,7 +1148,7 @@ mod tests {
             app.mode = mode;
             let result = home_dashboard(&mut app);
             let msg = result.message.unwrap();
-            assert!(msg.contains("Mode Tips"), "Missing tips for mode {mode:?}");
+            assert!(msg.contains("模式提示"), "模式 {mode:?} 缺少提示");
         }
     }
 
@@ -1194,8 +1159,8 @@ mod tests {
         let msg = result
             .message
             .expect("home dashboard should return message");
-        assert!(msg.contains("/links      - Dashboard & API links"));
-        assert!(msg.contains("/config      - Inspect and change settings"));
+        assert!(msg.contains("/links      - 控制台与 API 链接"));
+        assert!(msg.contains("/config      - 查看与修改设置"));
         assert!(
             !msg.lines()
                 .any(|line| line.trim_start().starts_with("/set "))
@@ -1205,9 +1170,7 @@ mod tests {
 
     #[test]
     fn home_dashboard_localizes_in_zh_hans() {
-        use codewhale_config::Locale;
         let mut app = create_test_app();
-        app.ui_locale = Locale::ZhHans;
         let result = home_dashboard(&mut app);
         let msg = result
             .message

@@ -31,7 +31,6 @@ use crate::tui::views::{
     render_panel_scroll_rail, render_underwater_surface,
 };
 use crate::workspace_discovery::{DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery};
-use codewhale_config::Locale;
 
 /// Maximum number of candidates collected from the initial walk. Keeps memory
 /// bounded for very large monorepos; matches the limits codex-rs uses for the
@@ -131,8 +130,6 @@ pub struct FilePickerView {
     scroll: usize,
     /// Exact visible row targets from the last render for mouse parity.
     last_row_hitboxes: RefCell<Vec<(u16, usize)>>,
-    /// UI locale captured from the app at construction (#4057 wave 2).
-    locale: Locale,
 }
 
 impl FilePickerView {
@@ -142,7 +139,7 @@ impl FilePickerView {
     /// `mention_walk_depth`.
     #[cfg(test)]
     pub fn new_with_relevance(workspace_root: &Path, relevance: FilePickerRelevance) -> Self {
-        Self::new_with_relevance_and_depth(workspace_root, relevance, WALK_DEPTH, Locale::En)
+        Self::new_with_relevance_and_depth(workspace_root, relevance, WALK_DEPTH)
     }
 
     /// Build a picker with working-set relevance hints and an explicit walk
@@ -152,7 +149,6 @@ impl FilePickerView {
         workspace_root: &Path,
         relevance: FilePickerRelevance,
         walk_depth: usize,
-        locale: Locale,
     ) -> Self {
         let max_depth = if walk_depth == 0 {
             None
@@ -168,7 +164,6 @@ impl FilePickerView {
             selected: 0,
             scroll: 0,
             last_row_hitboxes: RefCell::new(Vec::new()),
-            locale,
         };
         view.refilter();
         view
@@ -373,10 +368,9 @@ impl ModalView for FilePickerView {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let match_count = self.filtered.len();
         let title = if match_count == 1 {
-            tr(self.locale, MessageId::FilePickerMatchSingular).into_owned()
+            tr(MessageId::FilePickerMatchSingular).into_owned()
         } else {
-            tr(self.locale, MessageId::FilePickerMatchesPlural)
-                .replace("{count}", &match_count.to_string())
+            tr(MessageId::FilePickerMatchesPlural).replace("{count}", &match_count.to_string())
         };
         let inner = render_underwater_surface(area, buf, title);
 
@@ -902,6 +896,17 @@ mod tests {
     /// every overlay to remain readable and fully operable at.
     const BLOCKER_SIZES: [(u16, u16); 4] = [(80, 24), (100, 30), (120, 32), (160, 40)];
 
+    fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(unicode_width::UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        row
+    }
+
     #[test]
     fn file_picker_is_usable_and_opaque_at_blocker_sizes() {
         use crate::tui::views::ViewStack;
@@ -930,13 +935,7 @@ mod tests {
             ));
             stack.render(area, &mut buf);
 
-            let rows: Vec<String> = (0..h)
-                .map(|y| {
-                    (0..w)
-                        .map(|x| buf[(x, y)].symbol().to_string())
-                        .collect::<String>()
-                })
-                .collect();
+            let rows: Vec<String> = (0..h).map(|y| buffer_row_text(&buf, area, y)).collect();
             let text = rows.join("\n");
 
             for label in ["select", "insert @path", "close"] {

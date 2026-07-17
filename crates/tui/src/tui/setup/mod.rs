@@ -31,8 +31,8 @@ use crate::tui::views::{
 };
 use codewhale_config::{
     AutonomyPreference, ConstitutionAuthoring, ConstitutionChoice, ConstitutionSource,
-    ConstitutionValidity, InheritedConfigFacts, Locale, RuntimePostureSource, SetupState,
-    SetupStep, StepEntry, StepStatus, UserConstitution, UserConstitutionLoad,
+    ConstitutionValidity, InheritedConfigFacts, RuntimePostureSource, SetupState, SetupStep,
+    StepEntry, StepStatus, UserConstitution, UserConstitutionLoad,
     user_constitution::MAX_NOTES_LEN,
 };
 
@@ -91,13 +91,7 @@ impl SetupWizardStep for StaticSetupStep {
     }
 }
 
-const STEP_SPECS: [StaticSetupStep; 8] = [
-    StaticSetupStep {
-        id: SetupStep::Language,
-        title_id: MessageId::SetupStepLanguageTitle,
-        why_id: MessageId::SetupStepLanguageWhy,
-        required: true,
-    },
+const STEP_SPECS: [StaticSetupStep; 7] = [
     StaticSetupStep {
         id: SetupStep::ProviderModel,
         title_id: MessageId::SetupStepProviderModelTitle,
@@ -146,7 +140,6 @@ const STEP_SPECS: [StaticSetupStep; 8] = [
 pub struct SetupWizardView {
     state: SetupState,
     selected: usize,
-    locale: Locale,
     facts: SetupRuntimeFacts,
     guided_draft: GuidedConstitutionDraft,
     freeform_note: String,
@@ -362,10 +355,10 @@ impl SetupRuntimeFacts {
             .ok()
             .and_then(|load| {
                 load.constitution().map(|constitution| {
-                    autonomy_label(constitution.autonomy_preference, app.ui_locale).to_string()
+                    autonomy_label(constitution.autonomy_preference).to_string()
                 })
             })
-            .unwrap_or_else(|| tr(app.ui_locale, MessageId::SetupAutonomyUnspecified).to_string());
+            .unwrap_or_else(|| tr(MessageId::SetupAutonomyUnspecified).to_string());
         Self {
             provider,
             model,
@@ -409,10 +402,7 @@ impl SetupRuntimeFacts {
                 .filter(|policy| !policy.trim().is_empty())
                 .unwrap_or("on-request")
                 .to_string(),
-            project_override_warning: project_runtime_override_warning(
-                &app.workspace,
-                app.ui_locale,
-            ),
+            project_override_warning: project_runtime_override_warning(&app.workspace),
             constitution_autonomy,
             constitution_file: SetupConstitutionFileState::load(),
             expert_override,
@@ -563,7 +553,7 @@ impl SetupConstitutionFileState {
         }
     }
 
-    fn label(self, choice: ConstitutionChoice, locale: Locale) -> Cow<'static, str> {
+    fn label(self, choice: ConstitutionChoice) -> Cow<'static, str> {
         let id = match self {
             Self::NotChecked => MessageId::SetupConstitutionFileNotChecked,
             Self::Missing => MessageId::SetupConstitutionFileMissing,
@@ -577,7 +567,7 @@ impl SetupConstitutionFileState {
             Self::Unreadable => MessageId::SetupConstitutionFileUnreadable,
             Self::PathError => MessageId::SetupConstitutionFilePathError,
         };
-        tr(locale, id)
+        tr(id)
     }
 }
 
@@ -610,17 +600,17 @@ impl SetupExpertOverrideState {
         matches!(self, Self::Active)
     }
 
-    fn label(self, locale: Locale) -> Cow<'static, str> {
+    fn label(self) -> Cow<'static, str> {
         match self {
-            Self::NotChecked => tr(locale, MessageId::SetupExpertOverrideNotChecked),
-            Self::Missing => tr(locale, MessageId::SetupExpertOverrideMissing),
-            Self::Active => tr(locale, MessageId::SetupExpertOverrideActive),
-            Self::Disabled => tr(locale, MessageId::SetupExpertOverrideDisabled)
+            Self::NotChecked => tr(MessageId::SetupExpertOverrideNotChecked),
+            Self::Missing => tr(MessageId::SetupExpertOverrideMissing),
+            Self::Active => tr(MessageId::SetupExpertOverrideActive),
+            Self::Disabled => tr(MessageId::SetupExpertOverrideDisabled)
                 .replace("{env}", BASE_PROMPT_OVERRIDE_OPT_IN_ENV)
                 .into(),
-            Self::Empty => tr(locale, MessageId::SetupExpertOverrideEmpty),
-            Self::Unreadable => tr(locale, MessageId::SetupExpertOverrideUnreadable),
-            Self::PathError => tr(locale, MessageId::SetupExpertOverridePathError),
+            Self::Empty => tr(MessageId::SetupExpertOverrideEmpty),
+            Self::Unreadable => tr(MessageId::SetupExpertOverrideUnreadable),
+            Self::PathError => tr(MessageId::SetupExpertOverridePathError),
         }
     }
 }
@@ -663,66 +653,31 @@ impl GuidedConstitutionDraft {
     }
 
     #[cfg(test)]
-    fn to_constitution(self, locale: Locale) -> UserConstitution {
-        self.to_constitution_with_freeform(locale, None)
+    fn to_constitution(self) -> UserConstitution {
+        self.to_constitution_with_freeform(None)
     }
 
-    fn to_constitution_with_freeform(
-        self,
-        locale: Locale,
-        freeform_note: Option<&str>,
-    ) -> UserConstitution {
-        let mut notes = self.notes(locale);
+    fn to_constitution_with_freeform(self, freeform_note: Option<&str>) -> UserConstitution {
+        let mut notes = self.notes();
         if let Some(note) = freeform_note.map(str::trim).filter(|note| !note.is_empty()) {
-            let own_words = match locale {
-                Locale::Ja => format!(
-                    "\nユーザー自由原則：{}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
-                ),
-                Locale::ZhHans => format!(
-                    "\n用户自由原则：{}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
-                ),
-                Locale::ZhHant => format!(
-                    "\n使用者自由原則：{}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
-                ),
-                Locale::PtBr => format!(
-                    "\nPrincípio livre do usuário: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
-                ),
-                Locale::Es419 => format!(
-                    "\nPrincipio libre del usuario: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
-                ),
-                Locale::Vi => format!(
-                    "\nNguyên tắc tự do của người dùng: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
-                ),
-                Locale::Ko => format!(
-                    "\n사용자 자유 원칙: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
-                ),
-                _ => format!(
-                    "\nUser freeform principle: {}",
-                    bounded_freeform_note(note, MAX_NOTES_LEN)
-                ),
-            };
+            let own_words = format!(
+                "\n用户自由原则：{}",
+                bounded_freeform_note(note, MAX_NOTES_LEN)
+            );
             notes.push_str(&own_words);
         }
         UserConstitution {
-            language: Some(locale.tag().to_string()),
-            about: Some(self.purpose.about(locale).to_string()),
+            about: Some(self.purpose.about().to_string()),
             working_style: vec![
-                self.purpose.working_style(locale).to_string(),
-                self.communication.working_style(locale).to_string(),
-                self.evidence.working_style(locale).to_string(),
-                self.privacy.working_style(locale).to_string(),
+                self.purpose.working_style().to_string(),
+                self.communication.working_style().to_string(),
+                self.evidence.working_style().to_string(),
+                self.privacy.working_style().to_string(),
             ],
             priorities: vec![
-                authority_priority(locale).to_string(),
-                autonomy_priority(self.autonomy, locale).to_string(),
-                self.privacy.escalation_rule(locale).to_string(),
+                authority_priority().to_string(),
+                autonomy_priority(self.autonomy).to_string(),
+                self.privacy.escalation_rule().to_string(),
             ],
             autonomy_preference: self.autonomy,
             notes: Some(notes),
@@ -730,16 +685,16 @@ impl GuidedConstitutionDraft {
         }
     }
 
-    fn notes(self, locale: Locale) -> String {
-        let notes = tr(locale, MessageId::SetupGuidedNotes);
+    fn notes(self) -> String {
+        let notes = tr(MessageId::SetupGuidedNotes);
         notes
-            .replace("{purpose}", &self.purpose.label(locale))
-            .replace("{initiative}", autonomy_label(self.autonomy, locale))
-            .replace("{evidence}", &self.evidence.label(locale))
-            .replace("{communication}", self.communication.label(locale))
-            .replace("{privacy}", self.privacy.label(locale))
-            .replace("{principles}", self.principles.label(locale))
-            .replace("{notes}", self.principles.note(locale))
+            .replace("{purpose}", &self.purpose.label())
+            .replace("{initiative}", autonomy_label(self.autonomy))
+            .replace("{evidence}", &self.evidence.label())
+            .replace("{communication}", self.communication.label())
+            .replace("{privacy}", self.privacy.label())
+            .replace("{principles}", self.principles.label())
+            .replace("{notes}", self.principles.note())
             .to_string()
     }
 }
@@ -762,30 +717,39 @@ impl GuidedPurpose {
         }
     }
 
-    fn label(self, locale: Locale) -> Cow<'static, str> {
+    fn label(self) -> Cow<'static, str> {
         match self {
-            Self::Coding => tr(locale, MessageId::SetupGuidedPurposeCoding),
-            Self::Research => tr(locale, MessageId::SetupGuidedPurposeResearch),
-            Self::Operations => tr(locale, MessageId::SetupGuidedPurposeOperations),
-            Self::Mixed => tr(locale, MessageId::SetupGuidedPurposeMixed),
+            Self::Coding => tr(MessageId::SetupGuidedPurposeCoding),
+            Self::Research => tr(MessageId::SetupGuidedPurposeResearch),
+            Self::Operations => tr(MessageId::SetupGuidedPurposeOperations),
+            Self::Mixed => tr(MessageId::SetupGuidedPurposeMixed),
         }
     }
 
-    fn about(self, locale: Locale) -> Cow<'static, str> {
+    fn about(self) -> Cow<'static, str> {
         match self {
-            Self::Coding => tr(locale, MessageId::SetupGuidedPurposeAboutCoding),
-            Self::Research => tr(locale, MessageId::SetupGuidedPurposeAboutResearch),
-            Self::Operations => tr(locale, MessageId::SetupGuidedPurposeAboutOperations),
-            Self::Mixed => tr(locale, MessageId::SetupGuidedPurposeAboutMixed),
+            Self::Coding => tr(MessageId::SetupGuidedPurposeAboutCoding),
+            Self::Research => tr(MessageId::SetupGuidedPurposeAboutResearch),
+            Self::Operations => tr(MessageId::SetupGuidedPurposeAboutOperations),
+            Self::Mixed => tr(MessageId::SetupGuidedPurposeAboutMixed),
         }
     }
 
-    fn working_style(self, locale: Locale) -> Cow<'static, str> {
+    fn working_style(self) -> Cow<'static, str> {
         match self {
-            Self::Coding => tr(locale, MessageId::SetupGuidedStyleCoding),
-            Self::Research => tr(locale, MessageId::SetupGuidedStyleResearch),
-            Self::Operations => tr(locale, MessageId::SetupGuidedStyleOperations),
-            Self::Mixed => tr(locale, MessageId::SetupGuidedStyleMixed),
+            Self::Coding => tr(MessageId::SetupGuidedStyleCoding),
+            Self::Research => tr(MessageId::SetupGuidedStyleResearch),
+            Self::Operations => tr(MessageId::SetupGuidedStyleOperations),
+            Self::Mixed => tr(MessageId::SetupGuidedStyleMixed),
+        }
+    }
+
+    fn as_prompt_value(self) -> &'static str {
+        match self {
+            Self::Coding => "coding workbench",
+            Self::Research => "research synthesis",
+            Self::Operations => "operations helper",
+            Self::Mixed => "mixed workbench",
         }
     }
 }
@@ -806,84 +770,27 @@ impl GuidedEvidence {
         }
     }
 
-    fn label(self, locale: Locale) -> Cow<'static, str> {
+    fn label(self) -> Cow<'static, str> {
         match self {
-            Self::Assumptions => tr(locale, MessageId::SetupGuidedEvidenceAssumptions),
-            Self::TestsAndReceipts => tr(locale, MessageId::SetupGuidedEvidenceTestsAndReceipts),
-            Self::ReleaseReceipts => tr(locale, MessageId::SetupGuidedEvidenceReleaseReceipts),
+            Self::Assumptions => tr(MessageId::SetupGuidedEvidenceAssumptions),
+            Self::TestsAndReceipts => tr(MessageId::SetupGuidedEvidenceTestsAndReceipts),
+            Self::ReleaseReceipts => tr(MessageId::SetupGuidedEvidenceReleaseReceipts),
         }
     }
 
-    fn working_style(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::Assumptions) => {
-                "完了を主張する前に、前提、不明点、残るリスクを要約する。"
-            }
-            (Locale::Ja, Self::TestsAndReceipts) => {
-                "不確実性を減らせるときは、コマンド、テスト、スクリーンショット、引用で具体的に検証する。"
-            }
-            (Locale::Ja, Self::ReleaseReceipts) => {
-                "重要な主張とリリース証拠には、ファイル、コマンド、スクリーンショット、CI、出典を示す。"
-            }
-            (Locale::ZhHans, Self::Assumptions) => "在宣称完成前总结假设、未知和剩余风险。",
-            (Locale::ZhHans, Self::TestsAndReceipts) => {
-                "在能降低不确定性时，用命令、测试、截图或引用给出具体验证。"
-            }
-            (Locale::ZhHans, Self::ReleaseReceipts) => {
-                "对重要结论和发布证据标注文件、命令、截图、CI 或来源。"
-            }
-            (Locale::ZhHant, Self::Assumptions) => "在宣稱完成前總結假設、未知和剩餘風險。",
-            (Locale::ZhHant, Self::TestsAndReceipts) => {
-                "在能降低不確定性時，用命令、測試、截圖或引用給出具體驗證。"
-            }
-            (Locale::ZhHant, Self::ReleaseReceipts) => {
-                "對重要結論和發布證據標註檔案、命令、截圖、CI 或來源。"
-            }
-            (Locale::PtBr, Self::Assumptions) => {
-                "Resuma premissas, desconhecidos e risco restante antes de dizer que concluiu."
-            }
-            (Locale::PtBr, Self::TestsAndReceipts) => {
-                "Use comandos, testes, screenshots ou citações quando reduzirem a incerteza."
-            }
-            (Locale::PtBr, Self::ReleaseReceipts) => {
-                "Cite arquivos, comandos, screenshots, CI ou fontes para afirmações materiais e evidência de release."
-            }
-            (Locale::Es419, Self::Assumptions) => {
-                "Resume supuestos, incógnitas y riesgo restante antes de afirmar que terminaste."
-            }
-            (Locale::Es419, Self::TestsAndReceipts) => {
-                "Usa comandos, pruebas, capturas o citas cuando reduzcan materialmente la incertidumbre."
-            }
-            (Locale::Es419, Self::ReleaseReceipts) => {
-                "Cita archivos, comandos, capturas, CI o fuentes para afirmaciones materiales y evidencia de release."
-            }
-            (Locale::Vi, Self::Assumptions) => {
-                "Tóm tắt giả định, điều chưa biết và rủi ro còn lại trước khi tuyên bố hoàn tất."
-            }
-            (Locale::Vi, Self::TestsAndReceipts) => {
-                "Dùng lệnh, kiểm thử, ảnh chụp hoặc trích dẫn khi chúng giảm đáng kể bất định."
-            }
-            (Locale::Vi, Self::ReleaseReceipts) => {
-                "Trích dẫn tệp, lệnh, ảnh chụp, CI hoặc nguồn cho tuyên bố quan trọng và bằng chứng phát hành."
-            }
-            (Locale::Ko, Self::Assumptions) => {
-                "완료를 주장하기 전에 가정, 불확실한 점, 남은 위험을 요약한다."
-            }
-            (Locale::Ko, Self::TestsAndReceipts) => {
-                "불확실성을 실질적으로 줄일 수 있을 때는 명령어, 테스트, 스크린샷, 인용으로 구체적으로 검증한다."
-            }
-            (Locale::Ko, Self::ReleaseReceipts) => {
-                "중요한 주장과 릴리스 근거에는 파일 경로, 명령어, 스크린샷, CI, 출처를 제시한다."
-            }
-            (_, Self::Assumptions) => {
-                "Summarize assumptions, unknowns, and remaining risk before claiming completion."
-            }
-            (_, Self::TestsAndReceipts) => {
-                "Use commands, tests, screenshots, or citations when they materially reduce uncertainty."
-            }
-            (_, Self::ReleaseReceipts) => {
-                "Cite file paths, commands, screenshots, CI, or sources for material claims and release evidence."
-            }
+    fn working_style(self) -> &'static str {
+        match self {
+            Self::Assumptions => "在宣称完成前总结假设、未知和剩余风险。",
+            Self::TestsAndReceipts => "在能降低不确定性时，用命令、测试、截图或引用给出具体验证。",
+            Self::ReleaseReceipts => "对重要结论和发布证据标注文件、命令、截图、CI 或来源。",
+        }
+    }
+
+    fn as_prompt_value(self) -> &'static str {
+        match self {
+            Self::Assumptions => "state assumptions",
+            Self::TestsAndReceipts => "tests & receipts",
+            Self::ReleaseReceipts => "release receipts",
         }
     }
 }
@@ -904,93 +811,27 @@ impl GuidedCommunication {
         }
     }
 
-    fn label(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::Concise) => "簡潔",
-            (Locale::Ja, Self::Teaching) => "説明重視",
-            (Locale::Ja, Self::Direct) => "直接的",
-            (Locale::ZhHans, Self::Concise) => "简洁",
-            (Locale::ZhHans, Self::Teaching) => "教学式",
-            (Locale::ZhHans, Self::Direct) => "直接",
-            (Locale::ZhHant, Self::Concise) => "簡潔",
-            (Locale::ZhHant, Self::Teaching) => "教學式",
-            (Locale::ZhHant, Self::Direct) => "直接",
-            (Locale::PtBr, Self::Concise) => "conciso",
-            (Locale::PtBr, Self::Teaching) => "didático",
-            (Locale::PtBr, Self::Direct) => "direto",
-            (Locale::Es419, Self::Concise) => "conciso",
-            (Locale::Es419, Self::Teaching) => "didáctico",
-            (Locale::Es419, Self::Direct) => "directo",
-            (Locale::Vi, Self::Concise) => "ngắn gọn",
-            (Locale::Vi, Self::Teaching) => "giảng giải",
-            (Locale::Vi, Self::Direct) => "trực tiếp",
-            (Locale::Ko, Self::Concise) => "간결함",
-            (Locale::Ko, Self::Teaching) => "설명 중심",
-            (Locale::Ko, Self::Direct) => "직설적",
-            (_, Self::Concise) => "concise",
-            (_, Self::Teaching) => "teaching",
-            (_, Self::Direct) => "direct",
+    fn label(self) -> &'static str {
+        match self {
+            Self::Concise => "简洁",
+            Self::Teaching => "教学式",
+            Self::Direct => "直接",
         }
     }
 
-    fn working_style(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::Concise) => "更新は簡潔にし、重要なトレードオフだけ短く説明する。",
-            (Locale::Ja, Self::Teaching) => {
-                "重要な推論とトレードオフを、ユーザーが仕組みを理解できる程度に説明する。"
-            }
-            (Locale::Ja, Self::Direct) => {
-                "阻塞、リスク、不確実性を直接述べ、装飾的な文案を避ける。"
-            }
-            (Locale::ZhHans, Self::Concise) => "保持更新简洁，并只解释重要取舍。",
-            (Locale::ZhHans, Self::Teaching) => "解释关键推理和取舍，让用户能理解系统。",
-            (Locale::ZhHans, Self::Direct) => "直接说明阻塞、风险和不确定性，避免装饰性文案。",
-            (Locale::ZhHant, Self::Concise) => "保持更新簡潔，並只解釋重要取捨。",
-            (Locale::ZhHant, Self::Teaching) => "解釋關鍵推理和取捨，讓使用者能理解系統。",
-            (Locale::ZhHant, Self::Direct) => "直接說明阻塞、風險和不確定性，避免裝飾性文案。",
-            (Locale::PtBr, Self::Concise) => {
-                "Mantenha atualizações concisas e explique brevemente só os tradeoffs importantes."
-            }
-            (Locale::PtBr, Self::Teaching) => {
-                "Explique raciocínio e tradeoffs principais o bastante para o usuário entender o sistema."
-            }
-            (Locale::PtBr, Self::Direct) => {
-                "Seja direto sobre bloqueios, risco e incerteza; evite texto ornamental."
-            }
-            (Locale::Es419, Self::Concise) => {
-                "Mantén las actualizaciones concisas y explica brevemente solo los tradeoffs importantes."
-            }
-            (Locale::Es419, Self::Teaching) => {
-                "Explica el razonamiento y los tradeoffs clave lo suficiente para que el usuario entienda el sistema."
-            }
-            (Locale::Es419, Self::Direct) => {
-                "Sé directo sobre bloqueos, riesgo e incertidumbre; evita texto ornamental."
-            }
-            (Locale::Vi, Self::Concise) => {
-                "Giữ cập nhật ngắn gọn và chỉ giải thích ngắn các đánh đổi quan trọng."
-            }
-            (Locale::Vi, Self::Teaching) => {
-                "Giải thích suy luận và đánh đổi chính đủ để người dùng hiểu hệ thống."
-            }
-            (Locale::Vi, Self::Direct) => {
-                "Nói thẳng về điểm chặn, rủi ro và bất định; tránh câu chữ trang trí."
-            }
-            (Locale::Ko, Self::Concise) => {
-                "업데이트는 간결하게 유지하고, 중요한 트레이드오프만 짧게 설명한다."
-            }
-            (Locale::Ko, Self::Teaching) => {
-                "사용자가 시스템을 이해할 수 있을 만큼 핵심 추론과 트레이드오프를 설명한다."
-            }
-            (Locale::Ko, Self::Direct) => {
-                "차단 요인, 위험, 불확실성을 직설적으로 말하고 장식적인 표현은 피한다."
-            }
-            (_, Self::Concise) => "Keep updates concise and explain important tradeoffs briefly.",
-            (_, Self::Teaching) => {
-                "Explain key reasoning and tradeoffs enough that the user can learn the system."
-            }
-            (_, Self::Direct) => {
-                "Be direct about blockers, risk, and uncertainty; avoid ornamental copy."
-            }
+    fn working_style(self) -> &'static str {
+        match self {
+            Self::Concise => "保持更新简洁，并只解释重要取舍。",
+            Self::Teaching => "解释关键推理和取舍，让用户能理解系统。",
+            Self::Direct => "直接说明阻塞、风险和不确定性，避免装饰性文案。",
+        }
+    }
+
+    fn as_prompt_value(self) -> &'static str {
+        match self {
+            Self::Concise => "concise",
+            Self::Teaching => "teaching",
+            Self::Direct => "direct",
         }
     }
 }
@@ -1011,186 +852,41 @@ impl GuidedPrivacy {
         }
     }
 
-    fn label(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::StandardCare) => "標準保護",
-            (Locale::Ja, Self::StrictBoundaries) => "厳格な境界",
-            (Locale::Ja, Self::ProjectLocal) => "プロジェクト内メモリ",
-            (Locale::ZhHans, Self::StandardCare) => "标准保护",
-            (Locale::ZhHans, Self::StrictBoundaries) => "严格边界",
-            (Locale::ZhHans, Self::ProjectLocal) => "项目内记忆",
-            (Locale::ZhHant, Self::StandardCare) => "標準保護",
-            (Locale::ZhHant, Self::StrictBoundaries) => "嚴格邊界",
-            (Locale::ZhHant, Self::ProjectLocal) => "專案內記憶",
-            (Locale::PtBr, Self::StandardCare) => "cuidado padrão",
-            (Locale::PtBr, Self::StrictBoundaries) => "limites estritos",
-            (Locale::PtBr, Self::ProjectLocal) => "memória local do projeto",
-            (Locale::Es419, Self::StandardCare) => "cuidado estándar",
-            (Locale::Es419, Self::StrictBoundaries) => "límites estrictos",
-            (Locale::Es419, Self::ProjectLocal) => "memoria local del proyecto",
-            (Locale::Vi, Self::StandardCare) => "bảo vệ tiêu chuẩn",
-            (Locale::Vi, Self::StrictBoundaries) => "ranh giới nghiêm ngặt",
-            (Locale::Vi, Self::ProjectLocal) => "bộ nhớ trong dự án",
-            (Locale::Ko, Self::StandardCare) => "표준 보호",
-            (Locale::Ko, Self::StrictBoundaries) => "엄격한 경계",
-            (Locale::Ko, Self::ProjectLocal) => "프로젝트 내 메모리",
-            (_, Self::StandardCare) => "standard care",
-            (_, Self::StrictBoundaries) => "strict boundaries",
-            (_, Self::ProjectLocal) => "project-local memory",
+    fn label(self) -> &'static str {
+        match self {
+            Self::StandardCare => "标准保护",
+            Self::StrictBoundaries => "严格边界",
+            Self::ProjectLocal => "项目内记忆",
         }
     }
 
-    fn working_style(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::StandardCare) => {
-                "秘密情報、ユーザーファイル、Git 履歴、本番システム、コスト、プライバシー、時間を保護する。"
-            }
-            (Locale::Ja, Self::StrictBoundaries) => {
-                "秘密、個人データ、認証情報、本番状態、資金、公開操作は、先に確認する境界として扱う。"
-            }
-            (Locale::Ja, Self::ProjectLocal) => {
-                "プロジェクト固有の文脈はプロジェクト内に留め、明示要求がない限りメモリへ書かない。"
-            }
-            (Locale::ZhHans, Self::StandardCare) => {
-                "保护密钥、用户文件、Git 历史、生产系统、成本、隐私和时间。"
-            }
-            (Locale::ZhHans, Self::StrictBoundaries) => {
+    fn working_style(self) -> &'static str {
+        match self {
+            Self::StandardCare => "保护密钥、用户文件、Git 历史、生产系统、成本、隐私和时间。",
+            Self::StrictBoundaries => {
                 "把密钥、个人数据、凭据、生产状态、资金和发布动作视为先确认边界。"
             }
-            (Locale::ZhHans, Self::ProjectLocal) => {
-                "项目特定上下文留在项目内，除非明确要求，否则不要写入记忆。"
+            Self::ProjectLocal => "项目特定上下文留在项目内，除非明确要求，否则不要写入记忆。",
+        }
+    }
+
+    fn escalation_rule(self) -> &'static str {
+        match self {
+            Self::StandardCare => "遇到破坏性、高成本、凭据、发布、法律或安全风险操作时先询问。",
+            Self::StrictBoundaries => {
+                "在读取或传播敏感信息、触碰生产系统、花费资金或发布内容前停止并询问。"
             }
-            (Locale::ZhHant, Self::StandardCare) => {
-                "保護密鑰、使用者檔案、Git 歷史、生產系統、成本、隱私和時間。"
-            }
-            (Locale::ZhHant, Self::StrictBoundaries) => {
-                "把密鑰、個人資料、憑據、生產狀態、資金和發布動作視為先確認邊界。"
-            }
-            (Locale::ZhHant, Self::ProjectLocal) => {
-                "專案特定上下文留在專案內，除非明確要求，否則不要寫入記憶。"
-            }
-            (Locale::PtBr, Self::StandardCare) => {
-                "Proteja segredos, arquivos do usuário, histórico git, produção, custo, privacidade e tempo."
-            }
-            (Locale::PtBr, Self::StrictBoundaries) => {
-                "Trate segredos, dados pessoais, credenciais, estado de produção, dinheiro e publicações como limites de confirmação."
-            }
-            (Locale::PtBr, Self::ProjectLocal) => {
-                "Mantenha contexto específico do projeto no projeto; evite gravar na memória sem pedido explícito."
-            }
-            (Locale::Es419, Self::StandardCare) => {
-                "Protege secretos, archivos del usuario, historial git, producción, costo, privacidad y tiempo."
-            }
-            (Locale::Es419, Self::StrictBoundaries) => {
-                "Trata secretos, datos personales, credenciales, estado de producción, dinero y publicaciones como límites de confirmación."
-            }
-            (Locale::Es419, Self::ProjectLocal) => {
-                "Mantén el contexto específico del proyecto en el proyecto; evita llevarlo a memoria sin pedido explícito."
-            }
-            (Locale::Vi, Self::StandardCare) => {
-                "Bảo vệ bí mật, tệp người dùng, lịch sử git, hệ thống sản xuất, chi phí, riêng tư và thời gian."
-            }
-            (Locale::Vi, Self::StrictBoundaries) => {
-                "Xem bí mật, dữ liệu cá nhân, thông tin xác thực, trạng thái sản xuất, tiền và xuất bản là ranh giới cần xác nhận."
-            }
-            (Locale::Vi, Self::ProjectLocal) => {
-                "Giữ ngữ cảnh riêng của dự án trong dự án; tránh ghi vào bộ nhớ nếu không được yêu cầu rõ."
-            }
-            (Locale::Ko, Self::StandardCare) => {
-                "비밀 정보, 사용자 파일, Git 이력, 프로덕션 시스템, 비용, 프라이버시, 시간을 보호한다."
-            }
-            (Locale::Ko, Self::StrictBoundaries) => {
-                "비밀 정보, 개인 데이터, 자격 증명, 프로덕션 상태, 자금, 게시 작업은 먼저 확인하는 경계로 취급한다."
-            }
-            (Locale::Ko, Self::ProjectLocal) => {
-                "프로젝트 고유 맥락은 프로젝트 안에 두고, 명시적으로 요청받지 않는 한 메모리에 쓰지 않는다."
-            }
-            (_, Self::StandardCare) => {
-                "Protect secrets, user files, git history, production systems, cost, privacy, and time."
-            }
-            (_, Self::StrictBoundaries) => {
-                "Treat secrets, personal data, credentials, production state, money, and publish actions as stop-and-confirm boundaries."
-            }
-            (_, Self::ProjectLocal) => {
-                "Keep project-specific context local; avoid carrying sensitive details into memory unless explicitly asked."
+            Self::ProjectLocal => {
+                "需要跨项目记忆、复制项目细节或引用旧交接时，先确认这些上下文仍适用。"
             }
         }
     }
 
-    fn escalation_rule(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::StandardCare) => {
-                "破壊的、高コスト、認証情報、公開、法務、セキュリティリスクのある操作の前に尋ねる。"
-            }
-            (Locale::Ja, Self::StrictBoundaries) => {
-                "機微情報の読み取りや拡散、本番システム操作、支出、公開の前に停止して尋ねる。"
-            }
-            (Locale::Ja, Self::ProjectLocal) => {
-                "プロジェクト詳細をメモリ、ワークスペース、古い引き継ぎへ持ち出す前に確認する。"
-            }
-            (Locale::ZhHans, Self::StandardCare) => {
-                "遇到破坏性、高成本、凭据、发布、法律或安全风险操作时先询问。"
-            }
-            (Locale::ZhHans, Self::StrictBoundaries) => {
-                "在读取或传播敏感信息、触碰生产系统、花费资金或发布内容前停止并询问。"
-            }
-            (Locale::ZhHans, Self::ProjectLocal) => {
-                "需要跨项目记忆、复制项目细节或引用旧交接时，先确认这些上下文仍适用。"
-            }
-            (Locale::ZhHant, Self::StandardCare) => {
-                "遇到破壞性、高成本、憑據、發布、法律或安全風險操作時先詢問。"
-            }
-            (Locale::ZhHant, Self::StrictBoundaries) => {
-                "在讀取或傳播敏感資訊、觸碰生產系統、花費資金或發布內容前停止並詢問。"
-            }
-            (Locale::ZhHant, Self::ProjectLocal) => {
-                "需要跨專案記憶、複製專案細節或引用舊交接時，先確認這些上下文仍適用。"
-            }
-            (Locale::PtBr, Self::StandardCare) => {
-                "Pergunte antes de ações destrutivas, caras, com credenciais, publicação, risco legal ou de segurança."
-            }
-            (Locale::PtBr, Self::StrictBoundaries) => {
-                "Pare e pergunte antes de ler ou espalhar dados sensíveis, tocar produção, gastar dinheiro ou publicar."
-            }
-            (Locale::PtBr, Self::ProjectLocal) => {
-                "Confirme antes de levar detalhes do projeto para memória, workspaces ou handoffs antigos."
-            }
-            (Locale::Es419, Self::StandardCare) => {
-                "Pregunta antes de acciones destructivas, costosas, con credenciales, publicación o riesgo legal/de seguridad."
-            }
-            (Locale::Es419, Self::StrictBoundaries) => {
-                "Detente y pregunta antes de leer o difundir datos sensibles, tocar producción, gastar dinero o publicar."
-            }
-            (Locale::Es419, Self::ProjectLocal) => {
-                "Confirma antes de llevar detalles del proyecto a memoria, workspaces o handoffs viejos."
-            }
-            (Locale::Vi, Self::StandardCare) => {
-                "Hỏi trước các thao tác phá hủy, tốn kém, liên quan thông tin xác thực, xuất bản, pháp lý hoặc bảo mật."
-            }
-            (Locale::Vi, Self::StrictBoundaries) => {
-                "Dừng và hỏi trước khi đọc/phát tán dữ liệu nhạy cảm, chạm sản xuất, chi tiền hoặc xuất bản."
-            }
-            (Locale::Vi, Self::ProjectLocal) => {
-                "Xác nhận trước khi mang chi tiết dự án sang bộ nhớ, workspace khác hoặc handoff cũ."
-            }
-            (Locale::Ko, Self::StandardCare) => {
-                "파괴적이거나, 비용이 크거나, 자격 증명, 게시, 법적, 보안 위험이 있는 작업 전에 먼저 물어본다."
-            }
-            (Locale::Ko, Self::StrictBoundaries) => {
-                "민감 정보를 읽거나 퍼뜨리기 전, 프로덕션 시스템을 건드리기 전, 자금을 쓰거나 게시하기 전에 멈추고 물어본다."
-            }
-            (Locale::Ko, Self::ProjectLocal) => {
-                "프로젝트 세부 정보를 메모리, 다른 워크스페이스, 오래된 인계 자료로 옮기기 전에 확인한다."
-            }
-            (_, Self::StandardCare) => {
-                "Ask before destructive, high-cost, credential, publishing, legal, or security-risk actions."
-            }
-            (_, Self::StrictBoundaries) => {
-                "Stop and ask before reading or spreading sensitive data, touching production systems, spending money, or publishing."
-            }
-            (_, Self::ProjectLocal) => {
-                "Confirm before carrying project details across memory, workspaces, or stale handoffs."
-            }
+    fn as_prompt_value(self) -> &'static str {
+        match self {
+            Self::StandardCare => "standard care",
+            Self::StrictBoundaries => "strict boundaries",
+            Self::ProjectLocal => "project-local memory",
         }
     }
 }
@@ -1211,109 +907,29 @@ impl GuidedPrinciples {
         }
     }
 
-    fn label(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::ScopedChanges) => "小さく絞った変更",
-            (Locale::Ja, Self::UserVoice) => "ユーザーの声を保つ",
-            (Locale::Ja, Self::ReversibleOps) => "可逆手順",
-            (Locale::ZhHans, Self::ScopedChanges) => "小范围改动",
-            (Locale::ZhHans, Self::UserVoice) => "保留用户语气",
-            (Locale::ZhHans, Self::ReversibleOps) => "可逆步骤",
-            (Locale::ZhHant, Self::ScopedChanges) => "小範圍改動",
-            (Locale::ZhHant, Self::UserVoice) => "保留使用者語氣",
-            (Locale::ZhHant, Self::ReversibleOps) => "可逆步驟",
-            (Locale::PtBr, Self::ScopedChanges) => "mudanças focadas",
-            (Locale::PtBr, Self::UserVoice) => "preservar voz do usuário",
-            (Locale::PtBr, Self::ReversibleOps) => "passos reversíveis",
-            (Locale::Es419, Self::ScopedChanges) => "cambios acotados",
-            (Locale::Es419, Self::UserVoice) => "preservar voz del usuario",
-            (Locale::Es419, Self::ReversibleOps) => "pasos reversibles",
-            (Locale::Vi, Self::ScopedChanges) => "thay đổi có phạm vi",
-            (Locale::Vi, Self::UserVoice) => "giữ giọng người dùng",
-            (Locale::Vi, Self::ReversibleOps) => "bước có thể đảo ngược",
-            (Locale::Ko, Self::ScopedChanges) => "범위가 명확한 변경",
-            (Locale::Ko, Self::UserVoice) => "사용자의 어조 유지",
-            (Locale::Ko, Self::ReversibleOps) => "되돌릴 수 있는 단계",
-            (_, Self::ScopedChanges) => "scoped changes",
-            (_, Self::UserVoice) => "user voice",
-            (_, Self::ReversibleOps) => "reversible steps",
+    fn label(self) -> &'static str {
+        match self {
+            Self::ScopedChanges => "小范围改动",
+            Self::UserVoice => "保留用户语气",
+            Self::ReversibleOps => "可逆步骤",
         }
     }
 
-    fn note(self, locale: Locale) -> &'static str {
-        match (locale, self) {
-            (Locale::Ja, Self::ScopedChanges) => {
-                "自由原則：小さくレビューしやすい変更を優先し、明示要求がない限り無関係なリファクタを避ける。"
-            }
-            (Locale::Ja, Self::UserVoice) => {
-                "自由原則：ユーザーの語調、ブランド、制約を保ち、好みを権限拡大として扱わない。"
-            }
-            (Locale::Ja, Self::ReversibleOps) => {
-                "自由原則：影響の大きい操作の前に、可逆手順、チェックポイント、ロールバック説明を選ぶ。"
-            }
-            (Locale::ZhHans, Self::ScopedChanges) => {
+    fn note(self) -> &'static str {
+        match self {
+            Self::ScopedChanges => {
                 "自由原则：优先采用小范围、可审查的改动；除非明确要求，不做无关重构。"
             }
-            (Locale::ZhHans, Self::UserVoice) => {
-                "自由原则：保留用户的语气、品牌和约束；不把偏好推断成权限扩大。"
-            }
-            (Locale::ZhHans, Self::ReversibleOps) => {
-                "自由原则：先选择可逆步骤、检查点和回滚说明，再进行高影响操作。"
-            }
-            (Locale::ZhHant, Self::ScopedChanges) => {
-                "自由原則：優先採用小範圍、可審查的改動；除非明確要求，不做無關重構。"
-            }
-            (Locale::ZhHant, Self::UserVoice) => {
-                "自由原則：保留使用者的語氣、品牌和約束；不把偏好推斷成權限擴大。"
-            }
-            (Locale::ZhHant, Self::ReversibleOps) => {
-                "自由原則：先選擇可逆步驟、檢查點和回復說明，再進行高影響操作。"
-            }
-            (Locale::PtBr, Self::ScopedChanges) => {
-                "Princípio livre: prefira mudanças pequenas e revisáveis; evite refactors não relacionados sem pedido explícito."
-            }
-            (Locale::PtBr, Self::UserVoice) => {
-                "Princípio livre: preserve a voz, marca e restrições do usuário sem tratar preferências como expansão de permissão."
-            }
-            (Locale::PtBr, Self::ReversibleOps) => {
-                "Princípio livre: favoreça passos reversíveis, checkpoints e notas de rollback antes de ações de alto impacto."
-            }
-            (Locale::Es419, Self::ScopedChanges) => {
-                "Principio libre: prefiere cambios pequeños y revisables; evita refactors no relacionados sin pedido explícito."
-            }
-            (Locale::Es419, Self::UserVoice) => {
-                "Principio libre: preserva la voz, marca y restricciones del usuario sin tratar preferencias como expansión de permisos."
-            }
-            (Locale::Es419, Self::ReversibleOps) => {
-                "Principio libre: favorece pasos reversibles, checkpoints y notas de rollback antes de acciones de alto impacto."
-            }
-            (Locale::Vi, Self::ScopedChanges) => {
-                "Nguyên tắc tự do: ưu tiên thay đổi nhỏ, dễ review; tránh refactor không liên quan nếu không được yêu cầu rõ."
-            }
-            (Locale::Vi, Self::UserVoice) => {
-                "Nguyên tắc tự do: giữ giọng, thương hiệu và ràng buộc của người dùng, không xem sở thích là mở rộng quyền."
-            }
-            (Locale::Vi, Self::ReversibleOps) => {
-                "Nguyên tắc tự do: ưu tiên bước có thể đảo ngược, checkpoint và ghi chú rollback trước thao tác tác động cao."
-            }
-            (Locale::Ko, Self::ScopedChanges) => {
-                "자유 원칙: 작고 리뷰하기 쉬운 변경을 우선하고, 명시적으로 요청받지 않는 한 관련 없는 리팩터링은 하지 않는다."
-            }
-            (Locale::Ko, Self::UserVoice) => {
-                "자유 원칙: 사용자의 어조, 브랜드, 제약을 유지하고 선호를 권한 확대로 취급하지 않는다."
-            }
-            (Locale::Ko, Self::ReversibleOps) => {
-                "자유 원칙: 영향이 큰 작업 전에 되돌릴 수 있는 단계, 체크포인트, 롤백 메모를 우선한다."
-            }
-            (_, Self::ScopedChanges) => {
-                "Freeform principle: prefer small, reviewable changes and avoid unrelated refactors unless explicitly requested."
-            }
-            (_, Self::UserVoice) => {
-                "Freeform principle: preserve the user's voice, brand, and constraints without treating preferences as permission expansion."
-            }
-            (_, Self::ReversibleOps) => {
-                "Freeform principle: favor reversible steps, checkpoints, and rollback notes before high-impact operations."
-            }
+            Self::UserVoice => "自由原则：保留用户的语气、品牌和约束；不把偏好推断成权限扩大。",
+            Self::ReversibleOps => "自由原则：先选择可逆步骤、检查点和回滚说明，再进行高影响操作。",
+        }
+    }
+
+    fn as_prompt_value(self) -> &'static str {
+        match self {
+            Self::ScopedChanges => "scoped changes",
+            Self::UserVoice => "user voice",
+            Self::ReversibleOps => "reversible steps",
         }
     }
 }
@@ -1328,137 +944,39 @@ fn next_guided_autonomy(preference: AutonomyPreference) -> AutonomyPreference {
     }
 }
 
-fn autonomy_label(preference: AutonomyPreference, locale: Locale) -> &'static str {
-    match (locale, preference) {
-        (Locale::Ja, AutonomyPreference::Cautious) => "慎重",
-        (Locale::Ja, AutonomyPreference::Balanced) => "バランス",
-        (Locale::Ja, AutonomyPreference::Autonomous) => "積極的",
-        (Locale::ZhHans, AutonomyPreference::Cautious) => "谨慎",
-        (Locale::ZhHans, AutonomyPreference::Balanced) => "平衡",
-        (Locale::ZhHans, AutonomyPreference::Autonomous) => "积极主动",
-        (Locale::ZhHant, AutonomyPreference::Cautious) => "謹慎",
-        (Locale::ZhHant, AutonomyPreference::Balanced) => "平衡",
-        (Locale::ZhHant, AutonomyPreference::Autonomous) => "積極主動",
-        (Locale::PtBr, AutonomyPreference::Cautious) => "cauteloso",
-        (Locale::PtBr, AutonomyPreference::Balanced) => "equilibrado",
-        (Locale::PtBr, AutonomyPreference::Autonomous) => "ambicioso",
-        (Locale::Es419, AutonomyPreference::Cautious) => "cauteloso",
-        (Locale::Es419, AutonomyPreference::Balanced) => "equilibrado",
-        (Locale::Es419, AutonomyPreference::Autonomous) => "ambicioso",
-        (Locale::Vi, AutonomyPreference::Cautious) => "thận trọng",
-        (Locale::Vi, AutonomyPreference::Balanced) => "cân bằng",
-        (Locale::Vi, AutonomyPreference::Autonomous) => "chủ động",
-        (Locale::Ko, AutonomyPreference::Cautious) => "신중함",
-        (Locale::Ko, AutonomyPreference::Balanced) => "균형",
-        (Locale::Ko, AutonomyPreference::Autonomous) => "적극적",
-        (_, AutonomyPreference::Cautious) => "cautious",
-        (_, AutonomyPreference::Balanced) => "balanced",
-        (_, AutonomyPreference::Autonomous) => "ambitious",
-        (_, AutonomyPreference::Unspecified) => "unspecified",
+fn autonomy_label(preference: AutonomyPreference) -> &'static str {
+    match preference {
+        AutonomyPreference::Cautious => "谨慎",
+        AutonomyPreference::Balanced => "平衡",
+        AutonomyPreference::Autonomous => "积极主动",
+        AutonomyPreference::Unspecified => "未指定",
     }
 }
 
-fn autonomy_priority(preference: AutonomyPreference, locale: Locale) -> &'static str {
-    match (locale, preference) {
-        (Locale::Ja, AutonomyPreference::Cautious) => {
-            "ファイル編集、コマンド実行、あいまいな製品判断の前に停止して尋ねる。"
-        }
-        (Locale::Ja, AutonomyPreference::Balanced) => {
-            "明確で低リスクな作業は直接進め、危険、破壊的、あいまいな操作では先に確認する。"
-        }
-        (Locale::Ja, AutonomyPreference::Autonomous) => {
-            "安全な定型作業はまとめて進めるが、破壊的、認証情報、公開、高コスト、法務、セキュリティリスクでは停止して尋ねる。"
-        }
-        (Locale::ZhHans, AutonomyPreference::Cautious) => {
-            "在编辑文件、运行命令或产品选择不明确前，倾向先停下询问。"
-        }
-        (Locale::ZhHans, AutonomyPreference::Balanced) => {
+fn autonomy_prompt_value(preference: AutonomyPreference) -> &'static str {
+    match preference {
+        AutonomyPreference::Unspecified => "unspecified",
+        AutonomyPreference::Cautious => "cautious",
+        AutonomyPreference::Balanced => "balanced",
+        AutonomyPreference::Autonomous => "autonomous",
+    }
+}
+
+fn autonomy_priority(preference: AutonomyPreference) -> &'static str {
+    match preference {
+        AutonomyPreference::Cautious => "在编辑文件、运行命令或产品选择不明确前，倾向先停下询问。",
+        AutonomyPreference::Balanced => {
             "清晰低风险任务可直接行动；遇到风险、破坏性或歧义时先确认。"
         }
-        (Locale::ZhHans, AutonomyPreference::Autonomous) => {
+        AutonomyPreference::Autonomous => {
             "可批量处理安全的常规工作，但遇到破坏性、凭据、发布、高成本、法律或安全风险时停止询问。"
         }
-        (Locale::ZhHant, AutonomyPreference::Cautious) => {
-            "在編輯檔案、執行命令或產品選擇不明確前，傾向先停下詢問。"
-        }
-        (Locale::ZhHant, AutonomyPreference::Balanced) => {
-            "清晰低風險任務可直接行動；遇到風險、破壞性或歧義時先確認。"
-        }
-        (Locale::ZhHant, AutonomyPreference::Autonomous) => {
-            "可批量處理安全的常規工作，但遇到破壞性、憑據、發布、高成本、法律或安全風險時停止詢問。"
-        }
-        (Locale::PtBr, AutonomyPreference::Cautious) => {
-            "Pare e pergunte antes de editar arquivos, rodar comandos ou escolher entre caminhos ambíguos de produto."
-        }
-        (Locale::PtBr, AutonomyPreference::Balanced) => {
-            "Aja diretamente em tarefas claras e de baixo risco; confirme antes de ações arriscadas, destrutivas ou ambíguas."
-        }
-        (Locale::PtBr, AutonomyPreference::Autonomous) => {
-            "Agrupe trabalho seguro de rotina, mas pare para ações destrutivas, credenciais, publicação, alto custo, legais ou de segurança."
-        }
-        (Locale::Es419, AutonomyPreference::Cautious) => {
-            "Detente y pregunta antes de editar archivos, ejecutar comandos o elegir entre caminos ambiguos de producto."
-        }
-        (Locale::Es419, AutonomyPreference::Balanced) => {
-            "Actúa directamente en tareas claras y de bajo riesgo; confirma antes de acciones riesgosas, destructivas o ambiguas."
-        }
-        (Locale::Es419, AutonomyPreference::Autonomous) => {
-            "Agrupa trabajo seguro de rutina, pero detente ante acciones destructivas, credenciales, publicación, alto costo, legales o de seguridad."
-        }
-        (Locale::Vi, AutonomyPreference::Cautious) => {
-            "Dừng và hỏi trước khi sửa tệp, chạy lệnh hoặc chọn giữa đường sản phẩm mơ hồ."
-        }
-        (Locale::Vi, AutonomyPreference::Balanced) => {
-            "Hành động trực tiếp với việc rõ, rủi ro thấp; xác nhận trước việc rủi ro, phá hủy hoặc mơ hồ."
-        }
-        (Locale::Vi, AutonomyPreference::Autonomous) => {
-            "Gộp việc thường lệ an toàn, nhưng dừng với thao tác phá hủy, thông tin xác thực, xuất bản, chi phí cao, pháp lý hoặc bảo mật."
-        }
-        (Locale::Ko, AutonomyPreference::Cautious) => {
-            "파일 수정, 명령어 실행, 애매한 제품 선택 전에 멈추고 물어본다."
-        }
-        (Locale::Ko, AutonomyPreference::Balanced) => {
-            "명확하고 위험이 낮은 작업은 바로 진행하고, 위험하거나 파괴적이거나 애매한 작업은 먼저 확인한다."
-        }
-        (Locale::Ko, AutonomyPreference::Autonomous) => {
-            "안전한 정형 작업은 모아서 진행하되, 파괴적이거나 자격 증명, 게시, 고비용, 법적, 보안 위험이 있는 작업에서는 멈추고 물어본다."
-        }
-        (_, AutonomyPreference::Cautious) => {
-            "Stop and ask before editing files, running commands, or choosing between ambiguous product paths."
-        }
-        (_, AutonomyPreference::Balanced) => {
-            "Act directly on clear low-risk tasks; confirm before risky, destructive, or ambiguous actions."
-        }
-        (_, AutonomyPreference::Autonomous) => {
-            "Batch routine safe work, then stop for destructive, credential, publishing, high-cost, legal, or security-risk actions."
-        }
-        (_, AutonomyPreference::Unspecified) => "No standing initiative preference was selected.",
+        AutonomyPreference::Unspecified => "未选择常设主动性偏好。",
     }
 }
 
-fn authority_priority(locale: Locale) -> &'static str {
-    match locale {
-        Locale::Ja => {
-            "現在のユーザー要求とライブツール証拠は、メモリ、古い引き継ぎ、推測より優先される。"
-        }
-        Locale::ZhHans => "当前用户请求和实时工具证据优先于记忆、陈旧交接和猜测。",
-        Locale::ZhHant => "目前使用者請求和即時工具證據優先於記憶、陳舊交接和猜測。",
-        Locale::PtBr => {
-            "Pedidos atuais do usuário e evidência viva das ferramentas superam memória, handoffs antigos e palpites."
-        }
-        Locale::Es419 => {
-            "Las solicitudes actuales del usuario y la evidencia viva de herramientas superan memoria, handoffs viejos y suposiciones."
-        }
-        Locale::Vi => {
-            "Yêu cầu hiện tại của người dùng và bằng chứng trực tiếp từ công cụ ưu tiên hơn bộ nhớ, handoff cũ và phỏng đoán."
-        }
-        Locale::Ko => {
-            "현재 사용자 요청과 실시간 도구 근거는 메모리, 오래된 인계 자료, 추측보다 우선한다."
-        }
-        _ => {
-            "Current user requests and live tool evidence outrank memory, stale handoffs, and guesses."
-        }
-    }
+fn authority_priority() -> &'static str {
+    "当前用户请求和实时工具证据优先于记忆、陈旧交接和猜测。"
 }
 
 fn bounded_freeform_note(input: &str, max_chars: usize) -> String {
@@ -1488,63 +1006,13 @@ fn compact_freeform_preview(note: &str) -> String {
     preview
 }
 
-fn freeform_note_line(locale: Locale, note: &str, editing: bool) -> Line<'static> {
+fn freeform_note_line(note: &str, editing: bool) -> Line<'static> {
     let preview = compact_freeform_preview(note);
-    let text = match (locale, editing, preview.is_empty()) {
-        (Locale::Ja, true, true) => {
-            "F 自由原則：編集中 - 有界の原則を入力または貼り付け、Enter で完了".to_string()
-        }
-        (Locale::Ja, true, false) => format!("F 自由原則：編集中 - {preview}"),
-        (Locale::Ja, false, true) => "F 自由原則：F で有界の原則を入力または貼り付け".to_string(),
-        (Locale::Ja, false, false) => format!("F 自由原則：{preview}"),
-        (Locale::ZhHans, true, true) => {
-            "F 自由原则：正在编辑 - 输入或粘贴有界原则，Enter 完成".to_string()
-        }
-        (Locale::ZhHans, true, false) => format!("F 自由原则：正在编辑 - {preview}"),
-        (Locale::ZhHans, false, true) => "F 自由原则：按 F 输入或粘贴自己的有界原则".to_string(),
-        (Locale::ZhHans, false, false) => format!("F 自由原则：{preview}"),
-        (Locale::ZhHant, true, true) => {
-            "F 自由原則：正在編輯 - 輸入或貼上有界原則，Enter 完成".to_string()
-        }
-        (Locale::ZhHant, true, false) => format!("F 自由原則：正在編輯 - {preview}"),
-        (Locale::ZhHant, false, true) => "F 自由原則：按 F 輸入或貼上自己的有界原則".to_string(),
-        (Locale::ZhHant, false, false) => format!("F 自由原則：{preview}"),
-        (Locale::PtBr, true, true) => {
-            "F Princípio livre: editando - digite ou cole um princípio limitado, Enter para concluir".to_string()
-        }
-        (Locale::PtBr, true, false) => format!("F Princípio livre: editando - {preview}"),
-        (Locale::PtBr, false, true) => {
-            "F Princípio livre: pressione F para digitar ou colar um princípio limitado".to_string()
-        }
-        (Locale::PtBr, false, false) => format!("F Princípio livre: {preview}"),
-        (Locale::Es419, true, true) => {
-            "F Principio libre: editando - escribe o pega un principio acotado, Enter para terminar".to_string()
-        }
-        (Locale::Es419, true, false) => format!("F Principio libre: editando - {preview}"),
-        (Locale::Es419, false, true) => {
-            "F Principio libre: presiona F para escribir o pegar un principio acotado".to_string()
-        }
-        (Locale::Es419, false, false) => format!("F Principio libre: {preview}"),
-        (Locale::Vi, true, true) => {
-            "F Nguyên tắc tự do: đang sửa - nhập hoặc dán nguyên tắc có giới hạn, Enter để xong".to_string()
-        }
-        (Locale::Vi, true, false) => format!("F Nguyên tắc tự do: đang sửa - {preview}"),
-        (Locale::Vi, false, true) => {
-            "F Nguyên tắc tự do: nhấn F để nhập hoặc dán nguyên tắc có giới hạn".to_string()
-        }
-        (Locale::Vi, false, false) => format!("F Nguyên tắc tự do: {preview}"),
-        (Locale::Ko, true, true) => {
-            "F 자유 원칙: 편집 중 - 제한된 원칙을 입력하거나 붙여넣고 Enter로 완료".to_string()
-        }
-        (Locale::Ko, true, false) => format!("F 자유 원칙: 편집 중 - {preview}"),
-        (Locale::Ko, false, true) => "F 자유 원칙: F를 눌러 제한된 원칙을 입력하거나 붙여넣기".to_string(),
-        (Locale::Ko, false, false) => format!("F 자유 원칙: {preview}"),
-        (_, true, true) => {
-            "F Own words: editing - type or paste a bounded principle, Enter to finish".to_string()
-        }
-        (_, true, false) => format!("F Own words: editing - {preview}"),
-        (_, false, true) => "F Own words: press F to type or paste a bounded principle".to_string(),
-        (_, false, false) => format!("F Own words: {preview}"),
+    let text = match (editing, preview.is_empty()) {
+        (true, true) => "F 自由原则：正在编辑 - 输入或粘贴有界原则，Enter 完成".to_string(),
+        (true, false) => format!("F 自由原则：正在编辑 - {preview}"),
+        (false, true) => "F 自由原则：按 F 输入或粘贴自己的有界原则".to_string(),
+        (false, false) => format!("F 自由原则：{preview}"),
     };
     let style = if editing || !preview.is_empty() {
         Style::default().fg(palette::WHALE_ACCENT_PRIMARY)
@@ -1557,12 +1025,11 @@ fn freeform_note_line(locale: Locale, note: &str, editing: bool) -> Line<'static
 impl SetupWizardView {
     #[cfg(test)]
     #[must_use]
-    pub fn new(state: SetupState, locale: Locale) -> Self {
+    pub fn new(state: SetupState) -> Self {
         let selected = initial_step_index(&state);
         Self {
             state,
             selected,
-            locale,
             facts: SetupRuntimeFacts::default(),
             guided_draft: GuidedConstitutionDraft::default(),
             freeform_note: String::new(),
@@ -1581,7 +1048,6 @@ impl SetupWizardView {
     pub fn new_for_app(app: &App, config: &Config) -> Self {
         Self::new_with_facts(
             load_setup_state_for_app(app, config),
-            app.ui_locale,
             SetupRuntimeFacts::from_app_config(app, config),
         )
     }
@@ -1590,7 +1056,6 @@ impl SetupWizardView {
     pub fn new_for_app_at(app: &App, config: &Config, step: SetupStep) -> Self {
         Self::new_at_with_facts(
             load_setup_state_for_app(app, config),
-            app.ui_locale,
             step,
             SetupRuntimeFacts::from_app_config(app, config),
         )
@@ -1611,12 +1076,11 @@ impl SetupWizardView {
         &STEP_SPECS[self.selected]
     }
 
-    fn new_with_facts(state: SetupState, locale: Locale, facts: SetupRuntimeFacts) -> Self {
+    fn new_with_facts(state: SetupState, facts: SetupRuntimeFacts) -> Self {
         let selected = initial_step_index(&state);
         Self {
             state,
             selected,
-            locale,
             facts,
             guided_draft: GuidedConstitutionDraft::default(),
             freeform_note: String::new(),
@@ -1631,16 +1095,10 @@ impl SetupWizardView {
         }
     }
 
-    fn new_at_with_facts(
-        state: SetupState,
-        locale: Locale,
-        step: SetupStep,
-        facts: SetupRuntimeFacts,
-    ) -> Self {
+    fn new_at_with_facts(state: SetupState, step: SetupStep, facts: SetupRuntimeFacts) -> Self {
         Self {
             state,
             selected: visible_step_index(step),
-            locale,
             facts,
             guided_draft: GuidedConstitutionDraft::default(),
             freeform_note: String::new(),
@@ -1689,23 +1147,7 @@ impl SetupWizardView {
         }
         ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
             state,
-            message: tr(self.locale, message_id).to_string(),
-        })
-    }
-
-    fn commit_language_review(&mut self) -> ViewAction {
-        let mut state = self.state.clone();
-        state.constitution_language = Some(self.locale.tag().to_string());
-        state.set_step(
-            SetupStep::Language,
-            StepEntry::new(StepStatus::Verified, true, CONSTITUTION_CHECKPOINT_VERSION)
-                .with_result(format!("setup locale {}", self.locale.tag())),
-        );
-        self.state = state.clone();
-        self.move_next();
-        ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
-            state,
-            message: tr(self.locale, MessageId::SetupLanguageReviewed).to_string(),
+            message: tr(message_id).to_string(),
         })
     }
 
@@ -1729,7 +1171,7 @@ impl SetupWizardView {
         };
         ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
             state,
-            message: tr(self.locale, message_id).to_string(),
+            message: tr(message_id).to_string(),
         })
     }
 
@@ -1745,7 +1187,7 @@ impl SetupWizardView {
         self.move_next();
         ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
             state,
-            message: tr(self.locale, MessageId::SetupRuntimePostureReviewed).to_string(),
+            message: tr(MessageId::SetupRuntimePostureReviewed).to_string(),
         })
     }
 
@@ -1777,7 +1219,7 @@ impl SetupWizardView {
         };
         ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
             state,
-            message: tr(self.locale, message_id).to_string(),
+            message: tr(message_id).to_string(),
         })
     }
 
@@ -1806,14 +1248,14 @@ impl SetupWizardView {
         };
         ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
             state,
-            message: tr(self.locale, message_id).to_string(),
+            message: tr(message_id).to_string(),
         })
     }
 
     fn preview_tools_mcp_on_ramp(&self) -> ViewAction {
         ViewAction::Emit(ViewEvent::OpenTextPager {
-            title: tr(self.locale, MessageId::SetupToolsMcpPreviewTitle).to_string(),
-            content: tools_mcp_on_ramp_text(self.locale, &self.facts),
+            title: tr(MessageId::SetupToolsMcpPreviewTitle).to_string(),
+            content: tools_mcp_on_ramp_text(&self.facts),
         })
     }
 
@@ -1828,7 +1270,7 @@ impl SetupWizardView {
         self.move_next();
         ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
             state,
-            message: tr(self.locale, MessageId::SetupPersistenceReviewed).to_string(),
+            message: tr(MessageId::SetupPersistenceReviewed).to_string(),
         })
     }
 
@@ -1845,8 +1287,8 @@ impl SetupWizardView {
     fn preview_runtime_preset(&mut self) -> ViewAction {
         self.runtime_preset_preview_seen = true;
         ViewAction::Emit(ViewEvent::OpenTextPager {
-            title: tr(self.locale, MessageId::SetupRuntimePresetPreviewTitle).to_string(),
-            content: runtime_preset_preview_text(self.locale, self.runtime_preset, &self.facts),
+            title: tr(MessageId::SetupRuntimePresetPreviewTitle).to_string(),
+            content: runtime_preset_preview_text(self.runtime_preset, &self.facts),
         })
     }
 
@@ -1867,7 +1309,7 @@ impl SetupWizardView {
         ViewAction::Emit(ViewEvent::SetupRuntimePresetApplyRequested {
             preset: self.runtime_preset,
             state,
-            message: tr(self.locale, MessageId::SetupRuntimePresetApplied).to_string(),
+            message: tr(MessageId::SetupRuntimePresetApplied).to_string(),
         })
     }
 
@@ -1886,7 +1328,7 @@ impl SetupWizardView {
         self.state = state.clone();
         ViewAction::Emit(ViewEvent::SetupStateCommitRequested {
             state,
-            message: tr(self.locale, MessageId::SetupReportRecorded).to_string(),
+            message: tr(MessageId::SetupReportRecorded).to_string(),
         })
     }
 
@@ -1901,7 +1343,7 @@ impl SetupWizardView {
             Some(draft) => (draft.clone(), ConstitutionAuthoring::ModelDrafted),
             None => (
                 self.guided_draft
-                    .to_constitution_with_freeform(self.locale, self.freeform_note_for_draft()),
+                    .to_constitution_with_freeform(self.freeform_note_for_draft()),
                 ConstitutionAuthoring::Guided,
             ),
         };
@@ -1910,7 +1352,6 @@ impl SetupWizardView {
             CONSTITUTION_CHECKPOINT_VERSION,
             ConstitutionChoice::GuidedCustom,
         );
-        state.constitution_language = constitution.language.clone();
         state.constitution_source = ConstitutionSource::UserGlobal;
         state.constitution_validity = ConstitutionValidity::Valid;
         state.constitution_authoring = Some(authoring);
@@ -1939,7 +1380,7 @@ impl SetupWizardView {
         ViewAction::EmitAndClose(ViewEvent::SetupConstitutionCommitRequested {
             constitution,
             state,
-            message: tr(self.locale, MessageId::SetupCheckpointDoneGuided).to_string(),
+            message: tr(MessageId::SetupCheckpointDoneGuided).to_string(),
         })
     }
 
@@ -1956,13 +1397,13 @@ impl SetupWizardView {
             ),
             None => (
                 self.guided_draft
-                    .to_constitution_with_freeform(self.locale, self.freeform_note_for_draft()),
+                    .to_constitution_with_freeform(self.freeform_note_for_draft()),
                 DraftProvenance::Guided,
             ),
         };
         ViewAction::Emit(ViewEvent::OpenTextPager {
-            title: ratification_preview_title(self.locale).to_string(),
-            content: constitution_ratification_text(self.locale, &constitution, &provenance),
+            title: ratification_preview_title().to_string(),
+            content: constitution_ratification_text(&constitution, &provenance),
         })
     }
 
@@ -1987,7 +1428,6 @@ impl SetupWizardView {
         ViewAction::Emit(ViewEvent::SetupConstitutionModelDraftRequested {
             draft: self.guided_draft,
             freeform_note: self.freeform_note_for_draft().map(str::to_string),
-            locale: self.locale,
         })
     }
 
@@ -2049,14 +1489,13 @@ impl SetupWizardView {
         model_label: String,
     ) -> (String, String) {
         let content = constitution_ratification_text(
-            self.locale,
             &constitution,
             &DraftProvenance::Model(model_label.clone()),
         );
         self.model_draft = Some(constitution);
         self.model_draft_label = Some(model_label);
         self.guided_preview_seen = true;
-        (ratification_preview_title(self.locale).to_string(), content)
+        (ratification_preview_title().to_string(), content)
     }
 
     fn commit_constitution(&self, kind: SetupCommitKind) -> ViewAction {
@@ -2084,7 +1523,7 @@ impl SetupWizardView {
         };
         ViewAction::EmitAndClose(ViewEvent::SetupStateCommitRequested {
             state,
-            message: tr(self.locale, message_id).to_string(),
+            message: tr(message_id).to_string(),
         })
     }
 
@@ -2107,13 +1546,9 @@ impl SetupWizardView {
         };
         if !self.existing_preview_seen {
             self.existing_preview_seen = true;
-            let content = constitution_ratification_text(
-                self.locale,
-                constitution,
-                &DraftProvenance::Existing,
-            );
+            let content = constitution_ratification_text(constitution, &DraftProvenance::Existing);
             return ViewAction::Emit(ViewEvent::OpenTextPager {
-                title: ratification_preview_title(self.locale).to_string(),
+                title: ratification_preview_title().to_string(),
                 content,
             });
         }
@@ -2132,25 +1567,22 @@ impl SetupWizardView {
         );
         ViewAction::EmitAndClose(ViewEvent::SetupStateCommitRequested {
             state,
-            message: tr(self.locale, MessageId::SetupCheckpointDoneKept).to_string(),
+            message: tr(MessageId::SetupCheckpointDoneKept).to_string(),
         })
     }
 
     fn status_label(&self, status: StepStatus) -> Cow<'static, str> {
-        tr(
-            self.locale,
-            match status {
-                StepStatus::NotStarted => MessageId::SetupStatusNotStarted,
-                StepStatus::Recommended => MessageId::SetupStatusRecommended,
-                StepStatus::Optional => MessageId::SetupStatusOptional,
-                StepStatus::Deferred => MessageId::SetupStatusDeferred,
-                StepStatus::InProgress => MessageId::SetupStatusInProgress,
-                StepStatus::NeedsAction => MessageId::SetupStatusNeedsAction,
-                StepStatus::Verified => MessageId::SetupStatusVerified,
-                StepStatus::Skipped => MessageId::SetupStatusSkipped,
-                StepStatus::Failed => MessageId::SetupStatusFailed,
-            },
-        )
+        tr(match status {
+            StepStatus::NotStarted => MessageId::SetupStatusNotStarted,
+            StepStatus::Recommended => MessageId::SetupStatusRecommended,
+            StepStatus::Optional => MessageId::SetupStatusOptional,
+            StepStatus::Deferred => MessageId::SetupStatusDeferred,
+            StepStatus::InProgress => MessageId::SetupStatusInProgress,
+            StepStatus::NeedsAction => MessageId::SetupStatusNeedsAction,
+            StepStatus::Verified => MessageId::SetupStatusVerified,
+            StepStatus::Skipped => MessageId::SetupStatusSkipped,
+            StepStatus::Failed => MessageId::SetupStatusFailed,
+        })
     }
 }
 
@@ -2248,9 +1680,6 @@ impl ModalView for SetupWizardView {
             KeyCode::Enter if self.selected_step() == SetupStep::Constitution => {
                 self.commit_constitution(SetupCommitKind::BundledConstitution)
             }
-            KeyCode::Enter if self.selected_step() == SetupStep::Language => {
-                self.commit_language_review()
-            }
             KeyCode::Enter if self.selected_step() == SetupStep::ProviderModel => {
                 self.commit_provider_model_review()
             }
@@ -2288,126 +1717,105 @@ impl ModalView for SetupWizardView {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let progress = format!(
             "{} {}/{}",
-            tr(self.locale, MessageId::SetupWizardProgress),
+            tr(MessageId::SetupWizardProgress),
             self.selected + 1,
             STEP_SPECS.len()
         );
         let inner = render_underwater_surface(
             area,
             buf,
-            format!(
-                "{} · {progress}",
-                tr(self.locale, MessageId::SetupWizardTitle)
-            ),
+            format!("{} · {progress}", tr(MessageId::SetupWizardTitle)),
         );
         let mut hints = vec![
-            ActionHint::new("B", tr(self.locale, MessageId::SetupActionBack).to_string()),
-            ActionHint::new(
-                "N",
-                tr(self.locale, MessageId::SetupActionContinue).to_string(),
-            ),
-            ActionHint::new("S", tr(self.locale, MessageId::SetupActionSkip).to_string()),
-            ActionHint::new(
-                "R",
-                tr(self.locale, MessageId::SetupActionRetry).to_string(),
-            ),
-            ActionHint::new(
-                "PgUp/Dn",
-                tr(self.locale, MessageId::SetupActionScrollBody).to_string(),
-            ),
+            ActionHint::new("B", tr(MessageId::SetupActionBack).to_string()),
+            ActionHint::new("N", tr(MessageId::SetupActionContinue).to_string()),
+            ActionHint::new("S", tr(MessageId::SetupActionSkip).to_string()),
+            ActionHint::new("R", tr(MessageId::SetupActionRetry).to_string()),
+            ActionHint::new("PgUp/Dn", tr(MessageId::SetupActionScrollBody).to_string()),
         ];
         if self.selected_step() == SetupStep::Constitution {
             hints.push(ActionHint::new(
                 "1-6",
-                tr(self.locale, MessageId::SetupActionTuneGuided).to_string(),
+                tr(MessageId::SetupActionTuneGuided).to_string(),
             ));
             if self.facts.provider_ready {
                 hints.push(ActionHint::new(
                     "A",
-                    tr(self.locale, MessageId::SetupActionModelDraft).to_string(),
+                    tr(MessageId::SetupActionModelDraft).to_string(),
                 ));
             }
             hints.push(ActionHint::new(
                 "G",
-                tr(self.locale, MessageId::SetupActionGuided).to_string(),
+                tr(MessageId::SetupActionGuided).to_string(),
             ));
             hints.push(ActionHint::new(
                 "F",
-                tr(self.locale, MessageId::SetupActionFreeform).to_string(),
+                tr(MessageId::SetupActionFreeform).to_string(),
             ));
             if self.facts.constitution_file == SetupConstitutionFileState::Loaded {
                 hints.push(ActionHint::new(
                     "K",
-                    tr(self.locale, MessageId::SetupActionKeepExisting).to_string(),
+                    tr(MessageId::SetupActionKeepExisting).to_string(),
                 ));
             }
         } else if self.selected_step() == SetupStep::ProviderModel {
             hints.push(ActionHint::new(
                 "P",
-                tr(self.locale, MessageId::SetupActionProvider).to_string(),
+                tr(MessageId::SetupActionProvider).to_string(),
             ));
             hints.push(ActionHint::new(
                 "M",
-                tr(self.locale, MessageId::SetupActionModel).to_string(),
+                tr(MessageId::SetupActionModel).to_string(),
             ));
         } else if self.selected_step() == SetupStep::OperateFleet {
             hints.push(ActionHint::new(
                 "P",
-                tr(self.locale, MessageId::SetupActionProvider).to_string(),
+                tr(MessageId::SetupActionProvider).to_string(),
             ));
             hints.push(ActionHint::new(
                 "F",
-                tr(self.locale, MessageId::SetupActionFleet).to_string(),
+                tr(MessageId::SetupActionFleet).to_string(),
             ));
         } else if self.selected_step() == SetupStep::TrustSandbox {
             hints.push(ActionHint::new(
                 "1-3",
-                tr(self.locale, MessageId::SetupActionRuntimePreset).to_string(),
+                tr(MessageId::SetupActionRuntimePreset).to_string(),
             ));
             hints.push(ActionHint::new(
                 "A",
-                tr(self.locale, MessageId::SetupActionApplyRuntimePreset).to_string(),
+                tr(MessageId::SetupActionApplyRuntimePreset).to_string(),
             ));
             hints.push(ActionHint::new(
                 "M",
-                tr(self.locale, MessageId::SetupActionMode).to_string(),
+                tr(MessageId::SetupActionMode).to_string(),
             ));
             hints.push(ActionHint::new(
                 "C",
-                tr(self.locale, MessageId::SetupActionConfig).to_string(),
+                tr(MessageId::SetupActionConfig).to_string(),
             ));
         }
         hints.extend([
-            ActionHint::new(
-                "U",
-                tr(self.locale, MessageId::SetupActionUseBundled).to_string(),
-            ),
-            ActionHint::new(
-                "D",
-                tr(self.locale, MessageId::SetupActionDefer).to_string(),
-            ),
-            ActionHint::new(
-                "Esc",
-                tr(self.locale, MessageId::SetupActionCancel).to_string(),
-            ),
+            ActionHint::new("U", tr(MessageId::SetupActionUseBundled).to_string()),
+            ActionHint::new("D", tr(MessageId::SetupActionDefer).to_string()),
+            ActionHint::new("Esc", tr(MessageId::SetupActionCancel).to_string()),
         ]);
         let content_area = render_modal_footer(inner, buf, &hints);
         let spec = self.selected_spec();
         let mut lines = vec![
             Line::from(Span::styled(
-                tr(self.locale, spec.title_id()).to_string(),
+                tr(spec.title_id()).to_string(),
                 Style::default()
                     .fg(palette::WHALE_INFO)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
-            Line::from(Span::raw(tr(self.locale, spec.why_id()).to_string())),
+            Line::from(Span::raw(tr(spec.why_id()).to_string())),
             Line::from(""),
         ];
         lines.extend(self.selected_step_detail_lines());
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            tr(self.locale, MessageId::SetupWizardWhy).to_string(),
+            tr(MessageId::SetupWizardWhy).to_string(),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines.push(Line::from(""));
@@ -2423,7 +1831,7 @@ impl ModalView for SetupWizardView {
             };
             lines.push(Line::from(vec![
                 Span::styled(format!("{marker} "), style),
-                Span::styled(tr(self.locale, step.title_id()).to_string(), style),
+                Span::styled(tr(step.title_id()).to_string(), style),
                 Span::raw("  "),
                 Span::styled(
                     self.status_label(self.state.status(step.id())).to_string(),
@@ -2433,7 +1841,7 @@ impl ModalView for SetupWizardView {
         }
         lines.push(Line::from(""));
         lines.push(Line::from(Span::raw(
-            tr(self.locale, MessageId::SetupCheckpointLayerOrder).to_string(),
+            tr(MessageId::SetupCheckpointLayerOrder).to_string(),
         )));
         let wrap_width = usize::from(content_area.width).max(1);
         let visual_rows: usize = lines
@@ -2466,7 +1874,6 @@ impl SetupWizardView {
             SetupStep::ToolsMcp => self.tools_mcp_detail_lines(),
             SetupStep::Persistence => self.persistence_detail_lines(),
             SetupStep::Verification => self.verification_detail_lines(),
-            _ => Vec::new(),
         }
     }
 
@@ -2477,14 +1884,11 @@ impl SetupWizardView {
             self.detail_row(MessageId::SetupCardAuthLabel, &self.facts.auth),
             self.detail_row(MessageId::SetupCardHealthLabel, &self.facts.health),
             Line::from(Span::styled(
-                tr(
-                    self.locale,
-                    if self.facts.provider_ready {
-                        MessageId::SetupProviderModelReadyHint
-                    } else {
-                        MessageId::SetupProviderModelNeedsActionHint
-                    },
-                )
+                tr(if self.facts.provider_ready {
+                    MessageId::SetupProviderModelReadyHint
+                } else {
+                    MessageId::SetupProviderModelNeedsActionHint
+                })
                 .to_string(),
                 Style::default().fg(palette::TEXT_MUTED),
             )),
@@ -2499,8 +1903,8 @@ impl SetupWizardView {
         let existing_file = self
             .facts
             .constitution_file
-            .label(self.state.constitution_choice, self.locale);
-        let expert_override = self.facts.expert_override.label(self.locale);
+            .label(self.state.constitution_choice);
+        let expert_override = self.facts.expert_override.label();
         let preview = self
             .state
             .constitution_preview_hash
@@ -2517,48 +1921,48 @@ impl SetupWizardView {
                 &expert_override,
             ),
             Line::from(Span::styled(
-                tr(self.locale, MessageId::SetupConstitutionGuidedAnswersHint).to_string(),
+                tr(MessageId::SetupConstitutionGuidedAnswersHint).to_string(),
                 Style::default().fg(palette::TEXT_MUTED),
             )),
             self.guided_answer_pair(
                 (
                     "1",
                     MessageId::SetupConstitutionPurposeLabel,
-                    &self.guided_draft.purpose.label(self.locale),
+                    &self.guided_draft.purpose.label(),
                 ),
                 (
                     "2",
                     MessageId::SetupConstitutionAutonomyLabel,
-                    autonomy_label(self.guided_draft.autonomy, self.locale),
+                    autonomy_label(self.guided_draft.autonomy),
                 ),
             ),
             self.guided_answer_pair(
                 (
                     "3",
                     MessageId::SetupConstitutionEvidenceLabel,
-                    &self.guided_draft.evidence.label(self.locale),
+                    &self.guided_draft.evidence.label(),
                 ),
                 (
                     "4",
                     MessageId::SetupConstitutionCommunicationLabel,
-                    self.guided_draft.communication.label(self.locale),
+                    self.guided_draft.communication.label(),
                 ),
             ),
             self.guided_answer_single(
                 "5",
                 MessageId::SetupConstitutionPrivacyLabel,
-                self.guided_draft.privacy.label(self.locale),
+                self.guided_draft.privacy.label(),
             ),
             self.guided_answer_single(
                 "6",
                 MessageId::SetupConstitutionPrinciplesLabel,
-                self.guided_draft.principles.label(self.locale),
+                self.guided_draft.principles.label(),
             ),
-            freeform_note_line(self.locale, &self.freeform_note, self.editing_freeform_note),
+            freeform_note_line(&self.freeform_note, self.editing_freeform_note),
         ];
         if self.facts.constitution_file == SetupConstitutionFileState::Loaded {
             lines.push(Line::from(Span::styled(
-                keep_existing_invitation_line(self.locale),
+                keep_existing_invitation_line(),
                 Style::default().fg(palette::WHALE_ACCENT_PRIMARY),
             )));
         }
@@ -2568,17 +1972,17 @@ impl SetupWizardView {
             .filter(|_| self.model_draft.is_some())
         {
             lines.push(Line::from(Span::styled(
-                model_draft_ready_line(self.locale, label),
+                model_draft_ready_line(label),
                 Style::default().fg(palette::WHALE_ACCENT_PRIMARY),
             )));
         } else if self.facts.provider_ready {
             lines.push(Line::from(Span::styled(
-                model_draft_invitation_line(self.locale, &self.facts.model),
+                model_draft_invitation_line(&self.facts.model),
                 Style::default().fg(palette::WHALE_ACCENT_PRIMARY),
             )));
         }
         lines.push(Line::from(Span::styled(
-            tr(self.locale, MessageId::SetupConstitutionGuidedHint).to_string(),
+            tr(MessageId::SetupConstitutionGuidedHint).to_string(),
             Style::default().fg(palette::TEXT_MUTED),
         )));
         lines
@@ -2589,9 +1993,7 @@ impl SetupWizardView {
             .facts
             .project_override_warning
             .clone()
-            .unwrap_or_else(|| {
-                tr(self.locale, MessageId::SetupRuntimeProjectOverrideNone).to_string()
-            });
+            .unwrap_or_else(|| tr(MessageId::SetupRuntimeProjectOverrideNone).to_string());
         let mut lines = vec![
             self.detail_row(MessageId::SetupCardIntentLabel, &self.facts.work_intent),
             self.detail_row(MessageId::SetupCardApprovalLabel, &self.facts.approval),
@@ -2601,7 +2003,7 @@ impl SetupWizardView {
             self.detail_row(MessageId::SetupCardNetworkLabel, &self.facts.network),
             self.detail_row(
                 MessageId::SetupRuntimePresetSelectedLabel,
-                &runtime_preset_summary(self.locale, self.runtime_preset),
+                &runtime_preset_summary(self.runtime_preset),
             ),
             self.detail_row(
                 MessageId::SetupRuntimePresetDiffLabel,
@@ -2612,19 +2014,16 @@ impl SetupWizardView {
                 &project_override,
             ),
             Line::from(Span::styled(
-                tr(self.locale, MessageId::SetupRuntimePostureBoundary).to_string(),
+                tr(MessageId::SetupRuntimePostureBoundary).to_string(),
                 Style::default().fg(palette::TEXT_MUTED),
             )),
             Line::from(Span::styled(
-                tr(self.locale, MessageId::SetupRuntimePresetSafetyFloor).to_string(),
+                tr(MessageId::SetupRuntimePresetSafetyFloor).to_string(),
                 Style::default().fg(palette::TEXT_MUTED),
             )),
-            self.setup_review_hint_line(
-                MessageId::SetupRuntimePostureReviewHint,
-                Some("Press M for work mode or C for config."),
-            ),
+            self.setup_review_hint_line(MessageId::SetupRuntimePostureReviewHint),
             Line::from(Span::styled(
-                tr(self.locale, MessageId::SetupRuntimePresetApplyHint).to_string(),
+                tr(MessageId::SetupRuntimePresetApplyHint).to_string(),
                 Style::default().fg(palette::TEXT_MUTED),
             )),
         ];
@@ -2635,11 +2034,7 @@ impl SetupWizardView {
                 " "
             };
             lines.push(Line::from(Span::styled(
-                format!(
-                    "{marker} {}. {}",
-                    idx + 1,
-                    runtime_preset_summary(self.locale, *preset)
-                ),
+                format!("{marker} {}. {}", idx + 1, runtime_preset_summary(*preset)),
                 Style::default().fg(if *preset == self.runtime_preset {
                     palette::TEXT_PRIMARY
                 } else {
@@ -2669,7 +2064,7 @@ impl SetupWizardView {
                 &self.facts.operate_concurrency_result,
             ),
             self.detail_row(MessageId::SetupOperateReadinessLabel, &readiness),
-            self.setup_review_hint_line(MessageId::SetupOperateReviewHint, None),
+            self.setup_review_hint_line(MessageId::SetupOperateReviewHint),
         ]
     }
 
@@ -2691,10 +2086,7 @@ impl SetupWizardView {
                 MessageId::SetupToolsMcpPluginsLabel,
                 &self.facts.tools_mcp_plugins_result,
             ),
-            self.setup_review_hint_line(
-                MessageId::SetupToolsMcpReviewHint,
-                Some("Press R for safe on-ramps (no auto-run)."),
-            ),
+            self.setup_review_hint_line(MessageId::SetupToolsMcpReviewHint),
         ]
     }
 
@@ -2724,7 +2116,7 @@ impl SetupWizardView {
                 MessageId::SetupPersistenceNotesLabel,
                 &self.facts.persistence.notes_result,
             ),
-            self.setup_review_hint_line(MessageId::SetupPersistenceReviewHint, None),
+            self.setup_review_hint_line(MessageId::SetupPersistenceReviewHint),
         ]
     }
 
@@ -2756,7 +2148,7 @@ impl SetupWizardView {
             ),
             Line::from(""),
             Line::from(Span::styled(
-                tr(self.locale, MessageId::SetupReportRowsLabel).to_string(),
+                tr(MessageId::SetupReportRowsLabel).to_string(),
                 Style::default()
                     .fg(palette::TEXT_MUTED)
                     .add_modifier(Modifier::BOLD),
@@ -2768,9 +2160,9 @@ impl SetupWizardView {
             let entry = self.state.steps.get(&step);
             let required = entry.map_or(spec.required(), |entry| entry.required);
             let required_label = if required {
-                tr(self.locale, MessageId::SetupReportRequired)
+                tr(MessageId::SetupReportRequired)
             } else {
-                tr(self.locale, MessageId::SetupReportOptional)
+                tr(MessageId::SetupReportOptional)
             };
             let mut value = format!(
                 "{} ({})",
@@ -2787,42 +2179,29 @@ impl SetupWizardView {
         }
 
         lines.push(Line::from(""));
-        let next_action = tr(self.locale, self.next_action_id()).to_string();
+        let next_action = tr(self.next_action_id()).to_string();
         lines.push(self.detail_row(MessageId::SetupReportNextActionLabel, &next_action));
         lines
     }
 
-    fn setup_review_hint_line(
-        &self,
-        hint_id: MessageId,
-        english_action: Option<&'static str>,
-    ) -> Line<'static> {
-        let hint = if self.locale == Locale::En {
-            let mut hint = "Enter records this setup snapshot.".to_string();
-            if let Some(action) = english_action {
-                hint.push(' ');
-                hint.push_str(action);
-            }
-            hint
-        } else {
-            tr(self.locale, hint_id).to_string()
-        };
+    fn setup_review_hint_line(&self, hint_id: MessageId) -> Line<'static> {
+        let hint = tr(hint_id).to_string();
         Line::from(Span::styled(hint, Style::default().fg(palette::TEXT_MUTED)))
     }
 
     fn ready_label(&self, ready: bool) -> String {
         if ready {
-            tr(self.locale, MessageId::SetupReportReady).to_string()
+            tr(MessageId::SetupReportReady).to_string()
         } else {
-            tr(self.locale, MessageId::SetupStatusNeedsAction).to_string()
+            tr(MessageId::SetupStatusNeedsAction).to_string()
         }
     }
 
     fn state_source_label(&self) -> String {
         if self.state.inherited {
-            tr(self.locale, MessageId::SetupReportInherited).to_string()
+            tr(MessageId::SetupReportInherited).to_string()
         } else {
-            tr(self.locale, MessageId::SetupReportPersisted).to_string()
+            tr(MessageId::SetupReportPersisted).to_string()
         }
     }
 
@@ -2851,7 +2230,7 @@ impl SetupWizardView {
     fn detail_row(&self, label: MessageId, value: &str) -> Line<'static> {
         Line::from(vec![
             Span::styled(
-                format!("{} ", tr(self.locale, label)),
+                format!("{} ", tr(label)),
                 Style::default()
                     .fg(palette::TEXT_MUTED)
                     .add_modifier(Modifier::BOLD),
@@ -2869,16 +2248,10 @@ impl SetupWizardView {
             .fg(palette::TEXT_MUTED)
             .add_modifier(Modifier::BOLD);
         Line::from(vec![
-            Span::styled(
-                format!("{} {} ", left.0, tr(self.locale, left.1)),
-                label_style,
-            ),
+            Span::styled(format!("{} {} ", left.0, tr(left.1)), label_style),
             Span::raw(left.2.to_string()),
             Span::styled("  ·  ", Style::default().fg(palette::TEXT_MUTED)),
-            Span::styled(
-                format!("{} {} ", right.0, tr(self.locale, right.1)),
-                label_style,
-            ),
+            Span::styled(format!("{} {} ", right.0, tr(right.1)), label_style),
             Span::raw(right.2.to_string()),
         ])
     }
@@ -2886,7 +2259,7 @@ impl SetupWizardView {
     fn guided_answer_single(&self, key: &str, label: MessageId, value: &str) -> Line<'static> {
         Line::from(vec![
             Span::styled(
-                format!("{key} {} ", tr(self.locale, label)),
+                format!("{key} {} ", tr(label)),
                 Style::default()
                     .fg(palette::TEXT_MUTED)
                     .add_modifier(Modifier::BOLD),
@@ -2900,11 +2273,11 @@ fn setup_report_ready(state: &SetupState) -> bool {
     state.first_run_ready() || state.update_ready(CONSTITUTION_CHECKPOINT_VERSION)
 }
 
-fn runtime_preset_summary(locale: Locale, preset: SetupRuntimePreset) -> String {
+fn runtime_preset_summary(preset: SetupRuntimePreset) -> String {
     format!(
         "{} - {}",
-        tr(locale, preset.title_id()),
-        tr(locale, preset.description_id())
+        tr(preset.title_id()),
+        tr(preset.description_id())
     )
 }
 
@@ -2912,16 +2285,12 @@ fn runtime_preset_inline_diff(preset: SetupRuntimePreset, facts: &SetupRuntimeFa
     runtime_preset_diff_rows(preset, facts).join("; ")
 }
 
-fn runtime_preset_preview_text(
-    locale: Locale,
-    preset: SetupRuntimePreset,
-    facts: &SetupRuntimeFacts,
-) -> String {
+fn runtime_preset_preview_text(preset: SetupRuntimePreset, facts: &SetupRuntimeFacts) -> String {
     let mut lines = vec![
-        tr(locale, MessageId::SetupRuntimePresetPreviewTitle).to_string(),
-        runtime_preset_summary(locale, preset),
+        tr(MessageId::SetupRuntimePresetPreviewTitle).to_string(),
+        runtime_preset_summary(preset),
         String::new(),
-        tr(locale, MessageId::SetupRuntimePresetDiffLabel).to_string(),
+        tr(MessageId::SetupRuntimePresetDiffLabel).to_string(),
     ];
     lines.extend(
         runtime_preset_diff_rows(preset, facts)
@@ -2930,9 +2299,9 @@ fn runtime_preset_preview_text(
     );
     lines.extend([
         String::new(),
-        tr(locale, MessageId::SetupRuntimePostureBoundary).to_string(),
-        tr(locale, MessageId::SetupRuntimePresetSafetyFloor).to_string(),
-        tr(locale, MessageId::SetupRuntimePresetApplyHint).to_string(),
+        tr(MessageId::SetupRuntimePostureBoundary).to_string(),
+        tr(MessageId::SetupRuntimePresetSafetyFloor).to_string(),
+        tr(MessageId::SetupRuntimePresetApplyHint).to_string(),
     ]);
     lines.join("\n")
 }
@@ -2978,7 +2347,7 @@ fn runtime_preset_diff_rows(preset: SetupRuntimePreset, facts: &SetupRuntimeFact
     rows
 }
 
-fn project_runtime_override_warning(workspace: &Path, locale: Locale) -> Option<String> {
+fn project_runtime_override_warning(workspace: &Path) -> Option<String> {
     let project = codewhale_config::load_project_config(workspace)?;
     let mut fields = Vec::new();
     if let Some(policy) = project.approval_policy.as_deref() {
@@ -2990,16 +2359,10 @@ fn project_runtime_override_warning(workspace: &Path, locale: Locale) -> Option<
     if fields.is_empty() {
         return None;
     }
-    Some(match locale {
-        Locale::ZhHans => format!(
-            "此工作区的项目配置包含 {}。预设会保存用户默认值；项目配置仍可在此工作区收紧运行姿态。",
-            fields.join(", ")
-        ),
-        _ => format!(
-            "Project config contains {}. Presets save user defaults; project config can still tighten runtime posture in this workspace.",
-            fields.join(", ")
-        ),
-    })
+    Some(format!(
+        "此工作区的项目配置包含 {}。预设会保存用户默认值；项目配置仍可在此工作区收紧运行姿态。",
+        fields.join(", ")
+    ))
 }
 
 fn setup_report_result(state: &SetupState, facts: &SetupRuntimeFacts) -> String {
@@ -3028,7 +2391,7 @@ fn setup_report_result(state: &SetupState, facts: &SetupRuntimeFacts) -> String 
     )
 }
 
-fn tools_mcp_on_ramp_text(locale: Locale, facts: &SetupRuntimeFacts) -> String {
+fn tools_mcp_on_ramp_text(facts: &SetupRuntimeFacts) -> String {
     let tools_facts = tools_mcp::SetupToolsMcpFacts {
         servers_result: facts.tools_mcp_servers_result.clone(),
         skills_result: facts.tools_mcp_skills_result.clone(),
@@ -3047,13 +2410,13 @@ fn tools_mcp_on_ramp_text(locale: Locale, facts: &SetupRuntimeFacts) -> String {
         skills_path_display: facts.tools_mcp_skills_path_display.clone(),
         plugins_path_display: facts.tools_mcp_plugins_path_display.clone(),
     };
-    tools_mcp::on_ramp_text(locale, &tools_facts)
+    tools_mcp::on_ramp_text(&tools_facts)
 }
 
 #[cfg(test)]
 #[must_use]
-fn guided_constitution_template(locale: Locale) -> UserConstitution {
-    GuidedConstitutionDraft::default().to_constitution(locale)
+fn guided_constitution_template() -> UserConstitution {
+    GuidedConstitutionDraft::default().to_constitution()
 }
 
 /// Who authored the draft being previewed for ratification.
@@ -3068,17 +2431,8 @@ enum DraftProvenance {
     Existing,
 }
 
-fn ratification_preview_title(locale: Locale) -> &'static str {
-    match locale {
-        Locale::Ja => "ユーザー憲法 - 批准前の草案",
-        Locale::ZhHans => "用户宪法 — 批准前草案",
-        Locale::ZhHant => "使用者憲法 - 批准前草案",
-        Locale::PtBr => "Constituição do Usuário - Rascunho para Ratificação",
-        Locale::Es419 => "Constitución del Usuario - Borrador para Ratificación",
-        Locale::Vi => "Hiến pháp Người dùng - Bản nháp để phê chuẩn",
-        Locale::Ko => "사용자 헌법 - 승인 전 초안",
-        _ => "User Constitution — Draft for Ratification",
-    }
+fn ratification_preview_title() -> &'static str {
+    "用户宪法 — 批准前草案"
 }
 
 /// The ratification artifact shown in the pager: provenance, what a
@@ -3087,497 +2441,71 @@ fn ratification_preview_title(locale: Locale) -> &'static str {
 /// or amend. Only the scaffold differs between guided and model drafts — the
 /// law itself always comes from the same renderer.
 fn constitution_ratification_text(
-    locale: Locale,
     constitution: &UserConstitution,
     provenance: &DraftProvenance,
 ) -> String {
     const RULE: &str = "──────────────────────────────────────────────────────";
     let rendered = constitution
         .render_block(None)
-        .unwrap_or_else(|| match locale {
-            Locale::Ja => "構造化された憲法は空です。".to_string(),
-            Locale::ZhHans => "结构化宪法为空。".to_string(),
-            Locale::ZhHant => "結構化憲法為空。".to_string(),
-            Locale::PtBr => "A constituição estruturada está vazia.".to_string(),
-            Locale::Es419 => "La constitución estructurada está vacía.".to_string(),
-            Locale::Vi => "Hiến pháp có cấu trúc đang trống.".to_string(),
-            Locale::Ko => "구조화된 헌법이 비어 있습니다.".to_string(),
-            _ => "The structured constitution is empty.".to_string(),
-        });
-    let layer_order = tr(locale, MessageId::SetupCheckpointLayerOrder);
-
-    match locale {
-        Locale::Ja => {
-            let drafted_by = match provenance {
-                DraftProvenance::Model(label) => format!(
-                    "{label} があなたのガイド回答から起草し、CodeWhale が構造検証と境界制限を適用しました。"
-                ),
-                DraftProvenance::Guided => {
-                    "あなたのガイド回答から決定的に生成されました。".to_string()
-                }
-                DraftProvenance::Existing => {
-                    "既存の憲法を constitution.json から読み込み、変更せずに表示しています。"
-                        .to_string()
-                }
-            };
-            let ratify_how = match provenance {
-                DraftProvenance::Existing => {
-                    "これはすでに有効な基準です。プレビューを閉じて K を押すと、このまま保持してチェックポイントを完了します。\
-                     ファイルは変更されません。/constitution または /setup でいつでも修正できます。"
-                }
-                _ => {
-                    "確認するまで、どの内容も基準にはなりません。プレビューを閉じて G を押すと批准して保存します。\
-                     /constitution または /setup でいつでも修正できます。"
-                }
-            };
-            format!(
-                "CODEWHALE · ユーザー憲法\n{RULE}\n\n{drafted_by}\n\n\
-                 これは CodeWhale があなたと協働するための常設の基準です。優れた憲法のように、使えるほど短く、\
-                 網羅的な規則ではなく持続する原則で構成され、あなたの変化に合わせて修正できます。\
-                 すべての個別判断を裁くのではなく権限と境界を定め、セッションを越えて協働を継続させます。\
-                 ただしこれは記憶ではありません。履歴ではなく原則を保持します。\n\n\
-                 {rendered}\n\n\
-                 権限の階層\n{layer_order}\nあなたの直接の指示は常にこの文書より優先されます。\n\n\
-                 これができないこと\n\
-                 これは行動を導くものです。承認ポリシー、サンドボックス、Shell、ネットワーク、信頼、MCP 権限、\
-                 既定モード、公開、支出の権限を付与または変更することはできません。これらは実行時にあなたが管理します。\n\n\
-                 縮小コアと任意モジュール\n\
-                 組み込みのコアは引き続き有効です。この草案はユーザーグローバルの長期設定だけを保存します。\
-                 重い実行/オーケストレーション教義はモードプロンプトまたは将来の任意モジュールに属します。このプレビューはモジュールを有効化せず、設定も変更しません。\n\n\
-                 批准\n{ratify_how}"
-            )
+        .unwrap_or_else(|| "结构化宪法为空。".to_string());
+    let layer_order = tr(MessageId::SetupCheckpointLayerOrder);
+    let drafted_by = match provenance {
+        DraftProvenance::Model(label) => {
+            format!("由 {label} 根据你的引导式答案起草，并已由 CodeWhale 完成结构校验与边界限制。")
         }
-        Locale::ZhHans => {
-            let drafted_by = match provenance {
-                DraftProvenance::Model(label) => format!(
-                    "由 {label} 根据你的引导式答案起草，并已由 CodeWhale 完成结构校验与边界限制。"
-                ),
-                DraftProvenance::Guided => "由你的引导式答案确定性生成。".to_string(),
-                DraftProvenance::Existing => {
-                    "你现有的宪法，读取自 constitution.json——原样展示，未做任何修改。".to_string()
-                }
-            };
-            let ratify_how = match provenance {
-                DraftProvenance::Existing => {
-                    "这已是你现行的准则。关闭此预览后按 K 保留并完成检查点——文件不会被修改。\
-                     之后可随时用 /constitution 或 /setup 修订。"
-                }
-                _ => {
-                    "未经你确认，任何内容都不会成为准则。关闭此预览后按 G 批准并保存；\
-                     之后可随时用 /constitution 或 /setup 修订。"
-                }
-            };
-            format!(
-                "CODEWHALE · 用户宪法\n{RULE}\n\n{drafted_by}\n\n\
-                 这是 CodeWhale 与你协作的长期准则。像优秀的宪法一样：足够简短因而可用，由持久原则而非详尽规则构成，并且可以随你修订。\
-                 它界定权力与边界，而非裁决每个具体决定；它让协作跨会话延续——但它不是记忆，它承载的是原则，而非历史。\n\n\
-                 {rendered}\n\n\
-                 权限层级\n{layer_order}\n你的直接指令始终高于本文件。\n\n\
-                 它不能做什么\n\
-                 它只提供行为指导，不能授予或更改审批策略、沙箱、Shell、网络、信任、MCP 权限、默认模式、发布或支出权限——这些始终由你在运行时掌控。\n\n\
-                 精简核心与可选模块\n\
-                 内置核心始终生效。本草案只保存你的用户全局长期偏好。执行/编排等重型教义位于模式提示词或未来的可选模块中；此预览不会启用模块或更改其配置。\n\n\
-                 批准\n{ratify_how}"
-            )
+        DraftProvenance::Guided => "由你的引导式答案确定性生成。".to_string(),
+        DraftProvenance::Existing => {
+            "你现有的宪法，读取自 constitution.json——原样展示，未做任何修改。".to_string()
         }
-        Locale::ZhHant => {
-            let drafted_by = match provenance {
-                DraftProvenance::Model(label) => format!(
-                    "由 {label} 根據你的引導式答案起草，並已由 CodeWhale 完成結構驗證與邊界限制。"
-                ),
-                DraftProvenance::Guided => "由你的引導式答案確定性生成。".to_string(),
-                DraftProvenance::Existing => {
-                    "你現有的憲法，讀取自 constitution.json；原樣展示，未做任何修改。".to_string()
-                }
-            };
-            let ratify_how = match provenance {
-                DraftProvenance::Existing => {
-                    "這已是你現行的準則。關閉此預覽後按 K 保留並完成檢查點；\
-                     檔案不會被修改。之後可隨時用 /constitution 或 /setup 修訂。"
-                }
-                _ => {
-                    "未經你確認，任何內容都不會成為準則。關閉此預覽後按 G 批准並保存；\
-                     之後可隨時用 /constitution 或 /setup 修訂。"
-                }
-            };
-            format!(
-                "CODEWHALE · 使用者憲法\n{RULE}\n\n{drafted_by}\n\n\
-                 這是 CodeWhale 與你協作的長期準則。像優秀的憲法一樣：足夠簡短因而可用，由持久原則而非詳盡規則構成，並且可以隨你修訂。\
-                 它界定權力與邊界，而非裁決每個具體決定；它讓協作跨會話延續，但它不是記憶，它承載的是原則，而非歷史。\n\n\
-                 {rendered}\n\n\
-                 權限層級\n{layer_order}\n你的直接指令始終高於本文件。\n\n\
-                 它不能做什麼\n\
-                 它只提供行為指導，不能授予或更改審批策略、沙箱、Shell、網路、信任、MCP 權限、預設模式、發布或支出權限；這些始終由你在執行時掌控。\n\n\
-                 精簡核心與可選模組\n\
-                 內建核心始終生效。本草案只保存你的使用者全域長期偏好。執行/編排等重型教義位於模式提示詞或未來的可選模組中；此預覽不會啟用模組或更改其配置。\n\n\
-                 批准\n{ratify_how}"
-            )
-        }
-        Locale::PtBr => {
-            let drafted_by = match provenance {
-                DraftProvenance::Model(label) => format!(
-                    "Rascunhado por {label} a partir das suas respostas guiadas, depois validado por schema e limitado pelo CodeWhale."
-                ),
-                DraftProvenance::Guided => {
-                    "Renderizado deterministicamente a partir das suas respostas guiadas.".to_string()
-                }
-                DraftProvenance::Existing => {
-                    "Sua constituição existente, carregada de constitution.json, é exibida sem alterações."
-                        .to_string()
-                }
-            };
-            let ratify_how = match provenance {
-                DraftProvenance::Existing => {
-                    "Esta já é sua regra vigente. Feche a prévia e pressione K para mantê-la e concluir o checkpoint; \
-                     o arquivo não será modificado. Edite quando quiser com /constitution ou /setup."
-                }
-                _ => {
-                    "Nada vira regra até você confirmar. Feche a prévia e pressione G para ratificar e salvar. \
-                     Edite quando quiser com /constitution ou /setup."
-                }
-            };
-            format!(
-                "CODEWHALE · CONSTITUIÇÃO DO USUÁRIO\n{RULE}\n\n{drafted_by}\n\n\
-                 Esta é a regra permanente de como o CodeWhale trabalha com você. Como boas constituições, \
-                 ela é curta o bastante para ser usada, formada por princípios duráveis em vez de regras exaustivas, \
-                 e pode ser emendada conforme você muda. Ela define poderes e limites em vez de decidir cada caso, \
-                 e dá continuidade à colaboração entre sessões. Mas ela não é memória: carrega princípios, não histórico.\n\n\
-                 {rendered}\n\n\
-                 HIERARQUIA DE AUTORIDADE\n{layer_order}\nSeus pedidos diretos sempre superam este documento.\n\n\
-                 O QUE ISTO NÃO PODE FAZER\n\
-                 Isto orienta comportamento. Não pode conceder nem alterar política de aprovação, sandbox, shell, rede, \
-                 confiança, permissões MCP, modo padrão, publicação ou autoridade para gastos; isso continua sob seu controle em tempo de execução.\n\n\
-                 NÚCLEO REDUZIDO E MÓDULOS OPT-IN\n\
-                 O núcleo embutido continua ativo. Este rascunho só salva suas preferências permanentes globais de usuário. \
-                 Doutrina pesada de execução ou orquestração pertence a prompts de modo ou módulos opt-in futuros; esta prévia não ativa módulos nem muda sua configuração.\n\n\
-                 RATIFICAÇÃO\n{ratify_how}"
-            )
-        }
-        Locale::Es419 => {
-            let drafted_by = match provenance {
-                DraftProvenance::Model(label) => format!(
-                    "Redactado por {label} desde tus respuestas guiadas, luego validado por schema y acotado por CodeWhale."
-                ),
-                DraftProvenance::Guided => {
-                    "Renderizado de forma determinística desde tus respuestas guiadas.".to_string()
-                }
-                DraftProvenance::Existing => {
-                    "Tu constitución existente, cargada desde constitution.json, se muestra sin cambios."
-                        .to_string()
-                }
-            };
-            let ratify_how = match provenance {
-                DraftProvenance::Existing => {
-                    "Esta ya es tu regla vigente. Cierra la vista previa y presiona K para conservarla y completar el checkpoint; \
-                     el archivo no se modifica. Puedes enmendarla cuando quieras con /constitution o /setup."
-                }
-                _ => {
-                    "Nada se vuelve regla hasta que confirmes. Cierra la vista previa y presiona G para ratificar y guardar. \
-                     Puedes enmendarla cuando quieras con /constitution o /setup."
-                }
-            };
-            format!(
-                "CODEWHALE · CONSTITUCIÓN DEL USUARIO\n{RULE}\n\n{drafted_by}\n\n\
-                 Esta es la regla permanente de cómo CodeWhale trabaja contigo. Como las buenas constituciones, \
-                 es lo bastante breve para usarse, hecha de principios duraderos en vez de reglas exhaustivas, \
-                 y enmendable a medida que cambias. Define poderes y límites en vez de decidir cada caso, \
-                 y da continuidad a la colaboración entre sesiones. Pero no es memoria: lleva principios, no historial.\n\n\
-                 {rendered}\n\n\
-                 JERARQUÍA DE AUTORIDAD\n{layer_order}\nTus pedidos directos siempre superan este documento.\n\n\
-                 LO QUE ESTO NO PUEDE HACER\n\
-                 Orienta comportamiento. No puede conceder ni cambiar política de aprobación, sandbox, shell, red, \
-                 confianza, permisos MCP, modo predeterminado, publicación o autoridad de gasto; eso sigue bajo tu control en tiempo de ejecución.\n\n\
-                 NÚCLEO REDUCIDO Y MÓDULOS OPT-IN\n\
-                 El núcleo integrado sigue activo. Este borrador solo guarda tus preferencias permanentes globales de usuario. \
-                 La doctrina pesada de ejecución u orquestación pertenece a prompts de modo o módulos opt-in futuros; esta vista previa no activa módulos ni cambia su configuración.\n\n\
-                 RATIFICACIÓN\n{ratify_how}"
-            )
-        }
-        Locale::Vi => {
-            let drafted_by = match provenance {
-                DraftProvenance::Model(label) => format!(
-                    "Được {label} soạn từ câu trả lời hướng dẫn của bạn, rồi được CodeWhale kiểm tra schema và giới hạn biên."
-                ),
-                DraftProvenance::Guided => {
-                    "Được kết xuất xác định từ câu trả lời hướng dẫn của bạn.".to_string()
-                }
-                DraftProvenance::Existing => {
-                    "Hiến pháp hiện có của bạn, tải từ constitution.json, được hiển thị nguyên trạng."
-                        .to_string()
-                }
-            };
-            let ratify_how = match provenance {
-                DraftProvenance::Existing => {
-                    "Đây đã là luật hiện hành của bạn. Đóng bản xem trước rồi nhấn K để giữ nguyên và hoàn tất checkpoint; \
-                     tệp không bị sửa. Có thể chỉnh bất cứ lúc nào bằng /constitution hoặc /setup."
-                }
-                _ => {
-                    "Không có gì trở thành luật cho đến khi bạn xác nhận. Đóng bản xem trước rồi nhấn G để phê chuẩn và lưu. \
-                     Có thể chỉnh bất cứ lúc nào bằng /constitution hoặc /setup."
-                }
-            };
-            format!(
-                "CODEWHALE · HIẾN PHÁP NGƯỜI DÙNG\n{RULE}\n\n{drafted_by}\n\n\
-                 Đây là luật thường trực cho cách CodeWhale làm việc với bạn. Giống các hiến pháp tốt, \
-                 nó đủ ngắn để dùng, gồm các nguyên tắc bền vững thay vì luật lệ cạn kiệt, \
-                 và có thể sửa khi bạn thay đổi. Nó định khung quyền hạn và giới hạn thay vì quyết định từng trường hợp, \
-                 đồng thời giữ sự liên tục giữa các phiên. Nhưng nó không phải bộ nhớ: nó mang nguyên tắc, không mang lịch sử.\n\n\
-                 {rendered}\n\n\
-                 THỨ BẬC THẨM QUYỀN\n{layer_order}\nYêu cầu trực tiếp của bạn luôn cao hơn tài liệu này.\n\n\
-                 ĐIỀU NÀY KHÔNG THỂ LÀM\n\
-                 Nó hướng dẫn hành vi. Nó không thể cấp hoặc đổi chính sách phê duyệt, sandbox, shell, mạng, \
-                 độ tin cậy, quyền MCP, chế độ mặc định, xuất bản hoặc quyền chi tiêu; những thứ đó vẫn do bạn kiểm soát lúc chạy.\n\n\
-                 LÕI RÚT GỌN VÀ MÔ-ĐUN OPT-IN\n\
-                 Lõi tích hợp vẫn hoạt động. Bản nháp này chỉ lưu tùy chọn thường trực toàn cục của người dùng. \
-                 Giáo điều thực thi hoặc điều phối nặng thuộc về prompt chế độ hoặc mô-đun opt-in trong tương lai; bản xem trước này không bật mô-đun hoặc đổi cấu hình của chúng.\n\n\
-                 PHÊ CHUẨN\n{ratify_how}"
-            )
-        }
-        Locale::Ko => {
-            let drafted_by = match provenance {
-                DraftProvenance::Model(label) => format!(
-                    "{label}이(가) 당신의 가이드 답변을 바탕으로 초안을 작성했고, CodeWhale이 구조를 검증하고 범위를 제한했습니다."
-                ),
-                DraftProvenance::Guided => {
-                    "당신의 가이드 답변으로부터 결정적으로 생성되었습니다.".to_string()
-                }
-                DraftProvenance::Existing => {
-                    "constitution.json에서 불러온 기존 헌법이며, 변경 없이 그대로 표시됩니다."
-                        .to_string()
-                }
-            };
-            let ratify_how = match provenance {
-                DraftProvenance::Existing => {
-                    "이것은 이미 당신의 상시 규칙입니다. 미리보기를 닫고 K를 눌러 그대로 유지하며 체크포인트를 완료하세요; \
-                     파일은 수정되지 않습니다. /constitution 또는 /setup으로 언제든지 수정할 수 있습니다."
-                }
-                _ => {
-                    "확인하기 전까지는 아무것도 규칙이 되지 않습니다. 미리보기를 닫고 G를 눌러 승인하고 저장하세요. \
-                     /constitution 또는 /setup으로 언제든지 수정할 수 있습니다."
-                }
-            };
-            format!(
-                "CODEWHALE · 사용자 헌법\n{RULE}\n\n{drafted_by}\n\n\
-                 이것은 CodeWhale이 당신과 함께 일하는 방식에 대한 상시 규칙입니다. 훌륭한 헌법이 그렇듯, \
-                 사용할 수 있을 만큼 짧고, 소모적인 규칙이 아닌 지속적인 원칙으로 이루어져 있으며, 당신이 변화함에 따라 수정할 수 있습니다. \
-                 이는 모든 개별 사례를 판단하는 대신 권한과 한계를 규정하며, 세션을 넘어 협업의 연속성을 부여합니다. \
-                 다만 이것은 기억이 아닙니다: 이력이 아니라 원칙을 담습니다.\n\n\
-                 {rendered}\n\n\
-                 권한 계층\n{layer_order}\n당신의 직접적인 요청은 언제나 이 문서보다 우선합니다.\n\n\
-                 이것이 할 수 없는 일\n\
-                 이것은 행동을 안내할 뿐입니다. 승인 정책, 샌드박스, 셸, 네트워크, 신뢰, MCP 권한, 기본 모드, 게시, 지출 권한을 \
-                 부여하거나 바꿀 수 없습니다; 이는 여전히 런타임에서 당신이 직접 관리합니다.\n\n\
-                 축소된 코어와 옵트인 모듈\n\
-                 내장된 코어는 계속 활성 상태입니다. 이 초안은 사용자 전역의 상시 선호만 저장합니다. \
-                 무거운 실행/오케스트레이션 지침은 모드 프롬프트나 향후 옵트인 모듈에 속합니다. 이 미리보기는 모듈을 활성화하지 않으며 그 설정도 바꾸지 않습니다.\n\n\
-                 승인\n{ratify_how}"
-            )
+    };
+    let ratify_how = match provenance {
+        DraftProvenance::Existing => {
+            "这已是你现行的准则。关闭此预览后按 K 保留并完成检查点——文件不会被修改。\
+             之后可随时用 /constitution 或 /setup 修订。"
         }
         _ => {
-            let drafted_by = match provenance {
-                DraftProvenance::Model(label) => format!(
-                    "Drafted by {label} from your guided answers, then schema-checked and bounded by CodeWhale."
-                ),
-                DraftProvenance::Guided => {
-                    "Rendered deterministically from your guided answers.".to_string()
-                }
-                DraftProvenance::Existing => {
-                    "Your existing constitution, loaded from constitution.json — shown unchanged."
-                        .to_string()
-                }
-            };
-            let ratify_how = match provenance {
-                DraftProvenance::Existing => {
-                    "This is already your standing law. Close this preview, then press K to \
-                     keep it and complete the checkpoint — the file is not modified. Amend \
-                     anytime with /constitution or /setup."
-                }
-                _ => {
-                    "Nothing becomes law until you confirm. Close this preview, then press G to \
-                     ratify and save. Amend anytime with /constitution or /setup."
-                }
-            };
-            format!(
-                "CODEWHALE · USER CONSTITUTION\n{RULE}\n\n{drafted_by}\n\n\
-                 This is the standing law for how CodeWhale works with you. Like the best \
-                 constitutions, it is short enough to use, made of durable principles rather \
-                 than exhaustive rules, and amendable as you change. It frames powers and \
-                 limits rather than deciding every case, and it gives your collaboration \
-                 continuity across sessions — but it is not memory: it carries principles, \
-                 not history.\n\n\
-                 {rendered}\n\n\
-                 HIERARCHY OF AUTHORITY\n{layer_order}\nYour direct requests always outrank this document.\n\n\
-                 WHAT THIS CANNOT DO\n\
-                 It guides behavior. It cannot grant or change approval policy, sandbox, shell, \
-                 network, trust, MCP permissions, default mode, publishing, or spending \
-                 authority — those stay under your hand at runtime.\n\n\
-                 REDUCED CORE AND OPT-IN MODULES\n\
-                 The bundled core stays active. This draft only saves your user-global \
-                 standing preferences. Heavy execution or orchestration doctrine belongs in mode \
-                 prompts or future opt-in modules; this preview does not enable modules or change \
-                 their configuration.\n\n\
-                 RATIFICATION\n{ratify_how}"
-            )
+            "未经你确认，任何内容都不会成为准则。关闭此预览后按 G 批准并保存；\
+             之后可随时用 /constitution 或 /setup 修订。"
         }
-    }
+    };
+    format!(
+        "CODEWHALE · 用户宪法\n{RULE}\n\n{drafted_by}\n\n\
+         这是 CodeWhale 与你协作的长期准则。像优秀的宪法一样：足够简短因而可用，由持久原则而非详尽规则构成，并且可以随你修订。\
+         它界定权力与边界，而非裁决每个具体决定；它让协作跨会话延续——但它不是记忆，它承载的是原则，而非历史。\n\n\
+         {rendered}\n\n\
+         权限层级\n{layer_order}\n你的直接指令始终高于本文件。\n\n\
+         它不能做什么\n\
+         它只提供行为指导，不能授予或更改审批策略、沙箱、Shell、网络、信任、MCP 权限、默认模式、发布或支出权限——这些始终由你在运行时掌控。\n\n\
+         精简核心与可选模块\n\
+         内置核心始终生效。本草案只保存你的用户全局长期偏好。执行/编排等重型教义位于模式提示词或未来的可选模块中；此预览不会启用模块或更改其配置。\n\n\
+         批准\n{ratify_how}"
+    )
 }
 
 /// Card line inviting the user to let their configured model draft the law.
-fn model_draft_invitation_line(locale: Locale, model_label: &str) -> String {
-    match locale {
-        Locale::Ja => {
-            format!("A {model_label} が起草し、あなたが批准します。確認するまで保存しません。")
-        }
-        Locale::ZhHans => {
-            format!("A {model_label} 起草，你批准。未经确认不会保存。")
-        }
-        Locale::ZhHant => {
-            format!("A {model_label} 起草，你批准。未經確認不會保存。")
-        }
-        Locale::PtBr => {
-            format!("A {model_label} pode rascunhar. Você ratifica. Nada salva sem você.")
-        }
-        Locale::Es419 => {
-            format!("A {model_label} puede redactarla. Tú ratificas. Nada se guarda sin ti.")
-        }
-        Locale::Vi => {
-            format!("A {model_label} có thể soạn. Bạn phê chuẩn. Không lưu gì nếu chưa có bạn.")
-        }
-        Locale::Ko => {
-            format!(
-                "A {model_label}이(가) 초안을 작성할 수 있습니다. 승인은 당신이 합니다. 당신 없이는 아무것도 저장되지 않습니다."
-            )
-        }
-        _ => format!("A {model_label} can draft it. You ratify it. Nothing saves without you."),
-    }
+fn model_draft_invitation_line(model_label: &str) -> String {
+    format!("A {model_label} 起草，你批准。未经确认不会保存。")
 }
 
 /// Card line offering to keep an existing valid constitution unchanged.
-fn keep_existing_invitation_line(locale: Locale) -> &'static str {
-    match locale {
-        Locale::Ja => "K 既存の憲法を保持 - 確認して保持、ファイルは変更しません。",
-        Locale::ZhHans => "K 保留现有宪法——先查看，再保留，文件不变。",
-        Locale::ZhHant => "K 保留現有憲法 - 先查看，再保留，檔案不變。",
-        Locale::PtBr => "K Manter constituição existente - revise, mantenha, arquivo inalterado.",
-        Locale::Es419 => {
-            "K Conservar constitución existente - revisa, conserva, archivo sin cambios."
-        }
-        Locale::Vi => "K Giữ hiến pháp hiện có - xem lại, giữ nguyên, tệp không đổi.",
-        Locale::Ko => "K 기존 헌법 유지 - 검토 후 유지, 파일은 변경되지 않음.",
-        _ => "K Keep your existing constitution — review it, keep it, file unchanged.",
-    }
+fn keep_existing_invitation_line() -> &'static str {
+    "K 保留现有宪法——先查看，再保留，文件不变。"
 }
 
 /// Card line shown while a model draft awaits ratification.
-fn model_draft_ready_line(locale: Locale, model_label: &str) -> String {
-    match locale {
-        Locale::Ja => {
-            format!(
-                "{model_label} の草案が批准待ちです - G で確認して批准、1-6 で草案を破棄します。"
-            )
-        }
-        Locale::ZhHans => {
-            format!("{model_label} 的草案待批准——按 G 查看并批准；按 1-6 会丢弃草案。")
-        }
-        Locale::ZhHant => {
-            format!("{model_label} 的草案待批准 - 按 G 查看並批准；按 1-6 會丟棄草案。")
-        }
-        Locale::PtBr => {
-            format!(
-                "Rascunho de {model_label} aguarda ratificação - G para revisar e ratificar; 1-6 descarta."
-            )
-        }
-        Locale::Es419 => {
-            format!(
-                "El borrador de {model_label} espera ratificación - G para revisar y ratificar; 1-6 lo descarta."
-            )
-        }
-        Locale::Vi => {
-            format!(
-                "Bản nháp của {model_label} chờ phê chuẩn - G để xem và phê chuẩn; 1-6 sẽ bỏ bản nháp."
-            )
-        }
-        Locale::Ko => {
-            format!(
-                "{model_label}의 초안이 승인을 기다리고 있습니다 - G로 확인하고 승인, 1-6은 초안을 버립니다."
-            )
-        }
-        _ => format!(
-            "Draft by {model_label} awaits ratification — G to review and ratify; 1-6 discards it."
-        ),
-    }
+fn model_draft_ready_line(model_label: &str) -> String {
+    format!("{model_label} 的草案待批准——按 G 查看并批准；按 1-6 会丢弃草案。")
 }
 
 /// Host-facing status line after a successful model draft.
-pub(crate) fn model_draft_ready_message(locale: Locale, model_label: &str) -> String {
-    match locale {
-        Locale::Ja => format!(
-            "{model_label} があなたの憲法を起草しました。プレビューを確認してから G で批准してください。"
-        ),
-        Locale::ZhHans => format!("{model_label} 已起草你的宪法。请查看预览，然后按 G 批准。"),
-        Locale::ZhHant => format!("{model_label} 已起草你的憲法。請查看預覽，然後按 G 批准。"),
-        Locale::PtBr => format!(
-            "{model_label} rascunhou sua constituição. Revise a prévia e pressione G para ratificar."
-        ),
-        Locale::Es419 => format!(
-            "{model_label} redactó tu constitución. Revisa la vista previa y presiona G para ratificar."
-        ),
-        Locale::Vi => format!(
-            "{model_label} đã soạn hiến pháp của bạn. Xem bản xem trước rồi nhấn G để phê chuẩn."
-        ),
-        Locale::Ko => format!(
-            "{model_label}이(가) 당신의 헌법 초안을 작성했습니다. 미리보기를 확인한 뒤 G를 눌러 승인하세요."
-        ),
-        _ => format!(
-            "{model_label} drafted your constitution. Review the preview, then press G to ratify."
-        ),
-    }
+pub(crate) fn model_draft_ready_message(model_label: &str) -> String {
+    format!("{model_label} 已起草你的宪法。请查看预览，然后按 G 批准。")
 }
 
 /// Host-facing status line when model drafting fails or is unavailable. The
 /// guided deterministic draft always remains the standing fallback.
-pub(crate) fn model_draft_failed_message(
-    locale: Locale,
-    model_label: &str,
-    reason: &str,
-) -> String {
-    match locale {
-        Locale::Ja => {
-            format!(
-                "{model_label} は起草を完了できませんでした（{reason}）。ガイド草案は有効です。G でプレビューして批准できます。"
-            )
-        }
-        Locale::ZhHans => {
-            format!("{model_label} 未能完成起草（{reason}）。引导式草案仍然有效——按 G 预览并批准。")
-        }
-        Locale::ZhHant => {
-            format!("{model_label} 未能完成起草（{reason}）。引導式草案仍然有效；按 G 預覽並批准。")
-        }
-        Locale::PtBr => {
-            format!(
-                "{model_label} não conseguiu rascunhar sua constituição ({reason}). O rascunho guiado continua válido; pressione G para pré-visualizar e ratificar."
-            )
-        }
-        Locale::Es419 => {
-            format!(
-                "{model_label} no pudo redactar tu constitución ({reason}). El borrador guiado sigue válido; presiona G para previsualizar y ratificar."
-            )
-        }
-        Locale::Vi => {
-            format!(
-                "{model_label} không thể soạn hiến pháp của bạn ({reason}). Bản nháp hướng dẫn vẫn hợp lệ; nhấn G để xem trước và phê chuẩn."
-            )
-        }
-        Locale::Ko => {
-            format!(
-                "{model_label}이(가) 당신의 헌법 초안을 작성하지 못했습니다 ({reason}). 가이드 초안은 여전히 유효합니다. G를 눌러 미리보고 승인하세요."
-            )
-        }
-        _ => format!(
-            "{model_label} could not draft your constitution ({reason}). Your guided draft still \
-             stands — press G to preview and ratify."
-        ),
-    }
+pub(crate) fn model_draft_failed_message(model_label: &str, reason: &str) -> String {
+    format!("{model_label} 未能完成起草（{reason}）。引导式草案仍然有效——按 G 预览并批准。")
 }
 
 fn constitution_choice_label(choice: ConstitutionChoice) -> &'static str {
@@ -3686,7 +2614,6 @@ fn inherited_facts_for_app(app: &App, config: &Config) -> InheritedConfigFacts {
         .is_some_and(|loaded| !matches!(loaded, UserConstitutionLoad::Missing));
     let expert_override = SetupExpertOverrideState::load();
     InheritedConfigFacts {
-        language: Some(app.ui_locale.tag().to_string()),
         has_provider_route: !config.default_model().trim().is_empty(),
         has_credentials_or_local_runtime: has_api_key(config),
         trust_chosen: app.trust_mode || !onboarding::needs_trust(&app.workspace),
@@ -3778,7 +2705,6 @@ mod tests {
         assert_eq!(
             steps,
             vec![
-                SetupStep::Language,
                 SetupStep::ProviderModel,
                 SetupStep::TrustSandbox,
                 SetupStep::Constitution,
@@ -3791,7 +2717,6 @@ mod tests {
         assert_eq!(
             SetupWizardView::new_at_with_facts(
                 SetupState::default(),
-                Locale::En,
                 SetupStep::ToolsMcp,
                 SetupRuntimeFacts::default(),
             )
@@ -3804,14 +2729,14 @@ mod tests {
     fn wizard_resumes_at_constitution_checkpoint_when_update_incomplete() {
         let state = SetupState::default();
 
-        let view = SetupWizardView::new(state, Locale::En);
+        let view = SetupWizardView::new(state);
 
         assert_eq!(view.selected_step(), SetupStep::Constitution);
     }
 
     #[test]
     fn bundled_constitution_commit_marks_checkpoint_complete() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
 
         let action = view.handle_key(key(KeyCode::Enter));
 
@@ -3826,12 +2751,12 @@ mod tests {
         );
         assert_eq!(state.constitution_choice, ConstitutionChoice::Bundled);
         assert_eq!(state.status(SetupStep::Constitution), StepStatus::Verified);
-        assert!(message.contains("Constitution checkpoint complete"));
+        assert!(message.contains("宪法检查点已完成"));
     }
 
     #[test]
     fn back_keys_return_to_previous_step_and_clamp_at_first() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
         assert_eq!(view.selected_step(), SetupStep::Constitution);
 
         let action = view.handle_key(key(KeyCode::Right));
@@ -3845,12 +2770,12 @@ mod tests {
         for _ in 0..STEP_SPECS.len() {
             view.handle_key(key(KeyCode::Left));
         }
-        assert_eq!(view.selected_step(), SetupStep::Language);
+        assert_eq!(view.selected_step(), SetupStep::ProviderModel);
     }
 
     #[test]
     fn cancel_closes_without_commit_event() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
 
         let action = view.handle_key(key(KeyCode::Esc));
 
@@ -3859,7 +2784,7 @@ mod tests {
 
     #[test]
     fn skip_and_retry_emit_setup_state_commits() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
 
         let action = view.handle_key(key(KeyCode::Char('s')));
 
@@ -3868,7 +2793,7 @@ mod tests {
             panic!("expected skipped setup-state commit event");
         };
         assert_eq!(state.status(SetupStep::Constitution), StepStatus::Skipped);
-        assert!(message.contains("skipped"));
+        assert!(message.contains("已保存跳过此设置步骤"));
         assert_eq!(view.selected_step(), SetupStep::OperateFleet);
 
         let action = view.handle_key(key(KeyCode::Char('r')));
@@ -3881,7 +2806,7 @@ mod tests {
             state.status(SetupStep::OperateFleet),
             StepStatus::NeedsAction
         );
-        assert!(message.contains("retry"));
+        assert!(message.contains("已标记此设置步骤待重试"));
     }
 
     #[test]
@@ -3892,70 +2817,32 @@ mod tests {
             ConstitutionChoice::Bundled,
         );
 
-        let view = SetupWizardView::new(state, Locale::En);
+        let view = SetupWizardView::new(state);
 
-        assert_eq!(view.selected_step(), SetupStep::Language);
-    }
-
-    #[test]
-    fn language_step_records_locale_and_unblocks_first_run_ready() {
-        let mut state = SetupState::default();
-        state.set_step(
-            SetupStep::ProviderModel,
-            StepEntry::new(StepStatus::Verified, true, CONSTITUTION_CHECKPOINT_VERSION),
-        );
-        state.runtime_posture_source = RuntimePostureSource::Confirmed;
-        state.complete_constitution_checkpoint(
-            CONSTITUTION_CHECKPOINT_VERSION,
-            ConstitutionChoice::Bundled,
-        );
-        state.set_step(
-            SetupStep::Constitution,
-            StepEntry::new(StepStatus::Verified, true, CONSTITUTION_CHECKPOINT_VERSION),
-        );
-        let mut view = SetupWizardView::new(state, Locale::En);
-        assert_eq!(view.selected_step(), SetupStep::Language);
-
-        let action = view.handle_key(key(KeyCode::Enter));
-
-        let ViewAction::Emit(ViewEvent::SetupStateCommitRequested { state, message }) = action
-        else {
-            panic!("expected language setup-state commit event");
-        };
-        assert_eq!(state.status(SetupStep::Language), StepStatus::Verified);
-        assert_eq!(state.constitution_language.as_deref(), Some("en"));
-        assert!(state.first_run_ready());
-        assert!(message.contains("Setup language recorded"));
         assert_eq!(view.selected_step(), SetupStep::ProviderModel);
     }
 
     #[test]
-    fn zh_hans_checkpoint_copy_is_localized() {
-        assert_ne!(
-            tr(Locale::ZhHans, MessageId::SetupWizardTitle),
-            tr(Locale::En, MessageId::SetupWizardTitle)
-        );
-        assert_ne!(
-            tr(Locale::ZhHans, MessageId::SetupCheckpointDoneBundled),
-            tr(Locale::En, MessageId::SetupCheckpointDoneBundled)
-        );
+    fn setup_copy_is_simplified_chinese() {
+        assert!(tr(MessageId::SetupWizardTitle).contains("设置"));
+        assert!(tr(MessageId::SetupCheckpointDoneBundled).contains("宪法"));
     }
 
     #[test]
     fn guided_constitution_requires_preview_before_save() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
 
         let action = view.handle_key(key(KeyCode::Char('g')));
 
         let ViewAction::Emit(ViewEvent::OpenTextPager { title, content }) = action else {
             panic!("expected guided constitution preview event");
         };
-        assert!(title.contains("Draft for Ratification"));
+        assert!(title.contains("批准前草案"));
         assert!(content.contains("<codewhale_user_constitution"));
-        assert!(content.contains("press G to ratify and save"));
-        assert!(content.contains("REDUCED CORE AND OPT-IN MODULES"));
-        assert!(content.contains("The bundled core stays active"));
-        assert!(content.contains("does not enable modules"));
+        assert!(content.contains("按 G 批准并保存"));
+        assert!(content.contains("精简核心与可选模块"));
+        assert!(content.contains("内置核心始终生效"));
+        assert!(content.contains("不会启用模块"));
         assert_eq!(view.state().constitution_choice, ConstitutionChoice::Unset);
 
         let action = view.handle_key(key(KeyCode::Char('g')));
@@ -3968,7 +2855,6 @@ mod tests {
         else {
             panic!("expected guided constitution commit event");
         };
-        assert_eq!(constitution.language.as_deref(), Some("en"));
         assert_eq!(
             constitution.autonomy_preference,
             AutonomyPreference::Balanced
@@ -3982,88 +2868,25 @@ mod tests {
         );
         assert_eq!(state.status(SetupStep::Constitution), StepStatus::Verified);
         assert_eq!(state.runtime_posture_source, RuntimePostureSource::Unset);
-        assert!(message.contains("Constitution ratified"));
+        assert!(message.contains("宪法"));
     }
 
     #[test]
-    fn ratification_preview_explains_reduced_core_modules_for_shipped_locales() {
-        for locale in Locale::shipped() {
-            let constitution = GuidedConstitutionDraft::default().to_constitution(*locale);
-            let content =
-                constitution_ratification_text(*locale, &constitution, &DraftProvenance::Guided);
-            let (heading, module_marker, no_enable_marker, permission_marker, mcp_marker) =
-                match locale {
-                    Locale::Ja => (
-                        "縮小コア",
-                        "モジュール",
-                        "有効化せず",
-                        "承認ポリシー、サンドボックス、Shell、ネットワーク、信頼、MCP 権限",
-                        "付与または変更することはできません",
-                    ),
-                    Locale::ZhHans => (
-                        "精简核心",
-                        "模块",
-                        "不会启用",
-                        "不能授予或更改审批策略、沙箱、Shell、网络、信任、MCP 权限",
-                        "发布或支出权限",
-                    ),
-                    Locale::ZhHant => (
-                        "精簡核心",
-                        "模組",
-                        "不會啟用",
-                        "不能授予或更改審批策略、沙箱、Shell、網路、信任、MCP 權限",
-                        "發布或支出權限",
-                    ),
-                    Locale::PtBr => (
-                        "NÚCLEO REDUZIDO",
-                        "módulos",
-                        "não ativa",
-                        "Não pode conceder nem alterar política de aprovação, sandbox, shell, rede",
-                        "permissões MCP",
-                    ),
-                    Locale::Es419 => (
-                        "NÚCLEO REDUCIDO",
-                        "módulos",
-                        "no activa",
-                        "No puede conceder ni cambiar política de aprobación, sandbox, shell, red",
-                        "permisos MCP",
-                    ),
-                    Locale::Vi => (
-                        "LÕI RÚT GỌN",
-                        "mô-đun",
-                        "không bật",
-                        "không thể cấp hoặc đổi chính sách phê duyệt, sandbox, shell, mạng",
-                        "quyền MCP",
-                    ),
-                    Locale::Ko => (
-                        "축소된 코어",
-                        "모듈",
-                        "활성화하지 않으며",
-                        "승인 정책, 샌드박스, 셸, 네트워크, 신뢰, MCP 권한, 기본 모드, 게시, 지출 권한을 부여하거나 바꿀 수 없습니다",
-                        "MCP 권한",
-                    ),
-                    Locale::En => (
-                        "REDUCED CORE",
-                        "modules",
-                        "does not enable",
-                        "cannot grant or change approval policy, sandbox, shell",
-                        "MCP permissions",
-                    ),
-                };
+    fn ratification_preview_explains_reduced_core_modules() {
+        let constitution = GuidedConstitutionDraft::default().to_constitution();
+        let content = constitution_ratification_text(&constitution, &DraftProvenance::Guided);
 
-            assert!(content.contains(heading), "{}", locale.tag());
-            assert!(content.contains(module_marker), "{}", locale.tag());
-            assert!(content.contains(no_enable_marker), "{}", locale.tag());
-            assert!(content.contains(permission_marker), "{}", locale.tag());
-            assert!(content.contains(mcp_marker), "{}", locale.tag());
-        }
+        assert!(content.contains("精简核心"));
+        assert!(content.contains("模块"));
+        assert!(content.contains("不会启用"));
+        assert!(content.contains("不能授予或更改审批策略、沙箱、Shell、网络、信任、MCP 权限"));
+        assert!(content.contains("发布或支出权限"));
     }
 
     #[test]
     fn guided_constitution_key_is_contextual_to_constitution_step() {
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::ProviderModel,
             SetupRuntimeFacts::default(),
         );
@@ -4079,7 +2902,6 @@ mod tests {
     fn provider_model_step_hands_off_to_existing_route_surfaces() {
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::ProviderModel,
             SetupRuntimeFacts::default(),
         );
@@ -4119,7 +2941,6 @@ mod tests {
         let facts = SetupRuntimeFacts::from_app_config(&app, &config);
         let view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::ProviderModel,
             facts,
         );
@@ -4152,7 +2973,6 @@ mod tests {
         let facts = SetupRuntimeFacts::from_app_config(&app, &config);
         let view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::ProviderModel,
             facts,
         );
@@ -4184,7 +3004,6 @@ mod tests {
         let cn_app = App::new(setup_test_options(workspace.clone()), &cn_config);
         let cn_view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::ProviderModel,
             SetupRuntimeFacts::from_app_config(&cn_app, &cn_config),
         );
@@ -4203,7 +3022,6 @@ mod tests {
         let local_app = App::new(setup_test_options(workspace), &local_config);
         let local_view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::ProviderModel,
             SetupRuntimeFacts::from_app_config(&local_app, &local_config),
         );
@@ -4217,7 +3035,6 @@ mod tests {
     fn runtime_posture_step_hands_off_to_mode_and_config_surfaces() {
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::TrustSandbox,
             SetupRuntimeFacts::default(),
         );
@@ -4239,7 +3056,6 @@ mod tests {
     fn operate_fleet_step_hands_off_to_provider_and_fleet_surfaces() {
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::OperateFleet,
             SetupRuntimeFacts::default(),
         );
@@ -4259,7 +3075,7 @@ mod tests {
 
     #[test]
     fn guided_constitution_answers_shape_preview_and_saved_payload() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
         for key_char in ['1', '2', '3', '4', '5', '6'] {
             assert!(matches!(
                 view.handle_key(key(KeyCode::Char(key_char))),
@@ -4272,13 +3088,13 @@ mod tests {
         let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = action else {
             panic!("expected tuned guided constitution preview event");
         };
-        assert!(content.contains("current, cited research"));
-        assert!(content.contains("ambitious initiative"));
-        assert!(content.contains("release evidence"));
-        assert!(content.contains("learn the system"));
-        assert!(content.contains("sensitive data"));
-        assert!(content.contains("user voice"));
-        assert!(content.contains("preserve the user's voice"));
+        assert!(content.contains("实时资料、引用证据"));
+        assert!(content.contains("积极主动"));
+        assert!(content.contains("发布证据"));
+        assert!(content.contains("解释关键推理和取舍"));
+        assert!(content.contains("敏感信息"));
+        assert!(content.contains("保留用户语气"));
+        assert!(content.contains("保留用户的语气"));
 
         let action = view.handle_key(key(KeyCode::Char('g')));
 
@@ -4295,11 +3111,11 @@ mod tests {
             AutonomyPreference::Autonomous
         );
         let body = constitution.render_body();
-        assert!(body.contains("current, cited research"));
-        assert!(body.contains("release evidence"));
-        assert!(body.contains("learn the system"));
-        assert!(body.contains("sensitive data"));
-        assert!(body.contains("preserve the user's voice"));
+        assert!(body.contains("实时资料、引用证据"));
+        assert!(body.contains("发布证据"));
+        assert!(body.contains("解释关键推理和取舍"));
+        assert!(body.contains("敏感信息"));
+        assert!(body.contains("保留用户的语气"));
         assert_eq!(
             state.constitution_preview_hash.as_deref(),
             Some(constitution.preview_hash().as_str())
@@ -4310,24 +3126,21 @@ mod tests {
     fn constitution_detail_lines_explain_reduced_core_and_modules_boundary() {
         let view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Constitution,
             SetupRuntimeFacts::default(),
         );
 
         let text = lines_to_text(view.constitution_detail_lines());
 
-        assert!(text.contains("user-global preferences only"));
-        // The en copy no longer claims a line count for the core (#4057 wave 2
-        // reword: the shipped core outgrew "55-line").
-        assert!(text.contains("bundled core"));
-        assert!(text.contains("mode prompts"));
-        assert!(text.contains("future opt-ins"));
+        assert!(text.contains("只保存用户全局偏好"));
+        assert!(text.contains("内置核心始终生效"));
+        assert!(text.contains("模式提示词"));
+        assert!(text.contains("未来可选模块"));
     }
 
     #[test]
     fn freeform_note_previews_saves_and_stays_advisory() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
 
         let first_preview = view.handle_key(key(KeyCode::Char('g')));
         assert!(matches!(
@@ -4342,9 +3155,9 @@ mod tests {
         let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = second_preview else {
             panic!("freeform note should force a fresh preview");
         };
-        assert!(content.contains("User freeform principle"));
+        assert!(content.contains("用户自由原则"));
         assert!(content.contains("Prefer reversible demos"));
-        assert!(content.contains("do not change approval, sandbox, shell"));
+        assert!(content.contains("不会改变审批、沙箱、Shell"));
 
         let action = view.handle_key(key(KeyCode::Char('g')));
         let ViewAction::EmitAndClose(ViewEvent::SetupConstitutionCommitRequested {
@@ -4356,7 +3169,7 @@ mod tests {
             panic!("expected guided constitution commit event");
         };
         let body = constitution.render_body();
-        assert!(body.contains("User freeform principle"));
+        assert!(body.contains("用户自由原则"));
         assert!(body.contains("Prefer reversible demos"));
         assert_eq!(
             state.constitution_authoring,
@@ -4367,7 +3180,7 @@ mod tests {
 
     #[test]
     fn changing_guided_answer_requires_fresh_preview() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
 
         let first_preview = view.handle_key(key(KeyCode::Char('g')));
         assert!(matches!(
@@ -4384,7 +3197,7 @@ mod tests {
         let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = second_preview else {
             panic!("changed guided answer should preview again before saving");
         };
-        assert!(content.contains("preserve the user's voice"));
+        assert!(content.contains("保留用户的语气"));
 
         let action = view.handle_key(key(KeyCode::Char('g')));
         let ViewAction::EmitAndClose(ViewEvent::SetupConstitutionCommitRequested {
@@ -4398,11 +3211,7 @@ mod tests {
             constitution.autonomy_preference,
             AutonomyPreference::Balanced
         );
-        assert!(
-            constitution
-                .render_body()
-                .contains("preserve the user's voice")
-        );
+        assert!(constitution.render_body().contains("保留用户的语气"));
     }
 
     fn ready_facts(model: &str) -> SetupRuntimeFacts {
@@ -4415,10 +3224,6 @@ mod tests {
 
     fn first_run_ready_state() -> SetupState {
         let mut state = SetupState::default();
-        state.set_step(
-            SetupStep::Language,
-            StepEntry::new(StepStatus::Verified, true, CONSTITUTION_CHECKPOINT_VERSION),
-        );
         state.set_step(
             SetupStep::ProviderModel,
             StepEntry::new(StepStatus::Verified, true, CONSTITUTION_CHECKPOINT_VERSION),
@@ -4437,7 +3242,6 @@ mod tests {
 
     fn sample_model_draft() -> Box<UserConstitution> {
         Box::new(UserConstitution {
-            language: Some("en".to_string()),
             about: Some("A GLM-5.2 user shipping Rust.".to_string()),
             working_style: vec!["Keep diffs scoped.".to_string()],
             priorities: vec!["Evidence over vibes.".to_string()],
@@ -4451,7 +3255,7 @@ mod tests {
     fn model_draft_key_is_inert_without_a_ready_provider() {
         // Fallback contract: no route, no drafting offer — the deterministic
         // guided flow stands untouched.
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
         assert_eq!(view.selected_step(), SetupStep::Constitution);
 
         let action = view.handle_key(key(KeyCode::Char('a')));
@@ -4464,7 +3268,6 @@ mod tests {
     fn model_draft_key_requests_drafting_with_current_answers() {
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Constitution,
             ready_facts("GLM-5.2"),
         );
@@ -4480,12 +3283,10 @@ mod tests {
         let ViewAction::Emit(ViewEvent::SetupConstitutionModelDraftRequested {
             draft,
             freeform_note,
-            locale,
         }) = action
         else {
             panic!("expected model draft request event");
         };
-        assert_eq!(locale, Locale::En);
         assert_eq!(draft.autonomy, AutonomyPreference::Autonomous);
         assert_eq!(
             freeform_note.as_deref(),
@@ -4499,15 +3300,14 @@ mod tests {
     fn installed_model_draft_previews_then_ratifies_with_provenance() {
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Constitution,
             ready_facts("GLM-5.2"),
         );
 
         let (title, content) =
             view.install_model_draft(sample_model_draft(), "GLM-5.2".to_string());
-        assert!(title.contains("Draft for Ratification"));
-        assert!(content.contains("Drafted by GLM-5.2"));
+        assert!(title.contains("批准前草案"));
+        assert!(content.contains("由 GLM-5.2 根据你的引导式答案起草"));
         assert!(content.contains("A GLM-5.2 user shipping Rust."));
         assert!(content.contains("<codewhale_user_constitution"));
 
@@ -4534,12 +3334,12 @@ mod tests {
         let step = state.steps.get(&SetupStep::Constitution).expect("step");
         let result = step.result.as_deref().expect("result");
         assert!(result.contains("model-drafted constitution ratified (GLM-5.2)"));
-        assert!(message.contains("Constitution ratified"));
+        assert!(message.contains("宪法已批准"));
     }
 
     #[test]
     fn deterministic_ratification_records_guided_authoring() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
 
         view.handle_key(key(KeyCode::Char('g')));
         let action = view.handle_key(key(KeyCode::Char('g')));
@@ -4559,7 +3359,6 @@ mod tests {
     fn cycling_answers_discards_the_model_draft() {
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Constitution,
             ready_facts("GLM-5.2"),
         );
@@ -4577,8 +3376,8 @@ mod tests {
         let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = action else {
             panic!("stale draft should force a fresh preview");
         };
-        assert!(content.contains("Rendered deterministically"));
-        assert!(!content.contains("Drafted by GLM-5.2"));
+        assert!(content.contains("由你的引导式答案确定性生成"));
+        assert!(!content.contains("由 GLM-5.2"));
 
         let action = view.handle_key(key(KeyCode::Char('g')));
         let ViewAction::EmitAndClose(ViewEvent::SetupConstitutionCommitRequested { state, .. }) =
@@ -4596,7 +3395,6 @@ mod tests {
     fn freeform_note_discards_the_model_draft() {
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Constitution,
             ready_facts("GLM-5.2"),
         );
@@ -4608,35 +3406,34 @@ mod tests {
         let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = action else {
             panic!("changed freeform note should force a fresh guided preview");
         };
-        assert!(content.contains("Rendered deterministically"));
+        assert!(content.contains("由你的引导式答案确定性生成"));
         assert!(content.contains("Prefer local examples"));
-        assert!(!content.contains("Drafted by GLM-5.2"));
+        assert!(!content.contains("由 GLM-5.2"));
     }
 
     #[test]
     fn constitution_card_gates_the_model_draft_invitation() {
         // No ready provider: no invitation (and the blocker-size layout holds).
-        let not_ready = SetupWizardView::new(SetupState::default(), Locale::En);
+        let not_ready = SetupWizardView::new(SetupState::default());
         let text = lines_to_text(not_ready.constitution_detail_lines());
-        assert!(!text.contains("can draft it"));
-        assert!(!text.contains("awaits ratification"));
+        assert!(!text.contains("起草，你批准"));
+        assert!(!text.contains("草案待批准"));
 
         // Ready provider: the invitation names the first configured model.
         let ready = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Constitution,
             ready_facts("GLM-5.2"),
         );
         let text = lines_to_text(ready.constitution_detail_lines());
-        assert!(text.contains("GLM-5.2 can draft it. You ratify it."));
+        assert!(text.contains("GLM-5.2 起草，你批准"));
 
         // Installed draft: the card flips to the awaiting-ratification line.
         let mut with_draft = ready.clone();
         let _ = with_draft.install_model_draft(sample_model_draft(), "GLM-5.2".to_string());
         let text = lines_to_text(with_draft.constitution_detail_lines());
-        assert!(text.contains("Draft by GLM-5.2 awaits ratification"));
-        assert!(!text.contains("GLM-5.2 can draft it"));
+        assert!(text.contains("GLM-5.2 的草案待批准"));
+        assert!(!text.contains("GLM-5.2 起草，你批准"));
     }
 
     #[test]
@@ -4647,7 +3444,6 @@ mod tests {
 
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Constitution,
             ready_facts("GLM-5.2"),
         );
@@ -4678,239 +3474,92 @@ mod tests {
     }
 
     #[test]
-    fn guided_constitution_template_localizes_content() {
-        let english = guided_constitution_template(Locale::En).render_body();
-        let zh_hans = guided_constitution_template(Locale::ZhHans).render_body();
+    fn guided_constitution_template_uses_simplified_chinese() {
+        let body = guided_constitution_template().render_body();
 
-        assert!(english.contains("evidence-first coding workbench"));
-        assert!(zh_hans.contains("重证据"));
-        assert_ne!(english, zh_hans);
-
-        let markers = [
-            (Locale::Ja, "証拠重視"),
-            (Locale::ZhHans, "重证据"),
-            (Locale::ZhHant, "重證據"),
-            (Locale::PtBr, "guiada por evidências"),
-            (Locale::Es419, "basada en evidencia"),
-            (Locale::Vi, "ưu tiên bằng chứng"),
-            (Locale::Ko, "근거 중심"),
-        ];
-        for (locale, marker) in markers {
-            let body = guided_constitution_template(locale).render_body();
-            assert!(
-                body.contains(marker),
-                "missing localized guided marker for {}",
-                locale.tag()
-            );
-            assert_ne!(
-                english,
-                body,
-                "locale {} fell back to English",
-                locale.tag()
-            );
-            assert!(
-                !body.contains("A CodeWhale user who wants"),
-                "locale {} reused English purpose copy",
-                locale.tag()
-            );
-            assert!(
-                !body.contains("Guided answers:"),
-                "locale {} reused English guided-answer notes",
-                locale.tag()
-            );
-            assert!(
-                !body.contains("Current user requests and live tool evidence"),
-                "locale {} reused English authority priority",
-                locale.tag()
-            );
-        }
+        assert!(body.contains("重证据"));
+        assert!(body.contains("当前用户请求和实时工具证据"));
+        assert!(!body.contains("A CodeWhale user who wants"));
+        assert!(!body.contains("Guided answers:"));
     }
 
     #[test]
     fn ratification_preview_uses_rendered_block_and_layer_order() {
         let draft = GuidedConstitutionDraft::default();
-        let english = constitution_ratification_text(
-            Locale::En,
-            &draft.to_constitution(Locale::En),
-            &DraftProvenance::Guided,
-        );
-        let zh_hans = constitution_ratification_text(
-            Locale::ZhHans,
-            &draft.to_constitution(Locale::ZhHans),
-            &DraftProvenance::Guided,
-        );
-
-        assert!(english.contains("<codewhale_user_constitution"));
-        assert!(english.contains("Layer order"));
-        assert!(english.contains("press G to ratify and save"));
+        let content =
+            constitution_ratification_text(&draft.to_constitution(), &DraftProvenance::Guided);
+        assert!(content.contains("<codewhale_user_constitution"));
+        assert!(content.contains("权限层级"));
+        assert!(content.contains("按 G 批准并保存"));
         // Framing: powers and limits, not case-by-case; continuity, not memory.
-        assert!(english.contains("powers and limits rather than deciding every case"));
-        assert!(english.contains("but it is not memory"));
-        assert!(zh_hans.contains("<codewhale_user_constitution"));
-        assert!(zh_hans.contains("按 G 批准并保存"));
-        assert!(zh_hans.contains("它界定权力与边界"));
-        assert!(zh_hans.contains("但它不是记忆"));
-        assert_ne!(english, zh_hans);
-
-        let localized_markers = [
-            (Locale::Ja, "権限の階層"),
-            (Locale::ZhHans, "精简核心与可选模块"),
-            (Locale::ZhHant, "精簡核心與可選模組"),
-            (Locale::PtBr, "NÚCLEO REDUZIDO E MÓDULOS OPT-IN"),
-            (Locale::Es419, "NÚCLEO REDUCIDO Y MÓDULOS OPT-IN"),
-            (Locale::Vi, "LÕI RÚT GỌN VÀ MÔ-ĐUN OPT-IN"),
-            (Locale::Ko, "축소된 코어와 옵트인 모듈"),
-        ];
-        for (locale, marker) in localized_markers {
-            let content = constitution_ratification_text(
-                locale,
-                &draft.to_constitution(locale),
-                &DraftProvenance::Guided,
-            );
-            assert!(
-                content.contains(marker),
-                "missing localized ratification marker for {}",
-                locale.tag()
-            );
-            assert_ne!(
-                english,
-                content,
-                "locale {} ratification preview fell back to English",
-                locale.tag()
-            );
-            for fallback in [
-                "CODEWHALE · USER CONSTITUTION",
-                "HIERARCHY OF AUTHORITY",
-                "WHAT THIS CANNOT DO",
-                "REDUCED CORE AND OPT-IN MODULES",
-                "Rendered deterministically from your guided answers",
-                "Nothing becomes law until you confirm",
-            ] {
-                assert!(
-                    !content.contains(fallback),
-                    "locale {} reused English ratification scaffold: {fallback}",
-                    locale.tag()
-                );
-            }
-        }
+        assert!(content.contains("它界定权力与边界"));
+        assert!(content.contains("但它不是记忆"));
+        assert!(content.contains("精简核心与可选模块"));
     }
 
     #[test]
     fn ratification_preview_states_authority_boundaries_and_provenance() {
         let draft = GuidedConstitutionDraft::default();
-        let constitution = draft.to_constitution(Locale::En);
+        let constitution = draft.to_constitution();
 
-        let guided =
-            constitution_ratification_text(Locale::En, &constitution, &DraftProvenance::Guided);
-        assert!(guided.contains("HIERARCHY OF AUTHORITY"));
-        assert!(guided.contains("WHAT THIS CANNOT DO"));
-        assert!(guided.contains("cannot grant or change approval policy"));
-        assert!(guided.contains("Nothing becomes law until you confirm"));
-        assert!(guided.contains("Rendered deterministically"));
+        let guided = constitution_ratification_text(&constitution, &DraftProvenance::Guided);
+        assert!(guided.contains("权限层级"));
+        assert!(guided.contains("它不能做什么"));
+        assert!(guided.contains("不能授予或更改审批策略"));
+        assert!(guided.contains("未经你确认"));
+        assert!(guided.contains("确定性生成"));
 
         let drafted = constitution_ratification_text(
-            Locale::En,
             &constitution,
             &DraftProvenance::Model("GLM-5.2".to_string()),
         );
-        assert!(drafted.contains("Drafted by GLM-5.2"));
-        assert!(drafted.contains("schema-checked and bounded by CodeWhale"));
-
-        let zh = constitution_ratification_text(
-            Locale::ZhHans,
-            &draft.to_constitution(Locale::ZhHans),
-            &DraftProvenance::Model("GLM-5.2".to_string()),
-        );
-        assert!(zh.contains("权限层级"));
-        assert!(zh.contains("它不能做什么"));
-        assert!(zh.contains("由 GLM-5.2 根据你的引导式答案起草"));
+        assert!(drafted.contains("由 GLM-5.2 根据你的引导式答案起草"));
+        assert!(drafted.contains("结构校验与边界限制"));
     }
 
     #[test]
-    fn guided_constitution_detail_lines_show_localized_answers() {
-        let english = SetupWizardView::new(SetupState::default(), Locale::En);
-        let english_text = lines_to_text(english.constitution_detail_lines());
-        assert!(english_text.contains("Purpose:"));
-        assert!(english_text.contains("coding workbench"));
-        assert!(english_text.contains("Initiative:"));
-        assert!(english_text.contains("balanced"));
-        assert!(english_text.contains("Principles:"));
-        assert!(english_text.contains("scoped changes"));
-
-        let zh_hans = SetupWizardView::new(SetupState::default(), Locale::ZhHans);
-        let zh_hans_text = lines_to_text(zh_hans.constitution_detail_lines());
-        assert!(zh_hans_text.contains("用途："));
-        assert!(zh_hans_text.contains("编码工作台"));
-        assert!(zh_hans_text.contains("主动性："));
-        assert!(zh_hans_text.contains("平衡"));
-        assert!(zh_hans_text.contains("原则："));
-        assert!(zh_hans_text.contains("小范围改动"));
-
-        for locale in Locale::shipped()
-            .iter()
-            .copied()
-            .filter(|locale| *locale != Locale::En)
-        {
-            let view = SetupWizardView::new(SetupState::default(), locale);
-            let text = lines_to_text(view.constitution_detail_lines());
-            assert!(
-                text.contains(&*GuidedPurpose::Coding.label(locale)),
-                "missing localized purpose answer for {}",
-                locale.tag()
-            );
-            assert!(
-                text.contains(autonomy_label(AutonomyPreference::Balanced, locale)),
-                "missing localized autonomy answer for {}",
-                locale.tag()
-            );
-            assert!(
-                text.contains(GuidedPrinciples::ScopedChanges.label(locale)),
-                "missing localized principle answer for {}",
-                locale.tag()
-            );
-            assert!(
-                !text.contains("Purpose:"),
-                "locale {} reused English detail label",
-                locale.tag()
-            );
-            assert!(
-                !text.contains("not checked yet"),
-                "locale {} reused English file-state detail",
-                locale.tag()
-            );
-        }
+    fn guided_constitution_detail_lines_show_simplified_chinese_answers() {
+        let view = SetupWizardView::new(SetupState::default());
+        let text = lines_to_text(view.constitution_detail_lines());
+        assert!(text.contains("用途："));
+        assert!(text.contains("编码工作台"));
+        assert!(text.contains("主动性："));
+        assert!(text.contains("平衡"));
+        assert!(text.contains("原则："));
+        assert!(text.contains("小范围改动"));
+        assert!(!text.contains("Purpose:"));
     }
 
     #[test]
     fn constitution_file_state_labels_existing_override_states() {
         assert!(
             SetupConstitutionFileState::Missing
-                .label(ConstitutionChoice::Bundled, Locale::En)
-                .contains("no constitution.json")
+                .label(ConstitutionChoice::Bundled)
+                .contains("未找到 constitution.json")
         );
         assert!(
             SetupConstitutionFileState::Loaded
-                .label(ConstitutionChoice::GuidedCustom, Locale::En)
-                .contains("selected")
+                .label(ConstitutionChoice::GuidedCustom)
+                .contains("已存在并已选择")
         );
         assert!(
             SetupConstitutionFileState::Loaded
-                .label(ConstitutionChoice::Bundled, Locale::En)
-                .contains("inactive")
+                .label(ConstitutionChoice::Bundled)
+                .contains("不生效")
         );
         assert!(
             SetupConstitutionFileState::Invalid
-                .label(ConstitutionChoice::Unset, Locale::En)
-                .contains("invalid")
+                .label(ConstitutionChoice::Unset)
+                .contains("无效")
         );
         assert!(
             SetupConstitutionFileState::Unreadable
-                .label(ConstitutionChoice::Unset, Locale::En)
-                .contains("unreadable")
+                .label(ConstitutionChoice::Unset)
+                .contains("无法读取")
         );
         assert!(
             SetupConstitutionFileState::PathError
-                .label(ConstitutionChoice::Unset, Locale::ZhHans)
+                .label(ConstitutionChoice::Unset)
                 .contains("CODEWHALE_HOME")
         );
     }
@@ -4943,7 +3592,7 @@ mod tests {
         assert!(!SetupExpertOverrideState::Disabled.is_active());
         assert!(
             SetupExpertOverrideState::Disabled
-                .label(Locale::En)
+                .label()
                 .contains(BASE_PROMPT_OVERRIDE_OPT_IN_ENV)
         );
 
@@ -4968,25 +3617,20 @@ mod tests {
             constitution_file: SetupConstitutionFileState::Loaded,
             ..SetupRuntimeFacts::default()
         };
-        let view = SetupWizardView::new_at_with_facts(
-            state.clone(),
-            Locale::En,
-            SetupStep::Constitution,
-            facts,
-        );
+        let view =
+            SetupWizardView::new_at_with_facts(state.clone(), SetupStep::Constitution, facts);
 
         let text = lines_to_text(view.constitution_detail_lines());
-        assert!(text.contains("Source: bundled; validity valid"));
-        assert!(text.contains("Existing file:"));
-        assert!(text.contains("inactive under the recorded choice"));
-        assert!(text.contains("Expert override:"));
-        assert!(text.contains("not checked yet"));
+        assert!(text.contains("来源： bundled; validity valid"));
+        assert!(text.contains("现有文件："));
+        assert!(text.contains("当前记录选择使其不生效"));
+        assert!(text.contains("专家覆盖："));
+        assert!(text.contains("尚未检查"));
 
         state.constitution_choice = ConstitutionChoice::GuidedCustom;
         state.constitution_source = ConstitutionSource::UserGlobal;
         let view = SetupWizardView::new_at_with_facts(
             state,
-            Locale::ZhHans,
             SetupStep::Constitution,
             SetupRuntimeFacts {
                 constitution_file: SetupConstitutionFileState::Loaded,
@@ -5017,7 +3661,6 @@ mod tests {
             let mut stack = ViewStack::new();
             stack.push(SetupWizardView::new_at_with_facts(
                 SetupState::default(),
-                Locale::En,
                 SetupStep::Constitution,
                 SetupRuntimeFacts {
                     constitution_file: SetupConstitutionFileState::Loaded,
@@ -5032,15 +3675,17 @@ mod tests {
             let text = rows.join("\n");
 
             for label in [
-                "Setup",
-                "Choice:",
-                "Existing file:",
-                "Purpose:",
-                "preview/ratify",
-                "use bundled",
-                "cancel",
+                // Ratatui stores the continuation cell of each wide CJK glyph
+                // as a blank symbol, so buffer text contains these spaces.
+                "设 置",
+                "选 择 ：",
+                "现 有 文 件 ：",
+                "用 途 ：",
+                "预 览 /批 准",
+                "使 用 内 置",
+                "取 消",
             ] {
-                assert!(text.contains(label), "{w}x{h}: missing '{label}'");
+                assert!(text.contains(label), "{w}x{h}: missing '{label}'\n{text}");
             }
             assert!(
                 !text.contains('X'),
@@ -5050,10 +3695,17 @@ mod tests {
                 [palette::WHALE_BG, palette::WHALE_PANEL].contains(&buf[(w / 2, h / 2)].bg),
                 "{w}x{h}: modal interior must be opaque"
             );
-            for (y, row) in rows.iter().enumerate() {
+            for y in 0..h {
+                let mut x = 0;
+                let mut display_width = 0;
+                while x < w {
+                    let symbol_width = UnicodeWidthStr::width(buf[(x, y)].symbol()).max(1);
+                    display_width += symbol_width;
+                    x = x.saturating_add(symbol_width as u16);
+                }
                 assert!(
-                    UnicodeWidthStr::width(row.trim_end()) <= usize::from(w),
-                    "{w}x{h}: row {y} overflows width: {row:?}"
+                    display_width <= usize::from(w),
+                    "{w}x{h}: row {y} overflows width ({display_width})"
                 );
             }
         }
@@ -5064,7 +3716,7 @@ mod tests {
         let _guard = crate::test_support::lock_test_env();
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
-        let constitution = guided_constitution_template(Locale::En);
+        let constitution = guided_constitution_template();
         let mut state = SetupState::default();
         state.complete_constitution_checkpoint(
             CONSTITUTION_CHECKPOINT_VERSION,
@@ -5107,7 +3759,7 @@ mod tests {
         let _home = crate::test_support::EnvVarGuard::set("CODEWHALE_HOME", tmp.path());
 
         // An existing valid custom constitution from a prior version.
-        let existing = guided_constitution_template(Locale::En);
+        let existing = guided_constitution_template();
         persist_user_constitution_choice(&existing, &SetupState::default())
             .expect("write existing constitution");
         let path = UserConstitution::path().expect("constitution path");
@@ -5119,23 +3771,22 @@ mod tests {
         };
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Constitution,
             facts,
         );
 
         // The card offers the keep path.
         let text = lines_to_text(view.constitution_detail_lines());
-        assert!(text.contains("K Keep your existing constitution"), "{text}");
+        assert!(text.contains("K 保留现有宪法"), "{text}");
 
         // First K previews the existing law, unchanged, with keep wording.
         let action = view.handle_key(key(KeyCode::Char('k')));
         let ViewAction::Emit(ViewEvent::OpenTextPager { title, content }) = action else {
             panic!("expected keep-existing preview event");
         };
-        assert!(title.contains("Draft for Ratification"));
-        assert!(content.contains("shown unchanged"), "{content}");
-        assert!(content.contains("press K to keep it"), "{content}");
+        assert!(title.contains("批准前草案"));
+        assert!(content.contains("原样展示，未做任何修改"), "{content}");
+        assert!(content.contains("按 K 保留"), "{content}");
         assert!(
             content.contains("<codewhale_user_constitution"),
             "{content}"
@@ -5160,7 +3811,7 @@ mod tests {
             Some(existing.preview_hash().as_str())
         );
         assert_eq!(state.status(SetupStep::Constitution), StepStatus::Verified);
-        assert!(message.contains("Constitution kept"), "{message}");
+        assert!(message.contains("已保留现有宪法"), "{message}");
 
         let bytes_after = std::fs::read(&path).expect("file bytes after keep");
         assert_eq!(bytes_before, bytes_after, "keep must not rewrite the file");
@@ -5183,13 +3834,12 @@ mod tests {
             };
             let mut view = SetupWizardView::new_at_with_facts(
                 SetupState::default(),
-                Locale::En,
                 SetupStep::Constitution,
                 facts,
             );
             let text = lines_to_text(view.constitution_detail_lines());
             assert!(
-                !text.contains("K Keep your existing constitution"),
+                !text.contains("K 保留现有宪法"),
                 "{file_state:?} must not offer keep: {text}"
             );
             assert!(
@@ -5214,7 +3864,6 @@ mod tests {
         };
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::ProviderModel,
             facts,
         );
@@ -5227,7 +3876,7 @@ mod tests {
         };
         assert_eq!(state.status(SetupStep::ProviderModel), StepStatus::Verified);
         assert_eq!(view.selected_step(), SetupStep::TrustSandbox);
-        assert!(message.contains("Provider/model readiness recorded"));
+        assert!(message.contains("已记录服务商/模型就绪状态"));
     }
 
     #[test]
@@ -5241,7 +3890,6 @@ mod tests {
         };
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::ProviderModel,
             facts,
         );
@@ -5256,7 +3904,7 @@ mod tests {
             state.status(SetupStep::ProviderModel),
             StepStatus::NeedsAction
         );
-        assert!(message.contains("needs action"));
+        assert!(message.contains("服务商/模型仍需操作"));
     }
 
     #[test]
@@ -5293,7 +3941,6 @@ mod tests {
 
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::ProviderModel,
             facts,
         );
@@ -5316,7 +3963,6 @@ mod tests {
         };
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::TrustSandbox,
             facts,
         );
@@ -5332,7 +3978,7 @@ mod tests {
             state.runtime_posture_source,
             RuntimePostureSource::Confirmed
         );
-        assert!(message.contains("Runtime posture reviewed"));
+        assert!(message.contains("已复核运行姿态"));
         assert_eq!(view.selected_step(), SetupStep::Constitution);
     }
 
@@ -5360,7 +4006,6 @@ mod tests {
         let facts = SetupRuntimeFacts::from_app_config(&app, &config);
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::TrustSandbox,
             facts,
         );
@@ -5395,7 +4040,6 @@ mod tests {
     fn runtime_posture_skip_records_posture_specific_state() {
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::TrustSandbox,
             SetupRuntimeFacts::default(),
         );
@@ -5414,7 +4058,7 @@ mod tests {
         assert!(entry.required);
         assert_eq!(entry.result.as_deref(), Some("skipped by user"));
         assert_eq!(state.runtime_posture_source, RuntimePostureSource::Unset);
-        assert!(message.contains("skipped"));
+        assert!(message.contains("已保存跳过此设置步骤"));
         assert_eq!(view.selected_step(), SetupStep::Constitution);
     }
 
@@ -5431,19 +4075,18 @@ mod tests {
         };
         let view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::TrustSandbox,
             facts,
         );
 
         let text = lines_to_text(view.runtime_posture_detail_lines());
 
-        assert!(text.contains("Selected preset:"));
-        assert!(text.contains("Normal agent"));
+        assert!(text.contains("所选预设："));
+        assert!(text.contains("普通 Agent"));
         assert!(text.contains("settings.default_mode: agent -> act"));
         assert!(text.contains("config.allow_shell: true -> true"));
-        assert!(text.contains("Safety floor:"));
-        assert!(text.contains("Press A to preview"));
+        assert!(text.contains("安全底线："));
+        assert!(text.contains("按 A 预览"));
     }
 
     #[test]
@@ -5456,26 +4099,24 @@ mod tests {
             "approval_policy = \"never\"\nsandbox_mode = \"read-only\"\n",
         )
         .expect("project config");
-        let warning =
-            project_runtime_override_warning(tmp.path(), Locale::En).expect("project warning");
+        let warning = project_runtime_override_warning(tmp.path()).expect("project warning");
         let facts = SetupRuntimeFacts {
             project_override_warning: Some(warning),
             ..SetupRuntimeFacts::default()
         };
         let view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::TrustSandbox,
             facts,
         );
 
         let text = lines_to_text(view.runtime_posture_detail_lines());
 
-        assert!(text.contains("Project override:"));
+        assert!(text.contains("项目覆盖："));
         assert!(text.contains("approval_policy=never"));
         assert!(text.contains("sandbox_mode=read-only"));
-        assert!(text.contains("project override warning"));
-        assert!(text.contains("project config can still tighten"));
+        assert!(text.contains("此工作区的项目配置包含"));
+        assert!(text.contains("项目配置仍可在此工作区收紧运行姿态"));
     }
 
     #[test]
@@ -5496,19 +4137,18 @@ mod tests {
         };
         let view = SetupWizardView::new_at_with_facts(
             first_run_ready_state(),
-            Locale::En,
             SetupStep::OperateFleet,
             facts,
         );
 
         let text = lines_to_text(view.operate_fleet_detail_lines());
 
-        assert!(text.contains("Worker runtime:"));
+        assert!(text.contains("Worker 运行时："));
         assert!(text.contains("worker runtime enabled for deepseek"));
-        assert!(text.contains("Fleet roster:"));
+        assert!(text.contains("Fleet 成员表："));
         assert!(text.contains("3 Fleet members"));
         assert!(text.contains("plan limit not probed"));
-        assert!(text.contains("Enter records this setup snapshot."));
+        assert!(text.contains("按 Enter 记录当前 Operate/Fleet 事实"));
     }
 
     #[test]
@@ -5524,7 +4164,6 @@ mod tests {
         };
         let mut view = SetupWizardView::new_at_with_facts(
             first_run_ready_state(),
-            Locale::En,
             SetupStep::OperateFleet,
             facts,
         );
@@ -5546,7 +4185,7 @@ mod tests {
             .and_then(|entry| entry.result.as_deref())
             .expect("operate result");
         assert!(result.contains("plan limit not probed"), "{result}");
-        assert!(message.contains("needs action"));
+        assert!(message.contains("Operate/Fleet 仍需操作"));
         assert_eq!(view.selected_step(), SetupStep::ToolsMcp);
     }
 
@@ -5559,25 +4198,21 @@ mod tests {
             tools_mcp_plugins_result: "off — nothing configured yet (missing at /tmp/plugins); optional".to_string(),
             ..SetupRuntimeFacts::default()
         };
-        let view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::ToolsMcp,
-            facts,
-        );
+        let view =
+            SetupWizardView::new_at_with_facts(SetupState::default(), SetupStep::ToolsMcp, facts);
 
         let text = lines_to_text(view.tools_mcp_detail_lines());
 
-        assert!(text.contains("MCP servers:"));
+        assert!(text.contains("MCP 服务器："));
         assert!(text.contains("healthy"));
         assert!(text.contains("/tmp/mcp.json"));
         assert!(text.contains("/tmp/project/.codewhale/mcp.json"));
-        assert!(text.contains("Skills:"));
+        assert!(text.contains("技能："));
         assert!(text.contains("/tmp/skills"));
-        assert!(text.contains("Tools dir:"));
-        assert!(text.contains("Plugins:"));
-        assert!(text.contains("Enter records this setup snapshot."));
-        assert!(text.contains("Press R for safe on-ramps"));
+        assert!(text.contains("工具目录："));
+        assert!(text.contains("插件："));
+        assert!(text.contains("按 Enter 记录当前工具/MCP 事实"));
+        assert!(text.contains("按 R 查看安全引导"));
     }
 
     #[test]
@@ -5589,12 +4224,8 @@ mod tests {
             tools_mcp_needs_action: false,
             ..SetupRuntimeFacts::default()
         };
-        let mut view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::ToolsMcp,
-            facts,
-        );
+        let mut view =
+            SetupWizardView::new_at_with_facts(SetupState::default(), SetupStep::ToolsMcp, facts);
 
         let action = view.handle_key(key(KeyCode::Enter));
 
@@ -5614,7 +4245,7 @@ mod tests {
                 .as_deref()
                 .is_some_and(|result| result.contains("mode=read_only_safe_probe"))
         );
-        assert!(message.contains("Tools/MCP readiness recorded"));
+        assert!(message.contains("已记录工具/MCP 就绪状态"));
         assert_eq!(view.selected_step(), SetupStep::Persistence);
     }
 
@@ -5627,12 +4258,8 @@ mod tests {
             tools_mcp_needs_action: true,
             ..SetupRuntimeFacts::default()
         };
-        let mut view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::ToolsMcp,
-            facts,
-        );
+        let mut view =
+            SetupWizardView::new_at_with_facts(SetupState::default(), SetupStep::ToolsMcp, facts);
 
         let action = view.handle_key(key(KeyCode::Enter));
         let ViewAction::Emit(ViewEvent::SetupStateCommitRequested { state, message }) = action
@@ -5647,7 +4274,7 @@ mod tests {
                 .expect("entry")
                 .required
         );
-        assert!(message.contains("needs action") || message.contains("Tools/MCP"));
+        assert!(message.contains("工具/MCP 仍需处理"));
         // Optional step still advances; first-run is not blocked.
         assert_eq!(view.selected_step(), SetupStep::Persistence);
     }
@@ -5664,12 +4291,8 @@ mod tests {
             tools_mcp_plugins_path_display: "~/.codewhale/plugins".into(),
             ..SetupRuntimeFacts::default()
         };
-        let mut view = SetupWizardView::new_at_with_facts(
-            SetupState::default(),
-            Locale::En,
-            SetupStep::ToolsMcp,
-            facts,
-        );
+        let mut view =
+            SetupWizardView::new_at_with_facts(SetupState::default(), SetupStep::ToolsMcp, facts);
 
         let action = view.handle_key(key(KeyCode::Char('r')));
         let ViewAction::Emit(ViewEvent::OpenTextPager { title, content }) = action else {
@@ -5696,21 +4319,20 @@ mod tests {
         };
         let view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Persistence,
             facts,
         );
 
         let text = lines_to_text(view.persistence_detail_lines());
 
-        assert!(text.contains("Home:"));
+        assert!(text.contains("Home："));
         assert!(text.contains("explicit CODEWHALE_HOME"));
         assert!(text.contains("/tmp/cw-home/config.toml"));
         assert!(text.contains("/tmp/cw-home/setup_state.json (missing)"));
-        assert!(text.contains("Constitution:"));
-        assert!(text.contains("Memory:"));
-        assert!(text.contains("Notes:"));
-        assert!(text.contains("Enter records this setup snapshot."));
+        assert!(text.contains("宪法："));
+        assert!(text.contains("记忆："));
+        assert!(text.contains("笔记："));
+        assert!(text.contains("按 Enter 记录此路径快照"));
     }
 
     #[test]
@@ -5724,7 +4346,6 @@ mod tests {
         };
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Persistence,
             facts,
         );
@@ -5747,7 +4368,7 @@ mod tests {
                 .as_deref()
                 .is_some_and(|result| result.contains("mode=read_only_review"))
         );
-        assert!(message.contains("Persistence paths recorded"));
+        assert!(message.contains("已记录持久化路径"));
         assert_eq!(view.selected_step(), SetupStep::Verification);
     }
 
@@ -5764,7 +4385,6 @@ mod tests {
         };
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::OperateFleet,
             facts,
         );
@@ -5780,7 +4400,7 @@ mod tests {
             StepStatus::NeedsAction
         );
         assert!(!state.operate_ready());
-        assert!(message.contains("needs action"));
+        assert!(message.contains("Operate/Fleet 仍需操作"));
     }
 
     #[test]
@@ -5796,7 +4416,6 @@ mod tests {
         };
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::TrustSandbox,
             facts,
         );
@@ -5809,7 +4428,7 @@ mod tests {
         let ViewAction::Emit(ViewEvent::OpenTextPager { content, .. }) = preview else {
             panic!("first apply should preview the exact diff");
         };
-        assert!(content.contains("Runtime Posture Preset Preview"));
+        assert!(content.contains("运行姿态预设预览"));
         assert!(content.contains("settings.default_mode: agent -> act + full-access"));
         assert!(content.contains(
             "config.approval_policy: never -> removed; Full Access comes from settings.permission_posture"
@@ -5843,7 +4462,7 @@ mod tests {
                         && result.contains("network=unchanged")
                 })
         );
-        assert!(message.contains("Runtime preset applied"));
+        assert!(message.contains("已应用运行姿态预设"));
         assert_eq!(view.selected_step(), SetupStep::Constitution);
     }
 
@@ -5856,7 +4475,6 @@ mod tests {
         };
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Verification,
             facts,
         );
@@ -5883,7 +4501,7 @@ mod tests {
                         && result.contains("runtime=intent=agent, approval=suggest")
                 })
         );
-        assert!(message.contains("Setup report recorded"));
+        assert!(message.contains("设置报告已记录"));
     }
 
     #[test]
@@ -5895,7 +4513,6 @@ mod tests {
         );
         let mut view = SetupWizardView::new_at_with_facts(
             state,
-            Locale::En,
             SetupStep::Verification,
             SetupRuntimeFacts::default(),
         );
@@ -5926,26 +4543,25 @@ mod tests {
         };
         let view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Verification,
             facts,
         );
 
         let text = lines_to_text(view.verification_detail_lines());
 
-        assert!(text.contains("First-run:"));
-        assert!(text.contains("Update checkpoint:"));
-        assert!(text.contains("Operate/Fleet:"));
-        assert!(text.contains("Constitution autonomy:"));
+        assert!(text.contains("首次运行："));
+        assert!(text.contains("更新检查点："));
+        assert!(text.contains("Operate/Fleet："));
+        assert!(text.contains("宪法主动性："));
         assert!(text.contains("balanced"));
-        assert!(text.contains("Runtime posture:"));
+        assert!(text.contains("运行时姿态："));
         assert!(text.contains("intent=agent, approval=suggest"));
-        assert!(text.contains("Complete the constitution checkpoint"));
+        assert!(text.contains("完成宪法检查点"));
     }
 
     #[test]
     fn setup_wizard_body_scroll_resets_on_step_change() {
-        let mut view = SetupWizardView::new(SetupState::default(), Locale::En);
+        let mut view = SetupWizardView::new(SetupState::default());
         view.body_scroll = 12;
         view.move_next();
         assert_eq!(view.body_scroll, 0, "step change should reset body scroll");
@@ -5962,7 +4578,6 @@ mod tests {
 
         let mut view = SetupWizardView::new_at_with_facts(
             SetupState::default(),
-            Locale::En,
             SetupStep::Constitution,
             SetupRuntimeFacts {
                 constitution_file: SetupConstitutionFileState::Loaded,

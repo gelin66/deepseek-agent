@@ -35,7 +35,6 @@ use crate::tui::views::{
     truncate_view_text,
 };
 use crate::worker_profile::{ShellPolicy, WorkerRuntimeProfile};
-use codewhale_config::Locale;
 
 /// The live session route — the operator the roster works for. Read once at
 /// open, the same way [`super::fleet_setup::FleetSetupSnapshot`] snapshots it.
@@ -70,19 +69,15 @@ pub struct FleetRosterView {
     /// Selected row: 0 is the pinned operator row, members follow at 1..
     selected: usize,
     detail_scroll: usize,
-    /// UI locale captured from the app at construction (#4057 wave 2).
-    locale: Locale,
 }
 
 impl FleetRosterView {
     #[must_use]
     pub fn new(app: &App, config: &Config) -> Self {
-        let mut view = Self::from_parts(
+        Self::from_parts(
             OperatorInfo::from_app(app),
             FleetRoster::load(&config.fleet_config(), &app.workspace),
-        );
-        view.locale = app.ui_locale;
-        view
+        )
     }
 
     fn from_parts(operator: OperatorInfo, roster: FleetRoster) -> Self {
@@ -101,7 +96,6 @@ impl FleetRosterView {
                 .collect(),
             selected: 0,
             detail_scroll: 0,
-            locale: Locale::En,
         }
     }
 
@@ -135,7 +129,7 @@ impl FleetRosterView {
         vec![
             ActionHint::new("↑/↓", "select"),
             ActionHint::new("s/Enter", "setup"),
-            ActionHint::new("w", tr(self.locale, MessageId::FleetRosterWorkers)),
+            ActionHint::new("w", tr(MessageId::FleetRosterWorkers)),
             ActionHint::new("PgUp/PgDn", "scroll detail"),
             ActionHint::new("Esc", "close"),
         ]
@@ -212,7 +206,7 @@ impl ModalView for FleetRosterView {
         let header = vec![
             Line::from(vec![
                 Span::styled(
-                    format!("─ {} ", tr(self.locale, MessageId::FleetRosterHeaderLabel)),
+                    format!("─ {} ", tr(MessageId::FleetRosterHeaderLabel)),
                     Style::default().fg(palette::WHALE_ACCENT_PRIMARY).bold(),
                 ),
                 Span::styled(
@@ -220,14 +214,14 @@ impl ModalView for FleetRosterView {
                     Style::default().fg(palette::BORDER_COLOR),
                 ),
                 Span::styled(
-                    tr(self.locale, MessageId::FleetRosterTabRoster),
+                    tr(MessageId::FleetRosterTabRoster),
                     Style::default().fg(palette::WHALE_INFO).bold(),
                 ),
                 Span::styled(
                     format!(
                         "  {}  {} ",
-                        tr(self.locale, MessageId::FleetRosterTabSetup),
-                        tr(self.locale, MessageId::FleetRosterWorkers)
+                        tr(MessageId::FleetRosterTabSetup),
+                        tr(MessageId::FleetRosterWorkers)
                     ),
                     Style::default().fg(palette::TEXT_MUTED),
                 ),
@@ -238,16 +232,13 @@ impl ModalView for FleetRosterView {
                 Span::styled(
                     format!(
                         "  {}",
-                        tr(self.locale, MessageId::FleetRosterMembersCount)
+                        tr(MessageId::FleetRosterMembersCount)
                             .replace("{count}", &(self.members.len() + 1).to_string())
                     ),
                     Style::default().fg(palette::TEXT_SECONDARY),
                 ),
                 Span::styled(
-                    format!(
-                        " · {}",
-                        tr(self.locale, MessageId::FleetRosterOperatorFirst)
-                    ),
+                    format!(" · {}", tr(MessageId::FleetRosterOperatorFirst)),
                     Style::default().fg(palette::TEXT_MUTED),
                 ),
             ]),
@@ -309,7 +300,7 @@ impl FleetRosterView {
                 (
                     format!(
                         "{pointer}@ {}  {}",
-                        tr(self.locale, MessageId::FleetRosterOperatorRow),
+                        tr(MessageId::FleetRosterOperatorRow),
                         self.operator.model
                     ),
                     Style::default()
@@ -565,7 +556,6 @@ mod tests {
             members,
             selected: 0,
             detail_scroll: 0,
-            locale: Locale::En,
         }
     }
 
@@ -580,22 +570,43 @@ mod tests {
         let mut stack = ViewStack::new();
         stack.push(make());
         stack.render(area, &mut buf);
-        (0..h)
-            .map(|y| {
-                (0..w)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
-            .collect()
+        (0..h).map(|y| buffer_row_text(&buf, area, y)).collect()
+    }
+
+    fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        row
+    }
+
+    fn is_localized_cjk_text(ch: char) -> bool {
+        matches!(
+            ch as u32,
+            0x3000..=0x303f
+                | 0x3400..=0x4dbf
+                | 0x4e00..=0x9fff
+                | 0xf900..=0xfaff
+                | 0xff00..=0xffef
+        )
     }
 
     /// #4208: every role mark and control glyph on the roster — operator,
     /// role shapes, selection arrows, scroll rails — must narrow to an
-    /// ASCII-safe alternative.
+    /// ASCII-safe alternative. Localized CJK prose is text, not decoration,
+    /// so it is deliberately outside this glyph-compatibility contract.
     #[test]
     fn fleet_roster_glyphs_all_have_ascii_alternatives() {
         let rows = render_through_stack(view_with_overrides, 100, 30);
-        for ch in rows.join("\n").chars().filter(|ch| !ch.is_ascii()) {
+        for ch in rows
+            .join("\n")
+            .chars()
+            .filter(|ch| !ch.is_ascii() && !is_localized_cjk_text(*ch))
+        {
             let mut cell = ratatui::buffer::Cell::default();
             cell.set_symbol(&ch.to_string());
             crate::tui::color_compat::adapt_cell_symbol_for_ascii(&mut cell);
@@ -840,7 +851,7 @@ mod tests {
                 assert!(text.contains("close"), "{label} {w}x{h}: missing footer");
                 // The first impression names Fleet as the worker/orchestration surface.
                 assert!(
-                    text.contains("fleet") && text.contains("workers"),
+                    text.contains("fleet") && text.contains("工作器"),
                     "{label} {w}x{h}: missing framing"
                 );
                 // The selected row's detail is on screen.

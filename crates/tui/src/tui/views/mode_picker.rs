@@ -18,7 +18,6 @@ use crate::tui::views::{
     ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, centered_modal_area,
     render_modal_footer, render_modal_surface,
 };
-use codewhale_config::Locale;
 
 // Operate remains parseable for restored sessions and explicit compatibility
 // inputs, but it is not a truthful interactive choice until Workflow dispatch
@@ -28,20 +27,18 @@ const VISIBLE_MODES: [AppMode; 2] = [AppMode::Agent, AppMode::Plan];
 
 pub struct ModePickerView {
     cursor: usize,
-    locale: Locale,
     row_hitboxes: RefCell<Vec<Rect>>,
 }
 
 impl ModePickerView {
     #[must_use]
-    pub fn new(current: AppMode, locale: Locale) -> Self {
+    pub fn new(current: AppMode) -> Self {
         let cursor = VISIBLE_MODES
             .iter()
             .position(|mode| *mode == current)
             .unwrap_or(0);
         Self {
             cursor,
-            locale,
             row_hitboxes: RefCell::new(Vec::new()),
         }
     }
@@ -182,8 +179,8 @@ impl ModalView for ModePickerView {
                 Style::default().fg(palette::TEXT_MUTED)
             };
             let pointer = if is_cursor { ">" } else { " " };
-            let name = mode.display_name_localized(self.locale);
-            let hint = mode.picker_hint_localized(self.locale);
+            let name = mode.display_name_localized();
+            let hint = mode.picker_hint_localized();
             // Pad by terminal columns, not scalar count, so wide (CJK) mode
             // names keep the hint column aligned.
             let pad = " ".repeat(8usize.saturating_sub(UnicodeWidthStr::width(&*name)));
@@ -217,13 +214,13 @@ mod tests {
 
     #[test]
     fn opens_on_current_mode() {
-        let view = ModePickerView::new(AppMode::Plan, Locale::En);
+        let view = ModePickerView::new(AppMode::Plan);
         assert_eq!(view.selected_mode(), AppMode::Plan);
     }
 
     #[test]
     fn enter_emits_selected_mode() {
-        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
+        let mut view = ModePickerView::new(AppMode::Agent);
         view.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         let action = view.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         match action {
@@ -252,19 +249,26 @@ mod tests {
         // Render through the ViewStack so the shared opaque backdrop is painted
         // exactly as it is in production.
         let mut stack = ViewStack::new();
-        stack.push(ModePickerView::new(AppMode::Agent, Locale::En));
+        stack.push(ModePickerView::new(AppMode::Agent));
         stack.render(area, &mut buf);
         (buf, area)
     }
 
     fn rows(buf: &Buffer, area: Rect) -> Vec<String> {
         (0..area.height)
-            .map(|y| {
-                (0..area.width)
-                    .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect::<String>()
-            })
+            .map(|y| buffer_row_text(buf, area, y))
             .collect()
+    }
+
+    fn buffer_row_text(buf: &Buffer, area: Rect, y: u16) -> String {
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        row
     }
 
     #[test]
@@ -311,24 +315,24 @@ mod tests {
     #[test]
     fn number_keys_select_modes() {
         // Visible roster: 1 Act, 2 Plan. Operate remains compatibility-only.
-        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
+        let mut view = ModePickerView::new(AppMode::Agent);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('3'), KeyModifiers::NONE));
         assert!(matches!(action, ViewAction::None));
 
         // Legacy YOLO shorthand (4) is not offered by the picker.
-        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
+        let mut view = ModePickerView::new(AppMode::Agent);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
         assert!(matches!(action, ViewAction::None));
 
         // Old Operate number (5) is gone — no numeric gaps.
-        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
+        let mut view = ModePickerView::new(AppMode::Agent);
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::NONE));
         assert!(matches!(action, ViewAction::None));
     }
 
     #[test]
     fn mouse_click_renders_and_selects_mode_row() {
-        let mut view = ModePickerView::new(AppMode::Agent, Locale::En);
+        let mut view = ModePickerView::new(AppMode::Agent);
         let mut terminal = Terminal::new(TestBackend::new(100, 30)).expect("test terminal");
         terminal
             .draw(|frame| view.render(frame.area(), frame.buffer_mut()))

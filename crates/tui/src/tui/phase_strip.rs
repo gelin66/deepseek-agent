@@ -19,6 +19,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::localization::MessageId;
 use crate::tui::{
     app::App,
     history::{HistoryCell, ToolCell, ToolStatus},
@@ -90,7 +91,7 @@ fn truncate_to_width(text: &str, width: usize) -> String {
     result
 }
 
-/// Compact working detail for the phase band: `run ×N · 12s`.
+/// Compact working detail for the phase band: `运行 ×N · 12s`.
 /// Kept quieter than the classic footer's verbose tool-status line so the
 /// transcript owns the ledger and the strip only names the live pulse.
 fn working_detail(app: &App) -> Option<String> {
@@ -105,8 +106,15 @@ fn working_detail(app: &App) -> Option<String> {
         .map(|started| started.elapsed().as_secs());
     match (running, secs) {
         (0, Some(secs)) if secs > 0 => Some(format!("{secs}s")),
-        (n, Some(secs)) if n > 0 => Some(format!("run ×{n} · {secs}s")),
-        (n, None) if n > 0 => Some(format!("run ×{n}")),
+        (n, Some(secs)) if n > 0 => Some(
+            app.tr(MessageId::PhaseRunningCountDuration)
+                .replace("{count}", &n.to_string())
+                .replace("{seconds}", &secs.to_string()),
+        ),
+        (n, None) if n > 0 => Some(
+            app.tr(MessageId::PhaseRunningCount)
+                .replace("{count}", &n.to_string()),
+        ),
         _ => None,
     }
 }
@@ -274,6 +282,17 @@ mod tests {
         )
     }
 
+    fn buffer_row_text(buf: &Buffer, area: Rect) -> String {
+        let mut row = String::new();
+        let mut x = area.left();
+        while x < area.right() {
+            let symbol = buf[(x, area.y)].symbol();
+            row.push_str(symbol);
+            x = x.saturating_add(UnicodeWidthStr::width(symbol).max(1) as u16);
+        }
+        row
+    }
+
     #[test]
     fn live_phases_sit_above_composer_idle_stays_below() {
         assert_eq!(
@@ -319,7 +338,6 @@ mod tests {
     #[test]
     fn working_band_names_run_count_without_key_chorus() {
         let mut app = test_app();
-        app.ui_locale = codewhale_config::Locale::En;
         app.is_loading = true;
         app.turn_started_at = Some(Instant::now() - Duration::from_secs(12));
         let mut active = ActiveCell::new();
@@ -349,15 +367,10 @@ mod tests {
         terminal
             .draw(|frame| render(frame.area(), frame.buffer_mut(), &mut app))
             .expect("draw");
-        let text = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(text.contains("working"), "{text}");
-        assert!(text.contains("run ×1"), "{text}");
+        let area = Rect::new(0, 0, 80, 1);
+        let text = buffer_row_text(terminal.backend().buffer(), area);
+        assert!(text.contains("工作中"), "{text}");
+        assert!(text.contains("运行 ×1"), "{text}");
         assert!(
             !text.contains("/help") && !text.contains("/compact"),
             "live phase strip stays quiet: {text}"
@@ -368,19 +381,12 @@ mod tests {
     fn idle_band_advertises_only_canonical_commands_by_width() {
         fn render_text(width: u16) -> String {
             let mut app = test_app();
-            app.ui_locale = codewhale_config::Locale::En;
             let backend = TestBackend::new(width, 1);
             let mut terminal = Terminal::new(backend).expect("terminal");
             terminal
                 .draw(|frame| render(frame.area(), frame.buffer_mut(), &mut app))
                 .expect("draw");
-            terminal
-                .backend()
-                .buffer()
-                .content()
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>()
+            buffer_row_text(terminal.backend().buffer(), Rect::new(0, 0, width, 1))
         }
 
         let compact = render_text(40);

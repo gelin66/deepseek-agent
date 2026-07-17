@@ -12,7 +12,6 @@ use crate::localization::{MessageId, tr};
 use crate::mcp::{McpConfig, McpManagerSnapshot, McpServerConfig, McpServerSnapshot};
 use crate::tui::app::App;
 use crate::utils::display_path;
-use codewhale_config::Locale;
 
 /// Per-surface readiness vocabulary shared with setup summaries and doctor-like
 /// copy. These never block first-run; they only describe optional power tools.
@@ -142,8 +141,8 @@ impl SetupToolsMcpFacts {
     }
 }
 
-pub(super) fn on_ramp_text(locale: Locale, facts: &SetupToolsMcpFacts) -> String {
-    let base = tr(locale, MessageId::SetupToolsMcpOnRampText);
+pub(super) fn on_ramp_text(facts: &SetupToolsMcpFacts) -> String {
+    let base = tr(MessageId::SetupToolsMcpOnRampText);
     base.replace("{mcp_result}", &facts.servers_result)
         .replace("{skills_result}", &facts.skills_result)
         .replace("{tools_result}", &facts.tools_result)
@@ -554,7 +553,6 @@ mod tests {
     use crate::config::Config;
     use crate::mcp::{McpDiscoveredItem, McpManagerSnapshot, McpServerSnapshot};
     use crate::tui::app::TuiOptions;
-    use codewhale_config::Locale;
     use tempfile::TempDir;
 
     fn test_app(
@@ -585,7 +583,6 @@ mod tests {
             initial_input: None,
         };
         let mut app = App::new(options, &Config::default());
-        app.ui_locale = Locale::En;
         // App::new re-resolves skills via global/workspace discovery; pin the
         // hermetic test path and empty cache so host ~/.agents/skills cannot
         // leak into inventory assertions.
@@ -879,10 +876,10 @@ mod tests {
             skills_path_display: "~/.codewhale/skills".into(),
             plugins_path_display: "~/.codewhale/plugins".into(),
         };
-        let text = on_ramp_text(Locale::En, &facts);
+        let text = on_ramp_text(&facts);
         assert!(text.contains("codewhale mcp init") || text.contains("/mcp"));
         assert!(text.contains("/skills") || text.contains("setup --skills"));
-        assert!(text.contains("does not") || text.contains("never") || text.contains("not run"));
+        assert!(text.contains("不会") || text.contains("不"));
         assert!(text.contains("~/.codewhale/mcp.json"));
         assert!(!text.contains("sk-"));
     }
