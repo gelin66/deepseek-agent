@@ -95,7 +95,6 @@ mod seam_manager;
 #[allow(dead_code)]
 mod session_diagnostics;
 #[allow(dead_code)]
-mod session_manager;
 mod settings;
 mod skills;
 mod slop_ledger;
@@ -6952,7 +6951,15 @@ async fn run_interactive(
     let janitor_workspace = workspace.clone();
     tokio::task::spawn_blocking(move || {
         if janitor_snapshots_enabled {
-            session_manager::prune_workspace_snapshots(&janitor_workspace, janitor_max_age);
+            match crate::snapshot::prune_older_than(&janitor_workspace, janitor_max_age) {
+                Ok(0) => {}
+                Ok(count) => {
+                    tracing::debug!(target: "snapshot", "boot prune removed {count} snapshot(s)");
+                }
+                Err(error) => {
+                    tracing::warn!(target: "snapshot", "boot prune failed: {error}");
+                }
+            }
         }
 
         match crate::tools::truncate::prune_older_than(crate::tools::truncate::SPILLOVER_MAX_AGE) {

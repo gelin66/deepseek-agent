@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 
 use crate::tui::app::App;
 use crate::tui::app::ToolDetailRecord;
-use crate::tui::file_mention::{ContextReferenceKind, ContextReferenceSource};
 use crate::tui::file_picker::FilePickerRelevance;
 use crate::tui::file_picker::FilePickerView;
+use crate::tui::history::HistoryCell;
 
 /// Push the `/files` picker onto the view stack, pre-populated with
 /// per-session relevance ranks (modified, @-mentioned, tool-touched).
@@ -47,19 +47,8 @@ pub(super) fn build_relevance(app: &App) -> FilePickerRelevance {
         relevance.mark_modified(path);
     }
 
-    for record in app.session_context_references.iter().rev().take(64) {
-        let reference = &record.reference;
-        if reference.source != ContextReferenceSource::AtMention {
-            continue;
-        }
-        if !matches!(reference.kind, ContextReferenceKind::File) {
-            continue;
-        }
-        for raw in [&reference.target, &reference.label] {
-            if let Some(path) = workspace_file_candidate(raw, &app.workspace) {
-                relevance.mark_mentioned(path);
-            }
-        }
+    for path in mentioned_workspace_paths(&app.history, &app.workspace) {
+        relevance.mark_mentioned(path);
     }
 
     let mut seen_tool_paths = HashSet::new();
@@ -73,6 +62,27 @@ pub(super) fn build_relevance(app: &App) -> FilePickerRelevance {
     }
 
     relevance
+}
+
+fn mentioned_workspace_paths(history: &[HistoryCell], workspace: &Path) -> Vec<String> {
+    let mut seen = HashSet::new();
+    history
+        .iter()
+        .rev()
+        .filter_map(|cell| match cell {
+            HistoryCell::User { content } => Some(content.as_str()),
+            _ => None,
+        })
+        .take(64)
+        .flat_map(|content| {
+            content
+                .split_whitespace()
+                .filter_map(|token| token.strip_prefix('@'))
+                .take(128)
+        })
+        .filter_map(|raw| workspace_file_candidate(raw, workspace))
+        .filter(|path| seen.insert(path.clone()))
+        .collect()
 }
 
 fn modified_workspace_paths(workspace: &Path) -> Vec<String> {
@@ -248,4 +258,32 @@ fn workspace_path_to_picker_string(path: &Path) -> Option<String> {
         out.push_str(&component.as_os_str().to_string_lossy());
     }
     if out.is_empty() { None } else { Some(out) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_user_history_keeps_at_mention_relevance() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let source = temp.path().join("src/lib.rs");
+        std::fs::create_dir_all(source.parent().expect("source parent"))
+            .expect("create source dir");
+        std::fs::write(&source, "pub fn answer() -> u8 { 42 }").expect("write source");
+        let history = vec![
+            HistoryCell::Assistant {
+                content: "我会检查文件".to_owned(),
+                streaming: false,
+            },
+            HistoryCell::User {
+                content: "请查看 @src/lib.rs:12 并给出建议".to_owned(),
+            },
+        ];
+
+        assert_eq!(
+            mentioned_workspace_paths(&history, temp.path()),
+            vec!["src/lib.rs"]
+        );
+    }
 }

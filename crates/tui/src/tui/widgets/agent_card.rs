@@ -145,7 +145,7 @@ impl DelegateCard {
         let mut lines = Vec::with_capacity(self.actions.len() + 3);
         let content_width = usize::from(width);
         let role = readable_agent_role(&self.agent_type);
-        let short_id = crate::session_manager::truncate_id(&self.agent_id).to_string();
+        let short_id = self.agent_id.get(..8).unwrap_or(&self.agent_id).to_string();
         let detail = if let Some(ref summary) = self.summary {
             truncate_action(summary, 72)
         } else {

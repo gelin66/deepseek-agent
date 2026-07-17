@@ -1,8 +1,8 @@
 //! Boot-time snapshot pruning.
 //!
-//! Called from `session_manager` once per session start. Failure is
-//! never fatal — old snapshots taking disk space is annoying but not
-//! correctness-breaking, so we log and move on.
+//! Called by the interactive boot janitor. Failure is never fatal — old
+//! snapshots taking disk space is annoying but not correctness-breaking, so
+//! the caller logs and moves on.
 
 use std::io;
 use std::path::Path;

@@ -13,7 +13,6 @@ use thiserror::Error;
 
 use codewhale_config::{Locale, ProviderChain, resolve_locale, route::RouteLimits};
 
-use crate::artifacts::ArtifactRecord;
 use crate::compaction::CompactionConfig;
 use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, has_api_key_for,
@@ -24,20 +23,17 @@ use crate::core::authority::{ModeSessionPrefs, base_policy_for_mode};
 use crate::core::events::TurnRoute;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{MessageId, tr};
-use crate::models::{Message, SystemPrompt};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
 use crate::resource_telemetry::TokenThroughput;
-use crate::session_manager::{SessionContextReference, SessionMetadata, SessionWorkState};
 use crate::settings::Settings;
 use crate::tools::plan::{PlanState, SharedPlanState, new_shared_plan_state};
 use crate::tools::spec::RuntimeToolServices;
 use crate::tools::subagent::SubAgentResult;
-use crate::tools::todo::{SharedTodoList, TodoList, new_shared_todo_list};
+use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
 use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
-use crate::tui::file_mention::ContextReference;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::hotbar::HotbarActionRegistry;
 use crate::tui::paste_burst::{FlushResult, PasteBurst};
@@ -1669,7 +1665,6 @@ pub struct App {
     pub history_revisions: Vec<u64>,
     /// Monotonic counter used to issue fresh per-cell revisions.
     pub next_history_revision: u64,
-    pub api_messages: Vec<Message>,
     pub is_loading: bool,
     /// Timestamp of the most recent Enter while the engine was busy.
     /// Used by `enter_with_double_tap()` to detect a double-tap within 500 ms.
@@ -1804,8 +1799,6 @@ pub struct App {
     /// fast typing or IME commits could otherwise be mis-classified as a
     /// paste burst (#1322 follow-up).
     pub bracketed_paste_seen: bool,
-    #[allow(dead_code)]
-    pub system_prompt: Option<SystemPrompt>,
     pub auto_compact: bool,
     pub auto_compact_user_configured: bool,
     pub auto_compact_threshold_percent: f64,
@@ -2011,17 +2004,6 @@ pub struct App {
     pub view_stack: ViewStack,
     /// Last `request_user_input` prompt, retained so a failed modal submit can reopen (#1198).
     pub pending_user_input_prompt: Option<(String, crate::tools::user_input::UserInputRequest)>,
-    /// Current session ID for auto-save updates
-    pub current_session_id: Option<String>,
-    /// Last non-contended Work snapshot captured in this App. The outer
-    /// option distinguishes "never captured" from a captured empty state.
-    pub(crate) last_known_work_state: Option<Option<SessionWorkState>>,
-    /// Metadata for the active session, cached in memory so automatic
-    /// checkpoints never synchronously reload and parse a growing JSON file on
-    /// the UI thread.
-    pub(crate) current_session_metadata: Option<SessionMetadata>,
-    /// Metadata-only registry of large tool outputs produced in this session.
-    pub session_artifacts: Vec<ArtifactRecord>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
     /// Translation mode — when enabled, the model is instructed to respond in
@@ -2069,11 +2051,6 @@ pub struct App {
     pub tool_cells: HashMap<String, usize>,
     /// Full tool input/output keyed by history cell index.
     pub tool_details_by_cell: HashMap<usize, ToolDetailRecord>,
-    /// Linked context references keyed by the visible user history cell that
-    /// introduced them.
-    pub context_references_by_cell: HashMap<usize, Vec<SessionContextReference>>,
-    /// Session-wide context references persisted with saved sessions.
-    pub session_context_references: Vec<SessionContextReference>,
     /// In-flight tool/exec group for the current turn. Mutated in place as
     /// parallel tool calls start and complete; flushed into `history` on
     /// `TurnComplete`.
@@ -2872,7 +2849,6 @@ impl App {
             history_version: 0,
             history_revisions: Vec::new(),
             next_history_revision: 1,
-            api_messages: Vec::new(),
             is_loading: false,
             last_enter_instant: None,
             provider_wait_incident_logged: false,
@@ -2918,7 +2894,6 @@ impl App {
             use_bracketed_paste,
             use_paste_burst_detection,
             bracketed_paste_seen: false,
-            system_prompt: None,
             auto_compact,
             auto_compact_user_configured,
             auto_compact_threshold_percent,
@@ -3016,10 +2991,6 @@ impl App {
             },
             view_stack: ViewStack::new(),
             pending_user_input_prompt: None,
-            current_session_id: None,
-            last_known_work_state: None,
-            current_session_metadata: None,
-            session_artifacts: Vec::new(),
             trust_mode: yolo_compat || initial_mode == AppMode::Yolo,
             translation_enabled: false,
             status_items: config
@@ -3049,8 +3020,6 @@ impl App {
             cached_skills,
             tool_cells: HashMap::new(),
             tool_details_by_cell: HashMap::new(),
-            context_references_by_cell: HashMap::new(),
-            session_context_references: Vec::new(),
             active_cell: None,
             active_cell_revision: 0,
             active_tool_details: HashMap::new(),
@@ -3618,20 +3587,6 @@ impl App {
         self.refresh_displayed_cost_high_water();
     }
 
-    /// Copy current session/subagent cost accumulators into session metadata
-    /// for persistence.
-    pub fn sync_cost_to_metadata(&self, metadata: &mut crate::session_manager::SessionMetadata) {
-        metadata.cost.session_cost_usd = self.session.session_cost;
-        metadata.cost.session_cost_cny = self.session.session_cost_cny;
-        metadata.cost.subagent_cost_usd = self.session.subagent_cost;
-        metadata.cost.subagent_cost_cny = self.session.subagent_cost_cny;
-        metadata.cost.displayed_cost_high_water_usd = self.session.displayed_cost_high_water;
-        metadata.cost.displayed_cost_high_water_cny = self.session.displayed_cost_high_water_cny;
-        // Persist cumulative turn duration so the footer "worked" chip
-        // survives session save/restore (#2038).
-        metadata.cumulative_turn_secs = self.cumulative_turn_duration.as_secs();
-    }
-
     /// Recompute the displayed cost high-water mark. Called any time a cost
     /// counter is mutated; never decreases.
     pub fn refresh_displayed_cost_high_water(&mut self) {
@@ -3801,19 +3756,6 @@ impl App {
             })
             .collect();
 
-        // context_references_by_cell
-        self.context_references_by_cell = std::mem::take(&mut self.context_references_by_cell)
-            .into_iter()
-            .filter_map(|(idx, refs)| {
-                if idx >= n {
-                    Some((idx - n, refs))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        self.rebuild_session_context_references();
-
         // subagent_card_index
         self.subagent_card_index.retain(|_, idx| {
             if *idx >= n {
@@ -3949,14 +3891,10 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Clear the history and its session-scoped side indexes. Used by /clear,
-    /// session reset, and other "wipe and reload" flows.
+    /// Clear the ephemeral display projection and its side indexes.
     pub fn clear_history(&mut self) {
         self.history.clear();
         self.history_revisions.clear();
-        self.context_references_by_cell.clear();
-        self.session_context_references.clear();
-        self.session_artifacts.clear();
         self.collapsed_cells.clear();
         self.expanded_tool_runs.clear();
         self.collapsed_cell_map.clear();
@@ -3969,8 +3907,6 @@ impl App {
         let cell = self.history.pop();
         if cell.is_some() {
             self.history_revisions.pop();
-            self.context_references_by_cell.remove(&self.history.len());
-            self.rebuild_session_context_references();
             self.expanded_tool_runs
                 .retain(|idx| *idx < self.history.len());
             self.history_version = self.history_version.wrapping_add(1);
@@ -4136,56 +4072,6 @@ impl App {
         (0..self.virtual_cell_count())
             .rev()
             .find(|&idx| self.cell_has_detail_target(idx))
-    }
-
-    pub fn record_context_references(
-        &mut self,
-        history_cell: usize,
-        message_index: usize,
-        references: Vec<ContextReference>,
-    ) {
-        if references.is_empty() {
-            return;
-        }
-        let records: Vec<SessionContextReference> = references
-            .into_iter()
-            .map(|reference| SessionContextReference {
-                message_index,
-                reference,
-            })
-            .collect();
-        self.context_references_by_cell
-            .insert(history_cell, records.clone());
-        self.rebuild_session_context_references();
-        self.needs_redraw = true;
-    }
-
-    pub fn sync_context_references_from_session(
-        &mut self,
-        references: &[SessionContextReference],
-        message_to_cell: &HashMap<usize, usize>,
-    ) {
-        self.context_references_by_cell.clear();
-        for record in references {
-            let Some(&cell_index) = message_to_cell.get(&record.message_index) else {
-                continue;
-            };
-            self.context_references_by_cell
-                .entry(cell_index)
-                .or_default()
-                .push(record.clone());
-        }
-        self.rebuild_session_context_references();
-    }
-
-    fn rebuild_session_context_references(&mut self) {
-        let mut records: Vec<SessionContextReference> = self
-            .context_references_by_cell
-            .values()
-            .flat_map(|records| records.iter().cloned())
-            .collect();
-        records.sort_by_key(|record| record.message_index);
-        self.session_context_references = records;
     }
 
     /// Mutable variant of [`Self::cell_at_virtual_index`]. Bumps the
@@ -6185,71 +6071,6 @@ impl App {
         None
     }
 
-    /// Capture the durable Work state without ever converting lock contention
-    /// into an empty snapshot.
-    pub fn work_state_snapshot(&self) -> Result<Option<SessionWorkState>, String> {
-        let todos = Self::retry_lock(&self.todos, 100)
-            .ok_or_else(|| "To-do state is busy; try saving again".to_string())?;
-        let plan = Self::retry_lock(&self.plan_state, 100)
-            .ok_or_else(|| "Plan state is busy; try saving again".to_string())?;
-        let state = SessionWorkState {
-            todos: todos.snapshot(),
-            plan: plan.snapshot(),
-        };
-        Ok((!state.is_empty()).then_some(state))
-    }
-
-    /// Non-blocking snapshot for the render/event loop. Automatic persistence
-    /// must skip a contended first save instead of pausing the UI or writing a
-    /// false empty state.
-    pub fn try_work_state_snapshot(&mut self) -> Result<Option<SessionWorkState>, String> {
-        let todos = self
-            .todos
-            .try_lock()
-            .map_err(|_| "To-do state is busy".to_string())?;
-        let plan = self
-            .plan_state
-            .try_lock()
-            .map_err(|_| "Plan state is busy".to_string())?;
-        let state = SessionWorkState {
-            todos: todos.snapshot(),
-            plan: plan.snapshot(),
-        };
-        let state = (!state.is_empty()).then_some(state);
-        drop(plan);
-        drop(todos);
-        self.last_known_work_state = Some(state.clone());
-        Ok(state)
-    }
-
-    /// Atomically replace the live Work state from a saved session.
-    pub fn restore_work_state(&mut self, state: Option<&SessionWorkState>) -> Result<(), String> {
-        let (restored_todos, restored_plan) = match state {
-            Some(state) => (
-                TodoList::from_snapshot(&state.todos)?,
-                PlanState::from_snapshot(&state.plan),
-            ),
-            None => (TodoList::new(), PlanState::default()),
-        };
-        let normalized_state = SessionWorkState {
-            todos: restored_todos.snapshot(),
-            plan: restored_plan.snapshot(),
-        };
-
-        let mut todos = Self::retry_lock(&self.todos, 100)
-            .ok_or_else(|| "To-do state is busy; session was not restored".to_string())?;
-        let mut plan = Self::retry_lock(&self.plan_state, 100)
-            .ok_or_else(|| "Plan state is busy; session was not restored".to_string())?;
-        *todos = restored_todos;
-        *plan = restored_plan;
-        drop(plan);
-        drop(todos);
-        self.cached_work_summary = None;
-        self.last_known_work_state =
-            Some((!normalized_state.is_empty()).then_some(normalized_state));
-        Ok(())
-    }
-
     pub fn clear_todos(&mut self) -> bool {
         // Acquire both stores before mutating either one. `/clear` must never
         // report success after clearing only half of the Work surface.
@@ -6264,7 +6085,6 @@ impl App {
         drop(plan);
         drop(todos);
         self.cached_work_summary = None;
-        self.last_known_work_state = Some(None);
         true
     }
 

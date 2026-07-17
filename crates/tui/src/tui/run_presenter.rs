@@ -822,7 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn model_response_projects_canonical_usage_without_legacy_messages() {
+    fn model_response_projects_per_response_and_aggregate_usage() {
         let run_id = RunId::from("run");
         let response_usage = Usage {
             input_tokens: 12_345,
@@ -874,7 +874,6 @@ mod tests {
         assert_eq!(app.session.total_output_tokens, 1_000);
         assert_eq!(app.session.total_cache_hit_tokens, 15_000);
         assert_eq!(app.session.total_cache_miss_tokens, 5_000);
-        assert!(app.api_messages.is_empty());
     }
 
     #[test]

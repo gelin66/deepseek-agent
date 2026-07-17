@@ -457,16 +457,6 @@ fn activity_navigation_lines(
 #[cfg(test)]
 fn activity_detail_handle_line(app: &App, cell_index: usize, cell: &HistoryCell) -> Option<String> {
     if let Some(detail) = app.tool_detail_record_for_cell(cell_index) {
-        if let Some(artifact) = app
-            .session_artifacts
-            .iter()
-            .find(|artifact| artifact.tool_call_id == detail.tool_id)
-        {
-            return Some(format!(
-                "Detail handle: {} (retrieve_tool_result ref={}; v raw details)",
-                artifact.id, artifact.id
-            ));
-        }
         return Some(format!(
             "Detail handle: tool:{} (v raw details)",
             detail.tool_id

@@ -797,8 +797,8 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     surface_prompt_override_notices(&mut app);
 
     // The canonical foreground is one application service plus one Run API
-    // client. No legacy Engine, SessionManager, TaskManager, translation model,
-    // checkpoint writer, or runtime-thread store participates in this path.
+    // client. No retired execution manager, translation model, checkpoint
+    // writer, or runtime-thread store participates in this path.
     app.launch.visible = false;
     let input = TerminalInputPump::spawn()?;
     let mut pending_terminal_events = VecDeque::new();

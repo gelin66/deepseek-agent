@@ -18,8 +18,8 @@
 //!   footprint tractable — typical 100 MB workspace × 12 turns ≈ 1.2 GB
 //!   uncompressed but git's content-addressed storage usually brings
 //!   that down 10-30×. We mitigate further with:
-//!     - 7-day default retention (`session_manager` prunes at session
-//!       start via [`prune::prune_older_than`]).
+//!     - 7-day default retention (the interactive boot janitor calls
+//!       [`prune::prune_older_than`]).
 //!     - `gc.auto = 0` on the side repo (we don't want background gcs
 //!       firing mid-turn) plus an explicit `git gc --prune=now` after
 //!       prune.

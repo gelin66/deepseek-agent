@@ -178,8 +178,8 @@ pub fn write_spillover(id: &str, content: &str) -> io::Result<PathBuf> {
 
 /// Drop spillover files older than `max_age`. Returns the number of
 /// files removed. Non-fatal: directory-missing returns 0; per-file
-/// errors are logged and skipped. Mirrors
-/// [`crate::session_manager::prune_workspace_snapshots`].
+/// errors are logged and skipped. Mirrors the workspace snapshot boot
+/// janitor.
 pub fn prune_older_than(max_age: Duration) -> io::Result<usize> {
     let Some(root) = spillover_root() else {
         return Ok(0);

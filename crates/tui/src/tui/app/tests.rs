@@ -1535,40 +1535,6 @@ fn clear_todos_resets_plan_state() {
 }
 
 #[test]
-fn work_state_snapshot_round_trips_todos_and_plan() {
-    let app = App::new(test_options(false), &Config::default());
-    {
-        let mut todos = app.todos.try_lock().expect("todos lock");
-        todos.add("inspect".to_string(), TodoStatus::Completed);
-        todos.add("patch".to_string(), TodoStatus::InProgress);
-    }
-    {
-        let mut plan = app.plan_state.try_lock().expect("plan lock");
-        plan.update(UpdatePlanArgs {
-            objective: Some("Keep Work durable".to_string()),
-            plan: vec![PlanItemArg {
-                step: "verify".to_string(),
-                status: StepStatus::InProgress,
-            }],
-            ..UpdatePlanArgs::default()
-        });
-    }
-    let state = app
-        .work_state_snapshot()
-        .expect("snapshot locks")
-        .expect("non-empty state");
-
-    let mut restored = App::new(test_options(false), &Config::default());
-    restored
-        .restore_work_state(Some(&state))
-        .expect("restore Work state");
-    assert_eq!(
-        restored.work_state_snapshot().expect("snapshot"),
-        Some(state)
-    );
-}
-
-#[test]
 fn clear_todos_is_atomic_and_invalidates_cached_work_summary() {
     let mut app = App::new(test_options(false), &Config::default());
     {
@@ -1579,7 +1545,20 @@ fn clear_todos_is_atomic_and_invalidates_cached_work_summary() {
 
     assert!(app.clear_todos());
     assert!(app.cached_work_summary.is_none());
-    assert_eq!(app.work_state_snapshot().expect("snapshot"), None);
+    assert!(
+        app.todos
+            .try_lock()
+            .expect("todos lock")
+            .snapshot()
+            .is_empty()
+    );
+    assert!(
+        app.plan_state
+            .try_lock()
+            .expect("plan lock")
+            .snapshot()
+            .is_empty()
+    );
 }
 
 #[test]

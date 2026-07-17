@@ -190,9 +190,7 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        let mut app = App::new(options, &Config::default());
-        app.current_session_id = Some("session-123".to_string());
-        (app, tmpdir)
+        (App::new(options, &Config::default()), tmpdir)
     }
 
     fn external_url(result: &CommandResult) -> &str {
