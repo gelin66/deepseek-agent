@@ -13,9 +13,9 @@ use codewhale_protocol::agent_runtime::{
     InteractionId, RunId, RunPurpose, StoredRuntimeEvent, UserInteractionResponse,
 };
 use codewhale_protocol::run_api::{
-    CompactRunCommand, ContinueRunCommand, MAX_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION,
-    RootRunSummary, RunApiError, RunCommand, RunCommandEnvelope, RunCommandResult, RunView,
-    StartRunCommand,
+    CompactRunCommand, ContinueRunCommand, MAX_RUN_LIST_LIMIT, PendingCreationSummary,
+    RUN_API_SCHEMA_VERSION, RootRunSummary, RunApiError, RunCommand, RunCommandEnvelope,
+    RunCommandResult, RunView, StartRunCommand,
 };
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
@@ -30,6 +30,13 @@ pub enum TuiRunClientError {
     LaunchInFlight,
     #[error("当前没有可控制的活动根运行")]
     NoActiveRun,
+    #[error(
+        "工作区 {workspace:?} 存在多个待恢复创建请求，无法安全地自动选择：{creation_request_ids:?}"
+    )]
+    AmbiguousPendingCreations {
+        workspace: String,
+        creation_request_ids: Vec<String>,
+    },
     #[error("Run API 返回错误：{0:?}")]
     Application(RunApiError),
     #[error("Run API 对 {operation} 返回了意外结果：{result:?}")]
@@ -309,6 +316,80 @@ impl TuiRunClient {
         }
     }
 
+    /// List canonical creation receipts that reserved a Run identity but did
+    /// not commit `RunCreated`.
+    ///
+    /// The payload remains private to the application and Store. The TUI does
+    /// not reconstruct the original prompt or maintain a second recovery
+    /// journal.
+    pub async fn list_pending_creations(
+        &self,
+        workspace: String,
+        limit: u32,
+    ) -> Result<Vec<PendingCreationSummary>, TuiRunClientError> {
+        let operation = "list-pending-creations";
+        let response = self
+            .application
+            .execute(self.envelope(
+                operation,
+                RunCommand::ListPendingCreations { workspace, limit },
+            ))
+            .await;
+        match response.result {
+            RunCommandResult::PendingCreations { creations, .. } => Ok(creations),
+            RunCommandResult::Error { error } => Err(TuiRunClientError::Application(error)),
+            result => Err(TuiRunClientError::UnexpectedResult { operation, result }),
+        }
+    }
+
+    /// Recover one exact canonical creation receipt and adopt its reserved Run.
+    ///
+    /// `AgentApplication` owns payload replay and unknown-billing policy. This
+    /// client only supplies the durable creation identity and then uses the
+    /// same adoption/monitoring path as Start, Continue, Compact, and Resume.
+    pub async fn recover_creation(
+        &self,
+        creation_request_id: String,
+    ) -> Result<RunView, TuiRunClientError> {
+        self.begin_launch().await?;
+        self.execute_launch(
+            "recover-creation",
+            RunCommand::RecoverCreation {
+                creation_request_id,
+            },
+        )
+        .await
+    }
+
+    /// Recover the sole unambiguous pending creation for one workspace.
+    ///
+    /// Unknown-billing receipts are deliberately sent to canonical recovery:
+    /// the application returns its original typed `RunApiError` without
+    /// rerouting or reconstructing the prompt. Multiple receipts require an
+    /// explicit picker and are never silently reduced to "latest".
+    pub async fn recover_pending_for_workspace(
+        &self,
+        workspace: String,
+    ) -> Result<Option<RunView>, TuiRunClientError> {
+        let creations = self
+            .list_pending_creations(workspace.clone(), MAX_RUN_LIST_LIMIT)
+            .await?;
+        match creations.as_slice() {
+            [] => Ok(None),
+            [creation] => self
+                .recover_creation(creation.creation_request_id.clone())
+                .await
+                .map(Some),
+            _ => Err(TuiRunClientError::AmbiguousPendingCreations {
+                workspace,
+                creation_request_ids: creations
+                    .into_iter()
+                    .map(|creation| creation.creation_request_id)
+                    .collect(),
+            }),
+        }
+    }
+
     /// Attach to a terminal run for replay, or recover a non-terminal run.
     ///
     /// `Get` is read-only and cannot make an inactive durable run active.
@@ -544,12 +625,23 @@ async fn record_and_send(
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroU32;
+    use std::path::Path;
+    use std::time::Duration;
 
+    use codewhale_app::{
+        DeepSeekConnectionConfig, DeepSeekEndpoint, ProductionApplicationConfig,
+        ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
+    };
     use codewhale_protocol::agent_runtime::{
-        AgentOutcome, ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId,
+        AgentOutcome, CommandId, ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId,
         RuntimeEventKind, TerminalState, ToolPolicy,
     };
-    use codewhale_protocol::run_api::RunProductControls;
+    use codewhale_protocol::run_api::{PendingCreationKind, RunApiErrorCode, RunProductControls};
+    use codewhale_runtime::{CreationIntent, RunStore};
+    use codewhale_state::StateStore;
+    use sha2::{Digest, Sha256};
+    use tempfile::TempDir;
+    use wiremock::MockServer;
 
     use super::*;
 
@@ -622,6 +714,132 @@ mod tests {
                 }),
             },
         }
+    }
+
+    struct RecoveryFixture {
+        _root: TempDir,
+        workspace: String,
+        store: StateStore,
+        application: Arc<AgentApplication>,
+        model: MockServer,
+    }
+
+    impl RecoveryFixture {
+        async fn new() -> Self {
+            let model = MockServer::start().await;
+            let root = TempDir::new().expect("isolated recovery fixture");
+            let workspace_path = root.path().join("workspace");
+            let skills_dir = root.path().join("skills");
+            std::fs::create_dir_all(&workspace_path).expect("create fixture workspace");
+            std::fs::create_dir_all(&skills_dir).expect("create fixture skills directory");
+            let workspace = std::fs::canonicalize(&workspace_path)
+                .expect("canonical fixture workspace")
+                .display()
+                .to_string();
+            let state_path = root.path().join("state.db");
+            let store = StateStore::open(Some(state_path.clone())).expect("open fixture RunStore");
+            let application =
+                fixture_application(&state_path, &model.uri(), &workspace_path, &skills_dir);
+            Self {
+                _root: root,
+                workspace,
+                store,
+                application,
+                model,
+            }
+        }
+
+        async fn reserve(
+            &self,
+            creation_request_id: &str,
+            reserved_run_id: &str,
+            command: RunCommand,
+        ) {
+            let (kind, workspace, source_run_id) = match &command {
+                RunCommand::Start(command) => {
+                    (PendingCreationKind::Start, command.workspace.clone(), None)
+                }
+                RunCommand::Continue(command) => (
+                    PendingCreationKind::Continue,
+                    command
+                        .expected_workspace
+                        .clone()
+                        .expect("fixture continuation workspace"),
+                    Some(command.run_id.clone()),
+                ),
+                RunCommand::Compact(command) => (
+                    PendingCreationKind::Compact,
+                    command
+                        .expected_workspace
+                        .clone()
+                        .expect("fixture compaction workspace"),
+                    Some(command.run_id.clone()),
+                ),
+                other => panic!("fixture only reserves creation commands: {other:?}"),
+            };
+            self.store
+                .reserve_creation(
+                    &CommandId::from(creation_request_id),
+                    &creation_digest(&command),
+                    RunId::from(reserved_run_id),
+                    CreationIntent {
+                        kind,
+                        workspace,
+                        source_run_id,
+                        command,
+                    },
+                )
+                .await
+                .expect("reserve fixture creation");
+        }
+
+        async fn received_model_requests(&self) -> usize {
+            self.model
+                .received_requests()
+                .await
+                .expect("loopback request journal")
+                .len()
+        }
+    }
+
+    fn fixture_application(
+        state_path: &Path,
+        base_url: &str,
+        workspace: &Path,
+        skills_dir: &Path,
+    ) -> Arc<AgentApplication> {
+        let connection = DeepSeekConnectionConfig {
+            endpoint: DeepSeekEndpoint::loopback_fixture(format!("{base_url}/v1"))
+                .expect("loopback DeepSeek endpoint"),
+            strict_tools: false,
+            response_header_timeout: Duration::from_secs(2),
+            stream_idle_timeout: Duration::from_secs(2),
+            retry: TransportRetryPolicy::disabled(),
+        };
+        let config = ProductionApplicationConfig::official()
+            .with_state_db_path(state_path)
+            .with_deepseek_connection(connection)
+            .with_tool_config(
+                ProductionToolConfig::new(workspace).with_shell_policy(ShellPolicy::None),
+            )
+            .with_prompt(ProductionPromptConfig {
+                skills_dir: Some(skills_dir.to_path_buf()),
+                project_context_pack_enabled: false,
+                ..ProductionPromptConfig::default()
+            })
+            .with_default_max_api_requests(NonZeroU32::new(2).expect("non-zero request limit"))
+            .with_api_key("offline-creation-recovery-key")
+            .expect("fixture credential");
+        Arc::new(AgentApplication::production(config).expect("fixture AgentApplication"))
+    }
+
+    fn creation_digest(command: &RunCommand) -> String {
+        let bytes = serde_json::to_vec(command).expect("serialize canonical creation command");
+        let digest = Sha256::digest(bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        format!("sha256:{digest}")
     }
 
     #[test]
@@ -772,5 +990,157 @@ mod tests {
         };
         assert_eq!(first.request_id, retry.request_id);
         assert_ne!(first.request_id, second.request_id);
+    }
+
+    #[tokio::test]
+    async fn no_pending_creation_returns_none_without_starting_a_run() {
+        let fixture = RecoveryFixture::new().await;
+        let (client, _events) = TuiRunClient::new(fixture.application.clone());
+
+        assert!(
+            client
+                .recover_pending_for_workspace(fixture.workspace.clone())
+                .await
+                .expect("empty canonical pending list")
+                .is_none()
+        );
+        assert_eq!(fixture.received_model_requests().await, 0);
+    }
+
+    #[tokio::test]
+    async fn sole_explicit_pending_creation_recovers_and_adopts_reserved_run() {
+        let fixture = RecoveryFixture::new().await;
+        let creation_request_id = "tui-recover-explicit";
+        let reserved_run_id = "tui-reserved-explicit";
+        let mut command = start_command("恢复未发布的显式模型任务");
+        command.workspace = fixture.workspace.clone();
+        fixture
+            .reserve(
+                creation_request_id,
+                reserved_run_id,
+                RunCommand::Start(command),
+            )
+            .await;
+        let (client, _events) = TuiRunClient::new(fixture.application.clone());
+
+        let recovered = client
+            .recover_pending_for_workspace(fixture.workspace.clone())
+            .await
+            .expect("recover sole explicit creation")
+            .expect("one pending creation");
+
+        assert_eq!(recovered.run_id, RunId::from(reserved_run_id));
+        assert!(
+            fixture
+                .store
+                .load(&recovered.run_id)
+                .await
+                .expect("load recovered run")
+                .is_some(),
+            "recovery must create the exact reserved canonical Run"
+        );
+        assert!(
+            client
+                .list_pending_creations(fixture.workspace, 10)
+                .await
+                .expect("list consumed creations")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_billing_returns_canonical_error_without_second_model_request() {
+        let fixture = RecoveryFixture::new().await;
+        let creation_request_id = "tui-recover-unknown-billing";
+        let reserved_run_id = "tui-reserved-unknown-billing";
+        let mut command = start_command("不得重复自动路由");
+        command.workspace = fixture.workspace.clone();
+        command.model = None;
+        fixture
+            .reserve(
+                creation_request_id,
+                reserved_run_id,
+                RunCommand::Start(command),
+            )
+            .await;
+        let (client, _events) = TuiRunClient::new(fixture.application.clone());
+
+        let error = client
+            .recover_pending_for_workspace(fixture.workspace.clone())
+            .await
+            .expect_err("unknown billing must fail closed");
+        let TuiRunClientError::Application(error) = error else {
+            panic!("expected typed canonical application error, got {error:?}")
+        };
+        assert_eq!(error.code, RunApiErrorCode::RunRecoveryRequired);
+        let creation = error
+            .creation
+            .as_deref()
+            .expect("unknown billing must carry creation context");
+        assert_eq!(creation.creation_request_id, creation_request_id);
+        assert_eq!(error.run_id, Some(RunId::from(reserved_run_id)));
+        assert!(creation.unknown_billing);
+        assert_eq!(
+            fixture.received_model_requests().await,
+            0,
+            "TUI recovery must not resubmit the original prompt or rerun auto routing"
+        );
+    }
+
+    #[tokio::test]
+    async fn multiple_pending_creations_fail_closed_without_starting_any_run() {
+        let fixture = RecoveryFixture::new().await;
+        for (request_id, run_id, input) in [
+            ("tui-pending-a", "tui-reserved-a", "待恢复任务甲"),
+            ("tui-pending-b", "tui-reserved-b", "待恢复任务乙"),
+        ] {
+            let mut command = start_command(input);
+            command.workspace = fixture.workspace.clone();
+            fixture
+                .reserve(request_id, run_id, RunCommand::Start(command))
+                .await;
+        }
+        let (client, _events) = TuiRunClient::new(fixture.application.clone());
+
+        let error = client
+            .recover_pending_for_workspace(fixture.workspace.clone())
+            .await
+            .expect_err("multiple creations require an explicit choice");
+        let TuiRunClientError::AmbiguousPendingCreations {
+            workspace,
+            creation_request_ids,
+        } = error
+        else {
+            panic!("expected explicit ambiguity, got {error:?}")
+        };
+        assert_eq!(workspace, fixture.workspace);
+        assert_eq!(creation_request_ids.len(), 2);
+        assert!(
+            creation_request_ids
+                .iter()
+                .any(|request_id| request_id == "tui-pending-a")
+        );
+        assert!(
+            creation_request_ids
+                .iter()
+                .any(|request_id| request_id == "tui-pending-b")
+        );
+        assert!(
+            fixture
+                .store
+                .load(&RunId::from("tui-reserved-a"))
+                .await
+                .expect("load first reserved run")
+                .is_none()
+        );
+        assert!(
+            fixture
+                .store
+                .load(&RunId::from("tui-reserved-b"))
+                .await
+                .expect("load second reserved run")
+                .is_none()
+        );
+        assert_eq!(fixture.received_model_requests().await, 0);
     }
 }

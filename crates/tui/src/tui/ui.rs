@@ -57,7 +57,7 @@ use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::mouse_ui::*;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
-use crate::tui::run_client::TuiRunClient;
+use crate::tui::run_client::{TuiRunClient, TuiRunClientError};
 use crate::tui::run_presenter::{PresenterAction, present_effect};
 use crate::tui::run_projection::CanonicalRunProjection;
 use crate::tui::scrolling::TranscriptScroll;
@@ -814,6 +814,14 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     {
         return Ok(());
     }
+    app.workspace = app
+        .workspace
+        .canonicalize()
+        .with_context(|| format!("无法规范化 TUI 工作区：{}", app.workspace.display()))?;
+    if !app.workspace.is_dir() {
+        anyhow::bail!("TUI 工作区不是目录：{}", app.workspace.display());
+    }
+    let workspace_identity = app.workspace.display().to_string();
     let settings = Settings::load().unwrap_or_default();
     let application_config = crate::exec_runtime::production_application_config(
         config,
@@ -827,10 +835,11 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let application = Arc::new(AgentApplication::production(application_config)?);
     let (run_client, mut run_events) = TuiRunClient::new(application);
 
+    let mut suppress_automatic_initial_submit = false;
     if let Some(resume_id) = options.resume_session_id.as_deref() {
         let run_id = if resume_id == "latest" {
             run_client
-                .latest_root(app.workspace.display().to_string())
+                .latest_root(workspace_identity.clone())
                 .await?
                 .map(|run| run.run_id)
                 .ok_or_else(|| anyhow::anyhow!("当前工作区没有可恢复的 Agent 运行"))?
@@ -838,12 +847,31 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
             RunId::from(resume_id)
         };
         let _ = run_client
-            .attach_or_resume(run_id, Some(app.workspace.display().to_string()))
+            .attach_or_resume(run_id, Some(workspace_identity.clone()))
             .await?;
         app.is_loading = true;
+    } else {
+        match recover_creation_at_startup(&run_client, workspace_identity).await? {
+            StartupCreationRecovery::None => {}
+            StartupCreationRecovery::Recovered { run_id, active } => {
+                suppress_automatic_initial_submit = true;
+                app.is_loading = active;
+                app.status_message = Some(format!("正在恢复中断的运行：{run_id}"));
+            }
+            StartupCreationRecovery::Warning(message) => {
+                suppress_automatic_initial_submit = true;
+                app.status_message = Some(message.clone());
+                app.add_message(HistoryCell::System { content: message });
+            }
+        }
     }
 
-    if app.auto_submit_initial_input {
+    if suppress_automatic_initial_submit {
+        // Keep a CLI-supplied initial prompt in the composer. Pressing Enter is
+        // then a conscious new creation with a fresh request identity; startup
+        // recovery never replays it implicitly.
+        app.auto_submit_initial_input = false;
+    } else if app.auto_submit_initial_input {
         app.auto_submit_initial_input = false;
         if let Some(input) = app.submit_input() {
             let _ = run_client
@@ -885,6 +913,65 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     drop(terminal);
 
     result
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StartupCreationRecovery {
+    None,
+    Recovered { run_id: RunId, active: bool },
+    Warning(String),
+}
+
+async fn recover_creation_at_startup(
+    run_client: &TuiRunClient,
+    workspace: String,
+) -> Result<StartupCreationRecovery, TuiRunClientError> {
+    match run_client.recover_pending_for_workspace(workspace).await {
+        Ok(None) => Ok(StartupCreationRecovery::None),
+        Ok(Some(run)) => Ok(StartupCreationRecovery::Recovered {
+            run_id: run.run_id,
+            active: run.terminal.is_none(),
+        }),
+        Err(TuiRunClientError::Application(error))
+            if error
+                .creation
+                .as_deref()
+                .is_some_and(|creation| creation.unknown_billing) =>
+        {
+            let creation = error
+                .creation
+                .as_deref()
+                .expect("unknown-billing guard requires creation context");
+            let run = error
+                .run_id
+                .as_ref()
+                .map_or_else(|| "未知".to_owned(), ToString::to_string);
+            Ok(StartupCreationRecovery::Warning(format!(
+                "检测到上次自动选模创建未确认（creation：{}，run：{run}）。计费状态未知，\
+                 已禁止自动重发原请求；如需开始新任务，请检查后在输入框按 Enter 明确提交。",
+                creation.creation_request_id
+            )))
+        }
+        Err(TuiRunClientError::AmbiguousPendingCreations {
+            workspace,
+            creation_request_ids,
+        }) => {
+            let count = creation_request_ids.len();
+            let preview = creation_request_ids
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("、");
+            let suffix = if count > 3 { " 等" } else { "" };
+            Ok(StartupCreationRecovery::Warning(format!(
+                "工作区 {workspace:?} 有 {count} 个中断的创建请求，未自动选择（{preview}{suffix}）。\
+                 CLI 初始提示未自动发送；请通过本地 Run API 按 creation ID 恢复，\
+                 或在输入框按 Enter 明确开始新任务。"
+            )))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Complete first-run setup before constructing the sole production
