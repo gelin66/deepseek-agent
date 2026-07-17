@@ -15,7 +15,6 @@ pub mod active_cell;
 pub mod app;
 pub mod approval;
 pub mod auto_review;
-pub mod auto_router;
 pub mod clipboard;
 pub mod color_compat;
 pub mod command_palette;

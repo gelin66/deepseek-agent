@@ -583,10 +583,9 @@ pub fn translate(app: &mut App) -> CommandResult {
 mod tests {
     use super::*;
     use crate::config::Config;
-    use crate::tui::app::{App, AppMode, TuiOptions, TurnCacheRecord};
+    use crate::tui::app::{App, AppMode, TuiOptions};
     use std::ffi::OsString;
     use std::path::PathBuf;
-    use std::time::Instant;
     use tempfile::{TempDir, tempdir};
 
     struct SettingsPathGuard {
@@ -951,55 +950,6 @@ mod tests {
         // The session route is unchanged — still Z.ai / GLM.
         assert_eq!(app.api_provider, crate::config::ApiProvider::Zai);
         assert_eq!(app.model, crate::config::DEFAULT_ZAI_MODEL);
-    }
-
-    #[test]
-    fn model_switch_clears_turn_cache_history() {
-        let _settings = SettingsPathGuard::new();
-        let mut app = create_test_app();
-        // Keep the assertion independent of the developer's saved default model.
-        app.auto_model = false;
-        app.model = "deepseek-v4-pro".to_string();
-        app.push_turn_cache_record(TurnCacheRecord {
-            provider: None,
-            model: None,
-            auto_model: false,
-            input_tokens: 100,
-            output_tokens: 25,
-            cache_hit_tokens: Some(70),
-            cache_miss_tokens: Some(30),
-            reasoning_replay_tokens: Some(12),
-            recorded_at: Instant::now(),
-        });
-
-        let result = model(&mut app, Some("deepseek-v4-flash"));
-
-        assert!(result.message.is_some());
-        assert!(app.session.turn_cache_history.is_empty());
-    }
-
-    #[test]
-    fn model_reset_same_model_keeps_turn_cache_history() {
-        let _settings = SettingsPathGuard::new();
-        let mut app = create_test_app();
-        app.auto_model = false;
-        app.model = "deepseek-v4-pro".to_string();
-        app.push_turn_cache_record(TurnCacheRecord {
-            provider: None,
-            model: None,
-            auto_model: false,
-            input_tokens: 100,
-            output_tokens: 25,
-            cache_hit_tokens: Some(70),
-            cache_miss_tokens: Some(30),
-            reasoning_replay_tokens: Some(12),
-            recorded_at: Instant::now(),
-        });
-
-        let result = model(&mut app, Some("deepseek-v4-pro"));
-
-        assert!(result.message.is_some());
-        assert_eq!(app.session.turn_cache_history.len(), 1);
     }
 
     #[test]

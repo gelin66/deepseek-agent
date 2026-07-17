@@ -14,7 +14,6 @@ use thiserror::Error;
 use codewhale_config::{Locale, ProviderChain, resolve_locale, route::RouteLimits};
 
 use crate::artifacts::ArtifactRecord;
-use crate::client::{CacheWarmupKey, PromptInspection};
 use crate::compaction::CompactionConfig;
 use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, has_api_key_for,
@@ -184,40 +183,6 @@ pub enum AppMode {
     Yolo,
     Plan,
     Operate,
-}
-
-/// One row in the per-turn cache-telemetry ring (`/cache` debug surface, #263).
-#[derive(Debug, Clone)]
-pub struct TurnCacheRecord {
-    /// API provider used for the turn. This is recorded so cache misses can be
-    /// correlated with provider/model route changes.
-    pub provider: Option<ApiProvider>,
-    /// Concrete model used for the turn. For auto-model turns this is the
-    /// routed model, not the literal `auto` setting.
-    pub model: Option<String>,
-    /// Whether the route came from the auto-model selector.
-    pub auto_model: bool,
-    /// Provider-reported total input tokens for the turn (cache-hit +
-    ///   cache-miss + uncategorized). Useful for sanity-checking that hits +
-    ///   misses sum back to roughly the prompt size.
-    pub input_tokens: u32,
-    /// Provider-reported output tokens.
-    pub output_tokens: u32,
-    /// `prompt_cache_hit_tokens` from DeepSeek's usage payload. `None` when
-    ///   the model in use does not report cache telemetry (see
-    ///   `Capabilities::cache_telemetry_supported`).
-    pub cache_hit_tokens: Option<u32>,
-    /// `prompt_cache_miss_tokens`. `None` when the provider did not report it
-    ///   — in that case the `/cache` formatter infers the miss as
-    ///   `input_tokens − cache_hit_tokens`.
-    pub cache_miss_tokens: Option<u32>,
-    /// Approximate tokens spent re-sending prior `reasoning_content` on
-    ///   V4-thinking tool-calling turns (chars/3 heuristic). Helps separate
-    ///   cache misses caused by reasoning-replay churn from misses caused by
-    ///   real prefix instability.
-    pub reasoning_replay_tokens: Option<u32>,
-    /// Local timestamp the turn telemetry was recorded.
-    pub recorded_at: Instant,
 }
 
 /// Reasoning-effort tier, mirrored across DeepSeek and Codex effort pickers.
@@ -1514,16 +1479,8 @@ pub struct SessionState {
     pub total_cache_hit_tokens: u32,
     pub total_cache_miss_tokens: u32,
     pub total_output_tokens: u32,
-    pub turn_cache_history: VecDeque<TurnCacheRecord>,
-    pub last_cache_inspection: Option<PromptInspection>,
-    pub last_warmup_key: Option<CacheWarmupKey>,
     /// Tool catalog from the most recent model request.
-    ///
-    /// `/cache inspect` uses this to inspect the same tool schema bytes
-    /// that were eligible for the provider's prefix cache.
     pub last_tool_catalog: Option<Vec<Tool>>,
-    /// API base URL used by the most recent model request or cache warmup.
-    pub last_base_url: Option<String>,
 }
 
 /// Sidebar hover state for mouse tooltip support.
@@ -1646,11 +1603,7 @@ impl Default for SessionState {
             total_cache_hit_tokens: 0,
             total_cache_miss_tokens: 0,
             total_output_tokens: 0,
-            turn_cache_history: VecDeque::new(),
-            last_cache_inspection: None,
-            last_warmup_key: None,
             last_tool_catalog: None,
-            last_base_url: None,
         }
     }
 }
@@ -2325,20 +2278,6 @@ pub struct App {
     /// states. See [`App::arm_quit`] / [`App::quit_is_armed`].
     pub quit_armed_until: Option<Instant>,
 
-    // === Prefix-Cache Stability Tracking ===
-    /// Number of times the prefix (system prompt + tool specs) has changed.
-    pub prefix_change_count: u64,
-    /// Total number of prefix stability checks performed.
-    pub prefix_checks_total: u64,
-    /// Current prefix stability percentage, if known.
-    pub prefix_stability_pct: Option<u32>,
-    /// Description of the last prefix change, if any.
-    pub last_prefix_change_desc: Option<String>,
-    /// Current pinned prefix combined hash (SHA-256, 64 hex chars).
-    /// Updated per-turn via PrefixCacheChange events; surfaced by
-    /// `/cache stats` for cache-hit debugging.
-    pub last_pinned_prefix_hash: Option<String>,
-
     // === Transcript filtering (#397) ===
     /// Transcript cells the user has collapsed (hidden from view).
     /// Stores **original** virtual cell indices (pre-filtering).
@@ -2498,19 +2437,6 @@ impl App {
         self.draft_gen.load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    /// Cap on the session turn-cache history. Holds enough turns to debug a long
-    /// session without being so large the on-screen `/cache` table wraps.
-    pub const TURN_CACHE_HISTORY_CAP: usize = 50;
-
-    /// Append a per-turn cache-telemetry record, trimming the oldest entry once
-    /// the ring exceeds [`Self::TURN_CACHE_HISTORY_CAP`].
-    pub fn push_turn_cache_record(&mut self, record: TurnCacheRecord) {
-        self.session.turn_cache_history.push_back(record);
-        while self.session.turn_cache_history.len() > Self::TURN_CACHE_HISTORY_CAP {
-            self.session.turn_cache_history.pop_front();
-        }
-    }
-
     pub(crate) fn clear_model_scoped_telemetry(&mut self) {
         self.session.last_prompt_tokens = None;
         self.session.last_completion_tokens = None;
@@ -2518,10 +2444,8 @@ impl App {
         self.session.last_prompt_cache_hit_tokens = None;
         self.session.last_prompt_cache_miss_tokens = None;
         self.session.last_reasoning_replay_tokens = None;
-        self.session.turn_cache_history.clear();
         self.pending_turn_route = None;
         self.active_turn = None;
-        self.last_pinned_prefix_hash = None;
     }
 
     pub fn tr(&self, id: MessageId) -> Cow<'static, str> {
@@ -3184,11 +3108,6 @@ impl App {
             last_submitted_prompt: None,
             auto_submit_initial_input,
             quit_armed_until: None,
-            prefix_change_count: 0,
-            prefix_checks_total: 0,
-            prefix_stability_pct: None,
-            last_prefix_change_desc: None,
-            last_pinned_prefix_hash: None,
             collapsed_cells: HashSet::new(),
             folded_thinking: HashSet::new(),
             collapsed_cell_map: Vec::new(),
@@ -6701,7 +6620,6 @@ pub enum AppAction {
     FetchModels,
     /// Force a Models.dev live-catalog refresh into ProviderLake (#4187).
     RefreshModelsDevCatalog,
-    CacheWarmup,
     /// Switch the active LLM backend (DeepSeek vs NVIDIA NIM) without
     /// restarting the process. The runtime rebuilds its API client from
     /// the updated config. `model` overrides the post-switch model

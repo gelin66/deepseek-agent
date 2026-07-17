@@ -1332,8 +1332,8 @@ fn is_context_window_error(e: &anyhow::Error) -> bool {
 /// `prompt_cache_hit_tokens` but not `prompt_cache_miss_tokens` — using
 /// the sum as the denominator there reports an inflated 100% even when
 /// most of the prompt was uncached. Anchoring on `input_tokens` matches
-/// how the rest of the codebase (cost reporting, `/cache`) infers
-/// missing miss counts. (#584)
+/// how the rest of the codebase's cache telemetry infers missing miss counts.
+/// (#584)
 fn summary_cache_hit_percent(cache_hit: u32, input_tokens: u32) -> f64 {
     if input_tokens > 0 {
         (f64::from(cache_hit) * 100.0) / f64::from(input_tokens)

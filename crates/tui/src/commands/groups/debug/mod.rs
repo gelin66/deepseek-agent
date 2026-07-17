@@ -1,7 +1,6 @@
-//! Debug command area: token/cost introspection, cache tooling, and the change log.
+//! Debug command area: token/cost introspection and the change log.
 
 mod balance;
-mod cache;
 mod change;
 mod tokens;
 
@@ -18,7 +17,6 @@ impl CommandGroup for DebugCommands {
             Box::new(FunctionCommand::new(&TOKENS_INFO, run_tokens)),
             Box::new(FunctionCommand::new(&COST_INFO, run_cost)),
             Box::new(FunctionCommand::new(&BALANCE_INFO, run_balance)),
-            Box::new(FunctionCommand::new(&CACHE_INFO, run_cache)),
             Box::new(FunctionCommand::new(&CHANGE_INFO, run_change)),
             Box::new(FunctionCommand::new(&SYSTEM_INFO, run_system)),
             Box::new(FunctionCommand::new(&CONTEXT_INFO, run_context)),
@@ -43,12 +41,6 @@ static BALANCE_INFO: CommandInfo = CommandInfo {
     aliases: &[],
     usage: "/balance",
     description_id: MessageId::CmdBalanceDescription,
-};
-static CACHE_INFO: CommandInfo = CommandInfo {
-    name: "cache",
-    aliases: &[],
-    usage: "/cache [count|inspect|stats|zones|warmup]",
-    description_id: MessageId::CmdCacheDescription,
 };
 static CHANGE_INFO: CommandInfo = CommandInfo {
     name: "change",
@@ -82,9 +74,6 @@ fn run_cost(app: &mut App, arg: Option<&str>) -> CommandResult {
 fn run_balance(app: &mut App, arg: Option<&str>) -> CommandResult {
     run_registered(app, "balance", arg)
 }
-fn run_cache(app: &mut App, arg: Option<&str>) -> CommandResult {
-    run_registered(app, "cache", arg)
-}
 fn run_change(app: &mut App, arg: Option<&str>) -> CommandResult {
     run_registered(app, "change", arg)
 }
@@ -104,7 +93,6 @@ pub(in crate::commands) fn dispatch(
         "tokens" => tokens::tokens(app),
         "cost" => tokens::cost(app),
         "balance" => balance::balance(app),
-        "cache" => cache::cache(app, arg),
         "change" => change::change(app, arg),
         "system" | "xitong" => tokens::system_prompt(app),
         "context" | "ctx" => tokens::context(app, arg),

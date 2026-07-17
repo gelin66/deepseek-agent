@@ -7,7 +7,6 @@ use crate::localization::MessageId;
 use crate::palette;
 use crate::tools::subagent::SubAgentStatus;
 use crate::tui::app::{App, TaskPanelEntryKind};
-use crate::tui::format_helpers;
 use crate::tui::history::{HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
 use crate::tui::key_shortcuts;
 use crate::tui::subagent_routing::{
@@ -732,11 +731,6 @@ pub(crate) fn render_footer_from(
     } else {
         Vec::new()
     };
-    let prefix_stability = if has(S::PrefixStability) {
-        footer_prefix_stability_spans(app)
-    } else {
-        Vec::new()
-    };
     let cost = if has(S::Cost) {
         footer_cost_spans(app)
     } else {
@@ -776,7 +770,6 @@ pub(crate) fn render_footer_from(
     }
     for item in items {
         let chip = match *item {
-            S::PrefixStability => prefix_stability.clone(),
             S::Cache => cache_chip.clone(),
             S::ContextPercent => footer_context_percent_spans(app),
             S::GitBranch => footer_git_branch_spans(app),
@@ -795,8 +788,7 @@ pub(crate) fn render_footer_from(
     if !extra.is_empty() {
         // Stack into the cache slot — last existing right-cluster pipe — so
         // they appear adjacent without changing FooterProps's API. Chips are
-        // appended in `items` order, so users can place prefix stability next
-        // to cache telemetry without adding another FooterProps field.
+        // appended in `items` order without adding another FooterProps field.
         if !props.cache.is_empty() {
             props.cache.push(Span::raw("  "));
         }
@@ -872,13 +864,6 @@ fn active_foreground_shell_label(app: &App) -> Option<String> {
             None
         }
     })
-}
-
-pub(crate) fn footer_prefix_stability_spans(app: &App) -> Vec<Span<'static>> {
-    let Some((label, color)) = format_helpers::prefix_stability_chip(app) else {
-        return Vec::new();
-    };
-    vec![Span::styled(label, Style::default().fg(color))]
 }
 
 /// Spans for the "context %" footer chip. Mirrors the header colour ramp so
@@ -992,30 +977,18 @@ pub(crate) fn footer_session_tokens_spans(app: &App) -> Vec<Span<'static>> {
 pub(crate) fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
     // Context % is already shown in the header signal bar — don't
     // duplicate it in the footer. The footer carries unique info only:
-    // prefix stability, in-flight sub-agents, reasoning replay tokens, cache
-    // hit rate, and session cost.
+    // in-flight sub-agents, reasoning replay tokens, cache hit rate, and
+    // session cost.
     let agents_spans =
         crate::tui::widgets::footer_agents_chip(running_agent_count(app), app.ui_locale);
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
     let cost_spans = footer_cost_spans(app);
-    let prefix_spans = app
-        .prefix_stability_pct
-        .map(|_| {
-            let (label, color) = format_helpers::prefix_stability_chip(app).unwrap_or((
-                "cache prefix --".to_string(),
-                ratatui::style::Color::DarkGray,
-            ));
-            vec![Span::styled(label, Style::default().fg(color))]
-        })
-        .unwrap_or_default();
-
     let shell_spans = footer_shell_spans(app);
 
     let parts: Vec<&Vec<Span<'static>>> = [
         &agents_spans,
         &replay_spans,
-        &prefix_spans,
         &cache_spans,
         &cost_spans,
         &shell_spans,
@@ -1066,23 +1039,14 @@ pub(crate) fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
     } else {
         (f64::from(hit_tokens) / f64::from(total) * 100.0).clamp(0.0, 100.0)
     };
-    // Threshold-based coloring for cache hit rate (#396):
+    // Threshold-based coloring for cache hit rate:
     //   >80%: green (good cache utilization)
     //   40-80%: yellow/warning
-    //   <40%: red/dimmed only when the stable prefix is also suspect.
-    //
-    // A stable prefix with a low hit rate usually means the latest request
-    // contains a large new tail (tool results, sub-agent summaries, or fresh
-    // user input), not that the cacheable prefix is churning.
-    let prefix_is_stable = app
-        .prefix_stability_pct
-        .is_some_and(|pct| pct >= 95 && app.prefix_change_count == 0);
+    //   <40%: red.
     let color = if percent > 80.0 {
         palette::STATUS_SUCCESS
     } else if percent >= 40.0 {
         palette::STATUS_WARNING
-    } else if prefix_is_stable {
-        palette::TEXT_MUTED
     } else {
         palette::STATUS_ERROR
     };

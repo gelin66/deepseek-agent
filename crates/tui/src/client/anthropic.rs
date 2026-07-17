@@ -10,7 +10,7 @@
 //! - request shaping: adaptive thinking + `output_config.effort` from
 //!   CodeWhale's `reasoning_effort` tiers, sampling-parameter rules for
 //!   models that reject them, and `cache_control` breakpoint placement
-//!   aligned with the prefix-zone model in `prefix_cache.rs`;
+//!   aligned with stable-prefix reuse;
 //! - usage normalization (#2961 / #4318): `prompt_cache_hit_tokens` comes from
 //!   `cache_read_input_tokens`, `prompt_cache_write_tokens` from
 //!   `cache_creation_input_tokens`, `prompt_cache_miss_tokens` is the raw

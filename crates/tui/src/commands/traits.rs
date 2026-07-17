@@ -27,7 +27,6 @@ pub enum CommandDiscovery {
 pub(crate) const ADVANCED_DISCOVERY_COMMANDS: &[&str] = &[
     "anchor",
     "balance",
-    "cache",
     "change",
     "context",
     "debt",

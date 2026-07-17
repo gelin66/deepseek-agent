@@ -289,28 +289,6 @@ pub enum Event {
         files: usize,
         injected: bool,
     },
-
-    // === Prefix-Cache Stability Events ===
-    /// The prefix (system prompt + tool specs) changed between turns,
-    /// which invalidates DeepSeek's KV prefix cache. Carries diagnostics
-    /// for the TUI to surface.
-    PrefixCacheChange {
-        /// Human-readable description of what changed.
-        description: String,
-        /// Whether the system prompt component changed.
-        system_prompt_changed: bool,
-        /// Whether the tool set component changed.
-        tools_changed: bool,
-        /// Overall prefix stability percentage (100 = fully stable).
-        stability_pct: u32,
-        /// True when the prefix actually changed (cache invalidated).
-        /// False for routine stable-check heartbeats.
-        changed: bool,
-        /// Current pinned prefix combined hash (SHA-256, 64 hex chars).
-        /// Carried so `/cache stats` can surface it without reaching
-        /// into the engine's PrefixStabilityManager.
-        pinned_combined_hash: String,
-    },
 }
 
 impl Event {

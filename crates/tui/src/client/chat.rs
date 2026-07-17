@@ -10,7 +10,6 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::timeout as tokio_timeout;
 
@@ -902,18 +901,9 @@ pub(super) fn build_chat_messages_for_request_and_provider(
     PromptBuilder::for_request(request).build_for_provider(provider)
 }
 
-pub(crate) fn inspect_prompt_for_request(request: &MessageRequest) -> PromptInspection {
-    PromptBuilder::for_request(request).inspect()
-}
-
-pub(crate) fn build_cache_warmup_request(request: &MessageRequest) -> MessageRequest {
-    PromptBuilder::for_request(request).build_cache_warmup_request()
-}
-
 struct PromptBuilder<'a> {
     system: Option<&'a SystemPrompt>,
     messages: &'a [Message],
-    tools: Option<&'a [Tool]>,
     model: &'a str,
     reasoning_effort: Option<&'a str>,
 }
@@ -923,7 +913,6 @@ impl<'a> PromptBuilder<'a> {
         Self {
             system: request.system.as_ref(),
             messages: &request.messages,
-            tools: request.tools.as_deref(),
             model: &request.model,
             reasoning_effort: request.reasoning_effort.as_deref(),
         }
@@ -960,49 +949,6 @@ impl<'a> PromptBuilder<'a> {
             mirror_minimax_reasoning_details_for_messages(&mut messages);
         }
         messages
-    }
-
-    fn inspect(self) -> PromptInspection {
-        let messages = build_chat_messages_with_reasoning(
-            self.system,
-            self.messages,
-            self.model,
-            should_replay_reasoning_content(self.model, self.reasoning_effort),
-            true,
-        );
-        inspect_wire_request(self.tools, &messages)
-    }
-
-    fn build_cache_warmup_request(self) -> MessageRequest {
-        let system = stable_system_prompt(self.system);
-        let mut messages = stable_history_messages(self.messages);
-        let tools = self
-            .tools
-            .filter(|tools| !tools.is_empty())
-            .map(<[Tool]>::to_vec);
-        let tool_choice = tools.as_ref().map(|_| json!("none"));
-        messages.push(Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: CACHE_WARMUP_USER_TAIL.to_string(),
-                cache_control: None,
-            }],
-        });
-
-        MessageRequest {
-            model: self.model.to_string(),
-            messages,
-            max_tokens: 8,
-            system,
-            tools,
-            tool_choice,
-            metadata: None,
-            thinking: None,
-            reasoning_effort: self.reasoning_effort.map(str::to_string),
-            stream: None,
-            temperature: Some(0.0),
-            top_p: None,
-        }
     }
 }
 
@@ -1102,7 +1048,6 @@ fn push_text_part(parts: &mut Vec<Value>, text: &str) {
     }
 }
 
-pub(crate) const CACHE_WARMUP_USER_TAIL: &str = "请只回复 OK";
 const TOOL_RESULT_SENT_CHAR_BUDGET: usize = 12_000;
 const TOOL_RESULT_HEAD_CHARS: usize = 4_000;
 const TOOL_RESULT_TAIL_CHARS: usize = 4_000;
@@ -1116,401 +1061,6 @@ const TOOL_RESULT_DEDUP_MIN_CHARS: usize = 1_024;
 /// burden to satisfy. Keeps `~/.deepseek/tool_outputs/` from filling
 /// up with tiny `gh auth status` and `cat package.json` files.
 const TOOL_RESULT_SHA_PERSIST_MIN_CHARS: usize = 1_024;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PromptInspection {
-    pub base_static_prefix_hash: String,
-    pub full_request_prefix_hash: String,
-    /// Hash of the rendered tool catalog JSON, or empty when no tools were supplied.
-    pub tool_catalog_hash: String,
-    pub layers: Vec<PromptLayerInspection>,
-}
-
-/// Identifies the stable prefix that a cache warmup primes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct CacheWarmupKey {
-    pub provider: String,
-    pub model: String,
-    pub base_url: String,
-    pub static_prefix_hash: String,
-    pub tool_catalog_hash: String,
-    pub project_pack_hash: String,
-    pub skills_hash: String,
-}
-
-impl CacheWarmupKey {
-    pub(crate) fn from_inspection(
-        provider: &str,
-        model: &str,
-        base_url: &str,
-        inspection: &PromptInspection,
-    ) -> Self {
-        Self {
-            provider: provider.to_string(),
-            model: model.to_string(),
-            base_url: base_url.to_string(),
-            static_prefix_hash: inspection.base_static_prefix_hash.clone(),
-            tool_catalog_hash: inspection.tool_catalog_hash.clone(),
-            project_pack_hash: layer_hash(inspection, "Project context pack"),
-            skills_hash: layer_hash(inspection, "Skills"),
-        }
-    }
-
-    pub(crate) fn hash_short(&self) -> String {
-        let json = serde_json::to_string(self).unwrap_or_default();
-        let hash = sha256_hex(json.as_bytes());
-        hash[..hash.len().min(12)].to_string()
-    }
-}
-
-fn layer_hash(inspection: &PromptInspection, name: &str) -> String {
-    inspection
-        .layers
-        .iter()
-        .find(|layer| layer.name == name)
-        .map(|layer| layer.sha256.clone())
-        .unwrap_or_default()
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct PromptLayerInspection {
-    pub name: String,
-    pub stability: PromptLayerStability,
-    pub char_len: usize,
-    pub byte_len: usize,
-    /// Rough token estimate for quick before/after cache-hit reports.
-    pub token_estimate: usize,
-    pub sha256: String,
-    pub tool_result: Option<ToolResultInspection>,
-    pub turn_meta: Option<TurnMetaInspection>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ToolResultInspection {
-    pub original_chars: usize,
-    pub sent_chars: usize,
-    pub truncated: bool,
-    pub deduplicated: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct TurnMetaInspection {
-    pub original_chars: usize,
-    pub sent_chars: usize,
-    pub deduplicated: bool,
-    pub sha256: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) enum PromptLayerStability {
-    Static,
-    History,
-    Dynamic,
-}
-
-impl PromptLayerStability {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Static => "static",
-            Self::History => "history",
-            Self::Dynamic => "dynamic",
-        }
-    }
-}
-
-fn inspect_wire_request(tools: Option<&[Tool]>, messages: &[Value]) -> PromptInspection {
-    let mut layers = Vec::new();
-    let mut base_static_prefix_parts = Vec::new();
-    let mut full_request_prefix_parts = Vec::new();
-    let mut tool_catalog_hash = String::new();
-    let mut start_index = 0;
-
-    if let Some(message) = messages.first() {
-        let role = message
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let content = message_content_for_inspect(message);
-        if role == "system" {
-            for (name, stability, body) in split_system_layers(&content) {
-                if stability == PromptLayerStability::Static {
-                    base_static_prefix_parts.push(body.to_string());
-                }
-                if stability != PromptLayerStability::Dynamic {
-                    full_request_prefix_parts.push(body.to_string());
-                }
-                layers.push(prompt_layer(name, stability, body));
-            }
-            start_index = 1;
-        }
-    }
-
-    if let Some(tool_catalog) = tool_catalog_for_inspect(tools) {
-        tool_catalog_hash = sha256_hex(tool_catalog.as_bytes());
-        base_static_prefix_parts.push(tool_catalog.clone());
-        full_request_prefix_parts.push(tool_catalog.clone());
-        layers.push(prompt_layer(
-            "Tool catalog".to_string(),
-            PromptLayerStability::Static,
-            &tool_catalog,
-        ));
-    }
-
-    for (index, message) in messages.iter().enumerate().skip(start_index) {
-        let role = message
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
-        let content = message_content_for_inspect(message);
-        let is_last = index + 1 == messages.len();
-        let stability = if (is_last && role == "user") || role == "tool" {
-            PromptLayerStability::Dynamic
-        } else {
-            PromptLayerStability::History
-        };
-        let name = if is_last && role == "user" {
-            "User task".to_string()
-        } else {
-            format!("Message #{index} {role}")
-        };
-        if stability != PromptLayerStability::Dynamic {
-            full_request_prefix_parts.push(content.clone());
-        }
-        let mut layer = prompt_layer(name, stability, &content);
-        layer.tool_result = tool_result_inspection_for_message(message);
-        layer.turn_meta = turn_meta_inspection_for_message(message);
-        layers.push(layer);
-    }
-
-    let base_static_prefix = base_static_prefix_parts.join("\n");
-    let full_request_prefix = full_request_prefix_parts.join("\n");
-
-    PromptInspection {
-        base_static_prefix_hash: sha256_hex(base_static_prefix.as_bytes()),
-        full_request_prefix_hash: sha256_hex(full_request_prefix.as_bytes()),
-        tool_catalog_hash,
-        layers,
-    }
-}
-
-fn tool_catalog_for_inspect(tools: Option<&[Tool]>) -> Option<String> {
-    let tools = tools.filter(|tools| !tools.is_empty())?;
-    serde_json::to_string(&tools.iter().map(tool_to_chat).collect::<Vec<_>>()).ok()
-}
-
-fn message_content_for_inspect(message: &Value) -> String {
-    let mut parts = Vec::new();
-    if let Some(content) = message.get("content").and_then(Value::as_str)
-        && !content.is_empty()
-    {
-        parts.push(content.to_string());
-    }
-    if let Some(content) = message.get("content").and_then(Value::as_array) {
-        for part in content {
-            match part.get("type").and_then(Value::as_str) {
-                Some("text") => {
-                    if let Some(text) = part.get("text").and_then(Value::as_str)
-                        && !text.is_empty()
-                    {
-                        parts.push(text.to_string());
-                    }
-                }
-                Some("image_url") => {
-                    let url = part
-                        .get("image_url")
-                        .and_then(|image_url| image_url.get("url"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("");
-                    parts.push(format!(
-                        "[image_url:{}]",
-                        summarize_image_url_for_inspect(url)
-                    ));
-                }
-                _ => {}
-            }
-        }
-    }
-    if let Some(reasoning) = message.get("reasoning_content").and_then(Value::as_str)
-        && !reasoning.is_empty()
-    {
-        parts.push(reasoning.to_string());
-    }
-    if let Some(tool_calls) = message.get("tool_calls") {
-        parts.push(tool_calls.to_string());
-    }
-    parts.join("\n")
-}
-
-fn summarize_image_url_for_inspect(url: &str) -> String {
-    let Some((prefix, encoded)) = url.split_once(";base64,") else {
-        return first_chars(url, 96);
-    };
-    format!("{prefix};base64,<{} chars>", encoded.len())
-}
-
-fn tool_result_inspection_for_message(message: &Value) -> Option<ToolResultInspection> {
-    if message.get("role").and_then(Value::as_str) != Some("tool") {
-        return None;
-    }
-    let budget = message.get("_tool_result_budget")?;
-    Some(ToolResultInspection {
-        original_chars: budget
-            .get("original_chars")
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())?,
-        sent_chars: budget
-            .get("sent_chars")
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())?,
-        truncated: budget
-            .get("truncated")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        deduplicated: budget
-            .get("deduplicated")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-    })
-}
-
-fn turn_meta_inspection_for_message(message: &Value) -> Option<TurnMetaInspection> {
-    let budget = message.get("_turn_meta_budget")?;
-    Some(TurnMetaInspection {
-        original_chars: budget
-            .get("original_chars")
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())?,
-        sent_chars: budget
-            .get("sent_chars")
-            .and_then(Value::as_u64)
-            .and_then(|n| usize::try_from(n).ok())?,
-        deduplicated: budget
-            .get("deduplicated")
-            .and_then(Value::as_bool)
-            .unwrap_or(false),
-        sha256: budget
-            .get("sha256")
-            .and_then(Value::as_str)
-            .map(str::to_string)?,
-    })
-}
-
-fn split_system_layers(content: &str) -> Vec<(String, PromptLayerStability, &str)> {
-    let markers = [
-        ("Project context", "<project_instructions"),
-        ("Project context pack", "## Project Context Pack"),
-        ("Environment", "## Environment"),
-        ("Configured instructions", "<instructions "),
-        ("User memory", "## User Memory"),
-        ("Current session goal", "## Current Session Goal"),
-        ("Skills", "## Skills"),
-        ("Core execution", "## Core Execution"),
-        ("Compact template", "## Compact"),
-        ("Previous session relay", "## Previous Session Relay"),
-    ];
-
-    let mut starts: Vec<(usize, &str)> = markers
-        .iter()
-        .filter_map(|(name, marker)| content.find(marker).map(|idx| (idx, *name)))
-        .collect();
-    starts.sort_by_key(|(idx, _)| *idx);
-
-    let mut layers = Vec::new();
-    let first_marker = starts.first().map_or(content.len(), |(idx, _)| *idx);
-    if first_marker > 0 {
-        layers.push((
-            "Global system prefix".to_string(),
-            PromptLayerStability::Static,
-            content[..first_marker].trim(),
-        ));
-    }
-
-    for (i, (start, name)) in starts.iter().enumerate() {
-        let end = starts.get(i + 1).map_or(content.len(), |(idx, _)| *idx);
-        let stability = if *name == "Previous session relay" {
-            PromptLayerStability::Dynamic
-        } else if is_static_base_layer(name) {
-            PromptLayerStability::Static
-        } else {
-            PromptLayerStability::History
-        };
-        layers.push(((*name).to_string(), stability, content[*start..end].trim()));
-    }
-
-    if layers.is_empty() {
-        layers.push((
-            "Global system prefix".to_string(),
-            PromptLayerStability::Static,
-            content.trim(),
-        ));
-    }
-    layers
-}
-
-fn is_static_base_layer(name: &str) -> bool {
-    matches!(
-        name,
-        "Global system prefix"
-            | "Environment"
-            | "Skills"
-            | "Project context"
-            | "Project context pack"
-            | "Core execution"
-            | "Compact template"
-    )
-}
-
-fn stable_system_prompt(system: Option<&SystemPrompt>) -> Option<SystemPrompt> {
-    let instructions = system_to_instructions(system.cloned())?;
-    let stable = split_system_layers(&instructions)
-        .into_iter()
-        .filter_map(|(_, stability, body)| {
-            (stability == PromptLayerStability::Static).then_some(body)
-        })
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if stable.trim().is_empty() {
-        None
-    } else {
-        Some(SystemPrompt::Text(stable))
-    }
-}
-
-fn stable_history_messages(messages: &[Message]) -> Vec<Message> {
-    let mut end = messages.len();
-    if messages
-        .last()
-        .is_some_and(|message| message.role.as_str() == "user")
-    {
-        end = end.saturating_sub(1);
-    }
-    messages[..end].to_vec()
-}
-
-fn prompt_layer(
-    name: String,
-    stability: PromptLayerStability,
-    content: &str,
-) -> PromptLayerInspection {
-    let char_len = content.chars().count();
-    let token_estimate = if char_len == 0 {
-        0
-    } else if content.is_ascii() {
-        (char_len / 4).max(1)
-    } else {
-        char_len.max(1)
-    };
-    PromptLayerInspection {
-        name,
-        stability,
-        char_len,
-        byte_len: content.len(),
-        token_estimate,
-        sha256: sha256_hex(content.as_bytes()),
-        tool_result: None,
-        turn_meta: None,
-    }
-}
 
 fn sha256_hex(bytes: &[u8]) -> String {
     crate::hashing::sha256_hex(bytes)
@@ -2403,6 +1953,7 @@ pub(super) fn requires_tool_call_reasoning_replay(model: &str) -> bool {
     requires_reasoning_content(model)
 }
 
+#[cfg(test)]
 fn should_replay_reasoning_content(model: &str, effort: Option<&str>) -> bool {
     if effort
         .map(|value| {
@@ -4564,54 +4115,6 @@ mod stream_decoder_tests {
     }
 
     #[test]
-    fn cache_inspect_reports_turn_meta_dedup_metadata() {
-        let turn_meta = format!(
-            "<turn_meta>\nCurrent local date: 2026-05-09\n{}\n</turn_meta>",
-            "Working set: src/lib.rs\n".repeat(20)
-        );
-        let request = MessageRequest {
-            model: "deepseek-v4-flash".to_string(),
-            messages: vec![
-                user_message_with_turn_meta(&turn_meta, "first task"),
-                user_message_with_turn_meta(&turn_meta, "second task"),
-            ],
-            max_tokens: 0,
-            system: None,
-            tools: None,
-            tool_choice: None,
-            metadata: None,
-            thinking: None,
-            reasoning_effort: None,
-            stream: None,
-            temperature: None,
-            top_p: None,
-        };
-
-        let inspection = inspect_prompt_for_request(&request);
-        let turn_meta_layers: Vec<_> = inspection
-            .layers
-            .iter()
-            .filter_map(|layer| layer.turn_meta.as_ref())
-            .collect();
-
-        assert_eq!(turn_meta_layers.len(), 2);
-        assert_eq!(
-            turn_meta_layers[0].original_chars,
-            turn_meta.chars().count()
-        );
-        assert_eq!(turn_meta_layers[0].sent_chars, turn_meta.chars().count());
-        assert!(!turn_meta_layers[0].deduplicated);
-        assert_eq!(turn_meta_layers[0].sha256, sha256_hex(turn_meta.as_bytes()));
-        assert_eq!(
-            turn_meta_layers[1].original_chars,
-            turn_meta.chars().count()
-        );
-        assert!(turn_meta_layers[1].sent_chars < turn_meta_layers[1].original_chars);
-        assert!(turn_meta_layers[1].deduplicated);
-        assert_eq!(turn_meta_layers[1].sha256, turn_meta_layers[0].sha256);
-    }
-
-    #[test]
     fn request_builder_truncates_large_tool_result_for_wire() {
         let long_output = format!("{}{}", "A".repeat(7_000), "Z".repeat(7_000));
         let messages = vec![
@@ -4900,55 +4403,6 @@ mod stream_decoder_tests {
             ContentBlock::ToolResult { content, .. } => assert_eq!(content, &long_output),
             other => panic!("expected tool result, got {other:?}"),
         }
-    }
-
-    #[test]
-    fn cache_inspect_reports_tool_result_budget_metadata() {
-        with_tool_result_sha_spillover_root(|| {
-            let long_output = format!("{}{}", "A".repeat(7_000), "Z".repeat(7_000));
-            let request = MessageRequest {
-                model: "deepseek-v4-flash".to_string(),
-                messages: vec![
-                    tool_use_message("tool-1", "shell_command", json!({"command": "cargo test"})),
-                    tool_result_message("tool-1", &long_output),
-                    tool_use_message("tool-2", "shell_command", json!({"command": "cargo test"})),
-                    tool_result_message("tool-2", &long_output),
-                ],
-                max_tokens: 0,
-                system: None,
-                tools: None,
-                tool_choice: None,
-                metadata: None,
-                thinking: None,
-                reasoning_effort: None,
-                stream: None,
-                temperature: None,
-                top_p: None,
-            };
-
-            let inspection = inspect_prompt_for_request(&request);
-            let tool_layers: Vec<_> = inspection
-                .layers
-                .iter()
-                .filter_map(|layer| layer.tool_result.as_ref())
-                .collect();
-
-            assert_eq!(tool_layers.len(), 2);
-            assert_eq!(tool_layers[0].original_chars, 14_000);
-            assert!(tool_layers[0].sent_chars < tool_layers[0].original_chars);
-            assert!(tool_layers[0].truncated);
-            assert!(!tool_layers[0].deduplicated);
-            assert_eq!(tool_layers[1].original_chars, 14_000);
-            // Keep the reference far smaller than the original 14K output
-            // even with a copyable retrieval hint included.
-            assert!(
-                tool_layers[1].sent_chars < 300,
-                "deduplicated ref grew unexpectedly large: {}",
-                tool_layers[1].sent_chars
-            );
-            assert!(!tool_layers[1].truncated);
-            assert!(tool_layers[1].deduplicated);
-        });
     }
 }
 

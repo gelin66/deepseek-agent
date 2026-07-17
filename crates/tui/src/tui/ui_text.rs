@@ -433,13 +433,13 @@ mod tests {
     #[test]
     fn semantic_truncate_between_affixes_reserves_fixed_columns() {
         let hint = semantic_truncate_between_affixes(
-            " > [ ] Prefix stability  (",
-            "whether system/tools stayed cacheable",
+            " > [ ] Context window  (",
+            "tokens used compared with the model limit",
             ")",
             49,
         );
-        let row = format!(" > [ ] Prefix stability  ({hint})");
-        assert_eq!(hint, "whether system/tools…");
+        let row = format!(" > [ ] Context window  ({hint})");
+        assert_eq!(hint, "tokens used compared…");
         assert!(text_display_width(&row) <= 49);
     }
 
