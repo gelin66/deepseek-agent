@@ -45,10 +45,6 @@ pub const MAX_ABOUT_LEN: usize = 1000;
 pub const MAX_LIST_ITEMS: usize = 20;
 /// Maximum length of a single bounded list item.
 pub const MAX_ITEM_LEN: usize = 280;
-/// Maximum length of the `language` tag accepted from untrusted drafts
-/// (generous for BCP-47; blocks prose smuggled into a metadata field).
-pub const MAX_LANGUAGE_LEN: usize = 35;
-
 /// Model-facing autonomy preference. **Guidance only** — it may recommend a
 /// runtime posture but never applies one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -94,10 +90,6 @@ impl AutonomyPreference {
 pub struct UserConstitution {
     #[serde(default = "default_schema_version")]
     pub schema_version: u32,
-    /// Language the prose is authored in (BCP-47-ish tag, e.g. `"en"`,
-    /// `"zh-Hans"`). Localization metadata only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
     /// Short description of who the user is / their working context.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub about: Option<String>,
@@ -123,7 +115,6 @@ impl Default for UserConstitution {
     fn default() -> Self {
         Self {
             schema_version: USER_CONSTITUTION_SCHEMA_VERSION,
-            language: None,
             about: None,
             working_style: Vec::new(),
             priorities: Vec::new(),
@@ -162,7 +153,6 @@ impl UserConstitution {
     pub fn bounded(&self) -> Self {
         Self {
             schema_version: USER_CONSTITUTION_SCHEMA_VERSION,
-            language: self.language.as_deref().and_then(non_blank),
             about: self
                 .about
                 .as_deref()
@@ -348,11 +338,6 @@ impl UserConstitution {
     fn sanitized_untrusted(&self) -> Self {
         Self {
             schema_version: USER_CONSTITUTION_SCHEMA_VERSION,
-            language: self
-                .language
-                .as_deref()
-                .map(sanitize_untrusted_text)
-                .map(|s| truncate_chars(&s, MAX_LANGUAGE_LEN)),
             about: self.about.as_deref().map(sanitize_untrusted_text),
             working_style: self
                 .working_style
@@ -773,7 +758,7 @@ mod tests {
             .map(|i| format!("\"style {i}\""))
             .collect();
         let raw = format!(
-            r#"{{"notes":"{huge_notes}","working_style":[{}],"language":"en-with-a-very-long-smuggled-payload-that-keeps-going"}}"#,
+            r#"{{"notes":"{huge_notes}","working_style":[{}]}}"#,
             many_items.join(",")
         );
         let UntrustedDraftParse::Drafted(c) = UserConstitution::from_untrusted_json(&raw) else {
@@ -781,7 +766,6 @@ mod tests {
         };
         assert_eq!(c.notes.as_deref().unwrap().chars().count(), MAX_NOTES_LEN);
         assert_eq!(c.working_style.len(), MAX_LIST_ITEMS);
-        assert!(c.language.as_deref().unwrap().chars().count() <= MAX_LANGUAGE_LEN);
         // Bounded output means the ratified preview hash matches the saved form.
         assert_eq!(c.preview_hash(), c.bounded().preview_hash());
     }

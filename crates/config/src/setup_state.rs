@@ -41,8 +41,6 @@ pub const SETUP_STATE_FILE_NAME: &str = "setup_state.json";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SetupStep {
-    /// Language first, so later screens and constitution prose are localized.
-    Language,
     /// Provider + key (or local runtime) and a default model.
     ProviderModel,
     /// Trust, approvals, sandbox, network — runtime posture (#3406).
@@ -63,8 +61,7 @@ pub enum SetupStep {
 
 impl SetupStep {
     /// All steps in canonical first-run order.
-    pub const ALL: [SetupStep; 8] = [
-        SetupStep::Language,
+    pub const ALL: [SetupStep; 7] = [
         SetupStep::ProviderModel,
         SetupStep::TrustSandbox,
         SetupStep::Constitution,
@@ -276,9 +273,6 @@ pub struct SetupState {
     /// completed. Drives the once-per-version update checkpoint (#3794).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constitution_checkpoint_completed_for: Option<String>,
-    /// Language the constitution prose was authored/reviewed in.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub constitution_language: Option<String>,
     /// Which surface is the active user-global law.
     #[serde(default)]
     pub constitution_source: ConstitutionSource,
@@ -326,7 +320,6 @@ impl Default for SetupState {
             steps: BTreeMap::new(),
             constitution_choice: ConstitutionChoice::default(),
             constitution_checkpoint_completed_for: None,
-            constitution_language: None,
             constitution_source: ConstitutionSource::default(),
             constitution_validity: ConstitutionValidity::default(),
             constitution_authoring: None,
@@ -353,8 +346,6 @@ pub struct InheritedConfigFacts {
     pub has_credentials_or_local_runtime: bool,
     /// The user has previously made a trust/approval decision.
     pub trust_chosen: bool,
-    /// Onboarding language, if known.
-    pub language: Option<String>,
     /// A structured user-global `constitution.json` exists.
     pub has_user_constitution: bool,
     /// An expert full-Markdown override is active.
@@ -394,12 +385,11 @@ impl SetupState {
         )
     }
 
-    /// First-run "ready": language verified, provider/model ready-or-needs-action,
-    /// runtime posture inherited/confirmed, and an explicit constitution choice.
+    /// First-run "ready": provider/model ready-or-needs-action, runtime posture
+    /// inherited/confirmed, and an explicit constitution choice.
     #[must_use]
     pub fn first_run_ready(&self) -> bool {
-        self.step_verified(SetupStep::Language)
-            && self.provider_model_ready_or_needs_action()
+        self.provider_model_ready_or_needs_action()
             && self.runtime_posture_source.is_reviewed()
             && self.constitution_choice.is_explicit()
     }
@@ -454,14 +444,6 @@ impl SetupState {
             ..SetupState::default()
         };
         let inherited = "inherited";
-
-        if facts.language.is_some() {
-            state.set_step(
-                SetupStep::Language,
-                StepEntry::new(StepStatus::Verified, true, inherited),
-            );
-            state.constitution_language = facts.language.clone();
-        }
 
         if facts.has_provider_route && facts.has_credentials_or_local_runtime {
             state.set_step(
@@ -586,7 +568,6 @@ mod tests {
         assert!(persistence_index < verification_index);
 
         let mut state = SetupState::default();
-        state.set_step(SetupStep::Language, verified("0.8.67"));
         state.set_step(SetupStep::ProviderModel, verified("0.8.67"));
         state.runtime_posture_source = RuntimePostureSource::Confirmed;
         state.constitution_choice = ConstitutionChoice::Bundled;
@@ -603,7 +584,6 @@ mod tests {
     #[test]
     fn first_run_ready_requires_all_pillars() {
         let mut state = SetupState::default();
-        state.set_step(SetupStep::Language, verified("0.8.67"));
         state.set_step(SetupStep::ProviderModel, verified("0.8.67"));
         state.runtime_posture_source = RuntimePostureSource::Confirmed;
         // Still missing an explicit constitution choice.
@@ -615,7 +595,6 @@ mod tests {
     #[test]
     fn operate_ready_is_separate_from_first_run_ready() {
         let mut state = SetupState::default();
-        state.set_step(SetupStep::Language, verified("0.8.67"));
         state.set_step(SetupStep::ProviderModel, verified("0.8.67"));
         state.runtime_posture_source = RuntimePostureSource::Confirmed;
         state.constitution_choice = ConstitutionChoice::Bundled;
@@ -634,7 +613,6 @@ mod tests {
     #[test]
     fn legacy_verified_operate_card_without_receipt_proof_fails_closed() {
         let mut legacy = SetupState::default();
-        legacy.set_step(SetupStep::Language, verified("0.8.67"));
         legacy.set_step(SetupStep::ProviderModel, verified("0.8.67"));
         legacy.set_step(SetupStep::OperateFleet, verified("0.8.67"));
         legacy.runtime_posture_source = RuntimePostureSource::Confirmed;
@@ -665,7 +643,6 @@ mod tests {
     #[test]
     fn needs_action_provider_still_reaches_ready() {
         let mut state = SetupState::default();
-        state.set_step(SetupStep::Language, verified("0.8.67"));
         state.set_step(
             SetupStep::ProviderModel,
             StepEntry::new(StepStatus::NeedsAction, true, "0.8.67"),
@@ -699,14 +676,12 @@ mod tests {
             has_provider_route: true,
             has_credentials_or_local_runtime: true,
             trust_chosen: true,
-            language: Some("en".to_string()),
             has_user_constitution: false,
             has_expert_override: false,
             user_constitution_validity: ConstitutionValidity::Unknown,
         };
         let state = SetupState::derive_inherited(&facts);
         assert!(state.inherited);
-        assert_eq!(state.status(SetupStep::Language), StepStatus::Verified);
         assert_eq!(state.status(SetupStep::ProviderModel), StepStatus::Verified);
         assert_eq!(state.status(SetupStep::TrustSandbox), StepStatus::Verified);
         assert_eq!(state.constitution_source, ConstitutionSource::Bundled);

@@ -1,7 +1,6 @@
 pub mod auth_source;
 pub mod catalog;
 mod harness;
-pub mod locale;
 pub mod model_reference;
 pub mod models_dev;
 pub mod persistence;
@@ -16,9 +15,6 @@ pub mod user_constitution;
 pub use harness::{
     HarnessCompactionStrategy, HarnessPosture, HarnessPostureKind, HarnessProfile,
     HarnessSafetyPosture, HarnessToolSurface, built_in_harness_profiles,
-};
-pub use locale::{
-    DEFAULT_LOCALE, Locale, normalize_configured_locale, resolve_locale, resolve_locale_with_env,
 };
 pub use model_reference::{Modality, ModelReferenceCard, ModelReferenceDatabase};
 pub use prompt_preferences::{
