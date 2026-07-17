@@ -650,6 +650,7 @@ impl CountingDeepSeekFixture {
                     }
                     Err(error) => return Err(error.into()),
                 };
+                stream.set_nonblocking(false)?;
                 stream.set_read_timeout(Some(Duration::from_secs(5)))?;
                 let request = read_http_request(&mut stream)?;
                 if request.starts_with("GET /v1/models ") {
@@ -724,6 +725,7 @@ fn spawn_deepseek_fixture() -> anyhow::Result<(
                 }
                 Err(error) => return Err(error.into()),
             };
+            stream.set_nonblocking(false)?;
             stream.set_read_timeout(Some(Duration::from_secs(5)))?;
             let request = read_http_request(&mut stream)?;
             if request.starts_with("GET /v1/models ") {
