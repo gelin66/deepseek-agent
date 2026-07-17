@@ -3,7 +3,7 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M4-C C1 交互控制契约候选已实现、验收中；交互 TUI 尚未切换
+- 状态：M4-C C1 交互控制契约已冻结；交互 TUI 尚未切换
 - 更新日期：2026-07-17
 - schema：`Run API`（`schema_version = 2`）、`RuntimeEvent`（`schema_version = 4`）
 

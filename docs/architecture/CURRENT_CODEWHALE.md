@@ -9,7 +9,7 @@
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
-- 当前阶段：M4-C C1 候选已实现并进入验收，交互 TUI caller 尚未迁移
+- 当前阶段：M4-C C1 已冻结，交互 TUI caller 尚未迁移
 
 ## 1. 当前结论
 
@@ -223,11 +223,12 @@ M4-B 提交中的离线验收已经证明：
 [M4-B 本地 API 证据汇总](../../eval/summaries/m4-b-local-api-2026-07-17.md)；不能从一次
 链路 canary 推断编码能力或效率提升。
 
-当前 C1 候选的 conformance/Store replay 已证明 interaction ordering、幂等响应和同 run
-恢复状态机；外部 `SIGKILL` 已覆盖 `ControlRequested`/tool-in-flight 与
-`SteerApplied`/next-model-not-prepared 窗口。`InteractionRequested`、
-`InteractionResolved`/before-tool-start 和 `SteerQueued`/before-applied 的外部进程窗口仍待
-验收。该候选不代表 TUI 已切换，也不构成编码能力或效率提升证据。
+M4-C C1 实现提交为 `1d127b78`。conformance/Store replay 已证明 interaction ordering、
+幂等响应和同 run 恢复状态机；外部监督进程 `SIGKILL` 测试已覆盖 `InteractionRequested`、
+`InteractionResolved`/before-tool-start、`SteerQueued`/before-applied、
+`ControlRequested`/tool-in-flight 与 `SteerApplied`/next-model-not-prepared 窗口。focused、
+all-target check、全仓 clippy 和 workspace tests 均通过。该冻结不代表 TUI 已切换，也不构成
+编码能力或效率提升证据。
 
 ## 7. 明确非结论
 

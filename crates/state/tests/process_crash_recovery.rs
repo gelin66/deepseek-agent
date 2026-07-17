@@ -1,8 +1,10 @@
 //! Process-boundary recovery tests for the durable Agent runtime.
 //!
 //! The ignored helper is launched as a real child process. Its event sink or
-//! tool aborts only after the preceding SQLite commit has returned, so the
-//! parent exercises dead-PID lease takeover rather than an in-process mock.
+//! tool writes a ready marker only after the preceding SQLite commit has
+//! returned, then blocks until the parent kills it. This exercises external
+//! process termination and dead-PID lease takeover rather than an in-process
+//! mock.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -10,15 +12,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use codewhale_runtime::{
-    ActorRequestAccounting, AgentControl, AgentRuntime, ApiSurface, CancellationToken, CommandId,
-    ModelAccounting, ModelFinishReason, ModelMessage, ModelOutput, ModelPort, ModelPortError,
-    ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, NullEventSink, PendingRuntimeEvent,
-    RecoveryAmbiguityPhase, RunId, RunRequest, RunStore, RuntimeEventId, RuntimeEventKind,
-    RuntimeEventSink, StoredRuntimeEvent, SurfaceUsage, TerminalState, ToolArguments,
-    ToolDefinition, ToolExecutionError, ToolExecutor, ToolInvocation, ToolOutcome, Usage,
+    ActorRequestAccounting, AgentControl, AgentRuntime, ApiSurface, ApprovalRisk,
+    CancellationToken, CommandId, ModelAccounting, ModelFinishReason, ModelMessage, ModelOutput,
+    ModelPort, ModelPortError, ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall,
+    NullEventSink, PendingRuntimeEvent, RecoveryAmbiguityPhase, RunId, RunRequest, RunStore,
+    RuntimeEventId, RuntimeEventKind, RuntimeEventSink, StoredRuntimeEvent, SurfaceUsage,
+    TerminalState, ToolApprovalPrompt, ToolArguments, ToolDefinition, ToolExecutionError,
+    ToolExecutor, ToolInvocation, ToolOutcome, Usage, UserInteractionResponse,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -39,6 +43,9 @@ enum CrashScenario {
     ToolInFlight,
     ToolInFlightControlRequested,
     ModelResponseCommitted,
+    InteractionRequested,
+    InteractionResolved,
+    SteerQueued,
     SteerApplied,
     TerminalCommitted,
 }
@@ -50,6 +57,9 @@ impl CrashScenario {
             Self::ToolInFlight => "tool_in_flight",
             Self::ToolInFlightControlRequested => "tool_in_flight_control_requested",
             Self::ModelResponseCommitted => "model_response_committed",
+            Self::InteractionRequested => "interaction_requested",
+            Self::InteractionResolved => "interaction_resolved",
+            Self::SteerQueued => "steer_queued",
             Self::SteerApplied => "steer_applied",
             Self::TerminalCommitted => "terminal_committed",
         }
@@ -61,6 +71,9 @@ impl CrashScenario {
             "tool_in_flight" => Self::ToolInFlight,
             "tool_in_flight_control_requested" => Self::ToolInFlightControlRequested,
             "model_response_committed" => Self::ModelResponseCommitted,
+            "interaction_requested" => Self::InteractionRequested,
+            "interaction_resolved" => Self::InteractionResolved,
+            "steer_queued" => Self::SteerQueued,
             "steer_applied" => Self::SteerApplied,
             "terminal_committed" => Self::TerminalCommitted,
             other => panic!("unknown crash test scenario: {other}"),
@@ -89,19 +102,49 @@ impl CrashFixture {
     }
 
     fn crash_child(&self, scenario: CrashScenario) {
-        let status = Command::new(std::env::current_exe().expect("locate integration test binary"))
-            .arg("--ignored")
-            .arg("--exact")
-            .arg("process_crash_helper")
-            .arg("--test-threads=1")
-            .env(CHILD_SCENARIO, scenario.as_str())
-            .env(CHILD_DB, &self.db)
-            .env(CHILD_MODEL_MARKER, &self.model_marker)
-            .env(CHILD_TOOL_MARKER, &self.tool_marker)
-            .env(CHILD_ABORT_MARKER, &self.abort_marker)
-            .status()
-            .expect("launch crash helper");
-        assert!(!status.success(), "helper must terminate by process abort");
+        let mut child =
+            Command::new(std::env::current_exe().expect("locate integration test binary"))
+                .arg("--ignored")
+                .arg("--exact")
+                .arg("process_crash_helper")
+                .arg("--test-threads=1")
+                .env(CHILD_SCENARIO, scenario.as_str())
+                .env(CHILD_DB, &self.db)
+                .env(CHILD_MODEL_MARKER, &self.model_marker)
+                .env(CHILD_TOOL_MARKER, &self.tool_marker)
+                .env(CHILD_ABORT_MARKER, &self.abort_marker)
+                .spawn()
+                .expect("launch crash helper");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if marker_count(&self.abort_marker) == 1 {
+                break;
+            }
+            if let Some(status) = child.try_wait().expect("poll crash helper") {
+                panic!("crash helper exited before the committed ready marker: {status}");
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("timed out waiting for the committed crash ready marker");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        child.kill().expect("kill crash helper after ready marker");
+        let status = child.wait().expect("reap killed crash helper");
+        assert!(
+            !status.success(),
+            "helper must terminate by the parent process kill"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert_eq!(
+                status.signal(),
+                Some(9),
+                "Unix parent kill must terminate the helper with SIGKILL"
+            );
+        }
         assert_eq!(
             marker_count(&self.abort_marker),
             1,
@@ -170,18 +213,30 @@ impl MarkerModel {
 #[async_trait]
 impl ModelPort for MarkerModel {
     async fn stream(&self, request: ModelRequest) -> Result<Box<dyn ModelStream>, ModelPortError> {
-        if self.scenario == CrashScenario::SteerApplied {
+        if matches!(
+            self.scenario,
+            CrashScenario::SteerQueued | CrashScenario::SteerApplied
+        ) && marker_count(&self.marker) > 0
+        {
             assert!(matches!(
                 request.messages.last(),
                 Some(ModelMessage::User { content }) if content == "改做新任务"
             ));
         }
+        let request_number = marker_count(&self.marker);
         append_marker(&self.marker, "request");
         self.ledger.started.fetch_add(1, Ordering::AcqRel);
+        if self.scenario == CrashScenario::SteerQueued {
+            return Ok(Box::new(PendingStream));
+        }
         let output = if matches!(
             self.scenario,
             CrashScenario::ToolInFlight | CrashScenario::ToolInFlightControlRequested
-        ) {
+        ) || matches!(
+            self.scenario,
+            CrashScenario::InteractionRequested | CrashScenario::InteractionResolved
+        ) && request_number == 0
+        {
             ModelOutput {
                 content: String::new(),
                 reasoning_content: None,
@@ -249,6 +304,15 @@ struct OneShotStream {
     ledger: Arc<ModelLedger>,
 }
 
+struct PendingStream;
+
+#[async_trait]
+impl ModelStream for PendingStream {
+    async fn next(&mut self) -> Option<Result<ModelStreamEvent, ModelPortError>> {
+        std::future::pending().await
+    }
+}
+
 #[async_trait]
 impl ModelStream for OneShotStream {
     async fn next(&mut self) -> Option<Result<ModelStreamEvent, ModelPortError>> {
@@ -296,6 +360,20 @@ impl ToolExecutor for MarkerTools {
         }]
     }
 
+    fn approval_prompt(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
+        Ok((invocation.name == TOOL_NAME
+            && !self.abort_after_side_effect
+            && self.cancel_control.is_none())
+        .then(|| ToolApprovalPrompt {
+            title: "确认写入测试标记".to_owned(),
+            description: "验证审批恢复窗口".to_owned(),
+            risk: ApprovalRisk::Elevated,
+        }))
+    }
+
     async fn execute(
         &self,
         _invocation: ToolInvocation,
@@ -309,7 +387,7 @@ impl ToolExecutor for MarkerTools {
                     .expect("tool crash requires abort marker"),
                 "tool_in_flight",
             );
-            std::process::abort();
+            wait_for_parent_kill().await;
         }
         if let Some(control_slot) = &self.cancel_control {
             let control = loop {
@@ -329,17 +407,64 @@ impl ToolExecutor for MarkerTools {
 struct CrashSink {
     scenario: CrashScenario,
     abort_marker: PathBuf,
+    control: Option<Arc<Mutex<Option<AgentControl>>>>,
 }
 
 #[async_trait]
 impl RuntimeEventSink for CrashSink {
     async fn emit(&self, event: StoredRuntimeEvent) {
+        if self.scenario == CrashScenario::InteractionResolved
+            && let RuntimeEventKind::InteractionRequested { request } = &event.event
+        {
+            let control = wait_for_control(
+                self.control
+                    .as_ref()
+                    .expect("interaction resolution requires a control slot"),
+            )
+            .await;
+            let interaction_id = request.interaction_id.clone();
+            tokio::spawn(async move {
+                control
+                    .resolve_interaction(
+                        CommandId::from("process-crash-approval"),
+                        interaction_id,
+                        UserInteractionResponse::Approved,
+                    )
+                    .await
+                    .expect("resolve crash-test interaction");
+            });
+        }
+        if self.scenario == CrashScenario::SteerQueued
+            && matches!(event.event, RuntimeEventKind::ModelRequestInFlight { .. })
+        {
+            let control = wait_for_control(
+                self.control
+                    .as_ref()
+                    .expect("steer queueing requires a control slot"),
+            )
+            .await;
+            tokio::spawn(async move {
+                control
+                    .steer_durable(CommandId::from("process-crash-steer"), "改做新任务")
+                    .await
+                    .expect("queue crash-test steer");
+            });
+        }
         let should_abort = match self.scenario {
             CrashScenario::ModelInFlight => {
                 matches!(event.event, RuntimeEventKind::ModelRequestInFlight { .. })
             }
             CrashScenario::ModelResponseCommitted => {
                 matches!(event.event, RuntimeEventKind::ModelResponseCommitted { .. })
+            }
+            CrashScenario::InteractionRequested => {
+                matches!(event.event, RuntimeEventKind::InteractionRequested { .. })
+            }
+            CrashScenario::InteractionResolved => {
+                matches!(event.event, RuntimeEventKind::InteractionResolved { .. })
+            }
+            CrashScenario::SteerQueued => {
+                matches!(event.event, RuntimeEventKind::SteerQueued { .. })
             }
             CrashScenario::TerminalCommitted => event.event.is_terminal(),
             CrashScenario::ToolInFlight => false,
@@ -350,8 +475,21 @@ impl RuntimeEventSink for CrashSink {
         };
         if should_abort {
             append_marker(&self.abort_marker, self.scenario.as_str());
-            std::process::abort();
+            wait_for_parent_kill().await;
         }
+    }
+}
+
+async fn wait_for_parent_kill() -> ! {
+    std::future::pending().await
+}
+
+async fn wait_for_control(slot: &Arc<Mutex<Option<AgentControl>>>) -> AgentControl {
+    loop {
+        if let Some(control) = slot.lock().expect("control slot lock").clone() {
+            return control;
+        }
+        tokio::task::yield_now().await;
     }
 }
 
@@ -375,6 +513,15 @@ fn runtime_request() -> RunRequest {
     request.limits.max_turns = 4;
     request.limits.max_model_requests = 4;
     request.limits.max_tool_calls = 4;
+    request
+}
+
+fn scenario_request(scenario: CrashScenario) -> RunRequest {
+    let mut request = runtime_request();
+    request.environment.interactive = matches!(
+        scenario,
+        CrashScenario::InteractionRequested | CrashScenario::InteractionResolved
+    );
     request
 }
 
@@ -403,6 +550,36 @@ fn event_count(
         .iter()
         .filter(|event| predicate(&event.event))
         .count()
+}
+
+fn assert_replay_prefix_preserved(
+    before: &codewhale_runtime::RunReplay,
+    after: &codewhale_runtime::RunReplay,
+) {
+    assert!(
+        after.events.starts_with(&before.events),
+        "resume must preserve every committed event byte-for-byte"
+    );
+    assert!(
+        after
+            .events
+            .windows(2)
+            .all(|pair| pair[1].sequence == pair[0].sequence + 1),
+        "event sequence must remain contiguous after resume"
+    );
+    let mut event_ids = after
+        .events
+        .iter()
+        .map(|event| event.event_id.0.clone())
+        .collect::<Vec<_>>();
+    let event_count = event_ids.len();
+    event_ids.sort();
+    event_ids.dedup();
+    assert_eq!(
+        event_ids.len(),
+        event_count,
+        "event ids must remain unique after resume"
+    );
 }
 
 async fn commit_steer_applied_prefix(store: &StateStore, model_marker: &Path, abort_marker: &Path) {
@@ -482,7 +659,7 @@ async fn commit_steer_applied_prefix(store: &StateStore, model_marker: &Path, ab
     }
     append_marker(model_marker, "request");
     append_marker(abort_marker, CrashScenario::SteerApplied.as_str());
-    std::process::abort();
+    wait_for_parent_kill().await;
 }
 
 /// This test is not run by the normal harness. Parent tests launch it with an
@@ -511,13 +688,19 @@ fn process_crash_helper() {
             commit_steer_applied_prefix(&store, &model_marker, &abort_marker).await;
             unreachable!("steer-applied helper aborts");
         }
-        let cancel_control = (scenario == CrashScenario::ToolInFlightControlRequested)
-            .then(|| Arc::new(Mutex::new(None)));
+        let control_slot = matches!(
+            scenario,
+            CrashScenario::ToolInFlightControlRequested
+                | CrashScenario::InteractionResolved
+                | CrashScenario::SteerQueued
+        )
+        .then(|| Arc::new(Mutex::new(None)));
         let tools = Arc::new(MarkerTools::new(
             tool_marker,
             scenario == CrashScenario::ToolInFlight,
             Some(abort_marker.clone()),
-            cancel_control.clone(),
+            (scenario == CrashScenario::ToolInFlightControlRequested)
+                .then(|| control_slot.as_ref().expect("control slot").clone()),
         ));
         let runtime = Arc::new(AgentRuntime::new(
             Arc::new(MarkerModel::new(model_marker, scenario)),
@@ -525,11 +708,12 @@ fn process_crash_helper() {
             Arc::new(CrashSink {
                 scenario,
                 abort_marker,
+                control: control_slot.clone(),
             }),
             store,
         ));
-        let run = runtime.start(runtime_request());
-        if let Some(control_slot) = cancel_control {
+        let run = runtime.start(scenario_request(scenario));
+        if let Some(control_slot) = control_slot {
             *control_slot.lock().expect("control slot lock") = Some(run.control());
         }
         let outcome = run.wait().await.expect("child runtime join");
@@ -708,6 +892,307 @@ async fn committed_model_response_resumes_without_duplicate_request_usage_or_ass
             RuntimeEventKind::ModelResponseCommitted { .. }
         )),
         1
+    );
+    assert_eq!(event_count(&replay, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
+async fn interaction_requested_crash_replays_one_pending_approval_before_any_side_effect() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::InteractionRequested);
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+    assert_eq!(marker_count(&fixture.tool_marker), 0);
+
+    let (runtime, store) = fixture.reopen(CrashScenario::InteractionRequested);
+    let before_resume = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load pending interaction run")
+        .expect("pending interaction run exists");
+    let interaction_id = before_resume
+        .snapshot
+        .pending_tool
+        .as_ref()
+        .and_then(|tool| tool.interaction.as_ref())
+        .map(|interaction| interaction.request.interaction_id.clone())
+        .expect("pending interaction id");
+    assert_eq!(
+        event_count(&before_resume, |event| matches!(
+            event,
+            RuntimeEventKind::InteractionRequested { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before_resume, |event| matches!(
+            event,
+            RuntimeEventKind::InteractionResolved { .. }
+        )),
+        0
+    );
+    assert_eq!(
+        event_count(&before_resume, |event| matches!(
+            event,
+            RuntimeEventKind::ToolExecutionStarted { .. }
+        )),
+        0
+    );
+    assert!(
+        before_resume.snapshot.command_receipts.is_empty(),
+        "request commit alone must not invent a resolution receipt"
+    );
+    let run = runtime.resume(RunId::from(RUN_ID));
+    run.control()
+        .resolve_interaction(
+            CommandId::from("resume-process-crash-approval"),
+            interaction_id,
+            UserInteractionResponse::Approved,
+        )
+        .await
+        .expect("resolve replayed interaction");
+    let outcome = run.wait().await.expect("resume pending interaction");
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(marker_count(&fixture.model_marker), 2);
+    assert_eq!(marker_count(&fixture.tool_marker), 1);
+
+    let replay = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load recovered interaction run")
+        .expect("recovered interaction run exists");
+    assert_replay_prefix_preserved(&before_resume, &replay);
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::InteractionRequested { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::InteractionResolved { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::ToolExecutionStarted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::ToolOutcomeCommitted { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&replay, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
+async fn interaction_resolved_crash_starts_the_approved_tool_exactly_once_after_reopen() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::InteractionResolved);
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+    assert_eq!(marker_count(&fixture.tool_marker), 0);
+
+    let (runtime, store) = fixture.reopen(CrashScenario::InteractionResolved);
+    let before_resume = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load resolved interaction prefix")
+        .expect("resolved interaction prefix exists");
+    assert_eq!(
+        event_count(&before_resume, |event| matches!(
+            event,
+            RuntimeEventKind::InteractionRequested { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before_resume, |event| matches!(
+            event,
+            RuntimeEventKind::InteractionResolved { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before_resume, |event| matches!(
+            event,
+            RuntimeEventKind::ToolExecutionStarted { .. }
+        )),
+        0
+    );
+    let expected_interaction_id = before_resume
+        .snapshot
+        .pending_tool
+        .as_ref()
+        .and_then(|tool| tool.interaction.as_ref())
+        .map(|interaction| interaction.request.interaction_id.clone())
+        .expect("resolved interaction id");
+    assert_eq!(before_resume.snapshot.command_receipts.len(), 1);
+    assert!(matches!(
+        before_resume
+            .snapshot
+            .pending_tool
+            .as_ref()
+            .and_then(|tool| tool.interaction.as_ref())
+            .and_then(|interaction| interaction.response.as_ref()),
+        Some(UserInteractionResponse::Approved)
+    ));
+    let receipt = before_resume
+        .snapshot
+        .command_receipts
+        .first()
+        .expect("resolved interaction command receipt");
+    assert_eq!(
+        receipt.command_id,
+        CommandId::from("process-crash-approval")
+    );
+    assert!(matches!(
+        &receipt.command,
+        codewhale_runtime::DurableCommand::ResolveInteraction {
+            interaction_id,
+            response: UserInteractionResponse::Approved,
+        } if interaction_id == &expected_interaction_id
+    ));
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume resolved interaction");
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(marker_count(&fixture.model_marker), 2);
+    assert_eq!(marker_count(&fixture.tool_marker), 1);
+
+    let replay = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load recovered resolved interaction")
+        .expect("resolved interaction run exists");
+    assert_replay_prefix_preserved(&before_resume, &replay);
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::InteractionRequested { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::InteractionResolved { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::ToolExecutionStarted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::ToolOutcomeCommitted { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&replay, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
+async fn steer_queued_crash_never_applies_or_reissues_an_ambiguous_model_request() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::SteerQueued);
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+
+    let (runtime, store) = fixture.reopen(CrashScenario::SteerQueued);
+    let before_resume = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load queued-steer prefix")
+        .expect("queued-steer prefix exists");
+    assert_eq!(
+        event_count(&before_resume, |event| matches!(
+            event,
+            RuntimeEventKind::ModelRequestInFlight { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before_resume, |event| matches!(
+            event,
+            RuntimeEventKind::SteerQueued { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before_resume, |event| matches!(
+            event,
+            RuntimeEventKind::SteerApplied { .. }
+        )),
+        0
+    );
+    assert_eq!(before_resume.snapshot.pending_steers.len(), 1);
+    assert_eq!(before_resume.snapshot.command_receipts.len(), 1);
+    let receipt = before_resume
+        .snapshot
+        .command_receipts
+        .first()
+        .expect("queued steer command receipt");
+    assert_eq!(receipt.command_id, CommandId::from("process-crash-steer"));
+    assert!(matches!(
+        &receipt.command,
+        codewhale_runtime::DurableCommand::Steer { content } if content == "改做新任务"
+    ));
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume queued-steer run");
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::RecoveryRequired {
+            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+                phase: RecoveryAmbiguityPhase::ModelRequest,
+                ..
+            }
+        }
+    ));
+    assert!(
+        outcome.accounting.billing_unknown,
+        "an externally killed in-flight request must retain unknown billing"
+    );
+    assert_eq!(
+        marker_count(&fixture.model_marker),
+        1,
+        "an ambiguous in-flight model request must not be reissued"
+    );
+
+    let replay = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load queued-steer run")
+        .expect("queued-steer run exists");
+    assert_replay_prefix_preserved(&before_resume, &replay);
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::SteerQueued { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::SteerApplied { .. }
+        )),
+        0
     );
     assert_eq!(event_count(&replay, RuntimeEventKind::is_terminal), 1);
 }
