@@ -341,6 +341,7 @@ fn equivalent_start_command(exec: &RunRequest) -> StartRunCommand {
             auto_approve: true,
             trust_mode: true,
             allow_sandbox_elevation: false,
+            interactive: false,
             sandbox: None,
         },
     }
@@ -643,7 +644,11 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             }
             RuntimeEventKind::ChildStarted { .. } => "child_started",
             RuntimeEventKind::ChildFinished { .. } => "child_finished",
-            RuntimeEventKind::Steered { .. } => "steered",
+            RuntimeEventKind::InteractionRequested { .. } => "interaction_requested",
+            RuntimeEventKind::InteractionResolved { .. } => "interaction_resolved",
+            RuntimeEventKind::SteerQueued { .. } => "steer_queued",
+            RuntimeEventKind::SteerApplied { .. } => "steer_applied",
+            RuntimeEventKind::ControlRequested { .. } => "control_requested",
             RuntimeEventKind::Terminal { .. } => "terminal",
         })
         .collect::<Vec<_>>();

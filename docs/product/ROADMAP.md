@@ -3,10 +3,11 @@
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
 - 状态：执行中
-- 当前阶段：M4-B 本地 API 单一 Runtime/RunStore 纵向切换已严格完成；被测代码提交为
-  `a534a824670b60c807c5abf399ea8674d4beb527`。`exec` 与 app-server 已共用唯一
-  `AgentApplication`，旧 core/bridge/私有 API 状态路径已删除；下一垂直切片是 M4-C 交互
-  TUI 迁移。M1 的导入基线 A/B 与 M2 的完整官方 surface canary 仍是独立证据债务
+- 当前阶段：M4-C 进行中。M4-B 被测代码提交为
+  `a534a824670b60c807c5abf399ea8674d4beb527`；当前 C1 候选已建立 canonical durable
+  interaction/control contract，但交互 TUI caller、continuation、compaction 和旧
+  engine/runtime-thread 删除尚未完成。M1 的导入基线 A/B 与 M2 的完整官方 surface canary
+  仍是独立证据债务
 - 上次更新：2026-07-17
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -84,7 +85,7 @@ diff、stdout/stderr 和原始日志保持稳定。最终门禁至少覆盖：
 | M1 | 建立原始 DeepSeek 能力基准 | 进行中（硬预算本地门禁已通过，导入基线真实编码 A/B 待完成） | 真实编码 A/B 在硬请求预算下可重复测量成功率、假成功、Token、时间和成本 |
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
-| M4 | 统一工具、事件、RunStore 和产品入口 | 进行中（M4-A/M4-B 严格完成；M4-C 待完成） | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
+| M4 | 统一工具、事件、RunStore 和产品入口 | 进行中（M4-A/M4-B 严格完成；M4-C C1 验收中） | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
 | M5 | RepoGraph、ContextBroker 和现有 WIP 证据链迁移 | 待开始 | 现有 TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 待开始 | 根/子 Agent 同内核，并行任务产生净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
@@ -503,11 +504,31 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 - M4-A 已完成 Headless CLI 的 canonical `ToolOutcome`、SQLite RunStore 和恢复闭环。
 - M4-B 已完成 app-server 纵切，并删除该入口的旧 core/bridge/私有状态路径。
+- M4-C 的交互控制基础切片候选已实现、验收中：approval 与 request-user-input 共用一个 durable
+  interaction 协议，steer 使用 `SteerQueued -> SteerApplied` 安全边界，interrupt/cancel 和
+  command receipt 进入 canonical event/Store；HTTP 与 stdio 使用同一 schema。该记录不代表
+  交互 TUI 已切换。
 - M4-C 最后迁移交互 TUI，只保留命令输入与 `RuntimeEvent` 投影，删除 TUI 生产 turn loop。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影；compaction 的能力重构仍属于 M5。真实工具只有在生产 consumer 同步
   迁移时才物理收敛到 `crates/tools`，不做空目录式模块搬家。
+
+#### M4-C C1：durable interaction/control 契约（验收中）
+
+- 真实问题：canonical Runtime 缺少持久 approval、request-user-input、运行中 steer 安全边界
+  和可恢复 control receipt，直接切换 TUI 会产生能力退化。
+- 验收条件：审批前零副作用；交互响应和控制命令按 payload 幂等；steer FIFO 且只在原子
+  model/tool/child 边界应用；崩溃重放不重复请求、副作用或 terminal。
+- 单一 owner：协议类型属于 `crates/protocol`，状态机属于 `crates/runtime`，持久事实只进入
+  `RunStore`，应用命令只由 `crates/app::AgentApplication` 接收。
+- 替换旧语义：删除 v3 `Steered`、内存投递即 accepted 和 in-flight steer 直接进入
+  `RecoveryRequired` 的语义，不引入兼容 alias。
+- 测试与证据：protocol/runtime/app/Store conformance；外部 `SIGKILL` 当前覆盖
+  `ControlRequested`/tool-in-flight 和 `SteerApplied`/next-model-not-prepared；其余交互窗口
+  仍须按 EVALUATION 补齐。
+- 切换删除点：本切片删除旧协议语义；交互 TUI 的 `EngineEvent` control 回写、乐观 transcript
+  双写、`RuntimeThreadStore` 和第二子 Agent loop 在后续 M4-C caller cutover 同步物理删除。
 
 ### 删除/替代
 

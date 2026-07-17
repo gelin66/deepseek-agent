@@ -13,12 +13,12 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use codewhale_runtime::{
-    ActorRequestAccounting, AgentRuntime, ApiSurface, CancellationToken, ModelAccounting,
-    ModelFinishReason, ModelOutput, ModelPort, ModelPortError, ModelRequest, ModelStream,
-    ModelStreamEvent, ModelToolCall, NullEventSink, PendingRuntimeEvent, RecoveryAmbiguityPhase,
-    RunId, RunRequest, RunStore, RuntimeEventId, RuntimeEventKind, RuntimeEventSink,
-    StoredRuntimeEvent, SurfaceUsage, TerminalState, ToolArguments, ToolDefinition,
-    ToolExecutionError, ToolExecutor, ToolInvocation, ToolOutcome, Usage,
+    ActorRequestAccounting, AgentControl, AgentRuntime, ApiSurface, CancellationToken, CommandId,
+    ModelAccounting, ModelFinishReason, ModelMessage, ModelOutput, ModelPort, ModelPortError,
+    ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, NullEventSink, PendingRuntimeEvent,
+    RecoveryAmbiguityPhase, RunId, RunRequest, RunStore, RuntimeEventId, RuntimeEventKind,
+    RuntimeEventSink, StoredRuntimeEvent, SurfaceUsage, TerminalState, ToolArguments,
+    ToolDefinition, ToolExecutionError, ToolExecutor, ToolInvocation, ToolOutcome, Usage,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -37,7 +37,9 @@ const TOOL_NAME: &str = "write_marker";
 enum CrashScenario {
     ModelInFlight,
     ToolInFlight,
+    ToolInFlightControlRequested,
     ModelResponseCommitted,
+    SteerApplied,
     TerminalCommitted,
 }
 
@@ -46,7 +48,9 @@ impl CrashScenario {
         match self {
             Self::ModelInFlight => "model_in_flight",
             Self::ToolInFlight => "tool_in_flight",
+            Self::ToolInFlightControlRequested => "tool_in_flight_control_requested",
             Self::ModelResponseCommitted => "model_response_committed",
+            Self::SteerApplied => "steer_applied",
             Self::TerminalCommitted => "terminal_committed",
         }
     }
@@ -55,7 +59,9 @@ impl CrashScenario {
         match value {
             "model_in_flight" => Self::ModelInFlight,
             "tool_in_flight" => Self::ToolInFlight,
+            "tool_in_flight_control_requested" => Self::ToolInFlightControlRequested,
             "model_response_committed" => Self::ModelResponseCommitted,
+            "steer_applied" => Self::SteerApplied,
             "terminal_committed" => Self::TerminalCommitted,
             other => panic!("unknown crash test scenario: {other}"),
         }
@@ -125,7 +131,12 @@ impl CrashFixture {
         let store = Arc::new(StateStore::open(Some(self.db.clone())).expect("reopen SQLite store"));
         let runtime = Arc::new(AgentRuntime::new(
             Arc::new(MarkerModel::new(self.model_marker.clone(), scenario)),
-            Arc::new(MarkerTools::new(self.tool_marker.clone(), false, None)),
+            Arc::new(MarkerTools::new(
+                self.tool_marker.clone(),
+                false,
+                None,
+                None,
+            )),
             Arc::new(NullEventSink),
             store.clone(),
         ));
@@ -158,10 +169,19 @@ impl MarkerModel {
 
 #[async_trait]
 impl ModelPort for MarkerModel {
-    async fn stream(&self, _request: ModelRequest) -> Result<Box<dyn ModelStream>, ModelPortError> {
+    async fn stream(&self, request: ModelRequest) -> Result<Box<dyn ModelStream>, ModelPortError> {
+        if self.scenario == CrashScenario::SteerApplied {
+            assert!(matches!(
+                request.messages.last(),
+                Some(ModelMessage::User { content }) if content == "改做新任务"
+            ));
+        }
         append_marker(&self.marker, "request");
         self.ledger.started.fetch_add(1, Ordering::AcqRel);
-        let output = if self.scenario == CrashScenario::ToolInFlight {
+        let output = if matches!(
+            self.scenario,
+            CrashScenario::ToolInFlight | CrashScenario::ToolInFlightControlRequested
+        ) {
             ModelOutput {
                 content: String::new(),
                 reasoning_content: None,
@@ -247,14 +267,21 @@ struct MarkerTools {
     marker: PathBuf,
     abort_after_side_effect: bool,
     abort_marker: Option<PathBuf>,
+    cancel_control: Option<Arc<Mutex<Option<AgentControl>>>>,
 }
 
 impl MarkerTools {
-    fn new(marker: PathBuf, abort_after_side_effect: bool, abort_marker: Option<PathBuf>) -> Self {
+    fn new(
+        marker: PathBuf,
+        abort_after_side_effect: bool,
+        abort_marker: Option<PathBuf>,
+        cancel_control: Option<Arc<Mutex<Option<AgentControl>>>>,
+    ) -> Self {
         Self {
             marker,
             abort_after_side_effect,
             abort_marker,
+            cancel_control,
         }
     }
 }
@@ -284,6 +311,17 @@ impl ToolExecutor for MarkerTools {
             );
             std::process::abort();
         }
+        if let Some(control_slot) = &self.cancel_control {
+            let control = loop {
+                if let Some(control) = control_slot.lock().expect("control slot lock").clone() {
+                    break control;
+                }
+                tokio::task::yield_now().await;
+            };
+            control.cancel().expect("queue crash-test cancel");
+            std::future::pending::<()>().await;
+            unreachable!("control-requested crash aborts the process");
+        }
         Ok(ToolOutcome::success("side effect applied"))
     }
 }
@@ -305,6 +343,10 @@ impl RuntimeEventSink for CrashSink {
             }
             CrashScenario::TerminalCommitted => event.event.is_terminal(),
             CrashScenario::ToolInFlight => false,
+            CrashScenario::ToolInFlightControlRequested => {
+                matches!(event.event, RuntimeEventKind::ControlRequested { .. })
+            }
+            CrashScenario::SteerApplied => false,
         };
         if should_abort {
             append_marker(&self.abort_marker, self.scenario.as_str());
@@ -363,6 +405,86 @@ fn event_count(
         .count()
 }
 
+async fn commit_steer_applied_prefix(store: &StateStore, model_marker: &Path, abort_marker: &Path) {
+    let created = store
+        .create(runtime_request())
+        .await
+        .expect("create steer-applied crash run");
+    let snapshot = &created.replay.snapshot;
+    let attempt_id = codewhale_runtime::AttemptId("steer-applied-attempt".to_owned());
+    let model_request = ModelRequest {
+        run_id: created.lease.run_id.clone(),
+        parent_run_id: snapshot.request.parent_run_id.clone(),
+        actor: snapshot.request.actor,
+        model: snapshot.request.model.clone(),
+        system_prompt: snapshot.request.system_prompt.clone(),
+        messages: snapshot.transcript.project_messages(),
+        tools: Vec::new(),
+        reasoning_effort: snapshot.request.reasoning_effort,
+        max_output_tokens: snapshot.request.max_output_tokens,
+        streaming: snapshot.request.streaming,
+        request_number: 1,
+        attempt: 0,
+    };
+    for (event_id, event) in [
+        (
+            "steer-applied-model-prepared",
+            RuntimeEventKind::ModelRequestPrepared {
+                attempt_id: attempt_id.clone(),
+                request: Box::new(model_request),
+            },
+        ),
+        (
+            "steer-applied-model-in-flight",
+            RuntimeEventKind::ModelRequestInFlight {
+                attempt_id: attempt_id.clone(),
+            },
+        ),
+        (
+            "steer-applied-model-response",
+            RuntimeEventKind::ModelResponseCommitted {
+                attempt_id,
+                output: Box::new(ModelOutput {
+                    content: "旧结果".to_owned(),
+                    reasoning_content: None,
+                    tool_calls: Vec::new(),
+                    finish_reason: ModelFinishReason::Stop,
+                    usage: one_usage(),
+                }),
+                accounting: Box::new(ModelAccounting::default()),
+            },
+        ),
+        (
+            "steer-queued-before-crash",
+            RuntimeEventKind::SteerQueued {
+                command_id: CommandId::from("steer-before-crash"),
+                content: "改做新任务".to_owned(),
+            },
+        ),
+        (
+            "steer-applied-before-crash",
+            RuntimeEventKind::SteerApplied {
+                command_id: CommandId::from("steer-before-crash"),
+                content: "改做新任务".to_owned(),
+            },
+        ),
+    ] {
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent {
+                    event_id: RuntimeEventId(event_id.to_owned()),
+                    event,
+                },
+            )
+            .await
+            .expect("commit steer-applied crash prefix");
+    }
+    append_marker(model_marker, "request");
+    append_marker(abort_marker, CrashScenario::SteerApplied.as_str());
+    std::process::abort();
+}
+
 /// This test is not run by the normal harness. Parent tests launch it with an
 /// exact filter and scenario environment, then require an abnormal exit.
 #[test]
@@ -385,10 +507,17 @@ fn process_crash_helper() {
         .expect("build child runtime");
     tokio.block_on(async move {
         let store = Arc::new(StateStore::open(Some(db)).expect("open child SQLite store"));
+        if scenario == CrashScenario::SteerApplied {
+            commit_steer_applied_prefix(&store, &model_marker, &abort_marker).await;
+            unreachable!("steer-applied helper aborts");
+        }
+        let cancel_control = (scenario == CrashScenario::ToolInFlightControlRequested)
+            .then(|| Arc::new(Mutex::new(None)));
         let tools = Arc::new(MarkerTools::new(
             tool_marker,
             scenario == CrashScenario::ToolInFlight,
             Some(abort_marker.clone()),
+            cancel_control.clone(),
         ));
         let runtime = Arc::new(AgentRuntime::new(
             Arc::new(MarkerModel::new(model_marker, scenario)),
@@ -399,11 +528,11 @@ fn process_crash_helper() {
             }),
             store,
         ));
-        let outcome = runtime
-            .start(runtime_request())
-            .wait()
-            .await
-            .expect("child runtime join");
+        let run = runtime.start(runtime_request());
+        if let Some(control_slot) = cancel_control {
+            *control_slot.lock().expect("control slot lock") = Some(run.control());
+        }
+        let outcome = run.wait().await.expect("child runtime join");
         panic!("crash helper unexpectedly completed: {outcome:?}");
     });
 }
@@ -494,6 +623,53 @@ async fn tool_side_effect_crash_is_not_executed_twice_after_reopen() {
 }
 
 #[tokio::test]
+async fn control_requested_crash_does_not_hide_in_flight_tool_side_effect_ambiguity() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::ToolInFlightControlRequested);
+    assert_eq!(marker_count(&fixture.tool_marker), 1);
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+
+    let (runtime, store) = fixture.reopen(CrashScenario::ToolInFlightControlRequested);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume control-requested run");
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::RecoveryRequired {
+            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+                phase: RecoveryAmbiguityPhase::ToolExecution,
+                ..
+            }
+        }
+    ));
+    assert_eq!(marker_count(&fixture.tool_marker), 1);
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+
+    let replay = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load control-requested run")
+        .expect("control-requested run exists");
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::ControlRequested { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::ToolOutcomeCommitted { .. }
+        )),
+        0
+    );
+    assert_eq!(event_count(&replay, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
 async fn committed_model_response_resumes_without_duplicate_request_usage_or_assistant() {
     let fixture = CrashFixture::new();
     fixture.crash_child(CrashScenario::ModelResponseCommitted);
@@ -537,6 +713,54 @@ async fn committed_model_response_resumes_without_duplicate_request_usage_or_ass
 }
 
 #[tokio::test]
+async fn steer_applied_crash_resumes_with_a_new_model_request_instead_of_old_stop() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::SteerApplied);
+    assert_eq!(marker_count(&fixture.model_marker), 1);
+
+    let (runtime, store) = fixture.reopen(CrashScenario::SteerApplied);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume steer-applied run");
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(
+        marker_count(&fixture.model_marker),
+        2,
+        "the applied steer must force a new physical model request"
+    );
+
+    let replay = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load steer-applied run")
+        .expect("steer-applied run exists");
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::SteerQueued { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::SteerApplied { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&replay, |event| matches!(
+            event,
+            RuntimeEventKind::ModelResponseCommitted { .. }
+        )),
+        2
+    );
+    assert_eq!(event_count(&replay, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
 async fn committed_terminal_is_returned_after_reopen_without_second_terminal() {
     let fixture = CrashFixture::new();
     fixture.crash_child(CrashScenario::TerminalCommitted);
@@ -571,7 +795,8 @@ async fn caller_retry_after_reopen_returns_the_committed_event_by_id() {
         .expect("create durable run");
     let pending = PendingRuntimeEvent {
         event_id: RuntimeEventId("retry-after-commit".to_owned()),
-        event: RuntimeEventKind::Steered {
+        event: RuntimeEventKind::SteerQueued {
+            command_id: CommandId::from("retry-after-commit-command"),
             content: "调用方未收到 commit 返回值".to_owned(),
         },
     };

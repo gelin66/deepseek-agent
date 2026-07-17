@@ -9,7 +9,7 @@
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
-- 当前阶段：M4-B 本地 API 纵向切换严格完成，M4-C 交互 TUI 尚未迁移
+- 当前阶段：M4-C C1 候选已实现并进入验收，交互 TUI caller 尚未迁移
 
 ## 1. 当前结论
 
@@ -58,7 +58,9 @@ interactive TUI / TaskManager
 - 打开同一种 SQLite `RunStore`；
 - 绑定 physical request budget、model accounting 和 execution fingerprint；
 - 维护轻量 process-local active control registry；
-- 实现 start、get、events、resume、steer、interrupt、cancel。
+- 实现 start、get、events、resume、steer、interrupt、cancel、resolve_interaction。
+- control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
+  已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
 
 active registry 只保存当前进程可投递的 control handle，不是第二个 lifecycle 或持久事实。
 run projection、event、lease 和 terminal 都从 `RunStore` 读取。
@@ -72,6 +74,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 - model/tool 循环；
 - root/child budget；
 - control command；
+- durable approval、request-user-input、两阶段 steer 与 typed interrupt/cancel；
 - crash-safe event 提交；
 - terminal candidate 与 Host 接受边界。
 
@@ -108,6 +111,9 @@ read_file    run_tests    run_verifiers
 Runtime 在允许的 depth/budget 内追加内建 `agent` control tool；它启动的 child 仍是同一个
 `AgentRuntime`，不是另一套 swarm loop。
 
+交互 root run 还会追加 Runtime 内建 `request_user_input`；child run 强制非交互。该能力
+不增加固定 Host 工具数量，approval 也是工具执行前置协议，不是模型可见的新工具。
+
 所有 Host handler 返回 canonical `ToolOutcome`，明确区分 invocation、operation、retry、
 side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工具系统尚未迁移，
 不代表 Headless production catalog 会自动扩大。
@@ -120,6 +126,7 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 - reducer/snapshot/replay；
 - execution lease 与 epoch；
 - pending model attempt 与 unknown billing；
+- pending interaction、steer、terminal control 与携带规范化 payload 的 command receipt；
 - terminal exactly-once；
 - no-key terminal replay。
 
@@ -144,6 +151,7 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
+- Run API v2 / RuntimeEvent v4 提供 durable interaction resolve 与两阶段 steer；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -214,6 +222,12 @@ M4-B 提交中的离线验收已经证明：
 二进制摘要、费用和非结论见
 [M4-B 本地 API 证据汇总](../../eval/summaries/m4-b-local-api-2026-07-17.md)；不能从一次
 链路 canary 推断编码能力或效率提升。
+
+当前 C1 候选的 conformance/Store replay 已证明 interaction ordering、幂等响应和同 run
+恢复状态机；外部 `SIGKILL` 已覆盖 `ControlRequested`/tool-in-flight 与
+`SteerApplied`/next-model-not-prepared 窗口。`InteractionRequested`、
+`InteractionResolved`/before-tool-start 和 `SteerQueued`/before-applied 的外部进程窗口仍待
+验收。该候选不代表 TUI 已切换，也不构成编码能力或效率提升证据。
 
 ## 7. 明确非结论
 

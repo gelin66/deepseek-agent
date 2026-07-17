@@ -298,8 +298,12 @@ impl RunComposition for ProductionComposition {
         let model_port: Arc<dyn ModelPort> =
             Arc::new(DeepSeekModelPort::new(transport, request_budget.clone()));
         let runtime = Arc::new(AgentRuntime::new(model_port, tool_executor, sink, store));
-        let tool_catalog =
-            runtime.tool_definitions(&command.tool_policy, 0, command.limits.max_depth);
+        let tool_catalog = runtime.tool_definitions(
+            &command.tool_policy,
+            0,
+            command.limits.max_depth,
+            command.controls.interactive,
+        );
         let tool_catalog_sha256 = tool_catalog_sha256(&tool_catalog);
         let execution_fingerprint_sha256 =
             self.execution_fingerprint_sha256(&model, &tool_identity, &tool_catalog_sha256);
@@ -327,6 +331,7 @@ impl RunComposition for ProductionComposition {
                 auto_approve: command.controls.auto_approve,
                 trust_mode: command.controls.trust_mode,
                 allow_sandbox_elevation: command.controls.allow_sandbox_elevation,
+                interactive: command.controls.interactive,
                 sandbox: command.controls.sandbox,
             },
             accounting_baseline,
@@ -359,6 +364,7 @@ impl RunComposition for ProductionComposition {
             auto_approve: request.environment.auto_approve,
             trust_mode: request.environment.trust_mode,
             allow_sandbox_elevation: request.environment.allow_sandbox_elevation,
+            interactive: request.environment.interactive,
             sandbox: request.environment.sandbox.clone(),
         };
         let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?;
@@ -373,8 +379,12 @@ impl RunComposition for ProductionComposition {
             Arc::new(ReplayOnlyModelPort)
         };
         let runtime = Arc::new(AgentRuntime::new(model_port, tool_executor, sink, store));
-        let tool_catalog =
-            runtime.tool_definitions(&request.tool_policy, 0, request.limits.max_depth);
+        let tool_catalog = runtime.tool_definitions(
+            &request.tool_policy,
+            0,
+            request.limits.max_depth,
+            request.environment.interactive,
+        );
         let current_catalog_sha256 = tool_catalog_sha256(&tool_catalog);
         if request.environment.tool_catalog_sha256.as_deref()
             != Some(current_catalog_sha256.as_str())
@@ -843,6 +853,7 @@ mod tests {
                 auto_approve: true,
                 trust_mode: false,
                 allow_sandbox_elevation: false,
+                interactive: false,
                 sandbox: Some("workspace-write".to_owned()),
             },
         }
@@ -1309,8 +1320,12 @@ mod tests {
             Arc::new(NullEventSink),
             app.store.clone(),
         );
-        let current_catalog =
-            tool_catalog_sha256(&catalog_runtime.tool_definitions(&ToolPolicy::default(), 0, 0));
+        let current_catalog = tool_catalog_sha256(&catalog_runtime.tool_definitions(
+            &ToolPolicy::default(),
+            0,
+            0,
+            false,
+        ));
         let missing_fingerprint_run = seed_resume_mismatch(
             app.store.as_ref(),
             temp.path(),

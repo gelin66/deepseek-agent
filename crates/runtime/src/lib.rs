@@ -19,9 +19,9 @@ pub use agent::{
     AgentControl, AgentRuntime, ControlError, RunReadyError, RuntimeJoinError, RuntimeRun,
 };
 pub use store::{
-    AcquiredRun, CreatedRun, DurableActionState, InMemoryRunStore, PendingModelAction,
-    PendingToolAction, RunLease, RunReplay, RunSnapshot, StoppedModelFailure, apply_event,
-    reduce_events,
+    AcquiredRun, CommandReceipt, CreatedRun, DurableActionState, DurableCommand, InMemoryRunStore,
+    PendingControl, PendingModelAction, PendingSteer, PendingToolAction, PendingUserInteraction,
+    RunLease, RunReplay, RunSnapshot, StoppedModelFailure, apply_event, reduce_events,
 };
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -147,6 +147,16 @@ impl CancellationToken {
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     fn definitions(&self) -> Vec<ToolDefinition>;
+
+    /// Return a host-owned approval prompt for this exact invocation.
+    /// Concrete tool implementations remain the only owner of their risk and
+    /// policy rules; the runtime only persists and enforces the handshake.
+    fn approval_prompt(
+        &self,
+        _invocation: &ToolInvocation,
+    ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
+        Ok(None)
+    }
 
     async fn execute(
         &self,

@@ -54,6 +54,49 @@ pub struct PendingToolAction {
     pub operation_id: OperationId,
     pub invocation: ToolInvocation,
     pub state: DurableActionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub interaction: Option<PendingUserInteraction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingUserInteraction {
+    pub request: UserInteractionRequest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response: Option<UserInteractionResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingSteer {
+    pub command_id: CommandId,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingControl {
+    pub command_id: CommandId,
+    pub action: DurableControlAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DurableCommand {
+    Steer {
+        content: String,
+    },
+    Stop {
+        action: DurableControlAction,
+    },
+    ResolveInteraction {
+        interaction_id: InteractionId,
+        response: UserInteractionResponse,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CommandReceipt {
+    pub command_id: CommandId,
+    pub sequence: u64,
+    pub command: DurableCommand,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -75,6 +118,9 @@ pub struct RunSnapshot {
     pub pending_model: Option<PendingModelAction>,
     pub pending_tool: Option<PendingToolAction>,
     pub pending_children: Vec<RunId>,
+    pub pending_steers: Vec<PendingSteer>,
+    pub pending_control: Option<PendingControl>,
+    pub command_receipts: Vec<CommandReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -130,6 +176,9 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
         pending_model: None,
         pending_tool: None,
         pending_children: Vec::new(),
+        pending_steers: Vec::new(),
+        pending_control: None,
+        command_receipts: Vec::new(),
     };
 
     for stored in events.iter().skip(1) {
@@ -155,6 +204,19 @@ pub fn apply_event(
     validate_event_header(stored, snapshot.last_sequence.saturating_add(1), &run_id)?;
     if snapshot.terminal.is_some() {
         return Err(corrupt(&run_id, "event appears after terminal"));
+    }
+    if snapshot.pending_control.is_some()
+        && !matches!(
+            &stored.event,
+            RuntimeEventKind::ToolOutcomeCommitted { .. }
+                | RuntimeEventKind::ChildFinished { .. }
+                | RuntimeEventKind::Terminal { .. }
+        )
+    {
+        return Err(corrupt(
+            &run_id,
+            "only settlement events may follow a durable terminal control request",
+        ));
     }
     if snapshot.last_model_failure.is_some()
         && !matches!(&stored.event, RuntimeEventKind::Terminal { .. })
@@ -335,12 +397,144 @@ pub fn apply_event(
                 operation_id: operation_id.clone(),
                 invocation: invocation.clone(),
                 state: DurableActionState::Prepared,
+                interaction: None,
             });
+        }
+        RuntimeEventKind::InteractionRequested { request } => {
+            let interactive_root = snapshot.request.actor.kind == AgentActorKind::Root
+                && snapshot.request.environment.interactive;
+            let pending = pending_tool_mut(snapshot, &run_id, &request.operation_id)?;
+            if pending.invocation.call_id != request.call_id
+                || pending.invocation.name != request.tool_name
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "interaction request identity does not match the prepared tool",
+                ));
+            }
+            if pending.state != DurableActionState::Prepared {
+                return Err(corrupt(
+                    &run_id,
+                    "interaction requested after tool execution began",
+                ));
+            }
+            if pending.interaction.is_some() {
+                return Err(corrupt(&run_id, "tool requested more than one interaction"));
+            }
+            match &request.prompt {
+                UserInteractionPrompt::Approval { arguments, .. } => {
+                    if request.tool_name == REQUEST_USER_INPUT_TOOL_NAME {
+                        return Err(corrupt(
+                            &run_id,
+                            "request_user_input requires a user-input interaction",
+                        ));
+                    }
+                    if pending.invocation.arguments.parsed.as_ref() != Some(arguments) {
+                        return Err(corrupt(
+                            &run_id,
+                            "approval arguments do not match the prepared tool invocation",
+                        ));
+                    }
+                }
+                UserInteractionPrompt::UserInput {
+                    request: user_input,
+                } => {
+                    if request.tool_name != REQUEST_USER_INPUT_TOOL_NAME || !interactive_root {
+                        return Err(corrupt(
+                            &run_id,
+                            "user-input interaction is only valid for an interactive root request_user_input call",
+                        ));
+                    }
+                    user_input
+                        .validate()
+                        .map_err(|message| corrupt(&run_id, message))?;
+                    let arguments =
+                        pending.invocation.arguments.parsed.clone().ok_or_else(|| {
+                            corrupt(&run_id, "request_user_input requires parsed tool arguments")
+                        })?;
+                    let decoded: UserInputRequest =
+                        serde_json::from_value(arguments).map_err(|error| {
+                            corrupt(
+                                &run_id,
+                                format!(
+                                    "request_user_input arguments are not a valid request: {error}"
+                                ),
+                            )
+                        })?;
+                    if decoded != *user_input {
+                        return Err(corrupt(
+                            &run_id,
+                            "user-input request does not match the prepared tool invocation",
+                        ));
+                    }
+                }
+            }
+            pending.interaction = Some(PendingUserInteraction {
+                request: request.clone(),
+                response: None,
+            });
+        }
+        RuntimeEventKind::InteractionResolved {
+            command_id,
+            interaction_id,
+            response,
+        } => {
+            let pending = snapshot
+                .pending_tool
+                .as_ref()
+                .ok_or_else(|| corrupt(&run_id, "interaction resolved without a pending tool"))?;
+            let interaction = pending
+                .interaction
+                .as_ref()
+                .ok_or_else(|| corrupt(&run_id, "interaction resolved before it was requested"))?;
+            if interaction.request.interaction_id != *interaction_id {
+                return Err(corrupt(
+                    &run_id,
+                    "interaction resolution id does not match the pending request",
+                ));
+            }
+            if interaction.response.is_some() {
+                return Err(corrupt(&run_id, "interaction was resolved more than once"));
+            }
+            interaction
+                .request
+                .validate_response(response)
+                .map_err(|message| corrupt(&run_id, message))?;
+            record_command(
+                snapshot,
+                &run_id,
+                command_id,
+                stored.sequence,
+                DurableCommand::ResolveInteraction {
+                    interaction_id: interaction_id.clone(),
+                    response: response.clone(),
+                },
+            )?;
+            snapshot
+                .pending_tool
+                .as_mut()
+                .and_then(|pending| pending.interaction.as_mut())
+                .expect("validated pending interaction remains present")
+                .response = Some(response.clone());
         }
         RuntimeEventKind::ToolExecutionStarted { operation_id } => {
             let pending = pending_tool_mut(snapshot, &run_id, operation_id)?;
             if pending.state != DurableActionState::Prepared {
                 return Err(corrupt(&run_id, "tool execution entered in_flight twice"));
+            }
+            if let Some(interaction) = &pending.interaction
+                && !matches!(
+                    (&interaction.request.prompt, &interaction.response),
+                    (
+                        UserInteractionPrompt::Approval { .. },
+                        Some(UserInteractionResponse::Approved)
+                    )
+                )
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "tool execution began without an approved interaction",
+                ));
             }
             pending.state = DurableActionState::InFlight;
         }
@@ -359,6 +553,44 @@ pub fn apply_event(
                     &run_id,
                     "tool outcome identity does not match prepared call",
                 ));
+            }
+            if let Some(interaction) = &pending.interaction {
+                match (
+                    &interaction.request.prompt,
+                    &interaction.response,
+                    pending.state,
+                ) {
+                    (_, None, _) if outcome.operation != ToolOperationStatus::Cancelled => {
+                        return Err(corrupt(
+                            &run_id,
+                            "tool interaction was bypassed without cancellation",
+                        ));
+                    }
+                    (
+                        UserInteractionPrompt::Approval { .. },
+                        Some(UserInteractionResponse::Approved),
+                        DurableActionState::Prepared,
+                    ) => {
+                        return Err(corrupt(
+                            &run_id,
+                            "approved tool committed an outcome before execution began",
+                        ));
+                    }
+                    (
+                        UserInteractionPrompt::Approval { .. },
+                        Some(
+                            UserInteractionResponse::Denied { .. }
+                            | UserInteractionResponse::Cancelled,
+                        ),
+                        _,
+                    ) if outcome.invocation != ToolInvocationStatus::Rejected => {
+                        return Err(corrupt(
+                            &run_id,
+                            "denied or cancelled approval must commit a rejected tool outcome",
+                        ));
+                    }
+                    _ => {}
+                }
             }
             snapshot.pending_tool = None;
             snapshot.transcript.entries.push(TranscriptEntry::Tool {
@@ -405,14 +637,83 @@ pub fn apply_event(
                     handoff_content: handoff_content.clone(),
                 });
         }
-        RuntimeEventKind::Steered { content } => {
+        RuntimeEventKind::SteerQueued {
+            command_id,
+            content,
+        } => {
+            record_command(
+                snapshot,
+                &run_id,
+                command_id,
+                stored.sequence,
+                DurableCommand::Steer {
+                    content: content.clone(),
+                },
+            )?;
+            snapshot.pending_steers.push(PendingSteer {
+                command_id: command_id.clone(),
+                content: content.clone(),
+            });
+        }
+        RuntimeEventKind::SteerApplied {
+            command_id,
+            content,
+        } => {
+            let Some(pending) = snapshot.pending_steers.first() else {
+                return Err(corrupt(&run_id, "steer applied without a queued command"));
+            };
+            if pending.command_id != *command_id || pending.content != *content {
+                return Err(corrupt(
+                    &run_id,
+                    "steers must be applied in queued order with unchanged content",
+                ));
+            }
+            snapshot.pending_steers.remove(0);
             snapshot.transcript.entries.push(TranscriptEntry::User {
                 content: content.clone(),
+            });
+            snapshot.last_model_activity_sequence = Some(stored.sequence);
+        }
+        RuntimeEventKind::ControlRequested { command_id, action } => {
+            if snapshot.pending_control.is_some() {
+                return Err(corrupt(
+                    &run_id,
+                    "more than one terminal control was requested",
+                ));
+            }
+            record_command(
+                snapshot,
+                &run_id,
+                command_id,
+                stored.sequence,
+                DurableCommand::Stop { action: *action },
+            )?;
+            snapshot.pending_control = Some(PendingControl {
+                command_id: command_id.clone(),
+                action: *action,
             });
         }
         RuntimeEventKind::Terminal { outcome } => {
             if outcome.run_id != run_id {
                 return Err(corrupt(&run_id, "terminal outcome belongs to another run"));
+            }
+            if let Some(control) = &snapshot.pending_control {
+                let matches_control = matches!(
+                    (control.action, &outcome.terminal),
+                    (
+                        DurableControlAction::Interrupt,
+                        TerminalState::Interrupted | TerminalState::RecoveryRequired { .. }
+                    ) | (
+                        DurableControlAction::Cancel,
+                        TerminalState::Cancelled | TerminalState::RecoveryRequired { .. }
+                    )
+                );
+                if !matches_control {
+                    return Err(corrupt(
+                        &run_id,
+                        "terminal state does not match the durable control request",
+                    ));
+                }
             }
             snapshot.terminal = Some((**outcome).clone());
         }
@@ -572,6 +873,28 @@ fn pending_tool_mut<'a>(
         ));
     }
     Ok(pending)
+}
+
+fn record_command(
+    snapshot: &mut RunSnapshot,
+    run_id: &RunId,
+    command_id: &CommandId,
+    sequence: u64,
+    command: DurableCommand,
+) -> Result<(), RunStoreError> {
+    if snapshot
+        .command_receipts
+        .iter()
+        .any(|receipt| receipt.command_id == *command_id)
+    {
+        return Err(corrupt(run_id, "command id was committed more than once"));
+    }
+    snapshot.command_receipts.push(CommandReceipt {
+        command_id: command_id.clone(),
+        sequence,
+        command,
+    });
+    Ok(())
 }
 
 fn corrupt(run_id: &RunId, message: impl Into<String>) -> RunStoreError {

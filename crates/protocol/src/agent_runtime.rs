@@ -3,14 +3,16 @@
 //! These types deliberately describe model turns and runtime facts without
 //! depending on a UI, an HTTP transport, or a database representation.
 
+use std::collections::HashSet;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 3;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 4;
 pub const AGENT_TOOL_NAME: &str = "agent";
+pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -287,6 +289,11 @@ pub struct RunEnvironment {
     pub auto_approve: bool,
     pub trust_mode: bool,
     pub allow_sandbox_elevation: bool,
+    /// Whether this client can answer durable runtime interaction requests.
+    /// Headless callers keep this disabled so approval-gated tools fail closed
+    /// instead of leaving a run waiting for a response that can never arrive.
+    #[serde(default)]
+    pub interactive: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
 }
@@ -1086,6 +1093,295 @@ impl Default for OperationId {
     }
 }
 
+impl From<String> for OperationId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for OperationId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct InteractionId(pub String);
+
+impl InteractionId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().to_string())
+    }
+}
+
+impl Default for InteractionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<String> for InteractionId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for InteractionId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CommandId(pub String);
+
+impl CommandId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().to_string())
+    }
+}
+
+impl Default for CommandId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl From<String> for CommandId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for CommandId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApprovalRisk {
+    Routine,
+    Elevated,
+    Critical,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolApprovalPrompt {
+    pub title: String,
+    pub description: String,
+    pub risk: ApprovalRisk,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserInputOption {
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserInputQuestion {
+    pub header: String,
+    pub id: String,
+    pub question: String,
+    pub options: Vec<UserInputOption>,
+    #[serde(default)]
+    pub allow_free_text: bool,
+    #[serde(default)]
+    pub multi_select: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserInputRequest {
+    pub questions: Vec<UserInputQuestion>,
+}
+
+impl UserInputRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.questions.is_empty() || self.questions.len() > 3 {
+            return Err("questions must contain 1 to 3 items".to_owned());
+        }
+        let mut question_ids = HashSet::new();
+        for question in &self.questions {
+            if question.header.trim().is_empty()
+                || question.id.trim().is_empty()
+                || question.question.trim().is_empty()
+            {
+                return Err("question header, id, and text must not be empty".to_owned());
+            }
+            if !question_ids.insert(question.id.as_str()) {
+                return Err(format!("duplicate question id '{}'", question.id));
+            }
+            if !(2..=4).contains(&question.options.len()) {
+                return Err("each question must contain 2 to 4 options".to_owned());
+            }
+            if question.options.iter().any(|option| {
+                option.label.trim().is_empty() || option.description.trim().is_empty()
+            }) {
+                return Err("option label and description must not be empty".to_owned());
+            }
+            let mut option_labels = HashSet::new();
+            for option in &question.options {
+                if !option_labels.insert(option.label.as_str()) {
+                    return Err(format!(
+                        "question '{}' contains duplicate option label '{}'",
+                        question.id, option.label
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserInputAnswer {
+    pub id: String,
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UserInteractionPrompt {
+    Approval {
+        prompt: ToolApprovalPrompt,
+        arguments: Value,
+    },
+    UserInput {
+        request: UserInputRequest,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserInteractionRequest {
+    pub interaction_id: InteractionId,
+    pub operation_id: OperationId,
+    pub call_id: String,
+    pub tool_name: String,
+    pub prompt: UserInteractionPrompt,
+}
+
+impl UserInteractionRequest {
+    pub fn validate_response(&self, response: &UserInteractionResponse) -> Result<(), String> {
+        match (&self.prompt, response) {
+            (UserInteractionPrompt::Approval { .. }, UserInteractionResponse::Approved)
+            | (UserInteractionPrompt::Approval { .. }, UserInteractionResponse::Denied { .. })
+            | (UserInteractionPrompt::Approval { .. }, UserInteractionResponse::Cancelled)
+            | (UserInteractionPrompt::UserInput { .. }, UserInteractionResponse::Cancelled) => {
+                Ok(())
+            }
+            (
+                UserInteractionPrompt::UserInput { request },
+                UserInteractionResponse::Answered { answers },
+            ) => validate_user_input_answers(request, answers),
+            (UserInteractionPrompt::Approval { .. }, UserInteractionResponse::Answered { .. }) => {
+                Err("approval interaction cannot be resolved with user-input answers".to_owned())
+            }
+            (
+                UserInteractionPrompt::UserInput { .. },
+                UserInteractionResponse::Approved | UserInteractionResponse::Denied { .. },
+            ) => Err("user-input interaction requires answers or cancellation".to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum UserInteractionResponse {
+    Approved,
+    Denied {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    Answered {
+        answers: Vec<UserInputAnswer>,
+    },
+    Cancelled,
+}
+
+fn validate_user_input_answers(
+    request: &UserInputRequest,
+    answers: &[UserInputAnswer],
+) -> Result<(), String> {
+    request.validate()?;
+    let mut seen_answers = HashSet::new();
+    for answer in answers {
+        let Some(question) = request
+            .questions
+            .iter()
+            .find(|question| question.id == answer.id)
+        else {
+            return Err(format!(
+                "answer references unknown question id '{}'",
+                answer.id
+            ));
+        };
+        if answer.value.trim().is_empty() || answer.label.trim().is_empty() {
+            return Err(format!(
+                "answer for question '{}' must contain a label and value",
+                answer.id
+            ));
+        }
+        if !seen_answers.insert((answer.id.as_str(), answer.label.as_str())) {
+            return Err(format!(
+                "question '{}' contains duplicate answer '{}'",
+                answer.id, answer.label
+            ));
+        }
+        let known_option = question
+            .options
+            .iter()
+            .find(|option| option.label == answer.label);
+        match known_option {
+            Some(option) if answer.value != option.label => {
+                return Err(format!(
+                    "answer '{}' for question '{}' changed the selected option value",
+                    answer.label, answer.id
+                ));
+            }
+            None if !question.allow_free_text => {
+                return Err(format!(
+                    "question '{}' does not allow a free-text answer",
+                    answer.id
+                ));
+            }
+            _ => {}
+        }
+    }
+    for question in &request.questions {
+        let count = answers
+            .iter()
+            .filter(|answer| answer.id == question.id)
+            .count();
+        if count == 0 {
+            return Err(format!("question '{}' has no answer", question.id));
+        }
+        if !question.multi_select && count > 1 {
+            return Err(format!(
+                "question '{}' does not allow multiple answers",
+                question.id
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurableControlAction {
+    Interrupt,
+    Cancel,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelAttemptFailure {
     pub code: String,
@@ -1190,6 +1486,14 @@ pub enum RuntimeEventKind {
     ToolExecutionStarted {
         operation_id: OperationId,
     },
+    InteractionRequested {
+        request: UserInteractionRequest,
+    },
+    InteractionResolved {
+        command_id: CommandId,
+        interaction_id: InteractionId,
+        response: UserInteractionResponse,
+    },
     ToolOutcomeCommitted {
         operation_id: OperationId,
         call_id: String,
@@ -1207,8 +1511,17 @@ pub enum RuntimeEventKind {
         accounting: Box<ModelAccounting>,
         handoff_content: String,
     },
-    Steered {
+    SteerQueued {
+        command_id: CommandId,
         content: String,
+    },
+    SteerApplied {
+        command_id: CommandId,
+        content: String,
+    },
+    ControlRequested {
+        command_id: CommandId,
+        action: DurableControlAction,
     },
     Terminal {
         outcome: Box<AgentOutcome>,
@@ -1268,6 +1581,121 @@ mod tests {
         let arguments = ToolArguments::parse("{not-json");
         assert_eq!(arguments.raw, "{not-json");
         assert!(arguments.parsed.is_none());
+    }
+
+    #[test]
+    fn user_interaction_validates_prompt_specific_responses() {
+        let request = UserInteractionRequest {
+            interaction_id: InteractionId::from("interaction-1"),
+            operation_id: OperationId::from("operation-1"),
+            call_id: "call-1".to_owned(),
+            tool_name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
+            prompt: UserInteractionPrompt::UserInput {
+                request: UserInputRequest {
+                    questions: vec![UserInputQuestion {
+                        header: "范围".to_owned(),
+                        id: "scope".to_owned(),
+                        question: "选择范围".to_owned(),
+                        options: vec![
+                            UserInputOption {
+                                label: "A".to_owned(),
+                                description: "选项 A".to_owned(),
+                            },
+                            UserInputOption {
+                                label: "B".to_owned(),
+                                description: "选项 B".to_owned(),
+                            },
+                        ],
+                        allow_free_text: true,
+                        multi_select: false,
+                    }],
+                },
+            },
+        };
+        assert!(
+            request
+                .validate_response(&UserInteractionResponse::Answered {
+                    answers: vec![UserInputAnswer {
+                        id: "scope".to_owned(),
+                        label: "自定义".to_owned(),
+                        value: "只改 Runtime".to_owned(),
+                    }],
+                })
+                .is_ok()
+        );
+        assert!(
+            request
+                .validate_response(&UserInteractionResponse::Approved)
+                .is_err()
+        );
+        assert!(
+            request
+                .validate_response(&UserInteractionResponse::Answered {
+                    answers: vec![UserInputAnswer {
+                        id: "missing".to_owned(),
+                        label: "A".to_owned(),
+                        value: "A".to_owned(),
+                    }],
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn user_input_contract_rejects_ambiguous_questions_and_answers() {
+        let question = UserInputQuestion {
+            header: "范围".to_owned(),
+            id: "scope".to_owned(),
+            question: "选择范围".to_owned(),
+            options: vec![
+                UserInputOption {
+                    label: "A".to_owned(),
+                    description: "选项 A".to_owned(),
+                },
+                UserInputOption {
+                    label: "B".to_owned(),
+                    description: "选项 B".to_owned(),
+                },
+            ],
+            allow_free_text: false,
+            multi_select: true,
+        };
+        let request = UserInputRequest {
+            questions: vec![question.clone()],
+        };
+        assert!(request.validate().is_ok());
+        assert!(
+            validate_user_input_answers(
+                &request,
+                &[UserInputAnswer {
+                    id: "scope".to_owned(),
+                    label: "A".to_owned(),
+                    value: "伪造值".to_owned(),
+                }]
+            )
+            .is_err()
+        );
+        assert!(validate_user_input_answers(&request, &[]).is_err());
+        let duplicate = UserInputAnswer {
+            id: "scope".to_owned(),
+            label: "A".to_owned(),
+            value: "A".to_owned(),
+        };
+        assert!(validate_user_input_answers(&request, &[duplicate.clone(), duplicate]).is_err());
+
+        let duplicate_question_ids = UserInputRequest {
+            questions: vec![question.clone(), question.clone()],
+        };
+        assert!(duplicate_question_ids.validate().is_err());
+        let mut duplicate_options = question;
+        duplicate_options.options[1].label = "A".to_owned();
+        assert!(
+            UserInputRequest {
+                questions: vec![duplicate_options]
+            }
+            .validate()
+            .is_err()
+        );
     }
 
     #[test]

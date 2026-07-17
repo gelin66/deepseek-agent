@@ -10,12 +10,12 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Serialize};
 
 use crate::agent_runtime::{
-    ModelAccounting, ReasoningEffort, RunId, RunLimits, StoredRuntimeEvent, TerminalState,
-    ToolPolicy, Usage,
+    InteractionId, ModelAccounting, ReasoningEffort, RunId, RunLimits, StoredRuntimeEvent,
+    TerminalState, ToolPolicy, Usage, UserInteractionResponse,
 };
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 1;
+pub const RUN_API_SCHEMA_VERSION: u32 = 2;
 
 /// Explicit product controls accepted when starting a root run.
 ///
@@ -31,6 +31,9 @@ pub struct RunProductControls {
     pub trust_mode: bool,
     #[serde(default)]
     pub allow_sandbox_elevation: bool,
+    /// Whether the caller can resolve durable approval and user-input events.
+    #[serde(default)]
+    pub interactive: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sandbox: Option<String>,
 }
@@ -103,6 +106,11 @@ pub enum RunCommand {
     Cancel {
         run_id: RunId,
     },
+    ResolveInteraction {
+        run_id: RunId,
+        interaction_id: InteractionId,
+        response: UserInteractionResponse,
+    },
 }
 
 /// Read-only projection of one canonical run.
@@ -142,6 +150,10 @@ pub enum RunApiErrorCode {
     RunEnvironmentMismatch,
     EventCursorAhead,
     RunStoreFailed,
+    InteractionNotPending,
+    InteractionMismatch,
+    InteractionAlreadyResolved,
+    InvalidInteractionResponse,
 }
 
 /// Typed Run API failure. Human-readable text is supplementary to `code`.
@@ -191,7 +203,10 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::agent_runtime::{RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent, ToolPolicy};
+    use crate::agent_runtime::{
+        AGENT_RUNTIME_EVENT_SCHEMA_VERSION, CommandId, RuntimeEventId, RuntimeEventKind,
+        StoredRuntimeEvent, ToolPolicy,
+    };
 
     fn start_command() -> StartRunCommand {
         StartRunCommand {
@@ -221,6 +236,7 @@ mod tests {
                 auto_approve: true,
                 trust_mode: false,
                 allow_sandbox_elevation: false,
+                interactive: true,
                 sandbox: Some("workspace_write".to_owned()),
             },
         }
@@ -262,7 +278,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
@@ -292,6 +308,7 @@ mod tests {
                         "auto_approve": true,
                         "trust_mode": false,
                         "allow_sandbox_elevation": false,
+                        "interactive": true,
                         "sandbox": "workspace_write"
                     }
                 }
@@ -346,6 +363,11 @@ mod tests {
             RunCommand::Cancel {
                 run_id: RunId::from("run-1"),
             },
+            RunCommand::ResolveInteraction {
+                run_id: RunId::from("run-1"),
+                interaction_id: InteractionId::from("interaction-1"),
+                response: UserInteractionResponse::Approved,
+            },
         ];
         let expected = [
             "start",
@@ -355,6 +377,7 @@ mod tests {
             "steer",
             "interrupt",
             "cancel",
+            "resolve_interaction",
         ];
 
         for (command, expected_kind) in commands.into_iter().zip(expected) {
@@ -393,13 +416,14 @@ mod tests {
     #[test]
     fn response_uses_existing_run_view_and_stored_event_envelope() {
         let event = StoredRuntimeEvent {
-            schema_version: 3,
+            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
             run_id: RunId::from("run-1"),
             parent_run_id: None,
             event_id: RuntimeEventId("steer-1".to_owned()),
             sequence: 2,
             occurred_at_unix_ms: 123,
-            event: RuntimeEventKind::Steered {
+            event: RuntimeEventKind::SteerQueued {
+                command_id: CommandId::from("steer-command-1"),
                 content: "先修测试".to_owned(),
             },
         };

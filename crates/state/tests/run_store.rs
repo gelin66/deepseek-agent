@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 
 use codewhale_runtime::{
-    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentOutcome, AttemptId,
+    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentOutcome, AttemptId, CommandId,
     CreatedRun, DurableActionState, InMemoryRunStore, ModelAccounting, ModelFinishReason,
     ModelOutput, ModelRequest, ModelToolCall, OperationId, PendingRuntimeEvent, RunId, RunLease,
     RunReplay, RunRequest, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind,
@@ -32,7 +32,8 @@ fn request(run_id: &str, workspace: &str) -> RunRequest {
 fn user_event(id: &str, content: &str) -> PendingRuntimeEvent {
     PendingRuntimeEvent {
         event_id: RuntimeEventId(id.to_owned()),
-        event: RuntimeEventKind::Steered {
+        event: RuntimeEventKind::SteerQueued {
+            command_id: CommandId::from(format!("command-{id}")),
             content: content.to_owned(),
         },
     }

@@ -297,12 +297,24 @@ impl ToolExecutor for MockTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
         vec![
             definition("delay"),
+            definition("approval"),
             definition("read"),
             definition("run_tests"),
             definition("run_verifiers"),
             definition("slow"),
             definition("write"),
         ]
+    }
+
+    fn approval_prompt(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
+        Ok((invocation.name == "approval").then(|| ToolApprovalPrompt {
+            title: "确认测试工具".to_owned(),
+            description: "测试工具必须在显式批准后执行。".to_owned(),
+            risk: ApprovalRisk::Elevated,
+        }))
     }
 
     async fn execute(
@@ -489,6 +501,83 @@ async fn seed_committed_model_output(
     attempt_id
 }
 
+async fn seed_pending_approval(
+    store: &InMemoryRunStore,
+    run_id: &str,
+    resolved: bool,
+) -> UserInteractionRequest {
+    let mut run_request = request("resume approval");
+    run_request.run_id = Some(RunId::from(run_id));
+    run_request.environment.interactive = true;
+    let created = store.create(run_request).await.unwrap();
+    let tool_call = call("approval-call", "approval", r#"{"path":"src/lib.rs"}"#);
+    seed_committed_model_output(
+        store,
+        &created,
+        model_output(
+            "",
+            None,
+            vec![tool_call.clone()],
+            ModelFinishReason::ToolCalls,
+        ),
+    )
+    .await;
+    let operation_id = OperationId::from("approval-operation".to_owned());
+    append_event(
+        store,
+        &created.lease,
+        "approval-tool-prepared",
+        RuntimeEventKind::ToolPrepared {
+            operation_id: operation_id.clone(),
+            invocation: ToolInvocation {
+                run_id: RunId::from(run_id),
+                call_id: tool_call.id,
+                name: tool_call.name,
+                arguments: tool_call.arguments,
+            },
+        },
+    )
+    .await;
+    let interaction = UserInteractionRequest {
+        interaction_id: InteractionId::from("approval-interaction".to_owned()),
+        operation_id,
+        call_id: "approval-call".to_owned(),
+        tool_name: "approval".to_owned(),
+        prompt: UserInteractionPrompt::Approval {
+            prompt: ToolApprovalPrompt {
+                title: "确认测试工具".to_owned(),
+                description: "测试工具必须在显式批准后执行。".to_owned(),
+                risk: ApprovalRisk::Elevated,
+            },
+            arguments: json!({"path": "src/lib.rs"}),
+        },
+    };
+    append_event(
+        store,
+        &created.lease,
+        "approval-interaction-requested",
+        RuntimeEventKind::InteractionRequested {
+            request: interaction.clone(),
+        },
+    )
+    .await;
+    if resolved {
+        append_event(
+            store,
+            &created.lease,
+            "approval-interaction-resolved",
+            RuntimeEventKind::InteractionResolved {
+                command_id: CommandId::from("approval-command"),
+                interaction_id: interaction.interaction_id.clone(),
+                response: UserInteractionResponse::Approved,
+            },
+        )
+        .await;
+    }
+    store.release(&created.lease).await.unwrap();
+    interaction
+}
+
 #[tokio::test]
 async fn final_is_store_first_and_terminal_is_exactly_once() {
     let model = Arc::new(MockModel::new(|_| {
@@ -555,7 +644,8 @@ async fn final_is_store_first_and_terminal_is_exactly_once() {
     let error = store
         .append(
             &stale_lease,
-            PendingRuntimeEvent::new(RuntimeEventKind::Steered {
+            PendingRuntimeEvent::new(RuntimeEventKind::SteerQueued {
+                command_id: CommandId::from("late-steer"),
                 content: "late".into(),
             }),
         )
@@ -652,6 +742,266 @@ async fn tool_reasoning_and_raw_arguments_replay_exactly() {
     let calls = tools.calls.lock().unwrap();
     assert_eq!(calls[0].arguments.raw, "{ \"path\" : \"src/lib.rs\" }");
     assert!(calls[0].arguments.parsed.is_some());
+}
+
+#[tokio::test]
+async fn approval_is_durable_and_precedes_every_tool_side_effect() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let script_requests = requests.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        if script_requests.fetch_add(1, Ordering::AcqRel) == 0 {
+            return ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call(
+                    "approval-call",
+                    "approval",
+                    r#"{"path":"src/lib.rs"}"#,
+                )],
+                ModelFinishReason::ToolCalls,
+            )]);
+        }
+        assert!(request.messages.iter().any(|message| {
+            matches!(message, ModelMessage::Tool { call_id, content, .. }
+                if call_id == "approval-call" && content == "tool-result")
+        }));
+        ScriptResponse::Events(vec![completed(
+            "approved",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let (runtime, tools, sink, store) = fixture(model);
+    let mut run_request = request("approval");
+    run_request.environment.interactive = true;
+    let run = runtime.start(run_request);
+    let run_id = run.run_id.clone();
+    let control = run.control();
+    sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
+        .await;
+    assert!(tools.calls.lock().unwrap().is_empty());
+    let interaction = sink
+        .events()
+        .into_iter()
+        .find_map(|event| match event.event {
+            RuntimeEventKind::InteractionRequested { request } => Some(request),
+            _ => None,
+        })
+        .expect("approval request");
+    assert!(matches!(
+        interaction.prompt,
+        UserInteractionPrompt::Approval { .. }
+    ));
+    let accepted_sequence = control
+        .resolve_interaction(
+            CommandId::from("approve-command"),
+            interaction.interaction_id,
+            UserInteractionResponse::Approved,
+        )
+        .await
+        .expect("approval accepted durably");
+    let outcome = run.wait().await.unwrap();
+    assert_eq!(
+        outcome.terminal,
+        TerminalState::Completed {
+            message: "approved".to_owned()
+        }
+    );
+    assert_eq!(tools.calls.lock().unwrap().len(), 1);
+    let replay = store.load(&run_id).await.unwrap().unwrap();
+    let resolved = replay
+        .events
+        .iter()
+        .position(|event| matches!(event.event, RuntimeEventKind::InteractionResolved { .. }))
+        .expect("interaction resolution");
+    let started = replay
+        .events
+        .iter()
+        .position(|event| matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. }))
+        .expect("tool execution start");
+    assert_eq!(replay.events[resolved].sequence, accepted_sequence);
+    assert!(resolved < started);
+}
+
+#[tokio::test]
+async fn pending_approval_replays_without_reasking_and_resumes_each_safe_window_once() {
+    for resolved_before_resume in [false, true] {
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = if resolved_before_resume {
+            "approval-resolved-before-start"
+        } else {
+            "approval-waiting"
+        };
+        let interaction = seed_pending_approval(&store, run_id, resolved_before_resume).await;
+        let model = Arc::new(MockModel::new(|request| {
+            assert!(request.messages.iter().any(|message| {
+                matches!(message, ModelMessage::Tool { call_id, content, .. }
+                    if call_id == "approval-call" && content == "tool-result")
+            }));
+            ScriptResponse::Events(vec![completed(
+                "resumed",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )])
+        }));
+        let tools = Arc::new(MockTools::default());
+        let sink = Arc::new(CollectSink::default());
+        let runtime = Arc::new(AgentRuntime::new(
+            model,
+            tools.clone(),
+            sink.clone(),
+            store.clone(),
+        ));
+        let run = runtime.resume(RunId::from(run_id));
+        let control = run.control();
+        sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
+            .await;
+        if !resolved_before_resume {
+            assert!(tools.calls.lock().unwrap().is_empty());
+            control
+                .resolve_interaction(
+                    CommandId::from("approval-command"),
+                    interaction.interaction_id,
+                    UserInteractionResponse::Approved,
+                )
+                .await
+                .expect("resume approval accepted");
+        }
+        assert_eq!(
+            run.wait().await.unwrap().terminal,
+            TerminalState::Completed {
+                message: "resumed".to_owned()
+            }
+        );
+        assert_eq!(tools.calls.lock().unwrap().len(), 1);
+        let replay = store.load(&RunId::from(run_id)).await.unwrap().unwrap();
+        assert_eq!(
+            replay
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(event.event, RuntimeEventKind::InteractionRequested { .. })
+                })
+                .count(),
+            1,
+            "resume must replay the same pending interaction instead of requesting again"
+        );
+        assert_eq!(
+            replay
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(event.event, RuntimeEventKind::InteractionResolved { .. })
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            replay
+                .events
+                .iter()
+                .filter(|event| {
+                    matches!(event.event, RuntimeEventKind::ToolExecutionStarted { .. })
+                })
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn request_user_input_submit_and_cancel_are_canonical_tool_outcomes() {
+    for cancel in [false, true] {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let script_requests = requests.clone();
+        let model = Arc::new(MockModel::new(move |request| {
+            if script_requests.fetch_add(1, Ordering::AcqRel) == 0 {
+                return ScriptResponse::Events(vec![completed(
+                    "",
+                    None,
+                    vec![call(
+                        "question-call",
+                        REQUEST_USER_INPUT_TOOL_NAME,
+                        r#"{"questions":[{"header":"范围","id":"scope","question":"选择范围","options":[{"label":"A","description":"选项 A"},{"label":"B","description":"选项 B"}],"allow_free_text":true,"multi_select":false}]}"#,
+                    )],
+                    ModelFinishReason::ToolCalls,
+                )]);
+            }
+            let content = request
+                .messages
+                .iter()
+                .find_map(|message| match message {
+                    ModelMessage::Tool {
+                        call_id, content, ..
+                    } if call_id == "question-call" => Some(content.clone()),
+                    _ => None,
+                })
+                .expect("user input tool outcome");
+            if cancel {
+                assert!(content.contains("user_input_cancelled"));
+            } else {
+                assert!(content.contains("自定义范围"));
+            }
+            ScriptResponse::Events(vec![completed(
+                "continued",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )])
+        }));
+        let (runtime, tools, sink, _) = fixture(model);
+        let mut run_request = request("ask");
+        run_request.environment.interactive = true;
+        let run = runtime.start(run_request);
+        let control = run.control();
+        sink.wait_for(|event| matches!(event.event, RuntimeEventKind::InteractionRequested { .. }))
+            .await;
+        let interaction = sink
+            .events()
+            .into_iter()
+            .find_map(|event| match event.event {
+                RuntimeEventKind::InteractionRequested { request } => Some(request),
+                _ => None,
+            })
+            .expect("user input request");
+        assert!(matches!(
+            interaction.prompt,
+            UserInteractionPrompt::UserInput { .. }
+        ));
+        let response = if cancel {
+            UserInteractionResponse::Cancelled
+        } else {
+            UserInteractionResponse::Answered {
+                answers: vec![UserInputAnswer {
+                    id: "scope".to_owned(),
+                    label: "自定义".to_owned(),
+                    value: "自定义范围".to_owned(),
+                }],
+            }
+        };
+        control
+            .resolve_interaction(
+                CommandId::from(if cancel {
+                    "cancel-input-command"
+                } else {
+                    "answer-input-command"
+                }),
+                interaction.interaction_id,
+                response,
+            )
+            .await
+            .expect("user input resolution accepted");
+        assert!(matches!(
+            run.wait().await.unwrap().terminal,
+            TerminalState::Completed { .. }
+        ));
+        assert!(
+            tools.calls.lock().unwrap().is_empty(),
+            "request_user_input is runtime-owned and never reaches ToolExecutor"
+        );
+    }
 }
 
 #[tokio::test]
@@ -820,7 +1170,7 @@ async fn invalid_tool_call_identity_fails_before_any_tool_event() {
 }
 
 #[tokio::test]
-async fn steer_cancel_and_interrupt_after_transport_start_are_typed_terminals() {
+async fn in_flight_steer_queues_safely_while_cancel_and_interrupt_remain_typed_terminals() {
     let model = Arc::new(MockModel::new(|request| {
         if request.messages.iter().any(
             |message| matches!(message, ModelMessage::User { content } if content == "改做新任务"),
@@ -833,7 +1183,7 @@ async fn steer_cancel_and_interrupt_after_transport_start_are_typed_terminals() 
             )])
         } else {
             ScriptResponse::Events(vec![StreamStep::delayed(
-                Duration::from_secs(5),
+                Duration::from_millis(25),
                 ModelStreamEvent::Completed {
                     output: ModelOutput {
                         content: "旧结果".into(),
@@ -853,15 +1203,32 @@ async fn steer_cancel_and_interrupt_after_transport_start_are_typed_terminals() 
         .await;
     control.steer("改做新任务").unwrap();
     let outcome = run.wait().await.unwrap();
-    assert!(matches!(
+    assert_eq!(
         outcome.terminal,
-        TerminalState::RecoveryRequired {
-            ambiguity: RecoveryAmbiguity {
-                phase: RecoveryAmbiguityPhase::ModelRequest,
-                ..
-            }
+        TerminalState::Completed {
+            message: "新结果".to_owned()
         }
-    ));
+    );
+    let events = sink.events();
+    let queued = events
+        .iter()
+        .position(|event| matches!(event.event, RuntimeEventKind::SteerQueued { .. }))
+        .expect("steer queued durably");
+    let old_response = events
+        .iter()
+        .position(|event| {
+            matches!(
+                &event.event,
+                RuntimeEventKind::ModelResponseCommitted { output, .. }
+                    if output.content == "旧结果"
+            )
+        })
+        .expect("old response committed atomically");
+    let applied = events
+        .iter()
+        .position(|event| matches!(event.event, RuntimeEventKind::SteerApplied { .. }))
+        .expect("steer applied at a safe point");
+    assert!(queued < old_response && old_response < applied);
 
     let model = Arc::new(MockModel::new(|_| {
         ScriptResponse::Events(vec![StreamStep::delayed(
@@ -937,6 +1304,111 @@ async fn steer_cancel_and_interrupt_after_transport_start_are_typed_terminals() 
         1
     );
     assert!(interrupted_events.last().unwrap().event.is_terminal());
+}
+
+#[tokio::test]
+async fn concurrent_same_command_id_accepts_only_one_payload() {
+    let model = Arc::new(MockModel::new(|_| {
+        ScriptResponse::Events(vec![StreamStep::delayed(
+            Duration::from_secs(5),
+            ModelStreamEvent::Completed {
+                output: model_output("too late", None, Vec::new(), ModelFinishReason::Stop),
+            },
+        )])
+    }));
+    let (runtime, _, sink, store) = fixture(model);
+    let run = runtime.start(request("并发 command id"));
+    let run_id = run.run_id.clone();
+    let control = run.control();
+    sink.wait_for(|event| matches!(event.event, RuntimeEventKind::ModelRequestInFlight { .. }))
+        .await;
+
+    let command_id = CommandId::from("same-command");
+    let (first, second) = tokio::join!(
+        control.steer_durable(command_id.clone(), "内容 A"),
+        control.steer_durable(command_id, "内容 B")
+    );
+    assert!(matches!(
+        (&first, &second),
+        (Ok(_), Err(ControlError::CommandPayloadMismatch))
+            | (Err(ControlError::CommandPayloadMismatch), Ok(_))
+    ));
+    let replay = store.load(&run_id).await.unwrap().unwrap();
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(
+                &event.event,
+                RuntimeEventKind::SteerQueued { command_id, .. }
+                    if command_id == &CommandId::from("same-command")
+            ))
+            .count(),
+        1
+    );
+
+    control.cancel().unwrap();
+    assert_eq!(run.wait().await.unwrap().terminal, TerminalState::Cancelled);
+}
+
+#[tokio::test]
+async fn resume_after_steer_applied_never_reuses_the_superseded_stop_response() {
+    let store = Arc::new(InMemoryRunStore::default());
+    let created = store.create(request("旧任务")).await.unwrap();
+    seed_committed_model_output(
+        &store,
+        &created,
+        model_output("旧结果", None, Vec::new(), ModelFinishReason::Stop),
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "steer-queued-before-crash",
+        RuntimeEventKind::SteerQueued {
+            command_id: CommandId::from("steer-before-crash"),
+            content: "改做新任务".to_owned(),
+        },
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "steer-applied-before-crash",
+        RuntimeEventKind::SteerApplied {
+            command_id: CommandId::from("steer-before-crash"),
+            content: "改做新任务".to_owned(),
+        },
+    )
+    .await;
+    store.release(&created.lease).await.unwrap();
+
+    let model = Arc::new(MockModel::new(|request| {
+        assert!(matches!(
+            request.messages.last(),
+            Some(ModelMessage::User { content }) if content == "改做新任务"
+        ));
+        ScriptResponse::Events(vec![completed(
+            "新结果",
+            None,
+            Vec::new(),
+            ModelFinishReason::Stop,
+        )])
+    }));
+    let runtime = Arc::new(AgentRuntime::new(
+        model.clone(),
+        Arc::new(MockTools::default()),
+        Arc::new(CollectSink::default()),
+        store,
+    ));
+    let outcome = runtime.resume(created.lease.run_id).wait().await.unwrap();
+    assert_eq!(
+        outcome.terminal,
+        TerminalState::Completed {
+            message: "新结果".to_owned()
+        }
+    );
+    assert_eq!(model.ledger.root.started.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]
@@ -1164,7 +1636,7 @@ fn agent_catalog_exposes_only_the_implemented_chinese_contract() {
     }));
     let (runtime, _, _, _) = fixture(model);
     let agent = runtime
-        .tool_definitions(&ToolPolicy::default(), 0, 2)
+        .tool_definitions(&ToolPolicy::default(), 0, 2, false)
         .into_iter()
         .find(|definition| definition.name == "agent")
         .expect("agent definition");
@@ -1541,7 +2013,8 @@ async fn in_memory_store_event_ids_are_idempotent_and_sequences_are_monotonic() 
     let created = store.create(request("event identity")).await.unwrap();
     let pending = PendingRuntimeEvent {
         event_id: RuntimeEventId("steer-1".into()),
-        event: RuntimeEventKind::Steered {
+        event: RuntimeEventKind::SteerQueued {
+            command_id: CommandId::from("command-1"),
             content: "first".into(),
         },
     };
@@ -1556,7 +2029,8 @@ async fn in_memory_store_event_ids_are_idempotent_and_sequences_are_monotonic() 
             &created.lease,
             PendingRuntimeEvent {
                 event_id: RuntimeEventId("steer-1".into()),
-                event: RuntimeEventKind::Steered {
+                event: RuntimeEventKind::SteerQueued {
+                    command_id: CommandId::from("command-1"),
                     content: "different".into(),
                 },
             },
@@ -1569,7 +2043,8 @@ async fn in_memory_store_event_ids_are_idempotent_and_sequences_are_monotonic() 
         &store,
         &created.lease,
         "steer-2",
-        RuntimeEventKind::Steered {
+        RuntimeEventKind::SteerQueued {
+            command_id: CommandId::from("command-2"),
             content: "second".into(),
         },
     )
@@ -1592,6 +2067,395 @@ async fn in_memory_store_event_ids_are_idempotent_and_sequences_are_monotonic() 
             .collect::<Vec<_>>(),
         vec!["run_created", "steer-1", "steer-2"]
     );
+}
+
+#[tokio::test]
+async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_consistency() {
+    let store = InMemoryRunStore::default();
+    let created = store.create(request("reducer invariants")).await.unwrap();
+    append_event(
+        &store,
+        &created.lease,
+        "steer-first",
+        RuntimeEventKind::SteerQueued {
+            command_id: CommandId::from("steer-first"),
+            content: "第一条".to_owned(),
+        },
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "steer-second",
+        RuntimeEventKind::SteerQueued {
+            command_id: CommandId::from("steer-second"),
+            content: "第二条".to_owned(),
+        },
+    )
+    .await;
+    let out_of_order = store
+        .append(
+            &created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("steer-second-applied".to_owned()),
+                event: RuntimeEventKind::SteerApplied {
+                    command_id: CommandId::from("steer-second"),
+                    content: "第二条".to_owned(),
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        out_of_order,
+        RunStoreError::Corrupt { ref message, .. } if message.contains("queued order")
+    ));
+
+    let approval_store = InMemoryRunStore::default();
+    let approval_run = approval_store
+        .create(request("approval invariants"))
+        .await
+        .unwrap();
+    let operation_id = OperationId::from("approval-operation");
+    append_event(
+        &approval_store,
+        &approval_run.lease,
+        "approval-tool",
+        RuntimeEventKind::ToolPrepared {
+            operation_id: operation_id.clone(),
+            invocation: ToolInvocation {
+                run_id: approval_run.lease.run_id.clone(),
+                call_id: "approval-call".to_owned(),
+                name: "approval".to_owned(),
+                arguments: ToolArguments::from_value(json!({"path": "actual"})),
+            },
+        },
+    )
+    .await;
+    let prompt = ToolApprovalPrompt {
+        title: "确认".to_owned(),
+        description: "确认参数".to_owned(),
+        risk: ApprovalRisk::Elevated,
+    };
+    let mismatched_request = UserInteractionRequest {
+        interaction_id: InteractionId::from("approval-interaction"),
+        operation_id: operation_id.clone(),
+        call_id: "approval-call".to_owned(),
+        tool_name: "approval".to_owned(),
+        prompt: UserInteractionPrompt::Approval {
+            prompt: prompt.clone(),
+            arguments: json!({"path": "different"}),
+        },
+    };
+    let mismatch = approval_store
+        .append(
+            &approval_run.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("approval-mismatch".to_owned()),
+                event: RuntimeEventKind::InteractionRequested {
+                    request: mismatched_request,
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        mismatch,
+        RunStoreError::Corrupt { ref message, .. } if message.contains("arguments")
+    ));
+    let interaction = UserInteractionRequest {
+        interaction_id: InteractionId::from("approval-interaction"),
+        operation_id: operation_id.clone(),
+        call_id: "approval-call".to_owned(),
+        tool_name: "approval".to_owned(),
+        prompt: UserInteractionPrompt::Approval {
+            prompt,
+            arguments: json!({"path": "actual"}),
+        },
+    };
+    append_event(
+        &approval_store,
+        &approval_run.lease,
+        "approval-requested",
+        RuntimeEventKind::InteractionRequested {
+            request: interaction.clone(),
+        },
+    )
+    .await;
+    append_event(
+        &approval_store,
+        &approval_run.lease,
+        "approval-denied",
+        RuntimeEventKind::InteractionResolved {
+            command_id: CommandId::from("deny-command"),
+            interaction_id: interaction.interaction_id,
+            response: UserInteractionResponse::Denied { reason: None },
+        },
+    )
+    .await;
+    let succeeded_after_denial = approval_store
+        .append(
+            &approval_run.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("denied-success".to_owned()),
+                event: RuntimeEventKind::ToolOutcomeCommitted {
+                    operation_id,
+                    call_id: "approval-call".to_owned(),
+                    name: "approval".to_owned(),
+                    outcome: ToolOutcome::success("must be rejected"),
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        succeeded_after_denial,
+        RunStoreError::Corrupt { ref message, .. } if message.contains("rejected tool outcome")
+    ));
+
+    let user_input_store = InMemoryRunStore::default();
+    let mut user_input_run_request = request("user-input reducer invariant");
+    user_input_run_request.environment.interactive = true;
+    let user_input_run = user_input_store
+        .create(user_input_run_request)
+        .await
+        .unwrap();
+    let user_input_operation = OperationId::from("user-input-operation");
+    let invalid_user_input = UserInputRequest {
+        questions: vec![
+            UserInputQuestion {
+                header: "范围".to_owned(),
+                id: "scope".to_owned(),
+                question: "选择范围".to_owned(),
+                options: vec![
+                    UserInputOption {
+                        label: "A".to_owned(),
+                        description: "选项 A".to_owned(),
+                    },
+                    UserInputOption {
+                        label: "B".to_owned(),
+                        description: "选项 B".to_owned(),
+                    },
+                ],
+                allow_free_text: false,
+                multi_select: false,
+            },
+            UserInputQuestion {
+                header: "重复".to_owned(),
+                id: "scope".to_owned(),
+                question: "重复 ID".to_owned(),
+                options: vec![
+                    UserInputOption {
+                        label: "C".to_owned(),
+                        description: "选项 C".to_owned(),
+                    },
+                    UserInputOption {
+                        label: "D".to_owned(),
+                        description: "选项 D".to_owned(),
+                    },
+                ],
+                allow_free_text: false,
+                multi_select: false,
+            },
+        ],
+    };
+    append_event(
+        &user_input_store,
+        &user_input_run.lease,
+        "user-input-tool",
+        RuntimeEventKind::ToolPrepared {
+            operation_id: user_input_operation.clone(),
+            invocation: ToolInvocation {
+                run_id: user_input_run.lease.run_id.clone(),
+                call_id: "user-input-call".to_owned(),
+                name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
+                arguments: ToolArguments::from_value(
+                    serde_json::to_value(&invalid_user_input).unwrap(),
+                ),
+            },
+        },
+    )
+    .await;
+    let invalid_interaction = user_input_store
+        .append(
+            &user_input_run.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("invalid-user-input".to_owned()),
+                event: RuntimeEventKind::InteractionRequested {
+                    request: UserInteractionRequest {
+                        interaction_id: InteractionId::from("user-input-interaction"),
+                        operation_id: user_input_operation,
+                        call_id: "user-input-call".to_owned(),
+                        tool_name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
+                        prompt: UserInteractionPrompt::UserInput {
+                            request: invalid_user_input,
+                        },
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        invalid_interaction,
+        RunStoreError::Corrupt { ref message, .. } if message.contains("duplicate question id")
+    ));
+
+    let defaulted_input_store = InMemoryRunStore::default();
+    let mut defaulted_input_request = request("user-input omitted defaults");
+    defaulted_input_request.environment.interactive = true;
+    let defaulted_input_run = defaulted_input_store
+        .create(defaulted_input_request)
+        .await
+        .unwrap();
+    let defaulted_input_operation = OperationId::from("defaulted-input-operation");
+    let raw_arguments = json!({
+        "questions": [{
+            "header": "范围",
+            "id": "scope",
+            "question": "选择范围",
+            "options": [
+                {"label": "A", "description": "选项 A"},
+                {"label": "B", "description": "选项 B"}
+            ]
+        }]
+    });
+    append_event(
+        &defaulted_input_store,
+        &defaulted_input_run.lease,
+        "defaulted-input-tool",
+        RuntimeEventKind::ToolPrepared {
+            operation_id: defaulted_input_operation.clone(),
+            invocation: ToolInvocation {
+                run_id: defaulted_input_run.lease.run_id.clone(),
+                call_id: "defaulted-input-call".to_owned(),
+                name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
+                arguments: ToolArguments::from_value(raw_arguments.clone()),
+            },
+        },
+    )
+    .await;
+    let approval_for_input = defaulted_input_store
+        .append(
+            &defaulted_input_run.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("approval-for-input".to_owned()),
+                event: RuntimeEventKind::InteractionRequested {
+                    request: UserInteractionRequest {
+                        interaction_id: InteractionId::from("defaulted-input-interaction"),
+                        operation_id: defaulted_input_operation.clone(),
+                        call_id: "defaulted-input-call".to_owned(),
+                        tool_name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
+                        prompt: UserInteractionPrompt::Approval {
+                            prompt: ToolApprovalPrompt {
+                                title: "错误类型".to_owned(),
+                                description: "request_user_input 不能走审批提示".to_owned(),
+                                risk: ApprovalRisk::Elevated,
+                            },
+                            arguments: raw_arguments,
+                        },
+                    },
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        approval_for_input,
+        RunStoreError::Corrupt { ref message, .. } if message.contains("requires a user-input")
+    ));
+    append_event(
+        &defaulted_input_store,
+        &defaulted_input_run.lease,
+        "defaulted-input-requested",
+        RuntimeEventKind::InteractionRequested {
+            request: UserInteractionRequest {
+                interaction_id: InteractionId::from("defaulted-input-interaction"),
+                operation_id: defaulted_input_operation,
+                call_id: "defaulted-input-call".to_owned(),
+                tool_name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
+                prompt: UserInteractionPrompt::UserInput {
+                    request: UserInputRequest {
+                        questions: vec![UserInputQuestion {
+                            header: "范围".to_owned(),
+                            id: "scope".to_owned(),
+                            question: "选择范围".to_owned(),
+                            options: vec![
+                                UserInputOption {
+                                    label: "A".to_owned(),
+                                    description: "选项 A".to_owned(),
+                                },
+                                UserInputOption {
+                                    label: "B".to_owned(),
+                                    description: "选项 B".to_owned(),
+                                },
+                            ],
+                            allow_free_text: false,
+                            multi_select: false,
+                        }],
+                    },
+                },
+            },
+        },
+    )
+    .await;
+
+    let control_store = InMemoryRunStore::default();
+    let control_run = control_store
+        .create(request("control terminal invariant"))
+        .await
+        .unwrap();
+    append_event(
+        &control_store,
+        &control_run.lease,
+        "cancel-requested",
+        RuntimeEventKind::ControlRequested {
+            command_id: CommandId::from("cancel-command"),
+            action: DurableControlAction::Cancel,
+        },
+    )
+    .await;
+    let work_after_control = control_store
+        .append(
+            &control_run.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("steer-after-control".to_owned()),
+                event: RuntimeEventKind::SteerQueued {
+                    command_id: CommandId::from("steer-after-control"),
+                    content: "不应继续工作".to_owned(),
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        work_after_control,
+        RunStoreError::Corrupt { ref message, .. } if message.contains("settlement events")
+    ));
+    let mismatched_terminal = control_store
+        .append(
+            &control_run.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId("wrong-terminal".to_owned()),
+                event: RuntimeEventKind::Terminal {
+                    outcome: Box::new(AgentOutcome {
+                        run_id: control_run.lease.run_id.clone(),
+                        parent_run_id: None,
+                        terminal: TerminalState::Interrupted,
+                        accounting: ModelAccounting::default(),
+                        runtime_model_requests: 0,
+                        runtime_retries: 0,
+                        tool_calls: 0,
+                    }),
+                },
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        mismatched_terminal,
+        RunStoreError::Corrupt { ref message, .. } if message.contains("durable control")
+    ));
 }
 
 #[tokio::test]
@@ -2483,7 +3347,7 @@ async fn resume_in_flight_model_requires_recovery_without_reissuing_request() {
 }
 
 #[tokio::test]
-async fn resume_in_flight_tool_requires_recovery_without_repeating_side_effect() {
+async fn pending_cancel_does_not_hide_in_flight_tool_recovery_ambiguity() {
     let store = Arc::new(InMemoryRunStore::default());
     let created = store.create(request("in-flight tool")).await.unwrap();
     let tool_call = call("ambiguous-write", "write", r#"{"path":"out.txt"}"#);
@@ -2520,6 +3384,16 @@ async fn resume_in_flight_tool_requires_recovery_without_repeating_side_effect()
         "ambiguous-tool-in-flight",
         RuntimeEventKind::ToolExecutionStarted {
             operation_id: operation_id.clone(),
+        },
+    )
+    .await;
+    append_event(
+        &store,
+        &created.lease,
+        "cancel-requested-before-crash",
+        RuntimeEventKind::ControlRequested {
+            command_id: CommandId::from("cancel-before-crash"),
+            action: DurableControlAction::Cancel,
         },
     )
     .await;

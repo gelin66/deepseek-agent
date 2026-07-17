@@ -9,15 +9,18 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use codewhale_protocol::agent_runtime::{RunId, StoredRuntimeEvent, TerminalState};
+use codewhale_protocol::agent_runtime::{
+    CommandId, DurableControlAction, InteractionId, RunId, StoredRuntimeEvent, TerminalState,
+    UserInteractionResponse,
+};
 use codewhale_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope,
     RunCommandResponse, RunCommandResult, RunView, StartRunCommand,
 };
 use codewhale_runtime::{
-    AgentControl, ControlError, DurableActionState, ModelAccounting, ModelErrorCategory, ModelPort,
-    ModelPortError, ModelRequest, ModelStream, RunReadyError, RunReplay, RunStore, RunStoreError,
-    RuntimeEventSink, RuntimeRun,
+    AgentControl, ControlError, DurableActionState, DurableCommand, ModelAccounting,
+    ModelErrorCategory, ModelPort, ModelPortError, ModelRequest, ModelStream, RunReadyError,
+    RunReplay, RunStore, RunStoreError, RuntimeEventSink, RuntimeRun,
 };
 use tokio::sync::{Mutex, Notify};
 
@@ -199,13 +202,14 @@ impl AgentApplication {
         Self::from_parts(store, composition)
     }
 
-    /// Execute one of the seven canonical Run commands.
+    /// Execute one canonical Run command.
     pub async fn execute(&self, envelope: RunCommandEnvelope) -> RunCommandResponse {
         let RunCommandEnvelope {
             schema_version,
             request_id,
             command,
         } = envelope;
+        let command_id = CommandId::from(request_id.clone());
         let result = if schema_version != RUN_API_SCHEMA_VERSION {
             error_result(api_error(
                 RunApiErrorCode::InvalidRequest,
@@ -236,13 +240,51 @@ impl AgentApplication {
                             None,
                         ))
                     } else {
-                        self.control(&run_id, ControlAction::Steer(content)).await
+                        self.control(
+                            &run_id,
+                            ControlAction::Steer {
+                                command_id,
+                                content,
+                            },
+                        )
+                        .await
                     }
                 }
                 RunCommand::Interrupt { run_id } => {
-                    self.control(&run_id, ControlAction::Interrupt).await
+                    self.control(
+                        &run_id,
+                        ControlAction::Stop {
+                            command_id,
+                            action: DurableControlAction::Interrupt,
+                        },
+                    )
+                    .await
                 }
-                RunCommand::Cancel { run_id } => self.control(&run_id, ControlAction::Cancel).await,
+                RunCommand::Cancel { run_id } => {
+                    self.control(
+                        &run_id,
+                        ControlAction::Stop {
+                            command_id,
+                            action: DurableControlAction::Cancel,
+                        },
+                    )
+                    .await
+                }
+                RunCommand::ResolveInteraction {
+                    run_id,
+                    interaction_id,
+                    response,
+                } => {
+                    self.control(
+                        &run_id,
+                        ControlAction::ResolveInteraction {
+                            command_id,
+                            interaction_id,
+                            response,
+                        },
+                    )
+                    .await
+                }
             }
         };
         RunCommandResponse {
@@ -403,39 +445,97 @@ impl AgentApplication {
             Ok(replay) => replay,
             Err(error) => return error_result(error),
         };
+        if let Some(result) = committed_control_result(run_id, &replay, &action) {
+            return result;
+        }
         if let Some(outcome) = &replay.snapshot.terminal {
             return error_result(terminal_error(run_id, outcome.terminal.clone()));
         }
 
         let active = self.active.lock().await.get(run_id).cloned();
         let Some(active) = active else {
-            return self.not_active_after_race(run_id).await;
+            return self.control_after_race(run_id, &action).await;
         };
-        let sent = match action {
-            ControlAction::Steer(content) => active.control.steer(content),
-            ControlAction::Interrupt => active.control.interrupt(),
-            ControlAction::Cancel => active.control.cancel(),
+        let sent = match action.clone() {
+            ControlAction::Steer {
+                command_id,
+                content,
+            } => active.control.steer_durable(command_id, content).await,
+            ControlAction::Stop { command_id, action } => {
+                active.control.stop_durable(command_id, action).await
+            }
+            ControlAction::ResolveInteraction {
+                command_id,
+                interaction_id,
+                response,
+            } => {
+                active
+                    .control
+                    .resolve_interaction(command_id, interaction_id, response)
+                    .await
+            }
         };
         match sent {
-            Ok(()) => RunCommandResult::Accepted {
+            Ok(last_sequence) => RunCommandResult::Accepted {
                 run_id: run_id.clone(),
-                last_sequence: replay.snapshot.last_sequence,
+                last_sequence,
             },
-            Err(ControlError::RunFinished) => self.not_active_after_race(run_id).await,
+            Err(ControlError::RunFinished) => self.control_after_race(run_id, &action).await,
+            Err(ControlError::Store { message }) => error_result(api_error(
+                RunApiErrorCode::RunStoreFailed,
+                message,
+                Some(run_id.clone()),
+                None,
+            )),
+            Err(ControlError::CommandPayloadMismatch) => error_result(api_error(
+                RunApiErrorCode::InvalidRequest,
+                "command request_id was already committed with a different payload",
+                Some(run_id.clone()),
+                None,
+            )),
+            Err(ControlError::InteractionNotPending) => error_result(api_error(
+                RunApiErrorCode::InteractionNotPending,
+                "run is not waiting for a user interaction",
+                Some(run_id.clone()),
+                None,
+            )),
+            Err(ControlError::InteractionMismatch) => error_result(api_error(
+                RunApiErrorCode::InteractionMismatch,
+                "interaction id does not match the pending request",
+                Some(run_id.clone()),
+                None,
+            )),
+            Err(ControlError::InteractionAlreadyResolved) => error_result(api_error(
+                RunApiErrorCode::InteractionAlreadyResolved,
+                "interaction was already resolved",
+                Some(run_id.clone()),
+                None,
+            )),
+            Err(ControlError::InvalidInteractionResponse { message }) => error_result(api_error(
+                RunApiErrorCode::InvalidInteractionResponse,
+                message,
+                Some(run_id.clone()),
+                None,
+            )),
         }
     }
 
-    async fn not_active_after_race(&self, run_id: &RunId) -> RunCommandResult {
+    async fn control_after_race(&self, run_id: &RunId, action: &ControlAction) -> RunCommandResult {
         match self.load(run_id).await {
-            Ok(replay) => match replay.snapshot.terminal {
-                Some(outcome) => error_result(terminal_error(run_id, outcome.terminal)),
-                None => error_result(api_error(
-                    RunApiErrorCode::RunNotActive,
-                    format!("run {run_id} is not active in this process"),
-                    Some(run_id.clone()),
-                    None,
-                )),
-            },
+            Ok(replay) => {
+                if let Some(result) = committed_control_result(run_id, &replay, action) {
+                    return result;
+                }
+                match replay.snapshot.terminal {
+                    Some(outcome) => error_result(terminal_error(run_id, outcome.terminal)),
+                    None => error_result(api_error(
+                        RunApiErrorCode::RunNotActive,
+                        format!("run {run_id} is not active in this process"),
+                        Some(run_id.clone()),
+                        None,
+                    )),
+                }
+            }
             Err(error) => error_result(error),
         }
     }
@@ -498,10 +598,72 @@ impl AgentApplication {
     }
 }
 
+#[derive(Clone)]
 enum ControlAction {
-    Steer(String),
-    Interrupt,
-    Cancel,
+    Steer {
+        command_id: CommandId,
+        content: String,
+    },
+    Stop {
+        command_id: CommandId,
+        action: DurableControlAction,
+    },
+    ResolveInteraction {
+        command_id: CommandId,
+        interaction_id: InteractionId,
+        response: UserInteractionResponse,
+    },
+}
+
+fn committed_control_result(
+    run_id: &RunId,
+    replay: &RunReplay,
+    action: &ControlAction,
+) -> Option<RunCommandResult> {
+    let receipt = replay
+        .snapshot
+        .command_receipts
+        .iter()
+        .find(|receipt| receipt.command_id == *action.command_id())?;
+    if receipt.command != action.durable_command() {
+        return Some(error_result(api_error(
+            RunApiErrorCode::InvalidRequest,
+            "command request_id was already committed with a different payload",
+            Some(run_id.clone()),
+            None,
+        )));
+    }
+    Some(RunCommandResult::Accepted {
+        run_id: run_id.clone(),
+        last_sequence: receipt.sequence,
+    })
+}
+
+impl ControlAction {
+    fn command_id(&self) -> &CommandId {
+        match self {
+            Self::Steer { command_id, .. }
+            | Self::Stop { command_id, .. }
+            | Self::ResolveInteraction { command_id, .. } => command_id,
+        }
+    }
+
+    fn durable_command(&self) -> DurableCommand {
+        match self {
+            Self::Steer { content, .. } => DurableCommand::Steer {
+                content: content.clone(),
+            },
+            Self::Stop { action, .. } => DurableCommand::Stop { action: *action },
+            Self::ResolveInteraction {
+                interaction_id,
+                response,
+                ..
+            } => DurableCommand::ResolveInteraction {
+                interaction_id: interaction_id.clone(),
+                response: response.clone(),
+            },
+        }
+    }
 }
 
 fn spawn_monitor(
@@ -1231,7 +1393,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_seven_commands_use_one_store_and_typed_controls() {
+    async fn canonical_commands_use_one_store_and_durable_typed_controls() {
         let (app, store, composition) = new_fixture(ModelMode::Pending).await;
         let seeded = seed_resumable(&store, "resumable-run").await;
         let resumed = run_result(
@@ -1261,7 +1423,52 @@ mod tests {
                 },
             ))
             .await;
-        assert!(matches!(steer.result, RunCommandResult::Accepted { .. }));
+        let accepted_sequence = match steer.result {
+            RunCommandResult::Accepted { last_sequence, .. } => last_sequence,
+            other => panic!("expected durable steer acceptance, got {other:?}"),
+        };
+        let steered = wait_for_event(&store, &seeded, |event| {
+            matches!(event, RuntimeEventKind::SteerQueued { .. })
+        })
+        .await;
+        assert_eq!(steered.snapshot.last_sequence, accepted_sequence);
+        let retried = app
+            .execute(envelope(
+                "steer",
+                RunCommand::Steer {
+                    run_id: seeded.clone(),
+                    content: "先检查测试".to_owned(),
+                },
+            ))
+            .await;
+        assert!(matches!(
+            retried.result,
+            RunCommandResult::Accepted { last_sequence, .. }
+                if last_sequence == accepted_sequence
+        ));
+        let conflict = error(
+            app.execute(envelope(
+                "steer",
+                RunCommand::Steer {
+                    run_id: seeded.clone(),
+                    content: "复用同一 request_id 的不同内容".to_owned(),
+                },
+            ))
+            .await,
+        );
+        assert_eq!(conflict.code, RunApiErrorCode::InvalidRequest);
+        let stop_steered = app
+            .execute(envelope(
+                "cancel-steered",
+                RunCommand::Cancel {
+                    run_id: seeded.clone(),
+                },
+            ))
+            .await;
+        assert!(matches!(
+            stop_steered.result,
+            RunCommandResult::Accepted { .. }
+        ));
         wait_terminal(store.as_ref(), &seeded).await;
 
         let interrupt_run = run_result(
@@ -1329,6 +1536,204 @@ mod tests {
             .await,
         );
         assert!(fetched.terminal.is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_request_id_with_different_payload_is_never_double_accepted() {
+        let (app, store, _) = new_fixture(ModelMode::Pending).await;
+        let run = run_result(
+            app.execute(envelope(
+                "start-concurrent-command",
+                RunCommand::Start(start_command("并发控制")),
+            ))
+            .await,
+        );
+        wait_for_event(&store, &run.run_id, |event| {
+            matches!(event, RuntimeEventKind::ModelRequestInFlight { .. })
+        })
+        .await;
+
+        let first = app.execute(envelope(
+            "same-request-id",
+            RunCommand::Steer {
+                run_id: run.run_id.clone(),
+                content: "内容 A".to_owned(),
+            },
+        ));
+        let second = app.execute(envelope(
+            "same-request-id",
+            RunCommand::Steer {
+                run_id: run.run_id.clone(),
+                content: "内容 B".to_owned(),
+            },
+        ));
+        let (first, second) = tokio::join!(first, second);
+        let results = [first.result, second.result];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, RunCommandResult::Accepted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(
+                    result,
+                    RunCommandResult::Error {
+                        error: RunApiError {
+                            code: RunApiErrorCode::InvalidRequest,
+                            ..
+                        }
+                    }
+                ))
+                .count(),
+            1
+        );
+
+        let replay = store.load(&run.run_id).await.unwrap().unwrap();
+        assert_eq!(
+            replay
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    &event.event,
+                    RuntimeEventKind::SteerQueued { command_id, .. }
+                        if command_id == &CommandId::from("same-request-id")
+                ))
+                .count(),
+            1
+        );
+        let stopped = app
+            .execute(envelope(
+                "cancel-concurrent-command",
+                RunCommand::Cancel {
+                    run_id: run.run_id.clone(),
+                },
+            ))
+            .await;
+        assert!(matches!(stopped.result, RunCommandResult::Accepted { .. }));
+        wait_terminal(store.as_ref(), &run.run_id).await;
+    }
+
+    #[tokio::test]
+    async fn terminal_control_races_replay_the_exact_durable_receipt() {
+        let (app, store, _) = new_fixture(ModelMode::Pending).await;
+        let same_payload_run = run_result(
+            app.execute(envelope(
+                "start-same-cancel",
+                RunCommand::Start(start_command("并发相同取消")),
+            ))
+            .await,
+        );
+        wait_for_event(&store, &same_payload_run.run_id, |event| {
+            matches!(event, RuntimeEventKind::ModelRequestInFlight { .. })
+        })
+        .await;
+        let first = app.execute(envelope(
+            "same-cancel-id",
+            RunCommand::Cancel {
+                run_id: same_payload_run.run_id.clone(),
+            },
+        ));
+        let second = app.execute(envelope(
+            "same-cancel-id",
+            RunCommand::Cancel {
+                run_id: same_payload_run.run_id.clone(),
+            },
+        ));
+        let (first, second) = tokio::join!(first, second);
+        let sequences = [first.result, second.result]
+            .into_iter()
+            .map(|result| match result {
+                RunCommandResult::Accepted { last_sequence, .. } => last_sequence,
+                other => panic!("same cancel must replay accepted receipt, got {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(sequences[0], sequences[1]);
+        let same_payload_replay = wait_terminal(store.as_ref(), &same_payload_run.run_id).await;
+        assert_eq!(
+            same_payload_replay
+                .events
+                .iter()
+                .filter(|event| matches!(event.event, RuntimeEventKind::ControlRequested { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            same_payload_replay
+                .events
+                .iter()
+                .filter(|event| event.event.is_terminal())
+                .count(),
+            1
+        );
+
+        let conflicting_run = run_result(
+            app.execute(envelope(
+                "start-conflicting-stop",
+                RunCommand::Start(start_command("并发冲突停止")),
+            ))
+            .await,
+        );
+        wait_for_event(&store, &conflicting_run.run_id, |event| {
+            matches!(event, RuntimeEventKind::ModelRequestInFlight { .. })
+        })
+        .await;
+        let cancel = app.execute(envelope(
+            "same-stop-id",
+            RunCommand::Cancel {
+                run_id: conflicting_run.run_id.clone(),
+            },
+        ));
+        let interrupt = app.execute(envelope(
+            "same-stop-id",
+            RunCommand::Interrupt {
+                run_id: conflicting_run.run_id.clone(),
+            },
+        ));
+        let (cancel, interrupt) = tokio::join!(cancel, interrupt);
+        let results = [cancel.result, interrupt.result];
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, RunCommandResult::Accepted { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(
+                    result,
+                    RunCommandResult::Error {
+                        error: RunApiError {
+                            code: RunApiErrorCode::InvalidRequest,
+                            ..
+                        }
+                    }
+                ))
+                .count(),
+            1
+        );
+        let conflicting_replay = wait_terminal(store.as_ref(), &conflicting_run.run_id).await;
+        assert_eq!(
+            conflicting_replay
+                .events
+                .iter()
+                .filter(|event| matches!(event.event, RuntimeEventKind::ControlRequested { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            conflicting_replay
+                .events
+                .iter()
+                .filter(|event| event.event.is_terminal())
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]

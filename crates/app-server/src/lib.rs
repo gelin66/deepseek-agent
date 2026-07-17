@@ -96,6 +96,7 @@ enum PostRoute {
     Steer,
     Interrupt,
     Cancel,
+    ResolveInteraction,
 }
 
 /// Serve the canonical local Run API until the listener stops.
@@ -128,6 +129,10 @@ pub fn router(
         .route("/v1/runs/{run_id}/steer", post(steer_run))
         .route("/v1/runs/{run_id}/interrupt", post(interrupt_run))
         .route("/v1/runs/{run_id}/cancel", post(cancel_run))
+        .route(
+            "/v1/runs/{run_id}/interactions/{interaction_id}/resolve",
+            post(resolve_interaction),
+        )
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer_token,
@@ -183,7 +188,7 @@ async fn start_run(
     State(state): State<TransportState>,
     payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    execute_post(&state, PostRoute::Start, None, payload).await
+    execute_post(&state, PostRoute::Start, None, None, payload).await
 }
 
 async fn resume_run(
@@ -191,7 +196,7 @@ async fn resume_run(
     Path(run_id): Path<String>,
     payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    execute_post(&state, PostRoute::Resume, Some(run_id), payload).await
+    execute_post(&state, PostRoute::Resume, Some(run_id), None, payload).await
 }
 
 async fn steer_run(
@@ -199,7 +204,7 @@ async fn steer_run(
     Path(run_id): Path<String>,
     payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    execute_post(&state, PostRoute::Steer, Some(run_id), payload).await
+    execute_post(&state, PostRoute::Steer, Some(run_id), None, payload).await
 }
 
 async fn interrupt_run(
@@ -207,7 +212,7 @@ async fn interrupt_run(
     Path(run_id): Path<String>,
     payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    execute_post(&state, PostRoute::Interrupt, Some(run_id), payload).await
+    execute_post(&state, PostRoute::Interrupt, Some(run_id), None, payload).await
 }
 
 async fn cancel_run(
@@ -215,20 +220,41 @@ async fn cancel_run(
     Path(run_id): Path<String>,
     payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
-    execute_post(&state, PostRoute::Cancel, Some(run_id), payload).await
+    execute_post(&state, PostRoute::Cancel, Some(run_id), None, payload).await
+}
+
+async fn resolve_interaction(
+    State(state): State<TransportState>,
+    Path((run_id, interaction_id)): Path<(String, String)>,
+    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    execute_post(
+        &state,
+        PostRoute::ResolveInteraction,
+        Some(run_id),
+        Some(interaction_id),
+        payload,
+    )
+    .await
 }
 
 async fn execute_post(
     state: &TransportState,
     route: PostRoute,
     path_run_id: Option<String>,
+    path_interaction_id: Option<String>,
     payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     let envelope = match payload {
         Ok(Json(envelope)) => envelope,
         Err(error) => return json_rejection_response(error),
     };
-    if let Err(message) = validate_post_envelope(route, path_run_id.as_deref(), &envelope) {
+    if let Err(message) = validate_post_envelope(
+        route,
+        path_run_id.as_deref(),
+        path_interaction_id.as_deref(),
+        &envelope,
+    ) {
         let run_id = path_run_id.map(RunId::from);
         return command_response(invalid_response(&envelope.request_id, message, run_id));
     }
@@ -421,6 +447,7 @@ fn canonical_sse_event(event: &StoredRuntimeEvent) -> SseEvent {
 fn validate_post_envelope(
     route: PostRoute,
     path_run_id: Option<&str>,
+    path_interaction_id: Option<&str>,
     envelope: &RunCommandEnvelope,
 ) -> Result<(), String> {
     let body_run_id = match (&route, &envelope.command) {
@@ -428,7 +455,8 @@ fn validate_post_envelope(
         (PostRoute::Resume, RunCommand::Resume { run_id, .. })
         | (PostRoute::Steer, RunCommand::Steer { run_id, .. })
         | (PostRoute::Interrupt, RunCommand::Interrupt { run_id })
-        | (PostRoute::Cancel, RunCommand::Cancel { run_id }) => run_id,
+        | (PostRoute::Cancel, RunCommand::Cancel { run_id })
+        | (PostRoute::ResolveInteraction, RunCommand::ResolveInteraction { run_id, .. }) => run_id,
         _ => {
             return Err(format!(
                 "command kind does not match the {} route",
@@ -442,6 +470,19 @@ fn validate_post_envelope(
             "path run id {expected} does not match command run id {body_run_id}"
         ));
     }
+    if route == PostRoute::ResolveInteraction {
+        let expected = path_interaction_id
+            .expect("interaction resolution route always carries an interaction id");
+        let RunCommand::ResolveInteraction { interaction_id, .. } = &envelope.command else {
+            unreachable!("command kind was validated above")
+        };
+        if interaction_id.0 != expected {
+            return Err(format!(
+                "path interaction id {expected} does not match command interaction id {}",
+                interaction_id.0
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -452,6 +493,7 @@ fn route_name(route: PostRoute) -> &'static str {
         PostRoute::Steer => "steer",
         PostRoute::Interrupt => "interrupt",
         PostRoute::Cancel => "cancel",
+        PostRoute::ResolveInteraction => "resolve interaction",
     }
 }
 
@@ -512,16 +554,19 @@ fn response_status(response: &RunCommandResponse) -> StatusCode {
         RunCommandResult::Accepted { .. } => StatusCode::ACCEPTED,
         RunCommandResult::Run { .. } | RunCommandResult::Events { .. } => StatusCode::OK,
         RunCommandResult::Error { error } => match error.code {
-            RunApiErrorCode::InvalidRequest | RunApiErrorCode::EventCursorAhead => {
-                StatusCode::BAD_REQUEST
-            }
+            RunApiErrorCode::InvalidRequest
+            | RunApiErrorCode::EventCursorAhead
+            | RunApiErrorCode::InvalidInteractionResponse => StatusCode::BAD_REQUEST,
             RunApiErrorCode::RunNotFound => StatusCode::NOT_FOUND,
             RunApiErrorCode::RunAlreadyExists
             | RunApiErrorCode::RunAlreadyRunning
             | RunApiErrorCode::RunNotActive
             | RunApiErrorCode::RunRecoveryRequired
             | RunApiErrorCode::RunTerminal
-            | RunApiErrorCode::RunEnvironmentMismatch => StatusCode::CONFLICT,
+            | RunApiErrorCode::RunEnvironmentMismatch
+            | RunApiErrorCode::InteractionNotPending
+            | RunApiErrorCode::InteractionMismatch
+            | RunApiErrorCode::InteractionAlreadyResolved => StatusCode::CONFLICT,
             RunApiErrorCode::RunStoreFailed => StatusCode::INTERNAL_SERVER_ERROR,
         },
     }
@@ -673,8 +718,9 @@ mod tests {
         TransportRetryPolicy,
     };
     use codewhale_protocol::agent_runtime::{
-        AgentOutcome, ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId,
-        RuntimeEventKind, TerminalState, ToolPolicy,
+        AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentOutcome, CommandId, InteractionId,
+        ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId, RuntimeEventKind,
+        TerminalState, ToolPolicy, UserInteractionResponse,
     };
     use codewhale_protocol::run_api::{RunProductControls, RunView, StartRunCommand};
     use serde_json::json;
@@ -710,7 +756,7 @@ mod tests {
 
     fn event(sequence: u64, terminal: bool) -> StoredRuntimeEvent {
         StoredRuntimeEvent {
-            schema_version: 3,
+            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
             run_id: RunId::from("run-1"),
             parent_run_id: None,
             event_id: RuntimeEventId(format!("event-{sequence}")),
@@ -729,7 +775,8 @@ mod tests {
                     }),
                 }
             } else {
-                RuntimeEventKind::Steered {
+                RuntimeEventKind::SteerQueued {
+                    command_id: CommandId::from(format!("command-{sequence}")),
                     content: "继续".to_owned(),
                 }
             },
@@ -1049,13 +1096,17 @@ mod tests {
         ];
         for (route, command) in cases {
             assert!(
-                validate_post_envelope(route, Some("run-1"), &envelope(command.clone())).is_ok()
+                validate_post_envelope(route, Some("run-1"), None, &envelope(command.clone()))
+                    .is_ok()
             );
-            assert!(validate_post_envelope(route, Some("different"), &envelope(command)).is_err());
+            assert!(
+                validate_post_envelope(route, Some("different"), None, &envelope(command)).is_err()
+            );
             assert!(
                 validate_post_envelope(
                     route,
                     Some("run-1"),
+                    None,
                     &envelope(RunCommand::Get {
                         run_id: run_id.clone()
                     })
@@ -1067,6 +1118,7 @@ mod tests {
             validate_post_envelope(
                 PostRoute::Start,
                 None,
+                None,
                 &envelope(RunCommand::Start(start_command()))
             )
             .is_ok()
@@ -1075,10 +1127,34 @@ mod tests {
             validate_post_envelope(
                 PostRoute::Start,
                 None,
+                None,
                 &envelope(RunCommand::Resume {
-                    run_id,
+                    run_id: run_id.clone(),
                     expected_workspace: None,
                 })
+            )
+            .is_err()
+        );
+        let resolve = RunCommand::ResolveInteraction {
+            run_id,
+            interaction_id: InteractionId::from("interaction-1"),
+            response: UserInteractionResponse::Approved,
+        };
+        assert!(
+            validate_post_envelope(
+                PostRoute::ResolveInteraction,
+                Some("run-1"),
+                Some("interaction-1"),
+                &envelope(resolve.clone())
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_post_envelope(
+                PostRoute::ResolveInteraction,
+                Some("run-1"),
+                Some("different"),
+                &envelope(resolve)
             )
             .is_err()
         );
@@ -1256,7 +1332,14 @@ mod tests {
             RunCommand::Interrupt {
                 run_id: run_id.clone(),
             },
-            RunCommand::Cancel { run_id },
+            RunCommand::Cancel {
+                run_id: run_id.clone(),
+            },
+            RunCommand::ResolveInteraction {
+                run_id,
+                interaction_id: InteractionId::from("interaction-1"),
+                response: UserInteractionResponse::Approved,
+            },
         ];
         for command in commands {
             let expected = envelope(command);
@@ -1501,6 +1584,33 @@ mod tests {
             }
         ));
 
+        let mut resolve = envelope(RunCommand::ResolveInteraction {
+            run_id: run.run_id.clone(),
+            interaction_id: InteractionId::from("interaction-missing"),
+            response: UserInteractionResponse::Approved,
+        });
+        resolve.request_id = "request-resolve-missing".to_owned();
+        let (status, response) = post_command(
+            &app,
+            &format!(
+                "/v1/runs/{}/interactions/interaction-missing/resolve",
+                run.run_id.0
+            ),
+            &resolve,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert!(matches!(
+            response.result,
+            RunCommandResult::Error {
+                error: RunApiError {
+                    code: RunApiErrorCode::InteractionNotPending,
+                    ..
+                }
+            }
+        ));
+
         let steer = envelope(RunCommand::Steer {
             run_id: run.run_id.clone(),
             content: "先检查边界".to_owned(),
@@ -1513,12 +1623,42 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::ACCEPTED);
+        let steer_sequence = match response.result {
+            RunCommandResult::Accepted { last_sequence, .. } => last_sequence,
+            other => panic!("expected accepted steer, got {other:?}"),
+        };
+        let (_, response) = get_command(
+            &app,
+            &format!(
+                "/v1/runs/{}/events?after_sequence={}",
+                run.run_id.0,
+                steer_sequence.saturating_sub(1)
+            ),
+            None,
+        )
+        .await;
+        assert!(events_from_response(response).iter().any(|event| {
+            event.sequence == steer_sequence
+                && matches!(
+                    &event.event,
+                    RuntimeEventKind::SteerQueued { content, .. } if content == "先检查边界"
+                )
+        }));
+        let mut stop_steered = envelope(RunCommand::Cancel {
+            run_id: run.run_id.clone(),
+        });
+        stop_steered.request_id = "request-stop-steered".to_owned();
+        let (status, response) = post_command(
+            &app,
+            &format!("/v1/runs/{}/cancel", run.run_id.0),
+            &stop_steered,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED);
         assert!(matches!(response.result, RunCommandResult::Accepted { .. }));
         let steered = wait_http_terminal(&app, &run.run_id, None).await;
-        assert!(matches!(
-            steered.terminal,
-            Some(TerminalState::RecoveryRequired { .. })
-        ));
+        assert!(matches!(steered.terminal, Some(TerminalState::Cancelled)));
 
         let interrupt_run = envelope(RunCommand::Start(production_start(
             temp.path(),
@@ -1543,9 +1683,10 @@ mod tests {
         let interrupted = wait_http_terminal(&app, &interrupt_run.run_id, None).await;
         assert_eq!(interrupted.terminal, Some(TerminalState::Interrupted));
 
-        let cancel_terminal = envelope(RunCommand::Cancel {
+        let mut cancel_terminal = envelope(RunCommand::Cancel {
             run_id: run.run_id.clone(),
         });
+        cancel_terminal.request_id = "request-cancel-terminal".to_owned();
         let (status, response) = post_command(
             &app,
             &format!("/v1/runs/{}/cancel", run.run_id.0),

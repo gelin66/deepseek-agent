@@ -52,6 +52,7 @@ impl AgentRuntime {
         policy: &ToolPolicy,
         depth: u8,
         max_depth: u8,
+        interactive: bool,
     ) -> Vec<ToolDefinition> {
         if !policy.enabled {
             return Vec::new();
@@ -66,6 +67,9 @@ impl AgentRuntime {
             .collect::<Vec<_>>();
         if depth < max_depth && policy.permits(AGENT_TOOL_NAME) {
             definitions.push(agent_tool_definition());
+        }
+        if depth == 0 && interactive && policy.permits(REQUEST_USER_INPUT_TOOL_NAME) {
+            definitions.push(request_user_input_tool_definition());
         }
         definitions.sort_by(|left, right| left.name.cmp(&right.name));
         definitions.dedup_by(|left, right| left.name == right.name);
@@ -217,7 +221,6 @@ impl AgentRuntime {
                 .events
                 .first()
                 .map_or_else(now_unix_ms, |event| event.occurred_at_unix_ms),
-            pending_steers: Vec::new(),
             pending_children: Vec::new(),
             recovery_model,
             recovery_tool,
@@ -235,6 +238,14 @@ impl AgentRuntime {
                         &budget,
                     )
                     .await;
+            }
+            if let Some(control) = state.snapshot.pending_control.clone() {
+                let terminal = match control.action {
+                    DurableControlAction::Interrupt => TerminalState::Interrupted,
+                    DurableControlAction::Cancel => TerminalState::Cancelled,
+                };
+                self.settle_children_for(&mut state, &terminal).await;
+                return self.finalize(&mut state, terminal, &budget).await;
             }
             if let Some(stopped) = state.recovery_failure.take() {
                 let failure = match stopped.reason {
@@ -349,12 +360,32 @@ impl AgentRuntime {
                 }
                 if !state.pending_children.is_empty() {
                     match self.join_children(&mut state, &mut control, deadline).await {
-                        Ok(()) => continue,
+                        Ok(()) => {
+                            if let Err(failure) = self.flush_pending_steers(&mut state).await {
+                                self.cancel_children(&mut state).await;
+                                return self
+                                    .finalize(
+                                        &mut state,
+                                        TerminalState::Failed { failure },
+                                        &budget,
+                                    )
+                                    .await;
+                            }
+                            continue;
+                        }
                         Err(terminal) => {
                             self.cancel_children(&mut state).await;
                             return self.finalize(&mut state, terminal, &budget).await;
                         }
                     }
+                }
+                if !state.snapshot.pending_steers.is_empty() {
+                    if let Err(failure) = self.flush_pending_steers(&mut state).await {
+                        return self
+                            .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                            .await;
+                    }
+                    continue;
                 }
                 if turn.content.trim().is_empty() {
                     return self
@@ -479,6 +510,7 @@ impl AgentRuntime {
                         &state.snapshot.request.tool_policy,
                         state.snapshot.request.actor.depth,
                         state.snapshot.request.limits.max_depth,
+                        state.snapshot.request.environment.interactive,
                     ),
                     reasoning_effort: state.snapshot.request.reasoning_effort,
                     max_output_tokens: state.snapshot.request.max_output_tokens,
@@ -583,22 +615,13 @@ impl AgentRuntime {
                         });
                     }
                 },
-                command = control.recv() => match command {
-                    Some(ControlCommand::Steer(content)) => {
-                        state.pending_steers.push(content);
-                        return Ok(ModelAttemptControl::Terminal(recovery_terminal(
-                            RecoveryAmbiguityPhase::ModelRequest,
-                            &attempt_id.0,
-                            "模型请求已进入传输层，无法证明取消前是否已发送或计费",
-                        )));
+                command = control.recv() => if let Some(command) = command {
+                    match self.handle_control(state, command).await? {
+                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Terminal(terminal) => {
+                            return Ok(ModelAttemptControl::Terminal(terminal));
+                        }
                     }
-                    Some(ControlCommand::Interrupt) => {
-                        return Ok(ModelAttemptControl::Terminal(TerminalState::Interrupted));
-                    }
-                    Some(ControlCommand::Cancel) => {
-                        return Ok(ModelAttemptControl::Terminal(TerminalState::Cancelled));
-                    }
-                    None => {}
                 },
                 () = wait_for_deadline(deadline) => {
                     return Ok(ModelAttemptControl::Terminal(timeout_terminal(state, deadline)));
@@ -718,22 +741,13 @@ impl AgentRuntime {
                         }
                     }
                 }
-                command = control.recv() => match command {
-                    Some(ControlCommand::Steer(content)) => {
-                        state.pending_steers.push(content);
-                        return Ok(ModelAttemptControl::Terminal(recovery_terminal(
-                            RecoveryAmbiguityPhase::ModelRequest,
-                            &attempt_id.0,
-                            "模型流尚未原子提交，无法证明已生成内容和计费状态",
-                        )));
+                command = control.recv() => if let Some(command) = command {
+                    match self.handle_control(state, command).await? {
+                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Terminal(terminal) => {
+                            return Ok(ModelAttemptControl::Terminal(terminal));
+                        }
                     }
-                    Some(ControlCommand::Interrupt) => {
-                        return Ok(ModelAttemptControl::Terminal(TerminalState::Interrupted));
-                    }
-                    Some(ControlCommand::Cancel) => {
-                        return Ok(ModelAttemptControl::Terminal(TerminalState::Cancelled));
-                    }
-                    None => {}
                 },
                 () = wait_for_deadline(deadline) => {
                     return Ok(ModelAttemptControl::Terminal(timeout_terminal(state, deadline)));
@@ -900,50 +914,194 @@ impl AgentRuntime {
             self.launch_child(state, &call, budget)
                 .await
                 .map_err(store_terminal)?
+        } else if call.name == REQUEST_USER_INPUT_TOOL_NAME {
+            if !state.snapshot.request.environment.interactive
+                || state.snapshot.request.actor.kind != AgentActorKind::Root
+            {
+                ToolOutcome::rejected(
+                    "interaction_unavailable：当前运行没有可响应 request_user_input 的交互客户端",
+                    ToolRetryDisposition::AfterCorrection,
+                )
+            } else {
+                let Some(arguments) = call.arguments.parsed.as_ref() else {
+                    unreachable!("malformed arguments were rejected before interaction dispatch")
+                };
+                let request = match serde_json::from_value::<UserInputRequest>(arguments.clone()) {
+                    Ok(request) => request,
+                    Err(error) => {
+                        return self
+                            .commit_tool_outcome(
+                                state,
+                                operation_id,
+                                &call,
+                                ToolOutcome::rejected(
+                                    format!(
+                                        "invalid_arguments：request_user_input 参数无效：{error}"
+                                    ),
+                                    ToolRetryDisposition::AfterCorrection,
+                                ),
+                            )
+                            .await;
+                    }
+                };
+                if let Err(message) = request.validate() {
+                    ToolOutcome::rejected(
+                        format!("invalid_arguments：request_user_input 参数无效：{message}"),
+                        ToolRetryDisposition::AfterCorrection,
+                    )
+                } else {
+                    match self
+                        .wait_for_interaction(
+                            state,
+                            &operation_id,
+                            UserInteractionPrompt::UserInput { request },
+                            control,
+                            deadline,
+                        )
+                        .await
+                        .map_err(store_terminal)?
+                    {
+                        InteractionWaitResult::Resolved(UserInteractionResponse::Answered {
+                            answers,
+                        }) => ToolOutcome::json(&json!({"answers": answers})).unwrap_or_else(
+                            |error| {
+                                ToolOutcome::error(format!("user_input_encoding_failed：{error}"))
+                            },
+                        ),
+                        InteractionWaitResult::Resolved(UserInteractionResponse::Cancelled) => {
+                            ToolOutcome::rejected(
+                                "user_input_cancelled：用户取消了本次澄清请求",
+                                ToolRetryDisposition::AfterCorrection,
+                            )
+                        }
+                        InteractionWaitResult::Resolved(_) => ToolOutcome::rejected(
+                            "interaction_mismatch：request_user_input 收到了错误类型的响应",
+                            ToolRetryDisposition::NotRetryable,
+                        ),
+                        InteractionWaitResult::Terminal(terminal) => {
+                            terminal_after_result = Some(terminal);
+                            cancelled_tool_outcome(
+                                "user_input_interrupted：等待用户输入时运行已停止",
+                            )
+                        }
+                    }
+                }
+            }
         } else {
-            self.publish(
-                state,
-                RuntimeEventKind::ToolExecutionStarted {
-                    operation_id: operation_id.clone(),
-                },
-            )
-            .await
-            .map_err(store_terminal)?;
-            let cancellation = CancellationToken::default();
-            let execution = self.tools.execute(invocation, cancellation.clone());
-            tokio::pin!(execution);
-            loop {
-                tokio::select! {
-                    result = &mut execution => break match result {
-                        Ok(outcome) => outcome,
-                        Err(error) => ToolOutcome::transport_failure(format!(
-                            "{}：工具执行失败：{}",
-                            error.code, error.message
+            let approval = match self.tools.approval_prompt(&invocation) {
+                Ok(approval) => approval,
+                Err(error) => {
+                    return self
+                        .commit_tool_outcome(
+                            state,
+                            operation_id,
+                            &call,
+                            ToolOutcome::rejected(
+                                format!("{}：工具授权预检失败：{}", error.code, error.message),
+                                ToolRetryDisposition::NotRetryable,
+                            ),
+                        )
+                        .await;
+                }
+            };
+            let rejected = if let Some(prompt) = approval {
+                if !state.snapshot.request.environment.interactive {
+                    Some(ToolOutcome::rejected(
+                        "approval_required：当前非交互运行无法批准该工具调用",
+                        ToolRetryDisposition::AfterCorrection,
+                    ))
+                } else {
+                    match self
+                        .wait_for_interaction(
+                            state,
+                            &operation_id,
+                            UserInteractionPrompt::Approval {
+                                prompt,
+                                arguments: call
+                                    .arguments
+                                    .parsed
+                                    .clone()
+                                    .expect("validated tool arguments"),
+                            },
+                            control,
+                            deadline,
+                        )
+                        .await
+                        .map_err(store_terminal)?
+                    {
+                        InteractionWaitResult::Resolved(UserInteractionResponse::Approved) => None,
+                        InteractionWaitResult::Resolved(UserInteractionResponse::Denied {
+                            reason,
+                        }) => Some(ToolOutcome::rejected(
+                            reason.unwrap_or_else(|| "用户拒绝了工具调用".to_owned()),
+                            ToolRetryDisposition::AfterCorrection,
                         )),
-                    },
-                    command = control.recv() => match command {
-                        Some(ControlCommand::Steer(content)) => {
-                            state.pending_steers.push(content);
+                        InteractionWaitResult::Resolved(UserInteractionResponse::Cancelled) => {
+                            Some(ToolOutcome::rejected(
+                                "用户取消了工具审批",
+                                ToolRetryDisposition::AfterCorrection,
+                            ))
                         }
-                        Some(ControlCommand::Interrupt) => {
+                        InteractionWaitResult::Resolved(_) => Some(ToolOutcome::rejected(
+                            "interaction_mismatch：工具审批收到了错误类型的响应",
+                            ToolRetryDisposition::NotRetryable,
+                        )),
+                        InteractionWaitResult::Terminal(terminal) => {
+                            terminal_after_result = Some(terminal);
+                            Some(cancelled_tool_outcome(
+                                "tool_approval_interrupted：等待工具审批时运行已停止",
+                            ))
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+            if let Some(outcome) = rejected {
+                outcome
+            } else {
+                self.publish(
+                    state,
+                    RuntimeEventKind::ToolExecutionStarted {
+                        operation_id: operation_id.clone(),
+                    },
+                )
+                .await
+                .map_err(store_terminal)?;
+                let cancellation = CancellationToken::default();
+                let execution = self.tools.execute(invocation, cancellation.clone());
+                tokio::pin!(execution);
+                loop {
+                    tokio::select! {
+                        result = &mut execution => break match result {
+                            Ok(outcome) => outcome,
+                            Err(error) => ToolOutcome::transport_failure(format!(
+                                "{}：工具执行失败：{}",
+                                error.code, error.message
+                            )),
+                        },
+                        command = control.recv() => if let Some(command) = command {
+                            match self.handle_control(state, command).await.map_err(store_terminal)? {
+                                ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                                ControlEffect::Terminal(terminal) => {
+                                    cancellation.cancel();
+                                    let _ = tokio::time::timeout(Duration::from_secs(5), &mut execution).await;
+                                    let message = if matches!(terminal, TerminalState::Interrupted) {
+                                        "tool_interrupted：工具执行已中断"
+                                    } else {
+                                        "tool_cancelled：工具执行已取消"
+                                    };
+                                    terminal_after_result = Some(terminal);
+                                    break cancelled_tool_outcome(message);
+                                }
+                            }
+                        },
+                        () = wait_for_deadline(deadline) => {
                             cancellation.cancel();
                             let _ = tokio::time::timeout(Duration::from_secs(5), &mut execution).await;
-                            terminal_after_result = Some(TerminalState::Interrupted);
-                            break cancelled_tool_outcome("tool_interrupted：工具执行已中断");
+                            terminal_after_result = Some(timeout_terminal(state, deadline));
+                            break cancelled_tool_outcome("tool_deadline_exceeded：工具执行超过本次运行期限");
                         }
-                        Some(ControlCommand::Cancel) => {
-                            cancellation.cancel();
-                            let _ = tokio::time::timeout(Duration::from_secs(5), &mut execution).await;
-                            terminal_after_result = Some(TerminalState::Cancelled);
-                            break cancelled_tool_outcome("tool_cancelled：工具执行已取消");
-                        }
-                        None => {}
-                    },
-                    () = wait_for_deadline(deadline) => {
-                        cancellation.cancel();
-                        let _ = tokio::time::timeout(Duration::from_secs(5), &mut execution).await;
-                        terminal_after_result = Some(timeout_terminal(state, deadline));
-                        break cancelled_tool_outcome("tool_deadline_exceeded：工具执行超过本次运行期限");
                     }
                 }
             }
@@ -963,6 +1121,91 @@ impl AgentRuntime {
         match terminal_after_result {
             Some(terminal) => Err(terminal),
             None => Ok(()),
+        }
+    }
+
+    async fn commit_tool_outcome(
+        &self,
+        state: &mut RunState,
+        operation_id: OperationId,
+        call: &ModelToolCall,
+        outcome: ToolOutcome,
+    ) -> Result<(), TerminalState> {
+        self.publish(
+            state,
+            RuntimeEventKind::ToolOutcomeCommitted {
+                operation_id,
+                call_id: call.id.clone(),
+                name: call.name.clone(),
+                outcome,
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        Ok(())
+    }
+
+    async fn wait_for_interaction(
+        &self,
+        state: &mut RunState,
+        operation_id: &OperationId,
+        prompt: UserInteractionPrompt,
+        control: &mut mpsc::UnboundedReceiver<ControlCommand>,
+        deadline: Option<u64>,
+    ) -> Result<InteractionWaitResult, RuntimeFailure> {
+        let existing = state
+            .snapshot
+            .pending_tool
+            .as_ref()
+            .and_then(|pending| pending.interaction.as_ref())
+            .cloned();
+        let interaction = if let Some(existing) = existing {
+            existing
+        } else {
+            let pending = state
+                .snapshot
+                .pending_tool
+                .as_ref()
+                .expect("an interaction is requested only for a prepared tool");
+            let request = UserInteractionRequest {
+                interaction_id: InteractionId::new(),
+                operation_id: operation_id.clone(),
+                call_id: pending.invocation.call_id.clone(),
+                tool_name: pending.invocation.name.clone(),
+                prompt,
+            };
+            self.publish(
+                state,
+                RuntimeEventKind::InteractionRequested {
+                    request: request.clone(),
+                },
+            )
+            .await?;
+            PendingUserInteraction {
+                request,
+                response: None,
+            }
+        };
+        if let Some(response) = interaction.response {
+            return Ok(InteractionWaitResult::Resolved(response));
+        }
+        loop {
+            tokio::select! {
+                command = control.recv() => if let Some(command) = command {
+                    match self.handle_control(state, command).await? {
+                        ControlEffect::Continue => {}
+                        ControlEffect::InteractionResolved(response) => {
+                            return Ok(InteractionWaitResult::Resolved(response));
+                        }
+                        ControlEffect::Terminal(terminal) => {
+                            return Ok(InteractionWaitResult::Terminal(terminal));
+                        }
+                    }
+                },
+                () = wait_for_deadline(deadline) => {
+                    return Ok(InteractionWaitResult::Terminal(timeout_terminal(state, deadline)));
+                }
+            }
         }
     }
 
@@ -1111,6 +1354,8 @@ impl AgentRuntime {
         } else {
             CanonicalTranscript::default()
         };
+        let mut child_environment = state.snapshot.request.environment.clone();
+        child_environment.interactive = false;
         let child_request = RunRequest {
             run_id: Some(child_run_id.clone()),
             parent_run_id: Some(state.run_id().clone()),
@@ -1128,7 +1373,7 @@ impl AgentRuntime {
             deadline_unix_ms: state.snapshot.request.deadline_unix_ms,
             tool_policy: child_policy,
             limits: child_limits,
-            environment: state.snapshot.request.environment.clone(),
+            environment: child_environment,
             accounting_baseline: ModelAccounting::default(),
         };
         let child = self.start_inner(child_request, budget.clone());
@@ -1172,25 +1417,22 @@ impl AgentRuntime {
                         runtime_retries: 0,
                         tool_calls: 0,
                     }),
-                    command = control.recv() => match command {
-                        Some(ControlCommand::Steer(content)) => {
-                            self.apply_steer(state, content).await.map_err(store_terminal)?;
+                    command = control.recv() => if let Some(command) = command {
+                        match self.handle_control(state, command).await.map_err(store_terminal)? {
+                            ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                            ControlEffect::Terminal(terminal) => {
+                                if matches!(terminal, TerminalState::Interrupted) {
+                                    child.control.interrupt().ok();
+                                    for pending in &state.pending_children { pending.control.interrupt().ok(); }
+                                } else {
+                                    child.control.cancel().ok();
+                                    for pending in &state.pending_children { pending.control.cancel().ok(); }
+                                }
+                                let _ = child.join.await;
+                                self.join_remaining_children(state).await;
+                                return Err(terminal);
+                            }
                         }
-                        Some(ControlCommand::Interrupt) => {
-                            child.control.interrupt().ok();
-                            for pending in &state.pending_children { pending.control.interrupt().ok(); }
-                            let _ = child.join.await;
-                            self.join_remaining_children(state).await;
-                            return Err(TerminalState::Interrupted);
-                        }
-                        Some(ControlCommand::Cancel) => {
-                            child.control.cancel().ok();
-                            for pending in &state.pending_children { pending.control.cancel().ok(); }
-                            let _ = child.join.await;
-                            self.join_remaining_children(state).await;
-                            return Err(TerminalState::Cancelled);
-                        }
-                        None => {}
                     },
                     () = wait_for_deadline(deadline) => {
                         child.control.cancel().ok();
@@ -1262,9 +1504,10 @@ impl AgentRuntime {
     ) -> Result<Option<TerminalState>, RuntimeFailure> {
         loop {
             match control.try_recv() {
-                Ok(ControlCommand::Steer(content)) => self.apply_steer(state, content).await?,
-                Ok(ControlCommand::Interrupt) => return Ok(Some(TerminalState::Interrupted)),
-                Ok(ControlCommand::Cancel) => return Ok(Some(TerminalState::Cancelled)),
+                Ok(command) => match self.handle_control(state, command).await? {
+                    ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                    ControlEffect::Terminal(terminal) => return Ok(Some(terminal)),
+                },
                 Err(mpsc::error::TryRecvError::Empty | mpsc::error::TryRecvError::Disconnected) => {
                     return Ok(None);
                 }
@@ -1272,24 +1515,181 @@ impl AgentRuntime {
         }
     }
 
-    async fn apply_steer(
+    async fn handle_control(
         &self,
         state: &mut RunState,
-        content: String,
-    ) -> Result<(), RuntimeFailure> {
-        self.publish(
-            state,
-            RuntimeEventKind::Steered {
-                content: content.clone(),
-            },
-        )
-        .await?;
-        Ok(())
+        command: ControlCommand,
+    ) -> Result<ControlEffect, RuntimeFailure> {
+        match command {
+            ControlCommand::Steer {
+                command_id,
+                content,
+                ack,
+            } => {
+                let durable = DurableCommand::Steer {
+                    content: content.clone(),
+                };
+                if let Some(receipt) =
+                    command_receipt_result(&state.snapshot, &command_id, &durable)
+                {
+                    acknowledge(ack, receipt);
+                    return Ok(ControlEffect::Continue);
+                }
+                match self
+                    .publish(
+                        state,
+                        RuntimeEventKind::SteerQueued {
+                            command_id,
+                            content,
+                        },
+                    )
+                    .await
+                {
+                    Ok(stored) => {
+                        acknowledge(ack, Ok(stored.sequence));
+                        Ok(ControlEffect::Continue)
+                    }
+                    Err(failure) => {
+                        acknowledge(
+                            ack,
+                            Err(ControlError::Store {
+                                message: format!("{failure:?}"),
+                            }),
+                        );
+                        Err(failure)
+                    }
+                }
+            }
+            ControlCommand::Stop {
+                command_id,
+                action,
+                ack,
+            } => {
+                let durable = DurableCommand::Stop { action };
+                if let Some(receipt) =
+                    command_receipt_result(&state.snapshot, &command_id, &durable)
+                {
+                    return match receipt {
+                        Ok(sequence) => {
+                            acknowledge(ack, Ok(sequence));
+                            Ok(ControlEffect::Terminal(terminal_for_control(action)))
+                        }
+                        Err(error) => {
+                            acknowledge(ack, Err(error));
+                            Ok(ControlEffect::Continue)
+                        }
+                    };
+                }
+                if let Some(pending) = &state.snapshot.pending_control {
+                    acknowledge(ack, Err(ControlError::RunFinished));
+                    return Ok(ControlEffect::Terminal(terminal_for_control(
+                        pending.action,
+                    )));
+                }
+                match self
+                    .publish(
+                        state,
+                        RuntimeEventKind::ControlRequested { command_id, action },
+                    )
+                    .await
+                {
+                    Ok(stored) => {
+                        acknowledge(ack, Ok(stored.sequence));
+                        Ok(ControlEffect::Terminal(terminal_for_control(action)))
+                    }
+                    Err(failure) => {
+                        acknowledge(
+                            ack,
+                            Err(ControlError::Store {
+                                message: format!("{failure:?}"),
+                            }),
+                        );
+                        Err(failure)
+                    }
+                }
+            }
+            ControlCommand::ResolveInteraction {
+                command_id,
+                interaction_id,
+                response,
+                ack,
+            } => {
+                let durable = DurableCommand::ResolveInteraction {
+                    interaction_id: interaction_id.clone(),
+                    response: response.clone(),
+                };
+                if let Some(receipt) =
+                    command_receipt_result(&state.snapshot, &command_id, &durable)
+                {
+                    match receipt {
+                        Ok(sequence) => {
+                            let _ = ack.send(Ok(sequence));
+                            return Ok(ControlEffect::InteractionResolved(response));
+                        }
+                        Err(error) => {
+                            let _ = ack.send(Err(error));
+                            return Ok(ControlEffect::Continue);
+                        }
+                    }
+                }
+                let Some(interaction) = state
+                    .snapshot
+                    .pending_tool
+                    .as_ref()
+                    .and_then(|pending| pending.interaction.as_ref())
+                    .cloned()
+                else {
+                    let _ = ack.send(Err(ControlError::InteractionNotPending));
+                    return Ok(ControlEffect::Continue);
+                };
+                if interaction.request.interaction_id != interaction_id {
+                    let _ = ack.send(Err(ControlError::InteractionMismatch));
+                    return Ok(ControlEffect::Continue);
+                }
+                if interaction.response.is_some() {
+                    let _ = ack.send(Err(ControlError::InteractionAlreadyResolved));
+                    return Ok(ControlEffect::Continue);
+                }
+                if let Err(message) = interaction.request.validate_response(&response) {
+                    let _ = ack.send(Err(ControlError::InvalidInteractionResponse { message }));
+                    return Ok(ControlEffect::Continue);
+                }
+                match self
+                    .publish(
+                        state,
+                        RuntimeEventKind::InteractionResolved {
+                            command_id,
+                            interaction_id,
+                            response: response.clone(),
+                        },
+                    )
+                    .await
+                {
+                    Ok(stored) => {
+                        let _ = ack.send(Ok(stored.sequence));
+                        Ok(ControlEffect::InteractionResolved(response))
+                    }
+                    Err(failure) => {
+                        let _ = ack.send(Err(ControlError::Store {
+                            message: format!("{failure:?}"),
+                        }));
+                        Err(failure)
+                    }
+                }
+            }
+        }
     }
 
     async fn flush_pending_steers(&self, state: &mut RunState) -> Result<(), RuntimeFailure> {
-        for content in std::mem::take(&mut state.pending_steers) {
-            self.apply_steer(state, content).await?;
+        while let Some(pending) = state.snapshot.pending_steers.first().cloned() {
+            self.publish(
+                state,
+                RuntimeEventKind::SteerApplied {
+                    command_id: pending.command_id,
+                    content: pending.content,
+                },
+            )
+            .await?;
         }
         Ok(())
     }
@@ -1336,13 +1736,32 @@ impl AgentRuntime {
     ) -> AgentOutcome {
         let root = state.snapshot.request.actor.kind == AgentActorKind::Root;
         let mut accounting = self.cumulative_accounting(state, root).await;
-        if matches!(terminal, TerminalState::RecoveryRequired { .. }) {
+        let model_request_unsettled = state
+            .snapshot
+            .pending_model
+            .as_ref()
+            .is_some_and(|pending| pending.state == DurableActionState::InFlight);
+        let recovery_may_hide_model_billing = matches!(
+            &terminal,
+            TerminalState::RecoveryRequired {
+                ambiguity: RecoveryAmbiguity {
+                    phase: RecoveryAmbiguityPhase::ModelRequest | RecoveryAmbiguityPhase::ChildRun,
+                    ..
+                }
+            }
+        );
+        if model_request_unsettled || recovery_may_hide_model_billing {
             accounting.complete = false;
             accounting.usage_complete = false;
             accounting.usage_incomplete = true;
             accounting.billing_unknown = true;
-            accounting.billing_unknown_attempts =
-                accounting.billing_unknown_attempts.saturating_add(1);
+            let minimum_unknown_attempts = state
+                .accounting_epoch_baseline
+                .billing_unknown_attempts
+                .saturating_add(1);
+            accounting.billing_unknown_attempts = accounting
+                .billing_unknown_attempts
+                .max(minimum_unknown_attempts);
         }
         accounting.runtime_retries = accounting
             .runtime_retries
@@ -1413,7 +1832,6 @@ struct RunState {
     /// baseline, whereas a resumed run opens a new process-local ledger.
     model_accounting_includes_baseline: bool,
     started_unix_ms: u64,
-    pending_steers: Vec<String>,
     pending_children: Vec<PendingChild>,
     recovery_model: Option<PendingModelAction>,
     recovery_tool: Option<PendingToolAction>,
@@ -1587,11 +2005,68 @@ fn reserve(counter: &AtomicU32, limit: u32) -> bool {
         .is_ok()
 }
 
-#[derive(Debug, Clone)]
+enum ControlEffect {
+    Continue,
+    Terminal(TerminalState),
+    InteractionResolved(UserInteractionResponse),
+}
+
+enum InteractionWaitResult {
+    Resolved(UserInteractionResponse),
+    Terminal(TerminalState),
+}
+
 enum ControlCommand {
-    Steer(String),
-    Interrupt,
-    Cancel,
+    Steer {
+        command_id: CommandId,
+        content: String,
+        ack: Option<oneshot::Sender<Result<u64, ControlError>>>,
+    },
+    Stop {
+        command_id: CommandId,
+        action: DurableControlAction,
+        ack: Option<oneshot::Sender<Result<u64, ControlError>>>,
+    },
+    ResolveInteraction {
+        command_id: CommandId,
+        interaction_id: InteractionId,
+        response: UserInteractionResponse,
+        ack: oneshot::Sender<Result<u64, ControlError>>,
+    },
+}
+
+fn acknowledge(
+    ack: Option<oneshot::Sender<Result<u64, ControlError>>>,
+    result: Result<u64, ControlError>,
+) {
+    if let Some(ack) = ack {
+        let _ = ack.send(result);
+    }
+}
+
+fn command_receipt_result(
+    snapshot: &RunSnapshot,
+    command_id: &CommandId,
+    command: &DurableCommand,
+) -> Option<Result<u64, ControlError>> {
+    snapshot
+        .command_receipts
+        .iter()
+        .find(|receipt| receipt.command_id == *command_id)
+        .map(|receipt| {
+            if receipt.command == *command {
+                Ok(receipt.sequence)
+            } else {
+                Err(ControlError::CommandPayloadMismatch)
+            }
+        })
+}
+
+fn terminal_for_control(action: DurableControlAction) -> TerminalState {
+    match action {
+        DurableControlAction::Interrupt => TerminalState::Interrupted,
+        DurableControlAction::Cancel => TerminalState::Cancelled,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1602,20 +2077,82 @@ pub struct AgentControl {
 impl AgentControl {
     pub fn steer(&self, content: impl Into<String>) -> Result<(), ControlError> {
         self.sender
-            .send(ControlCommand::Steer(content.into()))
+            .send(ControlCommand::Steer {
+                command_id: CommandId::new(),
+                content: content.into(),
+                ack: None,
+            })
             .map_err(|_| ControlError::RunFinished)
     }
 
     pub fn interrupt(&self) -> Result<(), ControlError> {
         self.sender
-            .send(ControlCommand::Interrupt)
+            .send(ControlCommand::Stop {
+                command_id: CommandId::new(),
+                action: DurableControlAction::Interrupt,
+                ack: None,
+            })
             .map_err(|_| ControlError::RunFinished)
     }
 
     pub fn cancel(&self) -> Result<(), ControlError> {
         self.sender
-            .send(ControlCommand::Cancel)
+            .send(ControlCommand::Stop {
+                command_id: CommandId::new(),
+                action: DurableControlAction::Cancel,
+                ack: None,
+            })
             .map_err(|_| ControlError::RunFinished)
+    }
+
+    pub async fn steer_durable(
+        &self,
+        command_id: CommandId,
+        content: impl Into<String>,
+    ) -> Result<u64, ControlError> {
+        let (ack, received) = oneshot::channel();
+        self.sender
+            .send(ControlCommand::Steer {
+                command_id,
+                content: content.into(),
+                ack: Some(ack),
+            })
+            .map_err(|_| ControlError::RunFinished)?;
+        received.await.map_err(|_| ControlError::RunFinished)?
+    }
+
+    pub async fn stop_durable(
+        &self,
+        command_id: CommandId,
+        action: DurableControlAction,
+    ) -> Result<u64, ControlError> {
+        let (ack, received) = oneshot::channel();
+        self.sender
+            .send(ControlCommand::Stop {
+                command_id,
+                action,
+                ack: Some(ack),
+            })
+            .map_err(|_| ControlError::RunFinished)?;
+        received.await.map_err(|_| ControlError::RunFinished)?
+    }
+
+    pub async fn resolve_interaction(
+        &self,
+        command_id: CommandId,
+        interaction_id: InteractionId,
+        response: UserInteractionResponse,
+    ) -> Result<u64, ControlError> {
+        let (ack, received) = oneshot::channel();
+        self.sender
+            .send(ControlCommand::ResolveInteraction {
+                command_id,
+                interaction_id,
+                response,
+                ack,
+            })
+            .map_err(|_| ControlError::RunFinished)?;
+        received.await.map_err(|_| ControlError::RunFinished)?
     }
 }
 
@@ -1623,6 +2160,18 @@ impl AgentControl {
 pub enum ControlError {
     #[error("the run has already finished")]
     RunFinished,
+    #[error("runtime store failed while accepting the command: {message}")]
+    Store { message: String },
+    #[error("command id was already committed with a different payload")]
+    CommandPayloadMismatch,
+    #[error("the run is not waiting for a user interaction")]
+    InteractionNotPending,
+    #[error("interaction id does not match the pending request")]
+    InteractionMismatch,
+    #[error("the pending interaction was already resolved")]
+    InteractionAlreadyResolved,
+    #[error("invalid interaction response: {message}")]
+    InvalidInteractionResponse { message: String },
 }
 
 pub struct RuntimeRun {
@@ -1725,6 +2274,51 @@ fn agent_tool_definition() -> ToolDefinition {
     }
 }
 
+fn request_user_input_tool_definition() -> ToolDefinition {
+    ToolDefinition {
+        name: REQUEST_USER_INPUT_TOOL_NAME.to_owned(),
+        description: "向当前用户提出 1 到 3 个简短问题，并等待规范化答案后继续任务。".to_owned(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "header": {"type": "string"},
+                            "id": {"type": "string"},
+                            "question": {"type": "string"},
+                            "options": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 4,
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {"type": "string"},
+                                        "description": {"type": "string"}
+                                    },
+                                    "required": ["label", "description"],
+                                    "additionalProperties": false
+                                }
+                            },
+                            "allow_free_text": {"type": "boolean", "default": false},
+                            "multi_select": {"type": "boolean", "default": false}
+                        },
+                        "required": ["header", "id", "question", "options"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["questions"],
+            "additionalProperties": false
+        }),
+    }
+}
+
 fn model_failure(error: ModelPortError) -> RuntimeFailure {
     RuntimeFailure::Model {
         code: error.code,
@@ -1800,20 +2394,6 @@ fn signal_ready(
 ) {
     if let Some(sender) = ready.take() {
         let _ = sender.send(result);
-    }
-}
-
-fn recovery_terminal(
-    phase: RecoveryAmbiguityPhase,
-    action_id: &str,
-    message: &str,
-) -> TerminalState {
-    TerminalState::RecoveryRequired {
-        ambiguity: RecoveryAmbiguity {
-            phase,
-            action_id: action_id.to_owned(),
-            message: message.to_owned(),
-        },
     }
 }
 

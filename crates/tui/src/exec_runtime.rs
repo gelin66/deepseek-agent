@@ -241,6 +241,7 @@ pub(crate) async fn run_exec_runtime(
                     auto_approve,
                     trust_mode,
                     allow_sandbox_elevation,
+                    interactive: false,
                     sandbox: explicit_sandbox
                         .map(str::to_owned)
                         .or_else(|| config.sandbox_mode.clone()),
@@ -1168,7 +1169,11 @@ impl<'a> RuntimeEventProjection<'a> {
                 });
                 None
             }
-            RuntimeEventKind::Steered { content } => {
+            RuntimeEventKind::InteractionRequested { .. }
+            | RuntimeEventKind::InteractionResolved { .. }
+            | RuntimeEventKind::SteerQueued { .. }
+            | RuntimeEventKind::ControlRequested { .. } => None,
+            RuntimeEventKind::SteerApplied { content, .. } => {
                 transcript.entries.push(TranscriptEntry::User {
                     content: content.clone(),
                 });

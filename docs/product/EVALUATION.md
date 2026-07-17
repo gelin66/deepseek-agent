@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
 - 状态：V1 评测契约
-- 上次更新：2026-07-16
+- 上次更新：2026-07-17
 
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
@@ -74,8 +74,11 @@ A/B 对照。
 
 - context compaction 后保持目标；
 - 多次工具循环；
-- 中途 steer；
-- cancel/interrupt；
+- model request 在途 steer，必须先 queued，旧响应和完整工具/子 Agent 结果提交后才 applied；
+- approval 的 approve/deny/cancel 与 approval 后、工具开始前的恢复；
+- user input 的 submit/cancel、错误 response 类型与恢复重放；
+- 相同 command id 同 payload 幂等、不同 payload 拒绝；
+- cancel/interrupt 及 control-requested 到 terminal 之间的崩溃；
 - 进程被终止后的 resume；
 - snapshot/replay 一致性；
 - 不重复提交终态和写工具。
@@ -131,6 +134,10 @@ git_commit
 workspace_revision
 model
 api_surface
+interactive
+auto_approve
+trust_mode
+sandbox_posture
 verified_success
 terminal_state
 false_success
@@ -241,6 +248,16 @@ terminal_count
 model_request_delta
 usage_delta
 unknown_billing
+command_id
+interaction_id
+command_receipt_count
+control_requested_count
+control_action
+command_payload_digest
+interaction_request_count
+interaction_resolution_count
+steer_queued_count
+steer_applied_count
 tool_side_effect_count
 tool_side_effect_digest
 lease_outcome
@@ -251,9 +268,17 @@ no_key_replay
 
 - 恢复必须继续同一个 `run_id`，不能新建 run 后把两段输出拼成“恢复成功”；重开后已提交
   事件前缀的规范化摘要必须保持不变，后续 sequence 严格单调且 event id 不重复。
-- `crash_phase` 必须区分模型请求准备/在途、工具执行前/副作用后未提交、普通事件提交后
-  未发布，以及 canonical terminal 提交后未发布等窗口；每个窗口分别报告预期与实际的
-  request、usage、事件和副作用增量。
+- `crash_phase` 必须区分模型请求准备/在途、工具执行前/副作用后未提交、
+  `interaction_requested`、`interaction_resolved_before_tool_start`、
+  `steer_queued_before_applied`、`steer_applied_before_next_model`、
+  `control_requested_before_terminal`、普通事件提交后未发布，以及 canonical terminal 提交后
+  未发布等窗口；每个窗口分别报告预期与实际的 request、usage、事件和副作用增量。
+- `command_id` 与 `interaction_id` 是当前 crash trigger 的 nullable ID；涉及多个命令或交互
+  时必须保存完整 ID 集合或等价规范化摘要。`command_payload_digest` 必须绑定命令类型和
+  payload，用于证明同 ID 同 payload 幂等、同 ID 不同 payload 被拒绝。
+- 恢复后不得重复 interaction request、resolution 或 command receipt，不得把 queued steer
+  当成 applied；已提交 `SteerApplied` 后不得以此前已提交的 stop response 终止 run，必须
+  保留该响应，并把 applied steer 作为下一次模型请求的用户输入。
 - 请求已发送但 usage 尚未持久化时，费用不能推断为零。记录必须设置
   `unknown_billing=true`，保留已知 request/usage delta，并使依赖完整费用或 Token 的比较
   `product_metric_eligible=false`。

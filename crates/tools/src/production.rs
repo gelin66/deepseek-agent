@@ -9,7 +9,8 @@ use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
 use codewhale_protocol::agent_runtime::{
-    ToolDefinition, ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
+    ApprovalRisk, ToolApprovalPrompt, ToolDefinition, ToolOperationStatus, ToolRetryDisposition,
+    ToolSideEffectStatus,
 };
 use codewhale_runtime::{CancellationToken, ToolExecutionError, ToolExecutor, ToolInvocation};
 use serde::{Deserialize, Serialize};
@@ -20,8 +21,8 @@ use tokio_util::sync::CancellationToken as TokioCancellationToken;
 use crate::sandbox::SandboxPolicy as ExecutionSandboxPolicy;
 use crate::sandbox::backend::{SandboxBackend, SandboxBackendIdentity};
 use crate::shell::{
-    ExecShellHost, ExecShellOptions, ExecShellPolicyDecision, ShellPolicy, execute_exec_shell,
-    new_shared_shell_manager,
+    ExecShellHost, ExecShellOptions, ExecShellPolicyDecision, ShellPolicy,
+    exec_shell_input_is_parallel_readonly, execute_exec_shell, new_shared_shell_manager,
 };
 use crate::{
     ProductionToolContext, ToolError, ToolOutcome, execute_apply_patch, execute_edit_file,
@@ -446,6 +447,45 @@ impl ToolExecutor for ProductionToolExecutor {
         production_tool_definitions()
     }
 
+    fn approval_prompt(
+        &self,
+        invocation: &ToolInvocation,
+    ) -> Result<Option<ToolApprovalPrompt>, ToolExecutionError> {
+        if self.context.auto_approve() {
+            return Ok(None);
+        }
+        let input = invocation.arguments.parsed.as_ref();
+        let prompt = match invocation.name.as_str() {
+            "apply_patch" | "edit_file" => Some(ToolApprovalPrompt {
+                title: "确认修改工作区文件".to_owned(),
+                description: format!(
+                    "工具 {} 将修改当前工作区；确认后才会产生文件副作用。",
+                    invocation.name
+                ),
+                risk: ApprovalRisk::Elevated,
+            }),
+            "exec_shell"
+                if self.shell.shell_policy == ShellPolicy::Full
+                    && input.is_some_and(|input| !exec_shell_input_is_parallel_readonly(input)) =>
+            {
+                Some(ToolApprovalPrompt {
+                    title: "确认执行 Shell 命令".to_owned(),
+                    description: "该命令可能修改文件、启动进程或访问外部资源。".to_owned(),
+                    risk: ApprovalRisk::Elevated,
+                })
+            }
+            "run_tests" | "run_verifiers" if self.shell.shell_policy == ShellPolicy::Full => {
+                Some(ToolApprovalPrompt {
+                    title: "确认执行项目代码".to_owned(),
+                    description: format!("工具 {} 会运行仓库中的命令或测试代码。", invocation.name),
+                    risk: ApprovalRisk::Elevated,
+                })
+            }
+            _ => None,
+        };
+        Ok(prompt)
+    }
+
     async fn execute(
         &self,
         invocation: ToolInvocation,
@@ -777,6 +817,65 @@ mod tests {
         for forbidden in ["cancel", "shell_manager", "read_tracker", "api_key"] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn production_preflight_asks_only_for_real_write_or_code_execution() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path()).with_shell_policy(ShellPolicy::Full),
+        );
+        assert!(
+            executor
+                .approval_prompt(&invocation("apply_patch", json!({"patch": "x"})))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            executor
+                .approval_prompt(&invocation("read_file", json!({"path": "src/lib.rs"})))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            executor
+                .approval_prompt(&invocation(
+                    "exec_shell",
+                    json!({"command": "git status --short"})
+                ))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            executor
+                .approval_prompt(&invocation(
+                    "exec_shell",
+                    json!({"command": "touch changed"})
+                ))
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            executor
+                .approval_prompt(&invocation("run_tests", json!({})))
+                .unwrap()
+                .is_some()
+        );
+
+        let automatic = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path())
+                .with_shell_policy(ShellPolicy::Full)
+                .with_auto_approve(true),
+        );
+        assert!(
+            automatic
+                .approval_prompt(&invocation(
+                    "exec_shell",
+                    json!({"command": "touch changed"})
+                ))
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
