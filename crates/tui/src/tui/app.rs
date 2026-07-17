@@ -1207,20 +1207,7 @@ pub struct LaunchState {
 impl LaunchState {
     #[must_use]
     pub fn new(visible: bool, workspace: &std::path::Path) -> Self {
-        let workspace_session_count = crate::session_manager::SessionManager::default_location()
-            .and_then(|manager| manager.list_sessions())
-            .map(|sessions| {
-                sessions
-                    .into_iter()
-                    .filter(|session| {
-                        crate::session_manager::workspace_scope_matches(
-                            &session.workspace,
-                            workspace,
-                        )
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
+        let workspace_session_count = 0;
         let worktree_available = std::process::Command::new("git")
             .current_dir(workspace)
             .args(["rev-parse", "--show-toplevel"])
@@ -2826,7 +2813,8 @@ impl App {
         } else {
             preferred_mode
         };
-        let needs_workspace_trust = !yolo_compat && crate::tui::onboarding::needs_trust(&workspace);
+        let needs_workspace_trust = !yolo_compat
+            && crate::tui::onboarding::needs_trust_at(config_path.as_deref(), &workspace);
         let onboarding = initial_onboarding_state(
             skip_onboarding,
             was_onboarded,

@@ -4,104 +4,21 @@ use super::spec::{
     ApprovalRequirement, ToolCapability, ToolContext, ToolError, ToolOutcome, ToolSpec,
 };
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputOption {
-    pub label: String,
-    pub description: String,
-}
+#[cfg(test)]
+pub use codewhale_protocol::agent_runtime::UserInputOption;
+pub use codewhale_protocol::agent_runtime::{
+    UserInputAnswer, UserInputQuestion, UserInputRequest,
+    UserInteractionResponse as UserInputResponse,
+};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputQuestion {
-    pub header: String,
-    pub id: String,
-    pub question: String,
-    pub options: Vec<UserInputOption>,
-    /// When `true`, the modal offers a free-text "Other" response in addition
-    /// to the fixed options. Defaults to `false` for backwards compatibility
-    /// (older payloads omitting the field get the previous behavior).
-    #[serde(default)]
-    pub allow_free_text: bool,
-    /// When `true`, the user may select more than one option before confirming.
-    #[serde(default)]
-    pub multi_select: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputRequest {
-    pub questions: Vec<UserInputQuestion>,
-}
-
-impl UserInputRequest {
-    pub fn from_value(value: &Value) -> Result<Self, ToolError> {
-        let request: UserInputRequest = serde_json::from_value(value.clone()).map_err(|e| {
-            ToolError::invalid_input(format!("Invalid request_user_input payload: {e}"))
-        })?;
-        request.validate()?;
-        Ok(request)
-    }
-
-    pub fn validate(&self) -> Result<(), ToolError> {
-        if self.questions.is_empty() {
-            return Err(ToolError::invalid_input(
-                "request_user_input.questions must be non-empty",
-            ));
-        }
-        if self.questions.len() > 3 {
-            return Err(ToolError::invalid_input(
-                "request_user_input.questions must contain 1 to 3 items",
-            ));
-        }
-        for q in &self.questions {
-            if q.header.trim().is_empty() {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.header cannot be empty",
-                ));
-            }
-            if q.id.trim().is_empty() {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.id cannot be empty",
-                ));
-            }
-            if q.question.trim().is_empty() {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.question cannot be empty",
-                ));
-            }
-            if q.options.len() < 2 || q.options.len() > 4 {
-                return Err(ToolError::invalid_input(
-                    "request_user_input.questions.options must contain 2 to 4 items",
-                ));
-            }
-            for opt in &q.options {
-                if opt.label.trim().is_empty() {
-                    return Err(ToolError::invalid_input(
-                        "request_user_input option label cannot be empty",
-                    ));
-                }
-                if opt.description.trim().is_empty() {
-                    return Err(ToolError::invalid_input(
-                        "request_user_input option description cannot be empty",
-                    ));
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputAnswer {
-    pub id: String,
-    pub label: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UserInputResponse {
-    pub answers: Vec<UserInputAnswer>,
+pub fn parse_user_input_request(value: &Value) -> Result<UserInputRequest, ToolError> {
+    let request: UserInputRequest = serde_json::from_value(value.clone()).map_err(|error| {
+        ToolError::invalid_input(format!("Invalid request_user_input payload: {error}"))
+    })?;
+    request.validate().map_err(ToolError::invalid_input)?;
+    Ok(request)
 }
 
 pub struct RequestUserInputTool;
@@ -229,7 +146,7 @@ mod tests {
                 "multi_select": true
             }]
         });
-        let request = UserInputRequest::from_value(&input).expect("4 options + flags parse");
+        let request = parse_user_input_request(&input).expect("4 options + flags parse");
         assert_eq!(request.questions.len(), 1);
         assert_eq!(request.questions[0].options.len(), 4);
         assert!(request.questions[0].allow_free_text);
@@ -238,8 +155,7 @@ mod tests {
 
     #[test]
     fn from_value_defaults_flags_when_omitted() {
-        // Backwards compatibility: a legacy payload omitting the new boolean
-        // fields must still parse, defaulting both to false.
+        // Optional boolean fields use the canonical protocol defaults.
         let input = json!({
             "questions": [{
                 "header": "Pick",
@@ -251,7 +167,7 @@ mod tests {
                 ]
             }]
         });
-        let request = UserInputRequest::from_value(&input).expect("legacy payload parses");
+        let request = parse_user_input_request(&input).expect("legacy payload parses");
         assert!(!request.questions[0].allow_free_text);
         assert!(!request.questions[0].multi_select);
     }
@@ -272,8 +188,8 @@ mod tests {
                 ]
             }]
         });
-        let err = UserInputRequest::from_value(&input).expect_err("5 options must fail");
-        assert!(err.to_string().contains("2 to 4 items"));
+        let err = parse_user_input_request(&input).expect_err("5 options must fail");
+        assert!(err.to_string().contains("2 to 4 options"));
     }
 
     fn yes_no_question(header: &str, id: &str) -> UserInputQuestion {

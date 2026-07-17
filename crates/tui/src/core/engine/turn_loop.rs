@@ -2433,7 +2433,9 @@ impl Engine {
 
                         if tool_name == REQUEST_USER_INPUT_NAME {
                             let started_at = Instant::now();
-                            let result = match UserInputRequest::from_value(&tool_input) {
+                            let result = match crate::tools::user_input::parse_user_input_request(
+                                &tool_input,
+                            ) {
                                 Ok(request) => self
                                     .await_user_input(&tool_id, request)
                                     .await

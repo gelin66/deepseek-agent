@@ -85,11 +85,11 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn onboarding_step(app: &App) -> (usize, usize) {
-    let needs_trust = !app.trust_mode && needs_trust(&app.workspace);
+    let needs_trust = needs_trust_at(app.config_path.as_deref(), &app.workspace);
     // Welcome + Language + Tips are always shown.
     let mut total = 3;
     if app.onboarding_needs_api_key {
-        total += 2;
+        total += 1;
     }
     if needs_trust {
         total += 1;
@@ -98,11 +98,10 @@ fn onboarding_step(app: &App) -> (usize, usize) {
     let step = match app.onboarding {
         OnboardingState::Welcome => 1,
         OnboardingState::Language => 2,
-        OnboardingState::Provider => 3,
-        OnboardingState::ApiKey => 4,
+        OnboardingState::Provider | OnboardingState::ApiKey => 3,
         OnboardingState::TrustDirectory => {
             if app.onboarding_needs_api_key {
-                5
+                4
             } else {
                 3
             }
@@ -151,15 +150,7 @@ pub fn default_marker_path() -> Option<PathBuf> {
 }
 
 fn marker_path_with_home(home: &Path) -> PathBuf {
-    let primary = home.join(".codewhale").join(ONBOARDED_MARKER_FILE);
-    if primary.exists() {
-        return primary;
-    }
-    let legacy = home.join(".deepseek").join(ONBOARDED_MARKER_FILE);
-    if legacy.exists() {
-        return legacy;
-    }
-    primary
+    home.join(".codewhale").join(ONBOARDED_MARKER_FILE)
 }
 
 pub fn is_onboarded() -> bool {
@@ -183,19 +174,19 @@ fn mark_onboarded_at_home(home: &Path) -> std::io::Result<PathBuf> {
 }
 
 pub fn needs_trust(workspace: &Path) -> bool {
-    if crate::config::is_workspace_trusted(workspace) {
-        return false;
-    }
+    needs_trust_at(None, workspace)
+}
 
-    let markers = [
-        workspace.join(".deepseek").join("trusted"),
-        workspace.join(".deepseek").join("trust.json"),
-    ];
-    !markers.iter().any(|path| path.exists())
+pub fn needs_trust_at(config_path: Option<&Path>, workspace: &Path) -> bool {
+    !crate::config::is_workspace_trusted_at(config_path, workspace)
 }
 
 pub fn mark_trusted(workspace: &Path) -> anyhow::Result<PathBuf> {
-    crate::config::save_workspace_trust(workspace)
+    mark_trusted_at(None, workspace)
+}
+
+pub fn mark_trusted_at(config_path: Option<&Path>, workspace: &Path) -> anyhow::Result<PathBuf> {
+    crate::config::save_workspace_trust_at(config_path, workspace)
 }
 
 // ── API key validation and state-machine transitions ─────────────────
@@ -255,8 +246,8 @@ pub fn advance_onboarding_from_welcome(app: &mut App) {
 pub fn advance_onboarding_after_language(app: &mut App) {
     app.status_message = None;
     if app.onboarding_needs_api_key {
-        app.onboarding = OnboardingState::Provider;
-    } else if !app.trust_mode && needs_trust(&app.workspace) {
+        app.onboarding = OnboardingState::ApiKey;
+    } else if needs_trust_at(app.config_path.as_deref(), &app.workspace) {
         app.onboarding = OnboardingState::TrustDirectory;
     } else {
         app.onboarding = OnboardingState::Tips;
@@ -270,7 +261,7 @@ pub fn advance_onboarding_from_provider(app: &mut App) {
 
 pub fn advance_onboarding_after_api_key(app: &mut App) {
     app.status_message = None;
-    if !app.trust_mode && needs_trust(&app.workspace) {
+    if needs_trust_at(app.config_path.as_deref(), &app.workspace) {
         app.onboarding = OnboardingState::TrustDirectory;
     } else {
         app.onboarding = OnboardingState::Tips;
@@ -445,17 +436,19 @@ mod tests {
     }
 
     #[test]
-    fn existing_legacy_marker_is_preserved() {
+    fn existing_legacy_marker_is_ignored() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let legacy = tmp.path().join(".deepseek").join(ONBOARDED_MARKER_FILE);
         std::fs::create_dir_all(legacy.parent().expect("legacy parent")).expect("mkdir legacy");
         std::fs::write(&legacy, "").expect("seed legacy marker");
 
-        assert_eq!(marker_path_with_home(tmp.path()), legacy);
+        let primary = tmp.path().join(".codewhale").join(ONBOARDED_MARKER_FILE);
+        assert_eq!(marker_path_with_home(tmp.path()), primary);
         assert_eq!(
             mark_onboarded_at_home(tmp.path()).expect("mark onboarded"),
-            legacy
+            primary
         );
+        assert!(primary.is_file());
     }
 
     #[test]

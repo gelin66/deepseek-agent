@@ -8472,11 +8472,15 @@ fn api_key_validation_warns_without_blocking_unusual_formats() {
 
 #[test]
 fn onboarding_after_api_key_save_does_not_repeat_language_step() {
+    let _guard = ConfigPathEnvGuard::new();
+    let tmpdir = TempDir::new().expect("workspace tempdir");
     let mut app = create_test_app();
+    app.workspace = tmpdir.path().to_path_buf();
     app.onboarding = OnboardingState::ApiKey;
     app.onboarding_needs_api_key = false;
-    app.trust_mode = true;
     app.status_message = Some("saved".to_string());
+    crate::tui::onboarding::mark_trusted_at(app.config_path.as_deref(), &app.workspace)
+        .expect("mark trusted");
 
     crate::tui::onboarding::advance_onboarding_after_api_key(&mut app);
 
@@ -8499,7 +8503,7 @@ fn onboarding_after_api_key_save_routes_to_trust_when_needed() {
 }
 
 #[test]
-fn api_key_escape_returns_to_provider_step() {
+fn api_key_escape_returns_to_language_step() {
     let mut app = create_test_app();
     app.onboarding = OnboardingState::ApiKey;
     app.api_key_input = "sk-test-value".to_string();
@@ -8508,7 +8512,7 @@ fn api_key_escape_returns_to_provider_step() {
 
     back_from_api_key_onboarding(&mut app);
 
-    assert_eq!(app.onboarding, OnboardingState::Provider);
+    assert_eq!(app.onboarding, OnboardingState::Language);
     assert!(app.api_key_input.is_empty());
     assert_eq!(app.api_key_cursor, 0);
     assert_eq!(app.status_message, None);
@@ -8524,12 +8528,14 @@ fn trust_directory_completion_advances_to_tips() {
     app.onboarding_workspace_trust_gate = false;
     app.trust_mode = false;
 
-    complete_trust_directory_onboarding(&mut app, &Config::default())
-        .expect("trust completion should succeed");
+    complete_trust_directory_onboarding(&mut app).expect("trust completion should succeed");
 
-    assert!(app.trust_mode);
+    assert!(!app.trust_mode);
     assert_eq!(app.onboarding, OnboardingState::Tips);
-    assert!(app.runtime_services.hook_executor.is_some());
+    assert!(!crate::tui::onboarding::needs_trust_at(
+        app.config_path.as_deref(),
+        &app.workspace
+    ));
 }
 
 #[test]

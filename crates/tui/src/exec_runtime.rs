@@ -193,6 +193,7 @@ pub(crate) async fn run_exec_runtime(
             config,
             &workspace,
             &settings,
+            auto_approve || config.allow_shell(),
             auto_approve,
             trust_mode,
             append_system_prompt,
@@ -885,10 +886,11 @@ fn startup_failure_for_run_api(error: &RunApiError) -> ExecStartupFailure {
     }
 }
 
-fn production_application_config(
+pub(crate) fn production_application_config(
     config: &Config,
     workspace: &Path,
     settings: &crate::settings::Settings,
+    allow_shell: bool,
     auto_approve: bool,
     trust_mode: bool,
     append_system_prompt: Option<String>,
@@ -945,7 +947,7 @@ fn production_application_config(
     };
 
     let trusted = crate::workspace_trust::WorkspaceTrust::load_for(workspace);
-    let shell_policy = if auto_approve || config.allow_shell() {
+    let shell_policy = if allow_shell {
         ShellPolicy::Full
     } else {
         ShellPolicy::None

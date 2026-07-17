@@ -16,6 +16,12 @@ use std::time::{Duration, Instant};
 
 use crate::resource_telemetry::{TokenThroughput, estimate_output_tokens_from_text};
 use anyhow::{Context, Result};
+use codewhale_app::AgentApplication;
+use codewhale_protocol::agent_runtime::{
+    ApprovalRisk, ReasoningEffort as RuntimeReasoningEffort, RunId, RunLimits, ToolPolicy,
+    UserInteractionPrompt, UserInteractionResponse,
+};
+use codewhale_protocol::run_api::{RunProductControls, StartRunCommand};
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
 // never referenced, so the imports are gated to avoid -D warnings failures.
@@ -26,7 +32,8 @@ use crossterm::event::{
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
-        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers,
+        EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
+        KeyModifiers,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -44,7 +51,6 @@ use tracing;
 use windows::Win32::System::Console::{GetConsoleMode, GetStdHandle, SetConsoleMode};
 
 use crate::audit::log_sensitive_event;
-use crate::automation_manager::{AutomationManager, AutomationSchedulerConfig, spawn_scheduler};
 use crate::client::{
     CacheWarmupKey, DeepSeekClient, PromptInspection, build_cache_warmup_request,
     inspect_prompt_for_request,
@@ -71,11 +77,9 @@ use crate::session_manager::{
     create_saved_session_with_id_and_mode, create_saved_session_with_mode,
 };
 use crate::settings::Settings;
-use crate::task_manager::{
-    NewTaskRequest, SharedTaskManager, TaskManager, TaskManagerConfig, TaskStatus, TaskSummary,
-};
+use crate::task_manager::{NewTaskRequest, SharedTaskManager, TaskStatus, TaskSummary};
 use crate::tools::goal::{GoalSnapshot, GoalStatus};
-use crate::tools::spec::{RuntimeToolServices, ToolOutcome};
+use crate::tools::spec::ToolOutcome;
 use crate::tools::subagent::{MailboxMessage, SubAgentStatus};
 use crate::tui::auto_router;
 use crate::tui::color_compat::ColorCompatBackend;
@@ -101,6 +105,9 @@ use crate::tui::pager::PagerView;
 use crate::tui::persistence_actor::{self, PersistRequest};
 use crate::tui::plan_prompt::PlanPromptView;
 use crate::tui::plan_todo_bridge::{PlanAcceptance, project_accepted_plan};
+use crate::tui::run_client::TuiRunClient;
+use crate::tui::run_presenter::{PresenterAction, present_effect};
+use crate::tui::run_projection::CanonicalRunProjection;
 use crate::tui::scrolling::TranscriptScroll;
 use codewhale_tools::shell::{ShellJobSnapshot, ShellStatus};
 // SelectionAutoscroll unused
@@ -681,14 +688,12 @@ fn open_setup_checkpoint_if_due(app: &mut App, config: &Config, skip_onboarding:
     true
 }
 
-fn complete_trust_directory_onboarding(app: &mut App, config: &Config) -> Result<(), String> {
-    onboarding::mark_trusted(&app.workspace).map_err(|err| err.to_string())?;
-    app.trust_mode = true;
-    app.hooks = HookExecutor::new(
-        crate::hooks::HooksConfig::load_with_project(config.hooks_config(), &app.workspace),
-        app.workspace.clone(),
-    );
-    app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
+fn complete_trust_directory_onboarding(app: &mut App) -> Result<(), String> {
+    onboarding::mark_trusted_at(app.config_path.as_deref(), &app.workspace)
+        .map_err(|err| err.to_string())?;
+    // Workspace trust permits loading and operating in this repository. It
+    // does not silently grant unrestricted access outside the workspace.
+    app.trust_mode = false;
     app.status_message = None;
     if app.onboarding_workspace_trust_gate {
         app.onboarding_workspace_trust_gate = false;
@@ -700,14 +705,9 @@ fn complete_trust_directory_onboarding(app: &mut App, config: &Config) -> Result
 }
 
 fn back_from_api_key_onboarding(app: &mut App) {
-    app.onboarding = OnboardingState::Provider;
+    app.onboarding = OnboardingState::Language;
     app.api_key_input.clear();
     app.api_key_cursor = 0;
-    app.status_message = None;
-}
-
-fn back_from_provider_onboarding(app: &mut App) {
-    app.onboarding = OnboardingState::Language;
     app.status_message = None;
 }
 
@@ -883,234 +883,83 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let sync_output_at_init = !crate::settings::detected_ptyxis_terminal()
         && !crate::settings::detected_legacy_windows_console_host();
     reset_terminal_viewport(&mut terminal, sync_output_at_init)?;
-    let event_broker = EventBroker::new();
-
-    // Local mutable copy so runtime config flips (e.g. `/provider` switch)
-    // can rebuild the API client without restarting the process.
+    // The product has one model backend. Old provider settings are not a
+    // compatibility route for the canonical foreground.
     let mut config = config.clone();
+    config.provider = Some(ApiProvider::Deepseek.as_str().to_owned());
     let config = &mut config;
     let mut app = App::new(options.clone(), config);
+    app.onboarding_provider = ApiProvider::Deepseek;
     crate::startup_trace::mark("app_constructed");
-    sync_config_provider_from_app(config, &app);
     surface_prompt_override_notices(&mut app);
 
-    if options.resume_session_id.is_none() && !app.launch.visible {
-        let opened_setup = open_setup_checkpoint_if_due(&mut app, config, options.skip_onboarding);
-        // One-time Fleet + Hotbar intro for returning (non-resuming) users.
-        // First-time users see it when they finish onboarding. Gated by a
-        // persisted flag, so it shows exactly once and never inside a resumed
-        // session transcript or behind the constitution checkpoint.
-        if !opened_setup {
-            app.maybe_show_feature_intro();
-        }
-    }
-
-    // Load existing session if resuming.
-    if let Some(ref session_id) = options.resume_session_id
-        && let Ok(manager) = SessionManager::default_location()
-    {
-        // Try to load by prefix or full ID
-        let load_result: std::io::Result<Option<crate::session_manager::SavedSession>> =
-            if session_id == "latest" {
-                // Special case: resume the most recent session in this workspace.
-                match manager.get_latest_session_for_workspace(&options.workspace) {
-                    Ok(Some(meta)) => manager.load_session(&meta.id).map(Some),
-                    Ok(None) => Ok(None),
-                    Err(e) => Err(e),
-                }
-            } else {
-                manager.load_session_by_prefix(session_id).map(Some)
-            };
-
-        match load_result {
-            Ok(Some(saved)) => match apply_loaded_session(&mut app, config, &saved) {
-                Ok(false) => {
-                    app.status_message = Some(format!(
-                        "Resumed session: {}",
-                        crate::session_manager::truncate_id(&saved.metadata.id)
-                    ));
-                }
-                Ok(true) => {}
-                Err(err) => {
-                    app.status_message = Some(format!("Failed to restore session: {err}"));
-                }
-            },
-            Ok(None) => {
-                app.status_message = Some("No sessions found to resume".to_string());
-            }
-            Err(e) => {
-                app.status_message = Some(format!("Failed to load session: {e}"));
-            }
-        }
-    }
-
-    if let Ok(manager) = SessionManager::default_location() {
-        match manager.load_offline_queue_state() {
-            Ok(Some(state)) => {
-                // Only restore queue if session_id matches (or if we're resuming the same session)
-                let should_restore = match (&state.session_id, &app.current_session_id) {
-                    (Some(saved_id), Some(current_id)) => saved_id == current_id,
-                    (None, _) => false, // Legacy unscoped queues are stale-risky; fail closed.
-                    (_, None) => false, // No current session - don't restore
-                };
-
-                if should_restore {
-                    app.queued_messages = state
-                        .messages
-                        .into_iter()
-                        .map(queued_session_to_ui)
-                        .collect();
-                    let restored_draft = state.draft.map(queued_session_to_ui);
-                    if restored_draft.is_some() || app.queued_draft.is_none() {
-                        app.queued_draft = restored_draft;
-                    }
-                    if app.status_message.is_none() && app.queued_message_count() > 0 {
-                        app.status_message = Some(format!(
-                            "Restored {} queued message(s) from previous session — ↑ to edit, Ctrl+X to discard",
-                            app.queued_message_count()
-                        ));
-                    }
-                } else {
-                    // Session mismatch - clear the stale queue
-                    let _ = manager.clear_offline_queue_state();
-                }
-            }
-            Ok(None) => {}
-            Err(err) => {
-                if app.status_message.is_none() {
-                    app.status_message = Some(format!("Failed to restore offline queue: {err}"));
-                }
-            }
-        }
-    }
-
-    let task_manager = TaskManager::start(
-        TaskManagerConfig::from_runtime(
-            config,
-            app.workspace.clone(),
-            Some(app.model.clone()),
-            Some(app.max_subagents.clamp(1, 4)),
-        ),
-        config.clone(),
-    )
-    .await?;
-    let automations = std::sync::Arc::new(tokio::sync::Mutex::new(
-        AutomationManager::default_location()?,
-    ));
-    let automation_cancel = tokio_util::sync::CancellationToken::new();
-    let automation_scheduler = spawn_scheduler(
-        automations.clone(),
-        task_manager.clone(),
-        automation_cancel.clone(),
-        AutomationSchedulerConfig::default(),
-    );
-    let shell_manager = app
-        .runtime_services
-        .shell_manager
-        .clone()
-        .unwrap_or_else(|| codewhale_tools::shell::new_shared_shell_manager(app.workspace.clone()));
-    // #2511: ensure hook_executor is initialized for fresh sessions — it is
-    // only set by apply_workspace_runtime_state (session resume / workspace
-    // switch), so a brand-new session would otherwise leave it None and both
-    // exec_shell shell_env hooks and ToolCallBefore gate would silently no-op.
-    if app.runtime_services.hook_executor.is_none() {
-        app.runtime_services.hook_executor = Some(std::sync::Arc::new(app.hooks.clone()));
-    }
-    app.runtime_services = RuntimeToolServices {
-        shell_manager: Some(shell_manager),
-        task_manager: Some(task_manager.clone()),
-        automations: Some(automations),
-        task_data_dir: Some(task_manager.data_dir()),
-        active_task_id: None,
-        active_thread_id: None,
-        dynamic_tool_executor: None,
-        // #456: plumb the App's HookExecutor so `exec_shell` can surface
-        // the configured `shell_env` hooks. Clone the shared Arc.
-        hook_executor: app.runtime_services.hook_executor.clone(),
-        handle_store: app.runtime_services.handle_store.clone(),
-        rlm_sessions: app.runtime_services.rlm_sessions.clone(),
-    };
-    crate::startup_trace::mark("task_manager_ready");
-    refresh_active_task_panel(&mut app, &task_manager).await;
-
-    let engine_config = build_engine_config(&app, config);
-
-    // Spawn the Engine - it will handle all API communication
-    let engine_handle = spawn_engine(engine_config, config);
-    crate::startup_trace::mark("engine_spawned");
-    // The translation client is optional: it never crashes the TUI on
-    // startup, even when the API key is missing, the base URL is malformed,
-    // or the network is unavailable.
-    // Translations are skipped with a logged warning until a key is saved.
-    let translation_client = match DeepSeekClient::new(config) {
-        Ok(client) => Some(Arc::new(client)),
-        Err(err) => {
-            if app.onboarding == OnboardingState::None {
-                tracing::warn!("Translation client initialization failed: {err}");
-            }
-            None
-        }
-    };
-
-    if !app.api_messages.is_empty() {
-        let _ = engine_handle
-            .send(Op::SyncSession {
-                session_id: app.current_session_id.clone(),
-                messages: app.api_messages.clone(),
-                system_prompt: app.system_prompt.clone(),
-                system_prompt_override: false,
-                model: app.model.clone(),
-                workspace: app.workspace.clone(),
-                mode: app.mode,
-            })
-            .await;
-    }
-
-    // Fire session start hook
-    {
-        let context = app.base_hook_context();
-        let _ = app.execute_hooks(HookEvent::SessionStart, &context);
-    }
-
-    // Spawn the persistence actor so checkpoint/session-save I/O stays off
-    // the UI thread.  The actor serialises + writes to disk in a dedicated
-    // task; the UI just `try_send`s a request and returns immediately.
-    let persistence_runtime = SessionManager::default_location()
-        .ok()
-        .map(|persist_manager| {
-            let (handle, task) = persistence_actor::spawn_persistence_actor(persist_manager);
-            persistence_actor::init_actor(handle.clone());
-            (handle, task)
-        });
-
-    submit_initial_input_if_ready(&mut app, config, &engine_handle).await?;
-
-    crate::startup_trace::log_summary();
-    let result = run_event_loop(
+    // The canonical foreground is one application service plus one Run API
+    // client. No legacy Engine, SessionManager, TaskManager, translation model,
+    // checkpoint writer, or runtime-thread store participates in this path.
+    app.launch.visible = false;
+    let input = TerminalInputPump::spawn()?;
+    let mut pending_terminal_events = VecDeque::new();
+    if run_deepseek_onboarding_loop(
         &mut terminal,
         &mut app,
         config,
-        engine_handle,
-        task_manager,
-        &event_broker,
-        translation_client,
+        &input,
+        &mut pending_terminal_events,
+    )
+    .await?
+    {
+        return Ok(());
+    }
+    let settings = Settings::load().unwrap_or_default();
+    let application_config = crate::exec_runtime::production_application_config(
+        config,
+        &app.workspace,
+        &settings,
+        app.allow_shell,
+        app_auto_approve_enabled(&app),
+        app.trust_mode,
+        None,
+    )?;
+    let application = Arc::new(AgentApplication::production(application_config)?);
+    let (run_client, mut run_events) = TuiRunClient::new(application);
+
+    if let Some(resume_id) = options.resume_session_id.as_deref() {
+        let run_id = if resume_id == "latest" {
+            run_client
+                .latest_root(app.workspace.display().to_string())
+                .await?
+                .map(|run| run.run_id)
+                .ok_or_else(|| anyhow::anyhow!("当前工作区没有可恢复的 Agent 运行"))?
+        } else {
+            RunId::from(resume_id)
+        };
+        let _ = run_client
+            .attach_or_resume(run_id, Some(app.workspace.display().to_string()))
+            .await?;
+        app.is_loading = true;
+    }
+
+    if app.auto_submit_initial_input {
+        app.auto_submit_initial_input = false;
+        if let Some(input) = app.submit_input() {
+            let _ = run_client
+                .submit(canonical_start_command(&app, config, input))
+                .await?;
+            app.is_loading = true;
+        }
+    }
+
+    crate::startup_trace::log_summary();
+    let result = run_canonical_event_loop(
+        &mut terminal,
+        &mut app,
+        config,
+        &run_client,
+        &mut run_events,
+        &input,
+        &mut pending_terminal_events,
     )
     .await;
-    automation_cancel.cancel();
-    automation_scheduler.abort();
-
-    // Fire session end hook
-    {
-        let context = app.base_hook_context();
-        let _ = app.execute_hooks(HookEvent::SessionEnd, &context);
-    }
-
-    // Flush the persistence actor: clear checkpoint + graceful shutdown.
-    if let Some((handle, task)) = persistence_runtime {
-        handle.try_send(PersistRequest::ClearCheckpoint);
-        handle.try_send(PersistRequest::Shutdown);
-        let _ = task.await;
-    }
 
     cleanup_guard.defused = true;
     pop_keyboard_enhancement_flags(terminal.backend_mut());
@@ -1131,19 +980,561 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     terminal.show_cursor()?;
     drop(terminal);
 
-    if result.is_ok() && should_show_resume_hint(app.current_session_id.as_deref()) {
-        // Printed AFTER `LeaveAlternateScreen` / `drop(terminal)` above,
-        // so we're back on the primary screen — this is the one
-        // legitimate stdout write in the TUI module tree. The
-        // module-level `#![deny(clippy::print_stdout)]` would otherwise
-        // refuse it.
-        #[allow(clippy::print_stdout)]
+    result
+}
+
+/// Complete first-run setup before constructing the sole production
+/// `AgentApplication`.
+///
+/// This loop deliberately has no provider picker, model call, Engine command,
+/// session writer, or runtime-thread owner. It persists only the selected
+/// locale, the official DeepSeek key, workspace trust, and the onboarding
+/// marker.
+async fn run_deepseek_onboarding_loop(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    config: &mut Config,
+    input: &TerminalInputPump,
+    pending_terminal_events: &mut VecDeque<Event>,
+) -> Result<bool> {
+    while app.onboarding != OnboardingState::None {
+        draw_app_frame_inner(terminal, app, config, true)?;
+        let Some(event) = next_terminal_event(
+            input,
+            pending_terminal_events,
+            Duration::from_millis(UI_ACTIVE_POLL_MS),
+        )?
+        else {
+            continue;
+        };
+        match event {
+            Event::Paste(text) if app.onboarding == OnboardingState::ApiKey => {
+                app.insert_api_key_str(&text);
+                onboarding::sync_api_key_validation_status(app, false);
+            }
+            Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                let control = key.modifiers.contains(KeyModifiers::CONTROL);
+                if control && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')) {
+                    return Ok(true);
+                }
+                match key.code {
+                    KeyCode::Esc if app.onboarding == OnboardingState::ApiKey => {
+                        back_from_api_key_onboarding(app);
+                    }
+                    KeyCode::Esc if app.onboarding == OnboardingState::Language => {
+                        app.onboarding = OnboardingState::Welcome;
+                        app.status_message = None;
+                    }
+                    KeyCode::Esc if app.onboarding == OnboardingState::TrustDirectory => {
+                        return Ok(true);
+                    }
+                    KeyCode::Char(character)
+                        if app.onboarding == OnboardingState::Language
+                            && character.is_ascii_digit() =>
+                    {
+                        if let Some((_, tag, _, _)) = onboarding::language::LANGUAGE_OPTIONS
+                            .iter()
+                            .find(|(hotkey, _, _, _)| *hotkey == character)
+                        {
+                            match app.set_locale_from_onboarding(tag) {
+                                Ok(()) => onboarding::advance_onboarding_after_language(app),
+                                Err(error) => {
+                                    app.status_message = Some(format!("保存界面语言失败：{error}"));
+                                }
+                            }
+                        }
+                    }
+                    KeyCode::Enter => match app.onboarding {
+                        OnboardingState::Welcome => {
+                            onboarding::advance_onboarding_from_welcome(app);
+                        }
+                        OnboardingState::Language => {
+                            onboarding::advance_onboarding_after_language(app);
+                        }
+                        OnboardingState::ApiKey => {
+                            let key = app.api_key_input.trim().to_owned();
+                            match onboarding::validate_api_key_for_onboarding(&key) {
+                                onboarding::ApiKeyValidation::Reject(message) => {
+                                    app.status_message = Some(message);
+                                }
+                                onboarding::ApiKeyValidation::Accept { warning } => {
+                                    let config_path = app.config_path.as_deref();
+                                    crate::config_persistence::persist_root_string_key(
+                                        config_path,
+                                        "provider",
+                                        ApiProvider::Deepseek.as_str(),
+                                    )?;
+                                    crate::config_persistence::persist_root_string_key(
+                                        config_path,
+                                        "api_key",
+                                        &key,
+                                    )?;
+                                    config.provider =
+                                        Some(ApiProvider::Deepseek.as_str().to_owned());
+                                    config.api_key = Some(key);
+                                    app.api_key_input.clear();
+                                    app.api_key_cursor = 0;
+                                    app.onboarding_needs_api_key = false;
+                                    app.api_key_env_only = false;
+                                    app.offline_mode = false;
+                                    app.status_message = warning;
+                                    onboarding::advance_onboarding_after_api_key(app);
+                                }
+                            }
+                        }
+                        OnboardingState::TrustDirectory => {
+                            app.status_message =
+                                Some("按 1 或 Y 信任当前工作区；按 2 或 N 退出。".to_owned());
+                        }
+                        OnboardingState::Tips => {
+                            app.finish_onboarding_without_feature_intro();
+                        }
+                        OnboardingState::Provider => {
+                            // Provider selection is not part of this product.
+                            app.onboarding = OnboardingState::ApiKey;
+                        }
+                        OnboardingState::None => {}
+                    },
+                    KeyCode::Char('y' | 'Y' | '1')
+                        if app.onboarding == OnboardingState::TrustDirectory =>
+                    {
+                        if let Err(error) = complete_trust_directory_onboarding(app) {
+                            app.status_message = Some(format!("保存工作区信任失败：{error}"));
+                        }
+                    }
+                    KeyCode::Char('n' | 'N' | '2')
+                        if app.onboarding == OnboardingState::TrustDirectory =>
+                    {
+                        return Ok(true);
+                    }
+                    KeyCode::Backspace if app.onboarding == OnboardingState::ApiKey => {
+                        app.delete_api_key_char();
+                        onboarding::sync_api_key_validation_status(app, false);
+                    }
+                    KeyCode::Char(character)
+                        if app.onboarding == OnboardingState::ApiKey
+                            && key_shortcuts::is_text_input_key(&key) =>
+                    {
+                        app.insert_api_key_char(character);
+                        onboarding::sync_api_key_validation_status(app, false);
+                    }
+                    _ => {}
+                }
+            }
+            Event::Resize(_, _) | Event::FocusGained | Event::FocusLost => {}
+            _ => {}
+        }
+        app.needs_redraw = true;
+    }
+    Ok(false)
+}
+
+fn canonical_start_command(app: &App, config: &Config, input: String) -> StartRunCommand {
+    let reasoning_effort = match app.reasoning_effort {
+        ReasoningEffort::Off => RuntimeReasoningEffort::Off,
+        ReasoningEffort::Low => RuntimeReasoningEffort::Low,
+        ReasoningEffort::Medium => RuntimeReasoningEffort::Medium,
+        ReasoningEffort::High => RuntimeReasoningEffort::High,
+        ReasoningEffort::Auto => RuntimeReasoningEffort::Auto,
+        ReasoningEffort::Max => RuntimeReasoningEffort::Max,
+    };
+    let mut limits = RunLimits::default();
+    limits.max_concurrent_children = u32::try_from(app.max_subagents)
+        .unwrap_or(u32::MAX)
+        .clamp(1, 64);
+    if app.max_subagents == 0 {
+        limits.max_depth = 0;
+    }
+    StartRunCommand {
+        input,
+        workspace: app.workspace.display().to_string(),
+        model: (!app.auto_model).then(|| app.model.clone()),
+        reasoning_effort,
+        max_output_tokens: Some(384_000),
+        max_api_requests: None,
+        streaming: true,
+        tool_policy: ToolPolicy {
+            enabled: true,
+            allowed: app.active_allowed_tools.clone(),
+            denied: Vec::new(),
+        },
+        limits,
+        controls: RunProductControls {
+            auto_approve: app_auto_approve_enabled(app),
+            trust_mode: app.trust_mode,
+            allow_sandbox_elevation: false,
+            interactive: true,
+            sandbox: config.sandbox_mode.clone(),
+        },
+    }
+}
+
+#[allow(clippy::too_many_lines)]
+async fn run_canonical_event_loop(
+    terminal: &mut AppTerminal,
+    app: &mut App,
+    config: &Config,
+    run_client: &TuiRunClient,
+    run_events: &mut tokio::sync::mpsc::Receiver<
+        codewhale_protocol::agent_runtime::StoredRuntimeEvent,
+    >,
+    input: &TerminalInputPump,
+    pending_terminal_events: &mut VecDeque<Event>,
+) -> Result<()> {
+    let mut projection = CanonicalRunProjection::new();
+    let mut presented_interaction_id = None;
+    let mut exit_after_terminal = false;
+    let mut last_frame = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+
+    loop {
+        while let Ok(stored) = run_events.try_recv() {
+            for effect in projection
+                .apply(stored)
+                .map_err(|error| anyhow::anyhow!("canonical TUI projection failed: {error}"))?
+            {
+                if let Some(action) = present_effect(app, effect) {
+                    apply_presenter_action(app, action, &mut presented_interaction_id);
+                }
+            }
+            app.needs_redraw = true;
+        }
+
+        let now = Instant::now();
+        app.flush_paste_burst_if_enabled(now);
+        let view_events = app.view_stack.tick();
+        if !view_events.is_empty() {
+            handle_canonical_view_events(app, run_client, view_events, &mut exit_after_terminal)
+                .await?;
+        }
+
+        let snapshot = run_client.snapshot().await;
+        if exit_after_terminal && snapshot.current_active_root.is_none() && !app.is_loading {
+            return Ok(());
+        }
+
+        if app.needs_redraw
+            || now.saturating_duration_since(last_frame)
+                >= Duration::from_millis(UI_UNDERWATER_ANIMATION_MS)
         {
-            println!("{}", resume_hint_text());
+            draw_app_frame_inner(terminal, app, config, false)?;
+            app.needs_redraw = false;
+            last_frame = now;
+        }
+
+        let Some(event) = next_terminal_event(
+            input,
+            pending_terminal_events,
+            Duration::from_millis(UI_ACTIVE_POLL_MS),
+        )?
+        else {
+            continue;
+        };
+        match event {
+            Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                if handle_canonical_key(app, config, run_client, key, &mut exit_after_terminal)
+                    .await?
+                {
+                    return Ok(());
+                }
+            }
+            Event::Paste(text) => {
+                if app.view_stack.is_empty() {
+                    app.insert_paste_text(&text);
+                } else {
+                    let _ = app.view_stack.handle_paste(&text);
+                }
+                app.needs_redraw = true;
+            }
+            Event::Mouse(mouse) => {
+                use crossterm::event::MouseEventKind;
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => app.scroll_up(3),
+                    MouseEventKind::ScrollDown => app.scroll_down(3),
+                    _ => {}
+                }
+                app.needs_redraw = true;
+            }
+            Event::Resize(_, _) | Event::FocusGained | Event::FocusLost => {
+                app.needs_redraw = true;
+            }
+            _ => {}
         }
     }
+}
 
-    result
+async fn handle_canonical_key(
+    app: &mut App,
+    config: &Config,
+    run_client: &TuiRunClient,
+    key: KeyEvent,
+    exit_after_terminal: &mut bool,
+) -> Result<bool> {
+    if !app.view_stack.is_empty() {
+        let events = app.view_stack.handle_key(key);
+        handle_canonical_view_events(app, run_client, events, exit_after_terminal).await?;
+        app.needs_redraw = true;
+        return Ok(false);
+    }
+
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    if control && matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D')) {
+        if run_client.snapshot().await.current_active_root.is_some() {
+            run_client.cancel().await?;
+            *exit_after_terminal = true;
+            app.status_message = Some("正在取消当前运行，等待 canonical 终态…".to_owned());
+            app.needs_redraw = true;
+            return Ok(false);
+        }
+        if app.is_loading {
+            app.status_message = Some("等待 canonical 终态事件后才能退出".to_owned());
+            app.needs_redraw = true;
+            return Ok(false);
+        }
+        return Ok(true);
+    }
+    if control && matches!(key.code, KeyCode::Char('c') | KeyCode::Char('C')) {
+        if run_client.snapshot().await.current_active_root.is_some() {
+            run_client.interrupt().await?;
+            app.status_message = Some("中断请求已受理，等待 canonical 终态…".to_owned());
+        } else if !app.input.is_empty() {
+            app.clear_input_recoverable();
+        } else if app.is_loading {
+            app.status_message = Some("等待 canonical 终态事件…".to_owned());
+        } else {
+            return Ok(true);
+        }
+        app.needs_redraw = true;
+        return Ok(false);
+    }
+    if control && matches!(key.code, KeyCode::Char('l') | KeyCode::Char('L')) {
+        let snapshot = run_client.snapshot().await;
+        if let Some(run_id) = snapshot.latest_terminal_root {
+            let _ = run_client
+                .compact(run_id, Some(app.workspace.display().to_string()))
+                .await?;
+            app.is_loading = true;
+        } else {
+            app.status_message = Some("当前没有可压缩的终态运行".to_owned());
+        }
+        app.needs_redraw = true;
+        return Ok(false);
+    }
+
+    match key.code {
+        KeyCode::Enter
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                || key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            app.insert_char('\n');
+        }
+        KeyCode::Enter => {
+            let Some(input) = app.handle_composer_enter() else {
+                return Ok(false);
+            };
+            match input.trim() {
+                "/exit" | "/quit" => {
+                    if run_client.snapshot().await.current_active_root.is_some() {
+                        run_client.cancel().await?;
+                        *exit_after_terminal = true;
+                        app.status_message = Some("正在取消当前运行，完成后退出…".to_owned());
+                        return Ok(false);
+                    }
+                    if app.is_loading {
+                        app.status_message = Some("等待 canonical 终态事件后才能退出".to_owned());
+                        return Ok(false);
+                    }
+                    return Ok(true);
+                }
+                "/compact" => {
+                    let snapshot = run_client.snapshot().await;
+                    if let Some(run_id) = snapshot.latest_terminal_root {
+                        let _ = run_client
+                            .compact(run_id, Some(app.workspace.display().to_string()))
+                            .await?;
+                        app.is_loading = true;
+                    } else {
+                        app.status_message = Some("当前没有可压缩的终态运行".to_owned());
+                    }
+                }
+                command if command.starts_with('/') => {
+                    app.insert_str(&input);
+                    app.status_message =
+                        Some("该旧斜杠命令没有 canonical Run 语义，未执行".to_owned());
+                }
+                _ => {
+                    let snapshot = run_client.snapshot().await;
+                    if snapshot.current_active_root.is_some() {
+                        match run_client.steer(input.clone()).await {
+                            Ok(_) => {}
+                            Err(error) => {
+                                app.insert_str(&input);
+                                app.status_message = Some(format!("追加指令提交失败：{error}"));
+                            }
+                        }
+                    } else if app.is_loading {
+                        app.insert_str(&input);
+                        app.status_message =
+                            Some("等待 canonical 终态事件后再发送下一条输入".to_owned());
+                    } else {
+                        match run_client
+                            .submit(canonical_start_command(app, config, input.clone()))
+                            .await
+                        {
+                            Ok(_) => app.is_loading = true,
+                            Err(error) => {
+                                app.insert_str(&input);
+                                app.status_message = Some(format!("运行提交失败：{error}"));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        KeyCode::Esc => {
+            if !app.input.is_empty() {
+                app.clear_input_recoverable();
+            } else if run_client.snapshot().await.current_active_root.is_some() {
+                run_client.interrupt().await?;
+                app.status_message = Some("中断请求已受理，等待 canonical 终态…".to_owned());
+            } else if app.is_loading {
+                app.status_message = Some("等待 canonical 终态事件…".to_owned());
+            } else {
+                return Ok(true);
+            }
+        }
+        KeyCode::Backspace => app.delete_char(),
+        KeyCode::Delete => app.delete_char_forward(),
+        KeyCode::Left => app.move_cursor_left(),
+        KeyCode::Right => app.move_cursor_right(),
+        KeyCode::Home => app.move_cursor_start(),
+        KeyCode::End => app.move_cursor_end(),
+        KeyCode::PageUp => app.scroll_up(12),
+        KeyCode::PageDown => app.scroll_down(12),
+        KeyCode::Up if app.input.is_empty() => app.scroll_up(3),
+        KeyCode::Down if app.input.is_empty() => app.scroll_down(3),
+        KeyCode::Char('a') if control => app.move_cursor_start(),
+        KeyCode::Char('e') if control => app.move_cursor_end(),
+        KeyCode::Char('w') if control => app.delete_word_backward(),
+        KeyCode::Char(character)
+            if !control
+                && !key.modifiers.contains(KeyModifiers::SUPER)
+                && !character.is_control() =>
+        {
+            app.insert_char(character);
+        }
+        _ => {}
+    }
+    app.needs_redraw = true;
+    Ok(false)
+}
+
+async fn handle_canonical_view_events(
+    app: &mut App,
+    run_client: &TuiRunClient,
+    events: Vec<ViewEvent>,
+    exit_after_terminal: &mut bool,
+) -> Result<()> {
+    for event in events {
+        match event {
+            ViewEvent::ApprovalDecision {
+                tool_id, decision, ..
+            } => match decision {
+                ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
+                    run_client
+                        .resolve_interaction(
+                            codewhale_protocol::agent_runtime::InteractionId::from(tool_id),
+                            UserInteractionResponse::Approved,
+                        )
+                        .await?;
+                }
+                ReviewDecision::Denied => {
+                    run_client
+                        .resolve_interaction(
+                            codewhale_protocol::agent_runtime::InteractionId::from(tool_id),
+                            UserInteractionResponse::Denied { reason: None },
+                        )
+                        .await?;
+                }
+                ReviewDecision::Abort => {
+                    run_client.cancel().await?;
+                    *exit_after_terminal = false;
+                }
+            },
+            ViewEvent::UserInputSubmitted { tool_id, response } => {
+                run_client
+                    .resolve_interaction(
+                        codewhale_protocol::agent_runtime::InteractionId::from(tool_id),
+                        response,
+                    )
+                    .await?;
+            }
+            ViewEvent::UserInputCancelled { tool_id } => {
+                run_client
+                    .resolve_interaction(
+                        codewhale_protocol::agent_runtime::InteractionId::from(tool_id),
+                        UserInteractionResponse::Cancelled,
+                    )
+                    .await?;
+            }
+            _ => {
+                app.status_message = Some("该旧界面动作没有 canonical Run 语义，未执行".to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn apply_presenter_action(
+    app: &mut App,
+    action: PresenterAction,
+    presented_interaction_id: &mut Option<codewhale_protocol::agent_runtime::InteractionId>,
+) {
+    match action {
+        PresenterAction::ShowInteraction(request) => {
+            let interaction_id = request.interaction_id.clone();
+            *presented_interaction_id = Some(interaction_id.clone());
+            match request.prompt {
+                UserInteractionPrompt::Approval { prompt, arguments } => {
+                    let mut approval = ApprovalRequest::new_with_intent(
+                        &interaction_id.0,
+                        &request.tool_name,
+                        &prompt.description,
+                        &arguments,
+                        &interaction_id.0,
+                        Some(&prompt.title),
+                        &app.workspace,
+                    );
+                    approval.risk = match prompt.risk {
+                        ApprovalRisk::Routine => super::approval::RiskLevel::Benign,
+                        ApprovalRisk::Elevated | ApprovalRisk::Critical => {
+                            super::approval::RiskLevel::Destructive
+                        }
+                    };
+                    app.view_stack
+                        .push(ApprovalView::new_for_locale(approval, app.ui_locale));
+                }
+                UserInteractionPrompt::UserInput { request } => {
+                    app.view_stack
+                        .push(UserInputView::new(interaction_id.0, request));
+                }
+            }
+        }
+        PresenterAction::InteractionResolved { interaction_id, .. } => {
+            if presented_interaction_id.as_ref() != Some(&interaction_id) {
+                app.status_message = Some(format!("忽略不匹配的交互回执：{}", interaction_id.0));
+                return;
+            }
+            *presented_interaction_id = None;
+            if matches!(
+                app.view_stack.top_kind(),
+                Some(ModalKind::Approval | ModalKind::UserInput)
+            ) {
+                let _ = app.view_stack.pop();
+            }
+        }
+    }
 }
 
 fn should_show_resume_hint(session_id: Option<&str>) -> bool {
@@ -4358,7 +4749,8 @@ async fn run_event_loop(
                         back_from_api_key_onboarding(app);
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::Provider => {
-                        back_from_provider_onboarding(app);
+                        app.onboarding = OnboardingState::Language;
+                        app.status_message = None;
                     }
                     KeyCode::Esc if app.onboarding == OnboardingState::Language => {
                         app.onboarding = OnboardingState::Welcome;
@@ -4491,7 +4883,7 @@ async fn run_event_loop(
                     KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1')
                         if app.onboarding == OnboardingState::TrustDirectory =>
                     {
-                        if let Err(err) = complete_trust_directory_onboarding(app, config) {
+                        if let Err(err) = complete_trust_directory_onboarding(app) {
                             app.status_message = Some(format!("Failed to trust workspace: {err}"));
                         }
                     }

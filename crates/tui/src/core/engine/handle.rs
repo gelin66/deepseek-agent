@@ -10,8 +10,10 @@
 
 use anyhow::Result;
 
+use crate::tools::user_input::UserInputResponse;
+
 use super::approval::{ApprovalDecision, UserInputDecision};
-use super::{CancelReason, EngineHandle, Op, UserInputResponse};
+use super::{CancelReason, EngineHandle, Op};
 
 impl EngineHandle {
     /// Send an operation to the engine

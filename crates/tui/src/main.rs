@@ -1596,16 +1596,18 @@ async fn run_async_main() -> Result<()> {
             }
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
-                let workspace = resolve_workspace(&cli);
-                let resume_id = resolve_session_id(session_id, last, &workspace)?;
+                let resume_id = if last {
+                    "latest".to_owned()
+                } else {
+                    session_id.ok_or_else(|| {
+                        anyhow!("请提供 canonical Run ID，或使用 `codewhale resume --last`")
+                    })?
+                };
                 run_interactive(&cli, &config, Some(resume_id), None).await
             }
-            Commands::Fork { session_id, last } => {
-                let config = load_config_from_cli(&cli)?;
-                let workspace = resolve_workspace(&cli);
-                let new_session_id = fork_session(session_id, last, &workspace)?;
-                run_interactive(&cli, &config, Some(new_session_id), None).await
-            }
+            Commands::Fork { .. } => bail!(
+                "`fork` 已移除：canonical Run 不允许复制并改写历史；请恢复终态运行后直接发送新输入创建 Continue"
+            ),
         };
     }
 
@@ -1621,15 +1623,9 @@ async fn run_async_main() -> Result<()> {
     // Handle session resume. Plain `codewhale` starts fresh: interrupted
     // snapshots are preserved for explicit resume, but never auto-attached.
     let resume_session_id = if cli.continue_session {
-        let workspace = resolve_workspace(&cli);
-        recover_interrupted_checkpoint_for_resume(&workspace)
-            .or_else(|| latest_session_id_for_workspace(&workspace).ok().flatten())
+        Some("latest".to_owned())
     } else if let Some(id) = cli.resume.clone() {
         Some(id)
-    } else if !cli.fresh {
-        let workspace = resolve_workspace(&cli);
-        preserve_interrupted_checkpoint_for_explicit_resume(&workspace);
-        None
     } else {
         None
     };
@@ -5829,8 +5825,7 @@ async fn run_pr(
 
     let prompt = format_pr_prompt(number, &view, &diff);
     let resume_session_id = if cli.continue_session {
-        let workspace = resolve_workspace(cli);
-        latest_session_id_for_workspace(&workspace).ok().flatten()
+        Some("latest".to_owned())
     } else {
         cli.resume.clone()
     };
@@ -7274,12 +7269,6 @@ async fn run_interactive(
     let janitor_snapshots_enabled = snapshots.enabled;
     let janitor_max_age = snapshots.max_age();
     let janitor_workspace = workspace.clone();
-    // Session cleanup races session restore: skip it entirely when a session
-    // is being resumed/continued this launch (the just-resumed session could
-    // be pruned before its first save bumps `updated_at`). It runs next
-    // clean launch. When we do run it, exclude the explicit resume id too.
-    let janitor_resume_id = resume_session_id.clone();
-    let janitor_skip_session_cleanup = resume_session_id.is_some() || cli.continue_session;
     tokio::task::spawn_blocking(move || {
         if janitor_snapshots_enabled {
             session_manager::prune_workspace_snapshots(&janitor_workspace, janitor_max_age);
@@ -7296,12 +7285,6 @@ async fn run_interactive(
                 ?err,
                 "spillover prune skipped on boot"
             ),
-        }
-
-        if !janitor_skip_session_cleanup
-            && let Ok(manager) = session_manager::SessionManager::default_location()
-        {
-            let _ = manager.cleanup_old_sessions_keeping(janitor_resume_id.as_deref());
         }
     });
 

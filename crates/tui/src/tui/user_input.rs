@@ -81,6 +81,7 @@ pub struct UserInputView {
     /// Indices toggled into the pending multi-select set for the current
     /// question. Only used when `question.multi_select` is true.
     multi_pending: Vec<usize>,
+    validation_message: Option<String>,
 }
 
 impl UserInputView {
@@ -94,6 +95,7 @@ impl UserInputView {
             other_input: String::new(),
             answers: Vec::new(),
             multi_pending: Vec::new(),
+            validation_message: None,
         }
     }
 
@@ -135,6 +137,7 @@ impl UserInputView {
     }
 
     fn toggle_pending(&mut self, index: usize) {
+        self.validation_message = None;
         if let Some(pos) = self.multi_pending.iter().position(|i| *i == index) {
             self.multi_pending.remove(pos);
         } else {
@@ -157,7 +160,7 @@ impl UserInputView {
     fn advance_question(&mut self, new_answers: Vec<UserInputAnswer>) -> ViewAction {
         self.answers.extend(new_answers);
         if self.question_index + 1 >= self.request.questions.len() {
-            let response = UserInputResponse {
+            let response = UserInputResponse::Answered {
                 answers: self.answers.clone(),
             };
             return ViewAction::EmitAndClose(ViewEvent::UserInputSubmitted {
@@ -170,6 +173,7 @@ impl UserInputView {
         self.mode = InputMode::Selecting;
         self.other_input.clear();
         self.multi_pending.clear();
+        self.validation_message = None;
         ViewAction::None
     }
 
@@ -227,9 +231,10 @@ impl UserInputView {
         }
         if self.is_multi_select() {
             if self.is_confirm_selected() {
-                // Flush the pending set as this question's answers. An empty
-                // set is allowed (skip-like) — the model is expected to offer a
-                // sensible default, but we don't deadlock.
+                if self.multi_pending.is_empty() {
+                    self.validation_message = Some("请至少选择一个选项后再确认".to_string());
+                    return ViewAction::None;
+                }
                 let question = self.current_question();
                 let answers: Vec<UserInputAnswer> = self
                     .multi_pending
@@ -260,6 +265,10 @@ impl UserInputView {
                 ViewAction::None
             }
             KeyCode::Enter => {
+                if self.other_input.trim().is_empty() {
+                    self.validation_message = Some("请输入内容后再确认".to_string());
+                    return ViewAction::None;
+                }
                 let question = self.current_question();
                 let answer = UserInputAnswer {
                     id: question.id.clone(),
@@ -283,6 +292,7 @@ impl UserInputView {
             }
             KeyCode::Backspace => {
                 self.other_input.pop();
+                self.validation_message = None;
                 ViewAction::None
             }
             KeyCode::Char('h')
@@ -291,10 +301,12 @@ impl UserInputView {
                     .contains(crossterm::event::KeyModifiers::CONTROL) =>
             {
                 self.other_input.pop();
+                self.validation_message = None;
                 ViewAction::None
             }
             KeyCode::Char(ch) => {
                 if !ch.is_control() {
+                    self.validation_message = None;
                     self.other_input.push(ch);
                 }
                 ViewAction::None
@@ -412,6 +424,14 @@ impl ModalView for UserInputView {
                     Style::default().fg(palette::WHALE_ACCENT_PRIMARY),
                 ),
             ]));
+        }
+
+        if let Some(message) = &self.validation_message {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                message.clone(),
+                Style::default().fg(palette::STATUS_ERROR).bold(),
+            )));
         }
 
         lines.push(Line::from(""));
@@ -603,5 +623,41 @@ mod tests {
         );
         assert!(rendered.contains("Submit 1 selected"));
         assert!(rendered.contains("toggle"));
+    }
+
+    #[test]
+    fn empty_multi_select_stays_open_and_shows_validation() {
+        let mut view = sample_view();
+        view.request.questions[0].multi_select = true;
+        view.request.questions[0].allow_free_text = false;
+        view.selected = view.option_count() - 1;
+
+        let action = view.handle_key(KeyEvent::from(KeyCode::Enter));
+
+        assert!(matches!(action, ViewAction::None));
+        assert!(view.answers.is_empty());
+        assert_eq!(
+            view.validation_message.as_deref(),
+            Some("请至少选择一个选项后再确认")
+        );
+        assert!(render_view(&view, 120, 40).contains('请'));
+    }
+
+    #[test]
+    fn empty_free_text_stays_open_and_shows_validation() {
+        let mut view = sample_view();
+        view.mode = InputMode::OtherInput;
+        view.other_input = "   ".to_string();
+
+        let action = view.handle_key(KeyEvent::from(KeyCode::Enter));
+
+        assert!(matches!(action, ViewAction::None));
+        assert!(view.answers.is_empty());
+        assert_eq!(view.mode, InputMode::OtherInput);
+        assert_eq!(
+            view.validation_message.as_deref(),
+            Some("请输入内容后再确认")
+        );
+        assert!(render_view(&view, 120, 40).contains('请'));
     }
 }

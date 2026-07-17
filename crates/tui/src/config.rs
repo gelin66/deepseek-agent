@@ -4703,7 +4703,12 @@ pub(crate) fn workspace_trust_config_candidate_paths() -> Vec<PathBuf> {
 
 #[must_use]
 pub(crate) fn is_workspace_trusted(workspace: &Path) -> bool {
-    let Some(config_path) = default_config_path() else {
+    is_workspace_trusted_at(None, workspace)
+}
+
+#[must_use]
+pub(crate) fn is_workspace_trusted_at(config_path: Option<&Path>, workspace: &Path) -> bool {
+    let Ok(config_path) = crate::config_persistence::config_toml_path(config_path) else {
         return false;
     };
     let Ok(raw) = fs::read_to_string(config_path) else {
@@ -4716,8 +4721,15 @@ pub(crate) fn is_workspace_trusted(workspace: &Path) -> bool {
 }
 
 pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
-    let config_path = default_config_path()
-        .context("Failed to resolve config path: home directory not found.")?;
+    save_workspace_trust_at(None, workspace)
+}
+
+pub(crate) fn save_workspace_trust_at(
+    config_path: Option<&Path>,
+    workspace: &Path,
+) -> Result<PathBuf> {
+    let config_path = crate::config_persistence::config_toml_path(config_path)
+        .context("Failed to resolve active config path.")?;
     ensure_parent_dir(&config_path)?;
 
     let project_key = workspace_config_key(workspace);
