@@ -523,10 +523,6 @@ fn effective_static_prompt_composer() -> Option<&'static StaticPromptComposer> {
     STATIC_PROMPT_COMPOSER.get().map(Box::as_ref)
 }
 
-/// Compaction relay template — written into the system prompt so the
-/// model knows the format to use when writing `.codewhale/handoff.md`.
-pub const COMPACT_TEMPLATE: &str = include_str!("prompts/compact.md");
-
 /// Goal continuation audit template — injected by the engine when a runtime
 /// goal is active and the assistant tries to end a turn without closing it.
 pub const GOAL_CONTINUATION_PROMPT: &str = include_str!("prompts/continuation.md");
