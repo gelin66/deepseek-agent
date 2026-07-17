@@ -1422,8 +1422,27 @@ fn split_lane_log_proxy_command(
     }
 }
 
+fn reject_retired_top_level_command(cli: &Cli) -> Result<()> {
+    if cli.command.is_some() || cli.prompt_flag.is_some() {
+        return Ok(());
+    }
+    match cli.prompt.first().map(String::as_str) {
+        Some("sessions") => bail!(
+            "命令 `codewhale sessions` 已删除；请使用 `codewhale runs` 查看当前工作区的 canonical Agent 运行"
+        ),
+        Some("fork") => bail!(
+            "命令 `codewhale fork` 已删除；不再支持旧 TUI 会话分叉，请使用 `codewhale resume <RUN_ID>` 继续 canonical Agent 运行"
+        ),
+        _ => Ok(()),
+    }
+}
+
 fn run() -> Result<()> {
     let mut cli = Cli::parse();
+    // Clap intentionally accepts free-form root prompts. Reject retired
+    // top-level command spellings before config, TUI, Store, or model setup so
+    // an old command can never become an accidental paid prompt.
+    reject_retired_top_level_command(&cli)?;
 
     // The detached log proxy must not depend on user config parsing: its job
     // is to frame child output and publish a terminal receipt even when the
@@ -5389,7 +5408,14 @@ mod tests {
                 parsed.command.is_none() && parsed.prompt == [retired],
                 "retired top-level command must not remain as a dispatcher alias: {retired}"
             );
+            let error = reject_retired_top_level_command(&parsed)
+                .expect_err("retired command spelling must fail closed");
+            assert!(error.to_string().contains("命令 `codewhale"));
         }
+
+        let explicit_prompt = parse_ok(&["codewhale", "--prompt", "sessions"]);
+        reject_retired_top_level_command(&explicit_prompt)
+            .expect("an explicit prompt must not be mistaken for a retired command");
     }
 
     #[test]

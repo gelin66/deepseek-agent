@@ -243,3 +243,73 @@ fn dispatcher_help_exposes_runs_and_removes_legacy_session_commands() {
     assert!(!help.contains("Session id/prefix"));
     assert!(!help.contains("Windows note"));
 }
+
+#[test]
+fn retired_commands_fail_before_config_tui_store_or_model_startup() {
+    let home = tempfile::tempdir().expect("temporary CODEWHALE_HOME");
+    let workspace = tempfile::tempdir().expect("temporary workspace");
+    let marker = home.path().join("tui-launched");
+    let fake_tui = home.path().join("fake-codewhale-tui");
+    std::fs::write(
+        &fake_tui,
+        "#!/bin/sh\nprintf launched > \"$CODEWHALE_TUI_MARKER\"\n",
+    )
+    .expect("write fake TUI");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mut permissions = std::fs::metadata(&fake_tui)
+            .expect("fake TUI metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&fake_tui, permissions).expect("make fake TUI executable");
+    }
+    // A malformed real config proves the rejection happens before ConfigStore
+    // parsing, not merely before application/model construction.
+    std::fs::write(home.path().join("config.toml"), "provider = [")
+        .expect("write malformed config");
+
+    for (args, retired) in [
+        (vec!["sessions"], "sessions"),
+        (vec!["sessions", "--json"], "sessions"),
+        (vec!["fork", "legacy-session-id"], "fork"),
+        (vec!["fork", "--last"], "fork"),
+    ] {
+        let output = Command::new(codewhale_binary())
+            .current_dir(workspace.path())
+            .env("CODEWHALE_HOME", home.path())
+            .env("DEEPSEEK_TUI_BIN", &fake_tui)
+            .env("CODEWHALE_TUI_MARKER", &marker)
+            .env_remove("DEEPSEEK_API_KEY")
+            .env_remove("CODEWHALE_CLI_API_KEY")
+            .args(&args)
+            .output()
+            .expect("run retired dispatcher command");
+        assert!(
+            !output.status.success(),
+            "retired command unexpectedly succeeded: {args:?}"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "retired command wrote stdout: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 rejection");
+        assert!(
+            stderr.contains(&format!("命令 `codewhale {retired}` 已删除")),
+            "missing Chinese retired-command rejection for {args:?}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("failed to parse config"),
+            "retired command reached ConfigStore: {stderr}"
+        );
+        assert!(
+            !marker.exists(),
+            "retired command started the TUI: {args:?}"
+        );
+        assert!(
+            !home.path().join("state.db").exists(),
+            "retired command opened the canonical RunStore: {args:?}"
+        );
+    }
+}
