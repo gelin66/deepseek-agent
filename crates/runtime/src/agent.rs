@@ -3,6 +3,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use codewhale_context::compaction::{
+    ContextCompactionPreparation, effective_context, estimate_projection_tokens,
+    prepare_compaction, projection_from_summary,
+};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -204,12 +208,16 @@ impl AgentRuntime {
             && snapshot.last_model_response_sequence == snapshot.last_model_activity_sequence;
         let accounting_epoch_baseline = snapshot.accounting.clone();
         let recovery_model = snapshot.pending_model.clone();
+        let recovery_context_compaction = snapshot.pending_context_compaction.clone();
         let recovery_tool = snapshot.pending_tool.clone();
         let recovery_output = response_is_current
             .then_some(snapshot.last_model_output.clone())
             .flatten();
         let recovery_failure = resumed
             .then_some(snapshot.last_model_failure.clone())
+            .flatten();
+        let recovery_context_compaction_failure = resumed
+            .then_some(snapshot.last_context_compaction_failure.clone())
             .flatten();
         let recovered_child_ids = snapshot.pending_children.clone();
         let mut state = RunState {
@@ -223,9 +231,11 @@ impl AgentRuntime {
                 .map_or_else(now_unix_ms, |event| event.occurred_at_unix_ms),
             pending_children: Vec::new(),
             recovery_model,
+            recovery_context_compaction,
             recovery_tool,
             recovery_output,
             recovery_failure,
+            recovery_context_compaction_failure,
             recovered_child_ids,
         };
 
@@ -265,6 +275,21 @@ impl AgentRuntime {
                     .finalize(&mut state, TerminalState::Failed { failure }, &budget)
                     .await;
             }
+            if state.snapshot.request.purpose == RunPurpose::ContextCompaction
+                && let Some(stopped) = state.recovery_context_compaction_failure.take()
+            {
+                return self
+                    .finalize(
+                        &mut state,
+                        TerminalState::Failed {
+                            failure: RuntimeFailure::ContextCompactionFailed {
+                                message: stopped.failure.message,
+                            },
+                        },
+                        &budget,
+                    )
+                    .await;
+            }
         }
 
         loop {
@@ -286,6 +311,117 @@ impl AgentRuntime {
                 self.cancel_children(&mut state).await;
                 let terminal = timeout_terminal(&state, deadline);
                 return self.finalize(&mut state, terminal, &budget).await;
+            }
+            let safe_fresh_boundary = state.recovery_model.is_none()
+                && state.recovery_output.is_none()
+                && state.recovery_tool.is_none()
+                && state.snapshot.pending_model.is_none()
+                && state.snapshot.pending_tool.is_none()
+                && state.snapshot.pending_children.is_empty();
+            if safe_fresh_boundary
+                && !state.snapshot.pending_steers.is_empty()
+                && let Err(failure) = self.flush_pending_steers(&mut state).await
+            {
+                return self
+                    .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                    .await;
+            }
+            if state.snapshot.request.purpose == RunPurpose::ContextCompaction {
+                if state.snapshot.last_context_compaction.is_some() {
+                    return self
+                        .finalize(
+                            &mut state,
+                            TerminalState::Completed {
+                                message: "上下文压缩已完成。".to_owned(),
+                            },
+                            &budget,
+                        )
+                        .await;
+                }
+                match self
+                    .compact_context(
+                        &mut state,
+                        &budget,
+                        &mut control,
+                        deadline,
+                        ContextCompactionTrigger::Manual,
+                        true,
+                    )
+                    .await
+                {
+                    Ok(ContextCompactionControl::Terminal(terminal)) => {
+                        return self.finalize(&mut state, terminal, &budget).await;
+                    }
+                    Ok(
+                        ContextCompactionControl::Committed | ContextCompactionControl::NotNeeded,
+                    ) => {
+                        return self
+                            .finalize(
+                                &mut state,
+                                TerminalState::Completed {
+                                    message: "上下文压缩已完成。".to_owned(),
+                                },
+                                &budget,
+                            )
+                            .await;
+                    }
+                    Err(failure) => {
+                        return self
+                            .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                            .await;
+                    }
+                }
+            }
+            if safe_fresh_boundary && state.snapshot.request.context_policy.auto_compact {
+                let estimated = match effective_context(
+                    &state.snapshot.transcript,
+                    state.snapshot.context_projection.as_ref(),
+                ) {
+                    Ok(context) => context.estimated_tokens,
+                    Err(error) => {
+                        return self
+                            .finalize(
+                                &mut state,
+                                TerminalState::Failed {
+                                    failure: RuntimeFailure::Store {
+                                        message: error.to_string(),
+                                    },
+                                },
+                                &budget,
+                            )
+                            .await;
+                    }
+                };
+                let trigger = if estimated
+                    > u64::from(state.snapshot.request.context_policy.hard_input_tokens)
+                {
+                    ContextCompactionTrigger::PreflightLimit
+                } else {
+                    ContextCompactionTrigger::Threshold
+                };
+                match self
+                    .compact_context(
+                        &mut state,
+                        &budget,
+                        &mut control,
+                        deadline,
+                        trigger,
+                        trigger == ContextCompactionTrigger::PreflightLimit,
+                    )
+                    .await
+                {
+                    Ok(ContextCompactionControl::Terminal(terminal)) => {
+                        return self.finalize(&mut state, terminal, &budget).await;
+                    }
+                    Ok(
+                        ContextCompactionControl::Committed | ContextCompactionControl::NotNeeded,
+                    ) => {}
+                    Err(failure) => {
+                        return self
+                            .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                            .await;
+                    }
+                }
             }
             if state.recovery_output.is_none()
                 && state.recovery_model.is_none()
@@ -461,6 +597,485 @@ impl AgentRuntime {
         }
     }
 
+    async fn compact_context(
+        &self,
+        state: &mut RunState,
+        budget: &RuntimeBudget,
+        control: &mut mpsc::UnboundedReceiver<ControlCommand>,
+        deadline: Option<u64>,
+        trigger: ContextCompactionTrigger,
+        force: bool,
+    ) -> Result<ContextCompactionControl, RuntimeFailure> {
+        let current = effective_context(
+            &state.snapshot.transcript,
+            state.snapshot.context_projection.as_ref(),
+        )
+        .map_err(context_projection_failure)?;
+        if state
+            .snapshot
+            .last_context_compaction_failure
+            .as_ref()
+            .is_some_and(|failure| failure.source_projection_sha256 == current.sha256)
+        {
+            if force {
+                let message = state
+                    .snapshot
+                    .last_context_compaction_failure
+                    .as_ref()
+                    .map(|failure| failure.failure.message.clone())
+                    .unwrap_or_else(|| "context compaction failed".to_owned());
+                return Err(RuntimeFailure::ContextCompactionFailed { message });
+            }
+            if current.estimated_tokens
+                > u64::from(state.snapshot.request.context_policy.hard_input_tokens)
+            {
+                return Err(RuntimeFailure::ContextLimitExceeded {
+                    estimated_tokens: current.estimated_tokens,
+                    hard_input_tokens: u64::from(
+                        state.snapshot.request.context_policy.hard_input_tokens,
+                    ),
+                });
+            }
+            return Ok(ContextCompactionControl::NotNeeded);
+        }
+
+        let mut prepared = state.recovery_context_compaction.take();
+        if prepared.is_none() {
+            let template = self.compaction_request_template(state);
+            match prepare_compaction(
+                &state.snapshot.transcript,
+                state.snapshot.context_projection.as_ref(),
+                state.snapshot.request.context_policy,
+                &template,
+                force,
+            )
+            .map_err(context_projection_failure)?
+            {
+                ContextCompactionPreparation::NotNeeded { .. } => {
+                    return Ok(ContextCompactionControl::NotNeeded);
+                }
+                ContextCompactionPreparation::LimitExceeded {
+                    estimated_tokens,
+                    hard_input_tokens,
+                } => {
+                    return Err(RuntimeFailure::ContextLimitExceeded {
+                        estimated_tokens,
+                        hard_input_tokens,
+                    });
+                }
+                ContextCompactionPreparation::Local {
+                    projection,
+                    before_tokens,
+                    after_tokens,
+                } => {
+                    self.publish(
+                        state,
+                        RuntimeEventKind::ContextCompactionCommitted {
+                            compaction_id: ContextCompactionId::new(),
+                            trigger,
+                            projection: Box::new(projection),
+                            output: None,
+                            accounting: Box::new(state.snapshot.accounting.clone()),
+                            before_tokens,
+                            after_tokens,
+                        },
+                    )
+                    .await?;
+                    return Ok(ContextCompactionControl::Committed);
+                }
+                ContextCompactionPreparation::Model { plan, request } => {
+                    if !budget.reserve_model_request() {
+                        return Err(RuntimeFailure::RequestBudgetExceeded {
+                            limit: state.snapshot.request.limits.max_model_requests,
+                        });
+                    }
+                    let compaction_id = ContextCompactionId::new();
+                    let attempt_id = AttemptId::new();
+                    self.publish(
+                        state,
+                        RuntimeEventKind::ContextCompactionPrepared {
+                            compaction_id: compaction_id.clone(),
+                            attempt_id: attempt_id.clone(),
+                            trigger,
+                            plan: Box::new(plan.clone()),
+                            request: Box::new(request.clone()),
+                        },
+                    )
+                    .await?;
+                    prepared = Some(PendingContextCompaction {
+                        compaction_id,
+                        trigger,
+                        plan,
+                        attempt_id,
+                        request,
+                        state: DurableActionState::Prepared,
+                    });
+                }
+            }
+        }
+
+        loop {
+            let Some(pending) = prepared.take() else {
+                return Err(RuntimeFailure::Store {
+                    message: "context compaction lost its durable prepared request".to_owned(),
+                });
+            };
+            debug_assert_eq!(pending.state, DurableActionState::Prepared);
+            match self
+                .execute_context_compaction_attempt(state, &pending, control, deadline)
+                .await?
+            {
+                ContextCompactionAttemptControl::Output(output) => {
+                    let projection = projection_from_summary(&pending.plan, &output.content);
+                    let after_tokens =
+                        estimate_projection_tokens(&state.snapshot.transcript, &projection)
+                            .map_err(context_projection_failure)?;
+                    if after_tokens >= pending.plan.before_tokens
+                        || after_tokens
+                            > u64::from(state.snapshot.request.context_policy.hard_input_tokens)
+                    {
+                        let error = ModelPortError::new(
+                            "context_compaction_ineffective",
+                            ModelErrorCategory::Protocol,
+                            format!(
+                                "context summary did not reduce the request below the hard limit: before={}, after={}, hard={}",
+                                pending.plan.before_tokens,
+                                after_tokens,
+                                state.snapshot.request.context_policy.hard_input_tokens
+                            ),
+                            false,
+                        );
+                        self.commit_context_compaction_failure(
+                            state,
+                            &pending,
+                            &error,
+                            Some(output),
+                            ModelRetryDecision::Stop {
+                                reason: ModelRetryStopReason::ActionableOutput,
+                            },
+                        )
+                        .await?;
+                        return self.context_compaction_stopped(state, force);
+                    }
+                    let accounting = self.cumulative_accounting(state, false).await;
+                    self.publish(
+                        state,
+                        RuntimeEventKind::ContextCompactionCommitted {
+                            compaction_id: pending.compaction_id,
+                            trigger: pending.trigger,
+                            projection: Box::new(projection),
+                            output: Some(Box::new(output)),
+                            accounting: Box::new(accounting),
+                            before_tokens: pending.plan.before_tokens,
+                            after_tokens,
+                        },
+                    )
+                    .await?;
+                    return Ok(ContextCompactionControl::Committed);
+                }
+                ContextCompactionAttemptControl::Failed {
+                    error,
+                    actionable_output,
+                    output,
+                } => {
+                    let retry = self.plan_context_compaction_failure(
+                        state,
+                        budget,
+                        &pending,
+                        &error,
+                        actionable_output,
+                    );
+                    self.commit_context_compaction_failure(
+                        state,
+                        &pending,
+                        &error,
+                        output,
+                        retry.clone(),
+                    )
+                    .await?;
+                    match retry {
+                        ModelRetryDecision::Retry { .. } => {
+                            prepared = state.snapshot.pending_context_compaction.clone();
+                        }
+                        ModelRetryDecision::Stop { .. } => {
+                            return self.context_compaction_stopped(state, force);
+                        }
+                    }
+                }
+                ContextCompactionAttemptControl::Terminal(terminal) => {
+                    return Ok(ContextCompactionControl::Terminal(terminal));
+                }
+            }
+        }
+    }
+
+    fn compaction_request_template(&self, state: &RunState) -> ModelRequest {
+        ModelRequest {
+            run_id: state.run_id().clone(),
+            parent_run_id: state.snapshot.request.parent_run_id.clone(),
+            actor: state.snapshot.request.actor,
+            model: state.snapshot.request.model.clone(),
+            system_prompt: state.snapshot.request.system_prompt.clone(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            reasoning_effort: ReasoningEffort::Low,
+            max_output_tokens: Some(
+                state
+                    .snapshot
+                    .request
+                    .context_policy
+                    .summary_max_output_tokens
+                    .max(1),
+            ),
+            streaming: false,
+            request_number: state.snapshot.local_turns.saturating_add(1),
+            attempt: 0,
+        }
+    }
+
+    async fn execute_context_compaction_attempt(
+        &self,
+        state: &mut RunState,
+        pending: &PendingContextCompaction,
+        control: &mut mpsc::UnboundedReceiver<ControlCommand>,
+        deadline: Option<u64>,
+    ) -> Result<ContextCompactionAttemptControl, RuntimeFailure> {
+        self.publish(
+            state,
+            RuntimeEventKind::ContextCompactionInFlight {
+                compaction_id: pending.compaction_id.clone(),
+                attempt_id: pending.attempt_id.clone(),
+            },
+        )
+        .await?;
+
+        let open = self.model.stream(pending.request.clone());
+        tokio::pin!(open);
+        let mut stream = loop {
+            tokio::select! {
+                result = &mut open => break match result {
+                    Ok(stream) => stream,
+                    Err(error) => {
+                        return Ok(ContextCompactionAttemptControl::Failed {
+                            error,
+                            actionable_output: false,
+                            output: None,
+                        });
+                    }
+                },
+                command = control.recv() => if let Some(command) = command {
+                    match self.handle_control(state, command).await? {
+                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Terminal(terminal) => {
+                            return Ok(ContextCompactionAttemptControl::Terminal(terminal));
+                        }
+                    }
+                },
+                () = wait_for_deadline(deadline) => {
+                    return Ok(ContextCompactionAttemptControl::Terminal(
+                        timeout_terminal(state, deadline),
+                    ));
+                }
+            }
+        };
+
+        let mut streamed_content = String::new();
+        let mut streamed_reasoning = String::new();
+        loop {
+            tokio::select! {
+                event = next_model_event(
+                    &mut *stream,
+                    state.snapshot.request.limits.model_event_idle_ms,
+                ) => {
+                    match event {
+                        ModelEventPoll::Idle => {
+                            let timeout_ms = state
+                                .snapshot
+                                .request
+                                .limits
+                                .model_event_idle_ms
+                                .unwrap_or_default();
+                            return Ok(ContextCompactionAttemptControl::Failed {
+                                error: ModelPortError::new(
+                                    "context_compaction_stream_stall",
+                                    ModelErrorCategory::StreamStall,
+                                    format!(
+                                        "context compaction stream produced no canonical event for {timeout_ms}ms"
+                                    ),
+                                    true,
+                                ),
+                                actionable_output: !streamed_content.is_empty()
+                                    || !streamed_reasoning.is_empty(),
+                                output: None,
+                            });
+                        }
+                        ModelEventPoll::Event(Some(Ok(ModelStreamEvent::ContentDelta { delta }))) => {
+                            streamed_content.push_str(&delta);
+                        }
+                        ModelEventPoll::Event(Some(Ok(ModelStreamEvent::ReasoningDelta { delta }))) => {
+                            streamed_reasoning.push_str(&delta);
+                        }
+                        ModelEventPoll::Event(Some(Ok(ModelStreamEvent::Completed { output }))) => {
+                            let completed_reasoning =
+                                output.reasoning_content.clone().unwrap_or_default();
+                            let stream_matches = (streamed_content.is_empty()
+                                || streamed_content == output.content)
+                                && (streamed_reasoning.is_empty()
+                                    || streamed_reasoning == completed_reasoning);
+                            if !stream_matches
+                                || output.finish_reason != ModelFinishReason::Stop
+                                || !output.tool_calls.is_empty()
+                                || output.content.trim().is_empty()
+                            {
+                                return Ok(ContextCompactionAttemptControl::Failed {
+                                    error: ModelPortError::new(
+                                        "context_compaction_output_invalid",
+                                        ModelErrorCategory::Protocol,
+                                        "context compaction returned an invalid completed output",
+                                        false,
+                                    ),
+                                    actionable_output: true,
+                                    output: Some(output),
+                                });
+                            }
+                            return Ok(ContextCompactionAttemptControl::Output(output));
+                        }
+                        ModelEventPoll::Event(Some(Err(error))) => {
+                            return Ok(ContextCompactionAttemptControl::Failed {
+                                error,
+                                actionable_output: !streamed_content.is_empty()
+                                    || !streamed_reasoning.is_empty(),
+                                output: None,
+                            });
+                        }
+                        ModelEventPoll::Event(None) => {
+                            return Ok(ContextCompactionAttemptControl::Failed {
+                                error: ModelPortError::new(
+                                    "context_compaction_stream_incomplete",
+                                    ModelErrorCategory::Protocol,
+                                    "context compaction stream ended without a completed event",
+                                    true,
+                                ),
+                                actionable_output: !streamed_content.is_empty()
+                                    || !streamed_reasoning.is_empty(),
+                                output: None,
+                            });
+                        }
+                    }
+                }
+                command = control.recv() => if let Some(command) = command {
+                    match self.handle_control(state, command).await? {
+                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Terminal(terminal) => {
+                            return Ok(ContextCompactionAttemptControl::Terminal(terminal));
+                        }
+                    }
+                },
+                () = wait_for_deadline(deadline) => {
+                    return Ok(ContextCompactionAttemptControl::Terminal(
+                        timeout_terminal(state, deadline),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn plan_context_compaction_failure(
+        &self,
+        state: &RunState,
+        budget: &RuntimeBudget,
+        pending: &PendingContextCompaction,
+        error: &ModelPortError,
+        actionable_output: bool,
+    ) -> ModelRetryDecision {
+        let reason = if actionable_output {
+            Some(ModelRetryStopReason::ActionableOutput)
+        } else if !error.retryable {
+            Some(ModelRetryStopReason::NotRetryable)
+        } else if pending.request.attempt >= state.snapshot.request.context_policy.max_retries {
+            Some(ModelRetryStopReason::RetryLimitReached)
+        } else if !budget.reserve_model_request() {
+            Some(ModelRetryStopReason::RequestBudgetExceeded)
+        } else {
+            None
+        };
+        if let Some(reason) = reason {
+            return ModelRetryDecision::Stop { reason };
+        }
+        let mut request = pending.request.clone();
+        request.attempt = request.attempt.saturating_add(1);
+        ModelRetryDecision::Retry {
+            prepared: PreparedModelRetry {
+                attempt_id: AttemptId::new(),
+                request: Box::new(request),
+            },
+        }
+    }
+
+    async fn commit_context_compaction_failure(
+        &self,
+        state: &mut RunState,
+        pending: &PendingContextCompaction,
+        error: &ModelPortError,
+        output: Option<ModelOutput>,
+        retry: ModelRetryDecision,
+    ) -> Result<(), RuntimeFailure> {
+        let accounting = self.cumulative_accounting(state, false).await;
+        self.publish(
+            state,
+            RuntimeEventKind::ContextCompactionAttemptFailed {
+                compaction_id: pending.compaction_id.clone(),
+                attempt_id: pending.attempt_id.clone(),
+                failure: model_attempt_failure(error, output.is_some()),
+                output: output.map(Box::new),
+                accounting: Box::new(accounting),
+                retry,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    fn context_compaction_stopped(
+        &self,
+        state: &RunState,
+        force: bool,
+    ) -> Result<ContextCompactionControl, RuntimeFailure> {
+        let current = effective_context(
+            &state.snapshot.transcript,
+            state.snapshot.context_projection.as_ref(),
+        )
+        .map_err(context_projection_failure)?;
+        let stopped = state
+            .snapshot
+            .last_context_compaction_failure
+            .as_ref()
+            .ok_or_else(|| RuntimeFailure::Store {
+                message: "stopped context compaction has no durable failure".to_owned(),
+            })?;
+        if stopped.failure.code == "deepseek_request_budget_exhausted" {
+            return Err(RuntimeFailure::RequestBudgetExceeded {
+                limit: state.snapshot.request.limits.max_model_requests,
+            });
+        }
+        if force {
+            return Err(RuntimeFailure::ContextCompactionFailed {
+                message: stopped.failure.message.clone(),
+            });
+        }
+        if current.estimated_tokens
+            > u64::from(state.snapshot.request.context_policy.hard_input_tokens)
+        {
+            return Err(RuntimeFailure::ContextLimitExceeded {
+                estimated_tokens: current.estimated_tokens,
+                hard_input_tokens: u64::from(
+                    state.snapshot.request.context_policy.hard_input_tokens,
+                ),
+            });
+        }
+        Ok(ContextCompactionControl::NotNeeded)
+    }
+
     async fn model_turn(
         &self,
         state: &mut RunState,
@@ -490,22 +1105,18 @@ impl AgentRuntime {
                         },
                     }));
                 }
-                let transcript = &state.snapshot.transcript;
-                let system_prompt = transcript
-                    .entries
-                    .iter()
-                    .find_map(|entry| match entry {
-                        TranscriptEntry::System { prompt } => Some(prompt.clone()),
-                        _ => None,
-                    })
-                    .unwrap_or_else(|| state.snapshot.request.system_prompt.clone());
+                let context = effective_context(
+                    &state.snapshot.transcript,
+                    state.snapshot.context_projection.as_ref(),
+                )
+                .map_err(context_projection_failure)?;
                 let request = ModelRequest {
                     run_id: state.run_id().clone(),
                     parent_run_id: state.snapshot.request.parent_run_id.clone(),
                     actor: state.snapshot.request.actor,
                     model: state.snapshot.request.model.clone(),
-                    system_prompt,
-                    messages: transcript.project_messages(),
+                    system_prompt: context.system_prompt,
+                    messages: context.messages,
                     tools: self.tool_definitions(
                         &state.snapshot.request.tool_policy,
                         state.snapshot.request.actor.depth,
@@ -1354,11 +1965,16 @@ impl AgentRuntime {
         } else {
             CanonicalTranscript::default()
         };
+        let context_projection = fork_context
+            .then(|| state.snapshot.context_projection.clone())
+            .flatten();
         let mut child_environment = state.snapshot.request.environment.clone();
         child_environment.interactive = false;
         let child_request = RunRequest {
             run_id: Some(child_run_id.clone()),
             parent_run_id: Some(state.run_id().clone()),
+            continued_from_run_id: None,
+            purpose: RunPurpose::Agent,
             model: state.snapshot.request.model.clone(),
             input: child_input,
             system_prompt,
@@ -1374,6 +1990,8 @@ impl AgentRuntime {
             tool_policy: child_policy,
             limits: child_limits,
             environment: child_environment,
+            context_policy: state.snapshot.request.context_policy,
+            context_projection,
             accounting_baseline: ModelAccounting::default(),
         };
         let child = self.start_inner(child_request, budget.clone());
@@ -1740,12 +2358,19 @@ impl AgentRuntime {
             .snapshot
             .pending_model
             .as_ref()
-            .is_some_and(|pending| pending.state == DurableActionState::InFlight);
+            .is_some_and(|pending| pending.state == DurableActionState::InFlight)
+            || state
+                .snapshot
+                .pending_context_compaction
+                .as_ref()
+                .is_some_and(|pending| pending.state == DurableActionState::InFlight);
         let recovery_may_hide_model_billing = matches!(
             &terminal,
             TerminalState::RecoveryRequired {
                 ambiguity: RecoveryAmbiguity {
-                    phase: RecoveryAmbiguityPhase::ModelRequest | RecoveryAmbiguityPhase::ChildRun,
+                    phase: RecoveryAmbiguityPhase::ModelRequest
+                        | RecoveryAmbiguityPhase::ContextCompactionModelRequest
+                        | RecoveryAmbiguityPhase::ChildRun,
                     ..
                 }
             }
@@ -1834,9 +2459,11 @@ struct RunState {
     started_unix_ms: u64,
     pending_children: Vec<PendingChild>,
     recovery_model: Option<PendingModelAction>,
+    recovery_context_compaction: Option<PendingContextCompaction>,
     recovery_tool: Option<PendingToolAction>,
     recovery_output: Option<ModelOutput>,
     recovery_failure: Option<StoppedModelFailure>,
+    recovery_context_compaction_failure: Option<StoppedContextCompactionFailure>,
     recovered_child_ids: Vec<RunId>,
 }
 
@@ -1850,6 +2477,17 @@ impl RunState {
     }
 
     fn recovery_ambiguity(&self) -> Option<RecoveryAmbiguity> {
+        if let Some(pending) = self
+            .recovery_context_compaction
+            .as_ref()
+            .filter(|pending| pending.state == DurableActionState::InFlight)
+        {
+            return Some(RecoveryAmbiguity {
+                phase: RecoveryAmbiguityPhase::ContextCompactionModelRequest,
+                action_id: pending.attempt_id.0.clone(),
+                message: "进程在 DeepSeek 上下文压缩请求进入传输层后、压缩投影原子提交前停止；为避免重复请求和重复计费，运行未自动重发。".to_owned(),
+            });
+        }
         if let Some(pending) = self
             .recovery_model
             .as_ref()
@@ -1944,6 +2582,22 @@ impl ModelFailurePlan {
 
 enum ModelTurnControl {
     Output(ModelTurnOutput),
+    Terminal(TerminalState),
+}
+
+enum ContextCompactionControl {
+    NotNeeded,
+    Committed,
+    Terminal(TerminalState),
+}
+
+enum ContextCompactionAttemptControl {
+    Output(ModelOutput),
+    Failed {
+        error: ModelPortError,
+        actionable_output: bool,
+        output: Option<ModelOutput>,
+    },
     Terminal(TerminalState),
 }
 
@@ -2345,6 +2999,14 @@ fn model_port_error_from_failure(failure: &ModelAttemptFailure) -> ModelPortErro
         failure.message.clone(),
         failure.retryable,
     )
+}
+
+fn context_projection_failure(
+    error: codewhale_context::compaction::ContextProjectionError,
+) -> RuntimeFailure {
+    RuntimeFailure::Store {
+        message: error.to_string(),
+    }
 }
 
 fn latched_model_failure(primary: &Option<ModelPortError>) -> RuntimeFailure {

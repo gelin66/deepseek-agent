@@ -15,8 +15,8 @@ use codewhale_deepseek::{
     official_model_capabilities, resolve_deepseek_auto_route, resume_api_request_budget,
 };
 use codewhale_protocol::agent_runtime::{
-    AgentActor, CanonicalTranscript, ReasoningEffort, RunEnvironment, RunId, RunRequest,
-    ToolDefinition,
+    AgentActor, CanonicalTranscript, ContextPolicy, ReasoningEffort, RunEnvironment, RunId,
+    RunPurpose, RunRequest, ToolDefinition, TranscriptEntry,
 };
 use codewhale_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunProductControls, StartRunCommand,
@@ -38,6 +38,7 @@ use super::{
 };
 
 const DEEPSEEK_PROVIDER: &str = "deepseek";
+const CONTEXT_INPUT_SAFETY_TOKENS: u32 = 32_000;
 pub const DEFAULT_MAX_API_REQUESTS: u32 = 64;
 
 /// Prompt inputs shared by every production root run.
@@ -236,6 +237,7 @@ impl AgentApplication {
 impl RunComposition for ProductionComposition {
     async fn start(
         &self,
+        run_id: RunId,
         command: StartRunCommand,
         store: Arc<dyn RunStore>,
         sink: Arc<dyn RuntimeEventSink>,
@@ -293,6 +295,7 @@ impl RunComposition for ProductionComposition {
         let max_output_tokens = capability
             .resolve_output_tokens(command.max_output_tokens)
             .map_err(|error| invalid_request(error.to_string()))?;
+        let context_policy = production_context_policy(capability, max_output_tokens);
         let tool_executor: Arc<dyn ToolExecutor> =
             Arc::new(ProductionToolExecutor::new(tool_config));
         let model_port: Arc<dyn ModelPort> =
@@ -310,8 +313,10 @@ impl RunComposition for ProductionComposition {
         let system_prompt = self.system_prompt(&workspace, &model, !tool_catalog.is_empty());
         let accounting_baseline = model_accounting_snapshot(&request_budget);
         let request = RunRequest {
-            run_id: None,
+            run_id: Some(run_id),
             parent_run_id: None,
+            continued_from_run_id: None,
+            purpose: RunPurpose::Agent,
             model,
             input: command.input,
             system_prompt,
@@ -334,6 +339,8 @@ impl RunComposition for ProductionComposition {
                 interactive: command.controls.interactive,
                 sandbox: command.controls.sandbox,
             },
+            context_policy,
+            context_projection: None,
             accounting_baseline,
         };
         Ok(runtime.start(request))
@@ -426,7 +433,132 @@ impl RunComposition for ProductionComposition {
                 "persisted run does not contain an exact resolved max_output_tokens value",
             ));
         }
+        let expected_context_policy = production_context_policy(capability, expected_max_output);
+        if request.context_policy != expected_context_policy {
+            return Err(environment_mismatch(
+                &run_id,
+                "run_resume_context_policy_mismatch：persisted context policy does not match the current official DeepSeek capability",
+            ));
+        }
         Ok(runtime.resume(run_id))
+    }
+
+    async fn continue_run(
+        &self,
+        run_id: RunId,
+        source: RunReplay,
+        input: String,
+        purpose: RunPurpose,
+        store: Arc<dyn RunStore>,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> Result<RuntimeRun, RunApiError> {
+        let source_request = &source.snapshot.request;
+        let source_run_id = source_request.run_id.clone().ok_or_else(|| {
+            invalid_request("run_continue_source_id_missing：source run has no durable id")
+        })?;
+        if source_request.environment.provider != DEEPSEEK_PROVIDER {
+            return Err(environment_mismatch(
+                &source_run_id,
+                "run_continue_provider_mismatch：source run provider is not the official DeepSeek production provider",
+            ));
+        }
+        if source_request
+            .environment
+            .execution_fingerprint_sha256
+            .is_none()
+        {
+            return Err(environment_mismatch(
+                &source_run_id,
+                "run_continue_fingerprint_missing：source run has no production execution fingerprint",
+            ));
+        }
+        let workspace =
+            canonical_resume_workspace(&source_run_id, &source_request.environment.workspace)?;
+        let controls = RunProductControls {
+            auto_approve: source_request.environment.auto_approve,
+            trust_mode: source_request.environment.trust_mode,
+            allow_sandbox_elevation: source_request.environment.allow_sandbox_elevation,
+            interactive: source_request.environment.interactive,
+            sandbox: source_request.environment.sandbox.clone(),
+        };
+        let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?;
+        let tool_identity = tool_config.execution_identity();
+        let request_limit = source
+            .snapshot
+            .accounting
+            .hard_request_limit
+            .and_then(NonZeroU32::new)
+            .unwrap_or(self.default_max_api_requests);
+        let request_budget = SharedApiRequestBudget::new(request_limit);
+        let transport = self.bind_live_transport(request_budget.clone())?;
+        let model = source_request.model.clone();
+        let capability = official_model_capabilities(&model)
+            .map_err(|error| environment_mismatch(&source_run_id, error.to_string()))?;
+        let max_output_tokens = capability
+            .resolve_output_tokens(source_request.max_output_tokens)
+            .map_err(|error| environment_mismatch(&source_run_id, error.to_string()))?;
+        let context_policy = production_context_policy(capability, max_output_tokens);
+        let tool_executor: Arc<dyn ToolExecutor> =
+            Arc::new(ProductionToolExecutor::new(tool_config));
+        let model_port: Arc<dyn ModelPort> =
+            Arc::new(DeepSeekModelPort::new(transport, request_budget.clone()));
+        let runtime = Arc::new(AgentRuntime::new(model_port, tool_executor, sink, store));
+        let tool_catalog = runtime.tool_definitions(
+            &source_request.tool_policy,
+            0,
+            source_request.limits.max_depth,
+            source_request.environment.interactive,
+        );
+        let tool_catalog_sha256 = tool_catalog_sha256(&tool_catalog);
+        let execution_fingerprint_sha256 =
+            self.execution_fingerprint_sha256(&model, &tool_identity, &tool_catalog_sha256);
+        let system_prompt = self.system_prompt(&workspace, &model, !tool_catalog.is_empty());
+        let mut transcript = source.snapshot.transcript.clone();
+        match transcript.entries.first_mut() {
+            Some(TranscriptEntry::System { prompt }) => *prompt = system_prompt.clone(),
+            _ => transcript.entries.insert(
+                0,
+                TranscriptEntry::System {
+                    prompt: system_prompt.clone(),
+                },
+            ),
+        }
+        let deadline_unix_ms = source_request
+            .limits
+            .wall_time_ms
+            .map(|duration| unix_ms_now().saturating_add(duration));
+        let request = RunRequest {
+            run_id: Some(run_id),
+            parent_run_id: None,
+            continued_from_run_id: Some(source_run_id),
+            purpose,
+            model,
+            input,
+            system_prompt,
+            transcript,
+            reasoning_effort: source_request.reasoning_effort,
+            max_output_tokens: Some(max_output_tokens),
+            streaming: source_request.streaming,
+            actor: AgentActor::default(),
+            deadline_unix_ms,
+            tool_policy: source_request.tool_policy.clone(),
+            limits: source_request.limits,
+            environment: RunEnvironment {
+                workspace: stable_path(&workspace),
+                provider: DEEPSEEK_PROVIDER.to_owned(),
+                tool_catalog_sha256: Some(tool_catalog_sha256),
+                execution_fingerprint_sha256: Some(execution_fingerprint_sha256),
+                auto_approve: controls.auto_approve,
+                trust_mode: controls.trust_mode,
+                allow_sandbox_elevation: controls.allow_sandbox_elevation,
+                interactive: controls.interactive,
+                sandbox: controls.sandbox,
+            },
+            context_policy,
+            context_projection: source.snapshot.context_projection.clone(),
+            accounting_baseline: model_accounting_snapshot(&request_budget),
+        };
+        Ok(runtime.start(request))
     }
 }
 
@@ -623,6 +755,27 @@ fn duration_millis(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+fn production_context_policy(
+    capability: codewhale_deepseek::OfficialModelCapabilities,
+    max_output_tokens: u32,
+) -> ContextPolicy {
+    let hard_input_tokens = capability
+        .context_window_tokens
+        .saturating_sub(max_output_tokens)
+        .saturating_sub(CONTEXT_INPUT_SAFETY_TOKENS)
+        .max(1);
+    ContextPolicy {
+        auto_compact: true,
+        context_window_tokens: capability.context_window_tokens,
+        trigger_tokens: hard_input_tokens.saturating_mul(9) / 10,
+        hard_input_tokens,
+        summary_max_output_tokens: 2_048,
+        min_messages: 6,
+        keep_recent_user_turns: 4,
+        max_retries: 3,
+    }
+}
+
 fn unix_ms_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -664,7 +817,10 @@ fn environment_mismatch(run_id: &RunId, message: impl Into<String>) -> RunApiErr
 mod tests {
     use std::sync::{Arc, Mutex as StdMutex};
 
-    use codewhale_deepseek::OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS;
+    use codewhale_deepseek::{
+        OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_CONTEXT_WINDOW_TOKENS,
+        OFFICIAL_V4_MAX_OUTPUT_TOKENS,
+    };
     use codewhale_protocol::agent_runtime::{
         ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelStreamEvent, RunLimits,
         ToolArguments, ToolInvocation, ToolOutcome, ToolPolicy, Usage,
@@ -857,6 +1013,59 @@ mod tests {
                 sandbox: Some("workspace-write".to_owned()),
             },
         }
+    }
+
+    #[test]
+    fn official_v4_context_policy_reserves_output_and_fixed_catalog_uncertainty() {
+        for model in ["deepseek-v4-flash", "deepseek-v4-pro"] {
+            let capability = official_model_capabilities(model).expect("official V4 model");
+            assert_eq!(
+                capability.context_window_tokens,
+                OFFICIAL_V4_CONTEXT_WINDOW_TOKENS
+            );
+            assert_eq!(capability.max_output_tokens, OFFICIAL_V4_MAX_OUTPUT_TOKENS);
+            for output in [
+                OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS,
+                OFFICIAL_V4_MAX_OUTPUT_TOKENS,
+            ] {
+                let policy = production_context_policy(capability, output);
+                let expected_hard = OFFICIAL_V4_CONTEXT_WINDOW_TOKENS
+                    .saturating_sub(output)
+                    .saturating_sub(CONTEXT_INPUT_SAFETY_TOKENS);
+                assert_eq!(policy.hard_input_tokens, expected_hard);
+                assert_eq!(policy.trigger_tokens, expected_hard * 9 / 10);
+                assert!(policy.auto_compact);
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_model_visible_tool_catalog_fits_the_context_safety_reserve() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let tool_config = tool_config_for_run(
+            &ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full),
+            temp.path(),
+            &RunProductControls {
+                interactive: true,
+                ..RunProductControls::default()
+            },
+        )
+        .expect("tool config");
+        let runtime = AgentRuntime::new(
+            Arc::new(ReplayOnlyModelPort),
+            Arc::new(ProductionToolExecutor::new(tool_config)),
+            Arc::new(NullEventSink),
+            Arc::new(codewhale_runtime::InMemoryRunStore::default()),
+        );
+        let catalog = runtime.tool_definitions(&ToolPolicy::default(), 0, 4, true);
+        let conservative_tokens = serde_json::to_vec(&catalog)
+            .expect("serialize fixed catalog")
+            .len()
+            .div_ceil(3);
+        assert!(
+            conservative_tokens < CONTEXT_INPUT_SAFETY_TOKENS as usize,
+            "fixed catalog must fit the production safety reserve"
+        );
     }
 
     fn envelope(request_id: &str, command: RunCommand) -> RunCommandEnvelope {
@@ -1076,17 +1285,18 @@ mod tests {
         assert!(error.message.contains("deepseek_credential_missing"));
         assert!(
             app.store
-                .latest_resumable_run(
+                .list_root_runs(
                     &temp
                         .path()
                         .canonicalize()
                         .expect("canonical workspace")
                         .display()
-                        .to_string()
+                        .to_string(),
+                    1,
                 )
                 .await
                 .expect("query runs")
-                .is_none()
+                .is_empty()
         );
     }
 
@@ -1380,6 +1590,87 @@ mod tests {
             fingerprint_error
                 .message
                 .starts_with("run_resume_fingerprint_mismatch：")
+        );
+        assert_eq!(accepted.await.expect("zero request fixture"), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_context_policy_fails_resume_before_any_http_request() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let workspace = temp.path().canonicalize().expect("canonical workspace");
+        let (root, accepted) = quiet_loopback().await;
+        let connection = connection(&root, false);
+        let tools = ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full);
+        let controls = RunProductControls {
+            sandbox: Some("workspace-write".to_owned()),
+            ..RunProductControls::default()
+        };
+        let bound_tools =
+            tool_config_for_run(&tools, &workspace, &controls).expect("bound tool config");
+        let tool_identity = bound_tools.execution_identity();
+        let store =
+            Arc::new(StateStore::open(Some(temp.path().join("state.db"))).expect("state store"));
+        let catalog_runtime = AgentRuntime::new(
+            Arc::new(ReplayOnlyModelPort),
+            Arc::new(ProductionToolExecutor::new(bound_tools)),
+            Arc::new(NullEventSink),
+            store.clone(),
+        );
+        let catalog = catalog_runtime.tool_definitions(&ToolPolicy::default(), 0, 0, false);
+        let catalog_sha256 = tool_catalog_sha256(&catalog);
+        let composition = Arc::new(ProductionComposition {
+            deepseek: connection,
+            credential: Some(
+                DeepSeekCredential::new("test-deepseek-key").expect("test credential"),
+            ),
+            http_client: None,
+            tools,
+            prompt: ProductionPromptConfig::default(),
+            composition_build_revision: "test-composition".to_owned(),
+            default_max_api_requests: NonZeroU32::new(DEFAULT_MAX_API_REQUESTS)
+                .expect("non-zero default"),
+        });
+        let fingerprint = composition.execution_fingerprint_sha256(
+            "deepseek-v4-pro",
+            &tool_identity,
+            &catalog_sha256,
+        );
+        let mut request = RunRequest::new("恢复陈旧上下文策略", "persisted prompt");
+        let run_id = RunId::from("stale-context-policy");
+        request.run_id = Some(run_id.clone());
+        request.model = "deepseek-v4-pro".to_owned();
+        request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
+        request.limits.max_depth = 0;
+        request.context_policy = ContextPolicy::default();
+        request.environment = RunEnvironment {
+            workspace: stable_path(&workspace),
+            provider: DEEPSEEK_PROVIDER.to_owned(),
+            tool_catalog_sha256: Some(catalog_sha256),
+            execution_fingerprint_sha256: Some(fingerprint),
+            sandbox: controls.sandbox,
+            ..RunEnvironment::default()
+        };
+        let created = store.create(request).await.expect("seed resumable run");
+        store
+            .release(&created.lease)
+            .await
+            .expect("release seeded run");
+        let app = AgentApplication::from_parts(store, composition);
+        let error = error_result(
+            app.execute(envelope(
+                "stale-context-policy",
+                RunCommand::Resume {
+                    run_id,
+                    expected_workspace: None,
+                },
+            ))
+            .await,
+        );
+        assert_eq!(error.code, RunApiErrorCode::RunEnvironmentMismatch);
+        assert!(
+            error
+                .message
+                .starts_with("run_resume_context_policy_mismatch：")
         );
         assert_eq!(accepted.await.expect("zero request fixture"), 0);
     }

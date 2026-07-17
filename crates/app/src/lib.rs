@@ -10,18 +10,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use codewhale_protocol::agent_runtime::{
-    CommandId, DurableControlAction, InteractionId, RunId, StoredRuntimeEvent, TerminalState,
-    UserInteractionResponse,
+    CommandId, DurableControlAction, InteractionId, RunId, RunPurpose, StoredRuntimeEvent,
+    TerminalState, UserInteractionResponse,
 };
 use codewhale_protocol::run_api::{
-    RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope,
+    CompactRunCommand, ContinueRunCommand, MAX_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION,
+    RootRunSummary, RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope,
     RunCommandResponse, RunCommandResult, RunView, StartRunCommand,
 };
 use codewhale_runtime::{
-    AgentControl, ControlError, DurableActionState, DurableCommand, ModelAccounting,
-    ModelErrorCategory, ModelPort, ModelPortError, ModelRequest, ModelStream, RunReadyError,
-    RunReplay, RunStore, RunStoreError, RuntimeEventSink, RuntimeRun,
+    AgentControl, ContinuationError, ControlError, DurableActionState, DurableCommand,
+    ModelAccounting, ModelErrorCategory, ModelPort, ModelPortError, ModelRequest, ModelStream,
+    RootRunRecord, RunReadyError, RunReplay, RunStore, RunStoreError, RuntimeEventSink, RuntimeRun,
 };
+use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
 
 mod production;
@@ -79,6 +81,9 @@ pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
     if replay.snapshot.terminal.is_some()
         || replay.snapshot.last_model_failure.is_some()
         || !replay.snapshot.pending_children.is_empty()
+        || (replay.snapshot.request.purpose == RunPurpose::ContextCompaction
+            && (replay.snapshot.last_context_compaction.is_some()
+                || replay.snapshot.last_context_compaction_failure.is_some()))
     {
         return false;
     }
@@ -90,6 +95,11 @@ pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
         || replay
             .snapshot
             .pending_tool
+            .as_ref()
+            .is_some_and(|pending| pending.state == DurableActionState::InFlight)
+        || replay
+            .snapshot
+            .pending_context_compaction
             .as_ref()
             .is_some_and(|pending| pending.state == DurableActionState::InFlight)
     {
@@ -148,6 +158,7 @@ impl Drop for PendingActivation {
 trait RunComposition: Send + Sync {
     async fn start(
         &self,
+        run_id: RunId,
         command: StartRunCommand,
         store: Arc<dyn RunStore>,
         sink: Arc<dyn RuntimeEventSink>,
@@ -157,6 +168,16 @@ trait RunComposition: Send + Sync {
         &self,
         run_id: RunId,
         replay: RunReplay,
+        store: Arc<dyn RunStore>,
+        sink: Arc<dyn RuntimeEventSink>,
+    ) -> Result<RuntimeRun, RunApiError>;
+
+    async fn continue_run(
+        &self,
+        run_id: RunId,
+        source: RunReplay,
+        input: String,
+        purpose: RunPurpose,
         store: Arc<dyn RunStore>,
         sink: Arc<dyn RuntimeEventSink>,
     ) -> Result<RuntimeRun, RunApiError>;
@@ -210,7 +231,14 @@ impl AgentApplication {
             command,
         } = envelope;
         let command_id = CommandId::from(request_id.clone());
-        let result = if schema_version != RUN_API_SCHEMA_VERSION {
+        let result = if request_id.trim().is_empty() {
+            error_result(api_error(
+                RunApiErrorCode::InvalidRequest,
+                "request_id must not be empty",
+                None,
+                None,
+            ))
+        } else if schema_version != RUN_API_SCHEMA_VERSION {
             error_result(api_error(
                 RunApiErrorCode::InvalidRequest,
                 format!(
@@ -221,7 +249,21 @@ impl AgentApplication {
             ))
         } else {
             match command {
-                RunCommand::Start(command) => self.start(command).await,
+                RunCommand::Start(command) => {
+                    let digest = creation_command_sha256(&RunCommand::Start(command.clone()));
+                    self.start(command_id, digest, command).await
+                }
+                RunCommand::Continue(command) => {
+                    let digest = creation_command_sha256(&RunCommand::Continue(command.clone()));
+                    self.continue_run(command_id, digest, command).await
+                }
+                RunCommand::Compact(command) => {
+                    let digest = creation_command_sha256(&RunCommand::Compact(command.clone()));
+                    self.compact_run(command_id, digest, command).await
+                }
+                RunCommand::ListRoots { workspace, limit } => {
+                    self.list_roots(&workspace, limit).await
+                }
                 RunCommand::Get { run_id } => self.get(&run_id).await,
                 RunCommand::Events {
                     run_id,
@@ -335,14 +377,47 @@ impl AgentApplication {
         }
     }
 
-    async fn start(&self, command: StartRunCommand) -> RunCommandResult {
+    async fn start(
+        &self,
+        command_id: CommandId,
+        command_sha256: String,
+        command: StartRunCommand,
+    ) -> RunCommandResult {
         if let Err(error) = validate_start(&command) {
             return error_result(error);
+        }
+        let reservation = match self.reserve_creation(&command_id, &command_sha256).await {
+            Ok(reservation) => reservation,
+            Err(error) => return error_result(error),
+        };
+        if !reservation.newly_reserved {
+            match self.store.load(&reservation.reservation.run_id).await {
+                Ok(Some(replay)) => {
+                    return RunCommandResult::Run {
+                        run: Box::new(project_run(&replay)),
+                    };
+                }
+                Ok(None) if command.model.is_none() => {
+                    return error_result(api_error(
+                        RunApiErrorCode::RunRecoveryRequired,
+                        "run_creation_recovery_required：自动路由可能已发出请求，但 run_created 尚未提交；为避免重复计费，不会自动重试，请使用新的 request_id 明确重试",
+                        Some(reservation.reservation.run_id),
+                        None,
+                    ));
+                }
+                Ok(None) => {}
+                Err(error) => return error_result(store_error(error)),
+            }
         }
         let sink = self.event_sink();
         let run = match self
             .composition
-            .start(command, self.store.clone(), sink)
+            .start(
+                reservation.reservation.run_id.clone(),
+                command,
+                self.store.clone(),
+                sink,
+            )
             .await
         {
             Ok(run) => run,
@@ -351,7 +426,233 @@ impl AgentApplication {
         let run_id = run.run_id.clone();
         match self.activate(run).await {
             Ok(()) => self.get(&run_id).await,
+            Err(error) if error.code == RunApiErrorCode::RunAlreadyExists => {
+                self.get(&run_id).await
+            }
             Err(error) => error_result(error),
+        }
+    }
+
+    async fn continue_run(
+        &self,
+        command_id: CommandId,
+        command_sha256: String,
+        command: ContinueRunCommand,
+    ) -> RunCommandResult {
+        if command.input.trim().is_empty() {
+            return error_result(api_error(
+                RunApiErrorCode::InvalidRequest,
+                "continuation input must not be empty",
+                Some(command.run_id),
+                None,
+            ));
+        }
+        let source = match self.load(&command.run_id).await {
+            Ok(replay) => replay,
+            Err(error) => return error_result(error),
+        };
+        if let Some(expected_workspace) = command.expected_workspace.as_deref()
+            && expected_workspace != source.snapshot.request.environment.workspace
+        {
+            return error_result(api_error(
+                RunApiErrorCode::RunEnvironmentMismatch,
+                format!(
+                    "run_continue_workspace_mismatch：expected workspace {expected_workspace:?} does not match persisted workspace {:?}",
+                    source.snapshot.request.environment.workspace
+                ),
+                Some(command.run_id),
+                None,
+            ));
+        }
+        if source.snapshot.request.parent_run_id.is_some() {
+            return error_result(api_error(
+                RunApiErrorCode::RunContinuationInvalid,
+                "child Agent runs cannot be continuation sources",
+                Some(command.run_id),
+                None,
+            ));
+        }
+        let Some(outcome) = source.snapshot.terminal.as_ref() else {
+            return error_result(api_error(
+                RunApiErrorCode::RunContinuationInvalid,
+                "only a terminal root run can be continued; resume the active run instead",
+                Some(command.run_id),
+                None,
+            ));
+        };
+        if matches!(outcome.terminal, TerminalState::RecoveryRequired { .. }) {
+            return error_result(api_error(
+                RunApiErrorCode::RunRecoveryRequired,
+                "run has unresolved recovery ambiguity and cannot be continued",
+                Some(command.run_id),
+                Some(outcome.terminal.clone()),
+            ));
+        }
+        let reservation = match self.reserve_creation(&command_id, &command_sha256).await {
+            Ok(reservation) => reservation,
+            Err(error) => return error_result(error),
+        };
+        if !reservation.newly_reserved {
+            match self.store.load(&reservation.reservation.run_id).await {
+                Ok(Some(replay)) => {
+                    return RunCommandResult::Run {
+                        run: Box::new(project_run(&replay)),
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => return error_result(store_error(error)),
+            }
+        }
+
+        let sink = self.event_sink();
+        let run = match self
+            .composition
+            .continue_run(
+                reservation.reservation.run_id.clone(),
+                source,
+                command.input,
+                RunPurpose::Agent,
+                self.store.clone(),
+                sink,
+            )
+            .await
+        {
+            Ok(run) => run,
+            Err(error) => return error_result(error),
+        };
+        let run_id = run.run_id.clone();
+        match self.activate(run).await {
+            Ok(()) => self.get(&run_id).await,
+            Err(error) if error.code == RunApiErrorCode::RunAlreadyExists => {
+                self.get(&run_id).await
+            }
+            Err(error) => error_result(error),
+        }
+    }
+
+    async fn compact_run(
+        &self,
+        command_id: CommandId,
+        command_sha256: String,
+        command: CompactRunCommand,
+    ) -> RunCommandResult {
+        let source = match self.load(&command.run_id).await {
+            Ok(replay) => replay,
+            Err(error) => return error_result(error),
+        };
+        if let Some(expected_workspace) = command.expected_workspace.as_deref()
+            && expected_workspace != source.snapshot.request.environment.workspace
+        {
+            return error_result(api_error(
+                RunApiErrorCode::RunEnvironmentMismatch,
+                format!(
+                    "run_compact_workspace_mismatch：expected workspace {expected_workspace:?} does not match persisted workspace {:?}",
+                    source.snapshot.request.environment.workspace
+                ),
+                Some(command.run_id),
+                None,
+            ));
+        }
+        if source.snapshot.request.parent_run_id.is_some() {
+            return error_result(api_error(
+                RunApiErrorCode::RunContinuationInvalid,
+                "child Agent runs cannot be context-compaction sources",
+                Some(command.run_id),
+                None,
+            ));
+        }
+        let Some(outcome) = source.snapshot.terminal.as_ref() else {
+            return error_result(api_error(
+                RunApiErrorCode::RunContinuationInvalid,
+                "only a terminal root run can be compacted",
+                Some(command.run_id),
+                None,
+            ));
+        };
+        if matches!(outcome.terminal, TerminalState::RecoveryRequired { .. }) {
+            return error_result(api_error(
+                RunApiErrorCode::RunRecoveryRequired,
+                "run has unresolved recovery ambiguity and cannot be compacted",
+                Some(command.run_id),
+                Some(outcome.terminal.clone()),
+            ));
+        }
+        let reservation = match self.reserve_creation(&command_id, &command_sha256).await {
+            Ok(reservation) => reservation,
+            Err(error) => return error_result(error),
+        };
+        if !reservation.newly_reserved {
+            match self.store.load(&reservation.reservation.run_id).await {
+                Ok(Some(replay)) => {
+                    return RunCommandResult::Run {
+                        run: Box::new(project_run(&replay)),
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => return error_result(store_error(error)),
+            }
+        }
+
+        let sink = self.event_sink();
+        let run = match self
+            .composition
+            .continue_run(
+                reservation.reservation.run_id.clone(),
+                source,
+                String::new(),
+                RunPurpose::ContextCompaction,
+                self.store.clone(),
+                sink,
+            )
+            .await
+        {
+            Ok(run) => run,
+            Err(error) => return error_result(error),
+        };
+        let run_id = run.run_id.clone();
+        match self.activate(run).await {
+            Ok(()) => self.get(&run_id).await,
+            Err(error) if error.code == RunApiErrorCode::RunAlreadyExists => {
+                self.get(&run_id).await
+            }
+            Err(error) => error_result(error),
+        }
+    }
+
+    async fn reserve_creation(
+        &self,
+        command_id: &CommandId,
+        command_sha256: &str,
+    ) -> Result<codewhale_runtime::ReservedCreation, RunApiError> {
+        self.store
+            .reserve_creation(command_id, command_sha256, RunId::new())
+            .await
+            .map_err(store_error)
+    }
+
+    async fn list_roots(&self, workspace: &str, limit: u32) -> RunCommandResult {
+        if workspace.trim().is_empty() {
+            return error_result(api_error(
+                RunApiErrorCode::InvalidRequest,
+                "workspace must not be empty",
+                None,
+                None,
+            ));
+        }
+        if limit == 0 || limit > MAX_RUN_LIST_LIMIT {
+            return error_result(api_error(
+                RunApiErrorCode::InvalidRequest,
+                format!("root run list limit must be between 1 and {MAX_RUN_LIST_LIMIT}"),
+                None,
+                None,
+            ));
+        }
+        match self.store.list_root_runs(workspace, limit).await {
+            Ok(records) => RunCommandResult::Runs {
+                workspace: workspace.to_owned(),
+                runs: records.into_iter().map(project_root_run).collect(),
+            },
+            Err(error) => error_result(store_error(error)),
         }
     }
 
@@ -707,12 +1008,23 @@ fn validate_start(command: &StartRunCommand) -> Result<(), RunApiError> {
     Ok(())
 }
 
+fn creation_command_sha256(command: &RunCommand) -> String {
+    let bytes = serde_json::to_vec(command).expect("canonical RunCommand is serializable");
+    let digest = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{digest}")
+}
+
 fn project_run(replay: &RunReplay) -> RunView {
     let snapshot = &replay.snapshot;
     let request = &snapshot.request;
     RunView {
         run_id: request.run_id.clone().unwrap_or_default(),
+        purpose: request.purpose,
         parent_run_id: request.parent_run_id.clone(),
+        continued_from_run_id: request.continued_from_run_id.clone(),
         model: request.model.clone(),
         workspace: request.environment.workspace.clone(),
         last_sequence: snapshot.last_sequence,
@@ -726,6 +1038,19 @@ fn project_run(replay: &RunReplay) -> RunView {
         runtime_retries: snapshot.runtime_retries,
         tool_calls: snapshot.tool_calls,
         local_turns: snapshot.local_turns,
+    }
+}
+
+fn project_root_run(record: RootRunRecord) -> RootRunSummary {
+    RootRunSummary {
+        run_id: record.run_id,
+        purpose: record.purpose,
+        continued_from_run_id: record.continued_from_run_id,
+        workspace: record.workspace,
+        last_sequence: record.last_sequence,
+        terminal: record.terminal,
+        created_at_unix_ms: record.created_at_unix_ms,
+        updated_at_unix_ms: record.updated_at_unix_ms,
     }
 }
 
@@ -777,6 +1102,15 @@ fn ready_error(error: RunReadyError) -> RunApiError {
 
 fn store_error(error: RunStoreError) -> RunApiError {
     match error {
+        RunStoreError::CreationConflict { command_id } => api_error(
+            RunApiErrorCode::InvalidRequest,
+            format!(
+                "request_id {:?} was already reserved for a different creation command",
+                command_id.0
+            ),
+            None,
+            None,
+        ),
         RunStoreError::AlreadyExists { run_id } => api_error(
             RunApiErrorCode::RunAlreadyExists,
             format!("run {run_id} already exists"),
@@ -801,6 +1135,22 @@ fn store_error(error: RunStoreError) -> RunApiError {
             Some(run_id),
             None,
         ),
+        RunStoreError::InvalidContinuation {
+            source_run_id,
+            reason,
+        } => {
+            let code = if reason == ContinuationError::RecoveryRequired {
+                RunApiErrorCode::RunRecoveryRequired
+            } else {
+                RunApiErrorCode::RunContinuationInvalid
+            };
+            api_error(
+                code,
+                format!("run {source_run_id} cannot be continued: {reason}"),
+                Some(source_run_id),
+                None,
+            )
+        }
         other => api_error(
             RunApiErrorCode::RunStoreFailed,
             other.to_string(),
@@ -816,10 +1166,16 @@ fn store_error_run_id(error: &RunStoreError) -> Option<RunId> {
         | RunStoreError::NotFound { run_id }
         | RunStoreError::AlreadyRunning { run_id }
         | RunStoreError::AlreadyTerminal { run_id }
+        | RunStoreError::InvalidContinuation {
+            source_run_id: run_id,
+            ..
+        }
         | RunStoreError::StaleLease { run_id, .. }
         | RunStoreError::EventConflict { run_id, .. }
         | RunStoreError::Corrupt { run_id, .. } => Some(run_id.clone()),
-        RunStoreError::UnsupportedSchema { .. } | RunStoreError::Backend { .. } => None,
+        RunStoreError::CreationConflict { .. }
+        | RunStoreError::UnsupportedSchema { .. }
+        | RunStoreError::Backend { .. } => None,
     }
 }
 
@@ -848,11 +1204,11 @@ mod tests {
     use std::time::Duration;
 
     use codewhale_protocol::agent_runtime::{
-        ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelStreamEvent,
-        ReasoningEffort, RunEnvironment, RunLimits, RunRequest, RuntimeEventKind, ToolDefinition,
-        ToolInvocation, ToolOutcome, ToolPolicy, Usage,
+        ContextPolicy, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest,
+        ModelStreamEvent, ReasoningEffort, RunEnvironment, RunLimits, RunRequest, RuntimeEventKind,
+        ToolDefinition, ToolInvocation, ToolOutcome, ToolPolicy, TranscriptEntry, Usage,
     };
-    use codewhale_protocol::run_api::RunProductControls;
+    use codewhale_protocol::run_api::{CompactRunCommand, RunProductControls};
     use codewhale_runtime::{
         AgentRuntime, CancellationToken, InMemoryRunStore, ModelPort, ModelPortError, ModelStream,
         ToolExecutionError, ToolExecutor,
@@ -1028,12 +1384,14 @@ mod tests {
     impl RunComposition for FixtureComposition {
         async fn start(
             &self,
+            run_id: RunId,
             command: StartRunCommand,
             store: Arc<dyn RunStore>,
             sink: Arc<dyn RuntimeEventSink>,
         ) -> Result<RuntimeRun, RunApiError> {
             self.starts.fetch_add(1, Ordering::AcqRel);
             let mut request = request_from(command);
+            request.run_id = Some(run_id);
             request.environment.provider = "deepseek".to_owned();
             request.environment.tool_catalog_sha256 = Some("fixture-catalog".to_owned());
             request.environment.execution_fingerprint_sha256 = Some("fixture-execution".to_owned());
@@ -1052,6 +1410,29 @@ mod tests {
                 .store(replay.snapshot.last_sequence, Ordering::Release);
             Ok(self.runtime(store, sink).resume(run_id))
         }
+
+        async fn continue_run(
+            &self,
+            run_id: RunId,
+            source: RunReplay,
+            input: String,
+            purpose: RunPurpose,
+            store: Arc<dyn RunStore>,
+            sink: Arc<dyn RuntimeEventSink>,
+        ) -> Result<RuntimeRun, RunApiError> {
+            let source_run_id = source.snapshot.request.run_id.clone().unwrap_or_default();
+            let mut request = source.snapshot.request.clone();
+            request.run_id = Some(run_id);
+            request.parent_run_id = None;
+            request.continued_from_run_id = Some(source_run_id);
+            request.purpose = purpose;
+            request.input = input;
+            request.transcript = source.snapshot.transcript;
+            request.context_projection = source.snapshot.context_projection;
+            request.deadline_unix_ms = None;
+            request.accounting_baseline = ModelAccounting::default();
+            Ok(self.runtime(store, sink).start(request))
+        }
     }
 
     fn request_from(command: StartRunCommand) -> RunRequest {
@@ -1064,6 +1445,16 @@ mod tests {
         request.streaming = command.streaming;
         request.tool_policy = command.tool_policy;
         request.limits = command.limits;
+        request.context_policy = ContextPolicy {
+            auto_compact: false,
+            context_window_tokens: 100_000,
+            trigger_tokens: 70_000,
+            hard_input_tokens: 80_000,
+            summary_max_output_tokens: 512,
+            min_messages: 2,
+            keep_recent_user_turns: 0,
+            max_retries: 2,
+        };
         request.environment = RunEnvironment {
             workspace: command.workspace,
             auto_approve: command.controls.auto_approve,
@@ -1099,6 +1490,31 @@ mod tests {
             request_id: request_id.to_owned(),
             command,
         }
+    }
+
+    async fn execute_concurrently(
+        app: Arc<AgentApplication>,
+        first: RunCommandEnvelope,
+        second: RunCommandEnvelope,
+    ) -> [RunCommandResponse; 2] {
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let first_app = app.clone();
+        let first_barrier = barrier.clone();
+        let first_task = tokio::spawn(async move {
+            first_barrier.wait().await;
+            first_app.execute(first).await
+        });
+        let second_barrier = barrier.clone();
+        let second_task = tokio::spawn(async move {
+            second_barrier.wait().await;
+            app.execute(second).await
+        });
+        barrier.wait().await;
+        let (first, second) = tokio::join!(first_task, second_task);
+        [
+            first.expect("first concurrent command task"),
+            second.expect("second concurrent command task"),
+        ]
     }
 
     fn run_result(response: RunCommandResponse) -> RunView {
@@ -1308,6 +1724,342 @@ mod tests {
                 .events,
             before_events
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_continue_creates_distinct_root_with_fresh_accounting_and_full_history() {
+        let (app, store, _) = new_fixture(ModelMode::Complete).await;
+        let source = run_result(
+            app.execute(envelope(
+                "start-source",
+                RunCommand::Start(start_command("第一轮")),
+            ))
+            .await,
+        );
+        let source_replay = wait_terminal(store.as_ref(), &source.run_id).await;
+        let source_events = source_replay.events.clone();
+
+        let continued = run_result(
+            app.execute(envelope(
+                "continue-source",
+                RunCommand::Continue(ContinueRunCommand {
+                    run_id: source.run_id.clone(),
+                    input: "第二轮".to_owned(),
+                    expected_workspace: Some("/workspace/project".to_owned()),
+                }),
+            ))
+            .await,
+        );
+        assert_ne!(continued.run_id, source.run_id);
+        assert_eq!(continued.parent_run_id, None);
+        assert_eq!(continued.continued_from_run_id, Some(source.run_id.clone()));
+        let continued_replay = wait_terminal(store.as_ref(), &continued.run_id).await;
+        assert_eq!(
+            &continued_replay.snapshot.transcript.entries
+                [..source_replay.snapshot.transcript.entries.len()],
+            source_replay.snapshot.transcript.entries.as_slice()
+        );
+        assert!(matches!(
+            continued_replay.snapshot.transcript.entries
+                [source_replay.snapshot.transcript.entries.len()],
+            TranscriptEntry::User { ref content } if content == "第二轮"
+        ));
+        assert_eq!(source_replay.snapshot.usage.input_tokens, 4);
+        assert_eq!(continued_replay.snapshot.usage.input_tokens, 4);
+        assert_eq!(
+            store
+                .load(&source.run_id)
+                .await
+                .expect("reload source")
+                .expect("source exists")
+                .events,
+            source_events
+        );
+
+        let listed = app
+            .execute(envelope(
+                "list-roots",
+                RunCommand::ListRoots {
+                    workspace: "/workspace/project".to_owned(),
+                    limit: 10,
+                },
+            ))
+            .await;
+        let RunCommandResult::Runs { runs, .. } = listed.result else {
+            panic!("expected root list");
+        };
+        assert_eq!(runs.len(), 2);
+        assert!(runs.iter().any(|run| {
+            run.run_id == continued.run_id
+                && run.continued_from_run_id.as_ref() == Some(&source.run_id)
+        }));
+    }
+
+    #[tokio::test]
+    async fn manual_compact_creates_an_internal_root_then_continue_inherits_its_projection() {
+        let (app, store, _) = new_fixture(ModelMode::Complete).await;
+        let source = run_result(
+            app.execute(envelope(
+                "start-compact-source",
+                RunCommand::Start(start_command(&format!(
+                    "第一轮长上下文 {}",
+                    "甲".repeat(20_000)
+                ))),
+            ))
+            .await,
+        );
+        let source_replay = wait_terminal(store.as_ref(), &source.run_id).await;
+        let source_events = source_replay.events.clone();
+
+        let compact = run_result(
+            app.execute(envelope(
+                "compact-source",
+                RunCommand::Compact(CompactRunCommand {
+                    run_id: source.run_id.clone(),
+                    expected_workspace: Some("/workspace/project".to_owned()),
+                }),
+            ))
+            .await,
+        );
+        assert_eq!(compact.purpose, RunPurpose::ContextCompaction);
+        assert_eq!(compact.continued_from_run_id, Some(source.run_id.clone()));
+        let compact_replay = wait_terminal(store.as_ref(), &compact.run_id).await;
+        assert!(compact_replay.snapshot.context_projection.is_some());
+        assert!(compact_replay.snapshot.last_context_compaction.is_some());
+        assert!(compact_replay.events.iter().any(|event| matches!(
+            event.event,
+            RuntimeEventKind::ContextCompactionCommitted { .. }
+        )));
+        assert_eq!(
+            store
+                .load(&source.run_id)
+                .await
+                .expect("reload source")
+                .expect("source exists")
+                .events,
+            source_events
+        );
+
+        let continued = run_result(
+            app.execute(envelope(
+                "continue-after-compact",
+                RunCommand::Continue(ContinueRunCommand {
+                    run_id: compact.run_id.clone(),
+                    input: "第二轮".to_owned(),
+                    expected_workspace: Some("/workspace/project".to_owned()),
+                }),
+            ))
+            .await,
+        );
+        assert_eq!(continued.purpose, RunPurpose::Agent);
+        let continued_replay = wait_terminal(store.as_ref(), &continued.run_id).await;
+        assert_eq!(
+            continued_replay.snapshot.request.context_projection,
+            compact_replay.snapshot.context_projection
+        );
+
+        let listed = app
+            .execute(envelope(
+                "list-roots-with-purpose",
+                RunCommand::ListRoots {
+                    workspace: "/workspace/project".to_owned(),
+                    limit: 10,
+                },
+            ))
+            .await;
+        let RunCommandResult::Runs { runs, .. } = listed.result else {
+            panic!("expected root list");
+        };
+        assert!(runs.iter().any(|run| {
+            run.run_id == compact.run_id && run.purpose == RunPurpose::ContextCompaction
+        }));
+    }
+
+    #[tokio::test]
+    async fn continue_rejects_active_source_empty_input_and_workspace_mismatch() {
+        let (app, _, _) = new_fixture(ModelMode::Pending).await;
+        let active = run_result(
+            app.execute(envelope(
+                "start-active",
+                RunCommand::Start(start_command("保持活跃")),
+            ))
+            .await,
+        );
+        let active_error = error(
+            app.execute(envelope(
+                "continue-active",
+                RunCommand::Continue(ContinueRunCommand {
+                    run_id: active.run_id.clone(),
+                    input: "错误续跑".to_owned(),
+                    expected_workspace: None,
+                }),
+            ))
+            .await,
+        );
+        assert_eq!(active_error.code, RunApiErrorCode::RunContinuationInvalid);
+        let empty_error = error(
+            app.execute(envelope(
+                "continue-empty",
+                RunCommand::Continue(ContinueRunCommand {
+                    run_id: active.run_id.clone(),
+                    input: "   ".to_owned(),
+                    expected_workspace: None,
+                }),
+            ))
+            .await,
+        );
+        assert_eq!(empty_error.code, RunApiErrorCode::InvalidRequest);
+        let workspace_error = error(
+            app.execute(envelope(
+                "continue-wrong-workspace",
+                RunCommand::Continue(ContinueRunCommand {
+                    run_id: active.run_id.clone(),
+                    input: "错误工作区".to_owned(),
+                    expected_workspace: Some("/workspace/other".to_owned()),
+                }),
+            ))
+            .await,
+        );
+        assert_eq!(
+            workspace_error.code,
+            RunApiErrorCode::RunEnvironmentMismatch
+        );
+        let _ = app
+            .execute(envelope(
+                "cancel-active",
+                RunCommand::Cancel {
+                    run_id: active.run_id,
+                },
+            ))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn creation_request_ids_replay_one_run_and_reject_different_payloads() {
+        let (app, store, composition) = new_fixture(ModelMode::Complete).await;
+        let start = RunCommand::Start(start_command("创建幂等"));
+        let first = run_result(app.execute(envelope("same-create", start.clone())).await);
+        let retried = run_result(app.execute(envelope("same-create", start)).await);
+        assert_eq!(retried.run_id, first.run_id);
+        assert_eq!(composition.starts.load(Ordering::Acquire), 1);
+        let conflict = error(
+            app.execute(envelope(
+                "same-create",
+                RunCommand::Start(start_command("不同创建负载")),
+            ))
+            .await,
+        );
+        assert_eq!(conflict.code, RunApiErrorCode::InvalidRequest);
+
+        wait_terminal(store.as_ref(), &first.run_id).await;
+        let continuation = RunCommand::Continue(ContinueRunCommand {
+            run_id: first.run_id.clone(),
+            input: "下一轮".to_owned(),
+            expected_workspace: Some("/workspace/project".to_owned()),
+        });
+        let continued = run_result(
+            app.execute(envelope("same-continue", continuation.clone()))
+                .await,
+        );
+        let continued_retry =
+            run_result(app.execute(envelope("same-continue", continuation)).await);
+        assert_eq!(continued_retry.run_id, continued.run_id);
+        wait_terminal(store.as_ref(), &continued.run_id).await;
+
+        let compact = RunCommand::Compact(CompactRunCommand {
+            run_id: continued.run_id.clone(),
+            expected_workspace: Some("/workspace/project".to_owned()),
+        });
+        let compacted = run_result(app.execute(envelope("same-compact", compact.clone())).await);
+        let compacted_retry = run_result(app.execute(envelope("same-compact", compact)).await);
+        assert_eq!(compacted_retry.run_id, compacted.run_id);
+
+        let roots = store
+            .list_root_runs("/workspace/project", 10)
+            .await
+            .expect("list idempotent roots");
+        assert_eq!(roots.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn concurrent_same_creation_request_replays_one_run_and_one_root() {
+        let (app, store, _) = new_fixture(ModelMode::Pending).await;
+        let command = RunCommand::Start(start_command("并发相同创建"));
+        let responses = execute_concurrently(
+            app.clone(),
+            envelope("concurrent-same-create", command.clone()),
+            envelope("concurrent-same-create", command),
+        )
+        .await;
+        let [first, second] = responses.map(run_result);
+        assert_eq!(first.run_id, second.run_id);
+
+        let roots = store
+            .list_root_runs("/workspace/project", 10)
+            .await
+            .expect("list concurrent idempotent roots");
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].run_id, first.run_id);
+
+        let stopped = app
+            .execute(envelope(
+                "cancel-concurrent-same-create",
+                RunCommand::Cancel {
+                    run_id: first.run_id.clone(),
+                },
+            ))
+            .await;
+        assert!(matches!(stopped.result, RunCommandResult::Accepted { .. }));
+        wait_terminal(store.as_ref(), &first.run_id).await;
+    }
+
+    #[tokio::test]
+    async fn concurrent_conflicting_creation_request_accepts_at_most_one_payload() {
+        let (app, store, composition) = new_fixture(ModelMode::Pending).await;
+        let responses = execute_concurrently(
+            app.clone(),
+            envelope(
+                "concurrent-conflicting-create",
+                RunCommand::Start(start_command("并发创建负载 A")),
+            ),
+            envelope(
+                "concurrent-conflicting-create",
+                RunCommand::Start(start_command("并发创建负载 B")),
+            ),
+        )
+        .await;
+
+        let mut accepted = Vec::new();
+        let mut rejected = Vec::new();
+        for response in responses {
+            match response.result {
+                RunCommandResult::Run { run } => accepted.push(*run),
+                RunCommandResult::Error { error } => rejected.push(error),
+                other => panic!("unexpected conflicting creation result: {other:?}"),
+            }
+        }
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].code, RunApiErrorCode::InvalidRequest);
+        assert_eq!(composition.starts.load(Ordering::Acquire), 1);
+
+        let roots = store
+            .list_root_runs("/workspace/project", 10)
+            .await
+            .expect("list concurrent conflicting roots");
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].run_id, accepted[0].run_id);
+
+        let stopped = app
+            .execute(envelope(
+                "cancel-concurrent-conflicting-create",
+                RunCommand::Cancel {
+                    run_id: accepted[0].run_id.clone(),
+                },
+            ))
+            .await;
+        assert!(matches!(stopped.result, RunCommandResult::Accepted { .. }));
+        wait_terminal(store.as_ref(), &accepted[0].run_id).await;
     }
 
     #[tokio::test]

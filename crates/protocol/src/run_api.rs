@@ -10,12 +10,14 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Serialize};
 
 use crate::agent_runtime::{
-    InteractionId, ModelAccounting, ReasoningEffort, RunId, RunLimits, StoredRuntimeEvent,
-    TerminalState, ToolPolicy, Usage, UserInteractionResponse,
+    InteractionId, ModelAccounting, ReasoningEffort, RunId, RunLimits, RunPurpose,
+    StoredRuntimeEvent, TerminalState, ToolPolicy, Usage, UserInteractionResponse,
 };
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 2;
+pub const RUN_API_SCHEMA_VERSION: u32 = 3;
+pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
+pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
 /// Explicit product controls accepted when starting a root run.
 ///
@@ -69,6 +71,28 @@ pub struct StartRunCommand {
     pub controls: RunProductControls,
 }
 
+/// User input for a new root run that continues one terminal root run.
+///
+/// Model, prompt, tools, execution posture, and limits are inherited from the
+/// source run and revalidated by the application. A continuation is never a
+/// resume and never a child Agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ContinueRunCommand {
+    pub run_id: RunId,
+    pub input: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workspace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct CompactRunCommand {
+    pub run_id: RunId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workspace: Option<String>,
+}
+
 /// One versioned application command submitted over HTTP or stdio.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
@@ -83,6 +107,13 @@ pub struct RunCommandEnvelope {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunCommand {
     Start(StartRunCommand),
+    Continue(ContinueRunCommand),
+    Compact(CompactRunCommand),
+    ListRoots {
+        workspace: String,
+        #[serde(default = "default_run_list_limit")]
+        limit: u32,
+    },
     Get {
         run_id: RunId,
     },
@@ -121,8 +152,11 @@ pub enum RunCommand {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RunView {
     pub run_id: RunId,
+    pub purpose: RunPurpose,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<RunId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continued_from_run_id: Option<RunId>,
     pub model: String,
     pub workspace: String,
     pub last_sequence: u64,
@@ -136,6 +170,26 @@ pub struct RunView {
     pub local_turns: u32,
 }
 
+/// Lightweight RunStore projection used for workspace-scoped session lookup.
+///
+/// Entries are root runs, including internal context-compaction roots.
+/// Continuation lineage is represented by `continued_from_run_id`; child
+/// hierarchy remains represented exclusively by `parent_run_id` on full run
+/// views and events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RootRunSummary {
+    pub run_id: RunId,
+    pub purpose: RunPurpose,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub continued_from_run_id: Option<RunId>,
+    pub workspace: String,
+    pub last_sequence: u64,
+    pub terminal: bool,
+    pub created_at_unix_ms: u64,
+    pub updated_at_unix_ms: u64,
+}
+
 /// Stable machine-readable error codes shared by HTTP and stdio.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -147,6 +201,7 @@ pub enum RunApiErrorCode {
     RunNotActive,
     RunRecoveryRequired,
     RunTerminal,
+    RunContinuationInvalid,
     RunEnvironmentMismatch,
     EventCursorAhead,
     RunStoreFailed,
@@ -180,6 +235,10 @@ pub enum RunCommandResult {
         after_sequence: u64,
         events: Vec<StoredRuntimeEvent>,
     },
+    Runs {
+        workspace: String,
+        runs: Vec<RootRunSummary>,
+    },
     Accepted {
         run_id: RunId,
         last_sequence: u64,
@@ -187,6 +246,10 @@ pub enum RunCommandResult {
     Error {
         error: RunApiError,
     },
+}
+
+const fn default_run_list_limit() -> u32 {
+    DEFAULT_RUN_LIST_LIMIT
 }
 
 /// Versioned response correlated with one [`RunCommandEnvelope`].
@@ -245,7 +308,9 @@ mod tests {
     fn run_view() -> RunView {
         RunView {
             run_id: RunId::from("run-1"),
+            purpose: RunPurpose::Agent,
             parent_run_id: None,
+            continued_from_run_id: None,
             model: "deepseek-v4-flash".to_owned(),
             workspace: "/workspace/project".to_owned(),
             last_sequence: 2,
@@ -278,7 +343,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 2,
+                "schema_version": 3,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
@@ -327,6 +392,7 @@ mod tests {
             "accounting_baseline",
             "transcript",
             "parent_run_id",
+            "continued_from_run_id",
         ] {
             assert!(
                 !command.contains_key(forbidden),
@@ -342,6 +408,15 @@ mod tests {
     fn all_command_tags_round_trip() {
         let commands = vec![
             RunCommand::Start(start_command()),
+            RunCommand::Continue(ContinueRunCommand {
+                run_id: RunId::from("run-1"),
+                input: "继续修复".to_owned(),
+                expected_workspace: Some("/workspace/project".to_owned()),
+            }),
+            RunCommand::ListRoots {
+                workspace: "/workspace/project".to_owned(),
+                limit: 25,
+            },
             RunCommand::Get {
                 run_id: RunId::from("run-1"),
             },
@@ -371,6 +446,8 @@ mod tests {
         ];
         let expected = [
             "start",
+            "continue",
+            "list_roots",
             "get",
             "events",
             "resume",
@@ -388,6 +465,40 @@ mod tests {
                 command
             );
         }
+    }
+
+    #[test]
+    fn continue_command_exposes_only_source_input_and_workspace_guard() {
+        let command = RunCommand::Continue(ContinueRunCommand {
+            run_id: RunId::from("source-1"),
+            input: "继续完成测试".to_owned(),
+            expected_workspace: Some("/workspace/project".to_owned()),
+        });
+        assert_eq!(
+            serde_json::to_value(command).expect("serialize continue"),
+            json!({
+                "kind": "continue",
+                "run_id": "source-1",
+                "input": "继续完成测试",
+                "expected_workspace": "/workspace/project"
+            })
+        );
+    }
+
+    #[test]
+    fn root_list_limit_defaults_to_product_value() {
+        let command: RunCommand = serde_json::from_value(json!({
+            "kind": "list_roots",
+            "workspace": "/workspace/project"
+        }))
+        .expect("deserialize root list");
+        assert_eq!(
+            command,
+            RunCommand::ListRoots {
+                workspace: "/workspace/project".to_owned(),
+                limit: DEFAULT_RUN_LIST_LIMIT,
+            }
+        );
     }
 
     #[test]

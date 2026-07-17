@@ -6,6 +6,7 @@
 
 mod project_context_cache;
 
+pub mod compaction;
 pub mod model_context;
 pub mod project_context;
 pub mod prompts;

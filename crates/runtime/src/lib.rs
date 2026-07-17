@@ -19,9 +19,11 @@ pub use agent::{
     AgentControl, AgentRuntime, ControlError, RunReadyError, RuntimeJoinError, RuntimeRun,
 };
 pub use store::{
-    AcquiredRun, CommandReceipt, CreatedRun, DurableActionState, DurableCommand, InMemoryRunStore,
-    PendingControl, PendingModelAction, PendingSteer, PendingToolAction, PendingUserInteraction,
-    RunLease, RunReplay, RunSnapshot, StoppedModelFailure, apply_event, reduce_events,
+    AcquiredRun, CommandReceipt, CommittedContextCompaction, CreatedRun, CreationReservation,
+    DurableActionState, DurableCommand, InMemoryRunStore, PendingContextCompaction, PendingControl,
+    PendingModelAction, PendingSteer, PendingToolAction, PendingUserInteraction, ReservedCreation,
+    RootRunRecord, RunLease, RunReplay, RunSnapshot, StoppedContextCompactionFailure,
+    StoppedModelFailure, apply_event, reduce_events, validate_continuation_request,
 };
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -77,6 +79,11 @@ pub enum RunStoreError {
     AlreadyRunning { run_id: RunId },
     #[error("run {run_id} already reached its terminal event")]
     AlreadyTerminal { run_id: RunId },
+    #[error("run {source_run_id} cannot be continued: {reason}")]
+    InvalidContinuation {
+        source_run_id: RunId,
+        reason: ContinuationError,
+    },
     #[error("run {run_id} lease epoch {epoch} is stale")]
     StaleLease { run_id: RunId, epoch: u64 },
     #[error("event id {event_id} for run {run_id} was reused with different content")]
@@ -84,12 +91,40 @@ pub enum RunStoreError {
         run_id: RunId,
         event_id: RuntimeEventId,
     },
+    #[error("creation command id {command_id:?} was reused with different content")]
+    CreationConflict { command_id: CommandId },
     #[error("run {run_id} has corrupt persisted state: {message}")]
     Corrupt { run_id: RunId, message: String },
-    #[error("run store schema version {found} is newer than supported version {supported}")]
-    UnsupportedSchema { found: u32, supported: u32 },
+    #[error(
+        "run event schema version {found} is outside the supported range {minimum_supported}..={maximum_supported}"
+    )]
+    UnsupportedSchema {
+        found: u32,
+        minimum_supported: u32,
+        maximum_supported: u32,
+    },
     #[error("run store failed: {message}")]
     Backend { message: String },
+}
+
+#[derive(Debug, Clone, Copy, thiserror::Error, PartialEq, Eq)]
+pub enum ContinuationError {
+    #[error("source run is not terminal")]
+    SourceNotTerminal,
+    #[error("source run is a child Agent")]
+    SourceIsChild,
+    #[error("source run requires explicit recovery resolution")]
+    RecoveryRequired,
+    #[error("new run is not a root Agent")]
+    NewRunIsNotRoot,
+    #[error("source and continuation workspaces differ")]
+    WorkspaceMismatch,
+    #[error("continuation transcript is not the source canonical transcript")]
+    TranscriptMismatch,
+    #[error("continuation context projection is not the source projection")]
+    ContextProjectionMismatch,
+    #[error("continuation lineage is missing, cyclic, or internally inconsistent")]
+    LineageCorrupt,
 }
 
 /// Pull-based model stream. Calling `next` only after the previous stored
@@ -172,6 +207,15 @@ pub trait RuntimeEventSink: Send + Sync {
 
 #[async_trait]
 pub trait RunStore: Send + Sync {
+    /// Atomically reserve the durable identity of a Start/Continue/Compact
+    /// command before composition can perform any external model request.
+    async fn reserve_creation(
+        &self,
+        command_id: &CommandId,
+        command_sha256: &str,
+        proposed_run_id: RunId,
+    ) -> Result<ReservedCreation, RunStoreError>;
+
     async fn create(&self, request: RunRequest) -> Result<CreatedRun, RunStoreError>;
 
     async fn acquire(&self, run_id: &RunId) -> Result<AcquiredRun, RunStoreError>;
@@ -192,7 +236,11 @@ pub trait RunStore: Send + Sync {
 
     async fn release(&self, lease: &RunLease) -> Result<(), RunStoreError>;
 
-    async fn latest_resumable_run(&self, workspace: &str) -> Result<Option<RunId>, RunStoreError>;
+    async fn list_root_runs(
+        &self,
+        workspace: &str,
+        limit: u32,
+    ) -> Result<Vec<RootRunRecord>, RunStoreError>;
 }
 
 pub(crate) fn now_unix_ms() -> u64 {

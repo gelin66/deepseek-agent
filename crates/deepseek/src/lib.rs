@@ -31,9 +31,9 @@ pub use auto_route::{
     DeepSeekAutoRouteSource, resolve_deepseek_auto_route,
 };
 pub use model_port::{
-    DeepSeekModelPort, OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_MAX_OUTPUT_TOKENS,
-    OfficialModelCapabilities, OfficialModelCapabilityError, model_accounting_snapshot,
-    official_model_capabilities, resume_api_request_budget,
+    DeepSeekModelPort, OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS, OFFICIAL_V4_CONTEXT_WINDOW_TOKENS,
+    OFFICIAL_V4_MAX_OUTPUT_TOKENS, OfficialModelCapabilities, OfficialModelCapabilityError,
+    model_accounting_snapshot, official_model_capabilities, resume_api_request_budget,
 };
 pub use pricing::{
     CostEstimate, CurrencyPricing, ModelPricing, calculate_turn_cost_estimate,

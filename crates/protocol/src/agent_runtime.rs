@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 4;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 4;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 5;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -223,6 +224,13 @@ pub struct RunRequest {
     pub run_id: Option<RunId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<RunId>,
+    /// Terminal root run whose canonical conversation this new root run
+    /// continues. This is independent from `parent_run_id`, which is reserved
+    /// for the root/child Agent hierarchy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continued_from_run_id: Option<RunId>,
+    #[serde(default)]
+    pub purpose: RunPurpose,
     pub model: String,
     pub input: String,
     pub system_prompt: SystemPrompt,
@@ -243,6 +251,10 @@ pub struct RunRequest {
     pub limits: RunLimits,
     #[serde(default)]
     pub environment: RunEnvironment,
+    #[serde(default)]
+    pub context_policy: ContextPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_projection: Option<ContextProjection>,
     /// Physical model accounting already owned by the fresh run's
     /// `ModelPort`. Persisting it in `run_created` closes the crash window for
     /// pre-runtime calls such as DeepSeek auto-routing. A reopened process
@@ -257,6 +269,8 @@ impl RunRequest {
         Self {
             run_id: None,
             parent_run_id: None,
+            continued_from_run_id: None,
+            purpose: RunPurpose::Agent,
             model: "deepseek-v4-flash".to_owned(),
             input: input.into(),
             system_prompt: system_prompt.into(),
@@ -269,9 +283,67 @@ impl RunRequest {
             tool_policy: ToolPolicy::default(),
             limits: RunLimits::default(),
             environment: RunEnvironment::default(),
+            context_policy: ContextPolicy::default(),
+            context_projection: None,
             accounting_baseline: ModelAccounting::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPurpose {
+    #[default]
+    Agent,
+    ContextCompaction,
+}
+
+/// Host-owned context limits for the official DeepSeek model selected for a
+/// run. Transport clients cannot supply these values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextPolicy {
+    pub auto_compact: bool,
+    pub context_window_tokens: u32,
+    pub trigger_tokens: u32,
+    pub hard_input_tokens: u32,
+    pub summary_max_output_tokens: u32,
+    pub min_messages: u32,
+    pub keep_recent_user_turns: u32,
+    pub max_retries: u32,
+}
+
+impl Default for ContextPolicy {
+    fn default() -> Self {
+        Self {
+            auto_compact: false,
+            context_window_tokens: 0,
+            trigger_tokens: 0,
+            hard_input_tokens: 0,
+            summary_max_output_tokens: 2_048,
+            min_messages: 6,
+            keep_recent_user_turns: 4,
+            max_retries: 3,
+        }
+    }
+}
+
+/// Persisted per-request projection produced by context compaction.
+///
+/// `CanonicalTranscript` remains complete and append-only. This projection
+/// supplies only the compacted model-visible prefix; transcript entries after
+/// `source_entry_count` are appended when preparing the next request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextProjection {
+    pub source_entry_count: u64,
+    pub source_projection_sha256: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_prompt: Option<SystemPrompt>,
+    pub messages: Vec<ModelMessage>,
+    /// Indices in `messages` that originate from canonical user input or a
+    /// durable steer. Child handoffs can share the model `user` role but do
+    /// not consume the recent-user-turn retention budget.
+    #[serde(default)]
+    pub user_message_indices: Vec<u32>,
 }
 
 /// Immutable host facts required to reopen a run without silently changing
@@ -949,6 +1021,7 @@ pub enum RuntimeTimeoutPhase {
 #[serde(rename_all = "snake_case")]
 pub enum RecoveryAmbiguityPhase {
     ModelRequest,
+    ContextCompactionModelRequest,
     ToolExecution,
     ChildRun,
 }
@@ -988,6 +1061,13 @@ pub enum RuntimeFailure {
         message: String,
     },
     AccountingIncomplete {
+        message: String,
+    },
+    ContextLimitExceeded {
+        estimated_tokens: u64,
+        hard_input_tokens: u64,
+    },
+    ContextCompactionFailed {
         message: String,
     },
     Model {
@@ -1068,6 +1148,41 @@ impl AttemptId {
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ContextCompactionId(pub String);
+
+impl ContextCompactionId {
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Uuid::new_v4().to_string())
+    }
+}
+
+impl Default for ContextCompactionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCompactionTrigger {
+    Manual,
+    Threshold,
+    PreflightLimit,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContextCompactionPlan {
+    pub source_entry_count: u64,
+    pub source_projection_sha256: String,
+    pub before_tokens: u64,
+    pub locally_pruned_tokens: u64,
+    pub retained_messages: Vec<ModelMessage>,
+    pub retained_user_message_indices: Vec<u32>,
 }
 
 impl Default for AttemptId {
@@ -1450,6 +1565,36 @@ impl PendingRuntimeEvent {
 pub enum RuntimeEventKind {
     RunCreated {
         request: Box<RunRequest>,
+    },
+    ContextCompactionPrepared {
+        compaction_id: ContextCompactionId,
+        attempt_id: AttemptId,
+        trigger: ContextCompactionTrigger,
+        plan: Box<ContextCompactionPlan>,
+        request: Box<ModelRequest>,
+    },
+    ContextCompactionInFlight {
+        compaction_id: ContextCompactionId,
+        attempt_id: AttemptId,
+    },
+    ContextCompactionAttemptFailed {
+        compaction_id: ContextCompactionId,
+        attempt_id: AttemptId,
+        failure: ModelAttemptFailure,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<Box<ModelOutput>>,
+        accounting: Box<ModelAccounting>,
+        retry: ModelRetryDecision,
+    },
+    ContextCompactionCommitted {
+        compaction_id: ContextCompactionId,
+        trigger: ContextCompactionTrigger,
+        projection: Box<ContextProjection>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        output: Option<Box<ModelOutput>>,
+        accounting: Box<ModelAccounting>,
+        before_tokens: u64,
+        after_tokens: u64,
     },
     ModelRequestPrepared {
         attempt_id: AttemptId,

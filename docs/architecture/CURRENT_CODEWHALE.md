@@ -9,7 +9,8 @@
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
-- 当前阶段：M4-C C1 已冻结，交互 TUI caller 尚未迁移
+- 当前阶段：M4-C C1 已冻结；C2 continuation/context projection 候选已通过验收、待
+  review/commit 冻结，交互 TUI caller 尚未迁移
 
 ## 1. 当前结论
 
@@ -58,7 +59,10 @@ interactive TUI / TaskManager
 - 打开同一种 SQLite `RunStore`；
 - 绑定 physical request budget、model accounting 和 execution fingerprint；
 - 维护轻量 process-local active control registry；
-- 实现 start、get、events、resume、steer、interrupt、cancel、resolve_interaction。
+- 实现 start、continue、compact、list_roots、get、events、resume、steer、interrupt、
+  cancel、resolve_interaction；
+- start/continue/compact 通过 State schema v8 的 durable creation reservation 先绑定
+  `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
 
@@ -71,6 +75,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 根 Agent 和 child Agent 使用同一个 `AgentRuntime` 与 conformance semantics。Runtime 负责：
 
 - canonical transcript；
+- continuation lineage 与 model-visible context projection；
 - model/tool 循环；
 - root/child budget；
 - control command；
@@ -79,6 +84,12 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 - terminal candidate 与 Host 接受边界。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
+
+C2 候选把 continuation 与 recovery 分开：`resume` 继续同一个 run，`continue` 从一个终态
+root 创建新的 root，并用 `continued_from_run_id` 记录 lineage；source 不被改写。完整
+canonical transcript 仍 append-only，compaction 只替换每次请求的 model-visible projection。
+当前会先本地裁剪旧的大型工具结果，必要时才发出计入预算和 accounting 的 tool-free 摘要
+请求；prepared/in-flight/failed/committed 均是 RuntimeEvent v5 的持久事实。
 
 ### DeepSeek backend
 
@@ -122,8 +133,13 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
+- 当前 canonical RunStore schema 为 v8；
 - append-only canonical event；
 - reducer/snapshot/replay；
+- continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
+  创建；
+- durable creation reservation：start/continue/compact 的同 ID 同 payload 重试只对应
+  一个 reserved run ID，不同 payload 复用 ID 被拒绝；
 - execution lease 与 epoch；
 - pending model attempt 与 unknown billing；
 - pending interaction、steer、terminal control 与携带规范化 payload 的 command receipt；
@@ -139,7 +155,10 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 
 - 真实执行进入 `AgentApplication`；
 - text/NDJSON、receipt 和 exit code 投影仍在 `crates/tui`；
-- start/resume/events/cancel 均读写 canonical Run API；
+- start/continue/list_roots/resume/events/cancel 均读写 canonical Run API；
+- `codewhale exec --continue <PROMPT>` 查询精确 workspace 下最新 root；只有最新 root 已终态
+  时才以新 prompt 创建新的 root continuation。若最新 root 未终态，必须显式使用
+  `codewhale exec --resume <RUN_ID>` 恢复同一个 run；
 - crash/reopen/resume、terminal-first signal 和 no-key replay 已有外部进程门禁。
 
 顶层 `codewhale` 仍委托现有 TUI binary 处理 exec 参数与输出，这是进程入口复用，不是
@@ -151,7 +170,8 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- Run API v2 / RuntimeEvent v4 提供 durable interaction resolve 与两阶段 steer；
+- Run API v3 提供 continuation、manual compact 和 root 列表；RuntimeEvent writer 为 v5，
+  reader 接受 v4-v5；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -162,6 +182,7 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 交互 TUI 尚未切到 `AgentApplication`：
 
 - `crates/tui/src/core/engine/*` 仍有旧 turn loop；
+- `crates/tui/src/compaction.rs` 与旧 Engine compaction event 仍是另一条交互投影路径；
 - session、task 和 approval presentation 仍使用旧类型；
 - `TaskManager` 仍消费 `RuntimeThreadManager/RuntimeThreadStore`；
 - 交互 child-agent path 仍未通过与 canonical root/child 相同的 conformance suite；
@@ -177,7 +198,7 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 | `protocol` | canonical request、command、event、outcome、terminal | 后续 TaskContract/EvidenceReceipt 扩展 |
 | `runtime` | 唯一根/子 Agent loop 与 reducer | completion/evidence 的 M5 强化 |
 | `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | FIM 调优与定期官方复核 |
-| `context` | production prompt/context 构建边界 | RepoGraph/compaction M5 |
+| `context` | production prompt/context 构建与最小 compaction projection | RepoGraph、evidence-aware compaction 与 A/B 在 M5 |
 | `tools` | 固定 production tool catalog 与执行 | 编辑/FIM 协议 A/B |
 | `state` | SQLite RunStore、lease、replay | 交互旧状态 M4-C 删除 |
 | `app` | 唯一 production composition 与 Run command | 后续 orchestrator command |
@@ -230,11 +251,26 @@ M4-C C1 实现提交为 `1d127b78`。conformance/Store replay 已证明 interact
 all-target check、全仓 clippy 和 workspace tests 均通过。该冻结不代表 TUI 已切换，也不构成
 编码能力或效率提升证据。
 
+M4-C C2 当前是已通过验收但未 commit 冻结的候选：Run API v3、RuntimeEvent writer
+v5/read v4-v5、State schema v8，以及 continuation、root list、manual/automatic context
+projection 已进入 exec/app-server 的 canonical 链路。focused、workspace Clippy
+`-D warnings`、串行完整 workspace tests、内存/SQLite parity，以及由外部监督进程
+`SIGKILL` 的 compaction prepared/in-flight/committed 恢复矩阵均通过。费用受限的官方
+DeepSeek production sender canary 以 6/6 请求覆盖 Standard、Thinking/tool-history replay、
+Beta Strict 与 FIM，完整 usage、无 transport retry，费用为 `USD 0.0000969904`；该 canary
+不包含 compaction on/off 收益对照，且 `product_metric_eligible=false`。
+
+交互 TUI 仍使用旧 engine/session/task/runtime-thread 与旧 compaction 路径，因此不能把该
+候选记录为三个入口切换完成。当前证据只证明协议、lineage、持久恢复、accounting 与官方
+surface 兼容；尚无 compaction on/off 真实 A/B，不能声称 Token、成本或任务成功率改善。
+
 ## 7. 明确非结论
 
 当前源码不证明：
 
 - 交互 TUI 已统一；
+- C2 已完成冻结，或旧 TUI compaction/runtime-thread 路径已删除；
+- 当前 compaction 已证明节省 Token、降低成本或提高任务成功率；
 - Provider 清理、全面汉化或中文 Agent prompt A/B 已完成；
 - RepoGraph、EvidenceReceipt、writer-worktree Orchestrator 已完成；
 - transport 迁移本身提升了真实编码成功率；

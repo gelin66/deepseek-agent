@@ -2,14 +2,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 
 use codewhale_runtime::{
-    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentOutcome, AttemptId, CommandId,
-    CreatedRun, DurableActionState, InMemoryRunStore, ModelAccounting, ModelFinishReason,
-    ModelOutput, ModelRequest, ModelToolCall, OperationId, PendingRuntimeEvent, RunId, RunLease,
-    RunReplay, RunRequest, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind,
-    StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus,
-    ToolEvidence, ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus, ToolOperationStatus,
-    ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus, ToolTransportStatus, Usage,
-    reduce_events,
+    ActorRequestAccounting, AgentOutcome, AttemptId, CommandId, CreatedRun, DurableActionState,
+    InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall,
+    OperationId, PendingRuntimeEvent, RootRunRecord, RunId, RunLease, RunPurpose, RunReplay,
+    RunRequest, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent,
+    TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus, ToolEvidence,
+    ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus, ToolOperationStatus, ToolOutcome,
+    ToolRetryDisposition, ToolSideEffectStatus, ToolTransportStatus, Usage, reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -122,14 +121,53 @@ async fn append_to_both(
     assert_canonical_event_eq(&sqlite_event, &memory_event);
 }
 
+fn root_list_semantics(
+    records: Vec<RootRunRecord>,
+) -> Vec<(RunId, RunPurpose, Option<RunId>, String, u64, bool)> {
+    records
+        .into_iter()
+        .map(|record| {
+            assert!(record.created_at_unix_ms > 0);
+            assert!(record.updated_at_unix_ms >= record.created_at_unix_ms);
+            (
+                record.run_id,
+                record.purpose,
+                record.continued_from_run_id,
+                record.workspace,
+                record.last_sequence,
+                record.terminal,
+            )
+        })
+        .collect()
+}
+
 fn v5_model_request(request: &RunRequest) -> ModelRequest {
+    let mut transcript = request.transcript.clone();
+    if !matches!(
+        transcript.entries.first(),
+        Some(codewhale_runtime::TranscriptEntry::System { .. })
+    ) {
+        transcript.entries.insert(
+            0,
+            codewhale_runtime::TranscriptEntry::System {
+                prompt: request.system_prompt.clone(),
+            },
+        );
+    }
+    if !request.input.is_empty() {
+        transcript
+            .entries
+            .push(codewhale_runtime::TranscriptEntry::User {
+                content: request.input.clone(),
+            });
+    }
     ModelRequest {
         run_id: request.run_id.clone().expect("v5 fixture run id"),
         parent_run_id: request.parent_run_id.clone(),
         actor: request.actor,
         model: request.model.clone(),
         system_prompt: request.system_prompt.clone(),
-        messages: request.transcript.project_messages(),
+        messages: transcript.project_messages(),
         tools: Vec::new(),
         reasoning_effort: request.reasoning_effort,
         max_output_tokens: request.max_output_tokens,
@@ -146,7 +184,9 @@ fn v5_event(
     event: RuntimeEventKind,
 ) -> StoredRuntimeEvent {
     StoredRuntimeEvent {
-        schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+        // State schema v5 persisted RuntimeEvent v4. Keep this historical
+        // fixture independent from the current event writer version.
+        schema_version: 4,
         run_id: run_id.clone(),
         parent_run_id: None,
         event_id: RuntimeEventId(event_id.to_owned()),
@@ -810,7 +850,79 @@ async fn concurrent_store_instances_allow_only_one_writer() {
 }
 
 #[tokio::test]
-async fn latest_resumable_run_is_selected_from_durable_request_workspace() {
+async fn creation_reservation_is_durable_idempotent_and_rejects_payload_reuse() {
+    let path = temp_state_path("creation-reservation");
+    let sqlite = StateStore::open(Some(path.clone())).expect("open sqlite");
+    let memory = InMemoryRunStore::default();
+    let command_id = CommandId::from("create-command");
+    let proposed = RunId::from("reserved-run");
+
+    let sqlite_first = sqlite
+        .reserve_creation(&command_id, "sha256:first", proposed.clone())
+        .await
+        .expect("reserve sqlite creation");
+    let memory_first = memory
+        .reserve_creation(&command_id, "sha256:first", proposed.clone())
+        .await
+        .expect("reserve memory creation");
+    assert_eq!(
+        sqlite_first.reservation.command_id,
+        memory_first.reservation.command_id
+    );
+    assert_eq!(
+        sqlite_first.reservation.command_sha256,
+        memory_first.reservation.command_sha256
+    );
+    assert_eq!(
+        sqlite_first.reservation.run_id,
+        memory_first.reservation.run_id
+    );
+    assert!(sqlite_first.newly_reserved);
+
+    let sqlite_retry = sqlite
+        .reserve_creation(&command_id, "sha256:first", RunId::from("ignored-proposal"))
+        .await
+        .expect("retry sqlite reservation");
+    let memory_retry = memory
+        .reserve_creation(&command_id, "sha256:first", RunId::from("ignored-proposal"))
+        .await
+        .expect("retry memory reservation");
+    assert_eq!(
+        sqlite_retry.reservation.command_id,
+        memory_retry.reservation.command_id
+    );
+    assert_eq!(
+        sqlite_retry.reservation.command_sha256,
+        memory_retry.reservation.command_sha256
+    );
+    assert_eq!(
+        sqlite_retry.reservation.run_id,
+        memory_retry.reservation.run_id
+    );
+    assert!(!sqlite_retry.newly_reserved);
+    assert_eq!(sqlite_retry.reservation.run_id, proposed);
+
+    assert!(matches!(
+        sqlite
+            .reserve_creation(&command_id, "sha256:different", RunId::from("other-run"))
+            .await,
+        Err(RunStoreError::CreationConflict { .. })
+    ));
+    drop(sqlite);
+    let reopened = StateStore::open(Some(path)).expect("reopen sqlite");
+    let reopened_retry = reopened
+        .reserve_creation(
+            &command_id,
+            "sha256:first",
+            RunId::from("second-ignored-proposal"),
+        )
+        .await
+        .expect("retry after reopen");
+    assert_eq!(reopened_retry, sqlite_retry);
+}
+
+#[tokio::test]
+async fn root_runs_are_listed_from_durable_request_workspace() {
     let store = StateStore::open(Some(temp_state_path("latest"))).expect("open store");
     let first = store
         .create(request("workspace-first", "/tmp/workspace"))
@@ -832,20 +944,392 @@ async fn latest_resumable_run_is_selected_from_durable_request_workspace() {
     let child = store.create(child_request).await.expect("newer child");
     store.release(&child.lease).await.expect("release child");
 
+    let roots = store
+        .list_root_runs("/tmp/workspace", 10)
+        .await
+        .expect("root query");
     assert_eq!(
+        roots
+            .iter()
+            .map(|record| record.run_id.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            RunId::from("workspace-latest"),
+            RunId::from("workspace-first")
+        ]
+    );
+    assert!(
         store
-            .latest_resumable_run("/tmp/workspace")
+            .list_root_runs("/tmp/missing", 10)
             .await
-            .expect("latest query"),
-        Some(RunId::from("workspace-latest"))
+            .expect("missing query")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn root_list_semantics_match_memory_for_purpose_lineage_order_limit_and_state() {
+    let workspace = "/tmp/root-list-parity";
+    let sqlite =
+        StateStore::open(Some(temp_state_path("root_list_parity"))).expect("open sqlite store");
+    let memory = InMemoryRunStore::default();
+
+    let source_request = request("root-list-01-source", workspace);
+    let sqlite_source = sqlite
+        .create(source_request.clone())
+        .await
+        .expect("create sqlite source");
+    let memory_source = memory
+        .create(source_request)
+        .await
+        .expect("create memory source");
+    append_to_both(
+        &sqlite,
+        &sqlite_source.lease,
+        &memory,
+        &memory_source.lease,
+        terminal_event(&sqlite_source.lease.run_id),
+    )
+    .await;
+    let source = sqlite
+        .load(&sqlite_source.lease.run_id)
+        .await
+        .expect("load source")
+        .expect("source exists");
+
+    let mut continuation = request("root-list-02-agent-continuation", workspace);
+    continuation.continued_from_run_id = Some(sqlite_source.lease.run_id.clone());
+    continuation.input = "继续完成列表验收".to_owned();
+    continuation.transcript = source.snapshot.transcript.clone();
+    let sqlite_continuation = sqlite
+        .create(continuation.clone())
+        .await
+        .expect("create sqlite Agent continuation");
+    let memory_continuation = memory
+        .create(continuation)
+        .await
+        .expect("create memory Agent continuation");
+    append_to_both(
+        &sqlite,
+        &sqlite_continuation.lease,
+        &memory,
+        &memory_continuation.lease,
+        user_event("root-list-steer", "补充列表验收"),
+    )
+    .await;
+
+    let mut compaction = request("root-list-03-context-compaction", workspace);
+    compaction.continued_from_run_id = Some(sqlite_source.lease.run_id.clone());
+    compaction.purpose = RunPurpose::ContextCompaction;
+    compaction.input.clear();
+    compaction.transcript = source.snapshot.transcript.clone();
+    sqlite
+        .create(compaction.clone())
+        .await
+        .expect("create sqlite context-compaction root");
+    memory
+        .create(compaction)
+        .await
+        .expect("create memory context-compaction root");
+
+    let active_request = request("root-list-04-active", workspace);
+    sqlite
+        .create(active_request.clone())
+        .await
+        .expect("create sqlite active root");
+    memory
+        .create(active_request)
+        .await
+        .expect("create memory active root");
+
+    let mut child_request = request("root-list-99-child", workspace);
+    child_request.parent_run_id = Some(sqlite_source.lease.run_id.clone());
+    sqlite
+        .create(child_request.clone())
+        .await
+        .expect("create sqlite child");
+    memory
+        .create(child_request)
+        .await
+        .expect("create memory child");
+
+    let other_workspace_request = request("root-list-98-other-workspace", "/tmp/root-list-other");
+    sqlite
+        .create(other_workspace_request.clone())
+        .await
+        .expect("create sqlite other-workspace root");
+    memory
+        .create(other_workspace_request)
+        .await
+        .expect("create memory other-workspace root");
+
+    let sqlite_all = root_list_semantics(
+        sqlite
+            .list_root_runs(workspace, 10)
+            .await
+            .expect("list sqlite roots"),
+    );
+    let memory_all = root_list_semantics(
+        memory
+            .list_root_runs(workspace, 10)
+            .await
+            .expect("list memory roots"),
+    );
+    assert_eq!(sqlite_all, memory_all);
+    assert_eq!(
+        sqlite_all,
+        vec![
+            (
+                RunId::from("root-list-04-active"),
+                RunPurpose::Agent,
+                None,
+                workspace.to_owned(),
+                1,
+                false,
+            ),
+            (
+                RunId::from("root-list-03-context-compaction"),
+                RunPurpose::ContextCompaction,
+                Some(RunId::from("root-list-01-source")),
+                workspace.to_owned(),
+                1,
+                false,
+            ),
+            (
+                RunId::from("root-list-02-agent-continuation"),
+                RunPurpose::Agent,
+                Some(RunId::from("root-list-01-source")),
+                workspace.to_owned(),
+                2,
+                false,
+            ),
+            (
+                RunId::from("root-list-01-source"),
+                RunPurpose::Agent,
+                None,
+                workspace.to_owned(),
+                2,
+                true,
+            ),
+        ]
+    );
+
+    let sqlite_limited = root_list_semantics(
+        sqlite
+            .list_root_runs(workspace, 2)
+            .await
+            .expect("list limited sqlite roots"),
+    );
+    let memory_limited = root_list_semantics(
+        memory
+            .list_root_runs(workspace, 2)
+            .await
+            .expect("list limited memory roots"),
+    );
+    assert_eq!(sqlite_limited, memory_limited);
+    assert_eq!(sqlite_limited, sqlite_all[..2]);
+}
+
+#[tokio::test]
+async fn continuation_create_is_atomic_and_matches_memory_store() {
+    let sqlite = StateStore::open(Some(temp_state_path("continuation"))).expect("open store");
+    let memory = InMemoryRunStore::default();
+    let source_request = request("source-root", "/tmp/workspace");
+    let sqlite_source = sqlite
+        .create(source_request.clone())
+        .await
+        .expect("sqlite source");
+    let memory_source = memory.create(source_request).await.expect("memory source");
+    append_to_both(
+        &sqlite,
+        &sqlite_source.lease,
+        &memory,
+        &memory_source.lease,
+        terminal_event(&sqlite_source.lease.run_id),
+    )
+    .await;
+    let source_before = sqlite
+        .load(&sqlite_source.lease.run_id)
+        .await
+        .expect("load source")
+        .expect("source exists");
+
+    let mut continuation = request("continued-root", "/tmp/workspace");
+    continuation.continued_from_run_id = Some(sqlite_source.lease.run_id.clone());
+    continuation.input = "继续完成验收".to_owned();
+    continuation.transcript = source_before.snapshot.transcript.clone();
+    let sqlite_continued = sqlite
+        .create(continuation.clone())
+        .await
+        .expect("sqlite continuation");
+    let memory_continued = memory
+        .create(continuation)
+        .await
+        .expect("memory continuation");
+    assert_canonical_replay_eq(&sqlite_continued.replay, &memory_continued.replay);
+    assert_eq!(sqlite_continued.replay.snapshot.request.parent_run_id, None);
+    assert_eq!(
+        sqlite_continued
+            .replay
+            .snapshot
+            .request
+            .continued_from_run_id,
+        Some(sqlite_source.lease.run_id.clone())
     );
     assert_eq!(
-        store
-            .latest_resumable_run("/tmp/missing")
-            .await
-            .expect("missing query"),
-        None
+        &sqlite_continued.replay.snapshot.transcript.entries
+            [..source_before.snapshot.transcript.entries.len()],
+        source_before.snapshot.transcript.entries.as_slice()
     );
+    assert!(matches!(
+        sqlite_continued.replay.snapshot.transcript.entries.last(),
+        Some(codewhale_runtime::TranscriptEntry::User { content })
+            if content == "继续完成验收"
+    ));
+    assert_eq!(
+        sqlite
+            .load(&sqlite_source.lease.run_id)
+            .await
+            .expect("reload source")
+            .expect("source remains")
+            .events,
+        source_before.events
+    );
+
+    let roots = sqlite
+        .list_root_runs("/tmp/workspace", 10)
+        .await
+        .expect("list roots");
+    let continued_record = roots
+        .iter()
+        .find(|record| record.run_id == RunId::from("continued-root"))
+        .expect("continued root is listed");
+    assert_eq!(
+        continued_record.continued_from_run_id,
+        Some(RunId::from("source-root"))
+    );
+}
+
+#[tokio::test]
+async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch() {
+    let store = StateStore::open(Some(temp_state_path("invalid-continuation")))
+        .expect("open invalid continuation store");
+    let active = store
+        .create(request("active-source", "/tmp/workspace"))
+        .await
+        .expect("active source");
+    let mut from_active = request("from-active", "/tmp/workspace");
+    from_active.continued_from_run_id = Some(active.lease.run_id.clone());
+    from_active.transcript = active.replay.snapshot.transcript.clone();
+    assert!(matches!(
+        store.create(from_active).await,
+        Err(RunStoreError::InvalidContinuation {
+            reason: codewhale_runtime::ContinuationError::SourceNotTerminal,
+            ..
+        })
+    ));
+
+    let mut child_request = request("child-source", "/tmp/workspace");
+    child_request.parent_run_id = Some(RunId::from("parent"));
+    let child = store.create(child_request).await.expect("child source");
+    store
+        .append(
+            &child.lease,
+            PendingRuntimeEvent::terminal(AgentOutcome {
+                run_id: child.lease.run_id.clone(),
+                parent_run_id: Some(RunId::from("parent")),
+                terminal: TerminalState::Completed {
+                    message: "child completed".to_owned(),
+                },
+                accounting: ModelAccounting::default(),
+                runtime_model_requests: 0,
+                runtime_retries: 0,
+                tool_calls: 0,
+            }),
+        )
+        .await
+        .expect("terminal child");
+    let child_replay = store
+        .load(&child.lease.run_id)
+        .await
+        .expect("load child")
+        .expect("child exists");
+    let mut from_child = request("from-child", "/tmp/workspace");
+    from_child.continued_from_run_id = Some(child.lease.run_id.clone());
+    from_child.transcript = child_replay.snapshot.transcript;
+    assert!(matches!(
+        store.create(from_child).await,
+        Err(RunStoreError::InvalidContinuation {
+            reason: codewhale_runtime::ContinuationError::SourceIsChild,
+            ..
+        })
+    ));
+
+    let recovery = store
+        .create(request("recovery-source", "/tmp/workspace"))
+        .await
+        .expect("recovery source");
+    let recovery_outcome = AgentOutcome {
+        run_id: recovery.lease.run_id.clone(),
+        parent_run_id: None,
+        terminal: TerminalState::RecoveryRequired {
+            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+                phase: codewhale_runtime::RecoveryAmbiguityPhase::ModelRequest,
+                action_id: "attempt-1".to_owned(),
+                message: "billing unknown".to_owned(),
+            },
+        },
+        accounting: ModelAccounting::default(),
+        runtime_model_requests: 1,
+        runtime_retries: 0,
+        tool_calls: 0,
+    };
+    store
+        .append(
+            &recovery.lease,
+            PendingRuntimeEvent::terminal(recovery_outcome),
+        )
+        .await
+        .expect("terminal recovery source");
+    let recovery_replay = store
+        .load(&recovery.lease.run_id)
+        .await
+        .expect("load recovery")
+        .expect("recovery exists");
+    let mut from_recovery = request("from-recovery", "/tmp/workspace");
+    from_recovery.continued_from_run_id = Some(recovery.lease.run_id.clone());
+    from_recovery.transcript = recovery_replay.snapshot.transcript;
+    assert!(matches!(
+        store.create(from_recovery).await,
+        Err(RunStoreError::InvalidContinuation {
+            reason: codewhale_runtime::ContinuationError::RecoveryRequired,
+            ..
+        })
+    ));
+
+    let terminal = store
+        .create(request("workspace-source", "/tmp/workspace"))
+        .await
+        .expect("workspace source");
+    store
+        .append(&terminal.lease, terminal_event(&terminal.lease.run_id))
+        .await
+        .expect("terminal workspace source");
+    let terminal_replay = store
+        .load(&terminal.lease.run_id)
+        .await
+        .expect("load terminal source")
+        .expect("terminal source exists");
+    let mut wrong_workspace = request("wrong-workspace", "/tmp/other");
+    wrong_workspace.continued_from_run_id = Some(terminal.lease.run_id);
+    wrong_workspace.transcript = terminal_replay.snapshot.transcript;
+    assert!(matches!(
+        store.create(wrong_workspace).await,
+        Err(RunStoreError::InvalidContinuation {
+            reason: codewhale_runtime::ContinuationError::WorkspaceMismatch,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
@@ -861,7 +1345,7 @@ async fn v5_migration_replays_and_backfills_prepared_and_in_flight_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 6);
+    assert_eq!(user_version, 8);
     for (run_id, expected_state) in [
         ("v5-prepared", DurableActionState::Prepared),
         ("v5-in-flight", DurableActionState::InFlight),
@@ -961,7 +1445,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 6);
+        assert_eq!(user_version, 8);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -973,9 +1457,9 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 7)
+    conn.pragma_update(None, "user_version", 9)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
-    assert!(error.to_string().contains("newer than supported version 6"));
+    assert!(error.to_string().contains("newer than supported version 8"));
 }

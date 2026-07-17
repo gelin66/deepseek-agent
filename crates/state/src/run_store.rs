@@ -1,13 +1,15 @@
+use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use codewhale_runtime::{
-    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, PendingRuntimeEvent, RunId, RunRequest, RuntimeEventId,
-    RuntimeEventKind, StoredRuntimeEvent,
+    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, PendingRuntimeEvent, RunId, RunPurpose, RunRequest,
+    RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent,
 };
 use codewhale_runtime::{
-    AcquiredRun, CreatedRun, DurableActionState, RunLease, RunReplay, RunSnapshot, RunStore,
-    RunStoreError, apply_event, reduce_events,
+    AcquiredRun, CreatedRun, CreationReservation, DurableActionState, ReservedCreation,
+    RootRunRecord, RunLease, RunReplay, RunSnapshot, RunStore, RunStoreError, apply_event,
+    reduce_events, validate_continuation_request,
 };
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -16,6 +18,7 @@ use super::StateStore;
 #[derive(Debug)]
 struct RunProjection {
     parent_run_id: Option<RunId>,
+    continued_from_run_id: Option<RunId>,
     workspace: String,
     last_sequence: u64,
     terminal: bool,
@@ -27,6 +30,82 @@ struct RunProjection {
 }
 
 impl StateStore {
+    fn reserve_creation_sync(
+        &self,
+        command_id: codewhale_runtime::CommandId,
+        command_sha256: String,
+        proposed_run_id: RunId,
+    ) -> Result<ReservedCreation, RunStoreError> {
+        let mut conn = self.conn().map_err(backend)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(backend)?;
+        let existing = tx
+            .query_row(
+                r#"
+                SELECT command_sha256, run_id, created_at_unix_ms
+                FROM agent_run_creations
+                WHERE command_id = ?1
+                "#,
+                params![command_id.0],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(backend)?;
+        if let Some((existing_sha256, run_id, created_at)) = existing {
+            if existing_sha256 != command_sha256 {
+                return Err(RunStoreError::CreationConflict { command_id });
+            }
+            let reservation = CreationReservation {
+                command_id,
+                command_sha256: existing_sha256,
+                run_id: RunId(run_id),
+                created_at_unix_ms: from_store_u64(
+                    created_at,
+                    &proposed_run_id,
+                    "creation timestamp",
+                )?,
+            };
+            tx.commit().map_err(backend)?;
+            return Ok(ReservedCreation {
+                reservation,
+                newly_reserved: false,
+            });
+        }
+        let created_at_unix_ms = now_unix_ms();
+        tx.execute(
+            r#"
+            INSERT INTO agent_run_creations(
+                command_id, command_sha256, run_id, created_at_unix_ms
+            ) VALUES (?1, ?2, ?3, ?4)
+            "#,
+            params![
+                command_id.0,
+                command_sha256,
+                proposed_run_id.0,
+                to_store_i64(created_at_unix_ms, "creation timestamp")?,
+            ],
+        )
+        .map_err(backend)?;
+        let reservation = CreationReservation {
+            command_id,
+            command_sha256,
+            run_id: proposed_run_id,
+            created_at_unix_ms,
+        };
+        tx.commit().map_err(backend)?;
+        Ok(ReservedCreation {
+            reservation,
+            newly_reserved: true,
+        })
+    }
+
     fn create_run_sync(&self, mut request: RunRequest) -> Result<CreatedRun, RunStoreError> {
         let run_id = request.run_id.clone().unwrap_or_default();
         request.run_id = Some(run_id.clone());
@@ -64,18 +143,32 @@ impl StateStore {
         if exists {
             return Err(RunStoreError::AlreadyExists { run_id });
         }
+        if let Some(source_run_id) = request.continued_from_run_id.clone() {
+            let source_projection = read_run_projection(&tx, &source_run_id)?.ok_or_else(|| {
+                RunStoreError::NotFound {
+                    run_id: source_run_id.clone(),
+                }
+            })?;
+            let source = replay_from_conn(&tx, &source_run_id, &source_projection)?;
+            validate_continuation_request(&source.snapshot, &request)?;
+            validate_continuation_lineage(&tx, &source.snapshot, &request.environment.workspace)?;
+        }
 
         tx.execute(
             r#"
             INSERT INTO agent_runs(
-                run_id, parent_run_id, workspace, last_sequence, terminal,
+                run_id, parent_run_id, continued_from_run_id, workspace, last_sequence, terminal,
                 execution_epoch, lease_owner_id, lease_owner_pid,
                 created_at_unix_ms, updated_at_unix_ms
-            ) VALUES (?1, ?2, ?3, 1, 0, 1, ?4, ?5, ?6, ?6)
+            ) VALUES (?1, ?2, ?3, ?4, 1, 0, 1, ?5, ?6, ?7, ?7)
             "#,
             params![
                 run_id.0,
                 request.parent_run_id.as_ref().map(|id| id.0.as_str()),
+                request
+                    .continued_from_run_id
+                    .as_ref()
+                    .map(|id| id.0.as_str()),
                 request.environment.workspace,
                 lease.owner_id,
                 i64::from(lease.owner_pid),
@@ -122,16 +215,14 @@ impl StateStore {
             .execute(
                 r#"
                 UPDATE agent_runs
-                SET execution_epoch = ?2, lease_owner_id = ?3, lease_owner_pid = ?4,
-                    updated_at_unix_ms = ?5
-                WHERE run_id = ?1 AND execution_epoch = ?6
+                SET execution_epoch = ?2, lease_owner_id = ?3, lease_owner_pid = ?4
+                WHERE run_id = ?1 AND execution_epoch = ?5
                 "#,
                 params![
                     run_id.0,
                     to_store_i64(next_epoch, "execution epoch")?,
                     lease.owner_id,
                     i64::from(lease.owner_pid),
-                    to_store_i64(now_unix_ms(), "run timestamp")?,
                     to_store_i64(projection.execution_epoch, "execution epoch")?,
                 ],
             )
@@ -314,13 +405,12 @@ impl StateStore {
             .execute(
                 r#"
                 UPDATE agent_runs
-                SET lease_owner_id = NULL, lease_owner_pid = NULL, updated_at_unix_ms = ?2
-                WHERE run_id = ?1 AND execution_epoch = ?3
-                  AND lease_owner_id = ?4 AND lease_owner_pid = ?5
+                SET lease_owner_id = NULL, lease_owner_pid = NULL
+                WHERE run_id = ?1 AND execution_epoch = ?2
+                  AND lease_owner_id = ?3 AND lease_owner_pid = ?4
                 "#,
                 params![
                     lease.run_id.0,
-                    to_store_i64(now_unix_ms(), "run timestamp")?,
                     to_store_i64(lease.epoch, "execution epoch")?,
                     lease.owner_id,
                     i64::from(lease.owner_pid),
@@ -337,50 +427,162 @@ impl StateStore {
         Ok(())
     }
 
-    fn latest_resumable_run_sync(&self, workspace: String) -> Result<Option<RunId>, RunStoreError> {
+    fn list_root_runs_sync(
+        &self,
+        workspace: String,
+        limit: u32,
+    ) -> Result<Vec<RootRunRecord>, RunStoreError> {
         let mut conn = self.conn().map_err(backend)?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(backend)?;
-        let run_ids = {
+        let mut records = {
             let mut statement = tx
                 .prepare(
                     r#"
-                    SELECT run_id FROM agent_runs
-                    WHERE terminal = 0 AND workspace = ?1 AND parent_run_id IS NULL
+                    SELECT run_id, continued_from_run_id, workspace, last_sequence,
+                           terminal, created_at_unix_ms, updated_at_unix_ms
+                    FROM agent_runs
+                    WHERE workspace = ?1 AND parent_run_id IS NULL
                     ORDER BY updated_at_unix_ms DESC, run_id DESC
+                    LIMIT ?2
                     "#,
                 )
                 .map_err(backend)?;
-            let mut rows = statement.query(params![workspace]).map_err(backend)?;
-            let mut run_ids = Vec::new();
+            let mut rows = statement
+                .query(params![workspace, i64::from(limit)])
+                .map_err(backend)?;
+            let mut records = Vec::new();
             while let Some(row) = rows.next().map_err(backend)? {
-                run_ids.push(RunId(row.get::<_, String>(0).map_err(backend)?));
-            }
-            run_ids
-        };
-        for run_id in run_ids {
-            let projection =
-                read_run_projection(&tx, &run_id)?.ok_or_else(|| RunStoreError::NotFound {
+                let run_id = RunId(row.get::<_, String>(0).map_err(backend)?);
+                records.push(RootRunRecord {
                     run_id: run_id.clone(),
-                })?;
-            let replay = replay_from_conn(&tx, &run_id, &projection)?;
-            if replay.snapshot.terminal.is_none()
-                && replay.snapshot.request.environment.workspace == workspace
-            {
-                tx.commit().map_err(backend)?;
-                return Ok(Some(run_id));
+                    purpose: RunPurpose::Agent,
+                    continued_from_run_id: row
+                        .get::<_, Option<String>>(1)
+                        .map_err(backend)?
+                        .map(RunId),
+                    workspace: row.get(2).map_err(backend)?,
+                    last_sequence: from_store_u64(
+                        row.get(3).map_err(backend)?,
+                        &run_id,
+                        "last_sequence",
+                    )?,
+                    terminal: match row.get::<_, i64>(4).map_err(backend)? {
+                        0 => false,
+                        1 => true,
+                        _ => return Err(corrupt(&run_id, "terminal projection is not boolean")),
+                    },
+                    created_at_unix_ms: from_store_u64(
+                        row.get(5).map_err(backend)?,
+                        &run_id,
+                        "created_at_unix_ms",
+                    )?,
+                    updated_at_unix_ms: from_store_u64(
+                        row.get(6).map_err(backend)?,
+                        &run_id,
+                        "updated_at_unix_ms",
+                    )?,
+                });
             }
+            records
+        };
+        for record in &mut records {
+            let projection = read_run_projection(&tx, &record.run_id)?.ok_or_else(|| {
+                RunStoreError::NotFound {
+                    run_id: record.run_id.clone(),
+                }
+            })?;
+            let replay = replay_from_conn(&tx, &record.run_id, &projection)?;
             if replay.snapshot.request.environment.workspace != workspace {
                 return Err(RunStoreError::Corrupt {
-                    run_id,
+                    run_id: record.run_id.clone(),
                     message: "workspace projection disagrees with run snapshot".to_owned(),
                 });
             }
+            if replay.snapshot.request.parent_run_id.is_some()
+                || replay.snapshot.request.continued_from_run_id != record.continued_from_run_id
+                || replay.snapshot.last_sequence != record.last_sequence
+                || replay.snapshot.terminal.is_some() != record.terminal
+            {
+                return Err(corrupt(
+                    &record.run_id,
+                    "root run query projection disagrees with canonical replay",
+                ));
+            }
+            record.purpose = replay.snapshot.request.purpose;
         }
         tx.commit().map_err(backend)?;
-        Ok(None)
+        Ok(records)
     }
+}
+
+/// Validate the schema-v7 continuation projection against canonical RunCreated
+/// events. Existing rows are expected to have a null continuation id; any
+/// disagreement aborts migration rather than manufacturing lineage.
+pub(super) fn validate_v7_continuation_projections(conn: &Connection) -> Result<(), RunStoreError> {
+    let run_ids = {
+        let mut statement = conn
+            .prepare("SELECT run_id FROM agent_runs ORDER BY run_id")
+            .map_err(backend)?;
+        let mut rows = statement.query([]).map_err(backend)?;
+        let mut run_ids = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            run_ids.push(RunId(row.get::<_, String>(0).map_err(backend)?));
+        }
+        run_ids
+    };
+    for run_id in run_ids {
+        let projection =
+            read_run_projection(conn, &run_id)?.ok_or_else(|| RunStoreError::NotFound {
+                run_id: run_id.clone(),
+            })?;
+        let replay = replay_from_conn(conn, &run_id, &projection)?;
+        if replay.snapshot.request.continued_from_run_id != projection.continued_from_run_id {
+            return Err(corrupt(
+                &run_id,
+                "continuation projection disagrees with canonical replay during schema migration",
+            ));
+        }
+        validate_continuation_lineage(
+            conn,
+            &replay.snapshot,
+            &replay.snapshot.request.environment.workspace,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_continuation_lineage(
+    conn: &Connection,
+    source: &RunSnapshot,
+    workspace: &str,
+) -> Result<(), RunStoreError> {
+    let source_run_id = source.request.run_id.clone().unwrap_or_default();
+    let invalid = || RunStoreError::InvalidContinuation {
+        source_run_id: source_run_id.clone(),
+        reason: codewhale_runtime::ContinuationError::LineageCorrupt,
+    };
+    let mut visited = HashSet::from([source_run_id.clone()]);
+    let mut cursor = source.request.continued_from_run_id.clone();
+    while let Some(run_id) = cursor {
+        if !visited.insert(run_id.clone()) {
+            return Err(invalid());
+        }
+        let projection = read_run_projection(conn, &run_id)?.ok_or_else(invalid)?;
+        let replay = replay_from_conn(conn, &run_id, &projection)?;
+        let snapshot = replay.snapshot;
+        if snapshot.request.parent_run_id.is_some()
+            || snapshot.request.actor.kind != codewhale_runtime::AgentActorKind::Root
+            || snapshot.request.actor.depth != 0
+            || snapshot.request.environment.workspace != workspace
+            || snapshot.terminal.is_none()
+        {
+            return Err(invalid());
+        }
+        cursor = snapshot.request.continued_from_run_id;
+    }
+    Ok(())
 }
 
 /// Populate the schema-v6 fast projection from the canonical schema-v5 event
@@ -427,6 +629,12 @@ pub(super) fn backfill_v6_pending_model_projections(
                 "parent run projection disagrees with event log during schema migration",
             ));
         }
+        if snapshot.request.continued_from_run_id != projection.continued_from_run_id {
+            return Err(corrupt(
+                &run_id,
+                "continuation projection disagrees with event log during schema migration",
+            ));
+        }
         if snapshot.request.environment.workspace != projection.workspace {
             return Err(corrupt(
                 &run_id,
@@ -467,6 +675,19 @@ pub(super) fn backfill_v6_pending_model_projections(
 
 #[async_trait]
 impl RunStore for StateStore {
+    async fn reserve_creation(
+        &self,
+        command_id: &codewhale_runtime::CommandId,
+        command_sha256: &str,
+        proposed_run_id: RunId,
+    ) -> Result<ReservedCreation, RunStoreError> {
+        self.reserve_creation_sync(
+            command_id.clone(),
+            command_sha256.to_owned(),
+            proposed_run_id,
+        )
+    }
+
     async fn create(&self, request: RunRequest) -> Result<CreatedRun, RunStoreError> {
         let store = self.clone();
         tokio::task::spawn_blocking(move || store.create_run_sync(request))
@@ -522,10 +743,14 @@ impl RunStore for StateStore {
             .map_err(join_error)?
     }
 
-    async fn latest_resumable_run(&self, workspace: &str) -> Result<Option<RunId>, RunStoreError> {
+    async fn list_root_runs(
+        &self,
+        workspace: &str,
+        limit: u32,
+    ) -> Result<Vec<RootRunRecord>, RunStoreError> {
         let store = self.clone();
         let workspace = workspace.to_owned();
-        tokio::task::spawn_blocking(move || store.latest_resumable_run_sync(workspace))
+        tokio::task::spawn_blocking(move || store.list_root_runs_sync(workspace, limit))
             .await
             .map_err(join_error)?
     }
@@ -658,7 +883,8 @@ fn read_run_projection(
     let raw = conn
         .query_row(
             r#"
-            SELECT parent_run_id, workspace, last_sequence, terminal, execution_epoch,
+            SELECT parent_run_id, continued_from_run_id, workspace, last_sequence,
+                   terminal, execution_epoch,
                    lease_owner_id, lease_owner_pid, pending_model_attempt_id,
                    pending_model_in_flight
             FROM agent_runs WHERE run_id = ?1
@@ -667,14 +893,15 @@ fn read_run_projection(
             |row| {
                 Ok((
                     row.get::<_, Option<String>>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, i64>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                    row.get::<_, Option<i64>>(6)?,
-                    row.get::<_, Option<String>>(7)?,
-                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<i64>>(7)?,
+                    row.get::<_, Option<String>>(8)?,
+                    row.get::<_, i64>(9)?,
                 ))
             },
         )
@@ -682,6 +909,7 @@ fn read_run_projection(
         .map_err(backend)?;
     let Some((
         parent,
+        continued_from,
         workspace,
         last,
         terminal,
@@ -696,6 +924,7 @@ fn read_run_projection(
     };
     let projection = RunProjection {
         parent_run_id: parent.map(RunId),
+        continued_from_run_id: continued_from.map(RunId),
         workspace,
         last_sequence: from_store_u64(last, run_id, "last_sequence")?,
         terminal: match terminal {
@@ -761,6 +990,12 @@ fn replay_from_conn(
             "parent run projection disagrees with event log",
         ));
     }
+    if snapshot.request.continued_from_run_id != projection.continued_from_run_id {
+        return Err(corrupt(
+            run_id,
+            "continuation projection disagrees with event log",
+        ));
+    }
     if snapshot.request.environment.workspace != projection.workspace {
         return Err(corrupt(
             run_id,
@@ -798,6 +1033,7 @@ fn read_persisted_snapshot(
         || persisted.last_sequence > snapshot_sequence
         || persisted.request.run_id.as_ref() != Some(run_id)
         || persisted.request.parent_run_id != projection.parent_run_id
+        || persisted.request.continued_from_run_id != projection.continued_from_run_id
         || persisted.request.environment.workspace != projection.workspace
         || persisted.terminal.is_some() != projection.terminal
         || snapshot_model_projection(&persisted)

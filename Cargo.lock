@@ -1019,6 +1019,7 @@ name = "codewhale-runtime"
 version = "0.8.68"
 dependencies = [
  "async-trait",
+ "codewhale-context",
  "codewhale-protocol",
  "serde",
  "serde_json",

@@ -371,11 +371,15 @@ async fn killed_in_flight_model_request_resumes_fail_closed_without_resending() 
     let state_db = home.path().join(".codewhale/state.db");
     let canonical_workspace = std::fs::canonicalize(workspace.path()).expect("canonical workspace");
     let store = StateStore::open(Some(state_db.clone())).expect("open live run state db");
-    let run_id = store
-        .latest_resumable_run(&canonical_workspace.display().to_string())
+    let live_run = store
+        .list_root_runs(&canonical_workspace.display().to_string(), 1)
         .await
         .expect("find live run")
+        .into_iter()
+        .next()
         .expect("in-flight run must already be durable");
+    assert!(!live_run.terminal);
+    let run_id = live_run.run_id;
     drop(store);
 
     let mut concurrent_command = prepare_resume_exec(

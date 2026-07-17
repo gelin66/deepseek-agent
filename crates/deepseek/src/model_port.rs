@@ -20,10 +20,12 @@ use crate::{
 /// request less or explicitly raise it up to the provider ceiling.
 pub const OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS: u32 = 262_144;
 pub const OFFICIAL_V4_MAX_OUTPUT_TOKENS: u32 = 384_000;
+pub const OFFICIAL_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OfficialModelCapabilities {
     pub model: &'static str,
+    pub context_window_tokens: u32,
     pub default_output_tokens: u32,
     pub max_output_tokens: u32,
 }
@@ -73,6 +75,7 @@ pub fn official_model_capabilities(
     };
     Ok(OfficialModelCapabilities {
         model,
+        context_window_tokens: OFFICIAL_V4_CONTEXT_WINDOW_TOKENS,
         default_output_tokens: OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS,
         max_output_tokens: OFFICIAL_V4_MAX_OUTPUT_TOKENS,
     })

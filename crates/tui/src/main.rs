@@ -377,7 +377,7 @@ struct ExecArgs {
     /// Resume a durable Agent run by its exact run ID
     #[arg(long, value_name = "RUN_ID", conflicts_with = "continue_session")]
     resume: Option<String>,
-    /// Continue the most recent non-terminal Agent run for this workspace
+    /// Continue the most recent terminal root run with a new prompt
     #[arg(long = "continue", default_value_t = false, conflicts_with = "resume")]
     continue_session: bool,
     /// Output format for exec mode
@@ -402,10 +402,10 @@ struct ExecArgs {
     /// Extra text appended to the system prompt for this run.
     #[arg(long)]
     append_system_prompt: Option<String>,
-    /// Prompt to send to the model; omitted when resuming a durable run
+    /// Prompt to send to the model; omitted only when resuming a durable run
     #[arg(
         value_name = "PROMPT",
-        required_unless_present_any = ["resume", "continue_session"],
+        required_unless_present = "resume",
         trailing_var_arg = true,
         allow_hyphen_values = true
     )]
@@ -893,29 +893,17 @@ fn top_level_prompt_initial_input(parts: &[String]) -> Option<tui::InitialInput>
     (!parts.is_empty()).then(|| tui::InitialInput::Submit(join_prompt_parts(parts)))
 }
 
-async fn resolve_exec_resume_run_id(args: &ExecArgs, workspace: &Path) -> Result<Option<String>> {
+fn resolve_exec_run_launch(args: &ExecArgs) -> Result<exec_runtime::ExecRunLaunch> {
     if let Some(id) = args.resume.as_ref() {
-        return Ok(Some(id.clone()));
+        return Ok(exec_runtime::ExecRunLaunch::Resume(id.clone()));
     }
     if !args.continue_session {
-        return Ok(None);
+        return Ok(exec_runtime::ExecRunLaunch::Fresh);
     }
-    let store = codewhale_state::StateStore::open(None)?;
-    codewhale_runtime::RunStore::latest_resumable_run(
-        &store,
-        &workspace.display().to_string(),
-    )
-    .await?
-    .map(|run_id| run_id.to_string())
-    .map_or_else(
-        || {
-            bail!(
-                "工作区 {} 没有可恢复的 Agent 运行。持久运行中断后，请使用 `codewhale exec --resume <RUN_ID> ...`。",
-                workspace.display()
-            )
-        },
-        |id| Ok(Some(id)),
-    )
+    if args.prompt.is_empty() {
+        bail!("`codewhale exec --continue` 需要新的任务输入");
+    }
+    Ok(exec_runtime::ExecRunLaunch::ContinueLatest)
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -1505,7 +1493,7 @@ async fn run_async_main() -> Result<()> {
                 }
                 let model = resolve_exec_model(&config, args.model.as_deref());
                 let prompt = join_prompt_parts(&args.prompt);
-                let resume_run_id = resolve_exec_resume_run_id(&args, &workspace).await?;
+                let run_launch = resolve_exec_run_launch(&args)?;
                 // The `deepseek` launcher forwards `--yolo` to this binary via
                 // the DEEPSEEK_YOLO env var (which the config loader folds into
                 // `config.yolo`), not as a CLI flag. Honour either source.
@@ -1542,7 +1530,7 @@ async fn run_async_main() -> Result<()> {
                     auto_mode,
                     tool_mode,
                     args.json,
-                    resume_run_id,
+                    run_launch,
                     args.output_format,
                     max_turns,
                     args.max_api_requests,

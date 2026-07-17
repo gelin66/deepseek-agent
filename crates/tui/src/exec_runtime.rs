@@ -19,8 +19,8 @@ use codewhale_app::{
 };
 use codewhale_context::InstructionSource;
 use codewhale_protocol::run_api::{
-    RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope,
-    RunCommandResult, RunProductControls, StartRunCommand,
+    ContinueRunCommand, RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunCommand,
+    RunCommandEnvelope, RunCommandResult, RunProductControls, StartRunCommand,
 };
 use codewhale_runtime::{
     AgentOutcome, ApiSurface, CanonicalTranscript, ModelAccounting, ModelErrorCategory,
@@ -42,6 +42,14 @@ use super::{
     recv_exec_signal, stop_exec_signal_controller, wait_exec_output_until, wait_terminal_output,
     write_exec_stream_terminal,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExecRunLaunch {
+    Fresh,
+    Resume(String),
+    Continue(String),
+    ContinueLatest,
+}
 
 fn protocol_label(value: &impl Serialize) -> String {
     serde_json::to_value(value)
@@ -135,7 +143,7 @@ pub(crate) async fn run_exec_runtime(
     trust_mode: bool,
     tool_mode: bool,
     json_output: bool,
-    resume_run_id: Option<String>,
+    launch: ExecRunLaunch,
     output_format: ExecOutputFormat,
     max_turns: u32,
     max_api_requests: Option<NonZeroU32>,
@@ -193,10 +201,17 @@ pub(crate) async fn run_exec_runtime(
         let application = AgentApplication::production(application_config)
             .context("无法创建 production AgentApplication")?;
 
-        let is_resume = resume_run_id.is_some();
-        let requested_auto_model = !is_resume && model.trim().eq_ignore_ascii_case("auto");
+        let is_resume = matches!(launch, ExecRunLaunch::Resume(_));
+        let is_continue = matches!(
+            launch,
+            ExecRunLaunch::Continue(_) | ExecRunLaunch::ContinueLatest
+        );
+        let requested_auto_model =
+            !is_resume && !is_continue && model.trim().eq_ignore_ascii_case("auto");
         let route_source = if is_resume {
             "run_store_resume"
+        } else if is_continue {
+            "run_store_continue"
         } else if requested_auto_model {
             "auto_resolver"
         } else {
@@ -208,13 +223,81 @@ pub(crate) async fn run_exec_runtime(
             stop_exec_signal_controller(&mut signal_task).await;
             bail!("exec_watchdog_timeout: AgentApplication 启动前已耗尽全局运行时间");
         }
-        let command = if let Some(run_id) = resume_run_id {
-            RunCommand::Resume {
+        let launch = match launch {
+            ExecRunLaunch::ContinueLatest => {
+                let response = tokio::select! {
+                    biased;
+                    signal = recv_exec_signal(&mut signal_rx) => {
+                        stop_exec_signal_controller(&mut signal_task).await;
+                        if let Some(exit_code) = signal {
+                            std::process::exit(exit_code);
+                        }
+                        bail!("Headless 信号控制器在查询最近运行时意外退出");
+                    }
+                    response = tokio::time::timeout_at(
+                        deadline,
+                        application.execute(run_envelope(
+                            "exec-list-roots",
+                            RunCommand::ListRoots {
+                                workspace: workspace.display().to_string(),
+                                limit: 1,
+                            },
+                        )),
+                    ) => match response {
+                        Ok(response) => response,
+                        Err(_) => {
+                            startup_failure = ExecStartupFailure::RouteTimeout;
+                            stop_exec_signal_controller(&mut signal_task).await;
+                            bail!("exec_watchdog_timeout: 查询最近 Agent 运行超过最大运行时间");
+                        }
+                    }
+                };
+                let latest = match response.result {
+                    RunCommandResult::Runs { runs, .. } => {
+                        let Some(latest) = runs.into_iter().next() else {
+                            stop_exec_signal_controller(&mut signal_task).await;
+                            bail!(
+                                "工作区 {} 没有可继续的 Agent 会话",
+                                workspace.display()
+                            );
+                        };
+                        latest
+                    }
+                    RunCommandResult::Error { error } => {
+                        stop_exec_signal_controller(&mut signal_task).await;
+                        bail!("runtime_store_failed：{}", error.message);
+                    }
+                    other => {
+                        stop_exec_signal_controller(&mut signal_task).await;
+                        bail!("查询最近 Agent 运行返回了非 Runs 结果: {other:?}");
+                    }
+                };
+                if !latest.terminal {
+                    stop_exec_signal_controller(&mut signal_task).await;
+                    bail!(
+                        "最新 Agent 运行 {} 尚未终态；请使用 `codewhale exec --resume {}` 恢复同一运行",
+                        latest.run_id,
+                        latest.run_id
+                    );
+                }
+                ExecRunLaunch::Continue(latest.run_id.to_string())
+            }
+            launch => launch,
+        };
+        let command = match launch {
+            ExecRunLaunch::Resume(run_id) => RunCommand::Resume {
                 run_id: RunId::from(run_id),
                 expected_workspace: Some(workspace.display().to_string()),
+            },
+            ExecRunLaunch::Continue(run_id) => RunCommand::Continue(ContinueRunCommand {
+                run_id: RunId::from(run_id),
+                input: prompt.to_owned(),
+                expected_workspace: Some(workspace.display().to_string()),
+            }),
+            ExecRunLaunch::ContinueLatest => {
+                unreachable!("latest continuation is resolved through AgentApplication")
             }
-        } else {
-            RunCommand::Start(StartRunCommand {
+            ExecRunLaunch::Fresh => RunCommand::Start(StartRunCommand {
                 input: prompt.to_owned(),
                 workspace: workspace.display().to_string(),
                 model: (!requested_auto_model).then(|| model.to_owned()),
@@ -246,7 +329,7 @@ pub(crate) async fn run_exec_runtime(
                         .map(str::to_owned)
                         .or_else(|| config.sandbox_mode.clone()),
                 },
-            })
+            }),
         };
         startup_failure = if requested_auto_model {
             ExecStartupFailure::Route
@@ -1196,6 +1279,10 @@ impl<'a> RuntimeEventProjection<'a> {
             RuntimeEventKind::ModelRequestPrepared { .. }
             | RuntimeEventKind::ModelRequestInFlight { .. }
             | RuntimeEventKind::ModelRequestFailed { .. }
+            | RuntimeEventKind::ContextCompactionPrepared { .. }
+            | RuntimeEventKind::ContextCompactionInFlight { .. }
+            | RuntimeEventKind::ContextCompactionAttemptFailed { .. }
+            | RuntimeEventKind::ContextCompactionCommitted { .. }
             | RuntimeEventKind::ReasoningDelta { .. }
             | RuntimeEventKind::ToolExecutionStarted { .. }
             | RuntimeEventKind::ChildStarted { .. } => None,
@@ -1328,6 +1415,25 @@ fn project_failure(
             Some(message.clone()),
             "llm_accounting_incomplete",
             "internal",
+            false,
+        ),
+        RuntimeFailure::ContextLimitExceeded {
+            estimated_tokens,
+            hard_input_tokens,
+        } => (
+            RunTerminationReason::BudgetExhausted,
+            Some(format!(
+                "有效上下文预计为 {estimated_tokens} tokens，超过安全输入上限 {hard_input_tokens} tokens"
+            )),
+            "context_limit_exceeded",
+            "state",
+            false,
+        ),
+        RuntimeFailure::ContextCompactionFailed { message } => (
+            RunTerminationReason::ModelError,
+            Some(message.clone()),
+            "context_compaction_failed",
+            "state",
             false,
         ),
         RuntimeFailure::Store { message } => (

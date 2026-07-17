@@ -8,6 +8,7 @@ description = "UI-independent single Agent runtime for CodeWhale"
 
 [dependencies]
 async-trait.workspace = true
+codewhale-context = { path = "../context", version = "0.8.68" }
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
 serde.workspace = true
 serde_json.workspace = true

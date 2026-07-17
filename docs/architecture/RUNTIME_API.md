@@ -3,9 +3,11 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M4-C C1 交互控制契约已冻结；交互 TUI 尚未切换
+- 状态：M4-C C1 已冻结；C2 continuation/context projection 候选已通过验收、待
+  review/commit 冻结，交互 TUI 尚未切换
 - 更新日期：2026-07-17
-- schema：`Run API`（`schema_version = 2`）、`RuntimeEvent`（`schema_version = 4`）
+- schema：`Run API`（`schema_version = 3`）、`RuntimeEvent`（writer v5，reader v4-v5）、
+  `State`（schema v8）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -16,7 +18,7 @@ HTTP / SSE / stdio
         |
 crates/app-server        认证、限流、framing
         |
-AgentApplication         start/get/events/resume/steer/interrupt/cancel/resolve_interaction
+AgentApplication         start/continue/compact/list_roots/get/events/resume/control
         |
 AgentRuntime             唯一根/子 Agent 执行内核
         |
@@ -78,8 +80,11 @@ MCP 与 ACP 是不同协议，仍由 `codewhale serve --mcp` 和
 |---|---|---|
 | `GET` | `/healthz` | 公开进程健康检查 |
 | `POST` | `/v1/runs` | start |
+| `GET` | `/v1/runs?workspace=...&limit=...` | list_roots；精确 workspace，默认 50、范围 1-200 |
 | `GET` | `/v1/runs/{run_id}` | get |
 | `GET` | `/v1/runs/{run_id}/events?after_sequence=N` | events 或 SSE replay |
+| `POST` | `/v1/runs/{run_id}/continue` | 从终态 root 创建新的 root run |
+| `POST` | `/v1/runs/{run_id}/compact` | 从终态 root 创建 context-compaction root |
 | `POST` | `/v1/runs/{run_id}/resume` | resume |
 | `POST` | `/v1/runs/{run_id}/steer` | steer |
 | `POST` | `/v1/runs/{run_id}/interrupt` | interrupt |
@@ -98,7 +103,7 @@ POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "request_id": "client-request-42",
   "command": {
     "kind": "get",
@@ -107,10 +112,13 @@ POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配
 }
 ```
 
-支持且只支持八种 command：
+支持且只支持十一种 command：
 
 ```text
 start
+continue
+compact
+list_roots
 get
 events
 resume
@@ -146,7 +154,7 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "request_id": "start-1",
   "command": {
     "kind": "start",
@@ -172,6 +180,40 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 }
 ```
 
+### continue、compact 与 list_roots
+
+`continue` 只接受终态 root run 和非空新输入，并可用 `expected_workspace` 做精确 workspace
+校验。它创建独立的新 root：新 run 的 `parent_run_id` 为空，
+`continued_from_run_id` 指向 source；source transcript、event、terminal 和 accounting
+保持不变。新 run 继承并由 Host 重新校验 model、提示词、工具策略、执行姿态和
+model-visible context projection，同时重新开始本 run 的请求与用量记账。它不是 child
+Agent，也不是同 run 的 `resume`。
+
+```json
+{
+  "schema_version": 3,
+  "request_id": "continue-42",
+  "command": {
+    "kind": "continue",
+    "run_id": "...",
+    "input": "继续实现下一项验收条件。",
+    "expected_workspace": "/absolute/project"
+  }
+}
+```
+
+`compact` 同样只接受非 `RecoveryRequired` 的终态 root，但不接收新任务输入。它创建
+`purpose = context_compaction` 的独立 root，并把成功提交的 projection 留给后续
+continuation 继承；source 仍不可变。`list_roots` 按精确 workspace 返回最近更新优先的
+root 摘要，包含普通 Agent root 与内部 context-compaction root，不返回 child run。
+
+完整 canonical transcript 始终 append-only；compaction 只改变下一次模型请求使用的
+projection。Runtime 可因手动命令、threshold 或 preflight limit 触发：先本地裁剪较老的大型
+工具结果，仍不足时才发出 tool-free、non-streaming、low-reasoning 摘要请求。该请求计入物理
+请求预算与 accounting。当前实现只建立可恢复的最小投影机制，尚未证明 Token、成功率或成本
+收益，也未确定性保证摘要保留 TaskContract、当前 diff 和最新 evidence；这些结论仍需 M5
+的 compaction on/off A/B。
+
 ### resolve_interaction
 
 approval 与 `request_user_input` 都使用同一个 durable interaction 协议。客户端先从
@@ -181,7 +223,7 @@ prompt；过期、重复、错 ID 和错 response 均返回 typed error。
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "request_id": "approve-42",
   "command": {
     "kind": "resolve_interaction",
@@ -208,7 +250,7 @@ typed prompt。approval 必须在任何 `ToolExecutionStarted` 前提交并解�
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "request_id": "client-request-42",
   "result": {
     "kind": "run",
@@ -217,10 +259,11 @@ typed prompt。approval 必须在任何 `ToolExecutionStarted` 前提交并解�
 }
 ```
 
-result 只有四类：
+result 只有五类：
 
 - `run`：当前 Store projection；
 - `events`：严格位于 cursor 之后的 `StoredRuntimeEvent`；
+- `runs`：精确 workspace 下的 root-run 轻量列表；
 - `accepted`：control command 对应的 canonical event 已提交，`last_sequence` 是该 event 的
   Store sequence；
 - `error`：typed `RunApiError`。
@@ -235,6 +278,7 @@ run_already_running
 run_not_active
 run_recovery_required
 run_terminal
+run_continuation_invalid
 run_environment_mismatch
 event_cursor_ahead
 interaction_not_pending
@@ -269,8 +313,25 @@ RuntimeEvent v4 的控制事实为：
 - `ControlRequested`：interrupt/cancel 的持久意图；
 - v3 的单一 `Steered` 已删除，不提供兼容 alias。
 
+RuntimeEvent v5 在 v4 基础上增加：
+
+- `ContextCompactionPrepared`：摘要请求及其 source projection 已持久准备；
+- `ContextCompactionInFlight`：物理摘要请求可能已经发出；
+- `ContextCompactionAttemptFailed`：失败、重试决定和已知 accounting；
+- `ContextCompactionCommitted`：新的 model-visible projection 与前后 Token 估算已提交。
+
+当前 writer 只写 v5；reducer/Store reader 接受 v4-v5，以便读取 C1 已持久事件，不继续写旧
+版本。prepared 尚未进入 in-flight 时可恢复一次；in-flight 后无法证明请求未发送或账单完整
+时必须 fail closed 为 `RecoveryRequired`，不能盲目重发摘要请求。
+
 ## 6. 并发、控制与恢复
 
+- `start`、`continue` 和 `compact` 在创建 run 前先把
+  `request_id + normalized command digest -> reserved run_id` 持久写入 State schema v8；
+  同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
+  若 reservation 已存在但 continuation/compaction run 尚未创建，重试沿用同一 reserved
+  run ID，不能再生成第二个 run。自动路由 start 的预运行请求可能已发出时则 fail closed，
+  避免重复计费。
 - `start`/`resume` 只有在 canonical Store 已持久创建或取得 lease 后才确认。
 - 同进程 active run 通过一个 process-local control registry 投递 steer、interrupt、cancel 和
   interaction response；registry 不是持久事实，命令回执和结果事件才是持久事实。
@@ -278,8 +339,8 @@ RuntimeEvent v4 的控制事实为：
   `SteerApplied` 并进入下一次模型请求；运行中 steer 不再制造恢复故障。
 - interrupt/cancel 先提交 `ControlRequested` 再进入 typed terminal；steer、interrupt、
   cancel 和 resolve_interaction 使用持久 command receipt：同一 `request_id`、同一 payload
-  重试返回原 sequence，不同 payload 复用同一 `request_id` 会被拒绝。该承诺不适用于
-  `start`。
+  重试返回原 sequence，不同 payload 复用同一 `request_id` 会被拒绝。creation command
+  使用上一条独立的 durable creation reservation，而不是 control receipt。
 - command receipt 持久保存命令类型与规范化 payload；应用层事前检查和 Runtime 原子受理点
   都执行一致性校验，因此并发复用 `request_id` 也不能让两个不同命令同时成功。
 - tool approval 和 `request_user_input` 先提交 `InteractionRequested`，Host 只有在

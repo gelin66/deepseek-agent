@@ -72,7 +72,11 @@ A/B 对照。
 
 ### D. 长任务和恢复
 
-- context compaction 后保持目标；
+- context compaction 后保持目标、约束、未决问题、当前 diff 和最新 evidence；
+- continuation 创建新 root、source 不变、lineage 正确，且与同 run resume 明确分离；
+- continuation 继承 projection 后仍能完成预定义验收；
+- compaction 前后 canonical transcript 的条目、顺序和规范化 digest 保持不变，只有 model-visible
+  projection 改变；
 - 多次工具循环；
 - model request 在途 steer，必须先 queued，旧响应和完整工具/子 Agent 结果提交后才 applied；
 - approval 的 approve/deny/cancel 与 approval 后、工具开始前的恢复；
@@ -138,6 +142,13 @@ interactive
 auto_approve
 trust_mode
 sandbox_posture
+purpose
+continued_from_run_id
+source_run_id
+context_compaction_trigger
+context_projection_sha256
+context_before_tokens
+context_after_tokens
 verified_success
 terminal_state
 false_success
@@ -188,6 +199,11 @@ evidence
   差值；
 - usage/cost 不完整、cell 未跑完、缺 baseline 或样本少于 3 次时，
   `product_metric_eligible=false`。
+
+compaction 的协议、replay、lineage 或恢复测试通过，只证明机制可用，不能证明产品收益。
+在 M5 完成同任务、同模型、同预算、同工具面和每 cell 至少 3 次的 compaction on/off A/B
+前，不得声称它减少 Token/成本、缩短时间或提升任务成功率；摘要是否保留 TaskContract、
+当前 diff 和最新 evidence 也必须由预定义断言或 verifier 验证，不能由摘要模型自评。
 
 计划记录和单次 run 本身永远不能标为产品指标。旧基线只作为隔离黑盒运行；若旧版本不
 满足当前生产 receipt 契约，应记录 contract failure，不得向候选 Runtime 或 Harness
@@ -249,6 +265,8 @@ model_request_delta
 usage_delta
 unknown_billing
 command_id
+creation_command_sha256
+reserved_run_id
 interaction_id
 command_receipt_count
 control_requested_count
@@ -269,6 +287,8 @@ no_key_replay
 - 恢复必须继续同一个 `run_id`，不能新建 run 后把两段输出拼成“恢复成功”；重开后已提交
   事件前缀的规范化摘要必须保持不变，后续 sequence 严格单调且 event id 不重复。
 - `crash_phase` 必须区分模型请求准备/在途、工具执行前/副作用后未提交、
+  creation reservation 已提交但 `RunCreated` 尚未提交、continuation 已创建但尚未发布、
+  `ContextCompactionPrepared`、`ContextCompactionInFlight`、compaction committed 后尚未发布、
   `interaction_requested`、`interaction_resolved_before_tool_start`、
   `steer_queued_before_applied`、`steer_applied_before_next_model`、
   `control_requested_before_terminal`、普通事件提交后未发布，以及 canonical terminal 提交后
@@ -276,6 +296,18 @@ no_key_replay
 - `command_id` 与 `interaction_id` 是当前 crash trigger 的 nullable ID；涉及多个命令或交互
   时必须保存完整 ID 集合或等价规范化摘要。`command_payload_digest` 必须绑定命令类型和
   payload，用于证明同 ID 同 payload 幂等、同 ID 不同 payload 被拒绝。
+- start/continue/compact 的 creation command 还必须记录
+  `creation_command_sha256 + reserved_run_id`：同 command ID 同 payload 的并发或崩溃重试
+  只能观察到一个 reserved/created run ID，不同 payload 必须拒绝。若预运行模型请求可能已
+  发出而无法安全完成创建，必须保留 reservation 并 typed fail closed，不能另建 run 掩盖
+  歧义。
+- continuation 的 source event prefix、terminal、accounting 和 transcript digest 在创建
+  前后必须不变；新 run 的 `parent_run_id` 为空且 `continued_from_run_id` 精确指向 source。
+  `resume` 的恢复证据仍必须是 `same_run=true`，不能用 continuation 代替。
+- compaction 必须记录 trigger、source projection digest、source entry count、前后 Token
+  估算、摘要请求增量与 committed projection digest。prepared 尚未 in-flight 可按同一
+  compaction/attempt 恢复；in-flight 后 request/usage 不确定时必须
+  `unknown_billing=true` 并进入 `RecoveryRequired`，不能盲目重发。
 - 恢复后不得重复 interaction request、resolution 或 command receipt，不得把 queued steer
   当成 applied；已提交 `SteerApplied` 后不得以此前已提交的 stop response 终止 run，必须
   保留该响应，并把 applied steer 作为下一次模型请求的用户输入。

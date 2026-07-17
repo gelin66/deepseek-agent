@@ -24,7 +24,7 @@ use serde_json::Value;
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 6;
+const STATE_SCHEMA_VERSION: u32 = 8;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -650,10 +650,54 @@ impl StateStore {
                 "#,
             )
             .context("failed to initialize AgentRuntime fast projection schema")?;
+            // `read_run_projection` validates every durable projection during
+            // the v6 backfill. Add the nullable v7 lineage column in the same
+            // transaction so the shared reader has one schema shape.
+            if !agent_runs_has_continuation_column(&tx)? {
+                tx.execute_batch("ALTER TABLE agent_runs ADD COLUMN continued_from_run_id TEXT;")
+                    .context("failed to prepare AgentRuntime continuation projection")?;
+            }
             run_store::backfill_v6_pending_model_projections(&tx)
                 .context("failed to backfill AgentRuntime fast projection")?;
             tx.pragma_update(None, "user_version", 6)
                 .context("failed to commit AgentRuntime fast projection schema version")?;
+            user_version = 6;
+        }
+        if user_version < 7 {
+            if !agent_runs_has_continuation_column(&tx)? {
+                tx.execute_batch("ALTER TABLE agent_runs ADD COLUMN continued_from_run_id TEXT;")
+                    .context("failed to add AgentRuntime continuation projection")?;
+            }
+            tx.execute_batch(
+                r#"
+                CREATE INDEX idx_agent_runs_continued_from
+                    ON agent_runs(continued_from_run_id);
+                CREATE INDEX idx_agent_runs_root_workspace_updated
+                    ON agent_runs(workspace, updated_at_unix_ms DESC, run_id DESC)
+                    WHERE parent_run_id IS NULL;
+                "#,
+            )
+            .context("failed to initialize AgentRuntime continuation projection schema")?;
+            run_store::validate_v7_continuation_projections(&tx)
+                .context("failed to validate AgentRuntime continuation projections")?;
+            tx.pragma_update(None, "user_version", 7)
+                .context("failed to commit AgentRuntime continuation schema version")?;
+            user_version = 7;
+        }
+        if user_version < 8 {
+            tx.execute_batch(
+                r#"
+                CREATE TABLE agent_run_creations (
+                    command_id TEXT PRIMARY KEY NOT NULL,
+                    command_sha256 TEXT NOT NULL,
+                    run_id TEXT NOT NULL UNIQUE,
+                    created_at_unix_ms INTEGER NOT NULL
+                );
+                "#,
+            )
+            .context("failed to initialize durable run creation receipts")?;
+            tx.pragma_update(None, "user_version", 8)
+                .context("failed to commit run creation receipt schema version")?;
         }
         tx.commit()
             .context("failed to commit state schema migration")?;
@@ -1809,6 +1853,20 @@ impl StateStore {
         }
         Ok(latest)
     }
+}
+
+fn agent_runs_has_continuation_column(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM pragma_table_info('agent_runs')
+            WHERE name = 'continued_from_run_id'
+        )
+        "#,
+        [],
+        |row| row.get(0),
+    )
+    .context("failed to inspect AgentRuntime continuation projection schema")
 }
 
 fn default_state_db_path() -> PathBuf {

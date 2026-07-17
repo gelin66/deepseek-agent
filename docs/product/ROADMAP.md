@@ -5,9 +5,11 @@
 - 状态：执行中
 - 当前阶段：M4-C 进行中。M4-B 被测代码提交为
   `a534a824670b60c807c5abf399ea8674d4beb527`；C1 实现提交 `1d127b78` 已建立并冻结
-  canonical durable interaction/control contract，但交互 TUI caller、continuation、compaction 和旧
-  engine/runtime-thread 删除尚未完成。M1 的导入基线 A/B 与 M2 的完整官方 surface canary
-  仍是独立证据债务
+  canonical durable interaction/control contract。C2 的 Run API v3、RuntimeEvent writer
+  v5/read v4-v5、State schema v8、continuation 和最小 context projection 已通过本机完整
+  验收与费用受限的官方 DeepSeek sender canary，当前待 review/commit 冻结；交互 TUI caller
+  尚未切换，旧 engine/runtime-thread/compaction 路径尚未删除。M1 的
+  导入基线 A/B 与 M2 的完整官方 surface canary 仍是独立证据债务
 - 上次更新：2026-07-17
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -85,7 +87,7 @@ diff、stdout/stderr 和原始日志保持稳定。最终门禁至少覆盖：
 | M1 | 建立原始 DeepSeek 能力基准 | 进行中（硬预算本地门禁已通过，导入基线真实编码 A/B 待完成） | 真实编码 A/B 在硬请求预算下可重复测量成功率、假成功、Token、时间和成本 |
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
-| M4 | 统一工具、事件、RunStore 和产品入口 | 进行中（M4-A/M4-B/M4-C C1 完成；C2 待开始） | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
+| M4 | 统一工具、事件、RunStore 和产品入口 | 进行中（M4-A/M4-B/M4-C C1 完成；C2 验收通过待冻结） | CLI/TUI/API 同事件，旧 core/bridge 路径删除 |
 | M5 | RepoGraph、ContextBroker 和现有 WIP 证据链迁移 | 待开始 | 现有 TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 待开始 | 根/子 Agent 同内核，并行任务产生净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
@@ -508,11 +510,16 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   interaction 协议，steer 使用 `SteerQueued -> SteerApplied` 安全边界，interrupt/cancel 和
   command receipt 进入 canonical event/Store；HTTP 与 stdio 使用同一 schema。该记录不代表
   交互 TUI 已切换。
+- M4-C C2 先建立切换所需的 continuation lineage 和最小 context projection：Run API v3
+  区分同 run `resume` 与新 root `continue`，RuntimeEvent v5 持久化 compaction 阶段，State
+  schema v8 以 durable creation reservation 防止 start/continue/compact 重复创建。该候选已
+  通过验收但尚未 commit 冻结，也不代表 compaction 已产生产品收益。
 - M4-C 最后迁移交互 TUI，只保留命令输入与 `RuntimeEvent` 投影，删除 TUI 生产 turn loop。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
-  command/event 投影；compaction 的能力重构仍属于 M5。真实工具只有在生产 consumer 同步
-  迁移时才物理收敛到 `crates/tools`，不做空目录式模块搬家。
+  command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
+  选择上下文、确定性保留 TaskContract/diff/evidence 及验证净收益仍属于 M5。真实工具只有在
+  production consumer 同步迁移时才物理收敛到 `crates/tools`，不做空目录式模块搬家。
 
 #### M4-C C1：durable interaction/control 契约（已完成）
 
@@ -531,6 +538,36 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   workspace tests 通过。
 - 切换删除点：本切片删除旧协议语义；交互 TUI 的 `EngineEvent` control 回写、乐观 transcript
   双写、`RuntimeThreadStore` 和第二子 Agent loop 在后续 M4-C caller cutover 同步物理删除。
+
+#### M4-C C2：continuation 与最小 context projection（验收通过，待冻结）
+
+- 真实问题：旧 `exec --continue` 把 continuation 与同 run recovery 混为一谈，canonical
+  Runtime 也没有可持久恢复的 model-visible context projection；直接切换交互 TUI 会丢失长
+  会话延续与 compaction 行为。
+- 验收条件：`resume` 只推进同一 run；`continue` 只从非 `RecoveryRequired` 的终态 root
+  创建独立新 root，source 不变且 lineage 明确；完整 transcript append-only，compaction 只
+  改变请求 projection；摘要请求计入预算/accounting，prepared 可安全恢复，in-flight 不确定
+  时 fail closed；creation crash/concurrency 不产生第二个 run。
+- 单一 owner：command/lineage/event 属于 `crates/protocol`，projection 构建属于
+  `crates/context`，状态机属于 `crates/runtime`，State schema v8 的 lineage、root list 和
+  durable creation reservation 属于 `crates/state`，入口只经
+  `crates/app::AgentApplication`。
+- 替换旧语义：`codewhale exec --continue <PROMPT>` 通过 canonical `list_roots` 找到精确
+  workspace 最新 root，并创建新 root；若最新 root 未终态则要求
+  `codewhale exec --resume <RUN_ID>`。旧 latest-resumable lookup 和 continue-as-resume
+  语义不保留。
+- 测试与证据：protocol/runtime/app/Store/HTTP/stdio/exec 的 lineage、projection、
+  accounting、schema 与 reservation 契约通过；内存/SQLite root-list parity 与外部监督进程
+  `SIGKILL` 的 compaction prepared/in-flight/committed 窗口通过；focused、workspace
+  Clippy `-D warnings` 和串行完整 workspace tests 通过。官方 DeepSeek production sender
+  canary 以 6/6 请求覆盖 Standard、Thinking/tool-history replay、Beta Strict 与 FIM，
+  完整 usage、无 transport retry，费用 `USD 0.0000969904`；该 canary
+  `product_metric_eligible=false`，且不替代 compaction on/off 真实 A/B，因此不得声称
+  Token、成本或 verified task success 改善。
+- 切换删除点：C2 切换 exec/app-server 的旧 continuation lookup；交互 TUI 仍使用旧
+  engine/session/task/runtime-thread 与 `crates/tui/src/compaction.rs`，它们必须在后续 caller
+  cutover 同步删除。M5 再以 A/B 决定 evidence-aware compaction/ContextBroker 的保留设计，
+  不在 C2 堆叠第二套摘要器。
 
 ### 删除/替代
 
@@ -555,7 +592,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 - 用 tree-sitter、ripgrep、LSP、包依赖和 git diff 建立增量 RepoGraph。
 - 在统一 Runtime 上实现 `ContextBroker`，按任务相关性、证据新鲜度和 Token 预算选择上下文。
-- 重构 compaction，保留 TaskContract、未决问题、当前 diff 和最新证据。
+- 基于 M4-C C2 的唯一 projection/event 状态机增强 compaction，使其可确定性保留
+  TaskContract、未决问题、当前 diff 和最新证据；不得另建第二套 compaction runtime。
+- 用同任务、同预算的 compaction on/off A/B 测量 verified success、false-success、Token、
+  时间和费用；M4-C 的协议/恢复通过不能替代该收益证据。
 - 将当前生产 WIP 中已经接线的 `TaskContract`、`workspace_revision`、`EvidenceReceipt`、
   verifier receipt 和 Goal 终态约束拆分评测后迁入唯一 `AgentRuntime`/`RunStore`；这是迁移
   和收敛，不是再实现一套 Task、Goal、receipt 或 completion 状态机。
@@ -576,6 +616,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 ### 退出门槛
 
 - RepoGraph 相比当前 project map 提高成功率或减少 Token。
+- evidence-aware compaction 相比关闭 compaction 的变体产生可重复净收益；无收益则缩小或
+  删除对应增强，不能用实现复杂度冒充能力。
 - 写操作会使旧证据失效。
 - false-success 显著下降。
 - 根/子 Agent 与 Headless/TUI/API 对同一 TaskContract 共享同一验收判定和 RunStore 真相。

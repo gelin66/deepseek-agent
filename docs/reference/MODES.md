@@ -142,7 +142,9 @@ Run `codewhale --help` for the canonical list. Common flags:
 - `-p, --prompt <TEXT>`: one-shot prompt mode (prints and exits)
 - `codewhale exec --auto --output-format stream-json <PROMPT>`: run the tool-backed non-interactive agent and emit one JSON object per line for harnesses and backend wrappers
 - `codewhale exec --resume <RUN_ID>`: replay or resume one canonical Agent run; a new prompt is not required
-- `codewhale exec --continue`: resume the latest non-terminal root run for this workspace
+- `codewhale exec --continue <PROMPT>`: find the latest root run for the exact workspace and, only
+  when it is terminal, create a distinct new root continuation with the new prompt. If the latest
+  root is non-terminal, use `codewhale exec --resume <RUN_ID>` to recover that same run
 - `codewhale fork <ID|PREFIX>` / `codewhale fork --last`: copy a saved session into a new sibling session; forked sessions retain additive parent-session metadata and show that lineage in session listings
 - `--model <MODEL>`: when using the `codewhale` facade, forward a DeepSeek model override to the TUI
 - `--workspace <DIR>`: workspace root for file tools
@@ -153,6 +155,12 @@ Run `codewhale --help` for the canonical list. Common flags:
 - `--profile <NAME>`: select config profile
 - `--config <PATH>`: config file path
 - `-v, --verbose`: verbose logging
+
+The two `--continue` flags are intentionally different while the interactive TUI remains on its
+legacy saved-session path. `codewhale exec --continue <PROMPT>` uses Run API v3 continuation
+lineage and creates a new canonical root. Top-level `codewhale --continue` still resumes the most
+recent interactive saved session; it will not gain canonical Run semantics until the M4-C TUI
+caller cutover.
 
 ## Branching and Rollback
 

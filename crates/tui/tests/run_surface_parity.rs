@@ -586,7 +586,9 @@ fn view_from_replay(replay: &RunReplay) -> RunView {
     let request = &snapshot.request;
     RunView {
         run_id: request.run_id.clone().expect("persisted run id"),
+        purpose: request.purpose,
         parent_run_id: request.parent_run_id.clone(),
+        continued_from_run_id: request.continued_from_run_id.clone(),
         model: request.model.clone(),
         workspace: request.environment.workspace.clone(),
         last_sequence: snapshot.last_sequence,
@@ -629,6 +631,12 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
         .iter()
         .map(|event| match &event.event {
             RuntimeEventKind::RunCreated { .. } => "run_created",
+            RuntimeEventKind::ContextCompactionPrepared { .. } => "context_compaction_prepared",
+            RuntimeEventKind::ContextCompactionInFlight { .. } => "context_compaction_in_flight",
+            RuntimeEventKind::ContextCompactionAttemptFailed { .. } => {
+                "context_compaction_attempt_failed"
+            }
+            RuntimeEventKind::ContextCompactionCommitted { .. } => "context_compaction_committed",
             RuntimeEventKind::ModelRequestPrepared { .. } => "model_request_prepared",
             RuntimeEventKind::ModelRequestInFlight { .. } => "model_request_in_flight",
             RuntimeEventKind::ModelRequestFailed { .. } => "model_request_failed",
