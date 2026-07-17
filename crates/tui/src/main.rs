@@ -193,11 +193,11 @@ struct Cli {
     #[arg(short, long)]
     workspace: Option<PathBuf>,
 
-    /// Resume a previous session by ID or prefix
+    /// Resume a canonical Agent run by exact Run ID
     #[arg(short, long)]
     resume: Option<String>,
 
-    /// Continue the most recent session in this workspace
+    /// Resume the newest canonical Agent run in this workspace
     #[arg(short = 'c', long = "continue")]
     continue_session: bool,
 
@@ -239,15 +239,6 @@ enum Commands {
         /// Shell to generate completions for
         #[arg(value_enum)]
         shell: Shell,
-    },
-    /// List saved sessions
-    Sessions {
-        /// Maximum number of sessions to display
-        #[arg(short, long, default_value = "20")]
-        limit: usize,
-        /// Search sessions by title
-        #[arg(short, long)]
-        search: Option<String>,
     },
     /// Create default AGENTS.md in current directory
     Init,
@@ -309,21 +300,12 @@ enum Commands {
     Sandbox(SandboxArgs),
     /// Run a local server (e.g. MCP)
     Serve(ServeArgs),
-    /// Resume a previous session by ID (use --last for most recent)
+    /// Resume a canonical Agent run by exact Run ID (use --last for newest)
     Resume {
-        /// Conversation/session id (UUID or prefix)
-        #[arg(value_name = "SESSION_ID")]
+        /// Exact canonical Run ID
+        #[arg(value_name = "RUN_ID")]
         session_id: Option<String>,
-        /// Continue the most recent session in this workspace without a picker
-        #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
-        last: bool,
-    },
-    /// Fork a previous session by ID (use --last for most recent)
-    Fork {
-        /// Conversation/session id (UUID or prefix)
-        #[arg(value_name = "SESSION_ID")]
-        session_id: Option<String>,
-        /// Fork the most recent session in this workspace without a picker
+        /// Resume the newest canonical run in this workspace
         #[arg(long = "last", default_value_t = false, conflicts_with = "session_id")]
         last: bool,
     },
@@ -1422,7 +1404,6 @@ async fn run_async_main() -> Result<()> {
                 generate_completions(shell);
                 Ok(())
             }
-            Commands::Sessions { limit, search } => list_sessions(limit, search),
             Commands::Init => init_project(),
             Commands::Login { api_key } => run_login(api_key),
             Commands::Logout => run_logout(),
@@ -1600,9 +1581,6 @@ async fn run_async_main() -> Result<()> {
                 };
                 run_interactive(&cli, &config, Some(resume_id), None).await
             }
-            Commands::Fork { .. } => bail!(
-                "`fork` 已移除：canonical Run 不允许复制并改写历史；请恢复终态运行后直接发送新输入创建 Continue"
-            ),
         };
     }
 
@@ -5326,78 +5304,6 @@ fn rustc_version() -> String {
     String::from_utf8(output.stdout)
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|_| "unknown".to_string())
-}
-
-/// List saved sessions
-fn sessions_resume_command() -> &'static str {
-    "codewhale resume"
-}
-
-fn list_sessions(limit: usize, search: Option<String>) -> Result<()> {
-    use crate::palette;
-    use colored::Colorize;
-    use session_manager::{SessionManager, format_session_line};
-
-    let (accent_r, accent_g, accent_b) = palette::WHALE_ACCENT_PRIMARY_RGB;
-    let (sky_r, sky_g, sky_b) = palette::WHALE_INFO_RGB;
-    let (aqua_r, aqua_g, aqua_b) = palette::WHALE_INFO_RGB;
-
-    let manager = SessionManager::default_location()?;
-
-    let sessions = if let Some(query) = search {
-        manager.search_sessions(&query)?
-    } else {
-        manager.list_sessions()?
-    };
-
-    if sessions.is_empty() {
-        println!("{}", "No sessions found.".truecolor(sky_r, sky_g, sky_b));
-        println!(
-            "Start a new session with: {}",
-            "codewhale".truecolor(accent_r, accent_g, accent_b)
-        );
-        return Ok(());
-    }
-
-    println!(
-        "{}",
-        "Saved Sessions"
-            .truecolor(accent_r, accent_g, accent_b)
-            .bold()
-    );
-    println!("{}", "==============".truecolor(sky_r, sky_g, sky_b));
-    println!();
-
-    for (i, session) in sessions.iter().take(limit).enumerate() {
-        let line = format_session_line(session);
-        if i == 0 {
-            println!("  {} {}", "*".truecolor(aqua_r, aqua_g, aqua_b), line);
-        } else {
-            println!("    {line}");
-        }
-    }
-
-    let total = sessions.len();
-    if total > limit {
-        println!();
-        println!(
-            "  {} more session(s). Use --limit to show more.",
-            total - limit
-        );
-    }
-
-    println!();
-    println!(
-        "Resume with: {} {}",
-        sessions_resume_command().truecolor(accent_r, accent_g, accent_b),
-        "<session-id>".dimmed()
-    );
-    println!(
-        "Continue latest in this workspace: {}",
-        "codewhale --continue".truecolor(accent_r, accent_g, accent_b)
-    );
-
-    Ok(())
 }
 
 /// Initialize a new project with AGENTS.md
@@ -9547,7 +9453,7 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn sessions_footer_points_to_resume_subcommand() {
+    fn resume_subcommand_accepts_an_exact_run_id() {
         let cli = parse_cli(&["codewhale", "resume", "abc123"]);
         let Some(Commands::Resume { session_id, last }) = cli.command else {
             panic!("expected resume command");
@@ -9555,8 +9461,6 @@ mod terminal_mode_tests {
 
         assert_eq!(session_id.as_deref(), Some("abc123"));
         assert!(!last);
-        assert_eq!(sessions_resume_command(), "codewhale resume");
-        assert!(!sessions_resume_command().contains("--resume"));
     }
 
     #[test]
