@@ -158,24 +158,6 @@ const REQUIRED_RELEASE_ASSETS: &[&str] = &[
     "codewhale-windows-x64.zip",
 ];
 
-fn is_session_approved_for_tool(app: &App, tool_name: &str, grouping_key: &str) -> bool {
-    app.approval_session_approved.contains(grouping_key)
-        || app.approval_session_approved.contains(tool_name)
-}
-
-fn is_session_denied_for_key(app: &App, approval_key: &str) -> bool {
-    app.approval_session_denied.contains(approval_key)
-}
-
-fn should_auto_approve_approval_request(
-    app: &App,
-    tool_name: &str,
-    grouping_key: &str,
-    approval_force_prompt: bool,
-) -> bool {
-    !approval_force_prompt && is_session_approved_for_tool(app, tool_name, grouping_key)
-}
-
 fn app_auto_approve_enabled(app: &App) -> bool {
     app.mode == AppMode::Yolo || app.approval_mode == ApprovalMode::Bypass
 }
@@ -1139,12 +1121,10 @@ fn canonical_start_command(app: &App, config: &Config, input: String) -> StartRu
         ReasoningEffort::Max => RuntimeReasoningEffort::Max,
     };
     let mut limits = RunLimits::default();
-    limits.max_concurrent_children = u32::try_from(app.max_subagents)
-        .unwrap_or(u32::MAX)
-        .clamp(1, 64);
-    if app.max_subagents == 0 {
-        limits.max_depth = 0;
-    }
+    let subagents =
+        crate::exec_runtime::runtime_subagent_limits(config, app.api_provider, app.max_subagents);
+    limits.max_depth = subagents.max_depth;
+    limits.max_concurrent_children = subagents.max_concurrent_children;
     StartRunCommand {
         input,
         workspace: app.workspace.display().to_string(),
@@ -1472,7 +1452,7 @@ async fn handle_canonical_view_events(
             ViewEvent::ApprovalDecision {
                 tool_id, decision, ..
             } => match decision {
-                ReviewDecision::Approved | ReviewDecision::ApprovedForSession => {
+                ReviewDecision::Approved => {
                     run_client
                         .resolve_interaction(
                             codewhale_protocol::agent_runtime::InteractionId::from(tool_id),

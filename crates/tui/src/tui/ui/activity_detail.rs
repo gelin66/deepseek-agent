@@ -910,7 +910,6 @@ pub(super) fn turn_inspector_text(app: &App) -> String {
         "Tests / verifier",
         turn_verifier_lines(app, start, end),
     );
-    push_section(&mut out, "Approvals / denials", turn_approvals_lines(app));
     push_section(&mut out, "Model route + tokens/cost", turn_route_lines(app));
     push_section(
         &mut out,
@@ -1519,24 +1518,7 @@ fn command_looks_like_verifier(command: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
-/// Section 7 — approvals / denials.
-///
-/// The approval allow/deny sets are session-scoped (not per-turn), so the
-/// counts are labelled `(session)` to avoid implying turn precision.
-fn turn_approvals_lines(app: &App) -> Vec<String> {
-    let mut lines = Vec::new();
-    let approved = app.approval_session_approved.len();
-    let denied = app.approval_session_denied.len();
-    if approved > 0 {
-        lines.push(format!("Approved (session): {approved}"));
-    }
-    if denied > 0 {
-        lines.push(format!("Denied (session): {denied}"));
-    }
-    lines
-}
-
-/// Section 8 — model route plus token/cost accounting.
+/// Model route plus token/cost accounting.
 fn turn_route_lines(app: &App) -> Vec<String> {
     let mut lines = Vec::new();
 

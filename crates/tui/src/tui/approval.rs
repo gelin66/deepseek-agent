@@ -110,8 +110,6 @@ impl ApprovalMode {
 pub enum ReviewDecision {
     /// Execute this tool once
     Approved,
-    /// Approve and don't ask again for this tool type this session
-    ApprovedForSession,
     /// Reject the tool execution
     Denied,
     /// Abort the entire turn
@@ -1166,15 +1164,13 @@ fn split_unquoted_redirect(command: &str) -> Option<(&str, &str)> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApprovalOption {
     ApproveOnce,
-    ApproveAlways,
     Deny,
     Abort,
 }
 
 impl ApprovalOption {
-    const ORDER: [ApprovalOption; 4] = [
+    const ORDER: [ApprovalOption; 3] = [
         ApprovalOption::ApproveOnce,
-        ApprovalOption::ApproveAlways,
         ApprovalOption::Deny,
         ApprovalOption::Abort,
     ];
@@ -1211,7 +1207,6 @@ impl ApprovalOption {
     fn decision(self) -> ReviewDecision {
         match self {
             ApprovalOption::ApproveOnce => ReviewDecision::Approved,
-            ApprovalOption::ApproveAlways => ReviewDecision::ApprovedForSession,
             // Workflow maps Deny → "Edit plan" (model revises plan).
             ApprovalOption::Deny => ReviewDecision::Denied,
             ApprovalOption::Abort => ReviewDecision::Abort,
@@ -1381,20 +1376,18 @@ impl ModalView for ApprovalView {
                 ViewAction::None
             }
             KeyCode::Enter => self.commit_option(self.current_option()),
-            // Direct shortcuts; '1' / '2' map to the first two options
-            // so a numeric pad still works for approve flows.
+            // Direct shortcuts map only to outcomes the canonical host can
+            // actually enforce.
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1') => {
                 self.commit_option(ApprovalOption::ApproveOnce)
-            }
-            KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('2')
-                if !self.is_workflow_plan_approval() =>
-            {
-                self.commit_option(ApprovalOption::ApproveAlways)
             }
             // Workflow plan card (#4126): [2/e] Edit plan, [3/n/d] Cancel.
             KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Char('2')
                 if self.is_workflow_plan_approval() =>
             {
+                self.commit_option(ApprovalOption::Deny)
+            }
+            KeyCode::Char('2') if !self.is_workflow_plan_approval() => {
                 self.commit_option(ApprovalOption::Deny)
             }
             KeyCode::Char('s') | KeyCode::Char('S') if self.request.can_save_ask_rule() => self
@@ -1403,17 +1396,16 @@ impl ModalView for ApprovalView {
                     false,
                     self.request.persistent_ask_rules.clone(),
                 ),
-            KeyCode::Char('n')
-            | KeyCode::Char('N')
-            | KeyCode::Char('d')
-            | KeyCode::Char('D')
-            | KeyCode::Char('3') => {
+            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('d') | KeyCode::Char('D') => {
                 if self.is_workflow_plan_approval() {
                     // Cancel (abort turn) rather than session-deny.
                     self.commit_option(ApprovalOption::Abort)
                 } else {
                     self.commit_option(ApprovalOption::Deny)
                 }
+            }
+            KeyCode::Char('3') if self.is_workflow_plan_approval() => {
+                self.commit_option(ApprovalOption::Abort)
             }
             KeyCode::Char('v') | KeyCode::Char('V') => self.emit_params_pager(),
             KeyCode::Esc => self.emit_decision(ReviewDecision::Abort, false),
@@ -2689,14 +2681,14 @@ diff --git a/src/b.rs b/src/b.rs
         view.select_next();
         assert_eq!(view.selected, 2);
         view.select_next();
-        assert_eq!(view.selected, 3);
+        assert_eq!(view.selected, 2);
 
-        // Should clamp at 3
+        // Should clamp at the final option.
         view.select_next();
-        assert_eq!(view.selected, 3);
+        assert_eq!(view.selected, 2);
 
         view.select_prev();
-        assert_eq!(view.selected, 2);
+        assert_eq!(view.selected, 1);
     }
 
     #[test]
@@ -2820,31 +2812,25 @@ diff --git a/src/b.rs b/src/b.rs
     }
 
     #[test]
-    fn benign_a_two_approves_for_session() {
-        for code in [KeyCode::Char('a'), KeyCode::Char('A'), KeyCode::Char('2')] {
-            let mut view = ApprovalView::new(benign_request());
-            let action = view.handle_key(create_key_event(code));
-            assert!(
-                matches!(
-                    action,
-                    ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-                        decision: ReviewDecision::ApprovedForSession,
-                        ..
-                    })
-                ),
-                "expected ApprovedForSession for {code:?}"
-            );
-        }
+    fn benign_two_denies_once() {
+        let mut view = ApprovalView::new(benign_request());
+        let action = view.handle_key(create_key_event(KeyCode::Char('2')));
+        assert!(matches!(
+            action,
+            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
+                decision: ReviewDecision::Denied,
+                ..
+            })
+        ));
     }
 
     #[test]
-    fn benign_n_d_three_all_deny() {
+    fn benign_n_and_d_deny_once() {
         for code in [
             KeyCode::Char('n'),
             KeyCode::Char('N'),
             KeyCode::Char('d'),
             KeyCode::Char('D'),
-            KeyCode::Char('3'),
         ] {
             let mut view = ApprovalView::new(benign_request());
             let action = view.handle_key(create_key_event(code));
@@ -2878,10 +2864,9 @@ diff --git a/src/b.rs b/src/b.rs
     fn test_approval_view_enter_uses_selected_option() {
         let mut view = ApprovalView::new(benign_request());
 
-        // Navigate to index 2 (Denied)
+        // Navigate to index 1 (Denied)
         view.select_next();
-        view.select_next();
-        assert_eq!(view.selected, 2);
+        assert_eq!(view.selected, 1);
 
         let action = view.handle_key(create_key_event(KeyCode::Enter));
         assert!(matches!(
@@ -2934,10 +2919,8 @@ diff --git a/src/b.rs b/src/b.rs
         view.selected = 0;
         assert_eq!(view.current_decision(), ReviewDecision::Approved);
         view.selected = 1;
-        assert_eq!(view.current_decision(), ReviewDecision::ApprovedForSession);
-        view.selected = 2;
         assert_eq!(view.current_decision(), ReviewDecision::Denied);
-        view.selected = 3;
+        view.selected = 2;
         assert_eq!(view.current_decision(), ReviewDecision::Abort);
     }
 
@@ -2994,7 +2977,7 @@ diff --git a/src/b.rs b/src/b.rs
         assert!(matches!(
             action,
             ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-                decision: ReviewDecision::ApprovedForSession,
+                decision: ReviewDecision::Denied,
                 ..
             })
         ));
@@ -3009,21 +2992,11 @@ diff --git a/src/b.rs b/src/b.rs
     }
 
     #[test]
-    fn destructive_a_first_press_approves_for_session() {
+    fn destructive_a_has_no_unenforceable_session_semantics() {
         for code in [KeyCode::Char('a'), KeyCode::Char('A')] {
             let mut view = ApprovalView::new(destructive_request());
-
             let action = view.handle_key(create_key_event(code));
-            assert!(
-                matches!(
-                    action,
-                    ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-                        decision: ReviewDecision::ApprovedForSession,
-                        ..
-                    })
-                ),
-                "expected ApprovedForSession for {code:?}"
-            );
+            assert!(matches!(action, ViewAction::None));
         }
     }
 
@@ -3088,7 +3061,7 @@ diff --git a/src/b.rs b/src/b.rs
     }
 
     fn assert_approval_key_badges_visible(joined: &str) {
-        for badge in ["[1 / y]", "[2 / a]", "[3 / d / n]", "[Esc]"] {
+        for badge in ["[1 / y]", "[2 / d / n]", "[Esc]"] {
             assert!(
                 joined.contains(badge),
                 "missing key badge {badge}:\n{joined}"

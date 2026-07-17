@@ -2620,7 +2620,7 @@ struct ApprovalOptionRow {
     dangerous: bool,
 }
 
-fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 4] {
+fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 3] {
     let dangerous = matches!(risk, RiskLevel::Destructive);
     [
         ApprovalOptionRow {
@@ -2629,13 +2629,8 @@ fn approval_options_for(risk: RiskLevel, locale: Locale) -> [ApprovalOptionRow; 
             dangerous,
         },
         ApprovalOptionRow {
-            label: option_approve_always(locale),
-            key_hint: "2 / a",
-            dangerous,
-        },
-        ApprovalOptionRow {
             label: option_deny(locale),
-            key_hint: "3 / d / n",
+            key_hint: "2 / d / n",
             dangerous: false,
         },
         ApprovalOptionRow {
@@ -2703,10 +2698,6 @@ fn workflow_option_cancel(locale: Locale) -> Cow<'static, str> {
 
 fn option_approve_once(locale: Locale) -> Cow<'static, str> {
     tr(locale, MessageId::ApprovalOptionApproveOnce)
-}
-
-fn option_approve_always(locale: Locale) -> Cow<'static, str> {
-    tr(locale, MessageId::ApprovalOptionApproveAlways)
 }
 
 fn option_deny(locale: Locale) -> Cow<'static, str> {
@@ -5561,7 +5552,7 @@ mod tests {
 
             // Action row is always present (reserved off the bottom of the band).
             assert!(
-                rendered.contains("[1 / y]") && rendered.contains("[3 / d / n]"),
+                rendered.contains("[1 / y]") && rendered.contains("[2 / d / n]"),
                 "action row must stay visible at {w}x{h}:\n{rendered}"
             );
 
@@ -5586,11 +5577,7 @@ mod tests {
     }
 
     #[test]
-    fn approval_option_two_reads_as_session_scoped_not_always() {
-        // #3766: option 2 / `a` maps to ReviewDecision::ApprovedForSession, so
-        // neither the full option rows nor the compact controls may tell the
-        // user the approval is "always"/permanent. Persisting is the separate
-        // `s` save-rule action.
+    fn approval_options_only_advertise_canonical_outcomes() {
         let request = crate::tui::approval::ApprovalRequest::new(
             "approval-1",
             "exec_shell",
@@ -5599,23 +5586,16 @@ mod tests {
             "exec_shell:git commit",
         );
 
-        // Full card (tall): full option rows render the session-scoped label.
         let full = render_approval_request(&request, Rect::new(0, 0, 100, 30));
         assert!(
-            full.to_lowercase().contains("this session"),
-            "full approval option must state session scope:\n{full}"
-        );
-        assert!(
             !full.to_lowercase().contains("always"),
-            "full approval card must not call the session option 'always':\n{full}"
+            "full approval card must not advertise unenforceable session approval:\n{full}"
         );
-
-        // Short terminal: the reserved controls still render the session-scoped
-        // option `[2 / a]` and never call it "always".
+        assert!(full.contains("[1 / y]") && full.contains("[2 / d / n]"));
         let compact = render_approval_request(&request, Rect::new(0, 0, 60, 17));
         assert!(
-            compact.contains("[2 / a]") && compact.to_lowercase().contains("session"),
-            "short-terminal controls must label [2 / a] as session-scoped:\n{compact}"
+            !compact.contains("[2 / a]") && !compact.to_lowercase().contains("session"),
+            "compact controls must expose only canonical one-shot outcomes:\n{compact}"
         );
         assert!(
             !compact.to_lowercase().contains("always"),
@@ -5874,7 +5854,7 @@ diff --git a/src/b.rs b/src/b.rs\n\
         // off the bottom of the band so it can never be clipped (#3799).
         assert!(rendered.contains("Preview:"), "{rendered}");
         assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
+        assert!(rendered.contains("[2 / d / n]"), "{rendered}");
     }
 
     #[test]
@@ -5942,8 +5922,7 @@ diff --git a/src/b.rs b/src/b.rs\n\
         assert!(rendered.contains("cargo clippy"), "{rendered}");
         // Action row is reserved off the bottom and always visible (#3799).
         assert!(rendered.contains("[1 / y]"), "{rendered}");
-        assert!(rendered.contains("[2 / a]"), "{rendered}");
-        assert!(rendered.contains("[3 / d / n]"), "{rendered}");
+        assert!(rendered.contains("[2 / d / n]"), "{rendered}");
     }
 
     /// Regression for issue #65: after `App::handle_resize`, the chat widget

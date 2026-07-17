@@ -209,6 +209,41 @@ fn sanitize_stream_chunk_drops_terminal_control_characters() {
 }
 
 #[test]
+fn canonical_start_command_honors_disabled_subagents() {
+    let mut app = create_test_app();
+    app.max_subagents = 12;
+    let config = Config {
+        subagents: Some(crate::config::SubagentsConfig {
+            enabled: Some(false),
+            ..crate::config::SubagentsConfig::default()
+        }),
+        ..Config::default()
+    };
+
+    let command = canonical_start_command(&app, &config, "检查项目".to_owned());
+    assert_eq!(command.limits.max_depth, 0);
+    assert_eq!(command.limits.max_concurrent_children, 0);
+}
+
+#[test]
+fn canonical_start_command_uses_configured_subagent_limits() {
+    let mut app = create_test_app();
+    app.max_subagents = 12;
+    let config = Config {
+        subagents: Some(crate::config::SubagentsConfig {
+            max_concurrent: Some(4),
+            max_depth: Some(2),
+            ..crate::config::SubagentsConfig::default()
+        }),
+        ..Config::default()
+    };
+
+    let command = canonical_start_command(&app, &config, "并行审计".to_owned());
+    assert_eq!(command.limits.max_depth, 2);
+    assert_eq!(command.limits.max_concurrent_children, 4);
+}
+
+#[test]
 fn pending_input_preview_projects_all_live_buckets() {
     let mut app = create_test_app();
     app.push_pending_steer(QueuedMessage::new("steer-msg".to_string(), None));

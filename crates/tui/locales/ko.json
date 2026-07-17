@@ -524,7 +524,6 @@
     "ApprovalFieldImpact": "영향: ",
     "ApprovalFieldParams": "매개변수: ",
     "ApprovalOptionApproveOnce": "한 번 승인",
-    "ApprovalOptionApproveAlways": "이 세션에서 항상 승인 (이 종류)",
     "ApprovalOptionDeny": "이 호출 거부",
     "ApprovalOptionAbortTurn": "턴 중단",
     "ApprovalBlockTitle": "승인",

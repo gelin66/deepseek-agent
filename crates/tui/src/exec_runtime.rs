@@ -1007,6 +1007,37 @@ fn runtime_tool_policy(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RuntimeSubagentLimits {
+    pub max_depth: u8,
+    pub max_concurrent_children: u32,
+}
+
+/// Project the product's sub-agent configuration into canonical Runtime
+/// limits. Both exec and the interactive TUI must use this owner so disabling
+/// sub-agents, recursion depth, and concurrency cannot drift by surface.
+pub(crate) fn runtime_subagent_limits(
+    config: &Config,
+    provider: crate::config::ApiProvider,
+    requested_subagents: usize,
+) -> RuntimeSubagentLimits {
+    if !config.subagents_enabled_for_provider(provider) {
+        return RuntimeSubagentLimits {
+            max_depth: 0,
+            max_concurrent_children: 0,
+        };
+    }
+
+    let max_subagents = requested_subagents
+        .min(config.max_subagents_for_provider(provider))
+        .clamp(1, MAX_SUBAGENTS);
+    RuntimeSubagentLimits {
+        max_depth: u8::try_from(config.subagent_max_spawn_depth_for_provider(provider))
+            .unwrap_or(u8::MAX),
+        max_concurrent_children: u32::try_from(max_subagents).unwrap_or(u32::MAX),
+    }
+}
+
 fn runtime_limits(
     config: &Config,
     provider: crate::config::ApiProvider,
@@ -1015,17 +1046,8 @@ fn runtime_limits(
     hard_requests: Option<NonZeroU32>,
     remaining_runtime_ms: u64,
 ) -> RunLimits {
-    let subagents_enabled = config.subagents_enabled_for_provider(provider);
-    let max_subagents = if subagents_enabled {
-        requested_subagents
-            .min(config.max_subagents_for_provider(provider))
-            .clamp(1, MAX_SUBAGENTS)
-    } else {
-        0
-    };
-    let tree_width = u32::try_from(max_subagents)
-        .unwrap_or(u32::MAX)
-        .saturating_add(1);
+    let subagents = runtime_subagent_limits(config, provider, requested_subagents);
+    let tree_width = subagents.max_concurrent_children.saturating_add(1);
     RunLimits {
         max_turns,
         max_model_requests: hard_requests
@@ -1033,12 +1055,8 @@ fn runtime_limits(
             .unwrap_or_else(|| max_turns.saturating_mul(tree_width).max(max_turns)),
         max_model_retries: 2,
         max_tool_calls: max_turns.saturating_mul(tree_width).saturating_mul(4),
-        max_depth: if subagents_enabled {
-            u8::try_from(config.subagent_max_spawn_depth_for_provider(provider)).unwrap_or(u8::MAX)
-        } else {
-            0
-        },
-        max_concurrent_children: u32::try_from(max_subagents).unwrap_or(u32::MAX),
+        max_depth: subagents.max_depth,
+        max_concurrent_children: subagents.max_concurrent_children,
         model_event_idle_ms: Some(config.stream_chunk_timeout_secs().saturating_mul(1_000)),
         wall_time_ms: Some(remaining_runtime_ms.max(1)),
     }
@@ -1837,6 +1855,7 @@ fn unix_ms_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::SubagentsConfig;
 
     #[test]
     fn canonical_terminal_rejects_an_already_latched_process_signal() {
@@ -1866,5 +1885,44 @@ mod tests {
 
         assert!(signal_cancel_won(&result, &phase));
         assert_eq!(commit_exec_terminal_signal(&phase), Some(143));
+    }
+
+    #[test]
+    fn runtime_subagent_limits_honor_the_durable_off_switch() {
+        let config = Config {
+            subagents: Some(SubagentsConfig {
+                enabled: Some(false),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+
+        assert_eq!(
+            runtime_subagent_limits(&config, crate::config::ApiProvider::Deepseek, 12),
+            RuntimeSubagentLimits {
+                max_depth: 0,
+                max_concurrent_children: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn runtime_subagent_limits_apply_configured_depth_and_concurrency() {
+        let config = Config {
+            subagents: Some(SubagentsConfig {
+                max_concurrent: Some(3),
+                max_depth: Some(2),
+                ..SubagentsConfig::default()
+            }),
+            ..Config::default()
+        };
+
+        assert_eq!(
+            runtime_subagent_limits(&config, crate::config::ApiProvider::Deepseek, 9),
+            RuntimeSubagentLimits {
+                max_depth: 2,
+                max_concurrent_children: 3,
+            }
+        );
     }
 }

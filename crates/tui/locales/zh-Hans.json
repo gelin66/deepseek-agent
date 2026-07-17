@@ -522,7 +522,6 @@
     "ApprovalFieldImpact": "影响：",
     "ApprovalFieldParams": "参数：",
     "ApprovalOptionApproveOnce": "仅本次批准",
-    "ApprovalOptionApproveAlways": "本会话同类自动批准",
     "ApprovalOptionDeny": "拒绝本次调用",
     "ApprovalOptionAbortTurn": "终止本轮",
     "ApprovalBlockTitle": "审批",

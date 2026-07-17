@@ -522,7 +522,6 @@
     "ApprovalFieldImpact": "Impacto:",
     "ApprovalFieldParams": "Parámetros:",
     "ApprovalOptionApproveOnce": "Aprobar una vez",
-    "ApprovalOptionApproveAlways": "Aprobar en esta sesión (este tipo)",
     "ApprovalOptionDeny": "Denegar esta llamada",
     "ApprovalOptionAbortTurn": "Abortar turno",
     "ApprovalBlockTitle": "aprobación",

@@ -36,7 +36,6 @@
     "ApprovalFieldImpact": "影響：",
     "ApprovalFieldParams": "參數：",
     "ApprovalOptionApproveOnce": "僅批准一次",
-    "ApprovalOptionApproveAlways": "本會話同類自動批准",
     "ApprovalOptionDeny": "拒絕本次調用",
     "ApprovalOptionAbortTurn": "終止本輪",
     "ApprovalBlockTitle": "審批",

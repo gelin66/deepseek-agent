@@ -122,7 +122,7 @@ fn spawn_approval_fixture_server() -> anyhow::Result<(String, std::thread::JoinH
                                 "index":0,
                                 "id":"call_approval_pty",
                                 "type":"function",
-                                "function":{"name":"write_file","arguments":"{\"path\":\"approval-proof.txt\",\"content\":\"must-not-write\"}"}
+                                "function":{"name":"apply_patch","arguments":"{\"changes\":[{\"path\":\"approval-proof.txt\",\"content\":\"must-not-write\"}]}"}
                             }]},"finish_reason":null}]
                         })
                     ),
@@ -542,8 +542,7 @@ fn work_surface_real_rows_own_click_wheel_resize_and_stop_confirm() -> anyhow::R
 }
 
 #[test]
-fn approval_modal_real_rows_survive_wheel_resize_and_deny_without_side_effect() -> anyhow::Result<()>
-{
+fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
     let (base_url, server) = spawn_approval_fixture_server()?;
     let ws = make_sealed_workspace()?;
@@ -561,40 +560,29 @@ fn approval_modal_real_rows_survive_wheel_resize_and_deny_without_side_effect() 
             ws.workspace().to_str().expect("utf-8 workspace path"),
             "--no-project-config",
             "--skip-onboarding",
-            "--mouse-capture",
         ])
         .size(32, 100)
         .spawn()?;
     enter_launch_session(&mut h)?;
 
     h.send(keys::key::text(
-        "Request the fixture write_file call; do not change its arguments.",
+        "Request the fixture apply_patch call; do not change its arguments.",
     ))?;
-    h.wait_for_idle(Duration::from_millis(100), Duration::from_secs(2))?;
     h.send(keys::key::enter())?;
     h.wait_for_text("Approve once", Duration::from_secs(10))?;
     h.wait_for_text("Deny this call", KEY_TIMEOUT)?;
 
-    let (deny_row, deny_col) = h
-        .frame()
-        .find_text("Deny this call")
-        .expect("rendered denial option");
-    h.send(keys::mouse::wheel_down(deny_row, deny_col))?;
-    h.wait_for_text("❯ [2 / a]", KEY_TIMEOUT)?;
     h.resize(24, 80)?;
     h.wait_for(
-        |frame| frame.rows() == 24 && frame.cols() == 80,
+        |frame| {
+            frame.rows() == 24
+                && frame.cols() == 80
+                && frame.contains("Deny this call")
+                && frame.contains("[2 / d / n]")
+        },
         KEY_TIMEOUT,
     )?;
-    h.wait_for_idle(Duration::from_millis(200), Duration::from_secs(3))?;
-    h.wait_for_text("Deny this call", KEY_TIMEOUT)?;
-    let (deny_row, deny_col) = h
-        .frame()
-        .find_text("Deny this call")
-        .expect("denial option survived resize");
-    h.send(keys::mouse::wheel_down(deny_row, deny_col))?;
-    h.wait_for_text("❯ [3 / d / n]", KEY_TIMEOUT)?;
-    h.send(keys::mouse::click(deny_row, deny_col))?;
+    h.send(b"2")?;
     if let Err(err) = h.wait_for_text("DENIAL-HONORED", Duration::from_secs(10)) {
         let logs = std::fs::read_dir(ws.home().join(".codewhale/logs"))
             .ok()
