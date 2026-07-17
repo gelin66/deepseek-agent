@@ -569,6 +569,23 @@ fn app_new_respects_explicit_auto_compact_false_for_v4_class_models() {
 }
 
 #[test]
+fn app_new_uses_only_the_explicit_cost_currency_setting() {
+    let _lock = lock_test_env();
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let config_path = tmp.path().join("config.toml");
+    let settings_path = tmp.path().join("settings.toml");
+    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
+
+    std::fs::write(&settings_path, "cost_currency = \"usd\"\n").expect("usd settings");
+    let usd = App::new(test_options(false), &Config::default());
+    assert_eq!(usd.cost_currency, CostCurrency::Usd);
+
+    std::fs::write(&settings_path, "cost_currency = \"cny\"\n").expect("cny settings");
+    let cny = App::new(test_options(false), &Config::default());
+    assert_eq!(cny.cost_currency, CostCurrency::Cny);
+}
+
+#[test]
 fn cny_display_falls_back_to_usd_for_usd_only_costs() {
     let mut app = App::new(test_options(false), &Config::default());
     app.cost_currency = CostCurrency::Cny;
@@ -3808,19 +3825,15 @@ fn status_classifier_does_not_paint_negated_success_green() {
 }
 
 #[test]
-fn onboarding_provider_copy_is_provider_neutral_in_en() {
+fn onboarding_provider_copy_uses_fixed_simplified_chinese_catalog() {
     use crate::localization::{MessageId, tr};
-    use codewhale_config::Locale;
 
-    let title = tr(Locale::En, MessageId::OnboardProviderTitle);
-    let blurb = tr(Locale::En, MessageId::OnboardProviderBlurb);
-    let api_title = tr(Locale::En, MessageId::OnboardApiKeyTitle);
-    assert!(!title.to_ascii_lowercase().contains("deepseek"), "{title}");
-    assert!(!blurb.to_ascii_lowercase().contains("deepseek"), "{blurb}");
-    assert!(
-        !api_title.to_ascii_lowercase().contains("deepseek"),
-        "{api_title}"
+    assert_eq!(tr(MessageId::OnboardProviderTitle), "选择模型提供商");
+    assert_eq!(
+        tr(MessageId::OnboardProviderBlurb),
+        "选择 API 密钥来源。CodeWhale 平等对待每个提供商——无一特权。"
     );
+    assert_eq!(tr(MessageId::OnboardApiKeyTitle), "连接你的 API 密钥");
 }
 
 #[test]

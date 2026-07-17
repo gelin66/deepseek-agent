@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use codewhale_config::{Locale, ProviderChain, resolve_locale, route::RouteLimits};
+use codewhale_config::{ProviderChain, route::RouteLimits};
 
 use crate::compaction::CompactionConfig;
 use crate::config::{
@@ -61,10 +61,6 @@ pub struct ActiveTurnMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingState {
     Welcome,
-    /// Pick the UI locale before any other config decisions (#566).
-    /// Defaults to auto-detection from `LC_ALL` / `LANG`; explicit picks
-    /// land in the persisted settings.toml via `Settings::set("locale", …)`.
-    Language,
     Provider,
     ApiKey,
     TrustDirectory,
@@ -1017,28 +1013,22 @@ impl AppMode {
 
     /// Localized short name for the mode picker (user-facing surface only).
     #[must_use]
-    pub fn display_name_localized(self, locale: Locale) -> Cow<'static, str> {
-        tr(
-            locale,
-            match self {
-                AppMode::Agent | AppMode::Auto | AppMode::Yolo => MessageId::AppModeAgent,
-                AppMode::Plan => MessageId::AppModePlan,
-                AppMode::Operate => MessageId::AppModeOperate,
-            },
-        )
+    pub fn display_name_localized(self) -> Cow<'static, str> {
+        tr(match self {
+            AppMode::Agent | AppMode::Auto | AppMode::Yolo => MessageId::AppModeAgent,
+            AppMode::Plan => MessageId::AppModePlan,
+            AppMode::Operate => MessageId::AppModeOperate,
+        })
     }
 
     /// Localized one-line hint for the mode picker (user-facing surface only).
     #[must_use]
-    pub fn picker_hint_localized(self, locale: Locale) -> Cow<'static, str> {
-        tr(
-            locale,
-            match self {
-                AppMode::Agent | AppMode::Auto | AppMode::Yolo => MessageId::AppModeAgentHint,
-                AppMode::Plan => MessageId::AppModePlanHint,
-                AppMode::Operate => MessageId::AppModeOperateHint,
-            },
-        )
+    pub fn picker_hint_localized(self) -> Cow<'static, str> {
+        tr(match self {
+            AppMode::Agent | AppMode::Auto | AppMode::Yolo => MessageId::AppModeAgentHint,
+            AppMode::Plan => MessageId::AppModePlanHint,
+            AppMode::Operate => MessageId::AppModeOperateHint,
+        })
     }
 
     #[allow(dead_code)]
@@ -1189,15 +1179,12 @@ pub enum VimMode {
 impl VimMode {
     /// Localized status-bar label shown in the composer border (user-facing).
     #[must_use]
-    pub fn label_localized(self, locale: Locale) -> Cow<'static, str> {
-        tr(
-            locale,
-            match self {
-                Self::Normal => MessageId::VimModeNormal,
-                Self::Insert => MessageId::VimModeInsert,
-                Self::Visual => MessageId::VimModeVisual,
-            },
-        )
+    pub fn label_localized(self) -> Cow<'static, str> {
+        tr(match self {
+            Self::Normal => MessageId::VimModeNormal,
+            Self::Insert => MessageId::VimModeInsert,
+            Self::Visual => MessageId::VimModeVisual,
+        })
     }
 }
 
@@ -1816,7 +1803,6 @@ pub struct App {
     pub show_thinking: bool,
     pub verbose_transcript: bool,
     pub show_tool_details: bool,
-    pub ui_locale: Locale,
     pub cost_currency: CostCurrency,
     /// Route payment truth. Model pricing alone cannot distinguish metered
     /// API calls from OAuth or token-plan quota.
@@ -1969,10 +1955,6 @@ pub struct App {
     pub pending_user_input_prompt: Option<(String, crate::tools::user_input::UserInputRequest)>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
-    /// Translation mode — when enabled, the model is instructed to respond in
-    /// the current locale and a post-hoc translation layer replaces any
-    /// remaining English output before it reaches the user.
-    pub translation_enabled: bool,
     /// Ordered list of footer items the user wants visible. Sourced from
     /// `tui.status_items` in `~/.deepseek/config.toml` at startup; mutated
     /// live by `/statusline`. The renderer iterates this slice; no item is
@@ -2143,7 +2125,6 @@ pub struct App {
             Option<(
                 u64,
                 String,
-                codewhale_config::Locale,
                 Result<Box<codewhale_config::UserConstitution>, String>,
             )>,
         >,
@@ -2386,7 +2367,7 @@ impl App {
     }
 
     pub fn tr(&self, id: MessageId) -> Cow<'static, str> {
-        tr(self.ui_locale, id)
+        tr(id)
     }
 
     #[allow(clippy::too_many_lines)]
@@ -2560,11 +2541,8 @@ impl App {
         let status_indicator = settings.status_indicator.clone();
         let show_thinking = settings.show_thinking;
         let show_tool_details = settings.show_tool_details;
-        let ui_locale = resolve_locale(&settings.locale);
-        let cost_currency = match (settings.cost_currency.as_str(), ui_locale.tag()) {
-            ("usd", "zh-Hans") => CostCurrency::Cny,
-            _ => CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd),
-        };
+        let cost_currency =
+            CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd);
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
         let composer_vim_enabled = settings
@@ -2866,7 +2844,6 @@ impl App {
             show_thinking,
             verbose_transcript: false,
             show_tool_details,
-            ui_locale,
             cost_currency,
             billing_presentation: crate::route_billing::for_route(config, provider),
             composer_density,
@@ -2942,7 +2919,6 @@ impl App {
             view_stack: ViewStack::new(),
             pending_user_input_prompt: None,
             trust_mode: yolo_compat || initial_mode == AppMode::Yolo,
-            translation_enabled: false,
             status_items: config
                 .tui
                 .as_ref()
@@ -3130,31 +3106,6 @@ impl App {
         }
         self.status_message = Some(self.tr(MessageId::FleetReadyNotice).into_owned());
         self.needs_redraw = true;
-    }
-
-    /// Apply a locale tag selected from the onboarding language picker (#566).
-    /// Persists the value to settings.toml and immediately
-    /// re-resolves `ui_locale` so the rest of onboarding renders in the new
-    /// language. `App` doesn't keep `Settings` resident — it loads on entry
-    /// and rewrites on exit, mirroring the pattern used by the `/config`
-    /// surface.
-    pub fn set_locale_from_onboarding(&mut self, tag: &str) -> anyhow::Result<()> {
-        let mut settings = Settings::load_persisted().unwrap_or_else(|_| Settings::default());
-        settings.set("locale", tag)?;
-        settings.save()?;
-        self.ui_locale = resolve_locale(&settings.locale);
-        self.needs_redraw = true;
-        Ok(())
-    }
-
-    /// Locale tag currently persisted in settings.toml (or
-    /// `"auto"` when no settings file exists). Used by the onboarding
-    /// language picker to highlight the current selection without `App`
-    /// having to keep `Settings` resident.
-    pub fn current_locale_tag(&self) -> String {
-        Settings::load()
-            .map(|s| s.locale)
-            .unwrap_or_else(|_| "auto".to_string())
     }
 
     pub fn set_mode(&mut self, mode: AppMode) -> bool {
@@ -4157,7 +4108,6 @@ impl App {
                     .or_else(|| workflow_id.clone())
                     .unwrap_or_else(|| "workflow".to_string());
                 let mut panel = WorkflowPanel::new(run_id.clone(), label, *at_ms);
-                panel.locale = self.ui_locale;
                 panel.budget_total = *token_budget;
                 panel.budget_remaining = *token_budget;
                 self.workflow_panel = Some(panel);
@@ -4166,7 +4116,6 @@ impl App {
                 // No panel yet and event is not a start — seed a shell panel
                 // so late events still surface rather than being dropped.
                 let mut panel = WorkflowPanel::new("workflow", "workflow", 0);
-                panel.locale = self.ui_locale;
                 panel.apply_event(event);
                 self.workflow_panel = Some(panel);
             }
