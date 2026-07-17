@@ -230,11 +230,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         description_id: crate::localization::MessageId::KbCycleThinking,
         section: KeybindingSection::Modes,
     },
-    KeybindingEntry {
-        chord: "Esc Esc",
-        description_id: crate::localization::MessageId::KbBacktrackMessage,
-        section: KeybindingSection::Submission,
-    },
     // --- Modes ---
     KeybindingEntry {
         chord: "Tab",
@@ -260,12 +255,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         chord: "Alt+! / Alt+@ / Alt+# / Alt+$ / Alt+0 / Ctrl+Alt+0",
         description_id: crate::localization::MessageId::KbFocusSidebar,
         section: KeybindingSection::Modes,
-    },
-    // --- Sessions ---
-    KeybindingEntry {
-        chord: "Ctrl+R",
-        description_id: crate::localization::MessageId::KbSessionPicker,
-        section: KeybindingSection::Sessions,
     },
     // --- Clipboard ---
     KeybindingEntry {

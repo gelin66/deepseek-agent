@@ -27,34 +27,16 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap},
 };
 
 use crate::palette;
 use crate::tui::app::App;
-use crate::tui::backtrack::Direction;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::transcript_cache::{CachedTranscriptLine, CellId, TranscriptCache};
-use crate::tui::views::{
-    ActionHint, ModalKind, ModalView, ViewAction, ViewEvent, render_modal_footer,
-};
-
-/// Render mode for the overlay. `Tail` is the original sticky-tail
-/// behaviour (#94). `BacktrackPreview` (#133) highlights the Nth-from-tail
-/// `HistoryCell::User` so the user can see which turn Esc-Esc-Enter will
-/// roll back to. The mode also disables sticky-tail (we want the user to
-/// scan history, not be yanked to live output) and pins scroll near the
-/// highlighted cell on transitions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Mode {
-    #[default]
-    Tail,
-    BacktrackPreview {
-        selected_idx: usize,
-    },
-}
+use crate::tui::views::{ActionHint, ModalKind, ModalView, ViewAction, render_modal_footer};
 
 /// Snapshot of one cell, refreshed every frame from `App`. Owns the cell so
 /// the overlay's `render(&self)` can wrap without re-borrowing `App`.
@@ -68,7 +50,6 @@ struct CellSnapshot {
 struct FlattenedTranscript {
     lines: Vec<Line<'static>>,
     line_links: Vec<Vec<crate::tui::osc8::LineLink>>,
-    highlighted_range: Option<(usize, usize)>,
 }
 
 pub struct LiveTranscriptOverlay {
@@ -95,12 +76,6 @@ pub struct LiveTranscriptOverlay {
     last_total_lines: Cell<usize>,
     /// Pending `gg` second keystroke for Vim-style jump-to-top.
     pending_g: bool,
-    /// Render mode — `Tail` is the live-stream mode; `BacktrackPreview`
-    /// highlights the selected user message (#133).
-    mode: Mode,
-    /// Set when a backtrack selection changes. The next render pins the
-    /// selected cell into view once we know the wrapped line range.
-    preview_pin_pending: Cell<bool>,
 }
 
 impl LiveTranscriptOverlay {
@@ -115,36 +90,7 @@ impl LiveTranscriptOverlay {
             last_visible_height: Cell::new(0),
             last_total_lines: Cell::new(0),
             pending_g: false,
-            mode: Mode::Tail,
-            preview_pin_pending: Cell::new(false),
         }
-    }
-
-    /// Switch the overlay into backtrack-preview mode. Sticky-tail is
-    /// turned off so the highlighted cell stays in view while the user
-    /// steps through prior turns. The wrap cache stays valid because the
-    /// underlying snapshot data hasn't changed — only the post-wrap
-    /// highlight overlay does.
-    pub fn set_backtrack_preview(&mut self, selected_idx: usize) {
-        self.mode = Mode::BacktrackPreview { selected_idx };
-        self.sticky_to_bottom.set(false);
-        self.preview_pin_pending.set(true);
-    }
-
-    /// Return the overlay to live-tail mode (used when backtrack is
-    /// confirmed or canceled). Re-arms sticky-tail so streaming resumes.
-    #[allow(dead_code)] // exposed for callers that retain an overlay across a backtrack cancel; current UI just pops the view.
-    pub fn set_tail_mode(&mut self) {
-        self.mode = Mode::Tail;
-        self.sticky_to_bottom.set(true);
-        self.preview_pin_pending.set(false);
-    }
-
-    /// For tests + UI: current mode.
-    #[allow(dead_code)] // currently consumed only by tests; kept public for symmetry with `set_*` setters.
-    #[must_use]
-    pub fn mode(&self) -> Mode {
-        self.mode
     }
 
     /// Pull the latest cells + revisions from `App` so the next `render` shows
@@ -186,42 +132,14 @@ impl LiveTranscriptOverlay {
         self.options = app.transcript_render_options();
     }
 
-    /// Wrap each cell (using the cache) and return the flat line vector.
-    /// In `BacktrackPreview` mode the lines belonging to the selected
-    /// `HistoryCell::User` are decorated with a leading `▶` marker on the
-    /// first line and reverse-video styling on every line so the eye
-    /// snaps to them at a glance. The decoration is applied *after* the
-    /// cache lookup so toggling preview mode never invalidates wraps.
+    /// Wrap each cell using the cache and return the flat line vector.
     fn flatten(&self, width: u16) -> FlattenedTranscript {
         let width = width.max(1);
         let mut out: Vec<Line<'static>> = Vec::new();
         let mut out_links: Vec<Vec<crate::tui::osc8::LineLink>> = Vec::new();
-        let mut highlighted_range = None;
-
-        // Pre-compute which cell index (in `self.snapshots`) is the one
-        // the user has selected via Esc-Esc. We walk snapshots backwards
-        // counting User cells; the snapshot index whose count matches
-        // `selected_idx + 1` is the highlighted one.
-        let highlighted_cell_idx: Option<usize> = match self.mode {
-            Mode::BacktrackPreview { selected_idx } => {
-                let mut count = 0usize;
-                let mut hit = None;
-                for (idx, snap) in self.snapshots.iter().enumerate().rev() {
-                    if matches!(snap.cell, HistoryCell::User { .. }) {
-                        if count == selected_idx {
-                            hit = Some(idx);
-                            break;
-                        }
-                        count += 1;
-                    }
-                }
-                hit
-            }
-            Mode::Tail => None,
-        };
 
         let mut cache = self.cache.borrow_mut();
-        for (cell_idx, snap) in self.snapshots.iter().enumerate() {
+        for snap in &self.snapshots {
             let rendered: Vec<CachedTranscriptLine> = match cache.get(snap.id, width, snap.revision)
             {
                 Some(cached) => cached.to_vec(),
@@ -239,36 +157,12 @@ impl LiveTranscriptOverlay {
                     rendered
                 }
             };
-            let mut lines = rendered
-                .iter()
-                .map(|rendered| rendered.line.clone())
-                .collect::<Vec<_>>();
-            let mut line_links = rendered
-                .into_iter()
-                .map(|rendered| rendered.links)
-                .collect::<Vec<_>>();
-
-            if Some(cell_idx) == highlighted_cell_idx {
-                let start = out.len();
-                lines = decorate_highlight(lines);
-                if let Some(first_links) = line_links.first_mut() {
-                    *first_links = first_links.iter().map(|link| link.shifted(2)).collect();
-                }
-                out.extend(lines);
-                out_links.extend(line_links);
-                let end = out.len();
-                if end > start {
-                    highlighted_range = Some((start, end));
-                }
-            } else {
-                out.extend(lines);
-                out_links.extend(line_links);
-            }
+            out.extend(rendered.iter().map(|rendered| rendered.line.clone()));
+            out_links.extend(rendered.into_iter().map(|rendered| rendered.links));
         }
         FlattenedTranscript {
             lines: out,
             line_links: out_links,
-            highlighted_range,
         }
     }
 
@@ -291,15 +185,13 @@ impl LiveTranscriptOverlay {
         self.scroll.set(self.scroll.get().saturating_sub(amount));
         // Any upward motion exits sticky-tail; explicit user intent.
         self.sticky_to_bottom.set(false);
-        self.preview_pin_pending.set(false);
     }
 
     fn scroll_down(&mut self, amount: usize) {
         let max = self.max_scroll();
         let scroll = self.scroll.get().saturating_add(amount).min(max);
         self.scroll.set(scroll);
-        self.preview_pin_pending.set(false);
-        if scroll >= max && matches!(self.mode, Mode::Tail) {
+        if scroll >= max {
             self.sticky_to_bottom.set(true);
         }
     }
@@ -307,13 +199,11 @@ impl LiveTranscriptOverlay {
     fn jump_to_top(&mut self) {
         self.scroll.set(0);
         self.sticky_to_bottom.set(false);
-        self.preview_pin_pending.set(false);
     }
 
     fn jump_to_bottom(&mut self) {
         self.scroll.set(self.max_scroll());
-        self.sticky_to_bottom.set(matches!(self.mode, Mode::Tail));
-        self.preview_pin_pending.set(false);
+        self.sticky_to_bottom.set(true);
     }
 
     /// For tests: snapshot count.
@@ -341,54 +231,6 @@ impl Default for LiveTranscriptOverlay {
     }
 }
 
-/// Apply a backtrack-preview highlight to the lines belonging to a single
-/// `HistoryCell::User`. The first line gets a `▶ ` prefix in accent color
-/// (so the marker remains visible even on terminals where reverse-video
-/// is washed out); every line in the cell gets `Modifier::REVERSED` so
-/// the cell visually pops out of the surrounding transcript. Internal
-/// span structure is preserved so syntax/role coloring underneath the
-/// reverse stays readable.
-fn decorate_highlight(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
-    if lines.is_empty() {
-        return lines;
-    }
-    for line in &mut lines {
-        for span in &mut line.spans {
-            span.style = span.style.add_modifier(Modifier::REVERSED);
-        }
-    }
-    let marker = Span::styled(
-        "\u{25B6} ",
-        Style::default()
-            .fg(palette::TEXT_ACCENT)
-            .add_modifier(Modifier::BOLD),
-    );
-    if let Some(first) = lines.first_mut() {
-        first.spans.insert(0, marker);
-    }
-    lines
-}
-
-fn scroll_to_show_range(
-    current: usize,
-    start: usize,
-    end: usize,
-    visible_height: usize,
-    max_scroll: usize,
-) -> usize {
-    if visible_height == 0 {
-        return 0;
-    }
-    let end = end.max(start.saturating_add(1));
-    if start < current {
-        start.min(max_scroll)
-    } else if end > current.saturating_add(visible_height) {
-        end.saturating_sub(visible_height).min(max_scroll)
-    } else {
-        current.min(max_scroll)
-    }
-}
-
 impl ModalView for LiveTranscriptOverlay {
     fn kind(&self) -> ModalKind {
         ModalKind::LiveTranscript
@@ -401,34 +243,6 @@ impl ModalView for LiveTranscriptOverlay {
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-
-        // Backtrack-preview mode (#133) intercepts Left/Right/Enter/Esc
-        // before the normal scroll handlers so the user can step through
-        // prior user messages without their input being interpreted as
-        // pager navigation. Other keys (page up/down, gg/G, etc.) still
-        // fall through so the user can scroll the transcript while
-        // previewing.
-        if matches!(self.mode, Mode::BacktrackPreview { .. }) {
-            match key.code {
-                KeyCode::Left | KeyCode::Char('h') if !ctrl => {
-                    return ViewAction::Emit(ViewEvent::BacktrackStep {
-                        direction: Direction::Left,
-                    });
-                }
-                KeyCode::Right | KeyCode::Char('l') if !ctrl => {
-                    return ViewAction::Emit(ViewEvent::BacktrackStep {
-                        direction: Direction::Right,
-                    });
-                }
-                KeyCode::Enter => {
-                    return ViewAction::EmitAndClose(ViewEvent::BacktrackConfirm);
-                }
-                KeyCode::Esc | KeyCode::Char('q') => {
-                    return ViewAction::EmitAndClose(ViewEvent::BacktrackCancel);
-                }
-                _ => {}
-            }
-        }
 
         if ctrl {
             match key.code {
@@ -535,18 +349,10 @@ impl ModalView for LiveTranscriptOverlay {
 
         Clear.render(popup_area, buf);
 
-        let title: String = match self.mode {
-            Mode::BacktrackPreview { selected_idx } => format!(
-                " Backtrack preview — turn {} (\u{2190}/\u{2192} step, Enter rewind, Esc cancel) ",
-                selected_idx + 1
-            ),
-            Mode::Tail => {
-                if self.sticky_to_bottom.get() {
-                    " Live transcript (tailing) ".to_string()
-                } else {
-                    " Live transcript (paused) ".to_string()
-                }
-            }
+        let title = if self.sticky_to_bottom.get() {
+            " Live transcript (tailing) "
+        } else {
+            " Live transcript (paused) "
         };
 
         let block = Block::default()
@@ -578,11 +384,7 @@ impl ModalView for LiveTranscriptOverlay {
 
         // Wrap content using the per-cell cache at the body width.
         let content_width = content.width;
-        let FlattenedTranscript {
-            lines,
-            line_links,
-            highlighted_range,
-        } = self.flatten(content_width);
+        let FlattenedTranscript { lines, line_links } = self.flatten(content_width);
         self.last_total_lines.set(lines.len());
 
         let max_scroll = lines.len().saturating_sub(visible_height);
@@ -593,14 +395,6 @@ impl ModalView for LiveTranscriptOverlay {
         let scroll = if self.sticky_to_bottom.get() {
             self.scroll.set(max_scroll);
             max_scroll
-        } else if self.preview_pin_pending.replace(false) {
-            let next = highlighted_range
-                .map(|(start, end)| {
-                    scroll_to_show_range(self.scroll.get(), start, end, visible_height, max_scroll)
-                })
-                .unwrap_or_else(|| self.scroll.get().min(max_scroll));
-            self.scroll.set(next);
-            next
         } else {
             let next = self.scroll.get().min(max_scroll);
             self.scroll.set(next);
@@ -669,17 +463,6 @@ mod tests {
                 cell,
             })
             .collect();
-    }
-
-    fn buffer_text(buf: &Buffer) -> String {
-        let mut out = String::new();
-        for y in 0..buf.area.height {
-            for x in 0..buf.area.width {
-                out.push_str(buf[(x, y)].symbol());
-            }
-            out.push('\n');
-        }
-        out
     }
 
     #[test]
@@ -871,113 +654,6 @@ mod tests {
     }
 
     #[test]
-    fn backtrack_preview_disables_sticky() {
-        let mut v = LiveTranscriptOverlay::new();
-        assert!(v.is_sticky());
-        v.set_backtrack_preview(0);
-        assert!(!v.is_sticky());
-        assert!(matches!(
-            v.mode(),
-            Mode::BacktrackPreview { selected_idx: 0 }
-        ));
-    }
-
-    #[test]
-    fn set_tail_mode_re_arms_sticky() {
-        let mut v = LiveTranscriptOverlay::new();
-        v.set_backtrack_preview(2);
-        v.set_tail_mode();
-        assert!(v.is_sticky());
-        assert!(matches!(v.mode(), Mode::Tail));
-    }
-
-    #[test]
-    fn backtrack_preview_does_not_panic_with_no_user_cells() {
-        // Render in preview mode against a transcript that has zero User
-        // cells — the highlight scan should miss gracefully.
-        let mut v = LiveTranscriptOverlay::new();
-        install_snapshots(&mut v, vec![assistant("hi", false)]);
-        v.set_backtrack_preview(0);
-        let area = Rect::new(0, 0, 40, 10);
-        let mut buf = Buffer::empty(area);
-        v.render(area, &mut buf);
-    }
-
-    #[test]
-    fn backtrack_preview_highlights_selected_user_cell() {
-        // With 3 user cells (oldest → newest: u0, u1, u2), `selected_idx
-        // = 0` should highlight u2 (newest), `= 1` u1, `= 2` u0. We can
-        // detect the highlight by scanning the rendered buffer for the
-        // marker glyph.
-        let mut v = LiveTranscriptOverlay::new();
-        install_snapshots(
-            &mut v,
-            vec![
-                user("u0"),
-                assistant("a0", false),
-                user("u1"),
-                assistant("a1", false),
-                user("u2"),
-                assistant("a2", false),
-            ],
-        );
-        for sel in [0usize, 1, 2] {
-            v.set_backtrack_preview(sel);
-            // Force Tail re-render between iterations to confirm marker
-            // really moves rather than smearing.
-            let area = Rect::new(0, 0, 40, 24);
-            let mut buf = Buffer::empty(area);
-            v.render(area, &mut buf);
-            // Just verify the cell index resolved without panicking and
-            // the buffer is non-empty. Detailed marker placement is
-            // visual, hence not asserted here.
-            let mut any_content = false;
-            for y in 0..buf.area.height {
-                for x in 0..buf.area.width {
-                    if !buf[(x, y)].symbol().is_empty() && buf[(x, y)].symbol() != " " {
-                        any_content = true;
-                        break;
-                    }
-                }
-                if any_content {
-                    break;
-                }
-            }
-            assert!(any_content, "preview render must produce visible content");
-        }
-    }
-
-    #[test]
-    fn backtrack_preview_opens_near_latest_user_not_transcript_start() {
-        let mut v = LiveTranscriptOverlay::new();
-        let mut cells = Vec::new();
-        for i in 0..12 {
-            cells.push(user(&format!("user {i}")));
-            cells.push(assistant(&format!("assistant {i}"), false));
-        }
-        install_snapshots(&mut v, cells);
-
-        v.set_backtrack_preview(0);
-        let area = Rect::new(0, 0, 48, 10);
-        let mut buf = Buffer::empty(area);
-        v.render(area, &mut buf);
-        let rendered = buffer_text(&buf);
-
-        assert!(
-            v.scroll_offset() > 0,
-            "preview should pin near the selected recent turn, got top offset 0"
-        );
-        assert!(
-            rendered.contains("user 11"),
-            "latest user turn should be visible after opening preview: {rendered}"
-        );
-        assert!(
-            !rendered.contains("user 0"),
-            "preview must not open at the oldest transcript line: {rendered}"
-        );
-    }
-
-    #[test]
     fn live_transcript_is_usable_and_opaque_at_blocker_sizes() {
         use crate::tui::views::ViewStack;
         use unicode_width::UnicodeWidthStr;
@@ -1026,17 +702,5 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn backtrack_preview_out_of_range_does_not_panic() {
-        // Selecting beyond the user-cell count should simply not
-        // highlight anything — no panic, no marker.
-        let mut v = LiveTranscriptOverlay::new();
-        install_snapshots(&mut v, vec![user("only")]);
-        v.set_backtrack_preview(99);
-        let area = Rect::new(0, 0, 40, 10);
-        let mut buf = Buffer::empty(area);
-        v.render(area, &mut buf);
     }
 }

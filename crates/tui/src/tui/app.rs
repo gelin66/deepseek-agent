@@ -2061,10 +2061,6 @@ pub struct App {
     pub view_stack: ViewStack,
     /// Last `request_user_input` prompt, retained so a failed modal submit can reopen (#1198).
     pub pending_user_input_prompt: Option<(String, crate::tools::user_input::UserInputRequest)>,
-    /// Esc-Esc backtrack state machine (#133). `Inactive` by default; first
-    /// Esc primes, second Esc opens the live-transcript overlay scoped to
-    /// previous user messages so the user can rewind a turn.
-    pub backtrack: crate::tui::backtrack::BacktrackState,
     /// Current session ID for auto-save updates
     pub current_session_id: Option<String>,
     /// Last non-contended Work snapshot captured in this App. The outer
@@ -3104,7 +3100,6 @@ impl App {
             },
             view_stack: ViewStack::new(),
             pending_user_input_prompt: None,
-            backtrack: crate::tui::backtrack::BacktrackState::new(),
             current_session_id: None,
             last_known_work_state: None,
             current_session_metadata: None,
@@ -4076,10 +4071,8 @@ impl App {
 
     /// Truncate `history` (and the parallel `history_revisions` + auxiliary
     /// per-cell maps) so that only cells with index `< new_len` remain.
-    /// Used by Esc-Esc backtrack (#133) to roll the visible transcript
-    /// back to a chosen user message. Cells dropped here are gone — the
-    /// caller is expected to also trim the matching `api_messages` so the
-    /// next turn matches what the user sees.
+    /// Cells dropped here are gone; callers are responsible for keeping any
+    /// parallel legacy transcript state synchronized.
     pub fn truncate_history_to(&mut self, new_len: usize) {
         if new_len >= self.history.len() {
             return;

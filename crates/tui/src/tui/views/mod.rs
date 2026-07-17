@@ -40,7 +40,6 @@ pub enum ModalKind {
     SubAgents,
     Pager,
     LiveTranscript,
-    SessionPicker,
     Config,
     ModelPicker,
     ProviderPicker,
@@ -645,16 +644,6 @@ pub enum ViewEvent {
     FilePickerSelected {
         path: String,
     },
-    SessionSelected {
-        session_id: String,
-    },
-    SessionRenamed {
-        metadata: crate::session_manager::SessionMetadata,
-    },
-    SessionDeleted {
-        session_id: String,
-        title: String,
-    },
     /// Emitted by the `/model` picker on Enter — carries both the chosen
     /// model id and reasoning effort tier so the UI handler can update App
     /// state, persist via `Settings`, and forward `Op::SetModel` to the
@@ -839,23 +828,6 @@ pub enum ViewEvent {
     /// Emitted by the `/hotbar` setup wizard when the user chooses "Disable
     /// Hotbar". The host persists `hotbar = []` and hides the panel.
     HotbarDisableRequested,
-    /// Emitted by the live-transcript overlay while in backtrack preview
-    /// mode (#133) when the user steps the highlighted user message with
-    /// Left or Right. The handler advances `app.backtrack`, refreshes the
-    /// overlay's `selected_idx`, and pins scroll near the new highlight.
-    BacktrackStep {
-        direction: crate::tui::backtrack::Direction,
-    },
-    /// Emitted by the live-transcript overlay when the user presses Enter
-    /// in backtrack preview mode (#133). The handler calls
-    /// `app.backtrack.confirm()`, trims `app.history`/`api_messages` to
-    /// the selected user message, populates the composer with the
-    /// dropped user text, and closes the overlay.
-    BacktrackConfirm,
-    /// Emitted by the live-transcript overlay when the user presses Esc
-    /// in backtrack preview mode (#133). The handler resets
-    /// `app.backtrack` and closes the overlay without trimming.
-    BacktrackCancel,
     ContextMenuSelected {
         action: ContextMenuAction,
     },
