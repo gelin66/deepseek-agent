@@ -1730,7 +1730,11 @@ def run_lane(
         protocol_errors = receipt.protocol_errors()
         terminal = receipt.terminal
         prompt_matches = bool(terminal and terminal.get("prompt_sha256") == prompt_sha256)
-        actor_accounting_required = target.variant == "candidate"
+        # This A/B compares two current canonical Runtime binaries. Require
+        # the same root/child request ledger from both sides; allowing one
+        # variant to omit actor accounting would make the measurement contract
+        # asymmetric even when the older binary already emits those fields.
+        actor_accounting_required = True
         actor_accounting_valid = bool(
             terminal
             and actor_request_accounting_valid(
