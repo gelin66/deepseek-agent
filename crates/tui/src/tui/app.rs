@@ -21,7 +21,6 @@ use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{MessageId, tr};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
-use crate::resource_telemetry::TokenThroughput;
 use crate::settings::Settings;
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
@@ -1314,7 +1313,6 @@ pub struct SessionState {
     pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
     pub last_completion_tokens: Option<u32>,
-    pub last_output_throughput: Option<TokenThroughput>,
     pub last_prompt_cache_hit_tokens: Option<u32>,
     pub last_prompt_cache_miss_tokens: Option<u32>,
     pub last_reasoning_replay_tokens: Option<u32>,
@@ -1413,7 +1411,6 @@ impl Default for SessionState {
             displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
             last_completion_tokens: None,
-            last_output_throughput: None,
             last_prompt_cache_hit_tokens: None,
             last_prompt_cache_miss_tokens: None,
             last_reasoning_replay_tokens: None,
@@ -1434,7 +1431,6 @@ impl SessionState {
         self.total_cache_hit_tokens = 0;
         self.total_cache_miss_tokens = 0;
         self.total_output_tokens = 0;
-        self.last_output_throughput = None;
     }
 }
 
@@ -2008,7 +2004,6 @@ impl App {
     pub(crate) fn clear_model_scoped_telemetry(&mut self) {
         self.session.last_prompt_tokens = None;
         self.session.last_completion_tokens = None;
-        self.session.last_output_throughput = None;
         self.session.last_prompt_cache_hit_tokens = None;
         self.session.last_prompt_cache_miss_tokens = None;
         self.session.last_reasoning_replay_tokens = None;

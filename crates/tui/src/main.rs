@@ -55,7 +55,6 @@ mod palette;
 mod plugins;
 mod pricing;
 mod provider_lake;
-mod resource_telemetry;
 mod route_billing;
 mod route_budget;
 mod route_runtime;

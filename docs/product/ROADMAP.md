@@ -758,6 +758,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   discovery 误写成 model-visible 工具或 TUI `/mcp` manager。随后又删除了 TUI binary 私有
   `mcp` 模块内八个零生产消费者的“public API” wrapper、仅供测试读取的 shutdown report 与
   `#[allow(dead_code)]`；配置 reload、stale-session retry、transport shutdown 和 Drop 清理保留。
+- M4-C 已删除整模块以 `#[allow(dead_code)]` 隐藏、从未接入任何生产 caller 的 TUI
+  `ResourceTelemetry`/budget pressure/估算吞吐 foundation，以及 App 中只会初始化和清空、
+  从不写入或读取的 `last_output_throughput`。canonical Runtime/RunStore usage/accounting、
+  presenter 的 token/cache/reasoning/cost 投影和 DeepSeek 官方 usage 账本均保留；本切片不以
+  一个未接线的第二遥测模型冒充预算或性能能力。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

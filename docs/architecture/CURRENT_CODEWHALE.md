@@ -87,6 +87,11 @@ text 状态和配置已删除，composer 继续显示确定性的中文空输入
 同目录的 `schema_canonicalize` 也只有自身测试，从未处理 MCP 或 production 请求中的工具
 schema；该 207 行假缓存优化已删除。真正的请求前缀稳定性只按 canonical DeepSeek 投影与
 实际 cache 命中证据评估，不保留未接线的重复变换器。
+旧 TUI `ResourceTelemetry` 整模块通过 `#[allow(dead_code)]` 隐藏且没有生产调用方；其
+budget pressure、格式化和估算 token throughput 只由自身测试调用，App 中对应的
+`last_output_throughput` 也只有初始化与清空、没有 producer 或 renderer。该模块和写空字段
+已删除。canonical Runtime/RunStore 的 usage/accounting、DeepSeek usage 账本，以及 presenter
+真实消费的 token/cache/reasoning/cost 状态不变。
 
 ## 2. 已统一的生产链
 
