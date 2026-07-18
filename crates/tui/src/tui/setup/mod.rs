@@ -36,15 +36,11 @@ use codewhale_config::{
     user_constitution::MAX_NOTES_LEN,
 };
 
-mod fleet_draft;
-mod model_draft;
 mod operate;
 mod persistence;
 mod provider;
 mod tools_mcp;
 
-pub(crate) use fleet_draft::{draft_fleet_profile_with_model, workspace_fingerprint};
-pub(crate) use model_draft::draft_constitution_with_model;
 use persistence::SetupPersistenceFacts;
 
 /// Target lane for the once-per-version constitution checkpoint. The workspace
