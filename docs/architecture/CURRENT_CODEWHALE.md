@@ -564,6 +564,15 @@ M4-C foreground 切换后还已物理删除：
   predicate 已删除。真实行仍由 canonical `child_agents` 直接生成并交给 `subagent_panel_rows`；
   `parent_run_id`/`spawn_depth`/`agent_tree_prefix`、终态投影、handoff、child/Fleet 展示均保留。
   当前定向 sidebar 40/40、Run projection 6/6 通过，并通过 TUI check、fmt 和 diff-check。
+- 生产 `SidebarAgentRow` 现在只保存 canonical child 投影实际提供并消费的
+  `parent_run_id`、`spawn_depth`、`name`、`status`。没有可达展示消费者的 id/progress，以及
+  固定为空或零、没有交互 producer 的 model/objective/branch/steps/duration/expanded 已删除；
+  不可触发的 expanded dossier
+  和从未存在读取端的 `agent:<id>/full_transcript` handle 也已删除。handoff 没有丢失：
+  `ChildFinished.handoff_content` 继续由 canonical presenter 投影进 transcript。当前证据为
+  sidebar 33/33、presenter 14/14、Run projection 6/6、六子 Agent fanout 1/1、两项 exec 父子/
+  孙级汇合各 1/1、Fleet worker 1/1，并通过 TUI check、fmt 和 diff-check。header 的
+  `progress_only_count`/`fanout_*` 尚未在本切片扩张处理。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

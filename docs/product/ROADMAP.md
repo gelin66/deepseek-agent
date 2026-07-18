@@ -1025,6 +1025,14 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   仍是唯一真实 sidebar 子 Agent 链；`parent_run_id`、`spawn_depth`、`agent_tree_prefix`、终态矩阵、
   handoff 与 Fleet 投影均保留。删除的是假覆盖，不是多 Agent 能力。定向 sidebar 40/40、Run
   projection 6/6 通过，并通过 TUI check、fmt 和 diff-check。
+- M4-C 已将生产 `SidebarAgentRow` 收缩为调用图中真实存在的 `parent_run_id`、`spawn_depth`、
+  `name`、`status` 四项，并删除没有可达展示消费者的 id/progress、固定为空或零且没有交互
+  producer 的 model/objective/branch/steps/duration/expanded、不可展开的 dossier 分支和不存在的
+  `agent:<id>/full_transcript` handle。canonical `ChildFinished.handoff_content` 仍由 presenter
+  投影到 transcript，子 Agent 事件顺序、层级、七态终态矩阵、中文宽度、Fleet worker 与父子/
+  孙 Agent terminal 汇合均保留。定向 sidebar 33/33、presenter 14/14、Run projection 6/6、
+  六子 Agent fanout 1/1、两项 exec 多层汇合各 1/1、Fleet worker 1/1 通过，并通过 TUI check、
+  fmt 和 diff-check。header 的 `progress_only_count`/`fanout_*` 仍待独立调用图切片处理。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
