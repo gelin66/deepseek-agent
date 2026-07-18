@@ -101,7 +101,7 @@ impl ModelsDevCatalog {
     /// Build route offerings for every normal text-chat model served by a
     /// provider.
     ///
-    /// Non-chat rows (for example TTS/audio-only offerings) stay in the parsed
+    /// Non-chat rows (for example audio-only offerings) stay in the parsed
     /// catalog but are excluded from route resolution lists.
     #[must_use]
     pub fn provider_offerings(&self, provider_id: &str) -> Option<Vec<ProviderModelOffering>> {
@@ -584,7 +584,7 @@ mod tests {
     #[test]
     fn non_text_output_is_not_a_chat_model() {
         let model = ModelsDevProviderModel {
-            id: "mimo-v2.5-tts".to_string(),
+            id: "audio-only-model".to_string(),
             modalities: Some(ModelsDevModalities {
                 input: vec!["text".to_string()],
                 output: vec!["audio".to_string()],

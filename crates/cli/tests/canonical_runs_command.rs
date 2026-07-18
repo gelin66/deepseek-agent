@@ -414,6 +414,10 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
         vec!["mcp", "add-self", "--name", "legacy-self"],
         vec!["review"],
         vec!["review", "--staged"],
+        vec!["speech"],
+        vec!["speech", "paid input", "--model", "tts"],
+        vec!["tts"],
+        vec!["tts", "paid input"],
         vec!["serve", "--acp"],
         vec!["serve", "--mcp"],
     ] {
@@ -528,5 +532,26 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
     assert!(
         explicit_review_marker.exists(),
         "explicit --prompt \"审查当前 git diff\" was mistaken for the removed command"
+    );
+
+    let explicit_speech_home =
+        tempfile::tempdir().expect("temporary explicit-speech-prompt CODEWHALE_HOME");
+    let (explicit_speech_tui, explicit_speech_marker) =
+        install_tui_probe(explicit_speech_home.path());
+    let explicit_speech_prompt = run_dispatcher_with_tui_probe(
+        explicit_speech_home.path(),
+        workspace.path(),
+        &explicit_speech_tui,
+        &explicit_speech_marker,
+        &["--prompt", "生成语音"],
+    );
+    assert!(
+        explicit_speech_prompt.status.success(),
+        "explicit --prompt \"生成语音\" should remain legal: {}",
+        String::from_utf8_lossy(&explicit_speech_prompt.stderr)
+    );
+    assert!(
+        explicit_speech_marker.exists(),
+        "explicit --prompt \"生成语音\" was mistaken for the removed command"
     );
 }

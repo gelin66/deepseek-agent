@@ -57,9 +57,6 @@ base_url = "https://api.deepseek.com"
 #   mimo-v2.5-pro                   — default Xiaomi MiMo model ID
 #   mimo-v2.5-pro-ultraspeed        — Xiaomi MiMo V2.5 Pro UltraSpeed chat model ID
 #   mimo-v2.5                       — Xiaomi MiMo V2.5 Omni model ID
-#   mimo-v2.5-tts                   — Xiaomi MiMo speech/TTS model ID
-#   mimo-v2.5-tts-voicedesign       — Xiaomi MiMo voice-design TTS model ID
-#   mimo-v2.5-tts-voiceclone        — Xiaomi MiMo voice-clone TTS model ID
 #   accounts/fireworks/models/deepseek-v4-pro — Fireworks AI Pro model ID
 #   deepseek-ai/DeepSeek-V4-Pro      — SiliconFlow hosted Pro model ID
 #   deepseek-ai/DeepSeek-V4-Flash    — SiliconFlow hosted Flash model ID
@@ -165,11 +162,6 @@ memory_path = "~/.codewhale/memory.md"
 [memory]
 # enabled = true            # turn the feature on (default: false)
 # Override the env-var equivalent: `DEEPSEEK_MEMORY=on`
-
-# Xiaomi MiMo speech/TTS defaults. Also configurable with
-# XIAOMI_MIMO_SPEECH_OUTPUT_DIR / MIMO_SPEECH_OUTPUT_DIR.
-[speech]
-# output_dir = "./speech"
 
 # Native tool catalog controls (#2076). By default only the core tool surface
 # is loaded into the model context; less common native tools are discoverable
@@ -453,9 +445,6 @@ max_subagents = 10 # optional (1-20)
 # mode = "token-plan-cn"               # China cluster
 # mode = "token-plan-ams"              # Europe cluster
 # mode = "pay-as-you-go"               # standard API / sk- keys
-# TTS aliases are also accepted by `codewhale speech`: tts, voice-design, voice-clone
-# TTS model IDs: mimo-v2.5-tts, mimo-v2.5-tts-voicedesign, mimo-v2.5-tts-voiceclone, mimo-v2-tts
-
 # Novita AI-hosted inference (https://novita.ai)
 [providers.novita]
 # api_key = "YOUR_NOVITA_API_KEY"

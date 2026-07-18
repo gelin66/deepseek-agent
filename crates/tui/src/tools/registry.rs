@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use codewhale_protocol::runtime::DynamicToolSpec;
 use serde_json::Value;
@@ -501,7 +501,6 @@ pub struct AgentToolSurfaceOptions {
     pub web_search_enabled: bool,
     pub memory_tool_enabled: bool,
     pub vision_config: Option<crate::config::VisionModelConfig>,
-    pub speech_output_dir: Option<PathBuf>,
     pub goal_state: Option<SharedGoalState>,
     /// Register the agent-callable `verify` self-critique tool (#4196).
     /// Gated by `Feature::Verify` (`[features] verify_tool`), default on.
@@ -517,7 +516,6 @@ impl AgentToolSurfaceOptions {
             web_search_enabled: false,
             memory_tool_enabled: false,
             vision_config: None,
-            speech_output_dir: None,
             goal_state: None,
             verify_tool_enabled: true,
         }
@@ -794,22 +792,6 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RevertTurnTool))
     }
 
-    /// Include Xiaomi MiMo speech/TTS tools (`speech`, `tts`).
-    #[must_use]
-    pub fn with_speech_tools(
-        self,
-        client: Option<DeepSeekClient>,
-        output_dir: Option<PathBuf>,
-    ) -> Self {
-        use super::speech::SpeechTool;
-        self.with_tool(Arc::new(SpeechTool::new(
-            "speech",
-            client.clone(),
-            output_dir.clone(),
-        )))
-        .with_tool(Arc::new(SpeechTool::new("tts", client, output_dir)))
-    }
-
     /// Include persistent RLM session tools.
     #[must_use]
     pub fn with_rlm_tool(self, client: Option<DeepSeekClient>, _root_model: String) -> Self {
@@ -999,7 +981,6 @@ impl ToolRegistryBuilder {
         todo_list: super::todo::SharedTodoList,
         plan_state: super::plan::SharedPlanState,
     ) -> Self {
-        let speech_client = client.clone();
         let verify_client = client.clone();
         let verify_model = model.clone();
         let mut builder = self
@@ -1008,8 +989,7 @@ impl ToolRegistryBuilder {
             .with_plan_tool(plan_state)
             .with_slop_ledger_tools()
             .with_rlm_tool(client.clone(), model.clone())
-            .with_fim_tool(client)
-            .with_speech_tools(speech_client, options.speech_output_dir.clone());
+            .with_fim_tool(client);
 
         if options.verify_tool_enabled {
             builder = builder.with_verify_tool(verify_client, verify_model);
@@ -1102,8 +1082,7 @@ impl ToolRegistryBuilder {
         todo_list: super::todo::SharedTodoList,
         plan_state: super::plan::SharedPlanState,
     ) -> Self {
-        let mut options = AgentToolSurfaceOptions::new(shell_policy);
-        options.speech_output_dir = runtime.speech_output_dir.clone();
+        let options = AgentToolSurfaceOptions::new(shell_policy);
         self.with_full_agent_surface_options(
             client, model, manager, runtime, options, todo_list, plan_state,
         )
@@ -1424,18 +1403,6 @@ mod tests {
 
         assert!(!registry.contains("read_file"));
         assert!(registry.contains("list_dir"));
-    }
-
-    #[test]
-    fn builder_registers_speech_alias_tools() {
-        let tmp = tempdir().expect("tempdir");
-        let ctx = ToolContext::new(tmp.path().to_path_buf());
-        let registry = ToolRegistryBuilder::new()
-            .with_speech_tools(None, None)
-            .build(ctx);
-
-        assert!(registry.contains("speech"));
-        assert!(registry.contains("tts"));
     }
 
     #[test]
@@ -1829,6 +1796,38 @@ mod tests {
             !build_surface(false).contains("verify"),
             "verify should be absent when the opt-out disables it"
         );
+    }
+
+    #[test]
+    fn legacy_tui_agent_surface_excludes_removed_speech_tools() {
+        use super::AgentToolSurfaceOptions;
+        use crate::worker_profile::ShellPolicy;
+
+        let tmp = tempdir().expect("tempdir");
+        let ctx = ToolContext::new(tmp.path().to_path_buf());
+        let registry = ToolRegistryBuilder::new()
+            .with_agent_runtime_surface(
+                None,
+                "test-model".to_string(),
+                AgentToolSurfaceOptions::new(ShellPolicy::Full),
+                crate::tools::todo::new_shared_todo_list(),
+                crate::tools::plan::new_shared_plan_state(),
+            )
+            .build(ctx);
+
+        for removed_name in ["speech", "tts"] {
+            assert!(
+                !registry.contains(removed_name),
+                "removed tool {removed_name:?} must not remain callable"
+            );
+            assert!(
+                registry
+                    .to_api_tools()
+                    .iter()
+                    .all(|tool| tool.name != removed_name),
+                "removed tool {removed_name:?} must not be advertised to the model"
+            );
+        }
     }
 
     #[test]

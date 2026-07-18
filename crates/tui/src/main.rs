@@ -236,9 +236,6 @@ enum Commands {
     Auth(TuiAuthArgs),
     /// List available models from the configured API endpoint
     Models(ModelsArgs),
-    /// Generate speech audio with Xiaomi MiMo TTS models
-    #[command(visible_alias = "tts")]
-    Speech(SpeechArgs),
     /// Run a non-interactive prompt. Use --auto for agent-with-tools mode.
     Exec(ExecArgs),
     /// Manage local Agent Fleet runs and workers
@@ -949,50 +946,6 @@ struct ModelsArgs {
     json: bool,
 }
 
-#[derive(Args, Debug, Clone)]
-struct SpeechArgs {
-    /// Text to synthesize. This is sent as the assistant message content.
-    #[arg(value_name = "TEXT")]
-    text: String,
-
-    /// Output audio path. Defaults to speech.<format> in --output-dir,
-    /// [speech].output_dir, or the current directory.
-    #[arg(short, long, value_name = "FILE")]
-    output: Option<PathBuf>,
-
-    /// Directory for the default speech.<format> output file when -o/--output is omitted.
-    #[arg(long = "output-dir", value_name = "DIR")]
-    output_dir: Option<PathBuf>,
-
-    /// TTS model. Defaults to built-in voices, or is inferred from --voice-prompt/--clone-voice.
-    #[arg(long)]
-    model: Option<String>,
-
-    /// Built-in voice ID, or a data:audio/...;base64,... URI for voice clone.
-    #[arg(long)]
-    voice: Option<String>,
-
-    /// Natural language style instruction; not spoken verbatim.
-    #[arg(long)]
-    instruction: Option<String>,
-
-    /// Voice design prompt. Implies mimo-v2.5-tts-voicedesign when --model is omitted.
-    #[arg(long = "voice-prompt")]
-    voice_prompt: Option<String>,
-
-    /// MP3/WAV sample used for voice cloning. Implies mimo-v2.5-tts-voiceclone when --model is omitted.
-    #[arg(long = "clone-voice", value_name = "FILE")]
-    clone_voice: Option<PathBuf>,
-
-    /// Output audio format requested from the API
-    #[arg(long, default_value = "wav")]
-    format: String,
-
-    /// Emit machine-readable JSON output
-    #[arg(long, default_value_t = false)]
-    json: bool,
-}
-
 #[derive(Args, Debug, Default, Clone)]
 struct FeatureToggles {
     /// Enable a feature (repeatable). Equivalent to `features.<name>=true`.
@@ -1315,10 +1268,6 @@ async fn run_async_main() -> Result<()> {
             Commands::Models(args) => {
                 let config = load_config_from_cli(&cli)?;
                 run_models(&config, args).await
-            }
-            Commands::Speech(args) => {
-                let config = load_config_from_cli(&cli)?;
-                run_speech(&config, args).await
             }
             Commands::Exec(args) => {
                 let config = load_config_from_cli(&cli)?;
@@ -4936,198 +4885,6 @@ async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
     Ok(())
 }
 
-async fn run_speech(config: &Config, args: SpeechArgs) -> Result<()> {
-    use crate::client::{DeepSeekClient, SpeechSynthesisRequest};
-    use crate::config::ApiProvider;
-    use crate::tools::speech::{
-        DEFAULT_VOICE, SPEECH_MODEL_EXAMPLES, combine_speech_instructions,
-        default_speech_output_name, describe_speech_voice, encode_voice_clone_sample_data_uri,
-        infer_speech_model, normalize_speech_format,
-    };
-
-    let SpeechArgs {
-        text,
-        output,
-        output_dir,
-        model,
-        voice,
-        instruction,
-        voice_prompt,
-        clone_voice,
-        format,
-        json: json_output,
-    } = args;
-
-    if config.api_provider() != ApiProvider::XiaomiMimo {
-        bail!(
-            "`speech` requires provider = \"xiaomi-mimo\" (current: {}). Run with `--provider xiaomi-mimo` or set it in config.",
-            config.api_provider().as_str()
-        );
-    }
-
-    if text.trim().is_empty() {
-        bail!("Speech text cannot be empty");
-    }
-    let voice_is_data_uri = voice
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|value| value.starts_with("data:audio/"));
-    if clone_voice.is_some() && voice.is_some() {
-        bail!("Use either --clone-voice or --voice for cloned voice data, not both");
-    }
-    let model = infer_speech_model(
-        model.as_deref(),
-        clone_voice.is_some() || voice_is_data_uri,
-        voice_prompt.is_some(),
-    );
-    let model_lower = model.to_ascii_lowercase();
-    if !model_lower.contains("tts") {
-        bail!(
-            "speech requires a TTS model (examples: {}); got {model}",
-            SPEECH_MODEL_EXAMPLES.join(", ")
-        );
-    }
-    let is_voice_design = model_lower.contains("voicedesign");
-    let is_voice_clone = model_lower.contains("voiceclone");
-
-    let instruction = combine_speech_instructions(instruction, voice_prompt);
-    if is_voice_design
-        && instruction
-            .as_deref()
-            .is_none_or(|value| value.trim().is_empty())
-    {
-        bail!(
-            "mimo-v2.5-tts-voicedesign requires --voice-prompt or --instruction to describe the voice"
-        );
-    }
-
-    let voice = if let Some(clone_path) = clone_voice {
-        Some(encode_voice_clone_sample_data_uri(&clone_path)?)
-    } else if is_voice_design {
-        None
-    } else if let Some(value) = voice.filter(|value| !value.trim().is_empty()) {
-        Some(value)
-    } else if is_voice_clone {
-        bail!("mimo-v2.5-tts-voiceclone requires --clone-voice <mp3|wav> or --voice <data-uri>");
-    } else {
-        Some(DEFAULT_VOICE.to_string())
-    };
-    let format = normalize_speech_format(&format).with_context(|| {
-        format!("Unsupported speech format '{format}' (allowed: wav, mp3, pcm16)")
-    })?;
-    let output = output.unwrap_or_else(|| {
-        output_dir
-            .or_else(|| config.speech_output_dir())
-            .unwrap_or_default()
-            .join(default_speech_output_name(&format))
-    });
-
-    let client = DeepSeekClient::new(config)?;
-    let response = client
-        .synthesize_speech(SpeechSynthesisRequest {
-            model: model.clone(),
-            text,
-            instruction,
-            audio_format: format.clone(),
-            voice,
-        })
-        .await?;
-
-    if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create output directory {}", parent.display()))?;
-    }
-    std::fs::write(&output, &response.audio_bytes)
-        .with_context(|| format!("Failed to write audio file {}", output.display()))?;
-
-    if json_output {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "mode": "speech",
-                "success": true,
-                "model": response.model,
-                "format": response.audio_format,
-                "output": output.display().to_string(),
-                "bytes": response.audio_bytes.len(),
-                "voice": response.voice.as_deref().map(describe_speech_voice),
-                "transcript": response.transcript,
-            }))?
-        );
-    } else {
-        println!(
-            "Generated speech: {} ({} bytes, model: {}, format: {})",
-            output.display(),
-            response.audio_bytes.len(),
-            response.model,
-            response.audio_format
-        );
-    }
-
-    Ok(())
-}
-
-#[cfg(test)]
-mod speech_cli_tests {
-    use super::*;
-    use crate::tools::speech::{
-        default_speech_output_name, infer_speech_model, normalize_speech_format,
-    };
-
-    #[test]
-    fn normalizes_documented_speech_formats() {
-        assert_eq!(normalize_speech_format("WAV").as_deref(), Some("wav"));
-        assert_eq!(normalize_speech_format("pcm16").as_deref(), Some("pcm16"));
-        assert_eq!(normalize_speech_format("pcm").as_deref(), Some("pcm16"));
-        assert_eq!(normalize_speech_format("flac"), None);
-    }
-
-    #[test]
-    fn default_speech_output_tracks_requested_format() {
-        assert_eq!(
-            PathBuf::from(default_speech_output_name("mp3")),
-            PathBuf::from("speech.mp3")
-        );
-        assert_eq!(
-            PathBuf::from("audio").join(default_speech_output_name("pcm")),
-            PathBuf::from("audio").join("speech.pcm16")
-        );
-    }
-
-    #[test]
-    fn speech_command_parses_cli_passthrough_smoke() {
-        let cli = Cli::try_parse_from([
-            "codewhale-tui",
-            "speech",
-            "hello",
-            "--model",
-            "tts",
-            "--format",
-            "pcm",
-            "--output-dir",
-            "audio",
-            "--voice",
-            "Mia",
-        ])
-        .expect("speech command parses");
-
-        let Some(Commands::Speech(args)) = cli.command else {
-            panic!("expected speech command");
-        };
-        assert_eq!(args.text, "hello");
-        assert_eq!(
-            infer_speech_model(args.model.as_deref(), false, false),
-            "mimo-v2.5-tts"
-        );
-        assert_eq!(
-            normalize_speech_format(&args.format).as_deref(),
-            Some("pcm16")
-        );
-        assert_eq!(args.output_dir, Some(PathBuf::from("audio")));
-        assert_eq!(args.voice.as_deref(), Some("Mia"));
-    }
-}
-
 /// Test API connectivity by making a minimal request
 async fn test_api_connectivity(config: &Config) -> Result<()> {
     use crate::client::DeepSeekClient;
@@ -7860,16 +7617,18 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn removed_direct_model_and_server_commands_fail_during_argument_parsing() {
+    fn removed_product_and_server_commands_fail_during_argument_parsing() {
         for args in [
             ["codewhale-tui", "review"].as_slice(),
             ["codewhale-tui", "review", "--staged"].as_slice(),
+            ["codewhale-tui", "speech"].as_slice(),
+            ["codewhale-tui", "speech", "paid input", "--model", "tts"].as_slice(),
+            ["codewhale-tui", "tts"].as_slice(),
             ["codewhale-tui", "serve", "--acp"].as_slice(),
             ["codewhale-tui", "serve", "--mcp"].as_slice(),
             ["codewhale-tui", "mcp", "add-self"].as_slice(),
         ] {
-            let error =
-                Cli::try_parse_from(args).expect_err("removed MCP server command must fail closed");
+            let error = Cli::try_parse_from(args).expect_err("removed command must fail closed");
             assert!(
                 matches!(
                     error.kind(),
@@ -7887,6 +7646,14 @@ mod terminal_mode_tests {
 
         assert!(cli.command.is_none());
         assert_eq!(cli.prompt, ["审查当前 git diff"]);
+    }
+
+    #[test]
+    fn explicit_speech_prompt_remains_legal() {
+        let cli = parse_cli(&["codewhale-tui", "--prompt", "生成语音"]);
+
+        assert!(cli.command.is_none());
+        assert_eq!(cli.prompt, ["生成语音"]);
     }
 
     #[test]

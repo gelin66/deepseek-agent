@@ -430,11 +430,7 @@ fn known_context_window_for_model(model_lower: &str) -> Option<u32> {
         | "mimo-v2.5-pro"
         | "mimo-v2.5-pro-ultraspeed"
         | "mimo-v2.5" => Some(1_000_000),
-        "mimo-v2.5-asr"
-        | "mimo-v2.5-tts"
-        | "mimo-v2.5-tts-voicedesign"
-        | "mimo-v2.5-tts-voiceclone"
-        | "mimo-v2-tts" => Some(8_000),
+        "mimo-v2.5-asr" => Some(8_000),
         "grok-4.5" => Some(500_000),
         "grok-4.3" => Some(1_000_000),
         "grok-build" => Some(512_000),
@@ -493,10 +489,6 @@ pub fn max_output_tokens_for_model(model: &str) -> Option<u32> {
         | "mimo-v2.5-pro-ultraspeed"
         | "mimo-v2.5" => Some(131_072),
         "mimo-v2.5-asr" => Some(2_048),
-        "mimo-v2.5-tts"
-        | "mimo-v2.5-tts-voicedesign"
-        | "mimo-v2.5-tts-voiceclone"
-        | "mimo-v2-tts" => Some(8_192),
         "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free" => Some(65_536),
         "nvidia/nemotron-3-ultra-550b-a55b" => Some(16_384),
         "nvidia/nemotron-3-ultra-550b-a55b:free" => Some(65_536),

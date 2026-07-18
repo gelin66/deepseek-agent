@@ -199,9 +199,6 @@ enum Commands {
     Doctor(TuiPassthroughArgs),
     /// List live provider API models via the TUI binary.
     Models(TuiPassthroughArgs),
-    /// Generate speech audio with Xiaomi MiMo TTS models via the TUI binary.
-    #[command(visible_alias = "tts")]
-    Speech(TuiPassthroughArgs),
     /// 列出当前工作区的 canonical Agent 运行。
     Runs(RunsArgs),
     /// 恢复指定 canonical Agent 运行，或使用 --last。
@@ -1009,6 +1006,9 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
             Some("review") => {
                 bail!("命令 `codewhale review` 已删除；请使用 canonical Agent 审查当前 git diff")
             }
+            Some("speech") | Some("tts") => {
+                bail!("命令 `codewhale speech` / `codewhale tts` 已删除")
+            }
             _ => {}
         }
     }
@@ -1070,10 +1070,6 @@ fn run() -> Result<()> {
         Some(Commands::Models(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("models", args))
-        }
-        Some(Commands::Speech(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("speech", args))
         }
         Some(Commands::Runs(_)) => {
             unreachable!("canonical runs command dispatched before ConfigStore")
@@ -2611,14 +2607,6 @@ mod tests {
             // Safety: tests using this helper serialize with env_lock() and
             // restore the original value in Drop.
             unsafe { std::env::set_var(name, value) };
-            Self { name, previous }
-        }
-
-        fn remove(name: &'static str) -> Self {
-            let previous = std::env::var_os(name);
-            // Safety: tests using this helper serialize with env_lock() and
-            // restore the original value in Drop.
-            unsafe { std::env::remove_var(name) };
             Self { name, previous }
         }
     }
@@ -4740,6 +4728,8 @@ mod tests {
             "workflow",
             "workflow-tool",
             "review",
+            "speech",
+            "tts",
         ] {
             assert!(
                 !rendered.lines().any(|line| {
@@ -4799,6 +4789,14 @@ mod tests {
         assert_eq!(
             root_tui_passthrough(&explicit_review_prompt).expect("explicit review prompt"),
             vec!["--prompt", "审查当前 git diff"]
+        );
+
+        let explicit_speech_prompt = parse_ok(&["codewhale", "--prompt", "生成语音"]);
+        reject_retired_command(&explicit_speech_prompt)
+            .expect("an explicit speech-shaped prompt must remain legal");
+        assert_eq!(
+            root_tui_passthrough(&explicit_speech_prompt).expect("explicit speech prompt"),
+            vec!["--prompt", "生成语音"]
         );
 
         let add_self = parse_ok(&["codewhale", "mcp", "add-self"]);

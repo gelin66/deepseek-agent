@@ -619,13 +619,6 @@ fn bundled_asset_yields_real_chat_offerings_for_key_models() {
             .and_then(serde_json::Value::as_str),
         Some("always_on")
     );
-
-    // Audio/TTS rows are absent (the asset only ships chat models, but assert
-    // the filter contract anyway).
-    assert!(
-        rows.iter().all(|r| !r.wire_model_id.contains("tts")),
-        "no TTS rows should reach the offering layer"
-    );
 }
 
 #[test]

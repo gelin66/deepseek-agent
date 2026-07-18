@@ -3073,7 +3073,7 @@ mod tests {
     }
 
     #[test]
-    fn picker_lists_xiaomi_mimo_chat_models_without_speech_models() {
+    fn picker_lists_xiaomi_mimo_chat_models() {
         let (mut app, config, _lock) = create_test_app();
         app.api_provider = crate::config::ApiProvider::XiaomiMimo;
         app.model = "mimo-v2.5-pro".to_string();
@@ -3089,17 +3089,6 @@ mod tests {
             assert!(
                 !model_ids.contains(&deprecated),
                 "{deprecated} is deprecated and should not be promoted"
-            );
-        }
-        for speech_model in [
-            "mimo-v2.5-tts",
-            "mimo-v2.5-tts-voicedesign",
-            "mimo-v2.5-tts-voiceclone",
-            "mimo-v2-tts",
-        ] {
-            assert!(
-                !model_ids.contains(&speech_model),
-                "{speech_model} should not appear in the chat model picker"
             );
         }
     }

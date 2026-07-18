@@ -188,7 +188,7 @@ pub fn bundled_catalog_offerings() -> Vec<CatalogOffering> {
 
 /// Hydrate bundled [`CatalogOffering`] rows from a parsed Models.dev catalog.
 ///
-/// Only text-chat offerings are emitted (TTS/audio-only rows stay in the parsed
+/// Only text-chat offerings are emitted (audio-only rows stay in the parsed
 /// catalog but are excluded from route candidates, matching
 /// [`ModelsDevCatalog::provider_offerings`]). Each row is tagged
 /// [`CatalogSource::Bundled`]. No canonical model is inferred from a prefix; the

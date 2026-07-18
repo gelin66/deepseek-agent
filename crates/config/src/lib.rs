@@ -2387,22 +2387,6 @@ fn canonical_xiaomi_mimo_model_id(model: &str) -> Option<&'static str> {
         "asr" | "mimo-asr" | "mimo-v2.5-asr" | "speech-to-text" | "transcribe" => {
             Some(XIAOMI_MIMO_ASR_MODEL)
         }
-        "mimo-tts" | "mimo-v25-tts" | "mimo-v2.5-tts" | "tts" | "speech" => {
-            Some(XIAOMI_MIMO_TTS_MODEL)
-        }
-        "mimo-tts-voicedesign"
-        | "mimo-voice-design"
-        | "mimo-v25-tts-voicedesign"
-        | "mimo-v2.5-tts-voicedesign"
-        | "voicedesign"
-        | "voice-design" => Some(XIAOMI_MIMO_TTS_VOICE_DESIGN_MODEL),
-        "mimo-tts-voiceclone"
-        | "mimo-voice-clone"
-        | "mimo-v25-tts-voiceclone"
-        | "mimo-v2.5-tts-voiceclone"
-        | "voiceclone"
-        | "voice-clone" => Some(XIAOMI_MIMO_TTS_VOICE_CLONE_MODEL),
-        "mimo-v2-tts" => Some(XIAOMI_MIMO_V2_TTS_MODEL),
         _ => None,
     }
 }

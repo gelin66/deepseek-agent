@@ -1521,10 +1521,6 @@ pub struct SubAgentRuntime {
     /// but legitimate tool run is not killed mid-flight. `child_runtime()`
     /// preserves the parent's value.
     pub tool_timeout: Duration,
-    /// Default directory for Xiaomi MiMo speech/TTS tool outputs inherited by
-    /// child registries. Keeps parent and sub-agent `speech` / `tts` tools on
-    /// the same `[speech].output_dir` / env override.
-    pub speech_output_dir: Option<PathBuf>,
     /// Shared todo list — the parent's `SharedTodoList`, cloned into each
     /// child so sub-agent `checklist_update` calls are visible in the
     /// Work sidebar live. Without this, each child gets a fresh isolated
@@ -1575,7 +1571,6 @@ impl SubAgentRuntime {
             mcp_pool: None,
             step_api_timeout: DEFAULT_STEP_API_TIMEOUT,
             tool_timeout: DEFAULT_TOOL_TIMEOUT,
-            speech_output_dir: None,
             todos: crate::tools::todo::new_shared_todo_list(),
             parent_mode: AppMode::Agent,
         }
@@ -1600,7 +1595,6 @@ impl SubAgentRuntime {
     /// Preserve the parent Agent-mode native tool surface for child registries.
     #[must_use]
     pub fn with_agent_tool_surface_options(mut self, options: AgentToolSurfaceOptions) -> Self {
-        self.speech_output_dir = options.speech_output_dir.clone();
         self.agent_tool_surface_options = options;
         self
     }
@@ -1622,14 +1616,6 @@ impl SubAgentRuntime {
     #[must_use]
     pub fn with_step_api_timeout(mut self, timeout: Duration) -> Self {
         self.step_api_timeout = timeout;
-        self
-    }
-
-    /// Preserve the configured speech output directory for sub-agent tools.
-    #[must_use]
-    pub fn with_speech_output_dir(mut self, output_dir: Option<PathBuf>) -> Self {
-        self.speech_output_dir = output_dir.clone();
-        self.agent_tool_surface_options.speech_output_dir = output_dir;
         self
     }
 
@@ -1851,7 +1837,6 @@ impl SubAgentRuntime {
             mcp_pool: self.mcp_pool.clone(),
             step_api_timeout: self.step_api_timeout,
             tool_timeout: self.tool_timeout,
-            speech_output_dir: self.speech_output_dir.clone(),
             todos: self.todos.clone(),
             parent_mode: self.parent_mode,
         }

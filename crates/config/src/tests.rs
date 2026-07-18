@@ -3792,18 +3792,6 @@ fn xiaomi_mimo_aliases_resolve_to_canonical_models() {
         "mimo-v2.5-pro-ultraspeed"
     );
     assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "tts"),
-        "mimo-v2.5-tts"
-    );
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "voice-design"),
-        "mimo-v2.5-tts-voicedesign"
-    );
-    assert_eq!(
-        normalize_model_for_provider(ProviderKind::XiaomiMimo, "voiceclone"),
-        "mimo-v2.5-tts-voiceclone"
-    );
-    assert_eq!(
         normalize_model_for_provider(ProviderKind::XiaomiMimo, "custom-mimo-model"),
         "custom-mimo-model"
     );

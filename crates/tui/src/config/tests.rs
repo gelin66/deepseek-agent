@@ -3608,22 +3608,10 @@ fn normalize_model_name_for_provider_maps_arcee_direct_aliases() {
 }
 
 #[test]
-fn normalize_xiaomi_mimo_aliases_for_provider() {
+fn normalize_xiaomi_mimo_chat_aliases_for_provider() {
     assert_eq!(
         normalize_model_name_for_provider(ApiProvider::XiaomiMimo, "omni").as_deref(),
         Some("mimo-v2.5")
-    );
-    assert_eq!(
-        normalize_model_name_for_provider(ApiProvider::XiaomiMimo, "tts").as_deref(),
-        Some("mimo-v2.5-tts")
-    );
-    assert_eq!(
-        normalize_model_name_for_provider(ApiProvider::XiaomiMimo, "voice-design").as_deref(),
-        Some("mimo-v2.5-tts-voicedesign")
-    );
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::XiaomiMimo, "voiceclone"),
-        "mimo-v2.5-tts-voiceclone"
     );
 }
 
@@ -3637,17 +3625,6 @@ fn model_completion_names_for_xiaomi_mimo_include_chat_models() {
         assert!(
             !models.contains(&deprecated),
             "{deprecated} is deprecated and should not be promoted"
-        );
-    }
-    for speech_model in [
-        "mimo-v2.5-tts",
-        "mimo-v2.5-tts-voicedesign",
-        "mimo-v2.5-tts-voiceclone",
-        "mimo-v2-tts",
-    ] {
-        assert!(
-            !models.contains(&speech_model),
-            "{speech_model} belongs in speech/TTS selection, not /model"
         );
     }
 }
@@ -4492,7 +4469,7 @@ fn xiaomi_mimo_env_token_plan_mode_uses_token_plan_key_and_endpoint() -> Result<
         env::set_var("XIAOMI_MIMO_MODE", "token-plan-cn");
         env::set_var("XIAOMI_MIMO_TOKEN_PLAN_API_KEY", "tp-env-key");
         env::set_var("XIAOMI_MIMO_API_KEY", "sk-env-key");
-        env::set_var("XIAOMI_MIMO_MODEL", "voiceclone");
+        env::set_var("XIAOMI_MIMO_MODEL", "account-custom-mimo");
     }
 
     let config = Config::load(None, None)?;
@@ -4502,7 +4479,7 @@ fn xiaomi_mimo_env_token_plan_mode_uses_token_plan_key_and_endpoint() -> Result<
         config.deepseek_base_url(),
         XIAOMI_MIMO_TOKEN_PLAN_CN_BASE_URL
     );
-    assert_eq!(config.default_model(), "voiceclone");
+    assert_eq!(config.default_model(), "account-custom-mimo");
     Ok(())
 }
 
