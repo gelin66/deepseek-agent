@@ -9,7 +9,6 @@ pub mod key_hint;
 // evaluate the rendering in isolation. The follow-up PR plumbs it through
 // the composer area in `ui.rs`. `pub mod` (vs the usual `pub use` pattern)
 // keeps the unused-imports lint quiet until then.
-pub mod decision_card;
 pub mod pending_input_preview;
 mod renderable;
 pub mod tool_card;
