@@ -220,8 +220,8 @@ credentialed official live canary 与真实编码 A/B 完成前，M1-C 仍不得
 
 1. **M1-D WIP 处置**：根据离线、live 协议和真实任务三层证据，对 DeepSeek 协议、
    Agent 可靠性和本地配置逐项给出保留、重做、缩小或删除结论。旧 TUI `verify` 模型
-   critic 已确认无 canonical 生产消费者，按 M4 删除；确定性 `crates/tools::run_verifiers`
-   保留并进入 M5 Host evidence 门禁。
+   critic 已确认无 canonical 生产消费者并在 M4 物理删除；确定性
+   `crates/tools::run_verifiers` 保留并进入 M5 Host evidence 门禁。
 
 模型 critic 不等同于测试证据；未经真实缺陷检出率和误报率评测，不得恢复或成为完成门禁。
 
@@ -243,15 +243,18 @@ credentialed official live canary 与真实编码 A/B 完成前，M1-C 仍不得
 - `crates/deepseek` 已成为 `ApiSurface::{StandardChat, StrictChat, Fim}`、`RequestPlan`、物理
   请求预算、usage ledger 与官方 V4 pricing 的唯一 owner；TUI 旧 client 只服务尚未删除的
   generic Provider/外围路径，不得重新拥有官方 DeepSeek surface 决策。
-- 官方 DeepSeek streaming/non-streaming Client 已消费同一 planner；`RequestPlan` 一次性决定
-  surface、endpoint、wire model、streaming、reasoning replay、工具/strict 状态和 body。
+- 官方 DeepSeek Chat streaming/non-streaming Client 已消费同一 planner；Chat
+  `RequestPlan` 一次性决定 surface、endpoint、wire model、streaming、reasoning replay、
+  工具/strict 状态和 body。
 - Strict 在整组 schema 兼容时走 Beta；任一不兼容时整组原子回退 Standard，并保留全部工具。
-- FIM 保持独立 Beta Completions 语义；现有 transport、retry、parser 和 Agent loop 被复用。
+- FIM 保持独立 Beta Completions 规划语义、surface 与 accounting 类型；当前 canonical
+  production caller 和完整 response parser 尚未落地，不能把 request-plan 测试冒充可用的
+  事务性编辑链路。
 - planner 与相关 Client 单元回归已经通过，未增加第二个 Runtime 或第二套 Client 主循环。
 
 尚未完成的验收事实：
 
-- 缺少覆盖 Engine 到官方 production sender 的 Standard/Strict/FIM surface 矩阵；
+- 缺少覆盖 canonical Runtime 到官方 production sender 的 Standard/Strict/FIM surface 矩阵；
 - 多轮 exact reasoning replay、transport retry、畸形/不完整响应和 FIM 事务性写入仍需在
   production path 形成垂直证据；
 - 切换后的官方 DeepSeek live canary 尚未重跑。
@@ -582,6 +585,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `FleetWorkerRuntimeSpec` 已删除，生产 receipt 的 `effective_permissions` 在 M6 enforced
   policy 接管前固定留空。route、reasoning、prompt 与全局 `FleetExecConfig` allow/deny
   继续按真实 exec 参数保留。
+- M4-C 已物理删除无生产构造入口的旧 TUI `verify` 模型 critic、`FimEditTool`、
+  `RunTestsTool`、`RunVerifiersTool` 及其私有 sender/parser。确定性 `run_tests`/
+  `run_verifiers` 仍由 `crates/tools` 提供；`crates/deepseek` 继续拥有 Beta FIM request
+  planner、surface 与 accounting 类型。该删除不声称 canonical FIM response parser 或
+  事务性编辑链路已经完成，相关缺口仍按 M1/M2 证据债处理。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

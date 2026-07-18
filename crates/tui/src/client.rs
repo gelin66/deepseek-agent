@@ -21,8 +21,7 @@ use codewhale_config::catalog::{
 };
 use codewhale_config::route::ReadyRouteCandidate;
 use codewhale_deepseek::{
-    ApiRequestBudgetError, ApiRequestKind, ApiRequestLease, ApiResponseAccountingGuard,
-    SharedApiRequestBudget,
+    ApiRequestBudgetError, ApiRequestKind, ApiRequestLease, SharedApiRequestBudget,
 };
 
 use crate::config::{ApiProvider, Config, RetryPolicy};
@@ -2147,84 +2146,6 @@ pub(super) fn deepseek_accounting_usage(usage: &Usage) -> codewhale_runtime::Usa
     }
 }
 
-impl DeepSeekClient {
-    /// Call the DeepSeek `/beta/completions` FIM endpoint.
-    pub async fn fim_completion(
-        &self,
-        prompt: &str,
-        suffix: &str,
-        max_tokens: u32,
-    ) -> anyhow::Result<String> {
-        let plan = deepseek::plan_fim(
-            self.api_provider,
-            &self.base_url,
-            self.path_suffix.as_deref(),
-            prompt,
-            suffix,
-            max_tokens,
-        )?;
-        let (response, request_lease) = self.send_json_with_retry(&plan.url, &plan.body).await?;
-        let status = response.status();
-        if !status.is_success() {
-            let raw_error_text = bounded_error_text(response, ERROR_BODY_MAX_BYTES).await;
-            let error_text = sanitize_http_error_body(
-                Some(self.api_provider.display_name()),
-                status.as_u16(),
-                &raw_error_text,
-            );
-            anyhow::bail!("FIM API error: HTTP {status}: {error_text}");
-        }
-        let mut response_accounting =
-            ApiResponseAccountingGuard::new(request_lease, plan.model.clone(), plan.surface);
-        let response_text = response
-            .text()
-            .await
-            .context("Failed to read FIM API response body")?;
-        let value: serde_json::Value =
-            serde_json::from_str(&response_text).context("Failed to parse FIM API response")?;
-        let wire_usage = value.get("usage").filter(|usage| usage.is_object());
-        let usage = wire_usage.map(|usage| parse_usage(Some(usage)));
-        let response_model = value
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or(&plan.model);
-        response_accounting.set_model(response_model);
-        let accounting_usage = usage.as_ref().map(deepseek_accounting_usage);
-        response_accounting.complete(accounting_usage.as_ref(), wire_usage);
-        parse_fim_completion(&value)
-    }
-}
-
-/// Parse one DeepSeek FIM response without accepting a truncated or otherwise
-/// incomplete generation as editable source code.
-fn parse_fim_completion(value: &Value) -> Result<String> {
-    let choices = value
-        .get("choices")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("FIM response missing choices array"))?;
-    if choices.len() != 1 {
-        anyhow::bail!(
-            "FIM response must contain exactly one choice, received {}",
-            choices.len()
-        );
-    }
-    let choice = &choices[0];
-    let finish_reason = choice
-        .get("finish_reason")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("FIM response missing choices[0].finish_reason"))?;
-    if finish_reason != "stop" {
-        anyhow::bail!(
-            "FIM generation did not complete safely (finish_reason={finish_reason}); file was not modified"
-        );
-    }
-    choice
-        .get("text")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| anyhow::anyhow!("FIM response missing choices[0].text"))
-}
-
 mod anthropic;
 mod chat;
 pub(crate) mod deepseek;
@@ -2293,7 +2214,7 @@ mod tests {
 
     const DEEPSEEK_LIVE_CANARY_ENABLE_ENV: &str = "CODEWHALE_RUN_DEEPSEEK_LIVE_CANARY";
     const DEEPSEEK_LIVE_CANARY_KEY_FILE_ENV: &str = "CODEWHALE_DEEPSEEK_CANARY_KEY_FILE";
-    const DEEPSEEK_LIVE_CANARY_REQUESTS: u32 = 6;
+    const DEEPSEEK_LIVE_CANARY_REQUESTS: u32 = 5;
     const DEEPSEEK_LIVE_CANARY_TIMEOUT: Duration = Duration::from_secs(225);
     const DEEPSEEK_LIVE_CANARY_MAX_COST_USD: f64 = 0.01;
     const DEEPSEEK_LIVE_CANARY_MODEL: &str = "deepseek-v4-flash";
@@ -2598,13 +2519,6 @@ mod tests {
             return Err("strict_replay_response_invalid");
         }
 
-        let fim = standard_client
-            .fim_completion("def deepseek_canary() -> str:\n    return ", "\n", 64)
-            .await
-            .map_err(|_| "fim_request_failed")?;
-        if fim.trim().is_empty() {
-            return Err("fim_response_empty");
-        }
         Ok(())
     }
 
@@ -2661,7 +2575,7 @@ mod tests {
             && usage.usage_responses == DEEPSEEK_LIVE_CANARY_REQUESTS
             && usage.standard_chat_responses == 3
             && usage.strict_chat_responses == 2
-            && usage.fim_responses == 1
+            && usage.fim_responses == 0
             && usage.responses_missing_usage == 0
             && usage.incomplete_responses == 0
             && usage.billing_unknown_attempts == 0
@@ -2694,7 +2608,6 @@ mod tests {
                 "surfaces": {
                     "standard_chat": usage.standard_chat_responses,
                     "strict_chat": usage.strict_chat_responses,
-                    "fim": usage.fim_responses,
                 },
                 "usage": {
                     "input_tokens": usage.usage.input_tokens,
@@ -3759,59 +3672,6 @@ mod tests {
             Some("disabled")
         );
         assert!(body.get("output_config").is_none(), "{body}");
-    }
-
-    #[tokio::test]
-    async fn deepseek_anthropic_fim_fails_without_http_request() {
-        let server = MockServer::start().await;
-        let client = deepseek_anthropic_client(&server);
-
-        let err = client
-            .fim_completion("fn main() {", "}", 16)
-            .await
-            .expect_err("FIM is unsupported");
-        let message = err.to_string();
-        assert!(message.contains("official DeepSeek"), "{message}");
-        let requests = server.received_requests().await.expect("recorded requests");
-        assert!(
-            requests.is_empty(),
-            "unsupported FIM should fail locally before any HTTP call"
-        );
-    }
-
-    #[test]
-    fn fim_parser_accepts_only_complete_stop_responses() {
-        let complete = json!({
-            "choices": [{"text": "middle", "finish_reason": "stop"}]
-        });
-        assert_eq!(parse_fim_completion(&complete).unwrap(), "middle");
-
-        for reason in ["length", "content_filter", "insufficient_system_resource"] {
-            let incomplete = json!({
-                "choices": [{"text": "partial", "finish_reason": reason}]
-            });
-            let error = parse_fim_completion(&incomplete)
-                .expect_err("incomplete FIM output must not be writable")
-                .to_string();
-            assert!(error.contains(reason), "{error}");
-            assert!(error.contains("file was not modified"), "{error}");
-        }
-    }
-
-    #[test]
-    fn fim_parser_rejects_ambiguous_response_shape() {
-        for response in [
-            json!({"choices": []}),
-            json!({"choices": [
-                {"text": "first", "finish_reason": "stop"},
-                {"text": "second", "finish_reason": "stop"}
-            ]}),
-            json!({"choices": {"0": {"text": "middle", "finish_reason": "stop"}}}),
-            json!({"choices": [{"text": "middle"}]}),
-            json!({"choices": [{"finish_reason": "stop"}]}),
-        ] {
-            assert!(parse_fim_completion(&response).is_err(), "{response}");
-        }
     }
 
     #[test]

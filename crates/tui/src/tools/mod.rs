@@ -20,7 +20,6 @@ pub mod file_search;
 pub mod finance;
 
 pub mod fetch_url;
-pub mod fim;
 pub mod git;
 pub mod git_history;
 pub mod github;
@@ -46,14 +45,11 @@ pub mod shell;
 pub mod skill;
 pub mod spec;
 pub mod terminal_session;
-pub mod test_runner;
 pub mod todo;
 pub mod tool_result_retrieval;
 pub mod truncate;
 pub mod user_input;
 pub mod validate_data;
-pub mod verifier;
-pub mod verify;
 pub mod web_run;
 pub mod web_search;
 

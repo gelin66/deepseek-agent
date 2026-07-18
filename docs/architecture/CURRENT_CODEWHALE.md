@@ -119,9 +119,9 @@ canonical transcript 仍 append-only，compaction 只替换每次请求的 model
 
 `crates/deepseek` 是官方 DeepSeek 请求事实 owner：
 
-- Standard Chat、Beta Strict Chat、FIM surface 规划；
+- Standard Chat、Beta Strict Chat 与 FIM surface 规划；
 - 确定性 `RequestPlan`；
-- ordinary/non-streaming 与 SSE transport；
+- Chat ordinary/non-streaming 与 SSE transport；
 - reasoning/tool-call 历史回放；
 - finish reason、typed error、retry 和 usage；
 - root/child physical request attribution；
@@ -129,8 +129,9 @@ canonical transcript 仍 append-only，compaction 只替换每次请求的 model
 - 官方模型 capability、output limit 和 pricing fixture。
 
 普通工具调用不因存在工具就误走 Beta；只有整组 schema strict-compatible 时使用
-Beta Strict Chat。FIM 仍是独立 Beta Completions surface。Context cache 由官方 Chat 的
-稳定前缀自动触发，不存在手工 cache API。
+Beta Strict Chat。FIM 仍是独立 Beta Completions request-planning surface；当前没有
+canonical production FIM 编辑调用方或完整 response parser，因此不能宣称事务性 FIM
+编辑已经可用。Context cache 由官方 Chat 的稳定前缀自动触发，不存在手工 cache API。
 
 ### Tools
 

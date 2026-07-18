@@ -72,10 +72,11 @@ Changing one of these constraints requires evidence and a new ADR.
 - That WIP is not automatically accepted as stable behavior. It must be split
   into protocol, agent reliability, verify experiment, and local-development
   slices and evaluated independently.
-- `crates/tui/src/tools/verify.rs` has no canonical production consumer after
-  the old TUI registry deletion. It is still compiled as an unproven
-  model-critic experiment, not equivalent to deterministic test evidence, and
-  is an explicit M4 cleanup target rather than a capability to restore.
+- The orphan TUI `verify` model critic, `FimEditTool`, and the duplicate
+  `RunTestsTool`/`RunVerifiersTool` wrappers have been physically deleted.
+  Deterministic evidence remains in `crates/tools`; the canonical DeepSeek FIM
+  request surface remains in `crates/deepseek`. Do not restore the deleted TUI
+  model or tool loops as compatibility paths.
 
 Never use broad `git clean`, `git restore`, reset, or file moves to make a
 dirty tree look tidy. Inspect consumers with `rg`, preserve unrelated changes,

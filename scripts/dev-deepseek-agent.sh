@@ -9,18 +9,14 @@ test_args=(-p codewhale-tui --bin codewhale-tui --locked)
 
 run_focused_tests() {
   local filters=(
-    "tools::verify::tests"
     "memory::tests"
     "fleet::worker_runtime::tests"
-    "fim_parser"
     "api_url_"
     "deepseek_owned_legacy_routes_never_select_strict_by_url"
     "deepseek_tool_reasoning_replay_tests"
     "stream_decoder_tests"
     "schema_sanitize::tests"
     "tools::search::tests"
-    "tools::test_runner::tests"
-    "tools::verifier::tests"
     "client::deepseek::tests"
     "strict_tool_mode_doctor"
   )

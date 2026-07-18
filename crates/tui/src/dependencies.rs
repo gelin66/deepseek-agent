@@ -12,14 +12,11 @@
 //! This module centralises the probe-then-decide pattern. The supported
 //! callers today are:
 //!
-//! - Tool catalog construction (`core::engine::tool_catalog`): for
-//!   tools that should be advertised to the model only when the
-//!   required runtime is present.
 //! - Doctor command (`run_doctor` in `main.rs`): for surfacing the
 //!   resolved state to the user so missing dependencies aren't an
 //!   invisible failure.
-//! - Project verifier (`tools::verifier`): for running Python checks on every
-//!   supported platform.
+//! - Retained TUI tools and snapshot helpers that invoke Git, Node, Pandoc,
+//!   PDF extraction, or other local executables.
 //!
 //! Results are cached for the process lifetime via [`std::sync::OnceLock`]
 //! — probing a binary involves a `Command::output` per candidate and

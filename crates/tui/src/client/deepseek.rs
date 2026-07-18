@@ -6,7 +6,7 @@ use std::time::Duration;
 use codewhale_deepseek::RuntimeChatPlanInput;
 pub(crate) use codewhale_deepseek::{
     ApiSurface, ChatPlanError, DeepSeekConnectionConfig, DeepSeekEndpoint, DeepSeekResponse,
-    DeepSeekTransport, FimPlanError, RequestPlan, ResponseMode, TransportRetryPolicy,
+    DeepSeekTransport, RequestPlan, ResponseMode, TransportRetryPolicy,
 };
 use codewhale_deepseek::{ChatPlanInput, DeepSeekCredential, PlannedTool, ReasoningMode};
 #[cfg(test)]
@@ -392,20 +392,6 @@ pub(crate) fn plan_runtime_chat(
         request,
     )
     .map(Some)
-}
-
-pub(crate) fn plan_fim(
-    provider: ApiProvider,
-    base_url: &str,
-    path_suffix: Option<&str>,
-    prompt: &str,
-    suffix: &str,
-    max_tokens: u32,
-) -> Result<RequestPlan, FimPlanError> {
-    if official_root(provider, base_url).is_none() {
-        return Err(FimPlanError::RequiresOfficialDeepSeek);
-    }
-    codewhale_deepseek::plan_fim(base_url, path_suffix, prompt, suffix, max_tokens)
 }
 
 fn validate_canonical_reasoning_replay(
@@ -1117,62 +1103,6 @@ mod tests {
             .unwrap()
             .is_none(),
             "loopback must not become a generic interactive compatibility route"
-        );
-    }
-
-    #[test]
-    fn fim_is_fixed_to_official_beta_pro_and_validates_limits() {
-        let plan = plan_fim(
-            ApiProvider::Deepseek,
-            "https://api.deepseek.com",
-            None,
-            "prefix",
-            "suffix",
-            4096,
-        )
-        .expect("FIM plan");
-        assert_eq!(plan.surface, ApiSurface::Fim);
-        assert_eq!(plan.url, "https://api.deepseek.com/beta/completions");
-        assert_eq!(plan.model, codewhale_deepseek::FIM_MODEL);
-        assert_eq!(plan.body["model"], codewhale_deepseek::FIM_MODEL);
-        assert_eq!(plan.body["prompt"], "prefix");
-        assert_eq!(plan.body["suffix"], "suffix");
-        assert_eq!(plan.body["max_tokens"], 4096);
-
-        for max_tokens in [0, 4097] {
-            assert_eq!(
-                plan_fim(
-                    ApiProvider::Deepseek,
-                    "https://api.deepseek.com/beta",
-                    None,
-                    "prefix",
-                    "suffix",
-                    max_tokens
-                ),
-                Err(FimPlanError::InvalidMaxTokens)
-            );
-        }
-        assert_eq!(
-            plan_fim(
-                ApiProvider::Deepseek,
-                "https://gateway.example/v1",
-                None,
-                "prefix",
-                "suffix",
-                16
-            ),
-            Err(FimPlanError::RequiresOfficialDeepSeek)
-        );
-        assert_eq!(
-            plan_fim(
-                ApiProvider::Deepseek,
-                "https://api.deepseek.com",
-                Some("/tenant/completions"),
-                "prefix",
-                "suffix",
-                16
-            ),
-            Err(FimPlanError::RequiresOfficialDeepSeek)
         );
     }
 }
