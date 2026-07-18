@@ -4729,7 +4729,12 @@ fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus
     let path_suffix = config
         .provider_config_for(provider)
         .and_then(|provider| provider.path_suffix.as_deref());
-    if crate::client::deepseek::owns_route(provider, &target.base_url, path_suffix) {
+    let official_deepseek_route = matches!(
+        provider,
+        crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN
+    ) && path_suffix.is_none()
+        && codewhale_deepseek::official_root(&target.base_url).is_some();
+    if official_deepseek_route {
         DoctorStrictToolModeStatus {
             enabled: true,
             status: "route_ready_catalog_dependent",
