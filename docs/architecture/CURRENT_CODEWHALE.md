@@ -447,6 +447,9 @@ M4-C foreground 切换后还已物理删除：
 - `ColorCompatBackend` 的 forced/cached size override 字段和 setter 没有任何生产 writer，
   仅由同文件 3 个测试构造虚假尺寸路径，现已删除。`Backend::size()` 直接读取真实
   Crossterm backend；保留的颜色深度适配、palette/theme 更新与 OSC8 link 发送继续由原 owner 执行。
+- transcript `selection.rs` 的 selection/autoscroll 状态没有任何生产事件 writer，只会默认构造，
+  再被自动滚动 guard 与 renderer 读取；该模块、viewport 字段、resize clear、着色 helper 和专属自测
+  现已删除。composer `selection_anchor`、菜单/审批 palette 状态、Pager 系统复制及 canonical scroll 均未改变。
 - sidebar 的旧 hover/click 元数据只有 renderer producer，没有事件 handler、tooltip 或
   popover consumer；`SidebarHoverState`/section/row/action、每帧全文克隆、tooltip shadow
   和从未构造的 `SidebarAgentCancel` 已物理删除。可见 Activity/Agents/Session 行继续直接

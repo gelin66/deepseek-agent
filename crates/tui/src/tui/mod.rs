@@ -35,7 +35,6 @@ pub mod run_client;
 pub mod run_presenter;
 pub mod run_projection;
 pub mod scrolling;
-pub mod selection;
 pub mod sidebar;
 pub mod slash_menu;
 pub mod spinner;

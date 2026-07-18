@@ -27,7 +27,6 @@ use crate::tui::child_agents::ChildAgents;
 use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::scrolling::TranscriptScroll;
-use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 
@@ -1206,8 +1205,6 @@ pub struct ViewportState {
     pub transcript_scroll: TranscriptScroll,
     pub pending_scroll_delta: i32,
     pub transcript_cache: TranscriptViewCache,
-    pub transcript_selection: TranscriptSelection,
-    pub selection_autoscroll: Option<SelectionAutoscroll>,
     pub transcript_scrollbar_dragging: bool,
     pub last_transcript_area: Option<Rect>,
     pub last_composer_area: Option<Rect>,
@@ -1237,8 +1234,6 @@ impl Default for ViewportState {
             transcript_scroll: TranscriptScroll::to_bottom(),
             pending_scroll_delta: 0,
             transcript_cache: TranscriptViewCache::new(),
-            transcript_selection: TranscriptSelection::default(),
-            selection_autoscroll: None,
             transcript_scrollbar_dragging: false,
             last_transcript_area: None,
             last_composer_area: None,
@@ -2746,16 +2741,7 @@ impl App {
         // Bound history length: when the soft cap fires, fold the oldest
         // batch into a single ArchivedContext placeholder.
         self.maybe_fold_history();
-        let selection_has_range = self
-            .viewport
-            .transcript_selection
-            .ordered_endpoints()
-            .is_some_and(|(start, end)| start != end);
-        if self.viewport.transcript_scroll.is_at_tail()
-            && !self.viewport.transcript_selection.dragging
-            && !selection_has_range
-            && !self.user_scrolled_during_stream
-        {
+        if self.viewport.transcript_scroll.is_at_tail() && !self.user_scrolled_during_stream {
             self.scroll_to_bottom();
         }
     }
@@ -3195,16 +3181,7 @@ impl App {
         }
         self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
-        let selection_has_range = self
-            .viewport
-            .transcript_selection
-            .ordered_endpoints()
-            .is_some_and(|(start, end)| start != end);
-        if self.viewport.transcript_scroll.is_at_tail()
-            && !self.viewport.transcript_selection.dragging
-            && !selection_has_range
-            && !self.user_scrolled_during_stream
-        {
+        if self.viewport.transcript_scroll.is_at_tail() && !self.user_scrolled_during_stream {
             self.scroll_to_bottom();
         }
     }
@@ -3513,7 +3490,6 @@ impl App {
         }
 
         self.viewport.pending_scroll_delta = 0;
-        self.viewport.transcript_selection.clear();
 
         self.viewport.last_transcript_area = None;
         self.viewport.last_transcript_top = 0;

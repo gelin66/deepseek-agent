@@ -29,7 +29,6 @@ use crate::tui::app::{App, AppMode, ComposerDensity, VimMode};
 use crate::tui::approval::{ApprovalRequest, ApprovalStakes, ApprovalView, ToolCategory};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
 use crate::tui::scrolling::TranscriptLineMeta;
-use crate::tui::ui_text::{char_display_width, text_display_width};
 use crate::tui::underwater::ShellPhase;
 use ratatui::{
     buffer::Buffer,
@@ -436,8 +435,6 @@ impl ChatWidget {
                 app.last_send_at = None;
             }
         }
-
-        apply_selection(&mut lines, top, app);
 
         // The HTML contract is a top-first ledger. Bottom-padding the short
         // transcript made every newly wrapped stream line shift all prior
@@ -2514,42 +2511,6 @@ pub(crate) fn pad_lines_to_bottom(lines: &mut Vec<Line<'static>>, height: usize)
     *lines = padded;
 }
 
-fn apply_selection(lines: &mut [Line<'static>], top: usize, app: &App) {
-    let Some((start, end)) = app.viewport.transcript_selection.ordered_endpoints() else {
-        return;
-    };
-
-    let selection_style = Style::default()
-        .bg(app.ui_theme.selection_bg)
-        .fg(palette::SELECTION_TEXT);
-
-    for (idx, line) in lines.iter_mut().enumerate() {
-        let line_index = top + idx;
-        if line_index < start.line_index || line_index > end.line_index {
-            continue;
-        }
-
-        let (col_start, col_end) = if start.line_index == end.line_index {
-            (start.column, end.column)
-        } else if line_index == start.line_index {
-            (start.column, usize::MAX)
-        } else if line_index == end.line_index {
-            (0, end.column)
-        } else {
-            (0, usize::MAX)
-        };
-
-        if col_start == 0 && col_end == usize::MAX {
-            for span in &mut line.spans {
-                span.style = span.style.patch(selection_style);
-            }
-            continue;
-        }
-
-        line.spans = apply_selection_to_line(line, col_start, col_end, selection_style);
-    }
-}
-
 /// Apply a brief background tint to the last user message's visible lines.
 fn apply_send_flash(
     lines: &mut [Line<'static>],
@@ -2582,64 +2543,6 @@ fn apply_send_flash(
             }
         }
     }
-}
-
-fn apply_selection_to_line(
-    line: &Line<'static>,
-    col_start: usize,
-    col_end: usize,
-    selection_style: Style,
-) -> Vec<Span<'static>> {
-    let mut result = Vec::with_capacity(line.spans.len().saturating_add(2));
-    let mut current_col = 0usize;
-
-    for span in &line.spans {
-        let span_text: &str = span.content.as_ref();
-        let span_width = text_display_width(span_text);
-        let span_end = current_col.saturating_add(span_width);
-
-        if span_end <= col_start || current_col >= col_end {
-            result.push(span.clone());
-        } else if current_col >= col_start && span_end <= col_end {
-            result.push(Span::styled(
-                span.content.clone(),
-                span.style.patch(selection_style),
-            ));
-        } else {
-            let mut before = String::new();
-            let mut selected = String::new();
-            let mut after = String::new();
-            let mut ch_col = current_col;
-
-            for ch in span_text.chars() {
-                let ch_width = char_display_width(ch);
-                let ch_start = ch_col;
-                let ch_end = ch_col.saturating_add(ch_width);
-                if ch_end <= col_start {
-                    before.push(ch);
-                } else if ch_start >= col_end {
-                    after.push(ch);
-                } else {
-                    selected.push(ch);
-                }
-                ch_col = ch_end;
-            }
-
-            if !before.is_empty() {
-                result.push(Span::styled(before, span.style));
-            }
-            if !selected.is_empty() {
-                result.push(Span::styled(selected, span.style.patch(selection_style)));
-            }
-            if !after.is_empty() {
-                result.push(Span::styled(after, span.style));
-            }
-        }
-
-        current_col = span_end;
-    }
-
-    result
 }
 
 fn truncate_display_width(text: &str, max_width: usize) -> String {
@@ -3143,13 +3046,13 @@ mod tests {
     use super::{
         ACTIVE_REVISION_DOMAIN, ApprovalWidget, COMPOSER_PANEL_HEIGHT, COMPOSER_PLACEHOLDER,
         ChatWidget, ComposerWidget, Renderable, SlashMenuEntry, active_entry_revision,
-        ambient_ping_pong, apply_selection_to_line, apply_send_flash, build_empty_state_lines,
-        composer_content_geometry, composer_empty_hint_text, composer_height, composer_max_height,
-        composer_min_input_rows, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
-        fish_flee_offset, fish_heading, fish_mark, history_entry_revision, layout_input,
-        layout_input_with_scroll, pad_lines_to_bottom, placeholder_visual_lines,
-        receipt_is_settling, revision_in_domain, should_render_empty_state,
-        tool_run_summary_revision, wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
+        ambient_ping_pong, apply_send_flash, build_empty_state_lines, composer_content_geometry,
+        composer_empty_hint_text, composer_height, composer_max_height, composer_min_input_rows,
+        composer_top_padding, cursor_row_col, empty_composer_visual_rows, fish_flee_offset,
+        fish_heading, fish_mark, history_entry_revision, layout_input, layout_input_with_scroll,
+        pad_lines_to_bottom, placeholder_visual_lines, receipt_is_settling, revision_in_domain,
+        should_render_empty_state, tool_run_summary_revision, wrap_input_lines,
+        wrap_input_lines_for_mouse, wrap_text,
     };
     use crate::config::Config;
     use crate::palette;
@@ -3158,12 +3061,7 @@ mod tests {
     use crate::tui::approval::ApprovalStakes;
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
     use crate::tui::scrolling::{TranscriptLineMeta, TranscriptScroll};
-    use ratatui::{
-        buffer::Buffer,
-        layout::Rect,
-        style::{Color, Style},
-        text::{Line, Span},
-    };
+    use ratatui::{buffer::Buffer, layout::Rect, style::Color, text::Line};
     use std::{
         path::PathBuf,
         time::{Duration, Instant},
@@ -3749,24 +3647,6 @@ mod tests {
                 lines.len()
             );
         }
-    }
-
-    #[test]
-    fn selection_style_uses_explicit_selection_text_role() {
-        let line = Line::from(Span::styled(
-            "hello world",
-            Style::default().fg(palette::TEXT_PRIMARY),
-        ));
-        let selection_style = Style::default()
-            .bg(palette::SELECTION_BG)
-            .fg(palette::SELECTION_TEXT);
-
-        let styled = apply_selection_to_line(&line, 0, 5, selection_style);
-        assert_eq!(styled.len(), 2);
-        assert_eq!(styled[0].content.as_ref(), "hello");
-        assert_eq!(styled[0].style.fg, Some(palette::SELECTION_TEXT));
-        assert_eq!(styled[0].style.bg, Some(palette::SELECTION_BG));
-        assert_eq!(styled[1].content.as_ref(), " world");
     }
 
     #[test]

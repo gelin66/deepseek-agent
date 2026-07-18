@@ -887,6 +887,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除 `ColorCompatBackend` 中没有任何生产 writer、只由 3 个自测激活的
   forced/cached size override 字段与 setter。`Backend::size()` 现在直接委托真实 Crossterm backend；
   颜色深度适配、palette/theme 动态更新与 OSC8 link 输出保持原生产路径。
+- M4-C 已删除没有 Key/Mouse/Run event producer 的 transcript selection/autoscroll 模块、
+  默认空状态、自动滚动 guard、resize clear 和 renderer 着色岛，并移除只直接调用私有着色函数的自测。
+  composer 真实选区、菜单/审批选中态、系统文本复制、canonical transcript/scroll 与 Pager 保持原 owner。
 - M4-C 已删除 sidebar 每帧构造但从未被事件处理器、popover 或 renderer 读取的
   `SidebarHoverState`/section/row/action 元数据、全文副本和 tooltip shadow，以及从未被
   构造的 `SidebarAgentCancel` 事件。Activity/Agents/Session 的可见行继续由原 renderer
