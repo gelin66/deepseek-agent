@@ -26,7 +26,6 @@ pub mod footer_ui;
 pub mod history;
 pub mod key_shortcuts;
 pub mod markdown_render;
-pub mod notifications;
 pub mod ocean;
 pub mod onboarding;
 pub mod osc8;

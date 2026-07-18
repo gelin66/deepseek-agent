@@ -1367,17 +1367,6 @@ impl Drop for TerminalCleanupGuard {
     }
 }
 
-/// Strip ANSI control codes / non-printable bytes from a streaming
-/// text chunk. `pub(super)` because `tui::notifications` consumes it
-/// from `super::ui` for its per-turn message composition.
-pub(super) fn sanitize_stream_chunk(chunk: &str) -> String {
-    // Keep printable characters and common whitespace; drop control bytes.
-    chunk
-        .chars()
-        .filter(|c| *c == '\n' || *c == '\t' || !c.is_control())
-        .collect()
-}
-
 /// Build the pending-input preview widget from current `App` state.
 ///
 /// v0.6.6 (#122) wires all three buckets:

@@ -1257,124 +1257,12 @@ pub struct TuiConfig {
     /// (e.g. for a terminal that misrenders the sequence). OSC 8 escapes are
     /// emitted out-of-band, so buffer-column corruption is not a concern.
     pub osc8_links: Option<bool>,
-    /// High-level notification trigger condition. When set, overrides the
-    /// `[notifications].threshold_secs` gate from the lower-level
-    /// `[notifications]` block:
-    ///
-    /// - `Always` — fire a turn-completion notification on every successful
-    ///   turn regardless of duration. The configured `[notifications].method`
-    ///   and `include_summary` flag are still respected.
-    /// - `Never` — suppress all turn-completion notifications.
-    /// - Unset (default) — fall back to the `[notifications]` defaults.
-    pub notification_condition: Option<NotificationCondition>,
     /// When `true`, plain Up/Down on an empty composer scroll the
     /// transcript instead of recalling input history. Useful for
     /// terminals that map mouse-wheel gestures to arrow keys. Default:
     /// `true` only when mouse capture is off; otherwise `false`.
     #[serde(default)]
     pub composer_arrows_scroll: Option<bool>,
-}
-
-/// High-level notification trigger override. See
-/// [`TuiConfig::notification_condition`].
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum NotificationCondition {
-    /// Notify on every successful turn (no duration threshold).
-    Always,
-    /// Suppress notifications entirely.
-    Never,
-}
-
-/// Notification delivery method (mirrors `tui::notifications::Method`).
-#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum NotificationMethod {
-    /// Auto-detect: picks the best protocol for the current terminal
-    /// (OSC 9, Kitty OSC 99, Ghostty OSC 777, or Bel).
-    #[default]
-    Auto,
-    /// OSC 9 escape.
-    Osc9,
-    /// Plain BEL character.
-    Bel,
-    /// Kitty notification protocol (OSC 99).
-    Kitty,
-    /// Ghostty notification protocol (OSC 777).
-    Ghostty,
-    /// Disable notifications.
-    Off,
-}
-
-fn default_threshold_secs() -> u64 {
-    30
-}
-
-/// Completion sound options.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum CompletionSound {
-    /// No sound on turn completion.
-    Off,
-    /// System notification beep (default). On Windows uses `MessageBeep`.
-    #[default]
-    Beep,
-    /// Terminal BEL character (`\x07`).
-    Bell,
-    /// Play a configured WAV sound file.
-    File,
-}
-
-/// Controls when per-subagent completion notifications fire during a batch.
-/// Turn-completion notifications are unaffected.
-#[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum SubagentCompletionNotification {
-    /// Notify on every subagent completion.
-    Always,
-    /// Notify only when the last subagent in a batch finishes. Default: stays
-    /// quiet mid-run and fires once when the batch drains.
-    #[default]
-    FinalOnly,
-    /// Never fire a subagent-completion notification.
-    Off,
-}
-
-/// Desktop-notification configuration (OSC 9 / BEL on turn completion).
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct NotificationsConfig {
-    /// Delivery method: `auto` | `osc9` | `bel` | `off`. Default: `auto`.
-    /// `auto` resolves to OSC 9 for iTerm.app / Ghostty / WezTerm / Cmux
-    /// (detected via `$TERM_PROGRAM` then `$LC_TERMINAL`); otherwise it
-    /// falls back to BEL. On Windows the BEL path is routed through
-    /// `MessageBeep(MB_OK)`.
-    /// Use `method = "osc9"` explicitly when your terminal is OSC-9 capable
-    /// but sets neither env var (e.g. Cmux without `LC_TERMINAL`).
-    #[serde(default)]
-    pub method: NotificationMethod,
-    /// Only notify when the turn took at least this many seconds. Default: 30.
-    #[serde(default = "default_threshold_secs")]
-    pub threshold_secs: u64,
-    /// Include a short summary (elapsed time + cost) in the notification body.
-    /// Default: `false`.
-    #[serde(default)]
-    pub include_summary: bool,
-
-    /// When to fire per-subagent completion notifications during a batch:
-    /// `always` | `final-only` | `off`. Default: `final-only` (quiet mid-run,
-    /// one notification when the batch drains). Set `off` to
-    /// silence subagent notifications entirely.
-    #[serde(default)]
-    pub subagent_completion: SubagentCompletionNotification,
-
-    /// Completion sound: `"off"` | `"beep"` | `"bell"` | `"file"`. Default: `"beep"`.
-    /// Plays a sound when every turn finishes (alongside the ✅ marker).
-    #[serde(default)]
-    pub completion_sound: CompletionSound,
-
-    /// Path to the WAV sound file used when `completion_sound = "file"`.
-    #[serde(default)]
-    pub sound_file: Option<PathBuf>,
 }
 
 /// User-level memory configuration (#489).
@@ -1777,10 +1665,6 @@ pub struct Config {
     /// Provider-specific credentials and defaults shared with the `codewhale` facade.
     #[serde(default)]
     pub providers: Option<ProvidersConfig>,
-
-    /// Desktop notification settings (OSC 9 / BEL on long turn completion).
-    #[serde(default)]
-    pub notifications: Option<NotificationsConfig>,
 
     /// Per-domain network policy (#135). When absent, network tools fall back
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
@@ -3720,12 +3604,6 @@ impl Config {
         self.reasoning_effort.as_deref()
     }
 
-    /// Resolve the notifications configuration with defaults applied.
-    #[must_use]
-    pub fn notifications_config(&self) -> NotificationsConfig {
-        self.notifications.clone().unwrap_or_default()
-    }
-
     /// Resolve community skill settings with defaults applied.
     #[must_use]
     pub fn skills_config(&self) -> SkillsConfig {
@@ -5326,7 +5204,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         tui: override_cfg.tui.or(base.tui),
         providers: merge_providers(base.providers, override_cfg.providers),
         features: merge_features(base.features, override_cfg.features),
-        notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
         skills: merge_skills_config(base.skills, override_cfg.skills),
         search: override_cfg.search.or(base.search),

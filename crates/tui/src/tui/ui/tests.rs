@@ -369,21 +369,6 @@ fn raw_mode_probe_handshake_never_leaks_under_concurrent_race() {
 }
 
 #[test]
-fn sanitize_stream_chunk_preserves_unicode_and_visible_whitespace() {
-    let chunk = "你好，DeepSeek\t🚀\n café";
-    assert_eq!(sanitize_stream_chunk(chunk), chunk);
-}
-
-#[test]
-fn sanitize_stream_chunk_drops_terminal_control_characters() {
-    assert_eq!(
-        sanitize_stream_chunk("text\u{1b}[2Jmore\u{7}\u{8}\r\n"),
-        "text[2Jmore\n"
-    );
-    assert_eq!(sanitize_stream_chunk("\u{1b}\u{7}\u{8}"), "");
-}
-
-#[test]
 fn canonical_start_command_honors_disabled_subagents() {
     let mut app = create_test_app();
     app.max_subagents = 12;

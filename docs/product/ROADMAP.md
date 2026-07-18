@@ -816,6 +816,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   session count 从未有生产消费者。该状态、设置、本地化、renderer、自测岛和无效 Git probe
   现已物理删除，没有生产行为损失。onboarding、canonical `TuiRunClient`/Run 投影、CLI
   resume/continue、underwater shell/ocean 以及真实 Fleet/Lane/worktree 能力保持原 owner。
+- M4-C 已删除零生产调用方的 TUI desktop notifications 岛：OSC/BEL/macOS 发送、Windows
+  声音、terminal title/taskbar、配置决策和专属本地化全部只由模块内自测消费，从未接入
+  canonical turn/child 终态，因此删除没有生产行为损失。唯一模块外消费者
+  `humanize_duration` 已迁入 footer owner 并保留秒/分/时/日/周边界测试；只服务该幽灵岛的
+  `[notifications]`、`tui.notification_condition` 和 Windows Audio/Debug/UI features 同步
+  删除。MCP JSON-RPC notifications、Fleet alerts/webhooks、canonical Run 状态及 panic hook
+  是不同 owner，均保持不变。
 - M4-C 已把审批事件收缩为真实的 `interaction_id + decision`，继续经 canonical
   `resolve_interaction`/`cancel` 写入并重放 RunStore。删除从未有 Runtime 消费者的 TUI
   approval cache/grouping key、永远未设置的 timeout/tick 链，以及虚假的“批准并保存询问

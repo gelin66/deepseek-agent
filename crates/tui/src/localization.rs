@@ -321,9 +321,6 @@ pub enum MessageId {
     VoiceRecording,
     VoiceProcessing,
     VoiceTranscribed,
-    // Notifications (turn/agent completion).
-    NotificationTurnComplete,
-    NotificationSubagentComplete,
     // Footer chips.
     FooterWorkedChip,
     // Fleet setup wizard.
@@ -790,8 +787,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::VoiceRecording,
     MessageId::VoiceProcessing,
     MessageId::VoiceTranscribed,
-    MessageId::NotificationTurnComplete,
-    MessageId::NotificationSubagentComplete,
     MessageId::FooterWorkedChip,
     MessageId::FleetDraftTitle,
     MessageId::FleetDraftHeader,

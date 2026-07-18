@@ -7974,7 +7974,6 @@ mod terminal_mode_tests {
                 status_items: None,
                 osc8_links: None,
                 composer_arrows_scroll: None,
-                notification_condition: None,
             }),
             ..Config::default()
         };
@@ -8068,7 +8067,6 @@ mod terminal_mode_tests {
                 status_items: None,
                 osc8_links: None,
                 composer_arrows_scroll: None,
-                notification_condition: None,
             }),
             ..Config::default()
         };
@@ -8100,7 +8098,6 @@ mod terminal_mode_tests {
                 status_items: None,
                 osc8_links: None,
                 composer_arrows_scroll: None,
-                notification_condition: None,
             }),
             ..Config::default()
         };
@@ -8186,7 +8183,6 @@ mod terminal_mode_tests {
                 status_items: None,
                 osc8_links: None,
                 composer_arrows_scroll: None,
-                notification_condition: None,
             }),
             ..Config::default()
         };

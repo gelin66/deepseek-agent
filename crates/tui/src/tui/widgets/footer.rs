@@ -184,21 +184,69 @@ pub fn footer_agents_chip(running: usize) -> Vec<Span<'static>> {
     vec![Span::styled(text, Style::default().fg(palette::WHALE_INFO))]
 }
 
+/// Format cumulative work time with at most two adjacent units.
+///
+/// The footer needs a compact label rather than stopwatch precision: seconds
+/// disappear at the hour boundary, minutes at the day boundary, and so on.
+fn humanize_duration(duration: std::time::Duration) -> String {
+    const MINUTE: u64 = 60;
+    const HOUR: u64 = 60 * MINUTE;
+    const DAY: u64 = 24 * HOUR;
+    const WEEK: u64 = 7 * DAY;
+
+    let total = duration.as_secs();
+    if total == 0 {
+        return "0s".to_string();
+    }
+    if total >= WEEK {
+        let weeks = total / WEEK;
+        let days = (total % WEEK) / DAY;
+        return if days == 0 {
+            format!("{weeks}w")
+        } else {
+            format!("{weeks}w {days}d")
+        };
+    }
+    if total >= DAY {
+        let days = total / DAY;
+        let hours = (total % DAY) / HOUR;
+        return if hours == 0 {
+            format!("{days}d")
+        } else {
+            format!("{days}d {hours}h")
+        };
+    }
+    if total >= HOUR {
+        let hours = total / HOUR;
+        let minutes = (total % HOUR) / MINUTE;
+        return if minutes == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {minutes}m")
+        };
+    }
+    if total >= MINUTE {
+        let minutes = total / MINUTE;
+        let seconds = total % MINUTE;
+        return if seconds == 0 {
+            format!("{minutes}m")
+        } else {
+            format!("{minutes}m {seconds}s")
+        };
+    }
+    format!("{total}s")
+}
+
 /// Build the cumulative-elapsed chip ("worked 3h 12m") for the
 /// footer's right cluster (#448). Hidden during the first minute of
 /// a session so a fresh launch doesn't render a noisy `worked 5s`
-/// indicator that immediately starts ticking. Above the threshold,
-/// reuses [`crate::tui::notifications::humanize_duration`] for
-/// consistent w/d/h/m formatting.
+/// indicator that immediately starts ticking.
 #[must_use]
 pub fn footer_worked_chip(elapsed: std::time::Duration) -> Vec<Span<'static>> {
     if elapsed < std::time::Duration::from_secs(60) {
         return Vec::new();
     }
-    let label = tr(MessageId::FooterWorkedChip).replace(
-        "{duration}",
-        &crate::tui::notifications::humanize_duration(elapsed),
-    );
+    let label = tr(MessageId::FooterWorkedChip).replace("{duration}", &humanize_duration(elapsed));
     vec![Span::styled(
         label,
         Style::default().fg(palette::TEXT_MUTED),
@@ -839,6 +887,34 @@ mod tests {
                 "worked chip must be hidden at {secs}s; got {chip:?}"
             );
         }
+    }
+
+    #[test]
+    fn worked_duration_keeps_seconds_and_minutes_below_one_hour() {
+        use std::time::Duration;
+
+        assert_eq!(super::humanize_duration(Duration::ZERO), "0s");
+        assert_eq!(super::humanize_duration(Duration::from_secs(45)), "45s");
+        assert_eq!(super::humanize_duration(Duration::from_secs(60)), "1m");
+        assert_eq!(
+            super::humanize_duration(Duration::from_secs(3599)),
+            "59m 59s"
+        );
+    }
+
+    #[test]
+    fn worked_duration_uses_two_units_for_long_sessions() {
+        use std::time::Duration;
+
+        assert_eq!(super::humanize_duration(Duration::from_secs(3661)), "1h 1m");
+        assert_eq!(
+            super::humanize_duration(Duration::from_secs(2 * 86_400 + 5 * 3600 + 17 * 60)),
+            "2d 5h"
+        );
+        assert_eq!(
+            super::humanize_duration(Duration::from_secs(3 * 604_800 + 2 * 86_400 + 17 * 3600)),
+            "3w 2d"
+        );
     }
 
     #[test]

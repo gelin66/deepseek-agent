@@ -7163,25 +7163,6 @@ fn huggingface_env_overrides_key_base_url_and_model() -> Result<()> {
 }
 
 #[test]
-fn notifications_parse_custom_completion_sound_file() {
-    let config: Config = toml::from_str(
-        r#"
-        [notifications]
-        completion_sound = "file"
-        sound_file = "E:\\google\\downloads\\xm4114.wav"
-        "#,
-    )
-    .expect("custom completion sound config should parse");
-
-    let notifications = config.notifications_config();
-    assert_eq!(notifications.completion_sound, CompletionSound::File);
-    assert_eq!(
-        notifications.sound_file.as_deref(),
-        Some(std::path::Path::new("E:\\google\\downloads\\xm4114.wav"))
-    );
-}
-
-#[test]
 fn huggingface_short_env_fallbacks_configure_route() -> Result<()> {
     let _lock = lock_test_env();
     let nanos = SystemTime::now()

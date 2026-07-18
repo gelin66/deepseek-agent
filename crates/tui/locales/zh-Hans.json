@@ -284,8 +284,6 @@
     "VoiceRecording": "🎙 正在录音...请说话",
     "VoiceProcessing": "🎙 正在转录...",
     "VoiceTranscribed": "🎙 转录完成",
-    "NotificationTurnComplete": "本轮已完成",
-    "NotificationSubagentComplete": "子代理已完成",
     "FooterWorkedChip": "已运行{duration}",
     "FleetDraftTitle": "Fleet 配置 — 由 {model_label} 起草（按 g 批准）",
     "FleetDraftHeader": "# .codewhale/agents/{name}\n# 由 {model_label} 起草，并由 CodeWhale 校验与限界。\n# 权限保持在 Fleet 底线：无 shell、无 trust、需审批。\n# 在向导中按 g 之前不会保存任何内容。\n\n",

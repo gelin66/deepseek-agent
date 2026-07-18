@@ -447,6 +447,12 @@ M4-C foreground 切换后还已物理删除：
   将其隐藏；没有 launch action 进入事件循环、Run command、Lane 或 Fleet。删除因此只移除
   不可达 UI 和无效启动子进程，零生产行为损失。首启 onboarding、canonical TUI Run、CLI
   resume/continue、underwater shell/ocean 与 Fleet/Lane/worktree 均不经过该旧外壳。
+- TUI desktop notifications 模块及其 `[notifications]`/`tui.notification_condition` schema、
+  专属本地化和 Windows Audio/Debug/UI features。OSC/BEL/macOS 通知、声音、terminal
+  title/taskbar 及配置入口没有模块外生产调用，故删除为零生产行为损失；唯一真实消费者是
+  footer 对 `humanize_duration` 的调用，该 helper 和边界测试现由 footer 直接拥有。MCP
+  `notifications/initialized`/`notifications/progress`、Fleet alerts/webhooks、canonical
+  active/run status 和 panic hook 均为独立生产路径，未被删除。
 - `key_shortcuts` 中零调用的 copy/paste/control-like/Ctrl-H predicates；保留首启输入所需
   的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
 - 零生产消费者的通用 `[vision_model]`/`image_analyze` 配置与 feature；正式模型面仍只有
