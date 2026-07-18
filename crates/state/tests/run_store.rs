@@ -375,8 +375,8 @@ fn insert_v5_run(
     .expect("insert v5 snapshot");
 }
 
-async fn persist_committed_catalog_run(path: &PathBuf, run_id: &str) -> RunId {
-    let store = StateStore::open(Some(path.clone())).expect("open current state store");
+async fn persist_committed_catalog_run(path: &std::path::Path, run_id: &str) -> RunId {
+    let store = StateStore::open(Some(path.to_path_buf())).expect("open current state store");
     let created = store
         .create(request(run_id, "/tmp/v10-catalog-migration"))
         .await
