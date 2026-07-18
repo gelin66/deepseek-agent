@@ -714,7 +714,6 @@ pub struct SidebarAgentRow {
     pub parent_run_id: Option<String>,
     pub spawn_depth: u32,
     pub name: String,
-    pub role: String,
     pub model: Option<String>,
     pub status: String,
     pub objective: Option<String>,
@@ -735,11 +734,6 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
             parent_run_id: Some(child.parent_run_id.0.clone()),
             spawn_depth: u32::from(child.depth),
             name: format!("子 Agent {}", index + 1),
-            role: if child.depth > 1 {
-                "子级 Agent".to_string()
-            } else {
-                "子 Agent".to_string()
-            },
             model: None,
             status: canonical_child_status(child.terminal.as_ref()).to_string(),
             objective: None,
@@ -749,60 +743,6 @@ fn sidebar_agent_rows(app: &App) -> Vec<SidebarAgentRow> {
             duration_ms: None,
             expanded: false,
         })
-        .collect()
-}
-
-fn sort_sidebar_agent_rows_as_tree(rows: Vec<SidebarAgentRow>) -> Vec<SidebarAgentRow> {
-    let known_ids: std::collections::HashSet<String> =
-        rows.iter().map(|row| row.id.clone()).collect();
-    let mut children: std::collections::HashMap<String, Vec<usize>> =
-        std::collections::HashMap::new();
-    let mut roots = Vec::new();
-
-    for (idx, row) in rows.iter().enumerate() {
-        if let Some(parent) = row.parent_run_id.as_deref()
-            && known_ids.contains(parent)
-        {
-            children.entry(parent.to_string()).or_default().push(idx);
-            continue;
-        }
-        roots.push(idx);
-    }
-
-    fn push_tree(
-        idx: usize,
-        rows: &[SidebarAgentRow],
-        children: &std::collections::HashMap<String, Vec<usize>>,
-        seen: &mut std::collections::HashSet<usize>,
-        order: &mut Vec<usize>,
-    ) {
-        if !seen.insert(idx) {
-            return;
-        }
-        order.push(idx);
-        if let Some(child_indices) = children.get(&rows[idx].id) {
-            for child_idx in child_indices {
-                push_tree(*child_idx, rows, children, seen, order);
-            }
-        }
-    }
-
-    let mut order = Vec::with_capacity(rows.len());
-    let mut seen = std::collections::HashSet::new();
-    for idx in roots {
-        push_tree(idx, &rows, &children, &mut seen, &mut order);
-    }
-    for idx in 0..rows.len() {
-        push_tree(idx, &rows, &children, &mut seen, &mut order);
-    }
-
-    // Materialize by move instead of cloning each row a second time (#3898):
-    // `seen` guarantees every index lands in `order` exactly once, so each
-    // slot is taken exactly once and no row is dropped.
-    let mut slots: Vec<Option<SidebarAgentRow>> = rows.into_iter().map(Some).collect();
-    order
-        .into_iter()
-        .map(|idx| slots[idx].take().expect("each row emitted exactly once"))
         .collect()
 }
 
@@ -1041,13 +981,6 @@ fn sidebar_agent_status_is_terminal(status: &str) -> bool {
     )
 }
 
-fn sidebar_agent_status_is_running(status: &str) -> bool {
-    matches!(
-        status,
-        "running" | "queued" | "starting" | "waiting" | "model wait" | "tool"
-    )
-}
-
 fn sidebar_agent_row_label(row: &SidebarAgentRow, max_width: usize) -> String {
     let detail = row
         .objective
@@ -1264,8 +1197,8 @@ mod tests {
         AutoSidebarPanel, AutoSidebarState, SidebarAgentRow, SidebarFocus, SidebarSubagentSummary,
         SidebarToolRow, ToolRowOrder, auto_sidebar_panels, context_panel_cost_line,
         editorial_tool_rows, normalize_activity_text, render_sidebar, sidebar_agent_rows,
-        sort_sidebar_agent_rows_as_tree, subagent_output_handle, subagent_panel_lines,
-        subagent_panel_rows, task_panel_lines, task_panel_row_sets, task_panel_rows,
+        subagent_output_handle, subagent_panel_lines, subagent_panel_rows, task_panel_lines,
+        task_panel_row_sets, task_panel_rows,
     };
     use crate::config::Config;
     use crate::palette;
@@ -1600,7 +1533,6 @@ mod tests {
                 parent_run_id: None,
                 spawn_depth: 1,
                 name: format!("worker-{idx}"),
-                role: "explore".to_string(),
                 status: status.to_string(),
                 objective: None,
                 git_branch: None,
@@ -1650,7 +1582,6 @@ mod tests {
             parent_run_id: None,
             spawn_depth: 1,
             name: "worker-cancelled".to_string(),
-            role: "worker".to_string(),
             status: "canceled".to_string(),
             objective: None,
             git_branch: None,
@@ -1678,116 +1609,6 @@ mod tests {
     }
 
     #[test]
-    fn sort_sidebar_agent_rows_as_tree_emits_each_row_exactly_once() {
-        let agent_row = |id: &str, parent: Option<&str>| SidebarAgentRow {
-            id: id.to_string(),
-            parent_run_id: parent.map(str::to_string),
-            spawn_depth: 1,
-            name: id.to_string(),
-            role: "explore".to_string(),
-            model: None,
-            status: "running".to_string(),
-            objective: None,
-            git_branch: None,
-            progress: None,
-            steps_taken: 1,
-            duration_ms: None,
-            expanded: false,
-        };
-        // Parent + child + a two-node parent cycle: the cycle has no root, so
-        // only the orphan sweep reaches it. Every row must still come out
-        // exactly once (the move-based materialization panics on a double
-        // take and this pins the drop case too).
-        let rows = vec![
-            agent_row("agent_parent", None),
-            agent_row("agent_child", Some("agent_parent")),
-            agent_row("agent_cycle_a", Some("agent_cycle_b")),
-            agent_row("agent_cycle_b", Some("agent_cycle_a")),
-        ];
-
-        let sorted = sort_sidebar_agent_rows_as_tree(rows);
-
-        assert_eq!(sorted.len(), 4, "no rows dropped or duplicated");
-        let mut ids: Vec<&str> = sorted.iter().map(|row| row.id.as_str()).collect();
-        ids.sort_unstable();
-        assert_eq!(
-            ids,
-            vec![
-                "agent_child",
-                "agent_cycle_a",
-                "agent_cycle_b",
-                "agent_parent"
-            ]
-        );
-        assert_eq!(sorted[0].id, "agent_parent");
-        assert_eq!(sorted[1].id, "agent_child");
-    }
-
-    #[test]
-    fn subagent_sidebar_orders_and_indents_nested_children() {
-        let rows = vec![
-            SidebarAgentRow {
-                id: "agent_grandchild".to_string(),
-                model: None,
-                parent_run_id: Some("agent_parent".to_string()),
-                spawn_depth: 2,
-                name: "nested-reader".to_string(),
-                role: "explore".to_string(),
-                status: "done".to_string(),
-                objective: None,
-                git_branch: None,
-                progress: None,
-                steps_taken: 1,
-                duration_ms: Some(250),
-                expanded: false,
-            },
-            SidebarAgentRow {
-                id: "agent_parent".to_string(),
-                model: None,
-                parent_run_id: None,
-                spawn_depth: 1,
-                name: "nested-parent".to_string(),
-                role: "explore".to_string(),
-                status: "running".to_string(),
-                objective: None,
-                git_branch: None,
-                progress: Some("waiting on child".to_string()),
-                steps_taken: 2,
-                duration_ms: Some(500),
-                expanded: false,
-            },
-        ];
-        let sorted = sort_sidebar_agent_rows_as_tree(rows);
-        assert_eq!(sorted[0].id, "agent_parent");
-        assert_eq!(sorted[1].id, "agent_grandchild");
-        assert_eq!(sorted.len(), 2, "tree sort must not drop or duplicate rows");
-
-        let summary = SidebarSubagentSummary {
-            cached_total: 2,
-            cached_running: 1,
-            ..SidebarSubagentSummary::default()
-        };
-        let lines = subagent_panel_rows(&summary, &sorted, 64, 8, &palette::UI_THEME);
-        let text = lines_to_text(&lines);
-        let parent_idx = text
-            .iter()
-            .position(|line| line.contains("nested-parent"))
-            .expect("parent row");
-        let child_idx = text
-            .iter()
-            .position(|line| line.contains("nested-reader"))
-            .expect("child row");
-        assert!(
-            parent_idx < child_idx,
-            "parent must render before child: {text:?}"
-        );
-        assert!(
-            text[child_idx].contains("└─"),
-            "nested child should render with a tree branch marker: {text:?}"
-        );
-    }
-
-    #[test]
     fn subagent_sidebar_orders_and_indents_canonical_children() {
         let mut app = create_test_app();
         start_child(&mut app, "root-run", "agent_parent", 1);
@@ -1800,7 +1621,6 @@ mod tests {
         assert_eq!(rows[1].id, "agent_child");
         assert_eq!(rows[1].parent_run_id.as_deref(), Some("agent_parent"));
         assert_eq!(rows[1].spawn_depth, 2);
-        assert_eq!(rows[1].role, "子级 Agent");
 
         let summary = SidebarSubagentSummary {
             cached_total: 2,
@@ -2038,7 +1858,6 @@ mod tests {
                 parent_run_id: None,
                 spawn_depth: 1,
                 name: "check-docs-mcp".to_string(),
-                role: "explore".to_string(),
                 status: "running".to_string(),
                 objective: None,
                 git_branch: Some("feature/docs".to_string()),
@@ -2053,7 +1872,6 @@ mod tests {
                 parent_run_id: None,
                 spawn_depth: 1,
                 name: "check-install-docs".to_string(),
-                role: "general".to_string(),
                 status: "done".to_string(),
                 objective: None,
                 git_branch: None,
@@ -2184,7 +2002,6 @@ mod tests {
             parent_run_id: None,
             spawn_depth: 1,
             name: "model-worker".to_string(),
-            role: "worker".to_string(),
             model: Some("kimi-k2.6".to_string()),
             status: "running".to_string(),
             objective: None,
@@ -2219,7 +2036,6 @@ mod tests {
             parent_run_id: None,
             spawn_depth: 1,
             name: "scout".to_string(),
-            role: "worker".to_string(),
             model: None,
             status: "running".to_string(),
             objective: Some("Audit TUI input-pump path for starvation".to_string()),
@@ -2263,7 +2079,6 @@ mod tests {
             parent_run_id: None,
             spawn_depth: 1,
             name: "child".to_string(),
-            role: "agent".to_string(),
             model: None,
             status: "tool".to_string(),
             objective: None,
@@ -2307,7 +2122,6 @@ mod tests {
                 parent_run_id: None,
                 spawn_depth: 1,
                 name: format!("worker-{i}"),
-                role: "worker".to_string(),
                 model: Some("deepseek-v4-flash".to_string()),
                 status: "running".to_string(),
                 objective: Some(format!(
@@ -2375,7 +2189,6 @@ mod tests {
             id: "agent_busy".to_string(),
             spawn_depth: 1,
             name: "scout".to_string(),
-            role: "worker".to_string(),
             model: Some("deepseek-v4-flash".to_string()),
             status: "running".to_string(),
             objective: Some("Sweep the TUI for the v0.8.68 stopship".to_string()),
@@ -2439,7 +2252,6 @@ mod tests {
             id: "agent_narrow".to_string(),
             spawn_depth: 1,
             name: "scout".to_string(),
-            role: "worker".to_string(),
             model: Some("deepseek-v4-flash".to_string()),
             status: "running".to_string(),
             objective: Some("Audit the input pump for starvation under fan-out".to_string()),
@@ -2490,7 +2302,6 @@ mod tests {
                 id: "agent_matrix".to_string(),
                 spawn_depth: 1,
                 name: "scout".to_string(),
-                role: "worker".to_string(),
                 status: status.to_string(),
                 objective: Some("Trace the input pump".to_string()),
                 steps_taken: 3,
@@ -2534,7 +2345,6 @@ mod tests {
             id: "agent_7f3c".to_string(),
             spawn_depth: 1,
             name: "scout".to_string(),
-            role: "worker".to_string(),
             model: Some("deepseek-v4-flash".to_string()),
             status: "done".to_string(),
             objective: Some("Audit TUI input path".to_string()),
@@ -2575,7 +2385,6 @@ mod tests {
         let fresh = SidebarAgentRow {
             id: "agent_fresh".to_string(),
             name: "scout".to_string(),
-            role: "worker".to_string(),
             status: "starting".to_string(),
             steps_taken: 0,
             expanded: true,
@@ -2661,7 +2470,6 @@ mod tests {
             parent_run_id: None,
             spawn_depth: 1,
             name: "抹香鲸".to_string(),
-            role: "implementer".to_string(),
             model: Some("glm-5.2".to_string()),
             status: "running".to_string(),
             objective: Some(
@@ -2741,7 +2549,6 @@ mod tests {
             id: "agent_cjk_obj".to_string(),
             spawn_depth: 1,
             name: "抹香鲸".to_string(),
-            role: "implementer".to_string(),
             status: "running".to_string(),
             objective: Some(
                 "将智谱 GLM 添加为 provider-scoped provider，覆盖 issue #3439 的全部断言"

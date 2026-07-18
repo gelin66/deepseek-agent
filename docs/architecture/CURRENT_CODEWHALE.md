@@ -560,6 +560,10 @@ M4-C foreground 切换后还已物理删除：
   已删除。真实 modal title 继续使用 `semantic_truncate`，footer/sidebar/work-surface/thinking
   继续使用 `truncate_line_to_width`；`text_display_width` 对中文/CJK、组合字符、ZWJ、控制字符
   与窄宽度的契约保持不变。当前定向 ui-text 11/11 通过，并通过 TUI check、fmt 和 diff-check。
+- sidebar Agent 行中只写不读的 `role`、只有两个自测调用的 tree sorter 和零调用的 running
+  predicate 已删除。真实行仍由 canonical `child_agents` 直接生成并交给 `subagent_panel_rows`；
+  `parent_run_id`/`spawn_depth`/`agent_tree_prefix`、终态投影、handoff、child/Fleet 展示均保留。
+  当前定向 sidebar 40/40、Run projection 6/6 通过，并通过 TUI check、fmt 和 diff-check。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

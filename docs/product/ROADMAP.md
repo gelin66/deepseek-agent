@@ -1019,6 +1019,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `semantic_truncate`；footer/sidebar/work-surface/thinking 仍使用 `truncate_line_to_width`，
   中文/CJK、组合字符、ZWJ、控制字符与窄终端宽度契约均保留。定向 ui-text 11/11 通过，并通过
   TUI check、fmt 和 diff-check。
+- M4-C 已删除 `SidebarAgentRow` 中只写不读的 `role`、仅由两个自测调用而生产从未执行的
+  `sort_sidebar_agent_rows_as_tree`，以及零调用的 running-status helper。canonical
+  `ChildStarted`/`ChildFinished -> child_agents -> sidebar_agent_rows -> subagent_panel_rows`
+  仍是唯一真实 sidebar 子 Agent 链；`parent_run_id`、`spawn_depth`、`agent_tree_prefix`、终态矩阵、
+  handoff 与 Fleet 投影均保留。删除的是假覆盖，不是多 Agent 能力。定向 sidebar 40/40、Run
+  projection 6/6 通过，并通过 TUI check、fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
