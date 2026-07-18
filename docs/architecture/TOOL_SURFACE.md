@@ -331,8 +331,6 @@ registry also includes these model-visible tools:
 | `pandoc_convert` | Convert between document formats via pandoc (gated by binary presence) |
 | `validate_data` | Validate JSON or TOML against a schema |
 | `code_execution` | Execute Python code in an isolated sandbox |
-| `review` | Code review with structured feedback |
-| `verify` | On-demand adversarial self-check of a completion claim (gated by `[features].verify_tool`) |
 | `project_map` | Generate a structural map of the project workspace |
 | `remember` | Store a persistent fact in user memory (gated by `memory_enabled`) |
 | `image_analyze` | Vision-model image understanding (gated by `[vision_model]` config) |

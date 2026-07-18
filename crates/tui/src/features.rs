@@ -46,8 +46,6 @@ pub enum Feature {
     ExecPolicy,
     /// Enable vision model for image analysis.
     VisionModel,
-    /// Enable the agent-callable `verify` adversarial self-critique tool (#4196).
-    Verify,
 }
 
 impl fmt::Display for Stage {
@@ -256,12 +254,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "vision_model",
         stage: Stage::Beta,
         default_enabled: false,
-    },
-    FeatureSpec {
-        id: Feature::Verify,
-        key: "verify_tool",
-        stage: Stage::Stable,
-        default_enabled: true,
     },
 ];
 

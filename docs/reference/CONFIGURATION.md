@@ -1600,14 +1600,7 @@ web_search = true # enables canonical web.run plus the compatibility web_search 
 apply_patch = true
 mcp = true
 exec_policy = true
-verify_tool = true # lets the agent request an elevated, tool-less adversarial self-check
 ```
-
-`verify_tool` is enabled by default. The model may call `verify` before
-claiming a non-trivial change complete; the critic receives the claim plus
-bounded diff/file evidence, runs without tools so it cannot recurse, and
-returns a structured verdict. Disable the flag when the extra model call is
-not appropriate for the session's cost posture.
 
 You can also override features for a single run:
 

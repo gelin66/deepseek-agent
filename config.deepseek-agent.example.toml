@@ -30,7 +30,6 @@ shell_tool = true
 subagents = true
 apply_patch = true
 exec_policy = true
-verify_tool = true
 
 # Not part of the focused local surface. Enable per task when needed.
 web_search = false
