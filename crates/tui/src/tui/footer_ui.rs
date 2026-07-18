@@ -5,7 +5,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::localization::MessageId;
 use crate::palette;
-use crate::tui::app::{App, TaskPanelEntryKind};
+use crate::tui::app::App;
 use crate::tui::history::{HistoryCell, ToolCell, ToolStatus};
 use crate::tui::sidebar::{agents_sidebar_surface_visible, running_agent_count};
 use crate::tui::ui::{context_usage_snapshot, status_color};
@@ -138,9 +138,6 @@ pub(crate) fn stall_reason(app: &App) -> Option<String> {
     }
     if running_agent_count(app) > 0 {
         return Some("sub-agents working".to_string());
-    }
-    if app.task_panel.iter().any(|task| task.status == "running") {
-        return Some("background jobs running".to_string());
     }
     let active = app.active_cell.as_ref()?;
     if active.entries().iter().any(|cell| match cell {
@@ -575,8 +572,7 @@ pub(crate) fn render_footer_from(
     props.model.clear();
     props.mode_label = "";
 
-    // Shell-running chip: visible whenever foreground or background shell work
-    // is active, regardless of user-configured status items.
+    // Foreground shell chip, independent of user-configured status items.
     let shell_chip = footer_shell_spans(app);
 
     // Right-cluster extension chips: append in `items` order so user
@@ -641,29 +637,9 @@ pub(crate) fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
 }
 
 fn footer_shell_spans(app: &App) -> Vec<Span<'static>> {
-    if let Some(label) = active_foreground_shell_label(app) {
-        return crate::tui::widgets::footer_shell_label_chip(label);
-    }
-
-    let mut running = app.task_panel.iter().filter(|task| {
-        task.kind == TaskPanelEntryKind::Background
-            && task.status == "running"
-            && task.id.starts_with("shell_")
-    });
-    let Some(first) = running.next() else {
-        return Vec::new();
-    };
-    let extra = running.count();
-    let command = first
-        .prompt_summary
-        .strip_prefix("shell: ")
-        .unwrap_or(first.prompt_summary.as_str());
-    let label = if extra == 0 {
-        format!("shell bg: {}", concise_shell_command_label(command, 48))
-    } else {
-        format!("shell bg: {} jobs", extra + 1)
-    };
-    crate::tui::widgets::footer_shell_label_chip(label)
+    active_foreground_shell_label(app)
+        .map(crate::tui::widgets::footer_shell_label_chip)
+        .unwrap_or_default()
 }
 
 fn active_foreground_shell_label(app: &App) -> Option<String> {

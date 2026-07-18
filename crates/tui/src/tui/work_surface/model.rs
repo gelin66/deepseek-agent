@@ -24,7 +24,6 @@ impl WorkSurfacePlacement {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum WorkTone {
     Heading,
-    Live,
     Attention,
     Success,
     Muted,
@@ -67,57 +66,36 @@ impl WorkSurfaceState {
 
 pub(super) fn project(app: &mut App) -> Vec<WorkRow> {
     let live = super::live_projection::LiveWorkProjection::from_app(app);
-    let attention_hold = live
-        .rows
-        .iter()
-        .any(|row| row.state == super::live_projection::LiveWorkState::Waiting);
     let mut rows = Vec::new();
-    if live.counts.active > 0 || !live.rows.is_empty() {
+    if !live.rows.is_empty() {
         rows.push(section(
-            "active",
-            &format!(
-                "Active {} · Tasks {} · Runs {} · Workers {}",
-                live.counts.active, live.counts.tasks, live.counts.runs, live.counts.workers
-            ),
-            live.counts.active,
+            "agents",
+            &format!("Agents {} active · {} total", live.active, live.rows.len()),
         ));
-        rows.extend(live.rows.iter().map(|row| live_row(row, attention_hold)));
+        rows.extend(live.rows.iter().map(live_row));
     }
     app.work_surface.latest_rows = rows.clone();
     rows
 }
 
-fn section(id: &str, label: &str, count: usize) -> WorkRow {
+fn section(id: &str, label: &str) -> WorkRow {
     WorkRow {
         id: format!("section:{id}"),
         mark: "▾",
-        label: if label.chars().any(char::is_numeric) {
-            label.to_string()
-        } else {
-            format!("{label} {count}")
-        },
+        label: label.to_string(),
         tone: WorkTone::Heading,
     }
 }
 
-fn live_row(row: &super::live_projection::LiveWorkRow, attention_hold: bool) -> WorkRow {
+fn live_row(row: &super::live_projection::LiveWorkRow) -> WorkRow {
     let (mark, tone) = match row.state {
-        super::live_projection::LiveWorkState::Active if attention_hold => ("·", WorkTone::Muted),
-        _ => match row.state {
-            super::live_projection::LiveWorkState::Active => (
-                "›",
-                if row.kind == super::live_projection::LiveWorkKind::Worker {
-                    WorkTone::Worker
-                } else {
-                    WorkTone::Live
-                },
-            ),
-            super::live_projection::LiveWorkState::Waiting => ("◆", WorkTone::Attention),
-            super::live_projection::LiveWorkState::Settled => match row.status.as_str() {
-                "completed" | "success" | "done" => ("✓", WorkTone::Success),
-                "failed" | "canceled" | "cancelled" | "interrupted" => ("✕", WorkTone::Attention),
-                _ => ("☐", WorkTone::Muted),
-            },
+        super::live_projection::LiveWorkState::Active => ("›", WorkTone::Worker),
+        super::live_projection::LiveWorkState::Settled => match row.status.as_str() {
+            "done" => ("✓", WorkTone::Success),
+            "failed" | "canceled" | "interrupted" | "blocked" | "recovery" => {
+                ("✕", WorkTone::Attention)
+            }
+            _ => ("☐", WorkTone::Muted),
         },
     };
     WorkRow {

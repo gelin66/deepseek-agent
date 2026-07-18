@@ -2821,10 +2821,6 @@ fn should_render_empty_state(app: &App) -> bool {
         && !app.is_compacting
         && !app.is_purging
         && !app.attention_hold_active()
-        && !app
-            .task_panel
-            .iter()
-            .any(|task| task.kind == crate::tui::app::TaskPanelEntryKind::Background)
 }
 
 fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
@@ -3218,9 +3214,7 @@ mod tests {
     use crate::config::Config;
     use crate::palette;
     use crate::tui::active_cell::ActiveCell;
-    use crate::tui::app::{
-        App, ComposerDensity, TaskPanelEntry, TaskPanelEntryKind, ToolCollapseMode, TuiOptions,
-    };
+    use crate::tui::app::{App, ComposerDensity, ToolCollapseMode, TuiOptions};
     use crate::tui::history::{
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus,
     };
@@ -4277,24 +4271,6 @@ mod tests {
         app.add_message(crate::tui::history::HistoryCell::User {
             content: "hello".to_string(),
         });
-        assert!(!should_render_empty_state(&app));
-    }
-
-    #[test]
-    fn durable_tasks_suppress_the_launch_tableau() {
-        let mut app = create_test_app();
-        app.task_panel.push(TaskPanelEntry {
-            id: "shell_1".to_string(),
-            status: "running".to_string(),
-            prompt_summary: "cargo test".to_string(),
-            duration_ms: Some(100),
-            kind: TaskPanelEntryKind::Background,
-            stale: false,
-            elapsed_since_output_ms: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-        });
-
         assert!(!should_render_empty_state(&app));
     }
 

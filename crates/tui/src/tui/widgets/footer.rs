@@ -827,12 +827,9 @@ mod tests {
 
     #[test]
     fn worked_chip_tracks_completed_turn_time_not_session_uptime() {
-        // Regression test for the v0.8.8 takedown: the chip used to
-        // read `App::session_started_at.elapsed()`, so a TUI that had
-        // been open and idle for several minutes claimed "worked 3m"
-        // even though no turn had ever fired. The chip now sources
-        // from `App::cumulative_turn_duration`, which is only ever
-        // incremented on `TurnComplete`. Pin both directions:
+        // The chip sources from `App::cumulative_turn_duration`, which
+        // is only incremented when a real turn completes. Pin both
+        // directions:
         //
         //   1. cumulative == 0 (no turn finished yet)  → empty
         //   2. cumulative crosses 60s (real work)      → label shows

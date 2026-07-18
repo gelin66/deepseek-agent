@@ -186,7 +186,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
 fn row_style(app: &App, row: &WorkRow) -> Style {
     let fg = match row.tone {
         WorkTone::Heading => app.ui_theme.accent_primary,
-        WorkTone::Live => app.ui_theme.status_working,
         WorkTone::Attention => app.ui_theme.error_fg,
         WorkTone::Success => app.ui_theme.success,
         WorkTone::Muted => app.ui_theme.text_muted,

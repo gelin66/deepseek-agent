@@ -1869,12 +1869,6 @@ pub struct App {
     pub workspace_context_cell: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     /// Timestamp for cached workspace context.
     pub workspace_context_refreshed_at: Option<Instant>,
-    /// Cached background tasks for sidebar rendering.
-    pub task_panel: Vec<TaskPanelEntry>,
-    /// Wall-clock time when this TUI session started. Used by the Work
-    /// sidebar projection to hide completed durable tasks that finished
-    /// before the current session (bug #1913).
-    pub session_started_at: chrono::DateTime<chrono::Utc>,
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
     /// When true, the next draw will be a full repaint (terminal clear +
@@ -1962,25 +1956,6 @@ pub struct ToolDetailRecord {
     pub tool_name: String,
     pub input: Value,
     pub output: Option<String>,
-}
-
-/// Lightweight task view for sidebar rendering.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TaskPanelEntry {
-    pub id: String,
-    pub status: String,
-    pub prompt_summary: String,
-    pub duration_ms: Option<u64>,
-    pub kind: TaskPanelEntryKind,
-    pub stale: bool,
-    pub elapsed_since_output_ms: Option<u64>,
-    pub owner_agent_id: Option<String>,
-    pub owner_agent_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskPanelEntryKind {
-    Background,
 }
 
 impl QueuedMessage {
@@ -2593,8 +2568,6 @@ impl App {
             workspace_context: None,
             workspace_context_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             workspace_context_refreshed_at: None,
-            task_panel: Vec::new(),
-            session_started_at: chrono::Utc::now(),
             needs_redraw: true,
             force_next_full_repaint: false,
             is_compacting: false,
@@ -2979,10 +2952,6 @@ impl App {
             || self.runtime_turn_status.as_deref() == Some("in_progress")
             || self.is_compacting
             || self.is_purging
-            || self
-                .task_panel
-                .iter()
-                .any(|task| matches!(task.status.as_str(), "queued" | "running"))
     }
 
     /// Whether the interface is asking the user to make a decision. Ambient
@@ -2991,10 +2960,6 @@ impl App {
     #[must_use]
     pub fn attention_hold_active(&self) -> bool {
         !self.view_stack.is_empty()
-            || self
-                .task_panel
-                .iter()
-                .any(|task| matches!(task.status.as_str(), "waiting" | "needs_user"))
     }
 
     pub fn mark_approval_policy_locked(&mut self) {

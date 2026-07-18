@@ -621,12 +621,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   canonical Run 时 `ToolPolicy.allowed` 明确为 `None`；mode 权限基线只保留在真实调用方
   `App`。canonical Runtime terminal、RunStore、确定性 `run_verifiers` 和多 Agent/Fleet
   均未改变。
-- M4-C 已将 WorkSurface 收敛为 task、同步 shell run 与 canonical child Agent 的只读投影：
-  删除从未被生产事件循环调用的键盘/鼠标输入、焦点/选择/滚动、打开详情、停止确认、
-  命中区和失效 `/task`/`/jobs` 动作；随后删除没有生产 writer、没有 RunStore 表或
-  RuntimeEvent 的 TUI-local Plan/Todo Store、假工具、sidebar/footer 和旧 transcript 特判。
-  top/left/right 布局、状态排序、`AppMode::Plan` 权限语义与 canonical child 投影保留；
-  M5 的 TaskContract/EvidenceReceipt 必须由唯一 canonical owner 实现，不能恢复私有 Store。
+- M4-C 已将 WorkSurface 收敛为 canonical child Agent 的只读投影：删除从未被生产事件循环
+  调用的键盘/鼠标输入、焦点/选择/滚动、打开详情、停止确认、命中区和失效
+  `/task`/`/jobs` 动作；随后删除没有生产 writer、RunStore 表或 RuntimeEvent 的 TUI-local
+  Plan/Todo Store、`App.task_panel`/`TaskPanelEntry`、假工具及其 sidebar/footer/transcript
+  reader。top/left/right 布局、状态排序、`AppMode::Plan` 权限语义与 canonical child 投影
+  保留；Activity 继续读取 canonical `GenericToolCell`。M5 的 TaskContract/EvidenceReceipt
+  必须由唯一 canonical owner 实现，不能恢复私有 Store。
 - M4-C 已删除只服务退役 TUI 工具、没有 production executor 或 registry 消费者的旧
   `ToolSpec`/`ToolContext`/`RuntimeToolServices` abstraction island。TUI error taxonomy 直接
   消费 `codewhale_tools::ToolError`；固定 11 工具、`ProductionToolContext`、canonical

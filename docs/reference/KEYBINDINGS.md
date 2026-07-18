@@ -74,7 +74,6 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 | `↑` / `↓` / `j` / `k`| Move selection                                     |
 | `Enter`              | Activate the selected item (open / focus / cancel) |
 | `Tab`                | Cycle to next sidebar panel (Work → Tasks → Agents → Context) |
-| `Ctrl-X`             | Cancel all running background shell jobs when the Tasks panel is focused |
 | `Esc`                | Return focus to composer                           |
 
 ## Slash-command menu (after typing `/`)

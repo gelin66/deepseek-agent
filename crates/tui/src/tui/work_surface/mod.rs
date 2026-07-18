@@ -1,5 +1,5 @@
-//! Read-only work projection for tasks, tool runs and canonical child agents.
-//! Runtime and stores remain the sole owners of all displayed facts.
+//! Read-only work projection for canonical child agents.
+//! Runtime and RunStore remain the sole owners of all displayed facts.
 
 mod live_projection;
 mod model;
@@ -16,7 +16,7 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use crate::config::Config;
-    use crate::tui::app::{App, TaskPanelEntry, TaskPanelEntryKind, TuiOptions};
+    use crate::tui::app::{App, TuiOptions};
 
     fn app() -> App {
         let options = TuiOptions {
@@ -57,20 +57,6 @@ mod tests {
         text
     }
 
-    fn add_task(app: &mut App, id: &str) {
-        app.task_panel.push(TaskPanelEntry {
-            id: id.to_string(),
-            status: "running".to_string(),
-            prompt_summary: format!("task {id}"),
-            duration_ms: Some(1_000),
-            kind: TaskPanelEntryKind::Background,
-            stale: false,
-            elapsed_since_output_ms: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-        });
-    }
-
     fn start_child(app: &mut App, child: &str) {
         use codewhale_protocol::agent_runtime::RunId;
 
@@ -84,38 +70,19 @@ mod tests {
     }
 
     #[test]
-    fn compact_surface_preserves_task_without_fake_controls() {
+    fn compact_surface_preserves_child_without_fake_controls() {
         let mut app = app();
-        add_task(&mut app, "shell_compact");
+        start_child(&mut app, "agent_compact");
         let backend = TestBackend::new(40, 3);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
             .draw(|frame| super::render(frame, frame.area(), &mut app))
             .expect("draw");
         let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains("task shell_compact"), "{text}");
+        assert!(text.contains("子 Agent 1"), "{text}");
         for fake_control in ["[打开]", "[停止]", "确认", "正在停止"] {
             assert!(!text.contains(fake_control), "{fake_control}: {text}");
         }
-    }
-
-    #[test]
-    fn waiting_row_freezes_other_live_marks() {
-        let mut app = app();
-        add_task(&mut app, "run");
-        add_task(&mut app, "ask");
-        app.task_panel[1].status = "waiting".to_string();
-        let backend = TestBackend::new(100, 5);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| super::render(frame, frame.area(), &mut app))
-            .expect("draw");
-        let text = buffer_text(terminal.backend().buffer());
-        assert!(text.contains('◆'), "waiting keeps a still attention mark");
-        assert!(
-            !text.contains('›'),
-            "other live marks freeze under attention"
-        );
     }
 
     #[test]
@@ -146,7 +113,7 @@ mod tests {
     fn bounded_projection_is_deterministic_and_does_not_claim_scrollability() {
         let mut app = app();
         for id in ["one", "two", "three", "four", "five", "six"] {
-            add_task(&mut app, id);
+            start_child(&mut app, id);
         }
         let backend = TestBackend::new(80, 4);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -174,7 +141,7 @@ mod tests {
             (super::WorkSurfacePlacement::Right, 0, 70),
         ] {
             let mut app = app();
-            add_task(&mut app, "rail");
+            start_child(&mut app, "rail");
             app.work_surface.placement = placement;
             assert_eq!(super::height(&mut app, 100, 24, false), 0);
 
@@ -203,7 +170,7 @@ mod tests {
     #[test]
     fn classic_and_narrow_layouts_keep_the_existing_top_surface() {
         let mut app = app();
-        add_task(&mut app, "top");
+        start_child(&mut app, "top");
         app.work_surface.placement = super::WorkSurfacePlacement::Right;
 
         assert_eq!(super::height(&mut app, 100, 24, true), 8);

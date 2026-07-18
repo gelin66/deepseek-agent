@@ -190,13 +190,6 @@ impl ShellPhase {
         {
             return Self::Failed;
         }
-        if app
-            .task_panel
-            .iter()
-            .any(|task| matches!(task.status.as_str(), "waiting" | "needs_user"))
-        {
-            return Self::Waiting;
-        }
         if app.is_loading
             || matches!(app.runtime_turn_status.as_deref(), Some("in_progress"))
             || app

@@ -55,12 +55,13 @@ consumer，不能作为 M5 已有 evidence owner。M5 必须在 `protocol/runtim
 TaskContract/EvidenceReceipt/Host completion 链路；历史测试只能作为反例参考，不能通过
 adapter 恢复旧状态机。
 
-WorkSurface 现在只投影 task panel、同步 shell run 和 canonical child Agent，并保留
-top/left/right 布局。旧键盘/鼠标 handler 从未接入生产事件循环，却生成不存在的 `/task` 与
-`/jobs` 命令；该交互岛及其焦点、选择、滚动、打开、停止和 hitbox 状态已物理删除。
-没有生产 writer、没有 RunStore 表或 RuntimeEvent 的 TUI-local Plan/Todo Store、假工具、
-sidebar/footer 和旧 transcript 特判也已删除。`AppMode::Plan` 的只读权限语义和 canonical
-child 投影继续保留；M5 的 TaskContract/EvidenceReceipt 不通过恢复这些私有状态实现。
+WorkSurface 现在只投影 canonical child Agent，并保留 top/left/right 布局。旧键盘/鼠标
+handler 从未接入生产事件循环，却生成不存在的 `/task` 与 `/jobs` 命令；该交互岛及其焦点、
+选择、滚动、打开、停止和 hitbox 状态已物理删除。没有生产 writer、没有 RunStore 表或
+RuntimeEvent 的 TUI-local Plan/Todo Store、`App.task_panel`、假工具及其 sidebar/footer/
+transcript reader 也已删除。工具 Activity 继续读取 `run_presenter` 产生的 canonical
+`GenericToolCell`，多 Agent 展示继续读取 canonical `child_agents`；`AppMode::Plan` 的只读
+权限语义保留。M5 的 TaskContract/EvidenceReceipt 不通过恢复这些私有状态实现。
 WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 
 旧 `ModePickerView` 与 `StatusPickerView` 没有生产构造或打开入口，只有模块内测试；两者及
@@ -338,6 +339,9 @@ M4-C foreground 切换后还已物理删除：
 - 没有生产构造或写入方的 TUI-local Plan/Todo Store 与 `update_plan`/`todo_*` 假工具，以及
   只读取永久空状态的 WorkSurface/sidebar/footer 和旧 transcript/checklist 特判；
   `AppMode::Plan`、canonical root/child Run 投影和多 Agent 能力保留。
+- 只有测试构造、没有 canonical producer、RunStore 表或 RuntimeEvent writer 的
+  `App.task_panel`/`TaskPanelEntry` 及其 background shell reader；WorkSurface 现在只显示
+  canonical child Agent，Activity 继续显示 canonical `GenericToolCell`。
 - 只服务已删除旧工具、没有生产 executor 或 registry 消费者的 TUI `ToolSpec`、
   `ToolContext`、`RuntimeToolServices` 与本地 `SandboxPolicy`；错误分类直接使用
   `codewhale_tools::ToolError`，固定目录、production context、sandbox 与 shell owner 不变。
