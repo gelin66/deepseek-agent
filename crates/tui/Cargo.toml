@@ -35,8 +35,6 @@ codewhale-runtime = { path = "../runtime", version = "0.8.68" }
 codewhale-state = { path = "../state", version = "0.8.68" }
 codewhale-secrets = { path = "../secrets", version = "0.8.68" }
 codewhale-tools = { path = "../tools", version = "0.8.68" }
-codewhale-workflow = { path = "../workflow", version = "0.8.68" }
-codewhale-workflow-js = { path = "../workflow-js", version = "0.8.68" }
 schemaui = { version = "0.12.0", default-features = false, optional = true }
 async-stream = "0.3.6"
 async-trait.workspace = true

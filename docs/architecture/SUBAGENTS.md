@@ -1,6 +1,14 @@
 # Sub-Agents
 
-> Category: current capability map and migration input.
+> Category: legacy capability map and migration input.
+
+> 2026-07-18 cutover: production `agent` root/child execution now uses the
+> canonical `AgentRuntime` and `RunStore`. The hidden Workflow caller and its
+> dedicated `SubAgentRuntime` adapter were deleted. The remaining TUI
+> `tools/subagent` implementation and `subagents.v1.json` tests are compiled
+> compatibility code for unmigrated Fleet projections, not a production Agent
+> model loop or persistent source of truth. The sections below describe
+> migration input and must not override the canonical runtime contract.
 
 Sub-agents are the user-facing vocabulary for nested worker assignments: a
 parent launches a focused role (`explore`, `review`, `implementer`, `verifier`,
@@ -14,14 +22,10 @@ artifacts and restart behavior belong to the same event protocol as the root
 Agent. This document describes the current compatibility surface during that
 migration.
 
-The current `agent` implementation delegates to the durable sub-agent runtime
-while that cutover completes. It can still be useful for short in-session
-delegation. Transient provider header/stream/time-out failures are retried with
-backoff inside the child runtime before the worker is marked interrupted; if the
-retry budget is exhausted, CodeWhale preserves a checkpoint and returns a
-continuation handle instead of leaving the parent to infer what happened. For
-work that must survive process restarts, sleep, or remote execution, prefer
-Fleet or a Workflow-backed fleet run.
+The old compatibility implementation delegated to a private durable sub-agent
+runtime. That behavior is no longer the production `agent` contract. Current
+root/child retries, lifecycle, terminal state and recovery belong to
+`crates/runtime` and the canonical Run API.
 
 Sub-agents inherit the parent's tool registry by default, but child agents are
 leaf workers: they do not receive `agent` or nested lifecycle tools. `agent`

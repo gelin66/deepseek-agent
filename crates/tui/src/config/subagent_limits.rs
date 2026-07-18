@@ -16,7 +16,7 @@ pub const DEFAULT_MAX_SUBAGENTS: usize = 64;
 /// code changes while the full resource budget gate lands.
 pub const MAX_SUBAGENTS: usize = 128;
 /// Upper bound for queued + running sub-agent admissions. This is deliberately
-/// higher than the instantaneous concurrency cap so Workflow-style fanout can
+/// higher than the instantaneous concurrency cap so bounded fanout can
 /// opt into large bounded populations without unbounded queue growth.
 pub const MAX_SUBAGENT_ADMISSION: usize = 1024;
 /// Default per-step DeepSeek API timeout for sub-agent requests, in seconds.

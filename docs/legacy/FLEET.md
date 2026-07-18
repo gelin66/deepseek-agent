@@ -15,9 +15,6 @@ Use Fleet rather than short-lived `agent` fanout whenever the work
 needs retry, sleep/restart survival, remote execution, receipts, or a ledgered
 audit trail. The initial CLI surface is:
 
-For a guided start-to-monitor walkthrough that combines Fleet task specs with
-Workflow authoring, see [Fleet + Workflow Tutorial](FLEET_WORKFLOW_TUTORIAL.md).
-
 ```sh
 codewhale fleet init
 codewhale fleet run tasks.json --max-workers 4

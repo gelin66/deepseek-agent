@@ -277,7 +277,6 @@ fn live_row(row: &super::live_projection::LiveWorkRow, attention_hold: bool) -> 
             }),
             None,
         ),
-        super::live_projection::LiveWorkKind::Workflow => (None, None),
         _ => (
             Some(SidebarRowAction::Command(open)),
             stoppable

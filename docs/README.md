@@ -30,7 +30,6 @@
 - [reference/CONFIGURATION.md](reference/CONFIGURATION.md)
 - [reference/MCP.md](reference/MCP.md)
 - [legacy/FLEET.md](legacy/FLEET.md)
-- [legacy/WORKFLOW_AUTHORING.md](legacy/WORKFLOW_AUTHORING.md)
 
 代码迁移完成后，应同步缩小或删除对应参考；禁止把 `legacy/` 中的概念重新写回
 产品权威文档。

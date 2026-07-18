@@ -11,7 +11,7 @@
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - 当前阶段：M4-C 收尾；交互 TUI foreground 与 root/child projection 已迁移，当前
   canonical RuntimeEvent 为 v6、State schema 为 v10；隐藏 `workflow-tool` 第二模型循环
-  仍未删除
+  及其私有状态/UI 已删除，最终集成门禁待通过
 
 ## 1. 当前结论
 
@@ -29,20 +29,15 @@ interactive TUI --------/          |                |
 这三条入口不再拥有各自的模型循环、工具目录、终态判断或持久状态。交互 TUI 只提交
 canonical Run command，并从 durable event 投影 root/child 状态。
 
-当前仍存的生产例外是隐藏 Workflow 路径：
+旧生产例外 `workflow -> workflow-tool -> WorkflowTool -> SubAgentRuntime ->
+DeepSeekClient` 已物理删除；同时删除 Workflow/Workflow-JS crate、私有 JSON/JSONL
+写入链、TUI 面板/事件/审批/触发和专属 SubAgent adapter。没有建立兼容桥或双写。旧命令
+会在配置解析、TUI、Store 和模型初始化前 fail closed；显式
+`--prompt "workflow ..."` 仍是合法自然语言输入。
 
-```text
-workflow run
-  -> hidden workflow-tool
-  -> WorkflowTool
-  -> SubAgentRuntime
-  -> DeepSeekClient
-  -> workflow-runs.jsonl / subagents.v1.json
-```
-
-它不经过 `AgentApplication`、canonical `AgentRuntime` 或 `RunStore`，仍构成第二模型循环
-和第二持久事实。M4-C 关闭前必须删除；有效 DAG/worktree 能力以后只能迁入唯一
-Orchestrator，不能继续扩展该路径。
+因此当前生产可达的根/子 Agent 模型循环只剩 canonical `AgentRuntime`。尚未实现的
+DAG、writer worktree 和 merge 能力属于 M6 唯一 Orchestrator，而不是保留旧 Workflow
+Runtime 的理由。
 
 ## 2. 已统一的生产链
 
@@ -160,8 +155,8 @@ side effect、evidence、artifact 和 workspace revision。TUI 下仍编译的�
 - no-key terminal replay。
 
 旧 thread/message/goal tables 仍被 legacy `thread` CLI 等外围路径消费，不再服务交互 TUI
-foreground。Workflow/SubAgent 还维护独立 JSON/JSONL。它们都不是 canonical Run 状态来源，
-不能与 `RunStore` 双写，并应随各自旧产品入口删除。
+foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径删除，没有迁为
+`RunStore` 双写。
 
 ## 3. 当前入口
 
@@ -205,10 +200,10 @@ foreground。Workflow/SubAgent 还维护独立 JSON/JSONL。它们都不是 cano
 - `crates/tui/src/compaction.rs` 与 `seam_manager.rs` 已不是 production compaction owner，
   当前仍被编译的实现属于待物理删除的旧代码；真正的 compaction 位于
   `crates/context + crates/runtime + crates/app`；
-- generic Provider/config/UI 与隐藏 workflow 路径仍未执行 DeepSeek-only 最终清理。
+- generic Provider/config/UI 仍未执行 DeepSeek-only 最终清理。
 
-因此可以宣称三个保留 foreground 入口已统一，但不能宣称所有生产可达模型循环都已统一：
-隐藏 workflow 路径仍绕过唯一 Runtime/RunStore。
+因此三个保留 foreground 入口与所有生产可达根/子 Agent 模型循环已经统一；最终 M4
+集成门禁仍需确认完整调用图和回归。
 
 ## 4. Crate responsibility snapshot
 
@@ -219,11 +214,11 @@ foreground。Workflow/SubAgent 还维护独立 JSON/JSONL。它们都不是 cano
 | `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | FIM 调优与定期官方复核 |
 | `context` | production prompt/context 构建与最小 compaction projection | RepoGraph、evidence-aware compaction 与 A/B 在 M5 |
 | `tools` | 固定 production tool catalog 与执行 | 编辑/FIM 协议 A/B |
-| `state` | SQLite RunStore、lease、replay | legacy thread tables 与非 canonical Workflow/SubAgent 状态删除 |
+| `state` | SQLite RunStore、lease、replay | legacy thread tables 删除 |
 | `app` | 唯一 production composition 与 Run command | 后续 orchestrator command |
 | `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
 | `cli` | 顶层命令与 production config 解析 | DeepSeek-only 配置/中文 M7-M8 |
-| `tui` | exec/interactive canonical projection + 隐藏 workflow/Provider 遗留 | 删除第二 loop、退役 context 实现和非 DeepSeek 产品面 |
+| `tui` | exec/interactive canonical projection + Provider 遗留 | 删除退役 context 实现和非 DeepSeek 产品面 |
 
 `crates/core` 已删除。它原有的 fake `handle_prompt` 从未是 production Agent 能力；app-server
 迁移后没有保留兼容 crate 或空壳。
@@ -298,15 +293,13 @@ RuntimeEvent 仍为 v6。严格 workspace clippy 当前仍被遗留 TUI 无消�
 随构建目标不同；不得压制，应继续删除。
 
 当前证据证明三个 foreground 入口已统一，也证明协议、lineage、持久恢复、accounting 与
-官方 surface 兼容；但 hidden workflow 第二循环仍在，且尚无终局许可机制的真实 multi A/B
-或 compaction on/off A/B，不能声称 Token、成本或任务成功率改善。
+官方 surface 兼容；hidden workflow 第二循环已物理删除，但尚无终局许可机制的真实
+multi A/B 或 compaction on/off A/B，不能声称 Token、成本或任务成功率改善。
 
 ## 7. 明确非结论
 
 当前源码不证明：
 
-- 所有生产可达模型循环已经统一；
-- hidden workflow 已改用 canonical Runtime/RunStore；
 - 退役 `tui/compaction`/`seam_manager` 源码已物理删除；
 - 当前 compaction 已证明节省 Token、降低成本或提高任务成功率；
 - Provider 清理或全面汉化已完成；

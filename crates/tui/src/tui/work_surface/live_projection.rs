@@ -1,8 +1,7 @@
 //! Canonical live-work projection for the Ocean work surface.
 //!
 //! This is deliberately a read-only projection.  The task panel, active tool
-//! cell, canonical child projection, and workflow panel remain the owners of
-//! their state;
+//! cell and canonical child projection remain the owners of their state;
 //! this module owns only the identity, kind, liveness, and ordering used by
 //! the work surface.
 
@@ -17,7 +16,6 @@ pub(super) enum LiveWorkKind {
     Task,
     Run,
     Worker,
-    Workflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -53,7 +51,6 @@ pub(super) struct LiveWorkCounts {
     pub tasks: usize,
     pub runs: usize,
     pub workers: usize,
-    pub workflows: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -148,25 +145,6 @@ impl LiveWorkProjection {
             );
         }
 
-        if let Some(panel) = app.workflow_panel.as_ref() {
-            let state = if panel.lifecycle.is_running() {
-                LiveWorkState::Active
-            } else {
-                LiveWorkState::Settled
-            };
-            insert_prefer_live(
-                &mut by_identity,
-                LiveWorkRow {
-                    identity: format!("workflow:{}", panel.run_id),
-                    kind: LiveWorkKind::Workflow,
-                    state,
-                    status: panel.lifecycle.label().to_string(),
-                    label: panel.label.clone(),
-                    detail: panel.run_id.clone(),
-                },
-            );
-        }
-
         let mut rows = by_identity.into_values().collect::<Vec<_>>();
         rows.sort_by(|left, right| {
             left.state
@@ -182,7 +160,6 @@ impl LiveWorkProjection {
                     LiveWorkKind::Task => counts.tasks += 1,
                     LiveWorkKind::Run => counts.runs += 1,
                     LiveWorkKind::Worker => counts.workers += 1,
-                    LiveWorkKind::Workflow => counts.workflows += 1,
                 }
             }
         }

@@ -295,7 +295,7 @@ pub struct SetupState {
     #[serde(default)]
     pub runtime_posture_source: RuntimePostureSource,
 
-    /// Host-enforced Workflow dispatch and terminal receipts have been proven
+    /// Host-enforced Orchestrator dispatch and terminal receipts have been proven
     /// for this installation. Older records did not carry this proof and must
     /// deserialize false even if their Operate/Fleet card was marked Verified.
     #[serde(default, skip_serializing_if = "is_false")]

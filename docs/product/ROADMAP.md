@@ -10,8 +10,9 @@
   验收与费用受限的官方 DeepSeek sender canary，并冻结为提交 `4a3311ac`；后续
   `35fc3cc4` 已把 durable creation delivery 提升为 Run API v4 / State schema v9。交互 TUI
   foreground、canonical root/child Run 投影和旧前台状态删除已经完成；当前
-  RuntimeEvent v6、State schema v10。M4-C 仍被隐藏 `workflow-tool` 第二模型循环及其独立
-  JSON/JSONL 状态阻塞。M1 的
+  RuntimeEvent v6、State schema v10。M4-C 的最后一个结构阻塞已在本切片移除：
+  `workflow`/`workflow-tool` 入口、Workflow/Workflow-JS crate、TUI 私有执行/状态/UI 和
+  专属 SubAgent adapter 已物理删除，未引入兼容桥；M4 最终集成门禁仍须在合并后通过。M1 的
   导入基线 A/B 与 M2 的完整官方 surface canary 仍是独立证据债务
 - 上次更新：2026-07-18
 
@@ -27,8 +28,9 @@
   `crates/app::AgentApplication`、唯一 `crates/runtime::AgentRuntime`、固定工具目录和
   SQLite `RunStore`；TUI 通过 canonical command/event projection 工作。
 - `crates/core` 已删除；app-server 不再依赖 `core/tui`，也不启动 TUI 子进程。
-- canonical `agent` 工具启动的根/子 Agent 使用同一实现；隐藏 `workflow-tool` 仍直接构造
-  `DeepSeekClient + SubAgentRuntime + WorkflowTool`，是尚未删除的第二模型循环。
+- canonical `agent` 工具启动的根/子 Agent 使用同一实现；旧 `workflow-tool` 曾直接构造
+  `DeepSeekClient + SubAgentRuntime + WorkflowTool`，现已连同 Workflow 私有状态和 UI
+  物理删除。旧命令在读取配置、启动 TUI、打开 Store 或模型前 fail closed。
 - M1-A 离线契约证据与生产工具目录测量已经完成。
 - M1-B 官方 DeepSeek live canary 已通过 5/5，但仅属于协议兼容证据。
 - M1-C 的共享真实 HTTP 请求硬预算已经接入当前候选；提交 `0a5b76a` 的 M4-A production
@@ -115,7 +117,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M1 | 建立原始 DeepSeek 能力基准 | 进行中（硬预算本地门禁已通过，导入基线真实编码 A/B 待完成） | 真实编码 A/B 在硬请求预算下可重复测量成功率、假成功、Token、时间和成本 |
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
-| M4 | 统一工具、事件、RunStore 和产品入口 | 进行中（交互前台已切换，隐藏 workflow 第二循环待删） | CLI/TUI/API 同事件，所有生产模型循环统一 |
+| M4 | 统一工具、事件、RunStore 和产品入口 | 收尾中（第二模型循环已删，最终集成门禁待通过） | CLI/TUI/API 同事件，所有生产模型循环统一 |
 | M5 | RepoGraph、ContextBroker 和现有 WIP 证据链迁移 | 待开始 | 现有 TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 部分开始（canonical 根/子同 Runtime 已完成） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
@@ -225,7 +227,7 @@ credentialed official live canary 与真实编码 A/B 完成前，M1-C 仍不得
 
 - `crates/deepseek` 已成为 `ApiSurface::{StandardChat, StrictChat, Fim}`、`RequestPlan`、物理
   请求预算、usage ledger 与官方 V4 pricing 的唯一 owner；TUI 旧 client 只服务尚未删除的
-  generic Provider/hidden workflow 路径，不得重新拥有官方 DeepSeek surface 决策。
+  generic Provider/外围路径，不得重新拥有官方 DeepSeek surface 决策。
 - 官方 DeepSeek streaming/non-streaming Client 已消费同一 planner；`RequestPlan` 一次性决定
   surface、endpoint、wire model、streaming、reasoning replay、工具/strict 状态和 body。
 - Strict 在整组 schema 兼容时走 Beta；任一不兼容时整组原子回退 Standard，并保留全部工具。
@@ -545,9 +547,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `CanonicalRunProjection`/presenter 投影 root 与 child durable event；旧 Engine、
   EventBroker、foreground state owner、`SessionManager`、child display cache 和旧 slash
   command system 已删除。
-- M4-C 关闭前仍须删除隐藏 `workflow-tool -> WorkflowTool -> SubAgentRuntime ->
-  DeepSeekClient` 第二模型循环及其独立 Workflow/SubAgent 状态。有效 DAG/worktree 能力只能
-  迁入 canonical Orchestrator，不保留兼容桥。
+- M4-C 已删除隐藏 `workflow-tool -> WorkflowTool -> SubAgentRuntime -> DeepSeekClient`
+  第二模型循环及其独立 Workflow 状态、UI、审批、触发和 JS authoring surface；
+  `workflow`/`workflow-tool` 在任何配置、TUI、Store 或模型初始化前 fail closed。canonical
+  `agent` 的根/子同 Runtime 能力保持不变；DAG/worktree 能力以后只能进入唯一
+  Orchestrator，不恢复兼容桥。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
@@ -571,7 +575,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   workspace tests 通过。
 - 切换删除点：本切片删除旧协议语义；其后 C3 caller cutover 已物理删除交互前台的
   `EngineEvent` control 回写、乐观 transcript 双写和 runtime-thread owner。隐藏 workflow
-  第二循环不属于该前台实现，仍是 M4-C 剩余删除目标。
+  第二循环不属于该前台实现，现已由后续纯删除切片移除。
 
 #### M4-C C2：continuation 与最小 context projection（已完成）
 
@@ -615,7 +619,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   共 64 files、`+7/-25,523`。
 - 证据：canonical Run 20/20、canonical PTY 5/5、run presenter 13/13、canonical commands
   5/5；child blocked/recovery/terminal outcome 与中文宽字符投影有定向回归。
-- 非结论：该切片完成交互前台切换，但隐藏 workflow 第二循环仍使 M4-C/M4 不能关闭。
+- 非结论：该切片只完成交互前台切换；后续纯删除切片才移除隐藏 workflow 第二循环。
 
 #### 每 Agent 最终请求许可（机制完成，产品收益待验）
 
@@ -654,8 +658,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - app-server 的 TUI 子进程 bridge、`RuntimeBridge`、`monitor_turn` 与私有事件/状态翻译已删除；
   交互 TUI 的旧 foreground runtime-thread owner 也已删除。
 - TUI 已只保留交互命令和 canonical `RuntimeEvent` 投影。
-- 隐藏 workflow 仍写独立 Workflow/SubAgent JSON/JSONL；其有效能力迁入唯一 Orchestrator
-  后必须同步物理删除。
+- 隐藏 workflow 的 Workflow/SubAgent JSON/JSONL 写入链、专属 adapter 和 UI 已随第二
+  Runtime 物理删除；未把旧状态迁成 canonical 双写。
 
 ### 整个 M4 的退出门槛
 
@@ -663,7 +667,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - 内存 Store 与 SQLite Store 重放一致。（M4-A 行为门禁已通过）
 - crash/resume 和 exactly-once completion 通过。（`exec` 与 app-server 已通过）
 - exec/app-server/交互 foreground 不存在第二个生产 loop、可写 Store 或入口私有 completion
-  语义；M4 仍须删除 hidden workflow 的第二模型循环与独立状态真相。
+  语义；已删除的 hidden workflow 不再构成生产例外。最终仍须通过 M4 合并门禁确认调用图。
 
 ## 9. M5：RepoGraph、ContextBroker 与现有 WIP 证据链迁移
 
@@ -721,10 +725,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 ### 删除/替代
 
-- 删除 hidden `workflow-tool` 的 `SubAgentRuntime` 第二模型循环；不得影响 canonical
-  `AgentRuntime` child 能力。
+- hidden `workflow-tool` 的 `SubAgentRuntime` 第二模型循环已提前纯删除；canonical
+  `AgentRuntime` child 能力由 conformance 回归保护。
 - 能力迁入并有回归测试后，删除 Workflow/Fleet/Lane 重复用户概念、scheduler 和状态真相。
-- 删除不再承载独有能力的 `workflow-js`，不删除已迁入统一 Orchestrator 的智能体能力。
+- `workflow-js` 已随旧第二 Runtime 删除；不得以恢复 authoring surface 的方式重建它。
 
 ### 退出门槛
 
@@ -793,8 +797,8 @@ M8 退出前必须通过第 2.1 节的中文端到端、机器协议稳定性、
 | 退役 `tui/compaction`、`seam_manager` | `context` | 无消费者的第二压缩实现 |
 | `project_context`、`working_set` 遗留半区 | `context` | 浅层 project map 和重复投影 |
 | `tui/src/tools/*` | `tools` | TUI 工具业务逻辑 |
-| legacy thread tables、Workflow/SubAgent JSON、Fleet ledger | `state` | 多状态真相 |
-| hidden `workflow-tool`、Workflow、Fleet、Lane | `orchestrator` | 第二循环和重复产品外壳 |
+| legacy thread tables、Fleet ledger | `state` | 多状态真相 |
+| Fleet、Lane | `orchestrator` | 重复产品外壳；hidden Workflow 第二循环已删除 |
 | 交互 foreground/child projection（M4-C C3 已迁移） | `app + runtime + tui` | 旧 Engine、runtime-thread、SessionManager、child cache 已删除 |
 | `app-server` canonical projection（M4-B 已迁移） | `app + app-server` | TUI 子进程桥已删除 |
 | `crates/core` 脚手架（M4-B 已删除） | `app + runtime` | fake `handle_prompt` 已删除 |

@@ -522,9 +522,8 @@ pub struct SubAgentResult {
 
 /// Headless worker lifecycle states for sub-agent execution.
 ///
-/// This is the TUI-independent state machine that future CLI/API/workflow
-/// surfaces should consume. The legacy `SubAgentStatus` remains the
-/// compatibility projection returned by sub-agent runs.
+/// This compatibility state machine remains only for unmigrated Fleet
+/// projections. New CLI/API surfaces use the canonical Runtime/Orchestrator.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentWorkerStatus {
@@ -1157,43 +1156,6 @@ pub(crate) struct SubAgentSpawnOptions {
     pub wall_time: Option<Duration>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct WorkflowTaskSpawnResult {
-    pub result: SubAgentResult,
-    pub metadata: WorkflowTaskSpawnMetadata,
-}
-
-/// Workflow identity stamped onto children launched via `spawn_workflow_task`
-/// (#4119). Lets panel/history render without parsing the child prompt.
-#[derive(Debug, Clone)]
-pub(crate) struct WorkflowTaskSpawnIdentity {
-    pub workflow_run_id: String,
-    pub workflow_phase_id: Option<String>,
-    pub workflow_task_label: Option<String>,
-    pub workflow_child_index: u32,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct WorkflowTaskSpawnMetadata {
-    pub resolved_provider: String,
-    pub resolved_model: String,
-    pub route_source: String,
-    /// Fleet role resolved for this spawn, if any (#4177).
-    pub resolved_role: Option<String>,
-    /// AgentProfile id resolved for this spawn, if any (#4177).
-    pub resolved_profile: Option<String>,
-    pub parent_task_id: Option<String>,
-    pub depth: u32,
-    /// Workflow run that launched this child (`None` for direct `agent` spawns).
-    pub workflow_run_id: Option<String>,
-    /// Active phase title/id when the child was admitted (`None` outside workflows).
-    pub workflow_phase_id: Option<String>,
-    /// Human label from the Workflow `task({ label })` option.
-    pub workflow_task_label: Option<String>,
-    /// 0-based admission order among children of this workflow run.
-    pub workflow_child_index: Option<u32>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SubAgentModelStrength {
     Same,
@@ -1505,10 +1467,6 @@ pub struct SubAgentRuntime {
     pub fleet_roster: std::sync::Arc<crate::fleet::roster::FleetRoster>,
     pub context: ToolContext,
     pub allow_shell: bool,
-    /// When true, Suggest-level file writes auto-accept for write-capable roles
-    /// without full parent auto-approve. Shell/network/MCP still gated.
-    /// Set for Workflow-spawned children.
-    pub accept_edits: bool,
     /// Native Agent-mode tool surface inherited from the parent turn. Carries
     /// feature/config-dependent families such as web search, patch, memory,
     /// vision, notify, and FIM so child catalogs stay in parity with the parent.
@@ -1601,7 +1559,6 @@ impl SubAgentRuntime {
             fleet_roster: std::sync::Arc::new(crate::fleet::roster::FleetRoster::built_ins_only()),
             context,
             allow_shell,
-            accept_edits: false,
             agent_tool_surface_options: AgentToolSurfaceOptions::new(
                 ShellPolicy::from_legacy_allow_shell(allow_shell),
             ),
@@ -1880,7 +1837,6 @@ impl SubAgentRuntime {
             fleet_roster: self.fleet_roster.clone(),
             context: child_context,
             allow_shell: self.allow_shell,
-            accept_edits: self.accept_edits,
             agent_tool_surface_options: self.agent_tool_surface_options.clone(),
             worker_profile: self.worker_profile.clone(),
             event_tx: self.event_tx.clone(),
@@ -2531,7 +2487,7 @@ impl SubAgentManager {
         let remaining = limit.saturating_sub(spent);
         if remaining < MIN_SUBAGENT_SPAWN_TOKEN_RESERVE {
             return Err(anyhow!(
-                "Sub-agent token budget exhausted for scope {scope_id}: {spent}/{limit} tokens spent, {remaining} remaining. Wait for the parent/Workflow to summarize results or start a fresh agent run."
+                "Sub-agent token budget exhausted for scope {scope_id}: {spent}/{limit} tokens spent, {remaining} remaining. Wait for the parent to summarize results or start a fresh agent run."
             ));
         }
         Ok(Some(AgentUsageBudgetScope {
@@ -2552,30 +2508,6 @@ impl SubAgentManager {
         record.usage.budget_remaining_tokens = Some(scope.remaining);
         refresh_usage_note(&mut record.usage);
         self.refresh_budget_scope(&scope.scope_id);
-    }
-
-    /// Aggregate token spend for a shared workflow budget scope.
-    pub(crate) fn budget_spent_for_scope(&self, scope_id: &str) -> u64 {
-        self.aggregate_budget_spent(scope_id)
-    }
-
-    /// Attach a workflow child to the run-level shared budget pool.
-    pub(crate) fn attach_shared_budget_scope(
-        &mut self,
-        worker_id: &str,
-        scope_id: &str,
-        limit: u64,
-    ) {
-        let spent = self.aggregate_budget_spent(scope_id);
-        self.attach_budget_scope(
-            worker_id,
-            AgentUsageBudgetScope {
-                scope_id: scope_id.to_string(),
-                limit,
-                spent,
-                remaining: limit.saturating_sub(spent),
-            },
-        );
     }
 
     fn refresh_budget_scope(&mut self, scope_id: &str) {
@@ -3190,7 +3122,7 @@ impl SubAgentManager {
         let admitted = self.admitted_count();
         if admitted >= self.max_admitted_agents {
             return Err(anyhow!(
-                "Sub-agent admission limit reached (max_admitted {}, admitted {}, running {}, queued {}). Wait for queued/running agents to finish, cancel unneeded agents, or raise [subagents] max_admitted for this Workflow.",
+                "Sub-agent admission limit reached (max_admitted {}, admitted {}, running {}, queued {}). Wait for queued/running agents to finish, cancel unneeded agents, or raise [subagents] max_admitted for this task.",
                 self.max_admitted_agents,
                 admitted,
                 self.active_count(),
@@ -4640,7 +4572,7 @@ impl ToolSpec for AgentTool {
                 "agent 只用于启动子 Agent，请直接传 prompt 等启动参数；查看、通信、继续、打断和等待请分别使用 agents_list、agents_message、agents_followup、agents_interrupt、agents_wait。",
             ));
         }
-        let (snapshot, spawn_policy_note, _) =
+        let (snapshot, spawn_policy_note) =
             spawn_subagent_from_input(input, self.manager.clone(), self.runtime.clone()).await?;
         let worker_record = {
             let manager = self.manager.read().await;
@@ -4914,7 +4846,7 @@ async fn spawn_subagent_from_input(
     input: Value,
     manager: SharedSubAgentManager,
     runtime: SubAgentRuntime,
-) -> Result<(SubAgentResult, Option<String>, WorkflowTaskSpawnMetadata), ToolError> {
+) -> Result<(SubAgentResult, Option<String>), ToolError> {
     let mut spawn_request = parse_spawn_request(&input)?;
     let spawn_policy_note = apply_session_spawn_policy(&runtime, &mut spawn_request);
     let profile_member = apply_spawn_profile(&mut spawn_request, &runtime.fleet_roster)?;
@@ -5036,29 +4968,6 @@ async fn spawn_subagent_from_input(
     child_runtime.reasoning_effort = route.reasoning_effort.clone();
     child_runtime.reasoning_effort_auto = false;
     let model_route = route.model_route;
-    let resolved_role = profile_member
-        .as_ref()
-        .map(|member| member.profile.role.name.clone())
-        .filter(|name| !name.trim().is_empty())
-        .or_else(|| spawn_request.assignment.role.clone());
-    let resolved_profile = profile_member
-        .as_ref()
-        .map(|member| member.id.clone())
-        .or_else(|| spawn_request.profile.clone());
-    let spawn_metadata = WorkflowTaskSpawnMetadata {
-        resolved_provider: child_runtime.client.api_provider().as_str().to_string(),
-        resolved_model: effective_model.clone(),
-        route_source: model_selection.source.as_str().to_string(),
-        resolved_role,
-        resolved_profile,
-        parent_task_id: child_runtime.parent_agent_id.clone(),
-        depth: child_runtime.spawn_depth,
-        workflow_run_id: None,
-        workflow_phase_id: None,
-        workflow_task_label: None,
-        workflow_child_index: None,
-    };
-
     let mut manager_guard = manager.write().await;
 
     let result = manager_guard
@@ -5093,7 +5002,7 @@ async fn spawn_subagent_from_input(
         }
     }
 
-    Ok((result, spawn_policy_note, spawn_metadata))
+    Ok((result, spawn_policy_note))
 }
 
 /// Mode-aware spawn defaults for the root orchestrator (Wave 7 M4/M5).
@@ -5110,90 +5019,12 @@ fn apply_session_spawn_policy(
                 return None;
             }
             Some(
-                "Operate spawn policy: pass profile=scout|builder|reviewer|verifier or use workflow for multi-step work; the operator orchestrates, workers execute."
+                "Operate spawn policy: pass profile=scout|builder|reviewer|verifier; the operator orchestrates, workers execute."
                     .to_string(),
             )
         }
         _ => None,
     }
-}
-
-/// Spawn one Workflow `task(...)` through the same path as the public `agent`
-/// tool. Keeping this adapter inside the sub-agent module prevents the
-/// Workflow driver from copying Fleet roster/profile/depth/budget semantics.
-///
-/// `identity` is stamped onto the returned spawn metadata so panel/history
-/// consumers can render workflow children without parsing prompt text (#4119).
-pub(crate) async fn spawn_workflow_task(
-    request: codewhale_workflow_js::TaskRequest,
-    manager: SharedSubAgentManager,
-    mut runtime: SubAgentRuntime,
-    identity: WorkflowTaskSpawnIdentity,
-) -> Result<WorkflowTaskSpawnResult, ToolError> {
-    // Capture identity fallbacks before consuming `request` fields into the
-    // agent-tool input JSON.
-    let request_label = request
-        .label
-        .as_ref()
-        .map(|label| label.trim())
-        .filter(|label| !label.is_empty())
-        .map(str::to_string);
-    let request_phase = request
-        .phase
-        .as_ref()
-        .map(|phase| phase.trim())
-        .filter(|phase| !phase.is_empty())
-        .map(str::to_string);
-    let mut input = json!({
-        "prompt": request.description,
-        "worktree": request.worktree,
-    });
-    if let Some(value) = request.subagent_type {
-        input["type"] = json!(value);
-    }
-    if let Some(value) = request.role {
-        input["role"] = json!(value);
-    }
-    if let Some(value) = request.profile {
-        input["profile"] = json!(value);
-    }
-    if let Some(value) = request.model {
-        input["model"] = json!(value);
-    }
-    if let Some(value) = request.model_strength {
-        input["model_strength"] = json!(value);
-    }
-    if let Some(value) = request.thinking {
-        input["thinking"] = json!(value);
-    }
-    if let Some(value) = request.allowed_tools {
-        input["allowed_tools"] = json!(value);
-    }
-    if let Some(value) = request.max_depth {
-        input["max_depth"] = json!(value);
-    }
-    if let Some(value) = request.token_budget {
-        input["token_budget"] = json!(value);
-    }
-    // Workflow children inherit the parent tool surface and auto-accept
-    // Suggest-level file edits for write-capable roles. Shell / network / MCP
-    // still require parent auto-approve (or fail closed).
-    runtime.accept_edits = true;
-    let (result, _, mut metadata) = spawn_subagent_from_input(input, manager, runtime).await?;
-    // Prefer the identity values the driver stamped; fall back to task options.
-    let workflow_task_label = identity
-        .workflow_task_label
-        .filter(|label| !label.trim().is_empty())
-        .or(request_label);
-    let workflow_phase_id = identity
-        .workflow_phase_id
-        .filter(|phase| !phase.trim().is_empty())
-        .or(request_phase);
-    metadata.workflow_run_id = Some(identity.workflow_run_id);
-    metadata.workflow_phase_id = workflow_phase_id;
-    metadata.workflow_task_label = workflow_task_label;
-    metadata.workflow_child_index = Some(identity.workflow_child_index);
-    Ok(WorkflowTaskSpawnResult { result, metadata })
 }
 
 // === Sub-agent Execution ===
@@ -8778,8 +8609,6 @@ struct SubAgentToolRegistry {
     /// `command_denies_tool` (exact + `prefix*`, case-insensitive).
     disallowed_tools: Vec<String>,
     auto_approve: bool,
-    /// Workflow-spawned children auto-accept Suggest-level file edits.
-    accept_edits: bool,
     /// The role/type of the sub-agent that this registry belongs to. Used to
     /// decide whether `Suggest`-level tools (write/edit/patch) may run inside
     /// the child without the parent runtime being auto-approved (#1828, #1833).
@@ -8854,7 +8683,6 @@ impl SubAgentToolRegistry {
             allowed_tools: explicit_allowed_tools,
             disallowed_tools: runtime.worker_profile.denied_tools.clone(),
             auto_approve: runtime.context.auto_approve(),
-            accept_edits: runtime.accept_edits,
             agent_type,
             runtime_profile: runtime.worker_profile,
             can_spawn_child,
@@ -8995,11 +8823,10 @@ impl SubAgentToolRegistry {
                 ApprovalRequirement::Suggest => {
                     // Write/edit/patch tools land here. Explicit
                     // write-capable roles (`implementer`, `custom`) may run them
-                    // without parent auto-approve (#1828, #1833). Workflow-spawned
-                    // children also accept Suggest edits for any write-capable
-                    // posture (including general). Read-only roles still bounce.
+                    // without parent auto-approve (#1828, #1833). Read-only
+                    // roles still bounce.
                     let may_write = self.runtime_profile.permissions.write
-                        && (self.accept_edits || Self::role_can_delegate_writes(&self.agent_type));
+                        && Self::role_can_delegate_writes(&self.agent_type);
                     if !may_write {
                         return Err(anyhow!(
                             "Tool {name} requires approval and is not delegated to {role} sub-agents; rerun the parent with auto approval or pick a write-capable role",

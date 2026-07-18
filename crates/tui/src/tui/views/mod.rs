@@ -2102,16 +2102,6 @@ fn experimental_config_rows(config: &Config) -> Vec<ConfigRow> {
         editable: false,
         scope: ConfigScope::Saved,
     });
-    rows.push(ConfigRow {
-        section: ConfigSection::Fleet,
-        key: "workflow".to_string(),
-        value:
-            "/workflow runs scripted fan-out/fan-in operations with run cards and cancel support"
-                .to_string(),
-        editable: false,
-        scope: ConfigScope::Saved,
-    });
-
     rows
 }
 
@@ -2179,7 +2169,6 @@ fn config_label_for_key(key: &str) -> String {
         "mcp_config_path" => "MCP config path",
         "fleet.exec.max_spawn_depth" => "Fleet recursion depth",
         "goal_command" => "Goal command",
-        "workflow" => "Workflow",
         _ => {
             if let Some(feature) = key.strip_prefix("features.") {
                 return format!("Feature: {}", humanize_config_key(feature));
@@ -2277,7 +2266,6 @@ fn config_hint_for_key(key: &str) -> &'static str {
         "features.exec_policy" => "read-only feature flag state for execution policy tools",
         "features.vision_model" => "beta feature flag for vision/model image support",
         "goal_command" => "/goal sets objectives, budgets, and Work-context status",
-        "workflow" => "/workflow runs scripted operations with fan-out/fan-in run cards",
         _ => "",
     }
 }
@@ -3969,7 +3957,6 @@ mod tests {
         assert!(keys.contains(&"fleet.exec.max_spawn_depth"));
         assert!(keys.contains(&"features.vision_model"));
         assert!(keys.contains(&"goal_command"));
-        assert!(keys.contains(&"workflow"));
         assert!(!keys.contains(&"features.subagents"));
         assert!(!keys.contains(&"features.web_search"));
         assert!(!keys.contains(&"features.apply_patch"));
@@ -4244,11 +4231,6 @@ max_spawn_depth = 2
         assert_eq!(visible_row_keys(&view), vec!["goal_command"]);
 
         view.clear_filter();
-        type_filter(&mut view, "workflow");
-        assert_eq!(visible_section_labels(&view), vec!["舰队"]);
-        assert_eq!(visible_row_keys(&view), vec!["workflow"]);
-
-        view.clear_filter();
         type_filter(&mut view, "whaleflow");
         assert!(visible_row_keys(&view).is_empty());
     }
@@ -4463,10 +4445,6 @@ base_url = "https://api.xiaomimimo.com/v1"
         view.clear_filter();
         type_filter(&mut view, "reasoning level");
         assert_eq!(visible_row_keys(&view), vec!["reasoning_effort"]);
-
-        view.clear_filter();
-        type_filter(&mut view, "fan-out/fan-in");
-        assert_eq!(visible_row_keys(&view), vec!["workflow"]);
     }
 
     #[test]

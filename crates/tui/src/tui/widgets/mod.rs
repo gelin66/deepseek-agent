@@ -13,7 +13,6 @@ pub mod decision_card;
 pub mod pending_input_preview;
 mod renderable;
 pub mod tool_card;
-pub mod workflow_panel;
 
 pub use footer::{
     FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_shell_label_chip,
@@ -2590,49 +2589,11 @@ fn approval_options_for(risk: RiskLevel) -> [ApprovalOptionRow; 3] {
     ]
 }
 
-/// Workflow elevated-plan card options (#4126): Approve / Edit plan / Cancel.
-fn workflow_approval_options(risk: RiskLevel) -> [ApprovalOptionRow; 3] {
-    let dangerous = matches!(risk, RiskLevel::Destructive);
-    [
-        ApprovalOptionRow {
-            label: workflow_option_approve(),
-            key_hint: "1 / y",
-            dangerous,
-        },
-        ApprovalOptionRow {
-            label: workflow_option_edit_plan(),
-            key_hint: "2 / e",
-            dangerous: false,
-        },
-        ApprovalOptionRow {
-            label: workflow_option_cancel(),
-            key_hint: "3 / Esc",
-            dangerous: false,
-        },
-    ]
-}
-
 fn approval_options_for_request(
-    request: &ApprovalRequest,
+    _request: &ApprovalRequest,
     risk: RiskLevel,
 ) -> Vec<ApprovalOptionRow> {
-    if request.tool_name == "workflow" {
-        workflow_approval_options(risk).to_vec()
-    } else {
-        approval_options_for(risk).to_vec()
-    }
-}
-
-fn workflow_option_approve() -> Cow<'static, str> {
-    Cow::Borrowed("批准")
-}
-
-fn workflow_option_edit_plan() -> Cow<'static, str> {
-    Cow::Borrowed("编辑计划")
-}
-
-fn workflow_option_cancel() -> Cow<'static, str> {
-    Cow::Borrowed("取消")
+    approval_options_for(risk).to_vec()
 }
 
 fn option_approve_once() -> Cow<'static, str> {

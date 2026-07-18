@@ -149,7 +149,6 @@ pub enum MessageId {
     CmdStashDescription,
     CmdStatuslineDescription,
     CmdFleetDescription,
-    CmdWorkflowDescription,
     CmdSetupDescription,
     CmdSubagentsDescription,
     CmdTrustDescription,
@@ -474,9 +473,6 @@ pub enum MessageId {
     SetupReportNextActionOperate,
     SetupReportNextActionRequired,
     SetupReportRecorded,
-    // Agent fanout card.
-    FanoutCounts,
-
     // App mode picker (names, hints) and composer vim indicator.
     AppModeAgent,
     AppModeAuto,
@@ -550,7 +546,6 @@ pub enum MessageId {
     ToolFamilyRun,
     ToolFamilyFind,
     ToolFamilyDelegate,
-    ToolFamilyFanout,
     ToolFamilyRlm,
     ToolFamilyVerify,
     ToolFamilyThink,
@@ -757,9 +752,6 @@ pub enum MessageId {
     FleetProfileIdConflict,
     /// Sticky error when the drafted profile pins an unconfigured provider.
     FleetProfileProviderUnconfigured,
-    // Workflow panel.
-    WorkflowStatusWaiting,
-    WorkflowDebrief,
     // Sidebar work strip.
     SidebarTasksLabel,
     SidebarTodoLabel,
@@ -924,7 +916,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CmdStashDescription,
     MessageId::CmdStatuslineDescription,
     MessageId::CmdFleetDescription,
-    MessageId::CmdWorkflowDescription,
     MessageId::CmdSetupDescription,
     MessageId::CmdSubagentsDescription,
     MessageId::CmdTrustDescription,
@@ -1246,7 +1237,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::SetupReportNextActionOperate,
     MessageId::SetupReportNextActionRequired,
     MessageId::SetupReportRecorded,
-    MessageId::FanoutCounts,
     MessageId::AppModeAgent,
     MessageId::AppModeAuto,
     MessageId::AppModeYolo,
@@ -1314,7 +1304,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ToolFamilyRun,
     MessageId::ToolFamilyFind,
     MessageId::ToolFamilyDelegate,
-    MessageId::ToolFamilyFanout,
     MessageId::ToolFamilyRlm,
     MessageId::ToolFamilyVerify,
     MessageId::ToolFamilyThink,
@@ -1490,8 +1479,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::FleetProfileIdentityVerifyFailed,
     MessageId::FleetProfileIdConflict,
     MessageId::FleetProfileProviderUnconfigured,
-    MessageId::WorkflowStatusWaiting,
-    MessageId::WorkflowDebrief,
     MessageId::SidebarTasksLabel,
     MessageId::SidebarTodoLabel,
     MessageId::SidebarOpenControl,

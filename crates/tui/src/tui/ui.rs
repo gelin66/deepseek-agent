@@ -1797,13 +1797,6 @@ fn render(f: &mut Frame, app: &mut App) {
     let pending_preview = build_pending_input_preview(app);
     let desired_preview_height = pending_preview.desired_height(size.width);
 
-    // WorkflowPanel unified activity surface (#4121). Collapsed to one row
-    // while finished, expanded while running; zero height when no panel.
-    let desired_workflow_panel_height = app
-        .workflow_panel
-        .as_ref()
-        .map(|panel| panel.desired_height(size.width))
-        .unwrap_or(0);
     let auxiliary_budget = body_height.saturating_sub(
         top_work_strip_height
             .saturating_add(MIN_CHAT_HEIGHT)
@@ -1814,8 +1807,6 @@ fn render(f: &mut Frame, app: &mut App) {
     // while keeping the release-floor layout to three compact rows.
     let preview_cap = if size.height >= 20 { 4 } else { 3 };
     let preview_height = desired_preview_height.min(auxiliary_budget.min(preview_cap));
-    let workflow_panel_height =
-        desired_workflow_panel_height.min(auxiliary_budget.saturating_sub(preview_height));
 
     // Ocean live phases put the phase strip above the composer so activity
     // stays attached to the transcript and the prompt is the final bottom
@@ -1826,8 +1817,8 @@ fn render(f: &mut Frame, app: &mut App) {
         && crate::tui::phase_strip::PhaseStripPlacement::for_phase(phase).is_above_composer();
     let (composer_slot, footer_slot, tail_constraints) = if phase_above {
         (
-            5,
             4,
+            3,
             [
                 Constraint::Length(footer_height),
                 Constraint::Length(composer_height),
@@ -1835,8 +1826,8 @@ fn render(f: &mut Frame, app: &mut App) {
         )
     } else {
         (
+            3,
             4,
-            5,
             [
                 Constraint::Length(composer_height),
                 Constraint::Length(footer_height),
@@ -1850,7 +1841,6 @@ fn render(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(top_work_strip_height), // Tasks + To-do above transcript
             Constraint::Min(1),                        // Chat area
-            Constraint::Length(workflow_panel_height), // Workflow panel (#4121)
             Constraint::Length(preview_height),        // Pending input preview (0 if empty)
             tail_constraints[0],
             tail_constraints[1],
@@ -1957,30 +1947,10 @@ fn render(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // Workflow panel between chat and pending-input preview (#4121).
-    if workflow_panel_height > 0 {
-        if let Some(panel) = app.workflow_panel.as_ref() {
-            let area = body_chunks[2];
-            app.viewport.last_workflow_panel_area = Some(area);
-            app.viewport.last_workflow_cancel_area =
-                panel.cancel_hint_span(area.width).map(|(start, end)| Rect {
-                    x: area.x.saturating_add(start),
-                    y: area.y,
-                    width: end.saturating_sub(start),
-                    height: 1,
-                });
-            let buf = f.buffer_mut();
-            panel.render(area, buf);
-        }
-    } else {
-        app.viewport.last_workflow_panel_area = None;
-        app.viewport.last_workflow_cancel_area = None;
-    }
-
     // Render pending-input preview (queued/steered messages, if any).
     if preview_height > 0 {
         let buf = f.buffer_mut();
-        pending_preview.render(body_chunks[3], buf);
+        pending_preview.render(body_chunks[2], buf);
     }
 
     // Render composer
@@ -2798,40 +2768,6 @@ fn idle_poll_ms(app: &App) -> u64 {
 fn clamp_event_poll_timeout(timeout: Duration) -> Duration {
     const MIN_EVENT_POLL_TIMEOUT: Duration = Duration::from_millis(1);
     timeout.max(MIN_EVENT_POLL_TIMEOUT)
-}
-
-/// True while a `workflow` tool is executing in the foreground (active cell)
-/// or still shown as running in history. Used to keep per-subagent completion
-/// notifications quiet during a workflow run under `final-only`.
-fn workflow_tool_is_running(app: &App) -> bool {
-    fn is_running_workflow(cell: &HistoryCell) -> bool {
-        matches!(
-            cell,
-            HistoryCell::Tool(ToolCell::Generic(tool))
-                if tool.name == "workflow" && tool.status == ToolStatus::Running
-        )
-    }
-    app.history.iter().any(is_running_workflow)
-        || app
-            .active_cell
-            .as_ref()
-            .is_some_and(|active| active.entries().iter().any(is_running_workflow))
-}
-
-/// Decide whether an `AgentComplete` event should fire a subagent-completion
-/// desktop notification, per the `[notifications].subagent_completion` mode.
-/// `settings()` still has the final say (method=off / condition=never).
-fn should_notify_subagent_completion(
-    mode: crate::config::SubagentCompletionNotification,
-    has_other_running_subagents: bool,
-    workflow_tool_running: bool,
-) -> bool {
-    use crate::config::SubagentCompletionNotification as Mode;
-    match mode {
-        Mode::Off => false,
-        Mode::Always => true,
-        Mode::FinalOnly => !has_other_running_subagents && !workflow_tool_running,
-    }
 }
 
 fn should_tick_status_animation(

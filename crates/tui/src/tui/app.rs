@@ -1315,9 +1315,6 @@ pub struct ViewportState {
     /// time so mouse hit-testing can keep scroll events over the sidebar from
     /// leaking into the transcript viewport.
     pub last_sidebar_area: Option<Rect>,
-    /// WorkflowPanel rect above the composer (#4121), for mouse toggle/cancel.
-    pub last_workflow_panel_area: Option<Rect>,
-    pub last_workflow_cancel_area: Option<Rect>,
     pub last_transcript_top: usize,
     pub last_transcript_visible: usize,
     pub last_transcript_total: usize,
@@ -1347,8 +1344,6 @@ impl Default for ViewportState {
             last_transcript_area: None,
             last_composer_area: None,
             last_sidebar_area: None,
-            last_workflow_panel_area: None,
-            last_workflow_cancel_area: None,
             last_transcript_top: 0,
             last_transcript_visible: 0,
             last_transcript_total: 0,
@@ -1847,10 +1842,6 @@ pub struct App {
     pub stream_chunk_timeout_secs: u64,
     /// Ephemeral projection of canonical root/child runtime events.
     pub child_agents: ChildAgents,
-    /// Last time a workflow `budget_updated` event was allowed to request a
-    /// repaint. High-signal workflow events (task/run lifecycle) always paint;
-    /// budget-only chatter is paced under fan-out (#4095 residual).
-    pub last_workflow_budget_redraw: Option<Instant>,
     pub ui_theme: UiTheme,
     /// Active named theme. Drives the cell-level color remap in
     /// `tui::color_compat::ColorCompatBackend` so community presets
@@ -2093,10 +2084,6 @@ pub struct App {
     /// Active decision card (v0.8.43 truth-surface). When set, keyboard input
     /// is routed through the card navigation instead of the composer.
     pub decision_card: Option<crate::tui::widgets::decision_card::DecisionCard>,
-    /// Unified Workflow activity surface (#4121). Lives above the composer so
-    /// phase/row progress does not flood the chat transcript. Preserved after
-    /// completion until the next `RunStarted` replaces it.
-    pub workflow_panel: Option<crate::tui::widgets::workflow_panel::WorkflowPanel>,
     /// Wall-clock time when this TUI session started. Used by the Work
     /// sidebar projection to hide completed durable tasks that finished
     /// before the current session (bug #1913).
@@ -2818,7 +2805,6 @@ impl App {
             max_subagents,
             stream_chunk_timeout_secs: config.stream_chunk_timeout_secs(),
             child_agents: ChildAgents::default(),
-            last_workflow_budget_redraw: None,
             ui_theme,
             theme_id,
             onboarding,
@@ -2913,7 +2899,6 @@ impl App {
             workspace_context_refreshed_at: None,
             task_panel: Vec::new(),
             decision_card: None,
-            workflow_panel: None,
             session_started_at: chrono::Utc::now(),
             needs_redraw: true,
             force_next_full_repaint: false,
@@ -3956,72 +3941,6 @@ impl App {
             active.mark_in_progress_as_interrupted();
         }
         self.flush_active_cell();
-        // #4121: interrupt finalizes running workflow children as cancelled
-        // and preserves the completed panel until the next run starts.
-        if let Some(panel) = self.workflow_panel.as_mut() {
-            panel.finalize_interrupt();
-            self.needs_redraw = true;
-        }
-    }
-
-    /// Apply a workflow panel event, creating the panel on first `RunStarted`.
-    ///
-    /// Returns whether this event should request an immediate repaint.
-    /// Budget-only updates always mutate panel state but leave repaint to the
-    /// caller so high-frequency fan-out budget ticks can be paced (#4095).
-    pub fn apply_workflow_panel_event(
-        &mut self,
-        event: crate::tui::widgets::workflow_panel::WorkflowPanelEvent,
-    ) -> bool {
-        use crate::tui::widgets::workflow_panel::{WorkflowPanel, WorkflowPanelEvent};
-        let budget_only = matches!(event, WorkflowPanelEvent::BudgetUpdated { .. });
-        match (&mut self.workflow_panel, &event) {
-            (
-                None,
-                WorkflowPanelEvent::RunStarted {
-                    run_id,
-                    workflow_goal,
-                    workflow_id,
-                    token_budget,
-                    at_ms,
-                    ..
-                },
-            ) => {
-                let label = workflow_goal
-                    .clone()
-                    .or_else(|| workflow_id.clone())
-                    .unwrap_or_else(|| "workflow".to_string());
-                let mut panel = WorkflowPanel::new(run_id.clone(), label, *at_ms);
-                panel.budget_total = *token_budget;
-                panel.budget_remaining = *token_budget;
-                self.workflow_panel = Some(panel);
-            }
-            (None, _) => {
-                // No panel yet and event is not a start — seed a shell panel
-                // so late events still surface rather than being dropped.
-                let mut panel = WorkflowPanel::new("workflow", "workflow", 0);
-                panel.apply_event(event);
-                self.workflow_panel = Some(panel);
-            }
-            (Some(panel), _) => {
-                panel.apply_event(event);
-            }
-        }
-        if !budget_only {
-            self.needs_redraw = true;
-        }
-        !budget_only
-    }
-
-    /// Toggle the workflow panel expand/collapse state. Returns true when a
-    /// panel was present and toggled.
-    pub fn toggle_workflow_panel(&mut self) -> bool {
-        let Some(panel) = self.workflow_panel.as_mut() else {
-            return false;
-        };
-        let _ = panel.toggle_expanded();
-        self.needs_redraw = true;
-        true
     }
 
     pub fn push_status_toast(

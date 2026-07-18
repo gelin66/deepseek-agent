@@ -405,6 +405,22 @@ fn retired_commands_fail_before_config_tui_store_or_model_startup() {
             vec!["update", "--proxy", "socks5://127.0.0.1:1080"],
             "update",
         ),
+        (vec!["workflow"], "workflow"),
+        (
+            vec!["workflow", "run", "stopship", "--fleet", "v0868-stopship"],
+            "workflow",
+        ),
+        (vec!["workflow-tool"], "workflow-tool"),
+        (
+            vec![
+                "workflow-tool",
+                "--approval-source",
+                "explicit-workflow-command",
+                "--input-json",
+                r#"{"action":"run"}"#,
+            ],
+            "workflow-tool",
+        ),
         (vec!["mcp", "add-self"], "mcp add-self"),
         (
             vec!["mcp", "add-self", "--name", "legacy-self"],
@@ -458,6 +474,27 @@ fn retired_commands_fail_before_config_tui_store_or_model_startup() {
     assert!(
         explicit_marker.exists(),
         "explicit --prompt update ... was mistaken for the retired command"
+    );
+
+    let explicit_workflow_home =
+        tempfile::tempdir().expect("temporary explicit-workflow-prompt CODEWHALE_HOME");
+    let (explicit_workflow_tui, explicit_workflow_marker) =
+        install_tui_probe(explicit_workflow_home.path());
+    let explicit_workflow_prompt = run_dispatcher_with_tui_probe(
+        explicit_workflow_home.path(),
+        workspace.path(),
+        &explicit_workflow_tui,
+        &explicit_workflow_marker,
+        &["--prompt", "workflow", "run", "an", "audit"],
+    );
+    assert!(
+        explicit_workflow_prompt.status.success(),
+        "explicit --prompt workflow ... should remain a legal prompt: {}",
+        String::from_utf8_lossy(&explicit_workflow_prompt.stderr)
+    );
+    assert!(
+        explicit_workflow_marker.exists(),
+        "explicit --prompt workflow ... was mistaken for the retired command"
     );
 
     // `serve` remains as an ACP-only command, so Clap rejects the removed MCP

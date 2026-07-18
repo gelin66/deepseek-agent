@@ -405,35 +405,6 @@ fn normalized_goal_verifier_params(
     })
 }
 
-/// Run quick auto verifier gates after a successful workflow completion (#4013).
-pub(crate) async fn run_workflow_completion_gates(
-    context: &ToolContext,
-) -> Result<Value, ToolError> {
-    let shell = crate::tools::shell::exec_shell_options(context);
-    let outcome = codewhale_tools::execute_run_verifiers(
-        json!({
-            "profile": "auto",
-            "level": "quick",
-            "max_python_files": DEFAULT_MAX_PYTHON_FILES,
-            "commands": [],
-        }),
-        context.production_context(),
-        &shell,
-    )
-    .await?;
-    if !outcome.is_success() {
-        return Err(ToolError::execution_failed(format!(
-            "workflow verifier gates did not pass: {}",
-            outcome.content
-        )));
-    }
-    serde_json::from_str(&outcome.content).map_err(|error| {
-        ToolError::execution_failed(format!(
-            "tools-owned verifier returned invalid workflow output: {error}"
-        ))
-    })
-}
-
 fn start_background_gates(
     context: &ToolContext,
     profile: VerifierProfile,

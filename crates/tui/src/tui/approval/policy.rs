@@ -65,9 +65,7 @@ pub enum ApprovalStakes {
 
 /// Get the category for a tool by name.
 pub fn get_tool_category(name: &str) -> ToolCategory {
-    if name == "agent" || name == "workflow" {
-        // Workflow is multi-agent orchestration; reuse Agent stakes/routing
-        // and specialize the impact card via build_impact_summary (#4126).
+    if name == "agent" {
         ToolCategory::Agent
     } else if matches!(name, "write_file" | "edit_file" | "apply_patch") {
         ToolCategory::FileWrite

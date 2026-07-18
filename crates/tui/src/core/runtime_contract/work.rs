@@ -10,8 +10,6 @@ pub enum WorkDomain {
     Todo,
     /// Strategy owned through Plan mode.
     Plan,
-    /// Ordered durable execution.
-    Workflow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,7 +24,7 @@ pub enum WorkLifecycle {
 }
 
 /// Common envelope only. The payload remains owned by its domain so Tasks,
-/// To-do, Plan, and Workflow cannot collapse into a generic tracker.
+/// To-do, and Plan cannot collapse into a generic tracker.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkEventEnvelope {
     pub schema_version: u32,

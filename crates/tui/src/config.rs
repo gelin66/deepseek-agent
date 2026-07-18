@@ -1342,16 +1342,15 @@ pub enum CompletionSound {
     File,
 }
 
-/// Controls when per-subagent completion notifications fire during fleet /
-/// workflow runs. Turn-completion notifications are unaffected.
+/// Controls when per-subagent completion notifications fire during a batch.
+/// Turn-completion notifications are unaffected.
 #[derive(Debug, Clone, Copy, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum SubagentCompletionNotification {
     /// Notify on every subagent completion.
     Always,
-    /// Notify only when the last subagent in a batch finishes — no other
-    /// subagents running and no workflow run in progress. Default: stays quiet
-    /// mid-run and fires once when the fleet drains.
+    /// Notify only when the last subagent in a batch finishes. Default: stays
+    /// quiet mid-run and fires once when the batch drains.
     #[default]
     FinalOnly,
     /// Never fire a subagent-completion notification.
@@ -1378,9 +1377,9 @@ pub struct NotificationsConfig {
     #[serde(default)]
     pub include_summary: bool,
 
-    /// When to fire per-subagent completion notifications during fleet /
-    /// workflow runs: `always` | `final-only` | `off`. Default: `final-only`
-    /// (quiet mid-run, one notification when the batch drains). Set `off` to
+    /// When to fire per-subagent completion notifications during a batch:
+    /// `always` | `final-only` | `off`. Default: `final-only` (quiet mid-run,
+    /// one notification when the batch drains). Set `off` to
     /// silence subagent notifications entirely.
     #[serde(default)]
     pub subagent_completion: SubagentCompletionNotification,
@@ -2043,13 +2042,6 @@ pub struct Config {
     /// Agent Fleet trust/security/role/exec config.
     #[serde(default)]
     pub fleet: Option<codewhale_config::FleetConfigToml>,
-
-    /// Workflow automatic-launch, approval, isolation, and activity
-    /// persistence knobs (#4128). When absent, consumers use
-    /// [`codewhale_config::WorkflowConfigToml::default`] via
-    /// [`Self::workflow_config`].
-    #[serde(default)]
-    pub workflow: Option<codewhale_config::WorkflowConfigToml>,
 
     /// Sub-agent model overrides.
     #[serde(default)]
@@ -4515,15 +4507,6 @@ impl Config {
         self.fleet.clone().unwrap_or_default()
     }
 
-    /// Parsed `[workflow]` table, or product defaults when the table is absent
-    /// (#4128 / Section 2.11). Automatic launch, approval, isolation, and
-    /// activity-persistence consumers should read through this accessor so
-    /// omitted keys share one model.
-    #[must_use]
-    pub fn workflow_config(&self) -> codewhale_config::WorkflowConfigToml {
-        self.workflow.clone().unwrap_or_default()
-    }
-
     /// Return the configured DeepSeek reasoning-effort tier, if any.
     #[must_use]
     pub fn reasoning_effort(&self) -> Option<&str> {
@@ -6169,7 +6152,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
                 .or(base.context.project_pack),
         },
         fleet: override_cfg.fleet.or(base.fleet),
-        workflow: override_cfg.workflow.or(base.workflow),
         subagents: override_cfg.subagents.or(base.subagents),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
         workshop: override_cfg.workshop.or(base.workshop),

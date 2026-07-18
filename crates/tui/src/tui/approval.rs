@@ -522,11 +522,6 @@ fn build_impact_summary(tool_name: &str, category: ToolCategory, params: &Value)
             }
             impacts
         }
-        ToolCategory::Agent if tool_name == "workflow" => {
-            // #4126: elevated Workflow plan card — goal, children, capability flags, budget.
-            crate::tools::workflow_plan_approval::analyze_workflow_plan_approval(params)
-                .approval_impacts()
-        }
         ToolCategory::Agent => {
             let mut impacts = vec![
                 "Starts or inspects a child agent task; the child's own tool gates still apply."
@@ -688,18 +683,6 @@ fn build_prominent_details(
                 details.push(ApprovalDetail {
                     label: "Target".to_string(),
                     value: target,
-                    shell_lines: None,
-                });
-            }
-        }
-        ToolCategory::Agent if tool_name == "workflow" => {
-            // #4126: elevated Workflow plan card fields.
-            let summary =
-                crate::tools::workflow_plan_approval::analyze_workflow_plan_approval(params);
-            for (label, value) in summary.card_fields() {
-                details.push(ApprovalDetail {
-                    label: label.to_string(),
-                    value,
                     shell_lines: None,
                 });
             }
@@ -1162,19 +1145,8 @@ impl ApprovalOption {
         ApprovalOption::Abort,
     ];
 
-    /// Workflow elevated-plan card (#4126): Approve / Edit plan / Cancel.
-    const WORKFLOW_ORDER: [ApprovalOption; 3] = [
-        ApprovalOption::ApproveOnce,
-        ApprovalOption::Deny,
-        ApprovalOption::Abort,
-    ];
-
-    fn order_for(tool_name: &str) -> &'static [ApprovalOption] {
-        if tool_name == "workflow" {
-            &Self::WORKFLOW_ORDER
-        } else {
-            &Self::ORDER
-        }
+    fn order_for(_tool_name: &str) -> &'static [ApprovalOption] {
+        &Self::ORDER
     }
 
     fn from_index_for(tool_name: &str, idx: usize) -> ApprovalOption {
@@ -1194,7 +1166,6 @@ impl ApprovalOption {
     fn decision(self) -> ReviewDecision {
         match self {
             ApprovalOption::ApproveOnce => ReviewDecision::Approved,
-            // Workflow maps Deny → "Edit plan" (model revises plan).
             ApprovalOption::Deny => ReviewDecision::Denied,
             ApprovalOption::Abort => ReviewDecision::Abort,
         }
@@ -1238,12 +1209,6 @@ impl ApprovalView {
 
     fn current_option(&self) -> ApprovalOption {
         ApprovalOption::from_index_for(&self.request.tool_name, self.selected)
-    }
-
-    /// Whether this approval is the elevated Workflow plan card (#4126).
-    #[must_use]
-    pub fn is_workflow_plan_approval(&self) -> bool {
-        self.request.tool_name == "workflow"
     }
 
     /// Test-only accessor for the selected option's decision.
@@ -1360,15 +1325,7 @@ impl ModalView for ApprovalView {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Char('1') => {
                 self.commit_option(ApprovalOption::ApproveOnce)
             }
-            // Workflow plan card (#4126): [2/e] Edit plan, [3/n/d] Cancel.
-            KeyCode::Char('e') | KeyCode::Char('E') | KeyCode::Char('2')
-                if self.is_workflow_plan_approval() =>
-            {
-                self.commit_option(ApprovalOption::Deny)
-            }
-            KeyCode::Char('2') if !self.is_workflow_plan_approval() => {
-                self.commit_option(ApprovalOption::Deny)
-            }
+            KeyCode::Char('2') => self.commit_option(ApprovalOption::Deny),
             KeyCode::Char('s') | KeyCode::Char('S') if self.request.can_save_ask_rule() => self
                 .emit_decision_with_rules(
                     ReviewDecision::Approved,
@@ -1376,15 +1333,7 @@ impl ModalView for ApprovalView {
                     self.request.persistent_ask_rules.clone(),
                 ),
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('d') | KeyCode::Char('D') => {
-                if self.is_workflow_plan_approval() {
-                    // Cancel (abort turn) rather than session-deny.
-                    self.commit_option(ApprovalOption::Abort)
-                } else {
-                    self.commit_option(ApprovalOption::Deny)
-                }
-            }
-            KeyCode::Char('3') if self.is_workflow_plan_approval() => {
-                self.commit_option(ApprovalOption::Abort)
+                self.commit_option(ApprovalOption::Deny)
             }
             KeyCode::Char('v') | KeyCode::Char('V') => self.emit_params_pager(),
             KeyCode::Esc => self.emit_decision(ReviewDecision::Abort, false),
@@ -3629,121 +3578,6 @@ diff --git a/src/b.rs b/src/b.rs
                 .iter()
                 .any(|o| matches!(o, ElevationOption::Abort))
         );
-    }
-
-    // ========================================================================
-    // Workflow elevated plan approval card (#4126)
-    // ========================================================================
-
-    #[test]
-    fn workflow_tool_is_agent_category_and_shows_plan_card_fields() {
-        assert_eq!(get_tool_category("workflow"), ToolCategory::Agent);
-        let request = ApprovalRequest::new(
-            "wf-1",
-            "workflow",
-            "Launch workflow",
-            &json!({
-                "action": "start",
-                "plan": {
-                    "goal": "ship the fix",
-                    "risk": "writes",
-                    "token_budget": 80_000,
-                    "children": [
-                        {
-                            "id": "impl",
-                            "label": "builder",
-                            "prompt": "edit files",
-                            "type": "implementer",
-                            "mode": "read_write"
-                        }
-                    ]
-                }
-            }),
-            "tool:workflow",
-        );
-        assert_eq!(request.category, ToolCategory::Agent);
-        let details = request.prominent_detail_items();
-        let labels: Vec<_> = details.iter().map(|d| d.label.as_str()).collect();
-        assert!(labels.contains(&"目标"), "{labels:?}");
-        assert!(labels.contains(&"子任务"), "{labels:?}");
-        assert!(labels.contains(&"写入"), "{labels:?}");
-        assert!(labels.contains(&"Shell"), "{labels:?}");
-        assert!(labels.contains(&"网络"), "{labels:?}");
-        assert!(labels.contains(&"预算"), "{labels:?}");
-        assert!(
-            details
-                .iter()
-                .any(|d| d.label == "目标" && d.value.contains("ship the fix")),
-            "{details:?}"
-        );
-        assert!(
-            details
-                .iter()
-                .any(|d| d.label == "写入" && d.value == "yes"),
-            "{details:?}"
-        );
-        assert!(
-            request
-                .impacts
-                .iter()
-                .any(|i| i.contains("Approve to launch")),
-            "{:?}",
-            request.impacts
-        );
-
-        let view = ApprovalView::new(request);
-        assert!(view.is_workflow_plan_approval());
-        assert_eq!(view.current_decision(), ReviewDecision::Approved);
-    }
-
-    #[test]
-    fn workflow_plan_card_edit_plan_and_cancel_keys() {
-        let request = ApprovalRequest::new(
-            "wf-2",
-            "workflow",
-            "Launch workflow",
-            &json!({
-                "action": "start",
-                "plan": {
-                    "goal": "risky",
-                    "risk": "elevated",
-                    "children": [{ "prompt": "go", "type": "implementer" }]
-                }
-            }),
-            "tool:workflow",
-        );
-        let mut view = ApprovalView::new(request);
-        // [2 / e] → Edit plan → Denied
-        let action = view.handle_key(create_key_event(KeyCode::Char('e')));
-        match action {
-            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision { decision, .. }) => {
-                assert_eq!(decision, ReviewDecision::Denied);
-            }
-            other => panic!("expected edit-plan denial, got {other:?}"),
-        }
-
-        let request = ApprovalRequest::new(
-            "wf-3",
-            "workflow",
-            "Launch workflow",
-            &json!({
-                "action": "start",
-                "plan": {
-                    "goal": "risky",
-                    "risk": "elevated",
-                    "children": [{ "prompt": "go", "type": "implementer" }]
-                }
-            }),
-            "tool:workflow",
-        );
-        let mut view = ApprovalView::new(request);
-        let action = view.handle_key(create_key_event(KeyCode::Char('3')));
-        match action {
-            ViewAction::EmitAndClose(ViewEvent::ApprovalDecision { decision, .. }) => {
-                assert_eq!(decision, ReviewDecision::Abort);
-            }
-            other => panic!("expected cancel abort, got {other:?}"),
-        }
     }
 
     // ========================================================================
