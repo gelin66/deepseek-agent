@@ -22,8 +22,6 @@ use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 use codewhale_protocol::agent_runtime::TerminalState;
 
-pub mod fleet_roster;
-pub mod fleet_setup;
 pub mod mode_picker;
 pub mod status_picker;
 
@@ -39,8 +37,6 @@ pub enum ModalKind {
     Config,
     ModelPicker,
     ModePicker,
-    FleetRoster,
-    FleetSetup,
     SetupWizard,
     FilePicker,
     StatusPicker,
@@ -679,12 +675,6 @@ pub enum ViewEvent {
         /// explicit choice, not whatever the model echoed.
         reasoning_effort: Option<String>,
     },
-    /// Emitted by the `/fleet` roster view (`s` / Enter) to hand off to the
-    /// setup wizard for authoring or overriding a roster member. The roster
-    /// view itself never writes anything.
-    FleetRosterOpenSetupRequested,
-    /// Open the live workers tab from the unified Fleet surface.
-    FleetRosterOpenWorkersRequested,
     /// Emitted by the fleet setup Review step after the user previewed a
     /// model-drafted profile and pressed the explicit ratify key. The host
     /// renders TOML deterministically from the validated draft and persists
@@ -3764,7 +3754,7 @@ mod tests {
     }
 
     #[test]
-    fn fleet_worker_status_view_can_jump_to_fleet_setup() {
+    fn fleet_worker_status_view_can_open_fleet_command() {
         let mut view = SubAgentsView::new(Vec::new());
 
         let action = view.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
