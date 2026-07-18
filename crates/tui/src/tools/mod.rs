@@ -10,23 +10,17 @@
 
 pub mod approval_cache;
 pub mod arg_repair;
-pub mod finance;
 
-pub mod fetch_url;
-pub mod github;
 pub mod handle;
 pub mod js_execution;
 pub mod large_output_router;
 pub mod plan;
 pub mod plugin;
-pub mod runtime_mcp;
 pub mod schema_canonicalize;
 pub mod schema_sanitize;
 pub mod spec;
 pub mod todo;
 pub mod truncate;
 pub mod user_input;
-pub mod web_run;
-pub mod web_search;
 
 pub use user_input::UserInputResponse;
