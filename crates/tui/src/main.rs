@@ -56,7 +56,6 @@ mod mcp;
 mod memory;
 mod model_catalog;
 mod models;
-mod models_dev_live;
 mod network_policy;
 mod oauth;
 mod palette;
@@ -6245,12 +6244,6 @@ async fn run_interactive(
     }
 
     startup_trace::mark("interactive_config");
-
-    // Seed ProviderLake from the secret-free Models.dev disk cache before any
-    // picker/inventory read, then kick a best-effort background refresh (#4187).
-    // Failures are quiet: bundled catalog rows always remain available.
-    crate::models_dev_live::maybe_load_persisted_cache();
-    crate::models_dev_live::spawn_background_refresh();
 
     // Boot janitors — snapshot prune (7-day default), spillover prune
     // (#422), and managed-session cleanup (v0.8.44) — are best-effort disk
