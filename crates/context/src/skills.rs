@@ -125,9 +125,8 @@ impl SkillRegistry {
     ///
     /// The search walks `dir` recursively: any directory that contains a
     /// `SKILL.md` is loaded as a single skill, and the walk does **not**
-    /// descend further into that directory (companion files live next to
-    /// `SKILL.md`, and `tools::skill::collect_companion_files` already
-    /// treats nested subdirs as out-of-scope). This lets users organize
+    /// descend further into that directory: `SKILL.md` and its companion
+    /// files form that skill's boundary. This lets users organize
     /// skills by vendor / category — e.g.
     /// `<root>/<vendor>/<skill>/SKILL.md` — instead of being forced into
     /// a flat `<root>/<skill>/SKILL.md` layout.
