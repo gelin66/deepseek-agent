@@ -834,11 +834,8 @@ struct SetupArgs {
     #[arg(long, default_value_t = false)]
     force: bool,
     /// Print a compact, read-only status report (no network calls)
-    #[arg(long, default_value_t = false, conflicts_with_all = ["mcp", "skills", "plugins", "all", "local", "clean"])]
+    #[arg(long, default_value_t = false, conflicts_with_all = ["mcp", "skills", "plugins", "all", "local"])]
     status: bool,
-    /// Remove regenerable session checkpoints (latest + offline_queue)
-    #[arg(long, default_value_t = false, conflicts_with_all = ["mcp", "skills", "plugins", "all", "local", "status"])]
-    clean: bool,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -2105,42 +2102,9 @@ fn default_plugins_dir() -> PathBuf {
     deepseek_home_dir().join("plugins")
 }
 
-/// Default location for crash/offline-queue checkpoints managed by the TUI.
-fn default_checkpoints_dir() -> PathBuf {
-    deepseek_home_dir().join("sessions").join("checkpoints")
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CleanPlan {
-    targets: Vec<PathBuf>,
-}
-
-fn collect_clean_targets(checkpoints_dir: &Path) -> CleanPlan {
-    let candidates = ["latest.json", "offline_queue.json"];
-    let targets = candidates
-        .iter()
-        .map(|name| checkpoints_dir.join(name))
-        .filter(|p| p.exists())
-        .collect();
-    CleanPlan { targets }
-}
-
-fn execute_clean_plan(plan: &CleanPlan) -> Result<Vec<PathBuf>> {
-    let mut removed = Vec::with_capacity(plan.targets.len());
-    for path in &plan.targets {
-        std::fs::remove_file(path)
-            .with_context(|| format!("Failed to remove {}", path.display()))?;
-        removed.push(path.clone());
-    }
-    Ok(removed)
-}
-
 fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
     if args.status {
         return run_setup_status(config, workspace);
-    }
-    if args.clean {
-        return run_setup_clean(&default_checkpoints_dir(), args.force);
     }
 
     use crate::palette;
@@ -2482,45 +2446,6 @@ fn dotenv_status_line(workspace: &Path) -> String {
     }
 
     ".env not present in workspace".to_string()
-}
-
-fn run_setup_clean(checkpoints_dir: &Path, force: bool) -> Result<()> {
-    use colored::Colorize;
-
-    if !checkpoints_dir.exists() {
-        println!(
-            "Nothing to clean — checkpoints dir does not exist: {}",
-            checkpoints_dir.display()
-        );
-        return Ok(());
-    }
-
-    let plan = collect_clean_targets(checkpoints_dir);
-    if plan.targets.is_empty() {
-        println!(
-            "Nothing to clean — no checkpoint files in {}",
-            checkpoints_dir.display()
-        );
-        return Ok(());
-    }
-
-    if !force {
-        println!(
-            "Would remove {} checkpoint file(s) (use --force to apply):",
-            plan.targets.len()
-        );
-        for path in &plan.targets {
-            println!("  · {}", path.display());
-        }
-        return Ok(());
-    }
-
-    let removed = execute_clean_plan(&plan)?;
-    println!("{}", "Cleaned checkpoints:".bold());
-    for path in &removed {
-        println!("  ✓ {}", path.display());
-    }
-    Ok(())
 }
 
 fn run_session_diagnostics(args: SessionDiagnosticsArgs) -> Result<()> {
@@ -7368,6 +7293,7 @@ mod terminal_mode_tests {
             ["codewhale-tui", "serve", "--mcp"].as_slice(),
             ["codewhale-tui", "mcp", "add-self"].as_slice(),
             ["codewhale-tui", "setup", "--tools"].as_slice(),
+            ["codewhale-tui", "setup", "--clean"].as_slice(),
         ] {
             let error = Cli::try_parse_from(args).expect_err("removed command must fail closed");
             assert!(
@@ -7379,6 +7305,18 @@ mod terminal_mode_tests {
                 "unexpected parser outcome for {args:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn setup_force_remains_available_for_scaffolding() {
+        let cli = parse_cli(&["codewhale-tui", "setup", "--skills", "--force"]);
+        let Some(Commands::Setup(args)) = cli.command else {
+            panic!("expected setup command");
+        };
+
+        assert!(args.skills);
+        assert!(args.force);
+        assert!(!args.status);
     }
 
     #[test]
@@ -8955,71 +8893,6 @@ mod setup_helper_tests {
         let plugin_md = std::fs::read_to_string(&example_path).unwrap();
         assert!(plugin_md.contains("---"));
         assert!(plugin_md.contains("name: example"));
-    }
-
-    #[test]
-    fn collect_clean_targets_finds_only_known_files() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        std::fs::write(dir.join("latest.json"), "{}").unwrap();
-        std::fs::write(dir.join("offline_queue.json"), "[]").unwrap();
-        std::fs::write(dir.join("unrelated.json"), "{}").unwrap();
-
-        let plan = collect_clean_targets(dir);
-        assert_eq!(plan.targets.len(), 2);
-        assert!(plan.targets.iter().any(|p| p.ends_with("latest.json")));
-        assert!(
-            plan.targets
-                .iter()
-                .any(|p| p.ends_with("offline_queue.json"))
-        );
-        assert!(!plan.targets.iter().any(|p| p.ends_with("unrelated.json")));
-    }
-
-    #[test]
-    fn execute_clean_plan_removes_files_and_returns_them() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        let latest = dir.join("latest.json");
-        let queue = dir.join("offline_queue.json");
-        std::fs::write(&latest, "{}").unwrap();
-        std::fs::write(&queue, "[]").unwrap();
-
-        let plan = collect_clean_targets(dir);
-        let removed = execute_clean_plan(&plan).unwrap();
-        assert_eq!(removed.len(), 2);
-        assert!(!latest.exists());
-        assert!(!queue.exists());
-    }
-
-    #[test]
-    fn run_setup_clean_dry_run_lists_targets_without_force() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        std::fs::write(dir.join("latest.json"), "{}").unwrap();
-        run_setup_clean(dir, false).unwrap();
-        // Without --force, files must remain on disk.
-        assert!(dir.join("latest.json").exists());
-    }
-
-    #[test]
-    fn run_setup_clean_force_removes_files() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path();
-        std::fs::write(dir.join("latest.json"), "{}").unwrap();
-        std::fs::write(dir.join("offline_queue.json"), "[]").unwrap();
-        run_setup_clean(dir, true).unwrap();
-        assert!(!dir.join("latest.json").exists());
-        assert!(!dir.join("offline_queue.json").exists());
-    }
-
-    #[test]
-    fn run_setup_clean_handles_missing_dir() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("does-not-exist");
-        // Should print and return Ok without error.
-        run_setup_clean(&dir, true).unwrap();
-        assert!(!dir.exists());
     }
 
     #[test]

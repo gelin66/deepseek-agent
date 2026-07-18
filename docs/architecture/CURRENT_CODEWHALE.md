@@ -442,6 +442,13 @@ M4-C foreground 切换后还已物理删除：
   `~/.codewhale/snapshots`/`~/.deepseek/snapshots` 中的历史 side-git 数据，也不会在切换时
   自动删除用户文件。Runtime `RunSnapshot`/`RunReplay`、State `agent_run_snapshots`、canonical
   reducer/crash replay、工具 artifact 和 Fleet checkpoint 是不同 owner，均未改变。
+- 旧 `setup --clean` JSON cleanup 产品面。`SessionManager` 删除后，
+  `sessions/checkpoints/latest.json` 与 `offline_queue.json` 已没有 production writer/reader；
+  `CleanPlan` 只在显式 CLI cleanup 及自身测试内闭环。删除后程序不再列出或移除既有历史
+  文件，用户需要时只能手工处理。系统 skills 的生产自动安装仍保留；无调用的 uninstall/
+  bundled-name helper 同步删除。Setup `--force`、SQLite RunStore/`agent_run_snapshots`、crash
+  replay、进程内 busy-message queue、Fleet ledger/checkpoint 和 constitution checkpoint 均不经
+  该路径。
 - pre-session Launch menu 的 `LaunchState`、action/handler、renderer/hitbox、`launch_screen`
   设置和专属本地化。生产启动曾构造该状态并同步执行 `git rev-parse`，随后在第一帧前无条件
   将其隐藏；没有 launch action 进入事件循环、Run command、Lane 或 Fleet。删除因此只移除

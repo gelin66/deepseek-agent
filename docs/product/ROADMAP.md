@@ -733,6 +733,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   删除这些用户本地文件。canonical `RunSnapshot`/`RunReplay`、SQLite
   `agent_run_snapshots`、事件 reducer/crash replay、`ToolOutcome.artifacts` 和 Fleet
   checkpoint 均保持原 owner 与语义。
+- M4-C 已删除只会枚举或移除旧
+  `sessions/checkpoints/{latest.json,offline_queue.json}` 的 `setup --clean`、`CleanPlan` 和
+  无调用的系统 skill uninstall/name classifier。原 `SessionManager` writer/reader 早已删除，
+  当前没有生产路径生成或读取这两个 JSON；切换后的真实行为损失是程序不再代用户列出或删除
+  已存在的历史文件，它们会留在磁盘直至用户手工处理。交互启动仍生产调用
+  `install_system_skills`；Setup `--force`、canonical `state.db`/`agent_run_snapshots`、crash
+  replay、进程内 busy-message queue、Fleet ledger/checkpoint 和 constitution checkpoint 均未改变。
 - M4-C 已删除未注册、零执行调用方的旧 TUI `RequestUserInputTool`/parser 和永远为 `None`
   的 prompt shadow。保留的 UserInput modal 直接使用 canonical protocol 类型，并继续通过
   `AgentRuntime` interaction 与 `RunStore` 提交或取消，不再经过第二套 TUI ToolSpec。

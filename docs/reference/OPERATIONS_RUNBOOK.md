@@ -12,10 +12,9 @@ This runbook covers practical debugging and incident response for the local CLI/
 2. Enable verbose logs:
    - `RUST_LOG=deepseek_cli=debug cargo run`
    - For HTTP retries/reconnects: `RUST_LOG=deepseek_cli::client=debug cargo run`
-3. Capture current state:
-   - `ls ~/.codewhale/sessions`
-   - `ls ~/.codewhale/sessions/checkpoints`
-   - `ls ~/.codewhale/tasks`
+3. Capture the canonical state files without modifying them:
+   - `ls -l ~/.codewhale/state.db*`
+   - When `CODEWHALE_HOME` is set, inspect `$CODEWHALE_HOME/state.db*` instead.
 
 ## Incident: Turn Hangs or Stream Stops
 
@@ -35,31 +34,31 @@ Actions:
 3. Retry the prompt; if it still fails, restart the TUI.
 4. On restart, verify the previous queued/in-flight runtime turn is shown as interrupted rather than left in a running state.
 
-## Incident: Network Outage / Offline Behavior
+## Incident: Network Outage
 
-Expected behavior:
-- New prompts are queued while offline mode is active
-- Queue state persists to `~/.codewhale/sessions/checkpoints/offline_queue.json`
-
-Checks:
-1. Open queue in TUI: `/queue list`
-2. Confirm persisted queue file exists and updates timestamp
+There is no durable offline prompt queue. Messages queued while an active turn
+is busy are process-local composer state and do not survive a restart.
 
 Actions:
-1. Restore connectivity
-2. Re-send queued entries (from `/queue edit <n>` + Enter, or normal input flow)
-3. Ensure queue file clears when queue is empty
+1. Let the canonical run reach a typed retry/failure state or interrupt it.
+2. Restore connectivity.
+3. Resume the exact run if it remains resumable, then resubmit any composer
+   input that was not durably accepted.
 
 ## Incident: Crash Recovery Needed
 
 Expected behavior:
-- Checkpoint stored at `~/.codewhale/sessions/checkpoints/latest.json`
+- Canonical events and reducer snapshots are stored together in
+  `~/.codewhale/state.db` (or `$CODEWHALE_HOME/state.db`).
 - Startup begins a fresh session unless `--resume`/`--continue` is supplied
 
 Actions:
-1. Resume prior work explicitly via `codewhale --resume <id>` or `Ctrl+R` in TUI
-2. If checkpoint inspection is needed, inspect `latest.json` for schema mismatch/details
-3. If schema is newer than binary supports, upgrade binary or remove stale checkpoint
+1. Resume interactive work with `codewhale resume <RUN_ID>`, or headless work
+   with `codewhale exec --resume <RUN_ID>`.
+2. Use `codewhale resume --last` only when the newest run in the workspace is
+   the intended target; prefer an exact Run ID for incident recovery.
+3. Do not delete or edit individual `agent_run_snapshots` rows. They are
+   validated against the canonical append-only event log during replay.
 
 ## Incident: Persistent State Schema Errors
 
@@ -67,16 +66,14 @@ Symptoms:
 - Errors like `schema vX is newer than supported vY`
 
 Affected stores:
-- sessions (`~/.codewhale/sessions/*.json`)
-- runtime thread/turn/item records
-- tasks (`~/.codewhale/tasks/tasks/*.json`)
+- canonical SQLite state (`~/.codewhale/state.db` or
+  `$CODEWHALE_HOME/state.db`)
 
 Actions:
 1. Confirm binary version and migration expectations
-2. Back up the state directory before editing
-3. Either:
-   - run with a newer compatible binary, or
-   - archive incompatible records and regenerate state
+2. Back up `state.db` and its `-wal`/`-shm` siblings before any manual action.
+3. Run with a binary that supports the recorded schema. Do not delete a single
+   snapshot or event row to bypass a version or replay error.
 
 ## Incident: MCP/Tool Execution Failures
 

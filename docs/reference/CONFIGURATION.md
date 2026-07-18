@@ -1272,7 +1272,7 @@ checks in CI scripts; do not treat `capability.max_output` as the per-turn
 request budget. Use `capability.thinking_supported` to decide whether to
 configure reasoning effort.
 
-## Setup status, clean, and extension dirs
+## Setup status and extension dirs
 
 `codewhale-tui setup` accepts a few flags beyond the existing `--mcp`,
 `--skills`, `--local`, `--all`, and `--force`:
@@ -1286,14 +1286,7 @@ configure reasoning effort.
   `SKILL.md`. Plugins are not loaded automatically either; reference them
   from a skill or MCP wrapper when you want them active.
 - `--all` scaffolds MCP + skills + plugins together.
-- `--clean` — list `~/.codewhale/sessions/checkpoints/latest.json` and
-  `offline_queue.json` if they exist. Legacy
-  `~/.deepseek/sessions/checkpoints/` files are not scanned automatically; set
-  `CODEWHALE_HOME=~/.deepseek` for a one-off legacy cleanup. Pass `--force` to
-  actually remove matched files. This never touches real session history or the
-  task queue.
-
-`--status` and `--clean` are mutually exclusive with the scaffold flags.
+`--status` is mutually exclusive with the scaffold flags.
 
 ## Why the engine strips XML/`[TOOL_CALL]` text
 

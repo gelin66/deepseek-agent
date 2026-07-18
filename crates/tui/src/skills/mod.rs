@@ -12,4 +12,4 @@ pub use install::{
     InstallSource, InstalledSkill, RegistryDocument, RegistryEntry, RegistryFetchResult,
     SkillSyncOutcome, SyncResult, UpdateResult, default_cache_skills_dir,
 };
-pub use system::{install_system_skills, is_bundled_skill_name};
+pub use system::install_system_skills;

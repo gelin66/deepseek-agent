@@ -87,16 +87,6 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
     },
 ];
 
-/// Whether a skill name matches one of the bundled first-party skills.
-///
-/// Used by `/skills` to distinguish user-created skills (which should be
-/// surfaced prominently) from the always-installed bundle (which can be
-/// rendered compactly when many skills are present).
-#[must_use]
-pub fn is_bundled_skill_name(name: &str) -> bool {
-    BUNDLED_SKILLS.iter().any(|s| s.name == name)
-}
-
 /// Attempt to install a single bundled skill into `skills_dir`.
 ///
 /// Returns `true` if installation occurred (fresh install or version bump).
@@ -158,25 +148,6 @@ pub fn install_system_skills(skills_dir: &Path) -> std::io::Result<()> {
     if changed {
         fs::create_dir_all(skills_dir)?;
         fs::write(&marker, BUNDLED_SKILL_VERSION)?;
-    }
-    Ok(())
-}
-
-/// Remove all system skills and the version marker.
-///
-/// Intended for tests and `deepseek setup --clean`.  Ignores missing files.
-#[allow(dead_code)]
-pub fn uninstall_system_skills(skills_dir: &Path) -> std::io::Result<()> {
-    let marker = skills_dir.join(".system-installed-version");
-
-    for skill in BUNDLED_SKILLS {
-        let dir = skills_dir.join(skill.name);
-        if dir.exists() {
-            fs::remove_dir_all(&dir)?;
-        }
-    }
-    if marker.exists() {
-        fs::remove_file(&marker)?;
     }
     Ok(())
 }
@@ -401,30 +372,5 @@ mod tests {
         }
         let ver = fs::read_to_string(marker_file(&tmp)).unwrap();
         assert_eq!(ver.trim(), BUNDLED_SKILL_VERSION);
-    }
-
-    // ── uninstall ─────────────────────────────────────────────────────────────
-
-    #[test]
-    fn uninstall_removes_bundled_skills_and_marker() {
-        let tmp = TempDir::new().unwrap();
-        install_system_skills(tmp.path()).unwrap();
-        uninstall_system_skills(tmp.path()).unwrap();
-
-        for skill in BUNDLED_SKILLS {
-            assert!(
-                !skill_file(&tmp, skill.name).exists(),
-                "{} should be removed",
-                skill.name
-            );
-        }
-        assert!(!marker_file(&tmp).exists(), "marker should be removed");
-    }
-
-    #[test]
-    fn uninstall_on_clean_dir_is_a_noop() {
-        let tmp = TempDir::new().unwrap();
-        // Must not panic or error.
-        uninstall_system_skills(tmp.path()).unwrap();
     }
 }
