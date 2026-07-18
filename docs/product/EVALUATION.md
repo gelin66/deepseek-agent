@@ -464,8 +464,11 @@ no_key_replay
 
 ## 8. 当前 `verify` 实验的判定
 
-当前 WIP 中的独立 `verify` 工具使用额外 DeepSeek 调用评审 bounded diff/file evidence。
-它不等于 test/verifier receipt，必须单独评估：
+旧 TUI 独立 `verify` 工具使用额外 DeepSeek 调用评审 bounded diff/file evidence；旧
+ToolRegistry 删除后它已没有 canonical 生产消费者，只剩编译模块和自身测试。它不等于
+test/verifier receipt，也不应为了保留实验而恢复第二条模型路径；当前 M4 处置是物理删除。
+
+只有未来真实任务证据证明有必要重新引入模型 critic 时，才允许作为新候选单独评估：
 
 - 是否提高真实缺陷发现率；
 - 是否降低 false-success；
@@ -473,7 +476,7 @@ no_key_replay
 - 成本和延迟；
 - 是否应默认关闭、按需启用、缩小或删除。
 
-在该实验通过本规范前，不得让它成为所有任务的强制完成阶段。
+在该实验通过本规范前，不得恢复生产接线，更不得让它成为所有任务的强制完成阶段。
 
 ## 9. DeepSeek live canary
 

@@ -162,15 +162,23 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 
 ### 已完成：M1-A 离线契约基线
 
-- 当前提交在同一 Harness/manifest 下通过 41/41 离线用例。
-- 导入提交在同一 Harness/manifest 下通过 12/12 个 `cross_revision` 可比较用例。
-- 12 个跨提交用例包含生产 Engine 离线链路与多 Agent 契约，作为重构防回归底线。
-- 另外 29 个 `candidate_only` 用例只证明候选契约通过，不证明能力提升。
+- 2026-07-15 历史候选在当时同一 Harness/manifest 下通过 41/41 离线用例，导入提交通过
+  12/12 个 `cross_revision` 用例。历史清单已原样归档，固定 Git blob
+  `678c8e30d471e356cb93c47781c87b0c8624c26d`，不得用后续测试改名覆盖原口径。
+- 历史 12 个跨提交用例曾覆盖当时的 Engine 与旧多 Agent 契约；它们是历史比较证据，
+  不是当前 canonical Runtime、RunStore、Orchestrator 或 writer worktree 已完成的证明。
+- 默认清单已迁移为 29 项当前 canonical 回归：11 项 Runtime、9 项 DeepSeek、2 项
+  RunStore、3 项确定性工具、1 项 app-server 负向架构契约和 3 项真实 exec 用例。只有
+  happy-path 与畸形参数两项 exec 仍可 `cross_revision`；当前“未公开工具必须 fail-closed”
+  与导入版恢复语义不同，明确为 `candidate_only`，不冒充相对导入基线的能力提升。
+- writer worktree 没有 replacement，明确留在 M6；Strict `tool_choice`/嵌套 `anyOf`、FIM
+  response parser、畸形 SSE、reasoning-only、工具业务失败恢复、child 失败 handoff 与
+  失败测试结果仍是未进 runnable manifest 的证据债。
 - 完整证据、哈希和解释边界见
   [M1-A 离线契约基线](../../eval/summaries/m1-offline-baseline-2026-07-15.md)。
-- [`scripts/measure-tool-catalog.py`](../../scripts/measure-tool-catalog.py) 已通过真实生产 Engine
-  turn 测量完整目录、模型可见目录和确定性字节估算；该测量描述工具面规模，不是
-  Provider Token、真实模型调用或能力提升证据。
+- [`scripts/measure-tool-catalog.py`](../../scripts/measure-tool-catalog.py) 保存历史 Engine
+  工具面测量；当前 production catalog 的 owner 已迁到 `crates/tools + AgentRuntime`，旧
+  测量不能自动继承为当前结果。
 
 M1-A 完成不等于 M1 完成：离线用例没有真实 DeepSeek Token、cache、成本和可验证任务
 成功率，两套用例的总耗时也不可用于性能比较。
@@ -207,11 +215,11 @@ credentialed official live canary 与真实编码 A/B 完成前，M1-C 仍不得
 ### 后续待完成
 
 1. **M1-D WIP 处置**：根据离线、live 协议和真实任务三层证据，对 DeepSeek 协议、
-   Agent 可靠性、`verify` 和本地配置逐项给出保留、
-   重做、缩小或删除结论。
+   Agent 可靠性和本地配置逐项给出保留、重做、缩小或删除结论。旧 TUI `verify` 模型
+   critic 已确认无 canonical 生产消费者，按 M4 删除；确定性 `crates/tools::run_verifiers`
+   保留并进入 M5 Host evidence 门禁。
 
-`verify` 仍是额外模型评审实验，不等同于测试证据；未经真实缺陷检出率和误报率评测，
-不得默认成为完成门禁。
+模型 critic 不等同于测试证据；未经真实缺陷检出率和误报率评测，不得恢复或成为完成门禁。
 
 ### 退出门槛
 

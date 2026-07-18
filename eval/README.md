@@ -36,18 +36,29 @@ Harness、候选 revision 和 binary-pair SHA，且始终标记 `product_metric_
 同日 5 次真实 DeepSeek 请求的协议结果、usage/费用和能力边界见
 [M1-B DeepSeek live 协议 Canary](summaries/m1-b-deepseek-live-2026-07-15.md)。
 
-`manifests/m1-offline.tsv` 将证据明确分为：
+2026-07-15 的 41 项历史清单已原样冻结为
+[`archive/m1-offline-2026-07-15.tsv`](archive/m1-offline-2026-07-15.tsv)。它来自提交
+`366e8b5b37bedbbf3b1ebb326b14a70e885a57a2`，Git blob 为
+`678c8e30d471e356cb93c47781c87b0c8624c26d`；现有 41/41 candidate 与 12/12 imported
+结果继续绑定这份历史口径，不能用后续重构后的测试冒充同一清单。
 
-- `full-runtime-offline`：用注入模型或本地 WireMock 驱动真实 Engine、真实工具注册表，
-  或真实 `codewhale-tui exec`；
-- `protocol-unit`：验证 DeepSeek 路由、Strict、FIM parser、SSE decoder、reasoning replay
-  和 usage 的 inline 单元契约；它不是 HTTP fixture；
-- `runtime-contract`：验证终态、错误恢复、上下文、多 Agent 预算与 worktree 等确定性契约；
-- `critic-plumbing`：只验证 `verify` 模型评审工具的接线和结果归一化；
-- `config-contract`：验证本地 DeepSeek 配置约定。
+[`manifests/m1-offline.tsv`](manifests/m1-offline.tsv) 是当前 canonical 回归门禁，只登记
+真实 owner 下仍存在的行为：
 
-离线用例证明确定性协议和运行时行为，不证明真实 DeepSeek 的编码智能。尤其是
-`critic-plumbing` 通过，不代表 critic 能发现真实缺陷，也不能作为任务完成证据。
+- `full-runtime-offline`：本地 DeepSeek mock 驱动真实
+  `exec -> AgentApplication -> AgentRuntime`；
+- `protocol-unit`：验证 `crates/deepseek` 的 Standard/Beta/Strict/FIM 规划、回放、usage 和
+  类型化 SSE 结果；
+- `runtime-contract`：验证 canonical Runtime、RunStore、确定性工具证据、多 Agent handoff
+  与入口删除契约。
+
+当前清单不再保留旧 Engine、TUI ToolRegistry、私有 mailbox、模型 critic 或声明性
+worktree 测试。FIM 当前只登记 Beta route planner；完整 response parser、畸形 SSE、
+reasoning-only、工具业务失败恢复、child 失败 handoff、失败测试结果和 writer worktree
+仍是显式能力债，补齐 canonical owner 测试前不得放入可运行清单。
+
+离线用例只证明确定性协议和运行时行为，不证明真实 DeepSeek 的编码智能；模型自评也不能
+作为任务完成证据。
 
 现有 `codewhale eval` / `crates/tui/src/eval.rs` 会直接调用一套重复实现的简化文件与
 Shell 函数，绕过生产 Agent loop 和生产工具注册表，因此它只算 smoke，不纳入 M1
@@ -67,6 +78,14 @@ bash scripts/eval-m1.sh
 bash scripts/eval-m1.sh --scope cross-revision
 ```
 
+复现 2026-07-15 历史口径时，必须把归档清单显式传给当时或可比较的干净 worktree：
+
+```bash
+bash scripts/eval-m1.sh \
+  --repo /absolute/path/to/historical-worktree \
+  --manifest eval/archive/m1-offline-2026-07-15.tsv
+```
+
 使用当前评测器测试另一个干净 worktree：
 
 ```bash
@@ -76,11 +95,12 @@ bash scripts/eval-m1.sh \
   --output eval/results/m1-offline-imported.jsonl
 ```
 
-脚本逐项使用 Cargo 的精确测试名，并检查确实运行且通过了一个测试，避免“过滤器匹配
-零项但 Cargo 返回成功”的假绿。目标仓库必须是干净提交；清单、结果 Schema 或证据
-等级不合法时也会直接失败。结果同时记录被测提交、评测器提交和 manifest blob，避免
-以后用不同清单生成同名“基线”。整套运行完成后才会原子发布 JSONL 和正式日志目录；
-被中断的日志只会留在带 `.incomplete.<pid>` 后缀的目录中。
+脚本先按 package/target 缓存 Cargo test list，并要求每个精确测试名恰好匹配一项；清单过期
+会在正式运行前失败。逐项执行后仍检查确实运行且通过了一个测试，避免“过滤器匹配零项但
+Cargo 返回成功”的假绿。目标仓库必须是干净提交；清单、结果 Schema 或证据等级不合法时
+也会直接失败。结果同时记录被测提交、评测器提交和 manifest blob，避免以后用不同清单
+生成同名“基线”。整套运行完成后才会原子发布 JSONL 和正式日志目录；被中断的日志只会
+留在带 `.incomplete.<pid>` 后缀的目录中。
 
 ## DeepSeek 协议 live canary
 

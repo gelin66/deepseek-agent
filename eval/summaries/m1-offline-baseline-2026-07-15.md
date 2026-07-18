@@ -12,10 +12,14 @@
 | `eval/results/m1-offline-current-366e8b5b.jsonl` | `366e8b5b37bedbbf3b1ebb326b14a70e885a57a2` | `366e8b5b37bedbbf3b1ebb326b14a70e885a57a2` | `678c8e30d471e356cb93c47781c87b0c8624c26d` | `c43de6064e23927848a7270a139d0de97e04ed0c5c77018996596331f6141034` | `all` | 41/41 | 88 s |
 | `eval/results/m1-offline-imported-352e86a6-h366e8b5b.jsonl` | `352e86a611fdf3cd8bd27c36d24d482c06a71117` | `366e8b5b37bedbbf3b1ebb326b14a70e885a57a2` | `678c8e30d471e356cb93c47781c87b0c8624c26d` | `73fc2b5a86b531dc3f3ec46967f7e74f1d313a52869e80acda714b71c36fec6f` | `cross-revision` | 12/12 | 323 s |
 
-清单为 [m1-offline.tsv](../manifests/m1-offline.tsv)，评测入口为
+历史清单为 [m1-offline-2026-07-15.tsv](../archive/m1-offline-2026-07-15.tsv)，评测入口为
 [`scripts/eval-m1.sh`](../../scripts/eval-m1.sh)。导入结果只运行 12 个两边都存在的
 `cross_revision` 用例；它不是与当前 41 项对称的完整套件。当前结果中的另外 29 项均为
 `candidate_only`，只能说明候选提交的对应契约通过，不能用于声称相对导入提交有提升。
+
+> 后续 M4 已删除旧 Engine、私有 SubAgent Runtime/ToolRegistry 和无消费者 model critic。
+> 本文保留 2026-07-15 的原始结论；当前回归口径以
+> [`manifests/m1-offline.tsv`](../manifests/m1-offline.tsv) 为准，不能反向改写本历史结果。
 
 ## 2. 证据层级
 

@@ -109,10 +109,12 @@ fi
 
 rows=()
 seen_file="$(mktemp "${TMPDIR:-/tmp}/codewhale-m1-seen.XXXXXX")"
+list_cache_dir="$(mktemp -d "${TMPDIR:-/tmp}/codewhale-m1-list.XXXXXX")"
 output_tmp=""
 published=false
 cleanup() {
   rm -f "$seen_file"
+  rm -rf "$list_cache_dir"
   if [[ "$published" != true && -n "$output_tmp" ]]; then
     rm -f "$output_tmp"
   fi
@@ -153,6 +155,55 @@ done < <(tail -n +2 "$manifest")
 
 if ((${#rows[@]} == 0)); then
   echo "manifest contains no cases: $manifest" >&2
+  exit 2
+fi
+
+# Resolve every selected exact test before creating result files. Cargo exits
+# successfully when a filter matches zero tests, so a stale manifest must fail
+# here instead of being discovered after a long partial suite. Cache each
+# package/target listing because many cases share the same test binary.
+preflight_selected=0
+for line in "${rows[@]}"; do
+  IFS=$'\t' read -r case_id slice evidence_level comparison package target test_name requirement <<< "$line"
+  if [[ "$scope" == "cross-revision" && "$comparison" != "cross_revision" ]]; then
+    continue
+  fi
+
+  preflight_selected=$((preflight_selected + 1))
+  target_args=()
+  case "$target" in
+    bin:*) target_args=(--bin "${target#bin:}") ;;
+    test:*) target_args=(--test "${target#test:}") ;;
+    lib) target_args=(--lib) ;;
+  esac
+
+  cache_key="${package}-${target//:/_}"
+  cache_key="${cache_key//\//_}"
+  list_path="$list_cache_dir/$cache_key.list"
+  if [[ ! -f "$list_path" ]]; then
+    set +e
+    (
+      cd "$repo_root"
+      cargo test -p "$package" "${target_args[@]}" --locked -- --list
+    ) >"$list_path" 2>&1
+    list_status=$?
+    set -e
+    if [[ $list_status -ne 0 ]]; then
+      cat "$list_path" >&2
+      echo "failed to list tests for $package $target" >&2
+      exit 2
+    fi
+  fi
+
+  match_count="$(grep -Fxc -- "$test_name: test" "$list_path" || true)"
+  if [[ "$match_count" != "1" ]]; then
+    echo "manifest test must resolve exactly once: $case_id -> $package $target $test_name (found $match_count)" >&2
+    exit 2
+  fi
+done
+
+if ((preflight_selected == 0)); then
+  echo "scope selected no cases: $scope" >&2
   exit 2
 fi
 
