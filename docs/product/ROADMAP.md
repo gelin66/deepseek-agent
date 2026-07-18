@@ -884,6 +884,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   rapid mouse acceleration 状态也只被 `ViewportState` 默认构造、从未读取。canonical mouse
   继续直接提交固定三行 delta；`pending_scroll_delta`、`resolve_top`/`scrolled_by`、键盘滚动
   和 Pager 自有 mouse/Vim 键均保持原生产路径。
+- M4-C 已删除 `ColorCompatBackend` 中没有任何生产 writer、只由 3 个自测激活的
+  forced/cached size override 字段与 setter。`Backend::size()` 现在直接委托真实 Crossterm backend；
+  颜色深度适配、palette/theme 动态更新与 OSC8 link 输出保持原生产路径。
 - M4-C 已删除 sidebar 每帧构造但从未被事件处理器、popover 或 renderer 读取的
   `SidebarHoverState`/section/row/action 元数据、全文副本和 tooltip shadow，以及从未被
   构造的 `SidebarAgentCancel` 事件。Activity/Agents/Session 的可见行继续由原 renderer

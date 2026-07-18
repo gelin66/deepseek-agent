@@ -444,6 +444,9 @@ M4-C foreground 切换后还已物理删除：
   类型只被 `ViewportState` 默认构造且没有生产 reader。两组叶子现已删除，真实滚动仍由
   canonical mouse 的固定三行 delta、`pending_scroll_delta` 和
   `TranscriptScroll::scrolled_by`/`resolve_top` 驱动；Pager 保持独立滚动处理。
+- `ColorCompatBackend` 的 forced/cached size override 字段和 setter 没有任何生产 writer，
+  仅由同文件 3 个测试构造虚假尺寸路径，现已删除。`Backend::size()` 直接读取真实
+  Crossterm backend；保留的颜色深度适配、palette/theme 更新与 OSC8 link 发送继续由原 owner 执行。
 - sidebar 的旧 hover/click 元数据只有 renderer producer，没有事件 handler、tooltip 或
   popover consumer；`SidebarHoverState`/section/row/action、每帧全文克隆、tooltip shadow
   和从未构造的 `SidebarAgentCancel` 已物理删除。可见 Activity/Agents/Session 行继续直接
