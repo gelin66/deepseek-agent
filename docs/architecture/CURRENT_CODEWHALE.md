@@ -65,8 +65,10 @@ WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 现有真实调用方拥有。
 
 旧 `ConfigView` 同样没有生产构造、打开入口或 canonical 命令；其 2,000 余行编辑/筛选/
-渲染岛和专属消息已删除。底层配置仍从文件和环境加载，Doctor 指向实际配置文件；
-ThemePicker 当前仍编译并继续拥有自己的 `ConfigUpdated` 事件，等待独立调用图切片。
+渲染岛和专属消息已删除。底层配置仍从文件和环境加载，Doctor 指向实际配置文件。
+旧 `ThemePickerView` 及其 `settings_picker` 框架也只有自测构造；两者、无消费者的
+`ConfigUpdated` 事件与专属消息已删除。主题解析、持久化加载、Ocean 渲染与主题对比测试
+继续使用同一组 `ThemeId`/`UiTheme`。
 
 ## 2. 已统一的生产链
 

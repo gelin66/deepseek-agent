@@ -48,11 +48,6 @@ impl OceanTreatment {
     }
 
     #[must_use]
-    pub fn is_flat(self) -> bool {
-        self == Self::Flat
-    }
-
-    #[must_use]
     pub fn is_classic(self) -> bool {
         self == Self::Classic
     }

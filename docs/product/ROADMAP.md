@@ -632,6 +632,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   专属测试和消息目录；`Config`、`Settings`、`ApprovalPolicyControl` 与启动时配置加载继续
   保留。Doctor 和当前参考文档改为真实 `~/.codewhale/config.toml` 路径，不再宣传不存在的
   `/config` 编辑器。
+- M4-C 已删除只有自测构造的旧 `ThemePickerView` 及其专用 `settings_picker` 框架、
+  `ConfigUpdated` 事件与主题 picker 消息；主题配置文件加载、`ThemeId`/`UiTheme`、Ocean
+  渲染和主题对比测试继续保留，未把不可达 modal 当成真实主题能力。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

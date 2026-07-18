@@ -726,46 +726,6 @@ impl ThemeId {
         }
     }
 
-    /// Human-readable label for picker rows.
-    #[must_use]
-    pub const fn display_name(self) -> &'static str {
-        match self {
-            Self::System => "System",
-            Self::Terminal => "Terminal",
-            Self::Whale => "Whale (Dark)",
-            Self::WhaleLight => "Whale Light",
-            Self::Grayscale => "Grayscale",
-            Self::CatppuccinMocha => "Catppuccin Mocha",
-            Self::TokyoNight => "Tokyo Night",
-            Self::Dracula => "Dracula",
-            Self::GruvboxDark => "Gruvbox Dark",
-            Self::Claude => "Claude",
-            Self::Matrix => "Matrix",
-            Self::SolarizedLight => "Solarized Light",
-        }
-    }
-
-    /// Short tagline for picker rows.
-    #[must_use]
-    pub const fn tagline(self) -> &'static str {
-        match self {
-            Self::System => "Follow terminal background (COLORFGBG / macOS appearance)",
-            Self::Terminal => "Inherit terminal colors fully (transparent surfaces, ANSI accents)",
-            Self::Whale => "Whale dark — deep navy & gold",
-            Self::WhaleLight => "DeepSeek light, paper-ish",
-            Self::Grayscale => "Color-minimal high contrast",
-            Self::CatppuccinMocha => "Soft pastels on warm dark",
-            Self::TokyoNight => "Deep blue/violet night palette",
-            Self::Dracula => "Classic high-contrast purple",
-            Self::GruvboxDark => "Vintage warm earth tones",
-            Self::Claude => "Warm navy & coral",
-            Self::Matrix => "The Matrix films inspired theme",
-            Self::SolarizedLight => {
-                "Solarized light — Light, calming palette on warm ivory — easy on the eyes"
-            }
-        }
-    }
-
     /// Resolve to a concrete `UiTheme`. For `System` this consults
     /// `PaletteMode::detect()` exactly once and returns the corresponding
     /// dark/light theme — callers that want to live-track terminal background
@@ -789,7 +749,7 @@ impl ThemeId {
     }
 }
 
-/// Themes shown in the `/theme` picker, in display order.
+/// Supported themes in stable display order.
 pub const SELECTABLE_THEMES: &[ThemeId] = &[
     ThemeId::System,
     ThemeId::Terminal,

@@ -23,7 +23,6 @@ pub enum ModalKind {
     LiveTranscript,
     FilePicker,
     FeedbackPicker,
-    ThemePicker,
 }
 
 /// Clear and paint a modal popup with an opaque surface.
@@ -314,135 +313,6 @@ pub(crate) fn render_modal_footer(inner: Rect, buf: &mut Buffer, hints: &[Action
     place_footer_lines(inner, buf, lines)
 }
 
-/// Word-wrap a free-form footer string into styled lines that each fit `width`.
-///
-/// For footers that are pre-composed prose/sentences (e.g. localized config
-/// hints) rather than discrete key/label hints. Wrapping on whitespace keeps
-/// every word visible instead of clipping the tail at the modal edge.
-pub(crate) fn wrapped_footer_lines(text: &str, width: u16, style: Style) -> Vec<Line<'static>> {
-    let width = usize::from(width);
-    if text.trim().is_empty() || width == 0 {
-        return Vec::new();
-    }
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut current = String::new();
-    let mut current_width = 0usize;
-    for word in text.split_whitespace() {
-        let word_width = UnicodeWidthStr::width(word);
-        let needed = if current.is_empty() {
-            word_width
-        } else {
-            current_width + 1 + word_width
-        };
-        if !current.is_empty() && needed > width {
-            lines.push(Line::from(Span::styled(
-                std::mem::take(&mut current),
-                style,
-            )));
-            current_width = 0;
-        }
-        if !current.is_empty() {
-            current.push(' ');
-            current_width += 1;
-        }
-        current.push_str(word);
-        current_width += word_width;
-    }
-    if !current.is_empty() {
-        lines.push(Line::from(Span::styled(current, style)));
-    }
-    lines
-}
-
-/// Render a wrapping free-text footer anchored to the bottom of `inner` and
-/// return the content area above it. The prose counterpart to
-/// [`render_modal_footer`].
-pub(crate) fn render_modal_text_footer(
-    inner: Rect,
-    buf: &mut Buffer,
-    text: &str,
-    style: Style,
-) -> Rect {
-    let lines = wrapped_footer_lines(text, inner.width, style);
-    place_footer_lines(inner, buf, lines)
-}
-
-/// Shared list/detail geometry for modal managers and pickers.
-///
-/// Wide modals get a stable left list and a right detail pane. Narrow modals
-/// stack the list over the detail so neither side becomes unreadably thin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ListDetailLayout {
-    pub(crate) list: Rect,
-    pub(crate) detail: Rect,
-    pub(crate) stacked: bool,
-}
-
-impl ListDetailLayout {
-    #[must_use]
-    pub(crate) fn split(area: Rect, min_detail_width: u16) -> Self {
-        if area.width == 0 || area.height == 0 {
-            return Self {
-                list: area,
-                detail: area,
-                stacked: true,
-            };
-        }
-
-        let gap = 1;
-        let min_list_width = 30.min(area.width);
-        let can_split = area.width >= 96
-            && area
-                .width
-                .saturating_sub(gap)
-                .saturating_sub(min_list_width)
-                >= min_detail_width;
-        if can_split {
-            let max_list_width = area.width.saturating_sub(gap + min_detail_width);
-            let preferred = area.width.saturating_mul(42) / 100;
-            let list_width = preferred.clamp(min_list_width, max_list_width.min(52));
-            let detail_width = area.width.saturating_sub(list_width + gap);
-            return Self {
-                list: Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: list_width,
-                    height: area.height,
-                },
-                detail: Rect {
-                    x: area.x + list_width + gap,
-                    y: area.y,
-                    width: detail_width,
-                    height: area.height,
-                },
-                stacked: false,
-            };
-        }
-
-        let gap = if area.height >= 8 { 1 } else { 0 };
-        let min_detail_height = 4.min(area.height);
-        let max_list_height = area.height.saturating_sub(gap + min_detail_height);
-        let preferred = area.height.saturating_mul(3) / 5;
-        let list_height = preferred.clamp(1, max_list_height.max(1));
-        let detail_height = area.height.saturating_sub(list_height + gap);
-        Self {
-            list: Rect {
-                x: area.x,
-                y: area.y,
-                width: area.width,
-                height: list_height,
-            },
-            detail: Rect {
-                x: area.x,
-                y: area.y + list_height + gap,
-                width: area.width,
-                height: detail_height,
-            },
-            stacked: true,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum CommandPaletteAction {
     ExecuteCommand { command: String },
@@ -482,11 +352,6 @@ pub enum ViewEvent {
     },
     UserInputCancelled {
         tool_id: String,
-    },
-    ConfigUpdated {
-        key: String,
-        value: String,
-        persist: bool,
     },
     SidebarAgentCancel {
         agent_id: String,
@@ -703,8 +568,8 @@ impl fmt::Debug for ViewStack {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionHint, ListDetailLayout, ModalKind, ModalView, ViewAction, ViewStack,
-        action_footer_lines, centered_modal_area, render_modal_footer, render_underwater_surface,
+        ActionHint, ModalKind, ModalView, ViewAction, ViewStack, action_footer_lines,
+        centered_modal_area, render_modal_footer, render_underwater_surface,
     };
     use crate::palette;
     use crossterm::event::KeyEvent;
@@ -782,24 +647,6 @@ mod tests {
         assert_eq!(body.y, inner.y);
         assert_eq!(body.height, inner.height - 1);
         assert_eq!(body.y + body.height, inner.y + inner.height - 1);
-    }
-
-    #[test]
-    fn list_detail_layout_splits_wide_and_stacks_narrow() {
-        let wide = ListDetailLayout::split(Rect::new(0, 0, 120, 24), 34);
-        assert!(!wide.stacked);
-        assert!(wide.list.width >= 30);
-        assert!(wide.detail.width >= 34);
-        assert_eq!(wide.list.height, 24);
-        assert_eq!(wide.detail.height, 24);
-        assert!(wide.list.right() < wide.detail.left());
-
-        let narrow = ListDetailLayout::split(Rect::new(0, 0, 80, 20), 34);
-        assert!(narrow.stacked);
-        assert_eq!(narrow.list.width, 80);
-        assert_eq!(narrow.detail.width, 80);
-        assert!(narrow.list.bottom() <= narrow.detail.top());
-        assert!(narrow.list.height > 0);
     }
 
     #[test]
