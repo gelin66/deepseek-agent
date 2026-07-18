@@ -1,7 +1,6 @@
 use codewhale_config::route::RouteLimits;
 
 use crate::config::{ApiProvider, provider_capability};
-use crate::context_budget::ContextBudget;
 
 /// Preserve only route limits that came from a concrete offering.
 #[must_use]
@@ -34,22 +33,6 @@ pub(crate) fn route_output_limit_tokens(route_limits: Option<RouteLimits>) -> Op
         .and_then(|limits| limits.output_tokens)
         .and_then(|tokens| u32::try_from(tokens).ok())
         .filter(|tokens| *tokens > 0)
-}
-
-#[must_use]
-pub(crate) fn route_context_budget(
-    provider: ApiProvider,
-    model: &str,
-    route_limits: Option<RouteLimits>,
-    input_tokens: usize,
-    configured_output_cap: u32,
-) -> Option<ContextBudget> {
-    let window = route_context_window_tokens(provider, model, route_limits);
-    Some(ContextBudget::new(
-        u64::from(window),
-        u64::try_from(input_tokens).ok()?,
-        u64::from(configured_output_cap),
-    ))
 }
 
 #[cfg(test)]

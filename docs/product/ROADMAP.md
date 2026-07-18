@@ -763,6 +763,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   从不写入或读取的 `last_output_throughput`。canonical Runtime/RunStore usage/accounting、
   presenter 的 token/cache/reasoning/cost 投影和 DeepSeek 官方 usage 账本均保留；本切片不以
   一个未接线的第二遥测模型冒充预算或性能能力。
+- M4-C 已删除同样整模块以 `#[allow(dead_code)]` 隐藏、说明中明确“等待以后接线”的 TUI
+  `ContextBudget` foundation，以及唯一引用它但自身零调用的 `route_context_budget`。
+  `route_context_window_tokens`、route output limit、canonical `crates/context` projection/
+  compaction 和 Runtime/RunStore 预算恢复语义均保留；M5 不通过复活未接线的 TUI 预算模型
+  建设第二套 ContextBroker。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

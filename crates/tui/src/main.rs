@@ -30,7 +30,6 @@ mod codex_model_cache;
 mod composer_history;
 mod config;
 mod config_persistence;
-mod context_budget;
 mod core;
 mod deepseek_theme;
 mod dependencies;

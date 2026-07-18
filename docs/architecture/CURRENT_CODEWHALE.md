@@ -92,6 +92,10 @@ budget pressure、格式化和估算 token throughput 只由自身测试调用�
 `last_output_throughput` 也只有初始化与清空、没有 producer 或 renderer。该模块和写空字段
 已删除。canonical Runtime/RunStore 的 usage/accounting、DeepSeek usage 账本，以及 presenter
 真实消费的 token/cache/reasoning/cost 状态不变。
+旧 TUI `ContextBudget` 也只有自身测试和一个零调用的 `route_context_budget` wrapper，文件
+注释明确其 engine/TUI consumers 从未接线。该 505 行 foundation 与 wrapper 已删除；仍有
+真实调用方的 route context window/output limit、canonical `crates/context` projection/
+compaction 和 Runtime/RunStore 的预算、恢复及 accounting 语义不变。
 
 ## 2. 已统一的生产链
 
