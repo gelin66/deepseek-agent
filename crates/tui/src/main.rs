@@ -3679,6 +3679,10 @@ fn doctor_legacy_state_json(
     })
 }
 
+// Historical sidecar version still interpreted by Doctor and the prompt
+// context loader. The retired TUI setup wizard no longer owns this value.
+const LEGACY_SETUP_CHECKPOINT_VERSION: &str = "0.8.67";
+
 fn doctor_setup_state(
     config: &Config,
     workspace: &Path,
@@ -3746,7 +3750,7 @@ fn print_doctor_setup_report(
     use colored::Colorize;
 
     let first_run_ready = state.first_run_ready();
-    let update_ready = state.update_ready(crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION);
+    let update_ready = state.update_ready(LEGACY_SETUP_CHECKPOINT_VERSION);
     let operate_ready = state.operate_ready();
     let first_run_icon = if first_run_ready {
         "✓".truecolor(ok_rgb.0, ok_rgb.1, ok_rgb.2)
@@ -3773,7 +3777,7 @@ fn print_doctor_setup_report(
     );
     println!(
         "  {update_icon} update checkpoint {}: {}",
-        crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+        LEGACY_SETUP_CHECKPOINT_VERSION,
         doctor_ready_label(update_ready)
     );
     println!(
@@ -4116,9 +4120,9 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
         "source": source,
         "schema_version": state.schema_version,
         "inherited": state.inherited,
-        "checkpoint_version": crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+        "checkpoint_version": LEGACY_SETUP_CHECKPOINT_VERSION,
         "first_run_ready": state.first_run_ready(),
-        "update_ready": state.update_ready(crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION),
+        "update_ready": state.update_ready(LEGACY_SETUP_CHECKPOINT_VERSION),
         "operate_ready": state.operate_ready(),
         "constitution": {
             "choice": constitution_choice_id(state.constitution_choice),
@@ -6853,7 +6857,7 @@ mod doctor_setup_state_tests {
         assert_eq!(report["next_actions"]["persistence"], "/setup persistence");
         assert_eq!(
             report["checkpoint_version"],
-            crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION
+            LEGACY_SETUP_CHECKPOINT_VERSION
         );
         assert_eq!(report["update_ready"], false);
         assert_eq!(report["operate_ready"], false);
@@ -6986,7 +6990,7 @@ mod doctor_setup_state_tests {
             codewhale_config::StepEntry::new(
                 codewhale_config::StepStatus::Verified,
                 true,
-                crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+                LEGACY_SETUP_CHECKPOINT_VERSION,
             )
             .with_result("deepseek/deepseek-chat"),
         );
@@ -6995,12 +6999,12 @@ mod doctor_setup_state_tests {
             codewhale_config::StepEntry::new(
                 codewhale_config::StepStatus::Verified,
                 true,
-                crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+                LEGACY_SETUP_CHECKPOINT_VERSION,
             ),
         );
         state
             .complete_constitution_checkpoint(
-                crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+                LEGACY_SETUP_CHECKPOINT_VERSION,
                 codewhale_config::ConstitutionChoice::Bundled,
             )
             .set_step(
@@ -7008,7 +7012,7 @@ mod doctor_setup_state_tests {
                 codewhale_config::StepEntry::new(
                     codewhale_config::StepStatus::Verified,
                     true,
-                    crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+                    LEGACY_SETUP_CHECKPOINT_VERSION,
                 ),
             );
         state.runtime_posture_source = codewhale_config::RuntimePostureSource::Confirmed;
@@ -7039,7 +7043,7 @@ mod doctor_setup_state_tests {
         assert_eq!(report["constitution"]["choice"], "bundled");
         assert_eq!(
             report["constitution"]["checkpoint_completed_for"],
-            crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION
+            LEGACY_SETUP_CHECKPOINT_VERSION
         );
         assert_eq!(report["constitution"]["autonomy_preference"], "balanced");
         assert_eq!(report["runtime_posture_source"], "confirmed");
@@ -7086,12 +7090,12 @@ mod doctor_setup_state_tests {
             codewhale_config::StepEntry::new(
                 codewhale_config::StepStatus::Verified,
                 true,
-                crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+                LEGACY_SETUP_CHECKPOINT_VERSION,
             ),
         );
         state.runtime_posture_source = codewhale_config::RuntimePostureSource::Confirmed;
         state.complete_constitution_checkpoint(
-            crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+            LEGACY_SETUP_CHECKPOINT_VERSION,
             codewhale_config::ConstitutionChoice::Bundled,
         );
         state.set_step(
@@ -7099,7 +7103,7 @@ mod doctor_setup_state_tests {
             codewhale_config::StepEntry::new(
                 codewhale_config::StepStatus::Verified,
                 false,
-                crate::tui::setup::CONSTITUTION_CHECKPOINT_VERSION,
+                LEGACY_SETUP_CHECKPOINT_VERSION,
             )
             .with_result(
                 "provider=ready, runtime=ready, roster=ready, concurrency=plan limit not probed",

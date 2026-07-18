@@ -14,28 +14,13 @@ HTTP/SSE or stdio. The former ACP editor adapter has been deleted because it
 owned an independent model/session loop instead of projecting the canonical Run
 API.
 
-## Setup wizard vs manual MCP setup (#3407)
+## MCP readiness
 
-The constitution-first `/setup` wizard includes an optional **Tools and MCP**
-step. That step is discovery/readiness only:
-
-| Wizard can do | Still requires manual / explicit action |
-| --- | --- |
-| Show configured servers as `healthy` / `needs_config` / `off` | Start or connect MCP servers |
-| Report config path presence (global + project) | Write or edit `mcp.json` contents |
-| Safe static health probe (missing command/url, broken absolute path, missing bearer env) | `codewhale mcp validate`, live connect, OAuth login |
-| Point at safe on-ramps (`/mcp`, `codewhale mcp init`, `codewhale doctor`) | Install community skills, trust skills, enable plugins |
-| Record optional/`needs_action` setup_state without blocking first-run | Anything that spawns processes or installs packages |
-
-Empty inventory is **not** an error: first-run users see “nothing configured
-yet, that’s fine.” Failing or incomplete configured servers surface as
-`needs_config` with an actionable hint and never block setup completion.
-Enumeration never executes MCP/plugin commands beyond the static probe.
-Summaries redact commands, args, env, headers, and tokens.
-
-`codewhale doctor` reports MCP/skills/tools/plugins health with the same
-optional-surface intent (paths, counts, static checks) so wizard and doctor
-stay consistent.
+The retired TUI `/setup` wizard has been removed. MCP remains optional and is
+configured through the explicit CLI commands below. An empty inventory is not
+an error. `codewhale doctor` reports paths, counts and static configuration
+problems without starting servers or installing packages; summaries redact
+commands, args, environment values, headers and tokens.
 
 ## Bootstrap MCP Config
 

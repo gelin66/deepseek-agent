@@ -16,10 +16,10 @@ controls do not blur together.
 
 - **Bundled global Constitution** — the compiled base law in the binary. It is
   the default floor for every session.
-- **User-global constitution** — the normal guided setup output. Manage it with
-  `/constitution` or `/setup`; CodeWhale stores structured data at
-  `$CODEWHALE_HOME/constitution.json` (default `~/.codewhale/constitution.json`)
-  and renders it into a separate `<codewhale_user_constitution>` prose block.
+- **User-global constitution** — an existing structured file at
+  `$CODEWHALE_HOME/constitution.json` (default `~/.codewhale/constitution.json`).
+  CodeWhale renders an enabled file into a separate
+  `<codewhale_user_constitution>` prose block.
   This can express preferences and stop conditions, but it does not change
   runtime approval policy, sandbox, shell, network, trust, or MCP permissions.
 - **Repo-local constitution** — optional project policy in
@@ -31,39 +31,20 @@ controls do not blur together.
 - **Memory and handoffs** — recalled state. Useful, but lower authority than
   constitutions and project instructions.
 
-Release verification for these surfaces lives in
+Historical setup verification is archived in
 [`docs/evidence/v0867-constitution-setup-qa-matrix.md`](../evidence/v0867-constitution-setup-qa-matrix.md).
-Use it when checking `/setup`, `/constitution`, doctor, context reports, and
-the update checkpoint agree.
+It does not describe the current canonical command surface.
 
-### User-global constitution (legacy control surface)
+### User-global constitution
 
 On first launch CodeWhale uses a fixed Simplified Chinese onboarding path:
 Welcome → API-key gate (when required) → workspace-trust gate (when required)
-→ setup tips/checkpoint. There is no language screen or runtime language
-choice. The canonical command surface does not expose `/setup` or
-`/constitution`. The constitution editor described below belongs to the
-unmigrated legacy control surface and is scheduled for deletion; do not rely on
-it as a current entry point.
-
-On the **Constitution** step:
-
-- **`1`–`6`** tune the guided draft. **`G`** previews it, and **`G`** again
-  ratifies and saves a fresh structured `constitution.json`.
-- **`A`** (shown only when a provider is configured) asks your first configured
-  model to draft the constitution. Drafting is **not** saving: the draft is
-  rendered through the same preview and you still press **`G`** to ratify
-  before anything persists.
-- **`K`** keeps your existing loaded constitution unchanged (shown only when a
-  valid file is already present).
-- **`U`** (or `/constitution bundled`) records the bundled/default law.
-
-`/constitution` (alias `/law`) is the primary management surface once you are
-set up. Subcommands: `status` (the default), `preview`, `review`, `repo` (the
-repo-local law block), `explain`, `edit`/`guided`, `repair`, `posture`, and
-`bundled`. Managing the constitution never changes runtime approval, sandbox,
-shell, network, trust, default mode, or MCP authority — those stay in runtime
-posture/config.
+→ tips. There is no language screen or runtime language choice. The canonical
+command surface does not expose `/setup` or `/constitution`; the retired TUI
+setup wizard has been physically removed. Existing `constitution.json` and
+`setup_state.json` files are not deleted, and the prompt context loader still
+honors an enabled user constitution. Edit or remove those files explicitly if
+you choose to keep using this legacy instruction layer.
 
 Each repo can carry two distinct, complementary files:
 
@@ -121,8 +102,8 @@ Each repo can carry two distinct, complementary files:
 > present, it is ignored; the retired manual context-report command is not a
 > supported migration surface. Move ordinary instructions to `AGENTS.md` and
 > CodeWhale-specific authority policy to `.codewhale/constitution.json`.
-> Personal standing guidance belongs
-> in `/constitution` / `$CODEWHALE_HOME/constitution.json`. (The global
+> Personal standing guidance can remain in
+> `$CODEWHALE_HOME/constitution.json`. (The global
 > CodeWhale Constitution shipped in the model prompt is a separate thing and is
 > unaffected.)
 

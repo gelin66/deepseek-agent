@@ -1962,11 +1962,6 @@ pub struct App {
     /// task fills it (model label + drafted profile or a failure reason) so
     /// the drafting network call never parks the event loop (#3757 review).
     #[allow(clippy::type_complexity)]
-    /// Monotonic generation for model-draft requests. Bumped on each draft
-    /// request and each setup/fleet wizard open, so a draft that lands after
-    /// a superseding request or a wizard reopen is dropped rather than
-    /// installed into the wrong (or a stale) wizard instance.
-    pub draft_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
     #[allow(clippy::type_complexity)]
     pub fleet_draft_cell: std::sync::Arc<
         std::sync::Mutex<
@@ -1983,19 +1978,6 @@ pub struct App {
                 // (#4137). `None` means inherit.
                 Option<String>,
                 Result<Box<crate::fleet::profile::FleetProfileDraft>, String>,
-            )>,
-        >,
-    >,
-    /// Shared cell for async constitution model-draft delivery (same pattern
-    /// as `fleet_draft_cell`, so the drafting network call never parks the
-    /// event loop).
-    #[allow(clippy::type_complexity)]
-    pub constitution_draft_cell: std::sync::Arc<
-        std::sync::Mutex<
-            Option<(
-                u64,
-                String,
-                Result<Box<codewhale_config::UserConstitution>, String>,
             )>,
         >,
     >,
@@ -2206,21 +2188,6 @@ fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, _is_wind
 }
 
 impl App {
-    /// Advance and return the model-draft generation. Call when a draft is
-    /// requested or a setup/fleet wizard opens; a spawned draft that captured
-    /// an older generation is dropped on delivery.
-    pub fn next_draft_gen(&self) -> u64 {
-        self.draft_gen
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-            + 1
-    }
-
-    /// The current model-draft generation (delivery compares against this).
-    #[must_use]
-    pub fn current_draft_gen(&self) -> u64 {
-        self.draft_gen.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
     pub(crate) fn clear_model_scoped_telemetry(&mut self) {
         self.session.last_prompt_tokens = None;
         self.session.last_completion_tokens = None;
@@ -2790,9 +2757,7 @@ impl App {
             turn_last_activity_at: None,
             cumulative_turn_duration: std::time::Duration::ZERO,
             balance_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            draft_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             fleet_draft_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            constitution_draft_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             prompt_suggestion_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             balance_initiated: false,
             last_balance_fetch: None,

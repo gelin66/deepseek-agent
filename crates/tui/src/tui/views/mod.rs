@@ -32,7 +32,6 @@ pub enum ModalKind {
     LiveTranscript,
     Config,
     ModePicker,
-    SetupWizard,
     FilePicker,
     StatusPicker,
     FeedbackPicker,
@@ -595,32 +594,6 @@ pub enum ViewEvent {
         items: Vec<crate::config::StatusItem>,
         final_save: bool,
     },
-    /// Emitted by the constitution-first setup shell when a staged setup-state
-    /// record should be committed atomically to `$CODEWHALE_HOME/setup_state.json`.
-    SetupStateCommitRequested {
-        state: codewhale_config::SetupState,
-        message: String,
-    },
-    /// Emitted by the constitution-first setup shell when accepting a guided
-    /// structured user-global constitution. The host commits the constitution
-    /// and matching setup-state record together.
-    SetupConstitutionCommitRequested {
-        constitution: codewhale_config::UserConstitution,
-        state: codewhale_config::SetupState,
-        message: String,
-    },
-    /// Emitted by the setup Constitution card (`A`, provider route ready) to
-    /// ask the user's first configured model to draft the constitution from
-    /// the guided answers plus an optional bounded own-words note. The host
-    /// performs the one-shot call, pushes the sanitized/bounded draft back into the wizard, and opens the
-    /// ratification preview; on any failure it reports why and leaves the
-    /// deterministic guided draft standing. Nothing is persisted by this
-    /// event — saving still goes through the ratify keypress and
-    /// [`SetupConstitutionCommitRequested`](Self::SetupConstitutionCommitRequested).
-    SetupConstitutionModelDraftRequested {
-        draft: crate::tui::setup::GuidedConstitutionDraft,
-        freeform_note: Option<String>,
-    },
     /// Emitted by the fleet setup Review step (`m`) to ask the configured
     /// model to draft the agent profile the wizard describes. The host
     /// performs the one-shot call, pushes the sanitized/bounded draft back
@@ -649,28 +622,6 @@ pub enum ViewEvent {
     FleetProfileDraftCommitRequested {
         draft: Box<crate::fleet::profile::FleetProfileDraft>,
     },
-    /// Emitted by the setup Runtime Posture card after the user has previewed
-    /// and confirmed an explicit preset/config diff.
-    SetupRuntimePresetApplyRequested {
-        preset: crate::tui::setup::SetupRuntimePreset,
-        state: codewhale_config::SetupState,
-        message: String,
-    },
-    /// Emitted by the setup Provider/Model readiness card to hand off to the
-    /// existing provider manager instead of duplicating provider auth UI.
-    SetupOpenProviderRequested,
-    /// Emitted by the setup Provider/Model readiness card to hand off to the
-    /// existing provider-qualified model route picker.
-    SetupOpenModelRequested,
-    /// Emitted by the setup Operate/Fleet readiness card to hand off to the
-    /// existing Fleet setup wizard without writing Fleet config itself.
-    SetupOpenFleetRequested,
-    /// Emitted by the setup Runtime Posture card to hand off to the existing
-    /// work-mode picker.
-    SetupOpenModeRequested,
-    /// Emitted by the setup Runtime Posture card to hand off to the existing
-    /// config view for approval/sandbox/network details.
-    SetupOpenConfigRequested,
     /// Emitted by the pager (`c` / `y`) to copy its body to the system
     /// clipboard. The host handler writes via `app.clipboard` and surfaces a
     /// status message — modal views cannot reach `app` directly. `label` is

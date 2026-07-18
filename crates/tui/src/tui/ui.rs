@@ -518,32 +518,6 @@ fn engine_drain_budget_exhausted(events_drained: usize, started: Instant, now: I
         || now.saturating_duration_since(started) >= ENGINE_DRAIN_TIME_BUDGET
 }
 
-fn open_setup_checkpoint_if_due(app: &mut App, config: &Config, skip_onboarding: bool) -> bool {
-    if skip_onboarding {
-        if crate::tui::setup::should_open_update_checkpoint(app, config)
-            && let Err(err) = crate::tui::setup::defer_update_checkpoint_for_app(app, config)
-        {
-            tracing::warn!(
-                target: "tui::setup",
-                "failed to record deferred setup checkpoint: {err}"
-            );
-        }
-        return false;
-    }
-    if app.onboarding != crate::tui::app::OnboardingState::None
-        || app.view_stack.top_kind() == Some(ModalKind::SetupWizard)
-        || !crate::tui::setup::should_open_update_checkpoint(app, config)
-    {
-        return false;
-    }
-
-    // A fresh wizard invalidates any in-flight model draft from a prior one.
-    let _ = app.next_draft_gen();
-    app.view_stack
-        .push(crate::tui::setup::SetupWizardView::new_for_app(app, config));
-    true
-}
-
 fn complete_trust_directory_onboarding(app: &mut App) -> Result<(), String> {
     onboarding::mark_trusted_at(app.config_path.as_deref(), &app.workspace)
         .map_err(|err| err.to_string())?;

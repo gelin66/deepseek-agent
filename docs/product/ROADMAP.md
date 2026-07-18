@@ -599,6 +599,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除没有写入、弹出或清空调用方的持久 composer stash，以及 Doctor 对历史
   `composer_stash.jsonl` 的假诊断、不可达 Ctrl+S/`/stash` 帮助和提示；清空输入前用于撤销的
   进程内 recovery draft 仍由 `App` 保留。
+- M4-C 已删除唯一构造 helper 自身也无调用方的 TUI Setup Wizard、9 个无 canonical handler
+  的 Setup 事件和 175 条专属文案。顶层 `codewhale setup`、Doctor setup 投影、
+  `SetupState`/`UserConstitution` 及生产提示词加载语义保留；现有用户 sidecar 不自动删除。
 - M4-C 已物理删除没有 production consumer 的 TUI Goal/Hunt loop、私有
   TaskContract/receipt/Goal completion store、Slop ledger、`ToolContext.goal_contract`、
   假 custom-command allowed-tools/pause 状态及其 Work/UI/config surface。交互 TUI 启动
