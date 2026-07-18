@@ -104,12 +104,6 @@ fn canonical_approval_can_inspect_and_copy_full_params_locally() {
 }
 
 #[test]
-fn focus_gained_forces_terminal_viewport_recapture() {
-    assert!(terminal_event_needs_viewport_recapture(&Event::FocusGained));
-    assert!(!terminal_event_needs_viewport_recapture(&Event::FocusLost));
-}
-
-#[test]
 fn terminal_origin_reset_recovers_viewport_without_destructive_clear() {
     assert!(TERMINAL_ORIGIN_RESET.starts_with(b"\x1b[r\x1b[?6l"));
     assert!(TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H"));

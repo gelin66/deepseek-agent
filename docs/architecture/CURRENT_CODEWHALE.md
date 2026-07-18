@@ -101,6 +101,11 @@ compaction 和 Runtime/RunStore 的预算、恢复及 accounting 语义不变。
 字段已删除，`StatusItem::GitBranch` 断代替换为只读取真实 `App.workspace` 的
 `StatusItem::Workspace`，旧 `git_branch` 配置键不设 alias。canonical Run workspace、
 workspace guard、`git_status`/`git_diff`、Fleet branch 与 writer worktree 均未改变。
+`TerminalInputPump` 现在只拥有真实的终端输入线程、poll/read、限时接收和 Drop 生命周期。
+旧 Engine 的 heartbeat/liveness、child pause/ack、detached restart、pending queue/drain、
+watchdog/recovery snapshot 与 pause/resume terminal helper 均无生产调用方并已删除。终端
+Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run 事件继续由独立
+的 `run_events.try_recv` 进入 `CanonicalRunProjection` 和 presenter。
 
 ## 2. 已统一的生产链
 

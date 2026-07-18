@@ -774,6 +774,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `workspace` 的 `StatusItem::Workspace`，footer/sidebar/empty-state 直接投影 canonical
   `App.workspace` 并显示“工作区”。旧 `git_branch` 配置键不保留 alias；真实
   `git_status`/`git_diff`、Run workspace guard、Fleet branch/worktree 字段不变。
+- M4-C 已把 `TerminalInputPump` 收缩为唯一真实链路：后台限时 poll/read、`recv_timeout` 和
+  Drop 清理。删除旧 Engine 留下且零调用的非阻塞/pending-drain helper、heartbeat/liveness、
+  child-terminal pause/ack、detached restart、dispatch/turn/tool watchdog、recovery snapshot、
+  pause/resume terminal 及只由自身测试消费的 focus helper。onboarding 和 canonical loop 的
+  Key/Paste/Mouse/Resize/Focus 事件不变；`run_events.try_recv -> CanonicalRunProjection ->
+  presenter` 是另一条保留链，未被同名旧 input helper 误删。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

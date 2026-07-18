@@ -1,7 +1,5 @@
 //! TUI event loop and rendering logic for `DeepSeek` CLI.
 
-use std::cell::Cell;
-use std::collections::VecDeque;
 use std::io::{self, Stdout, Write};
 use std::sync::{
     Arc,
@@ -36,7 +34,7 @@ use crossterm::{
 use ratatui::{
     Frame, Terminal,
     buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect, Size},
+    layout::{Constraint, Direction, Layout, Rect},
     prelude::Widget,
     style::Style,
     widgets::Block,
@@ -87,19 +85,6 @@ const MIN_COMPOSER_HEIGHT: u16 = 2;
 const UI_ACTIVE_POLL_MS: u64 = 24;
 const SUBAGENT_HOOK_PREVIEW_LIMIT: usize = 2_048;
 const WEB_CONFIG_POLL_MS: u64 = 16;
-const DISPATCH_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(30);
-/// Minimum wall-clock time a turn may stay in `"in_progress"` before the UI
-/// assumes the engine stalled (e.g. sub-agent hang, lost completion event,
-/// engine panic).  The effective watchdog also respects the configured stream
-/// idle timeout so legitimate long model-reasoning pauses are not interrupted
-/// prematurely.
-const TURN_STALL_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(300);
-const TURN_STALL_WATCHDOG_GRACE: Duration = Duration::from_secs(30);
-/// Running tools can legitimately exceed the silent-turn timeout, but a tool
-/// with no progress heartbeat or output beyond this ceiling is treated as hung.
-// Must stay comfortably above `turn_stall_watchdog_timeout` so a running tool
-// gets extra grace beyond the turn-stall threshold (#1862 trimmed 15m → 10m).
-const TOOL_HANG_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(600);
 /// Ambient fish and the completion wake need a smoother cadence than the
 /// deliberately legible status spinner. This remains modest enough for a
 /// terminal renderer while avoiding the five-frame-per-second "jump" seen
@@ -225,77 +210,30 @@ const BEGIN_SYNC_UPDATE: &[u8] = b"\x1b[?2026h";
 /// the complete frame now.
 const END_SYNC_UPDATE: &[u8] = b"\x1b[?2026l";
 const TERMINAL_INPUT_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const TERMINAL_INPUT_HEARTBEAT_INTERVAL: Duration = Duration::from_millis(500);
-const TERMINAL_INPUT_STALL_TIMEOUT: Duration = Duration::from_secs(5);
-const TERMINAL_INPUT_RECOVERY_COOLDOWN: Duration = Duration::from_secs(10);
-const TERMINAL_INPUT_CHILD_PAUSE_TIMEOUT: Duration = Duration::from_millis(500);
-const TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL: Duration = Duration::from_millis(5);
-/// Upper bound on engine events processed before yielding to terminal input.
-const MAX_ENGINE_EVENTS_PER_DRAIN: usize = 16;
-/// Wall-clock budget for one engine drain batch (#1830 / #2317 input fairness).
-const ENGINE_DRAIN_TIME_BUDGET: Duration = Duration::from_millis(8);
-/// Throttled in-progress checkpoint while a turn is live (#1830 progress loss).
-const RECOVERY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(45);
 
 enum TerminalInputMessage {
     Event(Event),
-    Heartbeat,
     Error(io::Error),
 }
 
 struct TerminalInputPump {
     rx: std::sync::mpsc::Receiver<TerminalInputMessage>,
     stop: Arc<AtomicBool>,
-    paused: Arc<AtomicBool>,
-    paused_ack: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
-    last_alive_at: Cell<Instant>,
-}
-
-struct TerminalInputPumpParts {
-    rx: std::sync::mpsc::Receiver<TerminalInputMessage>,
-    stop: Arc<AtomicBool>,
-    paused: Arc<AtomicBool>,
-    paused_ack: Arc<AtomicBool>,
-    handle: JoinHandle<()>,
 }
 
 impl TerminalInputPump {
     fn spawn() -> io::Result<Self> {
-        let parts = Self::spawn_parts()?;
-        Ok(Self {
-            rx: parts.rx,
-            stop: parts.stop,
-            paused: parts.paused,
-            paused_ack: parts.paused_ack,
-            handle: Some(parts.handle),
-            last_alive_at: Cell::new(Instant::now()),
-        })
-    }
-
-    fn spawn_parts() -> io::Result<TerminalInputPumpParts> {
         let (tx, rx) = std::sync::mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let paused = Arc::new(AtomicBool::new(false));
-        let paused_ack = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
-        let thread_paused = Arc::clone(&paused);
-        let thread_paused_ack = Arc::clone(&paused_ack);
         let handle = thread::Builder::new()
             .name("codewhale-terminal-input".to_string())
             .spawn(move || {
-                let mut last_heartbeat = Instant::now();
                 while !thread_stop.load(Ordering::Acquire) {
-                    if thread_paused.load(Ordering::Acquire) {
-                        thread_paused_ack.store(true, Ordering::Release);
-                        thread::sleep(TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL);
-                        continue;
-                    }
-                    thread_paused_ack.store(false, Ordering::Release);
                     match event::poll(TERMINAL_INPUT_POLL_INTERVAL) {
                         Ok(true) => match event::read() {
                             Ok(event) => {
-                                last_heartbeat = Instant::now();
                                 if tx.send(TerminalInputMessage::Event(event)).is_err() {
                                     break;
                                 }
@@ -305,17 +243,7 @@ impl TerminalInputPump {
                                 break;
                             }
                         },
-                        Ok(false) => {
-                            let now = Instant::now();
-                            if now.duration_since(last_heartbeat)
-                                >= TERMINAL_INPUT_HEARTBEAT_INTERVAL
-                            {
-                                last_heartbeat = now;
-                                if tx.send(TerminalInputMessage::Heartbeat).is_err() {
-                                    break;
-                                }
-                            }
-                        }
+                        Ok(false) => {}
                         Err(err) => {
                             let _ = tx.send(TerminalInputMessage::Error(err));
                             break;
@@ -323,133 +251,23 @@ impl TerminalInputPump {
                     }
                 }
             })?;
-        Ok(TerminalInputPumpParts {
+        Ok(Self {
             rx,
             stop,
-            paused,
-            paused_ack,
-            handle,
+            handle: Some(handle),
         })
     }
 
     fn recv_timeout(&self, timeout: Duration) -> io::Result<Option<Event>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match self.rx.recv_timeout(remaining) {
-                Ok(TerminalInputMessage::Event(event)) => {
-                    self.mark_alive();
-                    return Ok(Some(event));
-                }
-                Ok(TerminalInputMessage::Heartbeat) => {
-                    self.mark_alive();
-                    if remaining.is_zero() {
-                        return Ok(None);
-                    }
-                }
-                Ok(TerminalInputMessage::Error(err)) => {
-                    self.mark_alive();
-                    return Err(err);
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => return Ok(None),
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::BrokenPipe,
-                        "终端输入线程已断开",
-                    ));
-                }
-            }
+        match self.rx.recv_timeout(timeout) {
+            Ok(TerminalInputMessage::Event(event)) => Ok(Some(event)),
+            Ok(TerminalInputMessage::Error(err)) => Err(err),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "终端输入线程已断开",
+            )),
         }
-    }
-
-    fn try_recv(&self) -> io::Result<Option<Event>> {
-        loop {
-            match self.rx.try_recv() {
-                Ok(TerminalInputMessage::Event(event)) => {
-                    self.mark_alive();
-                    return Ok(Some(event));
-                }
-                Ok(TerminalInputMessage::Heartbeat) => {
-                    self.mark_alive();
-                }
-                Ok(TerminalInputMessage::Error(err)) => {
-                    self.mark_alive();
-                    return Err(err);
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(None),
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => return Ok(None),
-            }
-        }
-    }
-
-    fn mark_alive(&self) {
-        self.last_alive_at.set(Instant::now());
-    }
-
-    fn stalled_for(&self, now: Instant) -> Duration {
-        now.saturating_duration_since(self.last_alive_at.get())
-    }
-
-    fn pause_for_child_terminal(&self) -> io::Result<()> {
-        self.paused.store(true, Ordering::Release);
-        if self.handle.is_none() {
-            self.paused_ack.store(true, Ordering::Release);
-            self.mark_alive();
-            return Ok(());
-        }
-
-        let deadline = Instant::now() + TERMINAL_INPUT_CHILD_PAUSE_TIMEOUT;
-        while !self.paused_ack.load(Ordering::Acquire) {
-            if Instant::now() >= deadline {
-                self.paused_ack.store(false, Ordering::Release);
-                self.paused.store(false, Ordering::Release);
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "启动编辑器前无法暂停终端输入线程",
-                ));
-            }
-            thread::sleep(TERMINAL_INPUT_CHILD_PAUSE_POLL_INTERVAL);
-        }
-        self.mark_alive();
-        Ok(())
-    }
-
-    fn resume_after_child_terminal(&self) {
-        self.paused_ack.store(false, Ordering::Release);
-        self.paused.store(false, Ordering::Release);
-        self.mark_alive();
-    }
-
-    /// Replace a wedged pump thread with a freshly spawned one.
-    ///
-    /// The old thread may be blocked forever inside crossterm's blocking
-    /// `event::read` (a stalled Windows console poll, or a Unix tty that
-    /// stopped delivering bytes), so it can never be joined. Instead it is
-    /// detached: `stop` is flagged and the `JoinHandle` dropped, so if the
-    /// thread ever wakes it exits on its own (its send fails once `rx` is
-    /// replaced, and the stop flag covers the poll loop).
-    fn restart_detached(&mut self) -> io::Result<()> {
-        self.detach_current_thread();
-        let parts = Self::spawn_parts()?;
-        self.install_parts(parts);
-        Ok(())
-    }
-
-    /// Flag the current pump thread to stop and drop its handle without
-    /// joining (the thread may be wedged in a blocking terminal read).
-    fn detach_current_thread(&mut self) {
-        self.stop.store(true, Ordering::Release);
-        let _ = self.handle.take();
-    }
-
-    /// Adopt freshly spawned pump parts and reset the liveness clock.
-    fn install_parts(&mut self, parts: TerminalInputPumpParts) {
-        self.rx = parts.rx;
-        self.stop = parts.stop;
-        self.paused = parts.paused;
-        self.paused_ack = parts.paused_ack;
-        self.handle = Some(parts.handle);
-        self.last_alive_at.set(Instant::now());
     }
 }
 
@@ -465,51 +283,6 @@ impl Drop for TerminalInputPump {
             let _ = handle.join();
         }
     }
-}
-
-fn next_terminal_event(
-    input: &TerminalInputPump,
-    pending: &mut VecDeque<Event>,
-    timeout: Duration,
-) -> io::Result<Option<Event>> {
-    if let Some(event) = pending.pop_front() {
-        return Ok(Some(event));
-    }
-    input.recv_timeout(timeout)
-}
-
-fn try_next_terminal_event(
-    input: &TerminalInputPump,
-    pending: &mut VecDeque<Event>,
-) -> io::Result<Option<Event>> {
-    if let Some(event) = pending.pop_front() {
-        return Ok(Some(event));
-    }
-    input.try_recv()
-}
-
-fn drain_terminal_input_queue(
-    input: &TerminalInputPump,
-    pending: &mut VecDeque<Event>,
-) -> io::Result<()> {
-    pending.clear();
-    while input.try_recv()?.is_some() {}
-    Ok(())
-}
-
-fn collect_pending_terminal_events(
-    input: &TerminalInputPump,
-    pending: &mut VecDeque<Event>,
-) -> io::Result<()> {
-    while let Some(event) = input.try_recv()? {
-        pending.push_back(event);
-    }
-    Ok(())
-}
-
-fn engine_drain_budget_exhausted(events_drained: usize, started: Instant, now: Instant) -> bool {
-    events_drained >= MAX_ENGINE_EVENTS_PER_DRAIN
-        || now.saturating_duration_since(started) >= ENGINE_DRAIN_TIME_BUDGET
 }
 
 fn complete_trust_directory_onboarding(app: &mut App) -> Result<(), String> {
@@ -655,9 +428,9 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         crate::logging::set_verbose(false);
     }
     // Mouse capture, bracketed paste, focus events, and the Kitty
-    // keyboard-protocol escape-disambiguation flag (#442). Single source
-    // of truth shared with the FocusGained recovery path and
-    // resume_terminal — see recover_terminal_modes.
+    // keyboard-protocol escape-disambiguation flag (#442). The setup is kept
+    // in one helper so startup and mode-recovery tests exercise the same
+    // sequence.
     //
     // Focus events are necessary for IME compositor re-activation on
     // macOS when the user switches away (Cmd+Tab) and returns. The Kitty
@@ -722,16 +495,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     // writer, or runtime-thread store participates in this path.
     app.launch.visible = false;
     let input = TerminalInputPump::spawn()?;
-    let mut pending_terminal_events = VecDeque::new();
-    if run_deepseek_onboarding_loop(
-        &mut terminal,
-        &mut app,
-        config,
-        &input,
-        &mut pending_terminal_events,
-    )
-    .await?
-    {
+    if run_deepseek_onboarding_loop(&mut terminal, &mut app, config, &input).await? {
         return Ok(());
     }
     app.workspace = app.workspace.canonicalize().with_context(|| {
@@ -826,7 +590,6 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
         &run_client,
         &mut run_events,
         &input,
-        &mut pending_terminal_events,
     )
     .await;
 
@@ -927,16 +690,10 @@ async fn run_deepseek_onboarding_loop(
     app: &mut App,
     config: &mut Config,
     input: &TerminalInputPump,
-    pending_terminal_events: &mut VecDeque<Event>,
 ) -> Result<bool> {
     while app.onboarding != OnboardingState::None {
         draw_app_frame_inner(terminal, app, true)?;
-        let Some(event) = next_terminal_event(
-            input,
-            pending_terminal_events,
-            Duration::from_millis(UI_ACTIVE_POLL_MS),
-        )?
-        else {
+        let Some(event) = input.recv_timeout(Duration::from_millis(UI_ACTIVE_POLL_MS))? else {
             continue;
         };
         match event {
@@ -1085,7 +842,6 @@ async fn run_canonical_event_loop(
         codewhale_protocol::agent_runtime::StoredRuntimeEvent,
     >,
     input: &TerminalInputPump,
-    pending_terminal_events: &mut VecDeque<Event>,
 ) -> Result<()> {
     let mut projection = CanonicalRunProjection::new();
     let mut presented_interaction_id = None;
@@ -1129,12 +885,7 @@ async fn run_canonical_event_loop(
             last_frame = now;
         }
 
-        let Some(event) = next_terminal_event(
-            input,
-            pending_terminal_events,
-            Duration::from_millis(UI_ACTIVE_POLL_MS),
-        )?
-        else {
+        let Some(event) = input.recv_timeout(Duration::from_millis(UI_ACTIVE_POLL_MS))? else {
             continue;
         };
         match event {
@@ -2102,68 +1853,6 @@ fn draw_app_frame_inner(
     result
 }
 
-fn pause_terminal(
-    terminal: &mut AppTerminal,
-    use_alt_screen: bool,
-    use_mouse_capture: bool,
-    use_bracketed_paste: bool,
-) -> Result<()> {
-    // #443: pop keyboard enhancement flags before handing the terminal
-    // to a child process so it doesn't inherit a half-configured input
-    // mode. Best-effort — terminals that didn't accept the flags
-    // silently ignore the pop. Matches the shutdown and panic paths.
-    pop_keyboard_enhancement_flags(terminal.backend_mut());
-    disable_alternate_scroll_mode(terminal.backend_mut());
-    execute!(terminal.backend_mut(), DisableFocusChange)?;
-    disable_raw_mode()?;
-    if use_alt_screen {
-        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-        #[cfg(windows)]
-        crate::logging::restore_verbose_state();
-    }
-    if use_mouse_capture {
-        execute!(terminal.backend_mut(), DisableMouseCapture)?;
-    }
-    if use_bracketed_paste {
-        disable_bracketed_paste_mode(terminal.backend_mut());
-    }
-    Ok(())
-}
-
-fn resume_terminal(
-    terminal: &mut AppTerminal,
-    use_alt_screen: bool,
-    use_mouse_capture: bool,
-    use_bracketed_paste: bool,
-    sync_output_enabled: bool,
-) -> Result<()> {
-    enable_raw_mode()?;
-    if use_alt_screen {
-        execute!(terminal.backend_mut(), EnterAlternateScreen)?;
-        // Re-entering alt-screen after mode recovery — suppress verbose
-        // CLI logging again so eprintln! doesn't leak into the TUI.
-        #[cfg(windows)]
-        crate::logging::set_verbose(false);
-    }
-    recover_terminal_modes(
-        terminal.backend_mut(),
-        use_mouse_capture,
-        use_bracketed_paste,
-    );
-    // Cache the real terminal size *before* resetting the viewport, so that
-    // reset_terminal_viewport → terminal.clear() → autoresize() → backend.size()
-    // picks up the cached size instead of falling through to
-    // crossterm::terminal::size() which may return stale buffer metadata
-    // (especially on Windows after a secondary EnterAlternateScreen).
-    if let Ok((cols, rows)) = crossterm::terminal::size() {
-        terminal
-            .backend_mut()
-            .set_terminal_size(Size::new(cols, rows));
-    }
-    reset_terminal_viewport(terminal, sync_output_enabled)?;
-    Ok(())
-}
-
 fn reset_terminal_viewport(terminal: &mut AppTerminal, sync_output_enabled: bool) -> Result<()> {
     // Reset scroll margins and origin mode before clearing. Some interactive
     // child processes leave DECSTBM/DECOM behind; if ratatui's diff renderer
@@ -2328,13 +2017,9 @@ fn enable_windows_ime_console_mode() {
 /// it, and a single flag's failure doesn't prevent later flags from being
 /// attempted.
 ///
-/// **Canonical location for terminal-mode setup.** If you add a new mode
-/// flag at startup or in `resume_terminal`, add it here too — `FocusGained`
-/// recovery calls this and will silently fall behind otherwise.
-///
-/// Excluded by design: raw mode and the alternate screen — those persist
-/// across focus events and are only re-established by `resume_terminal`
-/// after a suspension, which always runs a separate path.
+/// **Canonical location for terminal-mode setup.** New mouse, paste, keyboard
+/// or focus flags belong here so startup and terminal-mode tests stay aligned.
+/// Raw mode and the alternate screen are established separately by `run_tui`.
 ///
 pub(crate) fn recover_terminal_modes<W: Write>(
     writer: &mut W,
@@ -2376,10 +2061,6 @@ pub(crate) fn disable_bracketed_paste_mode<W: Write>(writer: &mut W) {
     if let Err(err) = execute!(writer, DisableBracketedPaste) {
         tracing::debug!(?err, "DisableBracketedPaste ignored");
     }
-}
-
-fn terminal_event_needs_viewport_recapture(evt: &Event) -> bool {
-    matches!(evt, Event::FocusGained)
 }
 
 pub(crate) fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
