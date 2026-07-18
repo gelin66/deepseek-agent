@@ -927,6 +927,14 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `tool_cells` 的 prepared→outcome 原位更新、canonical `RuntimeEvent`/`ToolOutcome`、
   `ActiveCell` 以及 child/Fleet 能力均保持原 owner。定向 presenter 13/13、canonical Run
   19/19、PTY 6/6、TUI all-target check、fmt 和 diff-check 均通过。
+- M4-C 已删除没有任何 production producer、只由 4 个 renderer 自测直接构造的
+  `HistoryCell::Error`，以及只服务该变体的标签、样式、纯文本换行 helper 和穷尽匹配分支。
+  模型请求失败和 terminal failure 继续由 typed `RuntimeEvent` 经 canonical presenter 投影；
+  child/system 消息仍使用 `HistoryCell::System`，失败工具仍由
+  `HistoryCell::Tool(GenericToolCell)` 与 `ToolStatus::Failed` 完整展示，session diagnostics
+  仍保留 `error_taxonomy`。定向 history 72/72、transcript cache 1/1、presenter 13/13、
+  canonical Run 19/19、PTY 6/6、TUI all-target check、fmt 和 diff-check 均通过；Widgets
+  全模块另有 2 个与本切片无调用关系的既有空状态文案断言失败，未越界修改。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

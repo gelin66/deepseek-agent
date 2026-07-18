@@ -31,7 +31,7 @@ use message::{
     tag_lines_without_links,
 };
 use thinking::{render_hidden_thinking_activity, render_thinking};
-use tool_output::{render_tool_output_mode, wrap_plain_line, wrap_text};
+use tool_output::{render_tool_output_mode, wrap_text};
 
 #[cfg(test)]
 use agent_activity::extract_agent_id;
@@ -71,13 +71,6 @@ pub enum HistoryCell {
     },
     System {
         content: String,
-    },
-    /// Categorized engine-error cell. Severity drives the label glyph + color
-    /// (red for `Error`/`Critical`, amber for `Warning`, dim for `Info`) so
-    /// the user can prioritize at a glance.
-    Error {
-        message: String,
-        severity: crate::error_taxonomy::ErrorSeverity,
     },
     Thinking {
         content: String,
@@ -156,30 +149,6 @@ impl HistoryCell {
                     )
                 }
             }
-            HistoryCell::Error { message, severity } => {
-                // Error messages are machine-generated and should not be run
-                // through markdown rendering, which would mangle env-var names
-                // containing underscores (e.g. DEEPSEEK_ALLOW_INSECURE_HTTP
-                // would lose its underscores as italic markers).
-                let label = error_label_text(*severity);
-                let label_style = error_label_style(*severity);
-                let body_style = error_body_style(*severity);
-                let prefix_width = UnicodeWidthStr::width(label);
-                let content_width = width.saturating_sub(2 + prefix_width as u16).max(1);
-                let mut lines = wrap_plain_line(message, body_style, content_width);
-                // Add the label prefix to the first line
-                if let Some(first) = lines.get_mut(0) {
-                    first.spans.insert(0, Span::raw(" "));
-                    first.spans.insert(0, Span::styled(label, label_style));
-                }
-                // Continuation rail for subsequent lines
-                let rail = format!("{}{}", '\u{258F}', " ".repeat(prefix_width));
-                let rail_style = Style::default().fg(palette::TEXT_DIM);
-                for line in lines.iter_mut().skip(1) {
-                    line.spans.insert(0, Span::styled(rail.clone(), rail_style));
-                }
-                lines
-            }
             HistoryCell::Thinking { content, streaming } => {
                 render_thinking(content, width, *streaming, false)
             }
@@ -235,7 +204,7 @@ impl HistoryCell {
                 content,
                 width,
             ),
-            HistoryCell::System { .. } | HistoryCell::Error { .. } => self.lines(width),
+            HistoryCell::System { .. } => self.lines(width),
             HistoryCell::ArchivedContext { .. } => {
                 render_archived_context(self, width, options.low_motion)
             }
@@ -636,41 +605,6 @@ fn truncate_text(text: &str, max_len: usize) -> String {
     }
     out.push_str("...");
     out
-}
-
-/// Label glyph for an error cell. `Critical`/`Error` get the loudest marker;
-/// `Warning` is softer; `Info` is neutral. Kept as ASCII so it survives any
-/// terminal font fallback.
-fn error_label_text(severity: crate::error_taxonomy::ErrorSeverity) -> &'static str {
-    match severity {
-        crate::error_taxonomy::ErrorSeverity::Critical
-        | crate::error_taxonomy::ErrorSeverity::Error => "Error",
-        crate::error_taxonomy::ErrorSeverity::Warning => "Warn",
-        crate::error_taxonomy::ErrorSeverity::Info => "Info",
-    }
-}
-
-/// Label color for an error cell — drives the leading rail glyph.
-fn error_label_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
-    let color = match severity {
-        crate::error_taxonomy::ErrorSeverity::Critical
-        | crate::error_taxonomy::ErrorSeverity::Error => palette::STATUS_ERROR,
-        crate::error_taxonomy::ErrorSeverity::Warning => palette::STATUS_WARNING,
-        crate::error_taxonomy::ErrorSeverity::Info => palette::TEXT_DIM,
-    };
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
-}
-
-/// Body color for an error cell — softer than the label so the rail draws
-/// the eye but the prose stays readable.
-fn error_body_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
-    let color = match severity {
-        crate::error_taxonomy::ErrorSeverity::Critical
-        | crate::error_taxonomy::ErrorSeverity::Error => palette::STATUS_ERROR,
-        crate::error_taxonomy::ErrorSeverity::Warning => palette::STATUS_WARNING,
-        crate::error_taxonomy::ErrorSeverity::Info => palette::TEXT_MUTED,
-    };
-    Style::default().fg(color)
 }
 
 fn render_tool_header_with_family_and_summary(

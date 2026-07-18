@@ -480,6 +480,15 @@ M4-C foreground 切换后还已物理删除：
   展示，canonical `RuntimeEvent`/`ToolOutcome`、`ActiveCell` 与 child/Fleet 均未改变。当前
   定向证据为 presenter 13/13、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check、
   fmt 与 diff-check。
+- `HistoryCell::Error` 没有 production producer；删除前只有 4 个 renderer 自测直接构造它，
+  其余引用均为 renderer 或 transcript cache 的穷尽匹配。该变体、专属标签/样式/纯文本换行
+  helper 和直接构造测试现已删除。模型请求失败与 terminal failure 仍由 typed
+  `RuntimeEvent` 经 canonical presenter 呈现；child/system 消息继续使用
+  `HistoryCell::System`，失败工具继续使用 `HistoryCell::Tool(GenericToolCell)` 与
+  `ToolStatus::Failed`，session diagnostics 继续使用 `error_taxonomy`。当前定向证据为
+  history 72/72、transcript cache 1/1、presenter 13/13、canonical Run 19/19、PTY 6/6，
+  并通过 TUI all-target check、fmt 与 diff-check；Widgets 全模块另有 2 个与该调用图无关的
+  既有空状态文案断言失败，未作为本切片通过证据。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

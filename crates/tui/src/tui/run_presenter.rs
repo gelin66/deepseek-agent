@@ -774,7 +774,7 @@ mod tests {
                 } => Some(format!("thinking:{streaming}:{content}")),
                 HistoryCell::System { content } => Some(format!("system:{content}")),
                 HistoryCell::Tool(cell) => Some(format!("tool:{:?}", cell.status)),
-                HistoryCell::Error { .. } | HistoryCell::ArchivedContext { .. } => None,
+                HistoryCell::ArchivedContext { .. } => None,
             })
             .collect()
     }

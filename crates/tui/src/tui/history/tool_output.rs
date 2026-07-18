@@ -579,14 +579,6 @@ fn render_output_row(
     }
 }
 
-pub(super) fn wrap_plain_line(line: &str, style: Style, width: u16) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    for part in wrap_text(line, width.max(1) as usize) {
-        lines.push(Line::from(Span::styled(part, style)));
-    }
-    lines
-}
-
 pub(super) fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if width == 0 {
         return vec![text.to_string()];
