@@ -181,12 +181,7 @@ impl ShellPhase {
     pub fn from_app(app: &App) -> Self {
         if matches!(
             app.view_stack.top_kind(),
-            Some(
-                ModalKind::Approval
-                    | ModalKind::Elevation
-                    | ModalKind::UserInput
-                    | ModalKind::PlanPrompt
-            )
+            Some(ModalKind::Approval | ModalKind::Elevation | ModalKind::UserInput)
         ) {
             return Self::Approval;
         }
@@ -196,7 +191,6 @@ impl ShellPhase {
             return Self::Failed;
         }
         if app.pending_user_input_prompt.is_some()
-            || app.plan_prompt_pending
             || app
                 .task_panel
                 .iter()
@@ -1023,13 +1017,6 @@ mod tests {
             WORKING_BUBBLE_FRAMES[4]
         );
 
-        app.runtime_turn_status = None;
-        app.plan_prompt_pending = true;
-        let (marker, label) = phase_marker(&app, ShellPhase::from_app(&app));
-        assert_eq!(marker, "◆");
-        assert_eq!(label, "等你处理");
-
-        app.plan_prompt_pending = false;
         app.runtime_turn_status = Some("failed".to_string());
         let (marker, label) = phase_marker(&app, ShellPhase::from_app(&app));
         assert_eq!(marker, "✕");

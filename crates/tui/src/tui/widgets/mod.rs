@@ -4636,20 +4636,6 @@ mod tests {
     }
 
     #[test]
-    fn waiting_state_freezes_the_whole_ocean_field() {
-        let mut app = create_test_app();
-        app.low_motion = false;
-        app.fancy_animations = true;
-        app.plan_prompt_pending = true;
-
-        let widget = ChatWidget::new(&mut app, Rect::new(0, 0, 100, 20));
-
-        assert!(!widget.ocean_animated);
-        assert!(!widget.ambient_life);
-        assert!(!should_render_empty_state(&app));
-    }
-
-    #[test]
     fn empty_state_shows_startup_context() {
         let mut app = create_test_app();
         app.workspace = PathBuf::from("/tmp/codewhale-test-workspace");

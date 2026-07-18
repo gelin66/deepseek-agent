@@ -30,12 +30,10 @@ pub enum ModalKind {
     Approval,
     Elevation,
     UserInput,
-    PlanPrompt,
     SubAgents,
     Pager,
     LiveTranscript,
     Config,
-    ModelPicker,
     ModePicker,
     SetupWizard,
     FilePicker,
@@ -579,10 +577,6 @@ pub enum ViewEvent {
         value: String,
         persist: bool,
     },
-    PlanPromptSelected {
-        option: usize,
-    },
-    PlanPromptDismissed,
     SubAgentsRefresh,
     SidebarAgentCancel {
         agent_id: String,
@@ -592,29 +586,6 @@ pub enum ViewEvent {
     /// position.
     FilePickerSelected {
         path: String,
-    },
-    /// Emitted by the `/model` picker on Enter — carries both the chosen
-    /// model id and reasoning effort tier so the UI handler can update App
-    /// state, persist via `Settings`, and forward `Op::SetModel` to the
-    /// running engine. `previous_*` fields let the handler skip work when
-    /// nothing changed and craft a clear status message.
-    ModelPickerApplied {
-        model: String,
-        provider: Option<crate::config::ApiProvider>,
-        effort: crate::tui::app::ReasoningEffort,
-        previous_model: String,
-        previous_effort: crate::tui::app::ReasoningEffort,
-    },
-    /// Emitted by the `/model` picker on Esc so the next open can restore
-    /// the browsing context — view mode and highlighted row (#4109 / #4115).
-    ModelPickerDismissed {
-        /// True when the dismissed view browses beyond configured providers
-        /// (Catalog / Recent / Coding / Cheap / Long context).
-        catalog_view: bool,
-        /// Named view key (`configured`, `catalog`, `recent`, `coding`,
-        /// `cheap`, `long_context`) for reopen restore (#4115).
-        view: String,
-        selected_row_id: Option<String>,
     },
     /// Emitted by the `/mode` picker when the user chooses a mode.
     ModeSelected {
