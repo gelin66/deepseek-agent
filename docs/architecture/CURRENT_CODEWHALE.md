@@ -362,6 +362,8 @@ M4-C foreground 切换后还已物理删除：
   UserInput modal 直接消费 protocol request/response，提交仍落入 canonical RunStore。
 - 旧 `composer_ui` 键盘处理器岛；唯一真实使用的 slash-menu 选择已迁回 canonical 事件
   owner `ui.rs`，其余 escape/history/word-motion/newline helpers 没有生产调用方。
+- `key_shortcuts` 中零调用的 copy/paste/control-like/Ctrl-H predicates；保留首启输入所需
+  的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
 
 ## 6. 当前验证事实
 
