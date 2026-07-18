@@ -2564,11 +2564,9 @@ struct RequirementsFile {
 
 /// The highest-precedence source that can currently own approval policy.
 ///
-/// The resolved [`Config`] historically retained only the final string, which
-/// made an in-session editor unable to distinguish a user-owned root key from
-/// a profile, environment, managed, requirements, or project constraint. The
-/// destructive Full Access preset uses this classification to fail closed
-/// unless it can prove that removing the root key is the operation requested.
+/// The resolved [`Config`] retains the final string, while the permission
+/// runtime also needs to know whether a profile, environment, managed file,
+/// requirements, or project constraint owns that value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ApprovalPolicyControl {
     Unset,
@@ -2583,11 +2581,6 @@ pub(crate) enum ApprovalPolicyControl {
 
 impl ApprovalPolicyControl {
     #[must_use]
-    pub(crate) fn editable_root(self) -> bool {
-        matches!(self, Self::Unset | Self::RootConfig)
-    }
-
-    #[must_use]
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Unset => "saved TUI posture",
@@ -2600,56 +2593,6 @@ impl ApprovalPolicyControl {
             Self::Ambiguous => "an unresolved configuration source",
         }
     }
-}
-
-/// Highest-precedence source that owns the interactive shell availability
-/// switch. Project/profile/environment/managed constraints are intentionally
-/// read-only from the root settings editor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ShellAccessControl {
-    Unset,
-    RootConfig,
-    Profile,
-    Environment,
-    ManagedConfig,
-    ProjectConfig,
-    Ambiguous,
-}
-
-impl ShellAccessControl {
-    #[must_use]
-    pub(crate) fn editable_root(self) -> bool {
-        matches!(self, Self::Unset | Self::RootConfig)
-    }
-
-    #[must_use]
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Unset => "the session default",
-            Self::RootConfig => "the root config.toml allow_shell",
-            Self::Profile => "the active config profile",
-            Self::Environment => "DEEPSEEK_ALLOW_SHELL",
-            Self::ManagedConfig => "managed configuration",
-            Self::ProjectConfig => "project configuration",
-            Self::Ambiguous => "an unresolved configuration source",
-        }
-    }
-}
-
-fn project_config_root_bool(workspace: &Path, key: &str) -> Option<bool> {
-    [
-        workspace
-            .join(codewhale_config::CODEWHALE_APP_DIR)
-            .join("config.toml"),
-        workspace
-            .join(codewhale_config::LEGACY_APP_DIR)
-            .join("config.toml"),
-    ]
-    .into_iter()
-    .find(|path| path.exists())
-    .and_then(|path| std::fs::read_to_string(path).ok())
-    .and_then(|raw| toml::from_str::<toml::Value>(&raw).ok())
-    .and_then(|document| document.get(key).and_then(toml::Value::as_bool))
 }
 
 /// Map the saved TUI permission posture onto the approval-policy ordering used
@@ -2768,83 +2711,6 @@ impl Config {
         }
     }
 
-    /// Identify whether shell availability can safely be edited through the
-    /// user-owned root config. Later sources are controlling even when their
-    /// effective value happens to match the root value.
-    #[must_use]
-    pub(crate) fn allow_shell_control(
-        &self,
-        config_path: Option<&Path>,
-        profile: Option<&str>,
-        workspace: &Path,
-    ) -> ShellAccessControl {
-        let workspace_is_home = effective_home_dir().is_some_and(|home| {
-            let workspace = workspace
-                .canonicalize()
-                .unwrap_or_else(|_| workspace.to_path_buf());
-            let home = home.canonicalize().unwrap_or(home);
-            workspace == home
-        });
-        if !workspace_is_home && project_config_root_bool(workspace, "allow_shell") == Some(false) {
-            return ShellAccessControl::ProjectConfig;
-        }
-
-        let managed_path = self
-            .managed_config_path
-            .as_deref()
-            .map(expand_path)
-            .or_else(default_managed_config_path);
-        if let Some(path) = managed_path
-            && path.exists()
-        {
-            match load_single_config_file(&path) {
-                Ok(managed) if managed.allow_shell.is_some() => {
-                    return ShellAccessControl::ManagedConfig;
-                }
-                Err(_) => return ShellAccessControl::Ambiguous,
-                Ok(_) => {}
-            }
-        }
-
-        if std::env::var_os("DEEPSEEK_ALLOW_SHELL").is_some() {
-            return ShellAccessControl::Environment;
-        }
-
-        let Some(path) = resolve_load_config_path(config_path.map(Path::to_path_buf)) else {
-            return if self.allow_shell.is_some() {
-                ShellAccessControl::Ambiguous
-            } else {
-                ShellAccessControl::Unset
-            };
-        };
-        let parsed = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|raw| toml::from_str::<ConfigFile>(&raw).ok());
-        let Some(parsed) = parsed else {
-            return if self.allow_shell.is_some() {
-                ShellAccessControl::Ambiguous
-            } else {
-                ShellAccessControl::Unset
-            };
-        };
-        if let Some(profile) = profile
-            && parsed
-                .profiles
-                .as_ref()
-                .and_then(|profiles| profiles.get(profile))
-                .is_some_and(|profile| profile.allow_shell.is_some())
-        {
-            return ShellAccessControl::Profile;
-        }
-        if parsed.base.allow_shell.is_some() {
-            ShellAccessControl::RootConfig
-        } else if self.allow_shell.is_some() {
-            ShellAccessControl::Ambiguous
-        } else {
-            ShellAccessControl::Unset
-        }
-    }
-
     /// Whether an explicit config or requirements file owns approval posture.
     /// TUI preferences may supply a default only when this is false.
     #[must_use]
@@ -2855,9 +2721,8 @@ impl Config {
         self.approval_policy_is_requirements_managed()
     }
 
-    /// Whether organization requirements, rather than a user-editable config
-    /// key, own approval posture. User config still outranks TUI settings, but
-    /// `/config approval_mode ... --save` may edit that user-owned key.
+    /// Whether organization requirements, rather than user configuration,
+    /// own approval posture. User config still outranks TUI settings.
     #[must_use]
     pub fn approval_policy_is_requirements_managed(&self) -> bool {
         let path = self

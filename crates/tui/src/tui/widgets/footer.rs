@@ -15,8 +15,8 @@
 //! |-------------|--------------|------------------|
 //! | state | `state_label` (+ working strip) | transcript / live work strip |
 //! | work count | `work`, `agents` | To-do/Agents sidebar, `/fleet` |
-//! | mode | `mode_label` | `/mode` picker |
-//! | permission | `permission` | Shift+Tab cycle, `/config` |
+//! | mode | `mode_label` | current runtime posture |
+//! | permission | `permission` | current runtime posture |
 //! | cost/rate | `cost`, `balance`, `cache` | canonical usage projection and `/cost` |
 //! | anomalies | MCP chip | MCP manager |
 //!

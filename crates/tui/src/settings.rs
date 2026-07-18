@@ -424,8 +424,8 @@ impl Default for Settings {
 /// favors a quiet, readable transcript over debug-dense output. Presentation
 /// only, and evidence-preserving — `show_thinking` is deliberately left untouched
 /// (thinking stays visible) and tool runs only have their inline detail
-/// collapsed, never hidden. Keyed by [`Settings::set`] names so the preset and a
-/// single-key `/config` set share one validation path.
+/// collapsed, never hidden. Keyed by [`Settings::set`] names so preset fields
+/// share one validation path.
 pub const CALM_PRESET_FIELDS: &[(&str, &str)] = &[
     ("calm_mode", "true"),
     ("tool_collapse", "calm"),
@@ -452,8 +452,7 @@ fn normalize_work_surface_placement(value: &str) -> &'static str {
 }
 
 /// The `(key, value)` fields a named preset applies, or `None` for an unknown
-/// name. Single source of truth shared by [`Settings::apply_preset`] and the
-/// `/config preset` command so the bundle is never defined twice.
+/// name. Single source of truth for [`Settings::apply_preset`].
 #[must_use]
 pub fn preset_fields(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
     match name.trim().to_ascii_lowercase().as_str() {
@@ -474,8 +473,7 @@ impl Settings {
     /// Get the canonical settings file path.
     ///
     /// New writes should target `~/.codewhale/settings.toml`. Legacy
-    /// DeepSeek-branded paths remain readable as fallbacks during load, but we
-    /// no longer surface them as the primary path in `/config`.
+    /// DeepSeek-branded paths remain readable as fallbacks during load.
     pub fn path() -> Result<PathBuf> {
         codewhale_config::settings_path()
     }

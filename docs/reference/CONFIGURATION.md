@@ -212,19 +212,12 @@ Overrides:
 
 If both are set, `--config` wins. Environment variable overrides are applied after the file is loaded.
 
-### TUI editability audit
+### 修改配置
 
-Inside the TUI, run `/config audit` to see which documented keys can be changed
-from the current session, which ones can also be persisted, and which ones stay
-file-only or restart-only. The audit includes current values for the high-impact
-runtime controls such as `approval_policy`, `allow_shell`,
-`stream_chunk_timeout_secs`, `base_url`, `mcp_config_path`, and the
-`[subagents]` concurrency/depth/timeout keys.
-
-Use the command's "Command / reason" column as the source of truth before
-editing by hand. For example, `/config approval_mode on-request --save` writes
-top-level `approval_policy = "on-request"`, while provider base URLs are saved
-but still require restarting the model client.
+当前交互 TUI 不提供配置编辑器。直接编辑 `~/.codewhale/config.toml`；模型路由、
+`approval_policy`、`allow_shell`、`base_url`、`mcp_config_path` 和
+`[subagents]` 等运行配置应在重启后生效。界面偏好保存在
+`~/.codewhale/settings.toml`。
 
 ### User workspace entries
 
@@ -1104,8 +1097,8 @@ codewhale also stores user preferences in:
 These settings control presentation and input behavior. Automatic compaction is
 owned by the canonical AgentRuntime context policy rather than a TUI
 preference; the TUI exposes no enable or threshold setting. Manual `/compact`
-remains available. You can inspect or update retained preferences from the TUI
-with `/settings` and `/config` (interactive editor).
+remains available. Edit `~/.codewhale/settings.toml` to change retained
+preferences.
 
 Common settings keys:
 
@@ -1121,8 +1114,8 @@ Common settings keys:
 - `work_surface_placement` (`top`, `left`, or `right`; default `top`): places
   Ocean's Tasks / To-do / Workers surface above the transcript or in a side
   rail. Side choices fall back to the top layout on narrow terminals and in
-  Classic without changing the saved Ocean preference. Set it live with
-  `/config work_surface_placement right --save` (or `left` / `top`).
+  Classic without changing the saved Ocean preference. Set it in
+  `~/.codewhale/settings.toml` and restart the TUI.
 - `mention_menu_limit` (integer, default `128`): maximum number of
   `@`-mention popup candidates retained before the composer renders the
   visible window. The visible rows still depend on terminal height.
@@ -1204,11 +1197,12 @@ If you are upgrading from older releases:
 - Old: `/codewhale`
   New: `/links` (aliases: `/dashboard`, `/api`)
 - Old: `/set model deepseek-reasoner`
-  New: `/config` and edit the `model` row to `deepseek-v4-pro` or `deepseek-v4-flash`
+  New: set `model = "deepseek-v4-pro"` or `model = "deepseek-v4-flash"` in
+  `~/.codewhale/config.toml`, then restart
 - Old: visible `Normal` mode or `default_mode = "normal"`
   New: use `Agent` / `default_mode = "agent"`; legacy `normal` still maps to `agent`
 - Old: discover `/set` in slash UX/help
-  New: use `/config` for editing and `/settings` for read-only inspection
+  New: edit the configuration and settings files directly
 
 ## Key Reference
 
@@ -1237,7 +1231,7 @@ If you are upgrading from older releases:
   keep the conservative omitted-field default and require `allow_shell = true`
   to expose shell. Plan mode always hides shell; Full Access enables shell and
   auto-approval.
-- `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`. Runtime `approval_mode` editing in `/config` also accepts `on-request` and `untrusted` aliases.
+- `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
   Platform support is not identical. macOS uses Seatbelt for policy
   enforcement. Linux support is helper-gated around Landlock. Windows does not
@@ -1366,8 +1360,6 @@ If you are upgrading from older releases:
   max_admitted = 20
   ```
 
-  `/config subagents status` prints both global values and the active
-  provider's resolved profile so rate-limit tuning is visible in the TUI.
   `[subagents.models]` accepts lower-case role or type keys such as `worker`,
   `explorer`, `general`, `explore`, `plan`, and `review`. Values are validated
   against the active provider at spawn time; direct DeepSeek requires DeepSeek
@@ -1393,9 +1385,8 @@ If you are upgrading from older releases:
   `skills_dir` override.
 - `mcp_config_path` (string, optional): defaults to `~/.codewhale/mcp.json`, with
   legacy `~/.deepseek/mcp.json` fallback when the CodeWhale path is absent.
-  It is visible in `/config` and can be changed from the TUI. The new path is
-  used immediately by `/mcp`, but rebuilding the model-visible MCP tool pool
-  requires restarting the TUI.
+  Change it in the configuration file and restart the TUI to rebuild the
+  model-visible MCP tool pool.
 - `notes_path` (string, optional): defaults to `~/.codewhale/notes.txt`, with
   legacy `~/.deepseek/notes.txt` fallback when the CodeWhale path is absent, and
   is used by the model-visible `note` tool.
@@ -1462,7 +1453,7 @@ If you are upgrading from older releases:
 - `tui.alternate_screen` (string, optional): `auto`, `always`, or `never`. This is retained for config compatibility, but interactive sessions now always use the TUI-owned alternate screen so host terminal scrollback cannot hijack the viewport.
 - `tui.mouse_capture` (bool, optional, default `true` on non-Windows terminals and on Windows Terminal/ConEmu/Cmder when the alternate screen is active; `false` on legacy Windows console and inside JetBrains JediTerm — PyCharm/IDEA/CLion/etc. — where mouse-event escapes leak into the input stream as garbled text, see #878 / #898): enable internal mouse scrolling, transcript selection, right-click context actions, and transcript scrollbar dragging. TUI-owned drag selection copies only transcript text, removes visual wrap-column line breaks from paragraphs, and keeps selection scoped to the transcript pane. Set this to `false` or run with `--no-mouse-capture` for raw terminal selection; set it to `true` or run with `--mouse-capture` to opt in anywhere it's defaulted off. On raw terminal selection, especially on legacy Windows console or when mouse capture is disabled, selection may cross the right sidebar and include visual wraps because the terminal, not the TUI, owns the selection.
 - `tui.terminal_probe_timeout_ms` (int, optional, default `500`): startup terminal-mode probe timeout in milliseconds. Values are clamped to `100..=5000`; timeout emits a warning and aborts startup instead of hanging indefinitely.
-- `tui.stream_chunk_timeout_secs` (int, optional, default `900`): per-SSE-chunk idle timeout for streamed model responses. Slow local or compatible servers can raise this with `/config stream_chunk_timeout_secs <seconds>`; `0` maps to the default and explicit values must be `1..=3600`. The legacy `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var is still honored when this key is omitted.
+- `tui.stream_chunk_timeout_secs` (int, optional, default `900`): per-SSE-chunk idle timeout for streamed model responses. Set it in the configuration file; `0` maps to the default and explicit values must be `1..=3600`. The legacy `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var is still honored when this key is omitted.
 - `tui.osc8_links` (bool, optional, default on for macOS/Linux, off for Windows): emit OSC 8 escape sequences around URLs in transcript output so supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) can open them with the terminal's link gesture—usually Cmd-click on macOS and Ctrl-click on Linux/Windows. Terminals without OSC 8 support render the plain label and ignore the escape. The escapes are emitted out-of-band (not inside buffer cells), so column corruption is not a concern; set `false` only for terminals that misrender the OSC 8 terminator itself. Windows legacy consoles default off; opt in with `true`.
 - `hooks` (optional): lifecycle hooks configuration (see `config.example.toml`).
 - `features.*` (optional): feature flag overrides (see below).
@@ -1578,11 +1569,7 @@ You can also override features for a single run:
 - `codewhale-tui --disable subagents`
 
 Use `codewhale-tui features list` to inspect known flags and their effective state.
-The native `/config` view also includes a read-only **Experimental** section
-for experimental feature flags. It shows each flag's effective enabled/disabled
-state and whether that state comes from the default or a configured override.
-Change feature flags in `[features]` or with `--enable` / `--disable`; the
-`/config` section is an audit surface, not a stability promise.
+Change feature flags in `[features]` or with `--enable` / `--disable`.
 
 ## Web Search Provider
 

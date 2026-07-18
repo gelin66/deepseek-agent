@@ -208,11 +208,8 @@ Overrides:
 
 `codewhale-tui mcp init` (and `codewhale-tui setup --mcp`) writes to this resolved path.
 
-The interactive `/config` editor also exposes `mcp_config_path`. Changing it in
-the TUI updates the path used by `/mcp`, and requires a restart before the
-model-visible MCP tool pool is rebuilt.
-
-After editing the file or changing `mcp_config_path`, restart the TUI.
+After changing `mcp_config_path` in `~/.codewhale/config.toml`, restart the TUI
+so the model-visible MCP tool pool is rebuilt.
 
 ## Tool Naming
 

@@ -89,13 +89,12 @@ expand globs, or create broad directory rules.
 
 ### MCP manager and palette discovery
 
-MCP server configuration is surfaced in the TUI through `/mcp` and the
-`mcp_config_path` row in `/config`. `/mcp` shows the resolved config path,
-server enabled/disabled state, transport, command or URL, timeouts, connection
-errors, and discovered tools/resources/prompts. It supports narrow manager
-actions for init, add, enable, disable, remove, validate, and reload/reconnect.
-Config edits are written immediately, but the model-visible MCP tool pool is
-restart-required after edits.
+MCP server configuration is surfaced through `/mcp`; `mcp_config_path` is read
+from `~/.codewhale/config.toml`. `/mcp` shows the resolved config path, server
+enabled/disabled state, transport, command or URL, timeouts, connection errors,
+and discovered tools/resources/prompts. It supports narrow manager actions for
+init, add, enable, disable, remove, validate, and reload/reconnect. Rebuilding
+the model-visible MCP tool pool requires a restart after path changes.
 
 The command palette includes MCP entries grouped by server. Disabled and failed
 servers stay visible, and discovered tools/prompts use the runtime names shown

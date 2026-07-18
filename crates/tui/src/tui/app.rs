@@ -1654,8 +1654,7 @@ pub struct App {
     pub synchronized_output_enabled: bool,
     /// Header status-indicator chip mode. `"cw"` is the static default;
     /// `"whale"` and `"dots"` preserve the animated legacy choices, while
-    /// `"off"` hides the chip. Loaded from settings and changed via
-    /// `/config status_indicator <cw|whale|dots|off>`.
+    /// `"off"` hides the chip. Loaded from settings.
     pub status_indicator: String,
     pub show_thinking: bool,
     pub show_tool_details: bool,
@@ -1768,10 +1767,8 @@ pub struct App {
     pub pending_user_input_prompt: Option<(String, crate::tools::user_input::UserInputRequest)>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
-    /// Ordered list of footer items the user wants visible. Sourced from
-    /// `tui.status_items` in `~/.deepseek/config.toml` at startup; mutated
-    /// live by `/statusline`. The renderer iterates this slice; no item is
-    /// hardcoded in the footer code path.
+    /// Ordered footer items loaded from `tui.status_items` at startup. The
+    /// renderer iterates this slice; no item is hardcoded in the footer path.
     pub status_items: Vec<crate::config::StatusItem>,
     /// Project documentation (AGENTS.md or CLAUDE.md)
     #[allow(dead_code)]

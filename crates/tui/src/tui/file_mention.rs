@@ -397,7 +397,7 @@ pub fn try_autocomplete_file_mention(app: &mut App) -> bool {
 fn no_file_mention_matches_status(partial: &str, walk_depth: usize) -> String {
     if path_partial_reaches_walk_depth(partial, walk_depth) {
         format!(
-            "No files match @{partial} (mention_walk_depth={walk_depth}; use /config set mention_walk_depth 0 to search deeper)"
+            "No files match @{partial} (mention_walk_depth={walk_depth}; set mention_walk_depth = 0 in ~/.codewhale/settings.toml to search deeper)"
         )
     } else {
         format!("No files match @{partial}")
