@@ -1046,7 +1046,6 @@ dependencies = [
  "ahash",
  "anyhow",
  "arboard",
- "async-stream",
  "async-trait",
  "axum",
  "base64",

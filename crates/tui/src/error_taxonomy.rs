@@ -1,7 +1,6 @@
 //! Shared error taxonomy across client, tools, runtime, and UI.
 use std::fmt;
 
-use crate::llm_client::LlmError;
 use crate::tools::spec::ToolError;
 
 /// Broad category for typed error handling and policy decisions.
@@ -217,111 +216,6 @@ impl ErrorEnvelope {
     }
 }
 
-impl From<LlmError> for ErrorEnvelope {
-    fn from(value: LlmError) -> Self {
-        match value {
-            LlmError::RateLimited { message, .. } => Self::new(
-                ErrorCategory::RateLimit,
-                ErrorSeverity::Warning,
-                true,
-                "llm_rate_limited",
-                message,
-            ),
-            LlmError::ServerError { status, message } => Self::new(
-                ErrorCategory::Internal,
-                ErrorSeverity::Error,
-                true,
-                format!("llm_server_{status}"),
-                message,
-            ),
-            LlmError::NetworkError(message) => Self::new(
-                ErrorCategory::Network,
-                ErrorSeverity::Error,
-                true,
-                "llm_network_error",
-                message,
-            ),
-            LlmError::Timeout(duration) => Self::new(
-                ErrorCategory::Timeout,
-                ErrorSeverity::Warning,
-                true,
-                "llm_timeout",
-                format!("Request timed out after {duration:?}"),
-            ),
-            LlmError::AuthenticationError(auth) => Self::new(
-                ErrorCategory::Authentication,
-                ErrorSeverity::Critical,
-                false,
-                "llm_auth_error",
-                auth.to_user_message(),
-            ),
-            LlmError::AuthorizationError(message) => Self::new(
-                ErrorCategory::Authorization,
-                ErrorSeverity::Error,
-                false,
-                "llm_authorization_error",
-                message,
-            ),
-            LlmError::InvalidRequest { message, .. } => Self::new(
-                ErrorCategory::InvalidInput,
-                ErrorSeverity::Error,
-                false,
-                "llm_invalid_request",
-                message,
-            ),
-            LlmError::ModelError(message) => Self::new(
-                ErrorCategory::InvalidInput,
-                ErrorSeverity::Error,
-                false,
-                "llm_model_error",
-                message,
-            ),
-            LlmError::ContentPolicyError(message) => Self::new(
-                ErrorCategory::Authorization,
-                ErrorSeverity::Error,
-                false,
-                "llm_content_policy",
-                message,
-            ),
-            LlmError::ParseError(message) => Self::new(
-                ErrorCategory::Parse,
-                ErrorSeverity::Error,
-                false,
-                "llm_parse_error",
-                message,
-            ),
-            LlmError::ContextLengthError(message) => Self::new(
-                ErrorCategory::InvalidInput,
-                ErrorSeverity::Error,
-                false,
-                "llm_context_length",
-                message,
-            ),
-            LlmError::ApiRequestBudgetExhausted { limit, started } => Self::new(
-                ErrorCategory::State,
-                ErrorSeverity::Warning,
-                false,
-                "llm_api_request_budget_exhausted",
-                format!("DeepSeek API 请求预算已用尽（已发起：{started}，上限：{limit}）"),
-            ),
-            LlmError::ApiRequestBudgetSealed { limit, started } => Self::new(
-                ErrorCategory::State,
-                ErrorSeverity::Warning,
-                false,
-                "llm_api_request_budget_sealed",
-                format!("DeepSeek API 请求预算已封存（已发起：{started}，上限：{limit}）"),
-            ),
-            LlmError::Other(message) => Self::new(
-                ErrorCategory::Internal,
-                ErrorSeverity::Error,
-                true,
-                "llm_other",
-                message,
-            ),
-        }
-    }
-}
-
 /// Classify an error message string into an ErrorCategory.
 ///
 /// Uses heuristic keyword matching on the lowercased message.
@@ -467,71 +361,6 @@ impl From<ToolError> for ErrorEnvelope {
     }
 }
 
-/// Stream‑level error discriminated by origin.
-///
-/// Each variant maps to an `ErrorCategory` so the UI can render
-/// stream‑specific icons or formatting. Wired into engine.rs at the three
-/// stream guard sites (chunk timeout, max-bytes overflow, max-duration).
-#[derive(Debug, Clone)]
-pub enum StreamError {
-    /// Stream stalled — no chunk received within the idle timeout.
-    Stall { timeout_secs: u64 },
-    /// Stream exceeded content size limit.
-    Overflow { limit_bytes: usize },
-    /// Stream exceeded wall‑clock duration limit.
-    DurationLimit { limit_secs: u64 },
-}
-
-impl StreamError {
-    /// Convert directly into an `ErrorEnvelope` for emission on the engine
-    /// event channel. Stalls are warning-severity and recoverable; size and
-    /// duration limits are errors (the user must restart the turn).
-    #[must_use]
-    pub fn into_envelope(self) -> ErrorEnvelope {
-        match self {
-            Self::Stall { timeout_secs } => ErrorEnvelope::new(
-                ErrorCategory::Timeout,
-                ErrorSeverity::Warning,
-                true,
-                "stream_stall",
-                format!("Stream stalled: no data received for {timeout_secs}s, closing stream"),
-            ),
-            Self::Overflow { limit_bytes } => ErrorEnvelope::new(
-                ErrorCategory::Internal,
-                ErrorSeverity::Error,
-                true,
-                "stream_overflow",
-                format!("Stream exceeded maximum content size of {limit_bytes} bytes, closing"),
-            ),
-            Self::DurationLimit { limit_secs } => ErrorEnvelope::new(
-                ErrorCategory::Timeout,
-                ErrorSeverity::Error,
-                true,
-                "stream_duration_limit",
-                format!("Stream exceeded maximum duration of {limit_secs}s, closing"),
-            ),
-        }
-    }
-}
-
-impl fmt::Display for StreamError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Stall { timeout_secs } => {
-                write!(f, "Stream stalled after {timeout_secs}s idle")
-            }
-            Self::Overflow { limit_bytes } => {
-                write!(f, "Stream exceeded {limit_bytes} bytes limit")
-            }
-            Self::DurationLimit { limit_secs } => {
-                write!(f, "Stream exceeded {limit_secs}s duration limit")
-            }
-        }
-    }
-}
-
-impl std::error::Error for StreamError {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,35 +456,6 @@ mod tests {
                 "expected Authentication for `{msg}`",
             );
         }
-    }
-
-    #[test]
-    fn llm_auth_error_envelope_renders_context_without_secret() {
-        let api_key = "tp-secret-token-plan-value";
-        let env = ErrorEnvelope::from(LlmError::from_http_response_with_request_context(
-            401,
-            &format!("Invalid API Key: {api_key}"),
-            Some("Xiaomi MiMo"),
-            Some("https://token-plan-sgp.xiaomimimo.com/v1"),
-            Some("mimo-v2.5"),
-            Some("env"),
-            Some(api_key),
-        ));
-
-        assert_eq!(env.category, ErrorCategory::Authentication);
-        assert_eq!(env.severity, ErrorSeverity::Critical);
-        assert!(!env.recoverable);
-        assert!(env.message.contains("provider: Xiaomi MiMo"));
-        assert!(
-            env.message
-                .contains("base URL authority: token-plan-sgp.xiaomimimo.com")
-        );
-        assert!(env.message.contains("model: mimo-v2.5"));
-        assert!(env.message.contains("key source: env"));
-        assert!(env.message.contains("key fingerprint: tp-... (len=26)"));
-        assert!(env.message.contains("key type: Xiaomi MiMo Token Plan key"));
-        assert!(!env.message.contains(api_key));
-        assert!(!env.message.contains("secret-token-plan-value"));
     }
 
     #[test]

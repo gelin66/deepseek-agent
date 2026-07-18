@@ -27,7 +27,6 @@ i18n!("locales", fallback = ["zh-Hans"]);
 
 mod artifacts;
 mod audit;
-mod client;
 mod codex_model_cache;
 mod composer_history;
 mod composer_stash;
@@ -47,8 +46,6 @@ mod features;
 mod fleet;
 mod hashing;
 mod hooks;
-mod llm_client;
-mod llm_response_cache;
 mod localization;
 mod logging;
 mod lsp;
