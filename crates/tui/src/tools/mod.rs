@@ -13,7 +13,6 @@ pub mod approval_cache;
 pub mod handle;
 pub mod large_output_router;
 pub mod plan;
-pub mod plugin;
 pub mod spec;
 pub mod todo;
 pub mod truncate;

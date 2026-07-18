@@ -702,6 +702,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   Doctor 假注册提示，并同步删除只服务该路径的 async/status dependency trait API。MCP 仍可
   按显式配置启动 Node server，canonical `run_verifiers` 仍覆盖 Node 项目；两者不依赖这套
   模型可见 JavaScript 执行器。
+- M4-C 已删除从未接入 production catalog 的 TUI script-command plugin ToolSpec、复制其
+  扫描逻辑的假 E2E、`[tools.plugin_dir]`/`[tools.overrides]` 配置和 `setup --tools`/Doctor
+  脚手架；固定 canonical catalog 不再暗示可被本地脚本替换。真实 MCP、skills 与现有
+  plugins 目录逻辑保持原调用边界，未被该删除重写。
 - M4-C 已把 `key_shortcuts` 收缩为首启输入仍使用的 `is_text_input_key`，删除零调用的
   copy/paste/control-like/Ctrl-H 判定；正式文本粘贴继续由 terminal `Event::Paste` 处理，
   Pager 文本复制继续走 canonical local view event。

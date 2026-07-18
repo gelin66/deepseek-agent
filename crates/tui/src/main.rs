@@ -828,13 +828,10 @@ struct SetupArgs {
     /// Initialize skills directory and an example skill
     #[arg(long, default_value_t = false)]
     skills: bool,
-    /// Initialize tools directory with a self-describing example script
-    #[arg(long, default_value_t = false)]
-    tools: bool,
     /// Initialize plugins directory with a self-describing example
     #[arg(long, default_value_t = false)]
     plugins: bool,
-    /// Initialize MCP config, skills, tools, and plugins
+    /// Initialize MCP config, skills, and plugins
     #[arg(long, default_value_t = false)]
     all: bool,
     /// Create a local workspace skills directory (./skills)
@@ -844,10 +841,10 @@ struct SetupArgs {
     #[arg(long, default_value_t = false)]
     force: bool,
     /// Print a compact, read-only status report (no network calls)
-    #[arg(long, default_value_t = false, conflicts_with_all = ["mcp", "skills", "tools", "plugins", "all", "local", "clean"])]
+    #[arg(long, default_value_t = false, conflicts_with_all = ["mcp", "skills", "plugins", "all", "local", "clean"])]
     status: bool,
     /// Remove regenerable session checkpoints (latest + offline_queue)
-    #[arg(long, default_value_t = false, conflicts_with_all = ["mcp", "skills", "tools", "plugins", "all", "local", "status"])]
+    #[arg(long, default_value_t = false, conflicts_with_all = ["mcp", "skills", "plugins", "all", "local", "status"])]
     clean: bool,
 }
 
@@ -2060,47 +2057,6 @@ fn init_skills_dir(skills_dir: &Path, force: bool) -> Result<(PathBuf, WriteStat
     Ok((skill_path, status))
 }
 
-fn tools_readme_template() -> &'static str {
-    "# Local tools\n\n\
-     Drop self-describing scripts here so they can be discovered by\n\
-     `codewhale-tui setup --status` and surfaced in `codewhale-tui doctor`.\n\n\
-     When `[tools.plugin_dir]` is set in config.toml (or when the default\n\
-     `~/.codewhale/tools/` directory exists), they are auto-discovered and\n\
-     registered as model-visible tools.\n\n\
-     Each script should start with a frontmatter-style header so the\n\
-     description is visible without executing the file and the agent knows\n\
-     the tool name, description, and input schema:\n\n\
-     ```\n\
-     # name: my-tool\n\
-     # description: One-line summary of what this tool does\n\
-     # usage: my-tool [args...]\n\
-     ```\n\n\
-     The directory is intentionally not auto-loaded into the agent's tool\n\
-     catalog. Wire individual tools through MCP, hooks, or skills when you\n\
-     want them available inside a session.\n"
-}
-
-fn tools_example_script() -> &'static str {
-    "#!/usr/bin/env sh\n\
-     # name: example\n\
-     # description: Print a confirmation that local tool discovery works\n\
-     # usage: example [name]\n\
-     printf 'codewhale-tui local tool ok: %s\\n' \"${1:-world}\"\n"
-}
-
-fn init_tools_dir(tools_dir: &Path, force: bool) -> Result<(PathBuf, WriteStatus, WriteStatus)> {
-    std::fs::create_dir_all(tools_dir)
-        .with_context(|| format!("Failed to create tools dir {}", tools_dir.display()))?;
-
-    let readme_path = tools_dir.join("README.md");
-    let readme_status = write_template_file(&readme_path, tools_readme_template(), force)?;
-
-    let example_path = tools_dir.join("example.sh");
-    let example_status = write_template_file(&example_path, tools_example_script(), force)?;
-
-    Ok((tools_dir.to_path_buf(), readme_status, example_status))
-}
-
 fn plugins_readme_template() -> &'static str {
     "# Local plugins\n\n\
      Plugins are richer than tools: each one lives in its own subdirectory\n\
@@ -2152,11 +2108,6 @@ fn deepseek_home_dir() -> PathBuf {
     })
 }
 
-/// Resolve the default tools directory. Mirrors `default_skills_dir` shape.
-fn default_tools_dir() -> PathBuf {
-    deepseek_home_dir().join("tools")
-}
-
 /// Resolve the default plugins directory.
 fn default_plugins_dir() -> PathBuf {
     deepseek_home_dir().join("plugins")
@@ -2206,10 +2157,9 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
     let (aqua_r, aqua_g, aqua_b) = palette::WHALE_INFO_RGB;
     let (sky_r, sky_g, sky_b) = palette::WHALE_INFO_RGB;
 
-    let any_explicit = args.mcp || args.skills || args.tools || args.plugins;
+    let any_explicit = args.mcp || args.skills || args.plugins;
     let run_mcp = args.mcp || args.all || !any_explicit;
     let run_skills = args.skills || args.all || !any_explicit;
-    let run_tools = args.tools || args.all;
     let run_plugins = args.plugins || args.all;
 
     println!(
@@ -2271,15 +2221,6 @@ fn run_setup(config: &Config, workspace: &Path, args: SetupArgs) -> Result<()> {
             );
         }
         println!("    Next: run the TUI and use `/skills` then `/skill getting-started`.");
-    }
-
-    if run_tools {
-        let tools_dir = default_tools_dir();
-        let (dir, readme_status, example_status) = init_tools_dir(&tools_dir, args.force)?;
-        report_write_status("Tools README", &dir.join("README.md"), readme_status);
-        report_write_status("Example tool", &dir.join("example.sh"), example_status);
-        println!("    Tools dir: {}", crate::utils::display_path(&dir));
-        println!("    Next: drop scripts here; surface them via skills/MCP when ready.");
     }
 
     if run_plugins {
@@ -2501,22 +2442,6 @@ fn run_setup_status(config: &Config, workspace: &Path) -> Result<()> {
         "  · skills: {} at {}",
         skills_count_for(&skills_dir),
         crate::utils::display_path(&skills_dir)
-    );
-
-    let tools_dir = default_tools_dir();
-    let tools_present = if tools_dir.exists() {
-        ""
-    } else {
-        "  (missing — run `setup --tools`)"
-    };
-    println!(
-        "  · tools: {} entries at {}{tools_present}",
-        if tools_dir.exists() {
-            count_dir_entries(&tools_dir)
-        } else {
-            0
-        },
-        crate::utils::display_path(&tools_dir)
     );
 
     let plugins_dir = default_plugins_dir();
@@ -3162,27 +3087,6 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         && !global_skills_dir.exists()
     {
         println!("    Run `codewhale setup --skills` (or add --local for ./skills).");
-    }
-
-    // Tools directory
-    println!();
-    println!("{}", "Tools:".bold());
-    let tools_dir = default_tools_dir();
-    if tools_dir.exists() {
-        let count = count_dir_entries(&tools_dir);
-        println!(
-            "  {} tools dir found at {} ({} items)",
-            "✓".truecolor(aqua_r, aqua_g, aqua_b),
-            crate::utils::display_path(&tools_dir),
-            count
-        );
-    } else {
-        println!(
-            "  {} tools dir not found at {}",
-            "·".dimmed(),
-            crate::utils::display_path(&tools_dir)
-        );
-        println!("    Run `codewhale setup --tools` to scaffold a starter dir.");
     }
 
     // Plugins directory
@@ -4318,7 +4222,6 @@ fn run_doctor_json(
             })
         });
 
-    let tools_dir = default_tools_dir();
     let plugins_dir = default_plugins_dir();
 
     // Memory feature state (#489). Operators ask "is memory on?" and
@@ -4409,11 +4312,6 @@ fn run_doctor_json(
                 "present": claude_skills_dir.exists(),
                 "count": skills_count_for(&claude_skills_dir),
             },
-        },
-        "tools": {
-            "path": tools_dir.display().to_string(),
-            "present": tools_dir.exists(),
-            "count": if tools_dir.exists() { count_dir_entries(&tools_dir) } else { 0 },
         },
         "plugins": {
             "path": plugins_dir.display().to_string(),
@@ -7573,6 +7471,7 @@ mod terminal_mode_tests {
             ["codewhale-tui", "serve", "--acp"].as_slice(),
             ["codewhale-tui", "serve", "--mcp"].as_slice(),
             ["codewhale-tui", "mcp", "add-self"].as_slice(),
+            ["codewhale-tui", "setup", "--tools"].as_slice(),
         ] {
             let error = Cli::try_parse_from(args).expect_err("removed command must fail closed");
             assert!(
@@ -9146,53 +9045,6 @@ mod setup_helper_tests {
     use super::*;
     use std::collections::BTreeSet;
     use tempfile::TempDir;
-
-    #[test]
-    fn init_tools_dir_creates_readme_and_example() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("tools");
-        let (returned_dir, readme_status, example_status) =
-            init_tools_dir(&dir, false).expect("init_tools_dir should succeed");
-
-        assert_eq!(returned_dir, dir);
-        assert!(matches!(readme_status, WriteStatus::Created));
-        assert!(matches!(example_status, WriteStatus::Created));
-        assert!(dir.join("README.md").exists());
-        assert!(dir.join("example.sh").exists());
-
-        let readme = std::fs::read_to_string(dir.join("README.md")).unwrap();
-        assert!(
-            readme.contains("# name:"),
-            "README must show frontmatter convention"
-        );
-
-        let example = std::fs::read_to_string(dir.join("example.sh")).unwrap();
-        assert!(example.starts_with("#!/usr/bin/env sh"));
-        assert!(example.contains("# name: example"));
-        assert!(example.contains("# description:"));
-    }
-
-    #[test]
-    fn init_tools_dir_skips_existing_without_force() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("tools");
-        let _ = init_tools_dir(&dir, false).unwrap();
-        let (_, readme_status, example_status) = init_tools_dir(&dir, false).unwrap();
-        assert!(matches!(readme_status, WriteStatus::SkippedExists));
-        assert!(matches!(example_status, WriteStatus::SkippedExists));
-    }
-
-    #[test]
-    fn init_tools_dir_force_overwrites() {
-        let tmp = TempDir::new().unwrap();
-        let dir = tmp.path().join("tools");
-        let _ = init_tools_dir(&dir, false).unwrap();
-        std::fs::write(dir.join("example.sh"), "stale").unwrap();
-        let (_, _, example_status) = init_tools_dir(&dir, true).unwrap();
-        assert!(matches!(example_status, WriteStatus::Overwritten));
-        let example = std::fs::read_to_string(dir.join("example.sh")).unwrap();
-        assert_ne!(example, "stale");
-    }
 
     #[test]
     fn init_plugins_dir_creates_readme_and_example_layout() {

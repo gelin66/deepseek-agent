@@ -379,6 +379,9 @@ M4-C foreground 切换后还已物理删除：
 - 从未进入固定 production catalog 的旧 TUI `js_execution`、Node resolver 和 Doctor 假
   注册提示；显式配置的 Node MCP server 与 canonical `run_verifiers` 的 Node 项目检查不经
   过该旧模型工具，继续保留。
+- 从未接入 production catalog 的 TUI script-command plugin ToolSpec、复制扫描器的假 E2E、
+  `[tools.plugin_dir]`/`[tools.overrides]` 与 `setup --tools`/Doctor 脚手架；canonical 固定工具
+  目录不再被配置宣称可替换，真实 MCP、skills 和现有 plugins 目录逻辑不变。
 
 ## 6. 当前验证事实
 

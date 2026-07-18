@@ -1654,19 +1654,14 @@ configure reasoning effort.
 `--skills`, `--local`, `--all`, and `--force`:
 
 - `--status` — print a compact one-screen status (api key, base URL, model,
-  MCP/skills/tools/plugins counts, sandbox, `.env` presence). Read-only and
+  MCP/skills/plugins counts, sandbox, `.env` presence). Read-only and
   network-free; safe to run in CI. If `.env` is missing and `.env.example` is
   present in the workspace, the status output points at `cp .env.example .env`.
-- `--tools` — scaffold `~/.codewhale/tools/` with a `README.md` describing the
-  self-describing frontmatter convention (`# name:` / `# description:` /
-  `# usage:`) and an `example.sh` that follows it. The directory is
-  intentionally not auto-loaded; wire individual scripts into the agent via
-  MCP, hooks, or skills.
 - `--plugins` — scaffold `~/.codewhale/plugins/` with a `README.md` and an
   `example/PLUGIN.md` sample using the same frontmatter shape as
   `SKILL.md`. Plugins are not loaded automatically either; reference them
   from a skill, hook, or MCP wrapper when you want them active.
-- `--all` now scaffolds MCP + skills + tools + plugins together.
+- `--all` scaffolds MCP + skills + plugins together.
 - `--clean` — list `~/.codewhale/sessions/checkpoints/latest.json` and
   `offline_queue.json` if they exist. Legacy
   `~/.deepseek/sessions/checkpoints/` files are not scanned automatically; set
