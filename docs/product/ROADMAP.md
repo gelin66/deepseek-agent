@@ -652,6 +652,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除没有任何构造方、只显示路径文本且从未加载图片的旧 TUI
   `ToolCell::ViewImage`；真实图片读取仍由 canonical `read_file` 工具路由到本地 macOS
   Vision/Tesseract OCR，该能力及其回归测试保留。
+- M4-C 已删除只有自测构造、没有按键或命令入口的旧实时对话覆盖层及其私有缓存，并同步
+  移除失效的 `Ctrl+Shift+T` 声明。主 transcript、canonical Run 流式投影和
+  `TranscriptViewCache` 继续作为唯一实时对话展示路径。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

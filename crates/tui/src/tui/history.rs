@@ -1381,7 +1381,7 @@ fn tool_copy_prefix_width(line: &Line<'static>) -> usize {
     }
 
     // Detail rows and pager affordances use the transcript rail as their
-    // first span. The live transcript's general rail accounting removes it;
+    // first span. The transcript cache's general rail accounting removes it;
     // do not report it again as cell-local copy chrome.
     if spans
         .get(index)

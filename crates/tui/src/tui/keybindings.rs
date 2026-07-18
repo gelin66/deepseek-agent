@@ -170,11 +170,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
-        chord: "Ctrl+Shift+T",
-        description_id: crate::localization::MessageId::KbLiveTranscript,
-        section: KeybindingSection::Submission,
-    },
-    KeybindingEntry {
         chord: "Ctrl+T",
         description_id: crate::localization::MessageId::KbCycleThinking,
         section: KeybindingSection::Modes,

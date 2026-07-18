@@ -129,7 +129,6 @@
     "KbCloseMenu": "关闭菜单、取消请求、丢弃草稿或清空输入",
     "KbCancelOrExit": "取消请求，或空闲时退出",
     "KbExitEmpty": "输入框为空时退出",
-    "KbLiveTranscript": "打开实时对话覆盖层（自动滚动尾随）",
     "KbCompleteCycleModes": "补全 /command、排队运行轮次跟进、切换模式；Shift+Tab 切换推理强度",
     "KbCycleThinking": "轮换当前提供商的推理强度 (Ctrl+T)",
     "KbCyclePermissions": "循环权限：询问 → 自动审查 → 完全访问（Shift+Tab）",

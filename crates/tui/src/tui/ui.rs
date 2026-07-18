@@ -53,7 +53,6 @@ use crate::settings::Settings;
 use crate::tui::color_compat::ColorCompatBackend;
 use crate::tui::footer_ui::render_footer;
 use crate::tui::key_shortcuts;
-use crate::tui::live_transcript::LiveTranscriptOverlay;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
 use crate::tui::run_client::{TuiRunClient, TuiRunClientError};
@@ -2080,12 +2079,6 @@ fn render(f: &mut Frame, app: &mut App) {
     }
 
     if !app.view_stack.is_empty() {
-        // The live transcript overlay snapshots the app's history + active
-        // cell on each render so streaming mutations propagate. Other views
-        // are static and skip this refresh.
-        if app.view_stack.top_kind() == Some(ModalKind::LiveTranscript) {
-            refresh_live_transcript_overlay(app);
-        }
         let buf = f.buffer_mut();
         app.view_stack.render(size, buf);
     }
@@ -2137,22 +2130,6 @@ fn draw_app_frame_inner(
     }
     let _ = terminal.backend_mut().flush();
     result
-}
-
-/// Pull the latest snapshot of cells / revisions / render options into the
-/// live transcript overlay sitting on top of the view stack. No-op if the
-/// top view isn't a `LiveTranscriptOverlay`.
-fn refresh_live_transcript_overlay(app: &mut App) {
-    // Pop+push lets us hold &mut to the overlay while also borrowing `app`
-    // mutably for the snapshot — direct re-borrow through `view_stack`
-    // would otherwise alias `app`.
-    let Some(mut overlay) = app.view_stack.pop() else {
-        return;
-    };
-    if let Some(typed) = overlay.as_any_mut().downcast_mut::<LiveTranscriptOverlay>() {
-        typed.refresh_from_app(app);
-    }
-    app.view_stack.push_boxed(overlay);
 }
 
 fn pause_terminal(

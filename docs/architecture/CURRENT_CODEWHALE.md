@@ -336,6 +336,8 @@ M4-C foreground 切换后还已物理删除：
   `crates/release` 保留，不属于本次删除。
 - 没有构造方、不会读取图片数据的旧 TUI `ToolCell::ViewImage` 文本卡；canonical
   `read_file` 仍通过 `crates/tools` 的 macOS Vision/Tesseract 后端提供本地图片 OCR。
+- 只有自测构造、没有生产打开入口的实时对话 overlay、其专用缓存和失效快捷键；主
+  transcript 仍由 `CanonicalRunProjection`/presenter 与 `TranscriptViewCache` 实时驱动。
 
 ## 6. 当前验证事实
 

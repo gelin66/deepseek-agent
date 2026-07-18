@@ -179,10 +179,9 @@ pub fn set_frame_links(links: Vec<LinkRegion>) {
     });
 }
 
-/// Append `links` to the thread-local frame link buffer. Used when more than
-/// one widget renders link-bearing content into the same frame (e.g. the main
-/// transcript and the live-transcript overlay): each seam appends rather than
-/// replacing, so all regions reach `ColorCompatBackend::draw`.
+/// Append `links` to the thread-local frame link buffer. When more than one
+/// widget renders link-bearing content into the same frame, each seam appends
+/// rather than replacing so all regions reach `ColorCompatBackend::draw`.
 pub fn append_frame_links(links: Vec<LinkRegion>) {
     FRAME_LINKS.with(|cell| cell.borrow_mut().extend(links));
 }

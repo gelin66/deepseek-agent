@@ -415,7 +415,7 @@ impl TranscriptViewCache {
 }
 
 /// Tool cells still render their own rail when used outside the transcript
-/// cache (pager, clipboard, focused detail). Inside the live transcript this
+/// cache (pager, clipboard, focused detail). Inside the main transcript this
 /// cache owns grouping across adjacent cells, so retaining both rails produces
 /// doubled prefixes such as `╭ ╭`. Replace the cell-local decoration with the
 /// group rail added by `line_with_group_rail` during flattening.

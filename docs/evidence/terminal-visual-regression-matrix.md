@@ -20,7 +20,6 @@ cargo test -p codewhale-tui --bin codewhale-tui --locked config_view_selected_ro
 | Palette contrast | dark, light | `crates/tui/tests/palette_audit.rs::contrast_guardrails_for_key_ui_pairs` | body, muted, warning, error, selected row, elevated row, and light-palette text pairs meet 4.5:1 contrast |
 | `/model` provider selector | narrow-ish, medium | `provider_picker::tests::small_list_render_keeps_selected_provider_visible_after_down_navigation`, `selected_provider_row_uses_strong_highlight` | selected provider remains visible after scroll, selection background is continuous and avoids bright accent backgrounds |
 | `/sessions` selector | 72x20, 120x28 | `session_picker::tests::session_picker_visual_matrix_covers_narrow_and_medium_rendering`, `session_picker_selected_row_renders_readable_selection_contrast` | both panes render, borders survive, long CJK titles truncate with ellipsis, no replacement characters, selected row stays visible and keeps readable contrast |
-| Transcript/live overlay | 40x10, 48x10, 60x16 | `live_transcript::tests::backtrack_preview_opens_near_latest_user_not_transcript_start`, `cache_reuses_unchanged_cells_across_renders` | overlay renders without provider access, recent turns stay visible, unchanged cells reuse wrap cache |
 
 ## Deferred Rows
 

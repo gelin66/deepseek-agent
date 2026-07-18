@@ -16,7 +16,6 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `Tab`                | Cycle TUI mode: Plan ↔ Act; choose Operate preview explicitly with `/mode`  |
 | `Shift-Tab`          | Cycle permission posture: Ask → Auto-Review → Full Access                    |
 | `Ctrl-T`             | Cycle reasoning effort for the active provider. DeepSeek-style providers cycle off → high → max → off; OpenAI Codex cycles low → medium → high → xhigh → low. |
-| `Ctrl-Shift-T`       | Toggle live transcript overlay (sticky-tail auto-scroll)                       |
 | `Ctrl-R`             | Open the resume-session picker                                 |
 | `Ctrl-L`             | Refresh / clear the screen                                     |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file-tree sidebar                          |

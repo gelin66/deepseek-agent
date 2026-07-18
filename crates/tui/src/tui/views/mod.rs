@@ -20,7 +20,6 @@ pub enum ModalKind {
     Elevation,
     UserInput,
     Pager,
-    LiveTranscript,
 }
 
 /// Clear and paint a modal popup with an opaque surface.
@@ -360,7 +359,7 @@ pub enum ViewAction {
     EmitAndClose(ViewEvent),
 }
 
-pub trait ModalView: std::any::Any {
+pub trait ModalView {
     fn kind(&self) -> ModalKind;
     fn handle_key(&mut self, key: KeyEvent) -> ViewAction;
     /// Returns `true` if the modal consumed the paste; `false` to let the
@@ -389,11 +388,6 @@ pub trait ModalView: std::any::Any {
     fn tick(&mut self) -> ViewAction {
         ViewAction::None
     }
-    /// Erased downcast hook for views that need a typed reference back from
-    /// the boxed trait object (e.g. the live transcript overlay needs `&mut`
-    /// access from outside the trait so it can refresh its snapshot of the
-    /// app's transcript state right before render).
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 #[derive(Default)]
@@ -418,15 +412,6 @@ impl ViewStack {
         let kind = view.kind();
         self.views.push(Box::new(view));
         tracing::debug!(target: "codewhale_tui::view_stack", action = "push", kind = ?kind, depth = self.views.len(), "view pushed");
-    }
-
-    /// Push an already-boxed view back onto the stack. Used by call sites
-    /// that pop a view, mutate it externally, and need to restore it without
-    /// the generic `push` re-boxing dance.
-    pub fn push_boxed(&mut self, view: Box<dyn ModalView>) {
-        let kind = view.kind();
-        self.views.push(view);
-        tracing::debug!(target: "codewhale_tui::view_stack", action = "push_boxed", kind = ?kind, depth = self.views.len(), "view pushed");
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn ModalView>> {
@@ -626,10 +611,6 @@ mod tests {
             buf[(x, y)]
                 .set_symbol("M")
                 .set_style(Style::default().fg(Color::White).bg(Color::Red));
-        }
-
-        fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-            self
         }
     }
 
