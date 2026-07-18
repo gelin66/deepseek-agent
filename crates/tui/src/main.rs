@@ -73,7 +73,6 @@ mod provider_lake;
 mod provider_readiness;
 mod regex_cache;
 pub mod repl;
-mod repo_law;
 mod request_tuning;
 mod resource_telemetry;
 mod retry_status;
