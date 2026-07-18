@@ -430,7 +430,7 @@ fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow:
 }
 
 // ===========================================================================
-// #1073 — pasting multi-line text with a trailing newline must NOT auto-submit
+// Terminal paste events and rapid ordinary key input
 // ===========================================================================
 
 /// Bracketed-paste path: terminal wraps the payload in `ESC[200~ … ESC[201~`,
@@ -472,47 +472,36 @@ fn paste_bracketed_with_trailing_newline_does_not_autosubmit() -> anyhow::Result
     Ok(())
 }
 
-/// Unbracketed-paste path: terminal does NOT wrap the payload, so crossterm
-/// sees the bytes as ordinary keystrokes. The TUI's `paste_burst` detector is
-/// supposed to recognize the rapid stream and treat it as a single paste, but
-/// historically the trailing `\r` (Enter) of the burst leaks through and
-/// triggers submit while the burst flush dumps the text into the now-empty
-/// composer.
-///
-/// This is the Windows / PowerShell repro from #1073.
+/// A raw byte stream without bracketed-paste markers is indistinguishable
+/// from fast typing. It must therefore follow the ordinary key contract:
+/// every byte reaches the composer immediately and remains editable.
 #[test]
-fn paste_unbracketed_with_trailing_newline_does_not_autosubmit() -> anyhow::Result<()> {
+fn rapid_plain_key_bytes_are_not_dropped_and_remain_editable() -> anyhow::Result<()> {
     let _guard = qa_pty_test_lock();
     let (_ws, mut h) = boot_minimal()?;
     h.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
 
-    let payload = "first line of the multi-line paste body\n\
-         second line continuing the paragraph until the end\n\
-         third line that finishes with a trailing newline character\n";
-    h.paste_unbracketed(payload)?;
-    h.wait_for_text("first line of the multi-line paste body", KEY_TIMEOUT)?;
-    // Observe past the 120 ms paste-burst guard before judging submission.
-    std::thread::sleep(Duration::from_millis(180));
-    h.pump();
+    let original = "rapid plain key bytes 12345";
+    h.send(keys::key::text(original))?;
+    h.wait_for_text(original, KEY_TIMEOUT)?;
+
+    // Backspace the final byte and replace it. The updated text proves the
+    // rapid stream was inserted into the live composer rather than buffered
+    // in a hidden paste heuristic.
+    h.send([0x7f_u8])?;
+    h.send(keys::key::ch('6'))?;
+    let edited = "rapid plain key bytes 12346";
+    h.wait_for_text(edited, KEY_TIMEOUT)?;
 
     let f = h.frame();
     let dump = f.debug_dump();
-    eprintln!("=== AFTER UNBRACKETED PASTE ===\n{dump}");
-
-    // The visible signal of an auto-submit: the text appears in the
-    // transcript above the composer (sent as a user message). The composer
-    // is also typically reset, but #1073 reports residual text in addition
-    // to the auto-submit, so checking the transcript is more reliable.
-    let count = dump.matches("first line").count();
     assert!(
-        count <= 1,
-        "'first line' appears {count} times — auto-submitted into transcript AND \
-         composer:\n{dump}"
+        f.contains(edited),
+        "rapid ordinary key bytes were lost or were not editable:\n{dump}"
     );
-    // And the pasted text should be visible somewhere.
     assert!(
-        f.contains("first line"),
-        "pasted text should be on-screen somewhere:\n{dump}"
+        !f.contains(original),
+        "the composer did not apply the backspace edit:\n{dump}"
     );
 
     let _ = h.shutdown();

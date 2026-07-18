@@ -26,7 +26,6 @@ use crate::tui::approval::ApprovalMode;
 use crate::tui::child_agents::ChildAgents;
 use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
-use crate::tui::paste_burst::{FlushResult, PasteBurst};
 use crate::tui::scrolling::{MouseScrollState, TranscriptScroll};
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::transcript::TranscriptViewCache;
@@ -1135,7 +1134,6 @@ pub struct ComposerState {
     pub cursor_position: usize,
     /// Single-entry kill buffer for emacs-style `Ctrl+K` cut / `Ctrl+Y` yank.
     pub kill_buffer: String,
-    pub paste_burst: PasteBurst,
     /// When a large paste is consolidated at submit time, the file @mention
     /// is stored here so it can be appended to the submitted text without
     /// replacing the visible composer content (#3263).
@@ -1181,7 +1179,6 @@ impl Default for ComposerState {
             input: String::new(),
             cursor_position: 0,
             kill_buffer: String::new(),
-            paste_burst: PasteBurst::default(),
             pending_paste_reference: None,
             oversized_paste_full_text: None,
             input_history: Vec::new(),
@@ -1541,15 +1538,6 @@ pub struct App {
     /// multi-project workspaces.
     pub workspace_follow_symlinks: bool,
     pub use_bracketed_paste: bool,
-    pub use_paste_burst_detection: bool,
-    /// Set to `true` the first time a real `Event::Paste` arrives during a
-    /// session. Once set, `handle_paste_burst_key` short-circuits — there's
-    /// no point running the rapid-keypress heuristic on a terminal that
-    /// already delivers paste-as-event correctly. Avoids paste-burst false
-    /// positives on Ghostty / iTerm2 / WezTerm / Windows Terminal where
-    /// fast typing or IME commits could otherwise be mis-classified as a
-    /// paste burst (#1322 follow-up).
-    pub bracketed_paste_seen: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
     pub ocean_started_at: Instant,
@@ -2133,7 +2121,6 @@ impl App {
         let sidebar_width_percent = settings.sidebar_width_percent;
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         let max_input_history = settings.max_input_history;
-        let use_paste_burst_detection = settings.paste_burst_detection;
         // Resolve the named theme from settings; unknown values were already
         // normalised to "system" in Settings::load. The background_color
         // setting still overlays on top.
@@ -2295,7 +2282,6 @@ impl App {
                 input: initial_input_text,
                 cursor_position: initial_input_cursor,
                 kill_buffer: String::new(),
-                paste_burst: PasteBurst::default(),
                 pending_paste_reference: None,
                 oversized_paste_full_text: None,
                 input_history,
@@ -2363,8 +2349,6 @@ impl App {
             use_alt_screen,
             use_mouse_capture,
             use_bracketed_paste,
-            use_paste_burst_detection,
-            bracketed_paste_seen: false,
             calm_mode,
             low_motion,
             ocean_started_at: Instant::now(),
@@ -3691,10 +3675,6 @@ impl App {
         self.mark_history_updated();
     }
 
-    pub fn cursor_byte_index(&self) -> usize {
-        byte_index_at_char(&self.input, self.cursor_position)
-    }
-
     /// When the user starts editing a truncated oversized paste, restore the
     /// full text so they can see and edit the complete content (#3263).
     fn auto_expand_oversized_paste(&mut self) {
@@ -3724,53 +3704,15 @@ impl App {
     }
 
     pub fn insert_paste_text(&mut self, text: &str) {
-        if let Some(pending) = self.paste_burst.flush_before_modified_input() {
-            self.insert_str(&pending);
-        }
         let normalized = normalize_paste_text(text);
         if !normalized.is_empty() {
             self.insert_str(&normalized);
         }
-        self.paste_burst.clear_after_explicit_paste();
         // Large pasted input stays editable and visible until submit. The
         // submit-time safety net consolidates oversized composer content into
         // an @paste-...md mention before dispatch, so no path silently
         // truncates user input.
         // self.consolidate_large_input_if_oversized(); // deferred to submit time
-    }
-
-    pub fn flush_paste_burst_if_due(&mut self, now: Instant) -> bool {
-        match self.paste_burst.flush_if_due(now) {
-            FlushResult::Paste(text) => {
-                self.insert_str(&text);
-                true
-            }
-            FlushResult::Typed(ch) => {
-                self.insert_char(ch);
-                true
-            }
-            FlushResult::None => false,
-        }
-    }
-
-    pub fn flush_paste_burst_if_enabled(&mut self, now: Instant) -> bool {
-        self.use_paste_burst_detection && self.flush_paste_burst_if_due(now)
-    }
-
-    pub fn paste_burst_next_flush_delay_if_enabled(&self, now: Instant) -> Option<Duration> {
-        if self.use_paste_burst_detection {
-            self.paste_burst.next_flush_delay(now)
-        } else {
-            None
-        }
-    }
-
-    pub fn flush_paste_burst_before_modified_input_if_enabled(&mut self) -> Option<String> {
-        if self.use_paste_burst_detection {
-            self.paste_burst.flush_before_modified_input()
-        } else {
-            None
-        }
     }
 
     pub fn insert_api_key_char(&mut self, c: char) {
@@ -4429,7 +4371,6 @@ impl App {
         self.selection_anchor = None;
         self.slash_menu_selected = 0;
         self.slash_menu_hidden = false;
-        self.paste_burst.clear_after_explicit_paste();
         self.needs_redraw = true;
     }
 
@@ -4475,7 +4416,6 @@ impl App {
         ));
         self.slash_menu_hidden = true;
         self.mention_menu_hidden = true;
-        self.paste_burst.clear_after_explicit_paste();
         self.status_message = Some("History search: type to filter, Enter accepts".to_string());
         self.needs_redraw = true;
     }
@@ -4638,14 +4578,12 @@ impl App {
 
     pub fn submit_input(&mut self) -> Option<String> {
         if self.input.trim().is_empty() {
-            self.paste_burst.clear_after_explicit_paste();
             return None;
         }
-        // Safety net: if any earlier path filled the buffer above the
-        // safety cap without going through `insert_paste_text`, fold it
-        // into a workspace paste file now (#553). Bracketed pastes hit
-        // the consolidation in `insert_paste_text` first, so the user
-        // sees the @mention in the composer before submission.
+        // Enforce the safety cap at submit time for every input path. This
+        // keeps bracketed pastes fully visible and editable in the composer,
+        // then writes oversized content to a workspace paste file before
+        // dispatch (#553, #3263).
         self.consolidate_large_input_if_oversized();
         // If consolidation created a paste file, restore the full text and
         // append the @mention so the model can read the complete content
@@ -4720,41 +4658,12 @@ impl App {
         true
     }
 
-    /// Composer-Enter dispatch. Returns `Some(input)` when the press should
-    /// fire a submit; `None` when Enter was absorbed (paste-burst Enter
-    /// suppression — see #1073).
+    /// Submit the current composer input when Enter is pressed.
     ///
-    /// Two suppression cases are handled here. Both are silent: nothing
-    /// visible happens beyond the text gaining a newline.
-    ///
-    /// 1. **Burst active.** A paste burst is currently being assembled in
-    ///    `paste_burst.buffer`. The Enter is part of the paste content;
-    ///    append `\n` to the buffer so the next flush includes it, do not
-    ///    submit, and extend the suppression window so a follow-on Enter
-    ///    (i.e. the *next* line of a multi-line paste) is also absorbed.
-    /// 2. **Window open after flush.** A burst just flushed into
-    ///    `self.input`, but the suppression window is still alive. The
-    ///    Enter is the trailing newline of that paste, not a submit gesture
-    ///    by the user. Insert `\n` directly into the composer text and
-    ///    re-arm the window.
-    ///
-    /// Outside both cases the call falls through to [`Self::submit_input`]
-    /// unchanged so normal Enter-to-send behaviour is preserved.
+    /// Literal newlines from a terminal paste arrive inside `Event::Paste`
+    /// and are inserted by [`Self::insert_paste_text`]. Ordinary Enter key
+    /// events keep their unambiguous submit meaning.
     pub fn handle_composer_enter(&mut self) -> Option<String> {
-        if self.use_paste_burst_detection {
-            let now = Instant::now();
-            if self
-                .paste_burst
-                .newline_should_insert_instead_of_submit(now)
-            {
-                if !self.paste_burst.append_newline_if_active(now) {
-                    self.insert_char('\n');
-                    self.paste_burst.extend_window(now);
-                }
-                self.needs_redraw = true;
-                return None;
-            }
-        }
         self.submit_input()
     }
 
@@ -4999,7 +4908,6 @@ impl App {
         self.cursor_position = char_count(&self.input);
         self.selection_anchor = None;
         self.slash_menu_hidden = false;
-        self.paste_burst.clear_after_explicit_paste();
     }
 
     pub fn history_down(&mut self) {
@@ -5015,7 +4923,6 @@ impl App {
                     self.cursor_position = char_count(&self.input);
                     self.selection_anchor = None;
                     self.slash_menu_hidden = false;
-                    self.paste_burst.clear_after_explicit_paste();
                 } else {
                     self.history_index = None;
                     if let Some(draft) = self.history_navigation_draft.take() {
@@ -5023,7 +4930,6 @@ impl App {
                         self.cursor_position = draft.cursor.min(char_count(&self.input));
                         self.selection_anchor = None;
                         self.slash_menu_hidden = false;
-                        self.paste_burst.clear_after_explicit_paste();
                         self.needs_redraw = true;
                     } else {
                         self.clear_input();

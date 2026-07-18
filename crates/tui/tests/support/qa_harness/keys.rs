@@ -52,7 +52,7 @@ pub mod mouse {
     }
 }
 
-/// Bracketed-paste helpers.
+/// Bracketed-paste helper.
 ///
 /// Wraps the payload in `ESC [ 2 0 0 ~` … `ESC [ 2 0 1 ~` so the receiver sees
 /// a `crossterm::Event::Paste(text)` rather than a key-by-key stream.
@@ -62,13 +62,5 @@ pub mod paste {
         out.extend_from_slice(text.as_bytes());
         out.extend_from_slice(b"\x1b[201~");
         out
-    }
-
-    /// Same as [`bracketed`] but does not wrap — simulates a terminal that
-    /// has bracketed paste disabled (e.g. some Windows PowerShell setups).
-    /// The child sees the bytes as ordinary keystrokes; an embedded `\n`
-    /// becomes an Enter press, which is what reproduces #1073.
-    pub fn unbracketed(text: &str) -> Vec<u8> {
-        text.replace('\n', "\r").as_bytes().to_vec()
     }
 }

@@ -834,7 +834,6 @@ async fn run_canonical_event_loop(
         }
 
         let now = Instant::now();
-        app.flush_paste_burst_if_enabled(now);
 
         let snapshot = run_client.snapshot().await;
         if exit_after_terminal && snapshot.current_active_root.is_none() && !app.is_loading {

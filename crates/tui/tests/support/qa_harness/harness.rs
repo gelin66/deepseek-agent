@@ -143,10 +143,6 @@ impl Harness {
         self.pty.write_bytes(&super::paste::bracketed(text))
     }
 
-    pub fn paste_unbracketed(&mut self, text: &str) -> Result<()> {
-        self.pty.write_bytes(&super::paste::unbracketed(text))
-    }
-
     /// Pull whatever the child has written since last call into the frame
     /// parser. Returns `true` if any new bytes arrived.
     pub fn pump(&mut self) -> bool {

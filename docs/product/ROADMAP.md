@@ -844,8 +844,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   App paste/attachment/selection 方法和手写 `[Attached ...]` parser 只在死方法、自测与伪
   renderer 状态内闭环，因此没有生产行为损失。arboard 继续以纯文本写入模式服务 Pager
   copy，OSC52/wl-copy/pbcopy/PowerShell fallback 保留；terminal `Event::Paste`、onboarding、
-  paste burst、普通 `@mention` 和 `read_file` OCR 仍是原生产 owner。不存在的 `/attach` 与
-  Ctrl-V 图片能力声明已删除，TUI direct `image` dependency 也随唯一消费者移除。
+  普通 `@mention` 和 `read_file` OCR 仍是原生产 owner。不存在的 `/attach` 与 Ctrl-V 图片
+  能力声明已删除，TUI direct `image` dependency 也随唯一消费者移除。随后独立调用图切片
+  确认 rapid-key paste-burst handler 从未被 canonical Key 事件调用，每帧只轮询永不激活的
+  默认状态；现已删除该状态机、App 空轮询、设置/别名和自证测试。无 bracketed marker 的
+  原始字节与快速键入不可区分，因此不再宣称 trailing Enter 可被启发式拦截；QA 改为证明
+  快速普通按键不丢失且仍可编辑。`Event::Paste`、API-key onboarding、bracketed terminal
+  mode、CRLF/裸 CR 归一化、超大粘贴路径与 Pager copy 保持原真实 owner。
 - M4-C 已把审批事件收缩为真实的 `interaction_id + decision`，继续经 canonical
   `resolve_interaction`/`cancel` 写入并重放 RunStore。删除从未有 Runtime 消费者的 TUI
   approval cache/grouping key、永远未设置的 timeout/tick 链，以及虚假的“批准并保存询问

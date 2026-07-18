@@ -234,9 +234,6 @@ pub struct Settings {
     /// terminal mishandles the `\e[?2004h` escape (rare; some legacy
     /// terminals over SSH+screen multiplex without the cap).
     pub bracketed_paste: bool,
-    /// Enable rapid-key paste-burst detection for terminals that do not emit
-    /// bracketed-paste events. Independent from `bracketed_paste`.
-    pub paste_burst_detection: bool,
     /// Maximum number of file-mention popup candidates retained before the
     /// composer renders its visible window. The widget paginates by terminal
     /// height, so this is a data-side cap rather than a visible-row budget.
@@ -378,7 +375,6 @@ impl Default for Settings {
             ocean_treatment: "ombre".to_string(),
             work_surface_placement: "top".to_string(),
             bracketed_paste: true,
-            paste_burst_detection: true,
             mention_menu_limit: 128,
             mention_walk_depth: 10,
             mention_menu_behavior: "fuzzy".to_string(),
@@ -692,9 +688,6 @@ impl Settings {
             "bracketed_paste" | "paste" => {
                 self.bracketed_paste = parse_bool(value)?;
             }
-            "paste_burst_detection" | "paste_burst" => {
-                self.paste_burst_detection = parse_bool(value)?;
-            }
             "mention_menu_limit" | "mention_limit" => {
                 self.mention_menu_limit = parse_usize_setting("mention_menu_limit", value)?;
             }
@@ -928,10 +921,6 @@ impl Settings {
             self.work_surface_placement
         ));
         lines.push(format!("  bracketed_paste:    {}", self.bracketed_paste));
-        lines.push(format!(
-            "  paste_burst_detect: {}",
-            self.paste_burst_detection
-        ));
         lines.push(format!("  mention_menu_limit: {}", self.mention_menu_limit));
         lines.push(format!("  mention_walk_depth: {}", self.mention_walk_depth));
         lines.push(format!(
@@ -1021,10 +1010,6 @@ impl Settings {
             (
                 "bracketed_paste",
                 "Terminal bracketed-paste mode: on/off (rare to disable)",
-            ),
-            (
-                "paste_burst_detection",
-                "Fallback rapid-key paste detection: on/off",
             ),
             (
                 "mention_menu_limit",
@@ -1588,25 +1573,6 @@ mod tests {
             .set("reasoning_effort", "default")
             .expect("clear effort");
         assert!(settings.reasoning_effort.is_none());
-    }
-
-    #[test]
-    fn paste_burst_detection_is_configurable_independent_of_bracketed_paste() {
-        let mut settings = Settings::default();
-        assert!(settings.bracketed_paste);
-        assert!(settings.paste_burst_detection);
-
-        settings
-            .set("paste_burst_detection", "off")
-            .expect("disable paste burst fallback");
-        assert!(settings.bracketed_paste);
-        assert!(!settings.paste_burst_detection);
-
-        settings
-            .set("bracketed_paste", "off")
-            .expect("disable bracketed paste");
-        assert!(!settings.bracketed_paste);
-        assert!(!settings.paste_burst_detection);
     }
 
     #[test]

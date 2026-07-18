@@ -764,9 +764,9 @@ Common settings keys:
   palettes, `grayscale` is the low-opinion black/white theme, and the named
   community presets apply across the TUI. Aliases such as `whale`, `mono`,
   `black-white`, `tokyonight`, and `gruvbox` are accepted.
-- `paste_burst_detection` (on/off, default on): fallback rapid-key paste
-  detection for terminals that do not emit bracketed-paste events. This is
-  independent of terminal bracketed-paste mode.
+- `bracketed_paste` (on/off, default on): request terminal paste events so
+  pasted newlines remain composer text instead of ordinary Enter key events.
+  Disable only for a terminal that mishandles bracketed-paste mode.
 - `work_surface_placement` (`top`, `left`, or `right`; default `top`): places
   Ocean's Tasks / To-do / Workers surface above the transcript or in a side
   rail. Side choices fall back to the top layout on narrow terminals and in

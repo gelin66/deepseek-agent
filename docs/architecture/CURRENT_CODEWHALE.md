@@ -475,8 +475,12 @@ M4-C foreground 切换后还已物理删除：
   `ClipboardHandler::write_text` 写系统剪贴板；图片读取/PNG 落盘、App attachment
   插入/选择/移除、手写 `[Attached ...]` parser 和对应 UI/文档均没有生产入口，删除为零
   生产行为损失。arboard 现关闭默认 image feature，TUI direct `image` dependency 已删除；
-  terminal `Event::Paste`/onboarding/paste burst、文本 writer、普通 `@mention`、canonical
-  `read_file` OCR 和现役 composer 文本编辑均保持原 owner。
+  terminal `Event::Paste`/onboarding、文本 writer、普通 `@mention`、canonical `read_file`
+  OCR 和现役 composer 文本编辑均保持原 owner。旧 rapid-key paste-burst handler 从未进入
+  canonical Key 事件分支，App 只会轮询无法由生产输入激活的默认状态；该两模块、状态、
+  设置/别名和自证测试现已物理删除。无 bracketed marker 的字节按普通按键直接进入
+  composer，不再虚构可区分快速键入与裸 paste；真实 bracketed mode 启停/恢复、API-key
+  paste、CRLF/裸 CR 归一化、超大文本处理与 Pager copy 均不经过已删除 fallback。
 - `key_shortcuts` 中零调用的 copy/paste/control-like/Ctrl-H predicates；保留首启输入所需
   的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
 - 零生产消费者的通用 `[vision_model]`/`image_analyze` 配置与 feature；正式模型面仍只有

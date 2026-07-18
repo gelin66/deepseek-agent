@@ -24,7 +24,6 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(20);
 const INTERACTION_TIMEOUT: Duration = Duration::from_secs(15);
-const PASTE_GUARD_SETTLE: Duration = Duration::from_millis(180);
 const COMPOSER_READY_TEXT: &str = "编写任务或使用 /。";
 const DEEPSEEK_FLASH_MODEL: &str = "deepseek-v4-flash";
 const DEEPSEEK_TEST_MODEL: &str = "deepseek-v4-pro";
@@ -233,13 +232,9 @@ fn wait_for_counter(
 
 fn type_and_submit(harness: &mut Harness, text: &str) -> Result<()> {
     harness.send(keys::key::text(text))?;
-    // Rapid PTY writes intentionally exercise paste-burst detection. Wait
-    // beyond its 120 ms trailing-Enter suppression window before submitting.
-    // Ambient ocean life keeps repainting even when the runtime is idle, so
-    // visual frame stability is not a valid readiness signal.
+    // Wait until the rapid ordinary key stream is visible before sending the
+    // unambiguous Enter key that submits it.
     harness.wait_for_text(text, Duration::from_secs(3))?;
-    std::thread::sleep(PASTE_GUARD_SETTLE);
-    harness.pump();
     harness.send(keys::key::enter())?;
     Ok(())
 }

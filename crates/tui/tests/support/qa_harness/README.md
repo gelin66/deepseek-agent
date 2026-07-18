@@ -24,8 +24,8 @@ spin up a PTY just to assert a function returns the right value.
 - `frame.rs` — `Frame`. Wraps `vt100::Parser`. Feed bytes in, ask questions
   out: `text()`, `row(y)`, `contains(s)`, `cursor()`, `debug_dump()`.
 - `keys.rs` — byte-sequence builders for keys (`key::ch('/')`,
-  `key::enter()`, `key::text("hello")`) and for paste (`paste::bracketed(s)`,
-  `paste::unbracketed(s)`).
+  `key::enter()`, `key::text("hello")`) and terminal paste events
+  (`paste::bracketed(s)`).
 - `harness.rs` — `Harness`. Composes the two. Has `wait_for`, `wait_for_text`,
   `wait_for_idle`, plus `make_sealed_workspace()` for a tempdir HOME.
 
