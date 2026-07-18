@@ -103,6 +103,105 @@ fn canonical_approval_can_inspect_and_copy_full_params_locally() {
 }
 
 #[test]
+fn canonical_mouse_click_on_approval_emits_decision() {
+    use crossterm::event::MouseButton;
+
+    let mut app = create_test_app();
+    let request = ApprovalRequest::new(
+        "interaction-mouse",
+        "read_file",
+        "测试鼠标批准",
+        &serde_json::json!({"path": "src/main.rs"}),
+    );
+    let approval = ApprovalView::new(request);
+    approval.set_mouse_hitboxes(vec![Rect::new(4, 6, 24, 1)]);
+    app.view_stack.push(approval);
+
+    let events = route_canonical_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 4,
+            row: 6,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(matches!(
+        events.as_slice(),
+        [ViewEvent::ApprovalDecision {
+            interaction_id,
+            decision: ReviewDecision::Approved,
+        }] if interaction_id == "interaction-mouse"
+    ));
+    assert!(app.view_stack.is_empty());
+}
+
+#[test]
+fn canonical_mouse_wheel_is_consumed_by_active_modal() {
+    use crate::tui::scrolling::TranscriptScroll;
+
+    let mut app = create_test_app();
+    app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
+    let transcript_before = app.viewport.transcript_scroll;
+    let request = ApprovalRequest::new(
+        "interaction-wheel",
+        "read_file",
+        "测试模态框滚轮",
+        &serde_json::json!({"path": "src/main.rs"}),
+    );
+    app.view_stack.push(ApprovalView::new(request));
+
+    let events = route_canonical_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        },
+    );
+
+    assert!(events.is_empty());
+    assert_eq!(app.viewport.transcript_scroll, transcript_before);
+    let decision = app
+        .view_stack
+        .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert!(matches!(
+        decision.as_slice(),
+        [ViewEvent::ApprovalDecision {
+            interaction_id,
+            decision: ReviewDecision::Denied,
+        }] if interaction_id == "interaction-wheel"
+    ));
+}
+
+#[test]
+fn canonical_mouse_without_modal_keeps_transcript_scroll_behavior() {
+    use crate::tui::scrolling::TranscriptScroll;
+
+    let mouse = MouseEvent {
+        kind: MouseEventKind::ScrollUp,
+        column: 0,
+        row: 0,
+        modifiers: KeyModifiers::NONE,
+    };
+    let mut expected = create_test_app();
+    expected.viewport.transcript_scroll = TranscriptScroll::at_line(7);
+    expected.scroll_up(3);
+
+    let mut actual = create_test_app();
+    actual.viewport.transcript_scroll = TranscriptScroll::at_line(7);
+    let events = route_canonical_mouse_event(&mut actual, mouse);
+
+    assert!(events.is_empty());
+    assert_eq!(
+        actual.viewport.transcript_scroll,
+        expected.viewport.transcript_scroll
+    );
+}
+
+#[test]
 fn terminal_origin_reset_recovers_viewport_without_destructive_clear() {
     assert!(TERMINAL_ORIGIN_RESET.starts_with(b"\x1b[r\x1b[?6l"));
     assert!(TERMINAL_ORIGIN_RESET.ends_with(b"\x1b[H"));

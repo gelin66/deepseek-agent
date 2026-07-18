@@ -26,7 +26,7 @@ use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
         EnableFocusChange, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyEventKind,
-        KeyModifiers,
+        KeyModifiers, MouseEvent, MouseEventKind,
     },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
@@ -900,12 +900,14 @@ async fn run_canonical_event_loop(
                 app.needs_redraw = true;
             }
             Event::Mouse(mouse) => {
-                use crossterm::event::MouseEventKind;
-                match mouse.kind {
-                    MouseEventKind::ScrollUp => app.scroll_up(3),
-                    MouseEventKind::ScrollDown => app.scroll_down(3),
-                    _ => {}
-                }
+                let view_events = route_canonical_mouse_event(app, mouse);
+                handle_canonical_view_events(
+                    app,
+                    run_client,
+                    view_events,
+                    &mut exit_after_terminal,
+                )
+                .await?;
                 app.needs_redraw = true;
             }
             Event::Resize(_, _) | Event::FocusGained | Event::FocusLost => {
@@ -914,6 +916,19 @@ async fn run_canonical_event_loop(
             _ => {}
         }
     }
+}
+
+fn route_canonical_mouse_event(app: &mut App, mouse: MouseEvent) -> Vec<ViewEvent> {
+    if !app.view_stack.is_empty() {
+        return app.view_stack.handle_mouse(mouse);
+    }
+
+    match mouse.kind {
+        MouseEventKind::ScrollUp => app.scroll_up(3),
+        MouseEventKind::ScrollDown => app.scroll_down(3),
+        _ => {}
+    }
+    Vec::new()
 }
 
 fn select_previous_slash_menu_entry(app: &mut App, entry_count: usize) {

@@ -785,6 +785,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   approval cache/grouping key、永远未设置的 timeout/tick 链，以及虚假的“批准并保存询问
   规则”动作、预览和空 `tools` 模块；工具名、风险、参数、`y/n/Esc/v`、Pager 复制和 durable
   interaction 语义均保留。模态框鼠标接线属于独立行为切片，不与本次真相清理混合。
+- M4-C 随后的独立行为切片已把 canonical `Event::Mouse` 先路由到活动 modal：Approval
+  左击产生同一 canonical decision，滚轮只移动 modal 选择，Pager 沿用自己的滚动处理，且
+  同一事件不再穿透到底层 transcript/sidebar/composer；没有 modal 时原 transcript 三行
+  滚动行为不变。该接线不增加第二事件状态机。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

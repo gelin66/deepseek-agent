@@ -413,6 +413,9 @@ M4-C foreground 切换后还已物理删除：
   canonical Runtime 消费者的“批准并保存询问规则”事件载荷和界面。当前审批事件只携带
   `interaction_id + decision`，由 `TuiRunClient` 调用 canonical `resolve_interaction` 或
   `cancel`；工具、风险、参数与 durable replay 仍由原真实链路承担。
+- 交互循环中曾零调用的 `ViewStack::handle_mouse` 现已成为唯一 modal 鼠标入口；活动 modal
+  优先消费点击/滚轮并阻止背景穿透，产生的事件仍交给现有 canonical view-event handler。
+  无 modal 的 transcript 滚动路径保持不变，没有新增私有 interaction owner。
 - `key_shortcuts` 中零调用的 copy/paste/control-like/Ctrl-H predicates；保留首启输入所需
   的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
 - 零生产消费者的通用 `[vision_model]`/`image_analyze` 配置与 feature；正式模型面仍只有
