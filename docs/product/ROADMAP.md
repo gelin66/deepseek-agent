@@ -935,6 +935,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   仍保留 `error_taxonomy`。定向 history 72/72、transcript cache 1/1、presenter 13/13、
   canonical Run 19/19、PTY 6/6、TUI all-target check、fmt 和 diff-check 均通过；Widgets
   全模块另有 2 个与本切片无调用关系的既有空状态文案断言失败，未越界修改。
+- M4-C 已删除从未被 canonical presenter 或其他 production producer 构造的
+  `ToolStatus::Hydrated`，以及 theme/history/sidebar 的穷尽展示分支和唯一直接断言。
+  当前工具展示状态只保留真实 lifecycle 的 `Running`/`Success`/`Failed`；这次删除不涉及
+  protocol/runtime/state/app 的 `RunReplay`、resume、SQLite `RunStore` 重建或 durable
+  hydrate 语义。定向 history 72/72、theme 5/5、sidebar 45/45、presenter 13/13、canonical
+  Run 19/19、PTY 6/6 和 TUI all-target check 均通过。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

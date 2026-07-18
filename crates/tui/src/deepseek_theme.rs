@@ -182,7 +182,6 @@ impl Theme {
         match status {
             ToolStatus::Running => self.tool_running_accent,
             ToolStatus::Success => self.tool_success_accent,
-            ToolStatus::Hydrated => self.tool_running_accent,
             ToolStatus::Failed => self.tool_failed_accent,
         }
     }
@@ -278,10 +277,6 @@ mod tests {
         assert_eq!(
             theme.tool_status_color(ToolStatus::Success),
             theme.tool_success_accent
-        );
-        assert_eq!(
-            theme.tool_status_color(ToolStatus::Hydrated),
-            theme.tool_running_accent
         );
         assert_eq!(
             theme.tool_status_color(ToolStatus::Failed),

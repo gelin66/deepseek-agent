@@ -276,7 +276,6 @@ impl HistoryCell {
 pub enum ToolStatus {
     Running,
     Success,
-    Hydrated,
     Failed,
 }
 
@@ -580,7 +579,7 @@ fn status_symbol(
         ToolStatus::Running => {
             crate::tui::spinner::braille_spinner_frame(started_at, low_motion).to_string()
         }
-        ToolStatus::Success | ToolStatus::Hydrated => TOOL_DONE_SYMBOL.to_string(),
+        ToolStatus::Success => TOOL_DONE_SYMBOL.to_string(),
         ToolStatus::Failed => TOOL_FAILED_SYMBOL.to_string(),
     }
 }
@@ -763,7 +762,6 @@ fn tool_status_label(status: ToolStatus) -> &'static str {
     match status {
         ToolStatus::Running => "running",
         ToolStatus::Success => "done",
-        ToolStatus::Hydrated => "tool loaded - retry required",
         ToolStatus::Failed => "issue",
     }
 }

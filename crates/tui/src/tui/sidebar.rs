@@ -711,9 +711,7 @@ fn normalize_activity_text(text: &str) -> String {
 fn tool_row_rank(row: &SidebarToolRow) -> u8 {
     match row.status {
         ToolStatus::Failed => 0,
-        // A schema-hydrated deferred tool is not "run done" — it must be
-        // retried — so it ranks with active work, not completed successes.
-        ToolStatus::Running | ToolStatus::Hydrated => 1,
+        ToolStatus::Running => 1,
         ToolStatus::Success if is_low_value_tool(&row.name) => 3,
         ToolStatus::Success => 2,
     }
@@ -742,7 +740,6 @@ fn tool_status_marker(
     match status {
         ToolStatus::Running => ("[~]", theme.warning),
         ToolStatus::Success => ("[✓]", theme.success),
-        ToolStatus::Hydrated => ("[~]", theme.warning),
         ToolStatus::Failed => ("[!]", theme.error_fg),
     }
 }

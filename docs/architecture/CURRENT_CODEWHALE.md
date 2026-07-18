@@ -489,6 +489,12 @@ M4-C foreground 切换后还已物理删除：
   history 72/72、transcript cache 1/1、presenter 13/13、canonical Run 19/19、PTY 6/6，
   并通过 TUI all-target check、fmt 与 diff-check；Widgets 全模块另有 2 个与该调用图无关的
   既有空状态文案断言失败，未作为本切片通过证据。
+- `ToolStatus::Hydrated` 没有 canonical presenter 或其他 production producer；删除前只有
+  theme/history/sidebar 的穷尽展示分支和一条主题自测断言。该变体及专属分支现已删除，
+  `GenericToolCell` 只投影真实 lifecycle 的 `Running`/`Success`/`Failed`。名称相似但独立的
+  canonical `RunReplay`、resume、SQLite `RunStore` 重建和 durable hydrate 语义位于
+  protocol/runtime/state/app，均未改变。当前定向证据为 history 72/72、theme 5/5、sidebar
+  45/45、presenter 13/13、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与
