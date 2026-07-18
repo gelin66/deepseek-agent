@@ -1340,20 +1340,6 @@ impl ConfigView {
             },
             ConfigRow {
                 section: ConfigSection::History,
-                key: "auto_compact".to_string(),
-                value: settings.auto_compact.to_string(),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                section: ConfigSection::History,
-                key: "auto_compact_threshold_percent".to_string(),
-                value: format!("{:.0}", settings.auto_compact_threshold_percent),
-                editable: true,
-                scope: ConfigScope::Saved,
-            },
-            ConfigRow {
-                section: ConfigSection::History,
                 key: "max_history".to_string(),
                 value: settings.max_input_history.to_string(),
                 editable: true,
@@ -2108,8 +2094,6 @@ fn config_label_for_key(key: &str) -> String {
         "sidebar_width" => "Sidebar width",
         "sidebar_focus" => "Sidebar focus",
         "context_panel" => "Context panel",
-        "auto_compact" => "Auto compact",
-        "auto_compact_threshold_percent" => "Compact threshold",
         "max_history" => "Input history",
         "prefer_external_pdftotext" => "PDF text extractor",
         "mcp_config_path" => "MCP config path",
@@ -2158,11 +2142,9 @@ fn config_hint_for_key(key: &str) -> &'static str {
             "a project, profile, environment, or managed config controls shell access"
         }
         "allow_shell" => "on exposes shell tools in Agent mode; permission rules still apply",
-        "auto_compact"
-        | "launch_screen"
-        | "show_tool_details"
-        | "composer_border"
-        | "paste_burst_detection" => "on/off, true/false, yes/no, 1/0",
+        "launch_screen" | "show_tool_details" | "composer_border" | "paste_burst_detection" => {
+            "on/off, true/false, yes/no, 1/0"
+        }
         "composer_density" | "transcript_spacing" => "compact | comfortable | spacious",
         "tool_collapse" => "compact | expanded | calm",
         // Derived from the shipped theme registry so this hint cannot go
@@ -2194,7 +2176,6 @@ fn config_hint_for_key(key: &str) -> &'static str {
         "sidebar_width" => "10..=50",
         "sidebar_focus" => "auto | work | tasks | agents | context | hidden",
         "max_history" => "integer (0 allowed)",
-        "auto_compact_threshold_percent" => "10..=100",
         "default_model" => "deepseek-v4-pro | deepseek-v4-flash | deepseek-* | none/default",
         "reasoning_effort" => {
             "DeepSeek: auto/off/high/max; Codex: low/medium/high/xhigh; default clears saved value"
@@ -2239,7 +2220,6 @@ fn config_boolean_key(key: &str) -> bool {
             | "paste_burst_detection"
             | "workspace_follow_symlinks"
             | "context_panel"
-            | "auto_compact"
             | "prefer_external_pdftotext"
     )
 }
@@ -3891,7 +3871,6 @@ mod tests {
         assert!(keys.contains(&"fancy_animations"));
         assert!(keys.contains(&"status_indicator"));
         assert!(keys.contains(&"synchronized_output"));
-        assert!(keys.contains(&"auto_compact"));
         assert!(keys.contains(&"tool_collapse"));
         assert!(keys.contains(&"composer_border"));
         assert!(keys.contains(&"composer_vim_mode"));

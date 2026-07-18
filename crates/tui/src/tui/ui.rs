@@ -89,9 +89,6 @@ pub(crate) use self::activity_detail::selected_detail_footer_label;
 const SLASH_MENU_LIMIT: usize = 128;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
-const CONTEXT_WARNING_THRESHOLD_PERCENT: f64 = 85.0;
-const CONTEXT_CRITICAL_THRESHOLD_PERCENT: f64 = 95.0;
-const CONTEXT_SUGGEST_COMPACT_THRESHOLD_PERCENT: f64 = 60.0;
 const UI_IDLE_POLL_MS: u64 = 48;
 const UI_ACTIVE_POLL_MS: u64 = 24;
 const SUBAGENT_HOOK_PREVIEW_LIMIT: usize = 2_048;
@@ -2687,53 +2684,6 @@ pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
     let used_f64 = used as f64;
     let percent = ((used_f64 / max_f64) * 100.0).clamp(0.0, 100.0);
     Some((used, max, percent))
-}
-
-fn maybe_warn_context_pressure(app: &mut App) {
-    let Some((used, max, percent)) = context_usage_snapshot(app) else {
-        return;
-    };
-
-    let configured_threshold = app.auto_compact_threshold_percent.clamp(10.0, 100.0);
-    let warning_threshold = CONTEXT_SUGGEST_COMPACT_THRESHOLD_PERCENT.min(configured_threshold);
-    if percent < warning_threshold {
-        return;
-    }
-
-    let recommendation = if !app.auto_compact {
-        "Consider enabling auto_compact or use /compact."
-    } else if percent >= configured_threshold {
-        "Auto-compaction will run before the next send."
-    } else {
-        "Auto-compaction is enabled."
-    };
-
-    if percent >= CONTEXT_CRITICAL_THRESHOLD_PERCENT {
-        app.status_message = Some(format!(
-            "Context critical: {percent:.0}% ({used}/{max} tokens). {recommendation}"
-        ));
-        return;
-    }
-
-    if app.status_message.is_none() {
-        let status_prefix = if percent >= CONTEXT_WARNING_THRESHOLD_PERCENT {
-            "Context high"
-        } else {
-            "Context building"
-        };
-        app.status_message = Some(format!(
-            "{status_prefix}: {percent:.0}% ({used}/{max} tokens). {recommendation}"
-        ));
-    }
-}
-
-fn should_auto_compact_before_send(app: &App) -> bool {
-    if !app.auto_compact {
-        return false;
-    }
-    context_usage_snapshot(app)
-        .map(|(_, _, pct)| pct >= app.auto_compact_threshold_percent.clamp(10.0, 100.0))
-        .unwrap_or(false)
 }
 
 fn status_animation_interval_ms(app: &App) -> u64 {

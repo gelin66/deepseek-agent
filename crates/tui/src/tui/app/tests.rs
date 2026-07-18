@@ -501,74 +501,6 @@ fn explicit_config_provider_wins_over_saved_default_provider() {
 }
 
 #[test]
-fn app_new_defaults_auto_compact_on_for_256k_class_models_when_unset() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-
-    let mut options = test_options(false);
-    options.model = "trinity-large-thinking".to_string();
-    let app = App::new(options, &Config::default());
-
-    assert!(app.auto_compact);
-    assert!(!app.auto_compact_user_configured);
-    assert_eq!(app.auto_compact_threshold_percent, 80.0);
-    assert_eq!(app.compact_threshold, 209_715);
-}
-
-#[test]
-fn app_new_defaults_auto_compact_on_for_v4_class_models_when_unset() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-
-    let mut options = test_options(false);
-    options.model = "deepseek-v4-pro".to_string();
-    let app = App::new(options, &Config::default());
-
-    assert!(app.auto_compact);
-    assert!(!app.auto_compact_user_configured);
-    assert_eq!(app.auto_compact_threshold_percent, 80.0);
-    assert_eq!(app.compact_threshold, 800_000);
-}
-
-#[test]
-fn app_new_respects_explicit_auto_compact_false_for_256k_class_models() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    std::fs::write(tmp.path().join("settings.toml"), "auto_compact = false\n").expect("settings");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-
-    let mut options = test_options(false);
-    options.model = "trinity-large-thinking".to_string();
-    let app = App::new(options, &Config::default());
-
-    assert!(!app.auto_compact);
-    assert!(app.auto_compact_user_configured);
-    assert_eq!(app.compact_threshold, 209_715);
-}
-
-#[test]
-fn app_new_respects_explicit_auto_compact_false_for_v4_class_models() {
-    let _lock = lock_test_env();
-    let tmp = tempfile::TempDir::new().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    std::fs::write(tmp.path().join("settings.toml"), "auto_compact = false\n").expect("settings");
-    let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-
-    let mut options = test_options(false);
-    options.model = "deepseek-v4-pro".to_string();
-    let app = App::new(options, &Config::default());
-
-    assert!(!app.auto_compact);
-    assert!(app.auto_compact_user_configured);
-    assert_eq!(app.compact_threshold, 800_000);
-}
-
-#[test]
 fn app_new_uses_only_the_explicit_cost_currency_setting() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -2454,39 +2386,6 @@ fn test_add_message() {
         content: "test".to_string(),
     });
     assert_eq!(app.history.len(), initial_len + 1);
-}
-
-#[test]
-fn test_update_model_compaction_budget() {
-    let mut app = App::new(test_options(false), &Config::default());
-    // Pin the inputs so the budget math is deterministic and does not
-    // depend on the developer's local `auto_compact_threshold_percent`
-    // setting (App::new loads real settings) or on auto-model resolution.
-    app.auto_model = false;
-    app.api_provider = ApiProvider::Deepseek;
-    app.active_route_limits = None;
-    app.active_context_window_override = None;
-    app.auto_compact_threshold_percent = 80.0;
-
-    // A large-context model earns a proportionally larger compaction
-    // budget; an unknown model falls back to the fixed default threshold.
-    app.model = "deepseek-v4-pro".to_string();
-    app.update_model_compaction_budget();
-    let large_window_threshold = app.compact_threshold;
-
-    app.model = "unknown-test-model".to_string();
-    app.update_model_compaction_budget();
-    let unknown_threshold = app.compact_threshold;
-
-    assert!(
-        unknown_threshold > 0,
-        "unknown model must still get a positive budget"
-    );
-    assert!(
-        large_window_threshold > unknown_threshold,
-        "a large-context model ({large_window_threshold}) should budget more \
-         than an unknown model ({unknown_threshold})"
-    );
 }
 
 #[test]

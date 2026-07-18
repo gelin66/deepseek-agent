@@ -1724,9 +1724,6 @@ pub struct App {
     /// fast typing or IME commits could otherwise be mis-classified as a
     /// paste burst (#1322 follow-up).
     pub bracketed_paste_seen: bool,
-    pub auto_compact: bool,
-    pub auto_compact_user_configured: bool,
-    pub auto_compact_threshold_percent: f64,
     pub calm_mode: bool,
     pub low_motion: bool,
     pub constrained_frame_rate: bool,
@@ -1832,8 +1829,6 @@ pub struct App {
     /// Whether the file-tree pane was actually rendered in the last frame.
     /// Set false when the terminal is too narrow to show the tree.
     pub file_tree_visible: bool,
-    #[allow(dead_code)]
-    pub compact_threshold: usize,
     pub max_input_history: usize,
     pub allow_shell: bool,
     pub verbosity: Option<String>,
@@ -2451,9 +2446,6 @@ impl App {
         let api_key_env_only =
             crate::config::active_provider_uses_env_only_api_key(&effective_auth_config);
         let was_onboarded = crate::tui::onboarding::is_onboarded();
-        let settings_auto_compact = settings.auto_compact;
-        let auto_compact_user_configured = Settings::auto_compact_explicitly_configured();
-        let auto_compact_threshold_percent = settings.auto_compact_threshold_percent;
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
         let constrained_frame_rate = settings.constrained_frame_rate;
@@ -2530,26 +2522,6 @@ impl App {
             .reasoning_effort
             .as_deref()
             .or_else(|| config.reasoning_effort());
-        let threshold_model = if auto_model {
-            DEFAULT_TEXT_MODEL
-        } else {
-            model.as_str()
-        };
-        let compact_threshold = crate::route_budget::compaction_threshold_for_route_at_percent(
-            provider,
-            threshold_model,
-            active_route_limits,
-            auto_compact_threshold_percent,
-        );
-        let auto_compact = if auto_compact_user_configured {
-            settings_auto_compact
-        } else {
-            crate::route_budget::auto_compact_default_for_route(
-                provider,
-                threshold_model,
-                active_route_limits,
-            )
-        };
         let reasoning_effort = if auto_model {
             ReasoningEffort::Auto
         } else {
@@ -2748,9 +2720,6 @@ impl App {
             use_bracketed_paste,
             use_paste_burst_detection,
             bracketed_paste_seen: false,
-            auto_compact,
-            auto_compact_user_configured,
-            auto_compact_threshold_percent,
             calm_mode,
             low_motion,
             constrained_frame_rate,
@@ -2798,7 +2767,6 @@ impl App {
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             file_tree: None,
             file_tree_visible: false,
-            compact_threshold,
             max_input_history,
             allow_shell,
             verbosity: config.verbosity.clone(),
@@ -5788,23 +5756,6 @@ impl App {
         drop(todos);
         self.cached_work_summary = None;
         true
-    }
-
-    pub fn update_model_compaction_budget(&mut self) {
-        let model = self.effective_model_for_budget().to_string();
-        self.compact_threshold = crate::route_budget::compaction_threshold_for_route_at_percent(
-            self.api_provider,
-            &model,
-            self.active_route_limits,
-            self.auto_compact_threshold_percent,
-        );
-        if !self.auto_compact_user_configured {
-            self.auto_compact = crate::route_budget::auto_compact_default_for_route(
-                self.api_provider,
-                &model,
-                self.active_route_limits,
-            );
-        }
     }
 
     pub fn set_active_route_limits(&mut self, limits: RouteLimits) {

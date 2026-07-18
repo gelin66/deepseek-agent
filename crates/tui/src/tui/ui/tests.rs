@@ -322,23 +322,6 @@ fn context_usage_uses_latest_canonical_prompt_usage() {
     assert_eq!(percent, 32.0);
 }
 
-#[test]
-fn context_pressure_warning_reflects_auto_compact_state() {
-    let mut app = create_test_app();
-    app.active_route_limits = Some(codewhale_config::route::RouteLimits {
-        context_tokens: Some(20_000),
-        ..codewhale_config::route::RouteLimits::default()
-    });
-    app.session.last_prompt_tokens = Some(18_000);
-    app.auto_compact = true;
-    app.auto_compact_threshold_percent = 70.0;
-
-    maybe_warn_context_pressure(&mut app);
-
-    let status = app.status_message.expect("context warning");
-    assert!(status.contains("Auto-compaction will run before the next send."));
-}
-
 fn complete_release_json(tag: &str) -> serde_json::Value {
     let assets = REQUIRED_RELEASE_ASSETS
         .iter()

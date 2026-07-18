@@ -214,11 +214,6 @@ fn resolve_tui_prefs_path_from_candidates(
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Auto-compact conversations when they approach the model limit.
-    pub auto_compact: bool,
-    /// Context-window percentage that triggers pre-send auto-compaction when
-    /// `auto_compact` is enabled. The hard token floor still applies.
-    pub auto_compact_threshold_percent: f64,
     /// Reduce status noise and collapse details more aggressively
     pub calm_mode: bool,
     /// Dense tool-run collapse mode: compact, expanded, or calm.
@@ -383,12 +378,6 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            // Keep the persisted fallback `false`; startup code enables
-            // auto-compaction by known model window when the user has not saved
-            // an explicit preference. This preserves an explicit opt-out while
-            // making long-session continuity the default runtime behavior.
-            auto_compact: false,
-            auto_compact_threshold_percent: 80.0,
             // #4095: default presentation is compact/calm; verbose detail is opt-in.
             calm_mode: true,
             tool_collapse_mode: "compact".to_string(),
@@ -578,13 +567,6 @@ impl Settings {
         self.legacy_yolo_default
     }
 
-    /// Whether the user explicitly persisted an `auto_compact` preference.
-    /// When absent, callers may choose a model-aware default.
-    pub fn auto_compact_explicitly_configured() -> bool {
-        codewhale_config::load_settings_source()
-            .is_ok_and(|source| source.contains_top_level_key("auto_compact"))
-    }
-
     /// Apply environment-driven overlays after disk load. Used for
     /// platform a11y signals that should ignore the user's saved
     /// preference (#450). The env values are consulted at startup;
@@ -714,13 +696,6 @@ impl Settings {
     /// Set a single setting by key
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         match key {
-            "auto_compact" | "compact" => {
-                self.auto_compact = parse_bool(value)?;
-            }
-            "auto_compact_threshold" | "auto_compact_threshold_percent" => {
-                self.auto_compact_threshold_percent =
-                    parse_percent_setting("auto_compact_threshold_percent", value)?;
-            }
             "calm_mode" | "calm" => {
                 self.calm_mode = parse_bool(value)?;
             }
@@ -989,11 +964,6 @@ impl Settings {
         let mut lines = Vec::new();
         lines.push(tr(MessageId::SettingsTitle).to_string());
         lines.push("─────────────────────────────".to_string());
-        lines.push(format!("  auto_compact:       {}", self.auto_compact));
-        lines.push(format!(
-            "  auto_compact_pct:   {:.0}",
-            self.auto_compact_threshold_percent
-        ));
         lines.push(format!("  calm_mode:          {}", self.calm_mode));
         lines.push(format!("  tool_collapse:      {}", self.tool_collapse_mode));
         lines.push(format!("  low_motion:         {}", self.low_motion));
@@ -1077,14 +1047,6 @@ impl Settings {
     #[allow(dead_code)]
     pub fn available_settings() -> Vec<(&'static str, &'static str)> {
         vec![
-            (
-                "auto_compact",
-                "Auto-compact near the hard context limit: on/off (model-aware default)",
-            ),
-            (
-                "auto_compact_threshold_percent",
-                "Auto-compact trigger threshold percent when auto_compact is on: 10-100 (default 80)",
-            ),
             ("calm_mode", "Calmer UI defaults: on/off"),
             (
                 "tool_collapse",
@@ -1339,21 +1301,6 @@ fn parse_usize_setting(key: &str, value: &str) -> Result<usize> {
             "Failed to update setting: invalid {key} '{value}'. Expected 0 or a positive integer."
         )
     })
-}
-
-fn parse_percent_setting(key: &str, value: &str) -> Result<f64> {
-    let trimmed = value.trim().trim_end_matches('%').trim();
-    let percent = trimmed.parse::<f64>().map_err(|_| {
-        anyhow::anyhow!(
-            "Failed to update setting: invalid {key} '{value}'. Expected a number from 10 to 100."
-        )
-    })?;
-    if !(10.0..=100.0).contains(&percent) {
-        anyhow::bail!(
-            "Failed to update setting: invalid {key} '{value}'. Expected a number from 10 to 100."
-        );
-    }
-    Ok(percent)
 }
 
 fn normalize_mention_menu_behavior(value: &str) -> Result<String> {
@@ -1642,37 +1589,6 @@ mod tests {
         assert!(err.to_string().contains("Unknown preset"));
         assert!(preset_fields("calm").is_some());
         assert!(preset_fields("turbo").is_none());
-    }
-
-    #[test]
-    fn default_settings_keep_auto_compact_as_unset_fallback() {
-        let settings = Settings::default();
-        // The persisted fallback remains false so a missing settings file does
-        // not look like an explicit user preference. Startup resolves the
-        // runtime default from the active model window unless the file contains
-        // `auto_compact`.
-        assert!(!settings.auto_compact);
-        assert_eq!(settings.auto_compact_threshold_percent, 80.0);
-    }
-
-    #[test]
-    fn auto_compact_remains_explicitly_configurable() {
-        let mut settings = Settings::default();
-        settings.set("auto_compact", "on").expect("enable");
-        assert!(settings.auto_compact);
-        settings.set("auto_compact", "off").expect("disable");
-        assert!(!settings.auto_compact);
-    }
-
-    #[test]
-    fn auto_compact_threshold_is_validated() {
-        let mut settings = Settings::default();
-        settings
-            .set("auto_compact_threshold", "65%")
-            .expect("threshold");
-        assert_eq!(settings.auto_compact_threshold_percent, 65.0);
-        assert!(settings.set("auto_compact_threshold", "9").is_err());
-        assert!(settings.set("auto_compact_threshold", "101").is_err());
     }
 
     #[test]
