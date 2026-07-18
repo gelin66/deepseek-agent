@@ -999,6 +999,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `write_exec_stream_terminal` 输出，保留背压、terminal acknowledgement 与有界关闭语义。
   exec stream、child receipt 和真实 terminal NDJSON 验收各 1/1，并通过 TUI all-target check、
   fmt 和 diff-check。
+- M4-C 已删除只由模块自测构造、没有生产边界消费者的 `ErrorEnvelope`、`ErrorSeverity`、
+  全部 envelope constructor/Display/Error 实现与 `From<ToolError>` 转换。会话诊断仍通过
+  `session-diagnostics -> classify_session_failure -> classify_error_message` 使用保留的
+  `ErrorCategory` 与分类器；精确 DeepSeek invalid/reasoning replay 错误仍优先归为
+  `InvalidInput`，API Key 认证仍先于普通授权，timeout 仍先于 network，rate-limit 仍先于
+  authentication，invalid-input 仍先于 tool。定向 taxonomy 18/18、session diagnostics 7/7
+  通过，并通过 TUI check、fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

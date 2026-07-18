@@ -1,7 +1,5 @@
-//! Shared error taxonomy across client, tools, runtime, and UI.
+//! Error taxonomy used by session diagnostics.
 use std::fmt;
-
-use codewhale_tools::ToolError;
 
 /// Broad category for typed error handling and policy decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -19,26 +17,6 @@ pub enum ErrorCategory {
     Internal,
 }
 
-/// Severity hint for UI and logs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ErrorSeverity {
-    Info,
-    Warning,
-    Error,
-    Critical,
-}
-
-/// Unified envelope used when crossing subsystem boundaries.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ErrorEnvelope {
-    pub category: ErrorCategory,
-    pub severity: ErrorSeverity,
-    pub recoverable: bool,
-    pub code: String,
-    pub message: String,
-}
-
 impl fmt::Display for ErrorCategory {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
@@ -54,165 +32,6 @@ impl fmt::Display for ErrorCategory {
             Self::Internal => "internal",
         };
         f.write_str(label)
-    }
-}
-
-impl fmt::Display for ErrorSeverity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            Self::Info => "info",
-            Self::Warning => "warning",
-            Self::Error => "error",
-            Self::Critical => "critical",
-        };
-        f.write_str(label)
-    }
-}
-
-impl fmt::Display for ErrorEnvelope {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}] {}: {}", self.severity, self.code, self.message)
-    }
-}
-
-impl std::error::Error for ErrorEnvelope {}
-
-impl ErrorEnvelope {
-    #[must_use]
-    pub fn new(
-        category: ErrorCategory,
-        severity: ErrorSeverity,
-        recoverable: bool,
-        code: impl Into<String>,
-        message: impl Into<String>,
-    ) -> Self {
-        Self {
-            category,
-            severity,
-            recoverable,
-            code: code.into(),
-            message: message.into(),
-        }
-    }
-
-    /// Recoverable internal error — stream stalls, transient retries, generic
-    /// engine errors that the user can resolve by retrying. Severity is
-    /// `Warning` so the UI surfaces it in amber rather than red.
-    #[must_use]
-    pub fn transient(message: impl Into<String>) -> Self {
-        Self::new(
-            ErrorCategory::Internal,
-            ErrorSeverity::Warning,
-            true,
-            "transient",
-            message,
-        )
-    }
-
-    /// Non-recoverable internal error — missing client, spawn failure, etc.
-    /// Flips the session into offline mode.
-    #[must_use]
-    pub fn fatal(message: impl Into<String>) -> Self {
-        Self::new(
-            ErrorCategory::Internal,
-            ErrorSeverity::Error,
-            false,
-            "fatal",
-            message,
-        )
-    }
-
-    /// Authentication failure — fatal and blocks the session.
-    #[must_use]
-    pub fn fatal_auth(message: impl Into<String>) -> Self {
-        Self::new(
-            ErrorCategory::Authentication,
-            ErrorSeverity::Critical,
-            false,
-            "auth_fatal",
-            message,
-        )
-    }
-
-    /// Context length / overflow — invalid input, recoverable via /compact.
-    #[must_use]
-    pub fn context_overflow(message: impl Into<String>) -> Self {
-        Self::new(
-            ErrorCategory::InvalidInput,
-            ErrorSeverity::Error,
-            true,
-            "context_overflow",
-            message,
-        )
-    }
-
-    /// Recoverable network / transport hiccup.
-    #[must_use]
-    pub fn network(message: impl Into<String>) -> Self {
-        Self::new(
-            ErrorCategory::Network,
-            ErrorSeverity::Warning,
-            true,
-            "network_transient",
-            message,
-        )
-    }
-
-    /// The transport closed cleanly but the provider never emitted an
-    /// authoritative stream terminal (`[DONE]` or `finish_reason`). Partial
-    /// content cannot be accepted as a successful model response.
-    #[must_use]
-    pub fn stream_incomplete(message: impl Into<String>) -> Self {
-        Self::new(
-            ErrorCategory::Network,
-            ErrorSeverity::Error,
-            false,
-            "llm_stream_incomplete",
-            message,
-        )
-    }
-
-    /// Tool execution failure.
-    #[must_use]
-    pub fn tool(message: impl Into<String>) -> Self {
-        Self::new(
-            ErrorCategory::Tool,
-            ErrorSeverity::Error,
-            true,
-            "tool_failed",
-            message,
-        )
-    }
-
-    /// Build an envelope by classifying a raw error message string. Used at
-    /// boundaries where the underlying error type was already stringified.
-    #[must_use]
-    pub fn classify(message: impl Into<String>, recoverable: bool) -> Self {
-        let message = message.into();
-        let category = classify_error_message(&message);
-        let severity = match category {
-            ErrorCategory::Authentication => ErrorSeverity::Critical,
-            ErrorCategory::RateLimit | ErrorCategory::Timeout | ErrorCategory::Network => {
-                ErrorSeverity::Warning
-            }
-            ErrorCategory::InvalidInput | ErrorCategory::Authorization | ErrorCategory::Parse => {
-                ErrorSeverity::Error
-            }
-            ErrorCategory::Tool | ErrorCategory::State | ErrorCategory::Internal => {
-                if recoverable {
-                    ErrorSeverity::Warning
-                } else {
-                    ErrorSeverity::Error
-                }
-            }
-        };
-        Self::new(
-            category,
-            severity,
-            recoverable,
-            category.to_string(),
-            message,
-        )
     }
 }
 
@@ -303,62 +122,6 @@ pub fn classify_error_message(message: &str) -> ErrorCategory {
     }
 
     ErrorCategory::Internal
-}
-
-impl From<ToolError> for ErrorEnvelope {
-    fn from(value: ToolError) -> Self {
-        match value {
-            ToolError::InvalidInput { message } => Self::new(
-                ErrorCategory::InvalidInput,
-                ErrorSeverity::Error,
-                false,
-                "tool_invalid_input",
-                message,
-            ),
-            ToolError::MissingField { field } => Self::new(
-                ErrorCategory::InvalidInput,
-                ErrorSeverity::Error,
-                false,
-                "tool_missing_field",
-                format!("Missing required field: {field}"),
-            ),
-            ToolError::PathEscape { path } => Self::new(
-                ErrorCategory::Authorization,
-                ErrorSeverity::Error,
-                false,
-                "tool_path_escape",
-                format!("Path escapes workspace: {}", path.display()),
-            ),
-            ToolError::ExecutionFailed { message } => Self::new(
-                ErrorCategory::Tool,
-                ErrorSeverity::Error,
-                true,
-                "tool_execution_failed",
-                message,
-            ),
-            ToolError::Timeout { seconds } => Self::new(
-                ErrorCategory::Timeout,
-                ErrorSeverity::Warning,
-                true,
-                "tool_timeout",
-                format!("Tool timed out after {seconds}s"),
-            ),
-            ToolError::NotAvailable { message } => Self::new(
-                ErrorCategory::State,
-                ErrorSeverity::Error,
-                false,
-                "tool_not_available",
-                message,
-            ),
-            ToolError::PermissionDenied { message } => Self::new(
-                ErrorCategory::Authorization,
-                ErrorSeverity::Error,
-                false,
-                "tool_permission_denied",
-                message,
-            ),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -619,21 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn error_envelope_display_includes_severity_code_message() {
-        let env = ErrorEnvelope::new(
-            ErrorCategory::Network,
-            ErrorSeverity::Warning,
-            true,
-            "net_transient",
-            "DNS resolution failed",
-        );
-        assert_eq!(
-            format!("{env}"),
-            "[warning] net_transient: DNS resolution failed"
-        );
-    }
-
-    #[test]
     fn error_category_display_round_trips_via_snake_case() {
         // The snake_case labels are what crosses the wire / hits logs;
         // pin them so a future rename doesn't silently shift consumer
@@ -641,6 +389,5 @@ mod tests {
         assert_eq!(format!("{}", ErrorCategory::Network), "network");
         assert_eq!(format!("{}", ErrorCategory::RateLimit), "rate_limit");
         assert_eq!(format!("{}", ErrorCategory::InvalidInput), "invalid_input");
-        assert_eq!(format!("{}", ErrorSeverity::Critical), "critical");
     }
 }

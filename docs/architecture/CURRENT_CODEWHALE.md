@@ -541,6 +541,13 @@ M4-C foreground 切换后还已物理删除：
   `write_exec_stream_terminal` 等待 acknowledgement；canonical Runtime/RunStore、工具和子
   Agent 事件均未改变。exec stream、child receipt 和真实 terminal NDJSON 验收各 1/1，并
   通过 TUI all-target check、fmt 和 diff-check。
+- `error_taxonomy` 中只有模块自测构造的 `ErrorEnvelope`、`ErrorSeverity`、全部 envelope
+  constructor/Display/Error 实现及 `From<ToolError>` 已删除。生产会话诊断继续使用
+  `ErrorCategory` 和 `classify_error_message`，调用链仍为
+  `session-diagnostics -> classify_session_failure -> classify_error_message`。分类顺序继续
+  保证精确 DeepSeek invalid/reasoning replay 错误先于泛化 tool 分类、API Key 认证先于授权、
+  timeout 先于 network、rate-limit 先于 authentication、invalid-input 先于 tool。当前定向
+  taxonomy 18/18、session diagnostics 7/7 通过，并通过 TUI check、fmt 和 diff-check。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与
