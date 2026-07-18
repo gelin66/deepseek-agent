@@ -9,5 +9,3 @@
 #![deny(clippy::print_stderr)]
 
 pub mod approval_cache;
-
-pub mod spec;

@@ -627,6 +627,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   RuntimeEvent 的 TUI-local Plan/Todo Store、假工具、sidebar/footer 和旧 transcript 特判。
   top/left/right 布局、状态排序、`AppMode::Plan` 权限语义与 canonical child 投影保留；
   M5 的 TaskContract/EvidenceReceipt 必须由唯一 canonical owner 实现，不能恢复私有 Store。
+- M4-C 已删除只服务退役 TUI 工具、没有 production executor 或 registry 消费者的旧
+  `ToolSpec`/`ToolContext`/`RuntimeToolServices` abstraction island。TUI error taxonomy 直接
+  消费 `codewhale_tools::ToolError`；固定 11 工具、`ProductionToolContext`、canonical
+  sandbox/shell 与 Runtime `ToolExecutor` 保持唯一 owner，不新增兼容 adapter。
 - M4-C 已删除只有自测构造、没有生产打开入口的旧 Mode/Status picker modal、专属事件和
   状态行 picker 文案；`AppMode` 权限基线、`StatusItem` 配置与实际 footer 投影继续由原
   调用方保留，不恢复不可达的 `/mode` 或 `/statusline` 外壳。

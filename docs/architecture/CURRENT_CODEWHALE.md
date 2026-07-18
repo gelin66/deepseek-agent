@@ -338,6 +338,9 @@ M4-C foreground 切换后还已物理删除：
 - 没有生产构造或写入方的 TUI-local Plan/Todo Store 与 `update_plan`/`todo_*` 假工具，以及
   只读取永久空状态的 WorkSurface/sidebar/footer 和旧 transcript/checklist 特判；
   `AppMode::Plan`、canonical root/child Run 投影和多 Agent 能力保留。
+- 只服务已删除旧工具、没有生产 executor 或 registry 消费者的 TUI `ToolSpec`、
+  `ToolContext`、`RuntimeToolServices` 与本地 `SandboxPolicy`；错误分类直接使用
+  `codewhale_tools::ToolError`，固定目录、production context、sandbox 与 shell owner 不变。
 - 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查和仍被 TUI/hooks 使用的
   `crates/release` 保留，不属于本次删除。
 - 没有构造方、不会读取图片数据的旧 TUI `ToolCell::ViewImage` 文本卡；canonical

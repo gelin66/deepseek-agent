@@ -53,11 +53,7 @@ pub use exec_shell::{
 
 use crate::child_env;
 use crate::sandbox::{
-    CommandSpec,
-    ExecEnv,
-    SandboxManager,
-    SandboxPolicy as ExecutionSandboxPolicy, // Rename to avoid conflict with spec::SandboxPolicy
-    SandboxType,
+    CommandSpec, ExecEnv, SandboxManager, SandboxPolicy as ExecutionSandboxPolicy, SandboxType,
 };
 use buffer::{tail_from_buffer, take_delta_from_buffer};
 use output::truncate_with_meta;
