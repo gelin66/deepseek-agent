@@ -688,6 +688,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已把仍在使用的 slash-menu 上下选择收回 canonical `ui.rs`，并删除其余全部零调用
   的旧 `composer_ui` 键盘处理器；历史搜索状态本身暂保留，但不再把未接入事件循环的旧
   handler 伪装成可用输入能力。
+- M4-C 已删除零生产消费者、仅由自身测试调用的 TUI `is_key_file`/`summarize_project`/
+  `project_tree` 浅层 project-map helpers；当前生产上下文继续由 `crates/context`、显式文件
+  工具和 canonical transcript 构造，M5 的 RepoGraph/ContextBroker 不通过保留旧 helper
+  或兼容适配器实现。
 - M4-C 已把 `key_shortcuts` 收缩为首启输入仍使用的 `is_text_input_key`，删除零调用的
   copy/paste/control-like/Ctrl-H 判定；正式文本粘贴继续由 terminal `Event::Paste` 处理，
   Pager 文本复制继续走 canonical local view event。

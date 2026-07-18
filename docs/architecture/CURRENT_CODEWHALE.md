@@ -368,6 +368,9 @@ M4-C foreground 切换后还已物理删除：
   DeepSeek，图像文本提取继续由 `crates/tools` 的本地 `read_file` OCR backend 承担。
 - 首启状态机不可达的 Provider 选择页与 picker memory；当前真实首启只包含 Welcome、
   DeepSeek API Key、工作区信任和 Tips，不再编译一页无法到达的多 Provider UI。
+- 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
+  helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
+  没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。
 
 ## 6. 当前验证事实
 
