@@ -497,7 +497,7 @@ pub(crate) fn calculate_turn_cost_estimate_for_provider_at(
         ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic
     );
     if direct_deepseek {
-        let usage = crate::client::deepseek_accounting_usage(usage);
+        let usage = runtime_usage(usage);
         let estimate = codewhale_deepseek::calculate_turn_cost_estimate(normalized_model, &usage)?;
         return Some(CostEstimate {
             usd: estimate.usd,
@@ -550,6 +550,18 @@ pub(crate) fn calculate_turn_cost_estimate_for_provider_at(
     // a costless foreign/catalog route must remain unpriced.
     let pricing = provider_owned_hand_pricing_at(provider, &catalog_model, recorded_at)?;
     Some(cost_estimate_with_pricing(pricing, usage))
+}
+
+fn runtime_usage(usage: &Usage) -> codewhale_runtime::Usage {
+    codewhale_runtime::Usage {
+        input_tokens: u64::from(usage.input_tokens),
+        output_tokens: u64::from(usage.output_tokens),
+        cache_hit_tokens: u64::from(usage.prompt_cache_hit_tokens.unwrap_or(0)),
+        cache_miss_tokens: u64::from(usage.prompt_cache_miss_tokens.unwrap_or(0)),
+        cache_write_tokens: u64::from(usage.prompt_cache_write_tokens.unwrap_or(0)),
+        reasoning_tokens: u64::from(usage.reasoning_tokens.unwrap_or(0)),
+        reasoning_replay_tokens: u64::from(usage.reasoning_replay_tokens.unwrap_or(0)),
+    }
 }
 
 /// Recorded-time variant with explicit billing-surface provenance.
