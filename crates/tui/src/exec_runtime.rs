@@ -1110,6 +1110,24 @@ struct ToolStart {
     started_at: String,
 }
 
+fn exec_tool_started_line(name: &str) -> Vec<u8> {
+    let mut line = tr(MessageId::ExecToolStarted).replace("{name}", name);
+    line.push('\n');
+    line.into_bytes()
+}
+
+fn exec_tool_finished_line(name: &str, success: bool, output: &str) -> Vec<u8> {
+    let message_id = if success {
+        MessageId::ExecToolCompleted
+    } else {
+        MessageId::ExecToolFailed
+    };
+    let mut line = tr(message_id).replace("{name}", name);
+    line.push_str(output);
+    line.push('\n');
+    line.into_bytes()
+}
+
 struct RuntimeEventProjection<'a> {
     summary: &'a mut ExecSummary,
     transcript: &'a mut CanonicalTranscript,
@@ -1201,7 +1219,7 @@ impl<'a> RuntimeEventProjection<'a> {
                     })
                     .ok()
                 } else if !json_output {
-                    Some(format!("tool: {}\n", invocation.name).into_bytes())
+                    Some(exec_tool_started_line(&invocation.name))
                 } else {
                     None
                 }
@@ -1254,18 +1272,11 @@ impl<'a> RuntimeEventProjection<'a> {
                     })
                     .ok()
                 } else if !json_output {
-                    Some(
-                        format!(
-                            "tool {name} {}: {}\n",
-                            if outcome.is_success() {
-                                "completed"
-                            } else {
-                                "failed"
-                            },
-                            super::summarize_tool_output(&outcome.content)
-                        )
-                        .into_bytes(),
-                    )
+                    Some(exec_tool_finished_line(
+                        name,
+                        outcome.is_success(),
+                        &super::summarize_tool_output(&outcome.content),
+                    ))
                 } else {
                     None
                 }
@@ -1958,6 +1969,28 @@ mod tests {
             Some("DeepSeek API 物理请求预算已用尽（上限：10）")
         );
         assert_eq!(physical.2, "llm_api_request_budget_exhausted");
+    }
+
+    #[test]
+    fn exec_text_tool_lifecycle_localizes_only_the_framework() {
+        let tool_name = "read_file::{output}";
+        let raw_success = "RAW stdout/stderr: completed failed {name}";
+        let raw_failure = "upstream error: permission denied";
+
+        assert_eq!(
+            String::from_utf8(exec_tool_started_line(tool_name)).expect("UTF-8 tool start"),
+            "开始调用工具：read_file::{output}\n"
+        );
+        assert_eq!(
+            String::from_utf8(exec_tool_finished_line(tool_name, true, raw_success))
+                .expect("UTF-8 successful tool outcome"),
+            "工具 read_file::{output} 调用完成：RAW stdout/stderr: completed failed {name}\n"
+        );
+        assert_eq!(
+            String::from_utf8(exec_tool_finished_line(tool_name, false, raw_failure))
+                .expect("UTF-8 failed tool outcome"),
+            "工具 read_file::{output} 调用失败：upstream error: permission denied\n"
+        );
     }
 
     #[test]

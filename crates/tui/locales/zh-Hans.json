@@ -714,5 +714,8 @@
     "FilePickerMatchSingular": "@ 附加 · 1 个匹配",
     "FilePickerMatchesPlural": "@ 附加 · {count} 个匹配",
     "ExecModelRequestBudgetExhausted": "Agent 模型请求预算已用尽（上限：{limit}）",
-    "ExecApiRequestBudgetExhausted": "DeepSeek API 物理请求预算已用尽（上限：{limit}）"
+    "ExecApiRequestBudgetExhausted": "DeepSeek API 物理请求预算已用尽（上限：{limit}）",
+    "ExecToolStarted": "开始调用工具：{name}",
+    "ExecToolCompleted": "工具 {name} 调用完成：",
+    "ExecToolFailed": "工具 {name} 调用失败："
 }

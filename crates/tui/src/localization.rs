@@ -775,6 +775,9 @@ pub enum MessageId {
     // Canonical exec terminal summaries.
     ExecModelRequestBudgetExhausted,
     ExecApiRequestBudgetExhausted,
+    ExecToolStarted,
+    ExecToolCompleted,
+    ExecToolFailed,
 }
 
 #[allow(dead_code)]
@@ -1495,6 +1498,9 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::FilePickerMatchesPlural,
     MessageId::ExecModelRequestBudgetExhausted,
     MessageId::ExecApiRequestBudgetExhausted,
+    MessageId::ExecToolStarted,
+    MessageId::ExecToolCompleted,
+    MessageId::ExecToolFailed,
 ];
 
 pub fn tr(id: MessageId) -> Cow<'static, str> {
