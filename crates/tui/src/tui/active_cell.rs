@@ -324,7 +324,6 @@ mod tests {
             input_summary: None,
             output: None,
             prompts: None,
-            spillover_path: None,
             output_summary: None,
             is_diff: false,
         }))

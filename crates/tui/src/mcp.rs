@@ -784,7 +784,7 @@ pub(super) const MAX_SSE_FRAME_BYTES: usize = 8 * 1024 * 1024;
 /// Hard ceiling on a single MCP HTTP response body / stdio line. A misbehaving
 /// or malicious server could otherwise stream an unbounded body (or a
 /// newline-free multi-GB "line") and OOM the process at transport-read time,
-/// before any transcript-level spillover applies.
+/// before the result reaches the canonical Runtime.
 pub(super) const MAX_MCP_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 fn sse_field_value<'a>(line: &'a str, field: &str) -> Option<&'a str> {

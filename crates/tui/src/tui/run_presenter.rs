@@ -459,7 +459,6 @@ fn present_tool_prepared(app: &mut App, id: &str, name: &str, arguments: &ToolAr
         input_summary: summarize_tool_args(&input),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     })));
@@ -506,7 +505,6 @@ fn present_tool_outcome(app: &mut App, id: &str, name: &str, outcome: &ToolOutco
         input_summary: None,
         output: output.clone(),
         prompts: None,
-        spillover_path: None,
         output_summary: summary,
         is_diff,
     })));

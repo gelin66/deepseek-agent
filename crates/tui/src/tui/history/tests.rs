@@ -17,91 +17,6 @@ use std::time::{Duration, Instant};
 // Below 3s the label stays "running" — quick reads/greps shouldn't
 // visually churn. From 3s onward the badge appears and ticks each
 // second so the user can tell the call hasn't hung.
-// ---- #423 spillover-path UI annotation ----
-//
-// When a tool result carries a `spillover_path` (set by the
-// tool-routing layer when the tool's `metadata.spillover_path` is
-// populated), the live render appends a one-line muted hint
-// pointing at the file. Transcript-mode replay leaves the hint
-// off because the full output is already inline.
-
-#[test]
-fn render_spillover_annotation_shows_path() {
-    use std::path::PathBuf;
-    let cell = GenericToolCell {
-        name: "read_file".to_string(),
-        status: ToolStatus::Success,
-        input_summary: Some("cmd: cargo build --release".to_string()),
-        output: Some("very large output...".to_string()),
-        prompts: None,
-        spillover_path: Some(PathBuf::from(
-            "/Users/dev/.deepseek/tool_outputs/call-abc12.txt",
-        )),
-        output_summary: None,
-        is_diff: false,
-    };
-    let lines = cell.lines_with_mode(120, true, super::RenderMode::Live);
-    let joined: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
-    assert!(
-        joined.contains("read done · cmd: cargo build --release"),
-        "expected compact live summary: {joined:?}"
-    );
-    assert!(
-        !joined.contains("full output:"),
-        "spillover paths stay out of compact live rows: {joined:?}"
-    );
-}
-
-#[test]
-fn render_spillover_annotation_omitted_in_transcript_mode() {
-    use std::path::PathBuf;
-    // Transcript mode is for replay; the full output is already
-    // inline so the annotation would just be redundant.
-    let cell = GenericToolCell {
-        name: "read_file".to_string(),
-        status: ToolStatus::Success,
-        input_summary: None,
-        output: Some("output".to_string()),
-        prompts: None,
-        spillover_path: Some(PathBuf::from("/tmp/spill.txt")),
-        output_summary: None,
-        is_diff: false,
-    };
-    let lines = cell.lines_with_mode(120, true, super::RenderMode::Transcript);
-    let joined: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
-    assert!(
-        !joined.contains("full output:"),
-        "annotation should be omitted in transcript mode: {joined:?}"
-    );
-}
-
-#[test]
-fn render_spillover_annotation_omitted_when_no_path_set() {
-    // The common case: most tool results don't trigger spillover.
-    let cell = GenericToolCell {
-        name: "read_file".to_string(),
-        status: ToolStatus::Success,
-        input_summary: None,
-        output: Some("contents".to_string()),
-        prompts: None,
-        spillover_path: None,
-        output_summary: None,
-        is_diff: false,
-    };
-    let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
-    let joined: String = lines
-        .iter()
-        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
-        .collect();
-    assert!(!joined.contains("full output:"), "{joined:?}");
-}
-
 #[test]
 fn summarize_tool_args_ignores_control_only_defaults() {
     let summary = super::summarize_tool_args(&serde_json::json!({
@@ -130,7 +45,6 @@ fn compact_git_tool_header_names_tool_not_control_default() {
         input_summary: Some("max_count: 15".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -160,7 +74,6 @@ fn compact_unknown_tool_header_names_tool_not_control_default() {
         input_summary: Some("max_count: 15".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -183,31 +96,6 @@ fn compact_unknown_tool_header_names_tool_not_control_default() {
 }
 
 #[test]
-fn render_spillover_annotation_truncates_to_width() {
-    use std::path::PathBuf;
-    let long_path = "/Users/dev/.deepseek/tool_outputs/this-is-a-very-long-tool-call-id-that-will-not-fit-in-narrow-widths.txt";
-    let cell = GenericToolCell {
-        name: "read_file".to_string(),
-        status: ToolStatus::Success,
-        input_summary: None,
-        output: Some("output".to_string()),
-        prompts: None,
-        spillover_path: Some(PathBuf::from(long_path)),
-        output_summary: None,
-        is_diff: false,
-    };
-    let lines = cell.lines_with_mode(40, true, super::RenderMode::Live);
-    let rendered: String = lines
-        .iter()
-        .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
-        .collect();
-    assert!(
-        !rendered.contains("full output:"),
-        "compact live rows should omit spillover annotations: {rendered:?}"
-    );
-}
-
-#[test]
 fn activity_group_renders_as_single_metadata_line() {
     let cell = GenericToolCell {
         name: "activity_group".to_string(),
@@ -215,7 +103,6 @@ fn activity_group_renders_as_single_metadata_line() {
         input_summary: Some("Explored 2 files, 1 search".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -281,7 +168,6 @@ fn agent_spawn_suppresses_generic_card_in_live_mode() {
                 .to_string(),
         ),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -303,7 +189,6 @@ fn agent_inspection_renders_single_compact_line_in_live_mode() {
                 .to_string(),
         ),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -333,7 +218,6 @@ fn agent_pending_inspection_uses_fallback_token() {
         input_summary: Some("action: peek prompt: do thing".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -357,7 +241,6 @@ fn agent_spawn_suppresses_generic_card_in_transcript_mode() {
         input_summary: Some("prompt: do thing".to_string()),
         output: Some(r#"{"agent_id": "agent-abc12", "model": "deepseek-v4-flash"}"#.to_string()),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -378,7 +261,6 @@ fn other_tools_are_unaffected_by_agent_compact_path() {
         input_summary: Some("path: foo.rs".to_string()),
         output: Some("first line\nsecond line\nthird line".to_string()),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -396,7 +278,6 @@ fn agent_compact_header_omits_unknown_child_fallback() {
         input_summary: Some("action: peek agent_type: delegate".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -423,7 +304,6 @@ fn agent_compact_header_does_not_duplicate_delegate_verb() {
         input_summary: Some("action: peek role: delegate".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -1452,7 +1332,6 @@ fn generic_tool_cell_picks_family_from_tool_name() {
         input_summary: Some("action: peek foo".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };
@@ -2129,7 +2008,6 @@ fn generic_tool_cell_renders_prompts_as_indexed_rows() {
             "List the public types in client.rs".to_string(),
             "Diff this commit against main".to_string(),
         ]),
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2156,7 +2034,6 @@ fn generic_tool_cell_falls_back_to_args_when_prompts_none() {
         input_summary: Some("query: foo".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2172,7 +2049,6 @@ fn known_generic_tool_hides_raw_name_in_live_mode() {
         input_summary: Some("profile: auto, level: quick".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2197,7 +2073,6 @@ fn known_generic_tool_keeps_raw_name_in_transcript_mode() {
         input_summary: Some("profile: auto, level: quick".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2218,7 +2093,6 @@ fn unknown_generic_tool_keeps_raw_name_in_live_mode() {
         input_summary: Some("query: foo".to_string()),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2248,7 +2122,6 @@ fn generic_tool_cell_preserves_multi_line_output_in_transcript() {
         input_summary: Some("command: git diff --stat".to_string()),
         output: Some(diff_stat.to_string()),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2300,7 +2173,6 @@ fn generic_tool_cell_expands_failed_multi_line_output_in_live() {
         input_summary: Some("command: ls".to_string()),
         output: Some(output),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2331,7 +2203,6 @@ fn generic_tool_failed_output_live_renders_card_rail() {
         input_summary: Some("command: noisy".to_string()),
         output: Some(output),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2360,7 +2231,6 @@ fn hidden_tool_details_keeps_failed_generic_output_expanded() {
         input_summary: Some("command: noisy".to_string()),
         output: Some(output),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2392,7 +2262,6 @@ fn calm_mode_keeps_failed_generic_output_expanded() {
         input_summary: Some("command: noisy".to_string()),
         output: Some(output),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2424,7 +2293,6 @@ fn generic_tool_success_live_collapses_output_transcript_keeps_it() {
         input_summary: Some("path: crates/tui/src/main.rs".to_string()),
         output: Some(output),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }));
@@ -2464,7 +2332,6 @@ fn tool_output_live_preserves_error_card_rail() {
         input_summary: Some("command: tool".to_string()),
         output: Some(output),
         prompts: None,
-        spillover_path: None,
         output_summary: Some("Error: failed to read config".to_string()),
         is_diff: false,
     }));
@@ -2571,7 +2438,6 @@ fn success_generic_tool(name: &str) -> HistoryCell {
         input_summary: Some(format!("args for {name}")),
         output: Some(format!("output for {name}")),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }))
@@ -2584,7 +2450,6 @@ fn failed_generic_tool(name: &str) -> HistoryCell {
         input_summary: None,
         output: Some("failed".to_string()),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }))
@@ -2597,7 +2462,6 @@ fn running_generic_tool(name: &str) -> HistoryCell {
         input_summary: None,
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }))
@@ -2803,7 +2667,6 @@ fn agent_cell(
         input_summary: action_summary.map(str::to_string),
         output: output.map(str::to_string),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }
@@ -2828,7 +2691,6 @@ fn unknown_tool_failure_collapses_to_one_line() {
                 .to_string(),
         ),
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     };

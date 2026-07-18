@@ -388,6 +388,9 @@ M4-C foreground 切换后还已物理删除：
 - 没有生产注册者或 producer、唯一 store 只由默认 `ToolContext` 空建的 TUI
   `handle_read`/`VarHandle` 原型与 process-local store；canonical artifact、RuntimeEvent、
   RunStore 不经该路径，最后仅被它使用的计数 writer 也已删除。
+- 零执行调用方的旧 TUI tool-output spillover/retrieval 链、只服务该链的私有 artifact 文件、
+  Doctor/启动 janitor 投影和始终为 `None` 的 history 字段；canonical `ToolOutcome.artifacts`、
+  verifier artifact、RuntimeEvent 和 RunStore 不依赖这套旧文件缓存，继续保留。
 
 ## 6. 当前验证事实
 

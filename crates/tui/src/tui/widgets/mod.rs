@@ -558,7 +558,6 @@ fn tool_run_summary_cell(run: &ToolRun) -> HistoryCell {
         input_summary: Some(crate::tui::history::tool_run_summary(run)),
         output: None,
         prompts: None,
-        spillover_path: None,
         output_summary: None,
         is_diff: false,
     }))
@@ -3346,7 +3345,6 @@ mod tests {
             input_summary: Some(format!("path: {name}.txt")),
             output: Some(format!("full output from {name}")),
             prompts: None,
-            spillover_path: None,
             output_summary: None,
             is_diff: false,
         }))
@@ -4671,7 +4669,6 @@ mod tests {
             input_summary: Some("items: <2 items>".to_string()),
             output: Some("hello world ".repeat(420)),
             prompts: None,
-            spillover_path: None,
             output_summary: None,
             is_diff: false,
         }));
@@ -4726,7 +4723,6 @@ mod tests {
                 input_summary: Some("todos: <1 items>".to_string()),
                 output: Some(output),
                 prompts: None,
-                spillover_path: None,
                 output_summary: None,
                 is_diff: false,
             })));

@@ -2282,7 +2282,6 @@ fn tool_run_expansion_toggle_opens_and_closes_run() {
             input_summary: None,
             output: Some("ok".to_string()),
             prompts: None,
-            spillover_path: None,
             output_summary: None,
             is_diff: false,
         })));
@@ -2313,7 +2312,6 @@ fn tool_run_expansion_toggle_handles_active_run() {
             input_summary: None,
             output: Some("ok".to_string()),
             prompts: None,
-            spillover_path: None,
             output_summary: None,
             is_diff: false,
         })));

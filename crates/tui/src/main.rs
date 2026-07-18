@@ -25,7 +25,6 @@ use codewhale_context::{project_context, prompts, skills as skill_context};
 use rust_i18n::i18n;
 i18n!("locales", fallback = ["zh-Hans"]);
 
-mod artifacts;
 mod audit;
 mod codex_model_cache;
 mod composer_history;
@@ -3110,31 +3109,6 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
         println!("    Run `codewhale setup --plugins` to scaffold a starter dir.");
     }
 
-    // Storage surfaces (#422 / #440 / #500)
-    println!();
-    println!("{}", "Storage:".bold());
-    if let Some(spillover_root) = crate::tools::truncate::spillover_root() {
-        let (present, count) = if spillover_root.is_dir() {
-            (true, count_dir_entries(&spillover_root))
-        } else {
-            (false, 0)
-        };
-        if present {
-            println!(
-                "  {} tool-output spillover at {} ({} file{})",
-                "✓".truecolor(aqua_r, aqua_g, aqua_b),
-                crate::utils::display_path(&spillover_root),
-                count,
-                if count == 1 { "" } else { "s" }
-            );
-        } else {
-            println!(
-                "  {} tool-output spillover dir not yet created at {}",
-                "·".dimmed(),
-                crate::utils::display_path(&spillover_root)
-            );
-        }
-    }
     // Tool dependencies — probe external binaries that individual
     // tools rely on (Python for code_execution, pdftotext for PDF
     // reading) so users see explicit ✓/✗ rather than the tool failing
@@ -4317,19 +4291,6 @@ fn run_doctor_json(
             "path": plugins_dir.display().to_string(),
             "present": plugins_dir.exists(),
             "count": if plugins_dir.exists() { count_dir_entries(&plugins_dir) } else { 0 },
-        },
-        "storage": {
-            "spillover": {
-                "path": crate::tools::truncate::spillover_root()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_default(),
-                "present": crate::tools::truncate::spillover_root()
-                    .is_some_and(|p| p.is_dir()),
-                "count": crate::tools::truncate::spillover_root()
-                    .filter(|p| p.is_dir())
-                    .map(|p| count_dir_entries(&p))
-                    .unwrap_or(0),
-            },
         },
         "sandbox": match codewhale_tools::sandbox::get_platform_sandbox() {
             Some(kind) => json!({"available": true, "kind": kind.to_string()}),
@@ -6050,12 +6011,9 @@ async fn run_interactive(
 
     startup_trace::mark("interactive_config");
 
-    // Boot janitors — snapshot prune (7-day default), spillover prune
-    // (#422), and managed-session cleanup (v0.8.44) — are best-effort disk
-    // hygiene. On a large ~/.codewhale they were the dominant startup cost
-    // (a git object walk plus thousands of stat/read calls), so they run on
-    // a blocking worker while the TUI brings up its first frame (#3757).
-    // All three were already documented as non-fatal.
+    // Snapshot pruning is best-effort disk hygiene. The git object walk can
+    // dominate startup on large workspaces, so it runs on a blocking worker
+    // while the TUI brings up its first frame.
     let snapshots = config.snapshots_config();
     let janitor_snapshots_enabled = snapshots.enabled;
     let janitor_max_age = snapshots.max_age();
@@ -6071,19 +6029,6 @@ async fn run_interactive(
                     tracing::warn!(target: "snapshot", "boot prune failed: {error}");
                 }
             }
-        }
-
-        match crate::tools::truncate::prune_older_than(crate::tools::truncate::SPILLOVER_MAX_AGE) {
-            Ok(0) => {}
-            Ok(n) => tracing::debug!(
-                target: "spillover",
-                "boot prune removed {n} spillover file(s)"
-            ),
-            Err(err) => tracing::warn!(
-                target: "spillover",
-                ?err,
-                "spillover prune skipped on boot"
-            ),
         }
     });
 
@@ -6393,27 +6338,6 @@ fn exec_stream_value(event: &ExecStreamEvent) -> Result<serde_json::Value> {
         );
     }
     Ok(value)
-}
-
-fn tool_artifact_receipt(metadata: Option<&serde_json::Value>) -> Option<serde_json::Value> {
-    let object = metadata?.as_object()?;
-    let mut artifact = serde_json::Map::new();
-    for key in [
-        "artifact_id",
-        "artifact_path",
-        "artifact_relative_path",
-        "artifact_byte_size",
-        "spillover_path",
-        "content_digest",
-        "original_byte_count",
-        "retained_head_bytes",
-        "retained_tail_bytes",
-    ] {
-        if let Some(value) = object.get(key) {
-            artifact.insert(key.to_string(), value.clone());
-        }
-    }
-    (!artifact.is_empty()).then_some(serde_json::Value::Object(artifact))
 }
 
 fn current_binary_sha256() -> Option<String> {

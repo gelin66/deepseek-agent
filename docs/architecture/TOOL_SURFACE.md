@@ -29,8 +29,6 @@ is owned by `crates/tools`; prompt guidance is assembled by `crates/context`.
 | `write_file` | Create or overwrite a file. |
 | `edit_file` | Search-and-replace inside a single file. Cheaper than a full rewrite. |
 | `apply_patch` | Apply a unified diff. The right tool for multi-hunk edits. |
-| `retrieve_tool_result` | Read summaries or slices of prior large tool outputs spilled to `~/.codewhale/tool_outputs/`; use `summary`, `head`, `tail`, `lines`, or `query` instead of replaying the whole result. |
-| `handle_read` | Read bounded projections from `var_handle` payloads held by live tool environments. This supports sub-agent transcripts and other large symbolic payloads. |
 
 ### Search
 

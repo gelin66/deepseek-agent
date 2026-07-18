@@ -999,13 +999,6 @@ pub struct GenericToolCell {
     /// fan-out tool), each prompt is shown on its own indented row instead
     /// of the inline `args:` summary. `None` for ordinary tools.
     pub prompts: Option<Vec<String>>,
-    /// Filesystem path to the full output's spillover file (#422/#423).
-    /// Set by the tool-routing layer when `ToolResult.metadata` carried a
-    /// `spillover_path` field. The truncation affordance includes the
-    /// path so the user can `read_file` it (or Cmd+click in
-    /// OSC 8-aware terminals — the path renders as a hyperlink when
-    /// `tui.osc8_links` is enabled).
-    pub spillover_path: Option<std::path::PathBuf>,
     // --- Pre-computed render cache (populated once at cell creation) ---
     /// Cached output summary — avoids re-parsing JSON every frame.
     pub output_summary: Option<String>,
@@ -1191,12 +1184,6 @@ impl GenericToolCell {
                     output_mode,
                 ));
             }
-
-            if matches!(mode, RenderMode::Live)
-                && let Some(path) = self.spillover_path.as_ref()
-            {
-                lines.push(render_spillover_annotation(path, width));
-            }
         }
         wrap_card_rail(lines)
     }
@@ -1245,29 +1232,6 @@ impl GenericToolCell {
             mode,
         ))
     }
-}
-
-/// Render the inline annotation for a tool cell whose full output was
-/// spilled to disk (#422 + #423). Produces a one-line muted hint:
-///
-/// ```text
-///   full output: /Users/you/.deepseek/tool_outputs/call-abc12.txt
-/// ```
-///
-/// Path is plain text on this branch; the OSC 8 hyperlink-wrap that
-/// makes it Cmd+click-openable lives on the OSC 8 branch (PR #515)
-/// and merges in once both PRs land on `main`. The clipboard /
-/// selection path already strips OSC 8 there, so a future enhancement
-/// stays backward-compatible.
-fn render_spillover_annotation(path: &std::path::Path, width: u16) -> Line<'static> {
-    let display = path.display().to_string();
-    let prefix = "  full output: ";
-    let budget = usize::from(width).saturating_sub(prefix.len()).max(8);
-    let truncated = truncate_text(&display, budget);
-    Line::from(vec![
-        Span::styled(prefix, Style::default().fg(palette::TEXT_MUTED)),
-        Span::styled(truncated, Style::default().fg(palette::TEXT_MUTED).italic()),
-    ])
 }
 
 fn render_command_mode(command: &str, width: u16, mode: RenderMode) -> Vec<Line<'static>> {

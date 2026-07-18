@@ -713,6 +713,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除没有生产注册者或 producer、唯一 store 只由默认 `ToolContext` 空建的 TUI
   `handle_read`/`VarHandle` 原型及其 process-local store；canonical artifact、RuntimeEvent 与
   RunStore 不经过该路径。随该原型删除后失去最后调用者的 `CountingWriter` 也同步删除。
+- M4-C 已删除零执行调用方的旧 TUI tool-output spillover writer/retriever、只由它消费的
+  TUI 私有 artifact 文件和始终为 `None` 的展示字段，并移除 Doctor/启动 janitor/工具面文档
+  中的假入口。正式 `ToolOutcome.artifacts`、确定性 verifier artifact、RuntimeEvent 与
+  SQLite RunStore 继续构成唯一 canonical 证据和产物链。
 - M4-C 已把 `key_shortcuts` 收缩为首启输入仍使用的 `is_text_input_key`，删除零调用的
   copy/paste/control-like/Ctrl-H 判定；正式文本粘贴继续由 terminal `Event::Paste` 处理，
   Pager 文本复制继续走 canonical local view event。
