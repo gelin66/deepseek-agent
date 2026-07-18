@@ -536,6 +536,11 @@ M4-C foreground 切换后还已物理删除：
   M7 删除，Beta FIM transport 也没有被本切片实现或替代。当前 focused、App 38/38（另 1 个
   外部进程 helper 忽略）、canonical Run 19/19、PTY 7/7、app/TUI all-target check、fmt 和
   diff-check 均通过。
+- exec stream-json 中零调用的旧 stdout 直写 helper 已删除。真实输出仍由 `ExecOutput` 队列
+  统一写出，事件序列化继续由 `exec_stream_line`/`exec_stream_value` 拥有，terminal 仍通过
+  `write_exec_stream_terminal` 等待 acknowledgement；canonical Runtime/RunStore、工具和子
+  Agent 事件均未改变。exec stream、child receipt 和真实 terminal NDJSON 验收各 1/1，并
+  通过 TUI all-target check、fmt 和 diff-check。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

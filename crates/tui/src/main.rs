@@ -6109,17 +6109,6 @@ fn exec_supports_provider(provider: crate::config::ApiProvider) -> bool {
     matches!(provider, crate::config::ApiProvider::Deepseek)
 }
 
-fn emit_exec_stream_event(event: &ExecStreamEvent) -> Result<()> {
-    let value = exec_stream_line(event)?;
-    let stdout = io::stdout();
-    let mut stdout = stdout.lock();
-    stdout
-        .write_all(&value)
-        .context("写入 exec stream-json 事件失败")?;
-    stdout.flush().context("刷新 exec stream-json 输出失败")?;
-    Ok(())
-}
-
 fn exec_stream_line(event: &ExecStreamEvent) -> Result<Vec<u8>> {
     let mut value = serde_json::to_vec(&exec_stream_value(event)?)?;
     value.push(b'\n');

@@ -994,6 +994,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   本切片不声称 FIM transport 已完成。定向与 focused 证据为 App 38/38（另 1 个外部进程
   helper 忽略）、Runtime conformance 53/53、DeepSeek 35/35、工具 299/299、exec 24/24、
   canonical Run 19/19、PTY 7/7，并通过 app/TUI all-target check、fmt 和 diff-check。
+- M4-C 已删除零调用的 exec stream-json 旧 stdout 直写 helper；生产内容、工具结果、子 Agent
+  lifecycle 与 terminal receipt 继续统一经 `ExecOutput` 队列、`exec_stream_line` 和
+  `write_exec_stream_terminal` 输出，保留背压、terminal acknowledgement 与有界关闭语义。
+  exec stream、child receipt 和真实 terminal NDJSON 验收各 1/1，并通过 TUI all-target check、
+  fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
