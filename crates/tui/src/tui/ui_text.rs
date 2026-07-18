@@ -1,28 +1,10 @@
-//! Shared text helpers for TUI selection and clipboard workflows.
+//! Shared display-width and plain-text helpers for the TUI.
 
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::tui::history::HistoryCell;
 use crate::tui::osc8;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CopyLineSeparator {
-    None,
-    Space,
-    Newline,
-}
-
-impl CopyLineSeparator {
-    #[must_use]
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "",
-            Self::Space => " ",
-            Self::Newline => "\n",
-        }
-    }
-}
 
 pub(crate) fn truncate_line_to_width(text: &str, max_width: usize) -> String {
     if max_width == 0 {
@@ -157,10 +139,9 @@ fn line_to_string(line: Line<'static>) -> String {
     out
 }
 
-/// Convert a rendered transcript line to plain text, stripping OSC-8 link
-/// escape sequences. The caller is responsible for shifting selection columns
-/// to account for any visual-only rail prefix (see
-/// `TranscriptViewCache::rail_prefix_width`).
+/// Convert every span in a rendered line to plain text, stripping any residual
+/// OSC-8 link escape sequences. Visual decoration remains part of the result;
+/// callers that need semantic text must choose their source spans explicitly.
 pub(super) fn line_to_plain(line: &Line<'static>) -> String {
     let mut out = String::new();
     append_spans_plain(line.spans.iter(), &mut out);
@@ -248,9 +229,7 @@ mod tests {
 
     #[test]
     fn line_to_plain_includes_all_spans() {
-        // Visual-only rail spans are stripped by the caller using
-        // TranscriptViewCache::rail_prefix_width — line_to_plain itself
-        // is a faithful span-to-string pass-through.
+        // This helper is deliberately a faithful span-to-string pass-through.
         let line = Line::from(vec![Span::raw("\u{2502} "), Span::raw("tool output")]);
         let text = line_to_plain(&line);
         assert_eq!(text, "\u{2502} tool output");

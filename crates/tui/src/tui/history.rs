@@ -11,7 +11,6 @@ use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::TranscriptSpacing;
 use crate::tui::diff_render;
-use crate::tui::ui_text::CopyLineSeparator;
 
 mod agent_activity;
 mod archived_context;
@@ -27,9 +26,9 @@ use constants::{
     TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TRANSCRIPT_RAIL, USER_GLYPH,
 };
 use message::{
-    RenderedTranscriptLine, assistant_label_style_for, hard_break_copy_lines, message_body_style,
-    render_message, render_message_with_copy_metadata, render_plain_message, render_user_message,
-    system_body_style, system_label_style, user_body_style, user_label_style,
+    RenderedTranscriptLine, assistant_label_style_for, message_body_style, render_message,
+    render_message_with_metadata, render_plain_message, render_user_message, system_body_style,
+    system_label_style, tag_lines_without_links, user_body_style, user_label_style,
 };
 use thinking::{render_hidden_thinking_activity, render_thinking};
 use tool_output::{render_tool_output_mode, wrap_plain_line, wrap_text};
@@ -244,16 +243,16 @@ impl HistoryCell {
         }
     }
 
-    pub(crate) fn lines_with_copy_metadata(
+    pub(crate) fn lines_with_render_metadata(
         &self,
         width: u16,
         options: TranscriptRenderOptions,
     ) -> Vec<RenderedTranscriptLine> {
         match self {
             HistoryCell::User { content } => {
-                hard_break_copy_lines(render_user_message(content, width))
+                tag_lines_without_links(render_user_message(content, width))
             }
-            HistoryCell::Assistant { content, streaming } => render_message_with_copy_metadata(
+            HistoryCell::Assistant { content, streaming } => render_message_with_metadata(
                 ASSISTANT_GLYPH,
                 assistant_label_style_for(*streaming, options.low_motion),
                 message_body_style(),
@@ -261,7 +260,7 @@ impl HistoryCell {
                 width,
             ),
             HistoryCell::System { content } if !is_cycle_boundary(content) => {
-                render_message_with_copy_metadata(
+                render_message_with_metadata(
                     &tr(MessageId::HistorySystemNoteLabel),
                     system_label_style(),
                     system_body_style(),
@@ -272,17 +271,12 @@ impl HistoryCell {
             HistoryCell::Tool(_) => self
                 .lines_with_options(width, options)
                 .into_iter()
-                .map(|line| {
-                    let copy_prefix_width = tool_copy_prefix_width(&line);
-                    RenderedTranscriptLine {
-                        line,
-                        links: Vec::new(),
-                        copy_prefix_width,
-                        copy_separator_after: CopyLineSeparator::Newline,
-                    }
+                .map(|line| RenderedTranscriptLine {
+                    line,
+                    links: Vec::new(),
                 })
                 .collect(),
-            _ => hard_break_copy_lines(self.lines_with_options(width, options)),
+            _ => tag_lines_without_links(self.lines_with_options(width, options)),
         }
     }
 
@@ -606,69 +600,6 @@ fn wrap_card_rail(mut lines: Vec<Line<'static>>) -> Vec<Line<'static>> {
         line.spans.insert(0, Span::raw(rail));
     }
     lines
-}
-
-/// Return the width of tool-cell chrome that remains after the transcript
-/// cache removes the cell-local card rail. Tool headers have two additional
-/// visual tokens (`✓`/spinner and the family glyph); detail rows have the
-/// thin transcript rail. Keeping this width with the rendered line avoids
-/// making selection copy infer chrome from glyph ranges, which can consume
-/// real code or CJK text that happens to begin with a box-drawing character.
-fn tool_copy_prefix_width(line: &Line<'static>) -> usize {
-    let spans = line.spans.as_slice();
-    let mut index = 0;
-
-    // The cache removes these exact local card rails before flattening.
-    if spans
-        .first()
-        .is_some_and(|span| matches!(span.content.as_ref(), "─ " | "╭ " | "│ " | "╰ "))
-    {
-        index = 1;
-    }
-
-    // Detail rows and pager affordances use the transcript rail as their
-    // first span. The transcript cache's general rail accounting removes it;
-    // do not report it again as cell-local copy chrome.
-    if spans
-        .get(index)
-        .is_some_and(|span| span.content.as_ref() == TRANSCRIPT_RAIL)
-    {
-        return 0;
-    }
-
-    // A tool header starts with `<status> <family> `. Only consume this
-    // pair when both tokens are present, so output beginning with `✓` or a
-    // braille character remains copyable content.
-    let Some(status) = spans.get(index).map(|span| span.content.as_ref()) else {
-        return 0;
-    };
-    let Some(family) = spans.get(index + 1).map(|span| span.content.as_ref()) else {
-        return 0;
-    };
-    if !status.ends_with(' ')
-        || !is_tool_status_glyph(status.trim_end())
-        || !family.ends_with(' ')
-        || UnicodeWidthStr::width(family.trim_end()) != 1
-    {
-        return 0;
-    }
-
-    UnicodeWidthStr::width(status) + UnicodeWidthStr::width(family)
-}
-
-fn is_tool_status_glyph(text: &str) -> bool {
-    let mut chars = text.chars();
-    let Some(ch) = chars.next() else {
-        return false;
-    };
-    chars.next().is_none()
-        && matches!(
-            ch,
-            '\u{2713}' // ✓
-                | '\u{2715}' // ✕
-                | '\u{00B7}' // ·
-                | '\u{2800}'..='\u{28FF}' // braille spinner frames
-        )
 }
 
 /// Detect whether a system message is a cycle-boundary announcement

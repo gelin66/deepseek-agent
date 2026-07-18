@@ -890,6 +890,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除没有 Key/Mouse/Run event producer 的 transcript selection/autoscroll 模块、
   默认空状态、自动滚动 guard、resize clear 和 renderer 着色岛，并移除只直接调用私有着色函数的自测。
   composer 真实选区、菜单/审批选中态、系统文本复制、canonical transcript/scroll 与 Pager 保持原 owner。
+- M4-C 已删除随上述 transcript selection/copy 生产路径一同失去 reader 的 copy metadata writer-only 管线：
+  `CopyLineSeparator`、soft-wrap separator、装饰 prefix width 曾跨 markdown/history/cache/
+  `TranscriptLineMeta` 逐行计算与传递，却没有生产消费者。字段、计算器、cache 数组与专属自测已物理删除；
+  真实 render metadata helper 已按职责重命名，继续传递 `Line`、links、`is_code` 和 cell/line 映射。
+  OSC8、Pager/审批系统复制、composer 选区、scroll/cache 渲染均保持原 owner。
 - M4-C 已删除从未被 canonical key handler 调用的 composer Vim 孤岛：
   `vim_mode.rs` 的 Normal-mode handler 没有任何生产调用方，设置值只能构造 App 状态并显示顶栏标签。
   模块、App helper/字段、设置/别名/列表、标签本地化和 widget 分支已物理删除；普通 composer 输入/选区/渲染、

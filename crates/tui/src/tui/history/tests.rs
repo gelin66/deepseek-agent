@@ -5,7 +5,7 @@ use super::{
 };
 use crate::deepseek_theme::Theme;
 use crate::palette;
-use crate::tui::ui_text::{line_to_plain, slice_text, text_display_width};
+use crate::tui::ui_text::{line_to_plain, text_display_width};
 use ratatui::style::Modifier;
 
 // ---- elapsed-seconds badge for long-running tools ----
@@ -422,11 +422,11 @@ fn system_note_uses_chinese_title_and_preserves_canonical_content() {
     assert_eq!(live[0].spans[0].content.as_ref(), "说明");
     assert!(lines_text(&live).contains(raw_content));
 
-    let copied = cell.lines_with_copy_metadata(160, TranscriptRenderOptions::default());
-    assert_eq!(copied[0].line.spans[0].content.as_ref(), "说明");
+    let tagged = cell.lines_with_render_metadata(160, TranscriptRenderOptions::default());
+    assert_eq!(tagged[0].line.spans[0].content.as_ref(), "说明");
     assert!(
         lines_text(
-            &copied
+            &tagged
                 .iter()
                 .map(|rendered| rendered.line.clone())
                 .collect::<Vec<_>>()
@@ -644,129 +644,6 @@ fn assistant_cell_renders_with_bullet_glyph_not_literal_label() {
     );
     assert!(visible.contains("ready"));
     assert_ne!(head.style.bg, Some(palette::SURFACE_ELEVATED));
-}
-
-#[test]
-fn copy_metadata_strips_tool_receipt_chrome_but_keeps_text() {
-    let cell = HistoryCell::Tool(GenericToolCell {
-        name: "exec_shell".to_string(),
-        status: ToolStatus::Success,
-        input_summary: Some("command: printf 'receipt'".to_string()),
-        output: Some("receipt".to_string()),
-        prompts: None,
-        output_summary: None,
-        is_diff: false,
-    });
-    let rendered = cell.lines_with_copy_metadata(80, TranscriptRenderOptions::default());
-    let header = rendered.first().expect("tool receipt header");
-    assert!(
-        header.copy_prefix_width >= 4,
-        "missing status/family chrome width"
-    );
-    assert!(
-        header
-            .line
-            .spans
-            .iter()
-            .any(|span| span.content.contains("receipt")),
-        "receipt text must remain in the rendered copy source"
-    );
-    let header_text = line_to_plain(&ratatui::text::Line::from(
-        header
-            .line
-            .spans
-            .iter()
-            .skip(1)
-            .cloned()
-            .collect::<Vec<_>>(),
-    ));
-    let copied = slice_text(
-        &header_text,
-        header.copy_prefix_width,
-        text_display_width(&header_text),
-    );
-    assert!(
-        !copied.contains('✓'),
-        "status chrome leaked into copy: {copied:?}"
-    );
-    assert!(
-        !copied.contains('●'),
-        "family chrome leaked into copy: {copied:?}"
-    );
-    assert!(
-        copied.contains("run done"),
-        "receipt text was clipped: {copied:?}"
-    );
-}
-
-#[test]
-fn copy_metadata_tracks_wrapped_assistant_code_prefix_in_display_columns() {
-    let cell = HistoryCell::Assistant {
-        content: "```text\n  中文 = 1\n```".to_string(),
-        streaming: false,
-    };
-    let rendered = cell.lines_with_copy_metadata(24, TranscriptRenderOptions::default());
-    let code_line = rendered
-        .iter()
-        .find(|line| {
-            line.line
-                .spans
-                .iter()
-                .any(|span| span.content.contains("中文"))
-        })
-        .expect("wrapped fenced code line");
-    assert_eq!(
-        code_line.copy_prefix_width, 2,
-        "code continuation prefix uses the role marker's two display columns"
-    );
-    let code = line_to_plain(&code_line.line);
-    let copied = slice_text(
-        &code,
-        code_line.copy_prefix_width,
-        text_display_width(&code),
-    );
-    assert!(
-        copied.contains("中文 = 1"),
-        "code text was clipped: {copied:?}"
-    );
-    assert!(
-        copied.starts_with("    中文"),
-        "code indentation or visual prefix was wrong: {copied:?}"
-    );
-}
-
-#[test]
-fn copy_metadata_keeps_fenced_code_indentation_after_prefix_removal() {
-    let cell = HistoryCell::Assistant {
-        content: "```rust\n    let answer = 42;\n```".to_string(),
-        streaming: false,
-    };
-    let rendered = cell.lines_with_copy_metadata(40, TranscriptRenderOptions::default());
-    let code_line = rendered
-        .iter()
-        .find(|line| {
-            line.line
-                .spans
-                .iter()
-                .any(|span| span.content.contains("answer"))
-        })
-        .expect("fenced code body");
-    let text = line_to_plain(&code_line.line);
-    let content = slice_text(
-        &text,
-        code_line.copy_prefix_width,
-        text_display_width(&text),
-    );
-    assert!(
-        content.contains("    let answer = 42;"),
-        "code indentation was not preserved: {content:?}"
-    );
-    for glyph in ['╎', '▎', '●', '│', '┃'] {
-        assert!(
-            !content.contains(glyph),
-            "decorative glyph leaked: {content:?}"
-        );
-    }
 }
 
 #[test]

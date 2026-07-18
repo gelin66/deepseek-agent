@@ -15,23 +15,19 @@
 //! Codex's pager uses the same line-offset shape; see
 //! `codex-rs/tui/src/pager_overlay.rs::PagerView`.
 
-use crate::tui::ui_text::CopyLineSeparator;
-
 // === Transcript Line Metadata ===
 
 /// Metadata describing how rendered transcript lines map to history cells.
 ///
 /// The scroll state itself does not consult this — it only stores a flat
-/// line offset — but other render-time helpers (selection painting,
-/// send-flash, jump-to-tool, scrollbar percent) still need the
+/// line offset — but other render-time helpers (send-flash, jump-to-tool,
+/// scrollbar percent) still need the
 /// line→cell mapping the cache exposes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptLineMeta {
     CellLine {
         cell_index: usize,
         line_in_cell: usize,
-        copy_prefix_width: usize,
-        copy_separator_after: CopyLineSeparator,
     },
     Spacer,
 }
@@ -47,27 +43,6 @@ impl TranscriptLineMeta {
                 ..
             } => Some((cell_index, line_in_cell)),
             TranscriptLineMeta::Spacer => None,
-        }
-    }
-
-    #[must_use]
-    pub fn copy_separator_after(&self) -> CopyLineSeparator {
-        match *self {
-            TranscriptLineMeta::CellLine {
-                copy_separator_after,
-                ..
-            } => copy_separator_after,
-            TranscriptLineMeta::Spacer => CopyLineSeparator::Newline,
-        }
-    }
-
-    #[must_use]
-    pub fn copy_prefix_width(&self) -> usize {
-        match *self {
-            TranscriptLineMeta::CellLine {
-                copy_prefix_width, ..
-            } => copy_prefix_width,
-            TranscriptLineMeta::Spacer => 0,
         }
     }
 }
@@ -201,8 +176,6 @@ mod tests {
         TranscriptLineMeta::CellLine {
             cell_index,
             line_in_cell,
-            copy_prefix_width: 0,
-            copy_separator_after: CopyLineSeparator::Newline,
         }
     }
 

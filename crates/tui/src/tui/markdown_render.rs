@@ -33,7 +33,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
 use crate::tui::osc8;
-use crate::tui::ui_text::CopyLineSeparator;
 
 // Thread-local counter incremented every time `parse` runs. Used by tests to
 // prove that width-only changes hit the cached-AST path and skip parsing.
@@ -105,8 +104,6 @@ pub struct RenderedMarkdownLine {
     /// out-of-band; `Span::content` always contains visible text only.
     pub links: Vec<osc8::LineLink>,
     pub is_code: bool,
-    pub copy_prefix_width: usize,
-    pub copy_separator_after: CopyLineSeparator,
 }
 
 /// Parse markdown source into a width-independent block AST.
@@ -234,8 +231,6 @@ pub fn render_parsed_tagged(
                         line,
                         links: Vec::new(),
                         is_code: false,
-                        copy_prefix_width: 0,
-                        copy_separator_after: CopyLineSeparator::Newline,
                     }),
             );
             continue;
@@ -256,8 +251,6 @@ pub fn render_parsed_tagged(
                     )),
                     links: Vec::new(),
                     is_code: false,
-                    copy_prefix_width: 0,
-                    copy_separator_after: CopyLineSeparator::Newline,
                 });
             }
             Block::HorizontalRule => {
@@ -268,8 +261,6 @@ pub fn render_parsed_tagged(
                     )),
                     links: Vec::new(),
                     is_code: false,
-                    copy_prefix_width: 0,
-                    copy_separator_after: CopyLineSeparator::Newline,
                 });
             }
             Block::ListItem { bullet, text } => {
@@ -303,8 +294,6 @@ pub fn render_parsed_tagged(
                     line: Line::from(""),
                     links: Vec::new(),
                     is_code: false,
-                    copy_prefix_width: 0,
-                    copy_separator_after: CopyLineSeparator::Newline,
                 });
             }
             Block::TableRow(_) | Block::TableSeparator => unreachable!(),
@@ -317,8 +306,6 @@ pub fn render_parsed_tagged(
             line: Line::from(""),
             links: Vec::new(),
             is_code: false,
-            copy_prefix_width: 0,
-            copy_separator_after: CopyLineSeparator::Newline,
         });
     }
 
@@ -499,7 +486,6 @@ fn render_wrapped_line_tagged(
     };
     let mut out = Vec::new();
 
-    let last_index = wrapped.len().saturating_sub(1);
     for (idx, chunk) in wrapped.into_iter().enumerate() {
         let line = if idx == 0 {
             Line::from(vec![Span::raw(prefix), Span::styled(chunk, style)])
@@ -509,19 +495,10 @@ fn render_wrapped_line_tagged(
                 Span::styled(chunk, style),
             ])
         };
-        let copy_separator_after = if idx == last_index {
-            CopyLineSeparator::Newline
-        } else if is_code {
-            CopyLineSeparator::None
-        } else {
-            CopyLineSeparator::Space
-        };
         out.push(RenderedMarkdownLine {
             line,
             links: Vec::new(),
             is_code,
-            copy_prefix_width: if indent_code { prefix_width } else { 0 },
-            copy_separator_after,
         });
     }
 
@@ -554,8 +531,6 @@ fn render_list_line_tagged(
                 line: Line::from(spans),
                 links,
                 is_code: false,
-                copy_prefix_width: 0,
-                copy_separator_after: rendered.copy_separator_after,
             });
         } else {
             let mut spans = vec![Span::raw(" ".repeat(bullet_width))];
@@ -564,8 +539,6 @@ fn render_list_line_tagged(
                 line: Line::from(spans),
                 links,
                 is_code: false,
-                copy_prefix_width: bullet_width,
-                copy_separator_after: rendered.copy_separator_after,
             });
         }
     }
@@ -596,8 +569,6 @@ fn render_line_with_links_tagged(
             line: Line::from(""),
             links: Vec::new(),
             is_code: false,
-            copy_prefix_width: 0,
-            copy_separator_after: CopyLineSeparator::Newline,
         }];
     }
 
@@ -653,12 +624,7 @@ fn render_line_with_links_tagged(
         if ww > width && width > 0 {
             // Flush the in-progress line first.
             if !current_spans.is_empty() {
-                push_inline_line(
-                    &mut lines,
-                    &mut current_spans,
-                    &mut current_links,
-                    CopyLineSeparator::Space,
-                );
+                push_inline_line(&mut lines, &mut current_spans, &mut current_links);
                 current_width = 0;
             }
             // Char-break the word into width-sized chunks. Each full chunk
@@ -676,8 +642,6 @@ fn render_line_with_links_tagged(
                         line: Line::from(vec![word.span_for(chunk)]),
                         links,
                         is_code: false,
-                        copy_prefix_width: 0,
-                        copy_separator_after: CopyLineSeparator::None,
                     });
                     chunk_w = 0;
                 }
@@ -694,12 +658,7 @@ fn render_line_with_links_tagged(
         // Wrap before this word if it doesn't fit.
         if current_width > 0 && current_width + ww > width {
             // Trim trailing space span before breaking.
-            push_inline_line(
-                &mut lines,
-                &mut current_spans,
-                &mut current_links,
-                CopyLineSeparator::Space,
-            );
+            push_inline_line(&mut lines, &mut current_spans, &mut current_links);
             current_width = 0;
         }
         record_inline_link(&mut current_links, &word, current_width, ww);
@@ -708,22 +667,13 @@ fn render_line_with_links_tagged(
     }
 
     if !current_spans.is_empty() {
-        push_inline_line(
-            &mut lines,
-            &mut current_spans,
-            &mut current_links,
-            CopyLineSeparator::Newline,
-        );
-    } else if let Some(last) = lines.last_mut() {
-        last.copy_separator_after = CopyLineSeparator::Newline;
+        push_inline_line(&mut lines, &mut current_spans, &mut current_links);
     }
     if lines.is_empty() {
         lines.push(RenderedMarkdownLine {
             line: Line::from(""),
             links: Vec::new(),
             is_code: false,
-            copy_prefix_width: 0,
-            copy_separator_after: CopyLineSeparator::Newline,
         });
     }
     lines
@@ -733,7 +683,6 @@ fn push_inline_line(
     lines: &mut Vec<RenderedMarkdownLine>,
     spans: &mut Vec<Span<'static>>,
     links: &mut Vec<osc8::LineLink>,
-    copy_separator_after: CopyLineSeparator,
 ) {
     if let Some(last) = spans.last()
         && last.content.as_ref() == " "
@@ -752,8 +701,6 @@ fn push_inline_line(
         line: Line::from(std::mem::take(spans)),
         links: std::mem::take(links),
         is_code: false,
-        copy_prefix_width: 0,
-        copy_separator_after,
     });
 }
 

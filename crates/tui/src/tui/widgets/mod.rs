@@ -3161,8 +3161,6 @@ mod tests {
         let line_meta = vec![TranscriptLineMeta::CellLine {
             cell_index: 0,
             line_in_cell: 0,
-            copy_prefix_width: 0,
-            copy_separator_after: crate::tui::ui_text::CopyLineSeparator::Newline,
         }];
         let original_index_map = vec![2];
 

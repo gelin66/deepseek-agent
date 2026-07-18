@@ -6,15 +6,12 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
 use crate::tui::markdown_render;
-use crate::tui::ui_text::CopyLineSeparator;
 
 use super::{ASSISTANT_GLYPH, USER_GLYPH};
 
 pub(crate) struct RenderedTranscriptLine {
     pub line: Line<'static>,
     pub links: Vec<crate::tui::osc8::LineLink>,
-    pub copy_prefix_width: usize,
-    pub copy_separator_after: CopyLineSeparator,
 }
 
 pub(super) fn render_message(
@@ -24,13 +21,13 @@ pub(super) fn render_message(
     content: &str,
     width: u16,
 ) -> Vec<Line<'static>> {
-    render_message_with_copy_metadata(prefix, label_style, body_style, content, width)
+    render_message_with_metadata(prefix, label_style, body_style, content, width)
         .into_iter()
         .map(|rendered| rendered.line)
         .collect()
 }
 
-pub(super) fn render_message_with_copy_metadata(
+pub(super) fn render_message_with_metadata(
     prefix: &str,
     label_style: Style,
     body_style: Style,
@@ -90,46 +87,23 @@ pub(super) fn render_message_with_copy_metadata(
             spans.extend(rendered_line.line.spans);
             Line::from(spans)
         };
-        lines.push(RenderedTranscriptLine {
-            line,
-            links,
-            copy_prefix_width: rendered_line.copy_prefix_width
-                + history_copy_prefix_width(prefix, prefix_width, rendered_line.is_code, idx),
-            copy_separator_after: rendered_line.copy_separator_after,
-        });
+        lines.push(RenderedTranscriptLine { line, links });
     }
     if lines.is_empty() {
         lines.push(RenderedTranscriptLine {
             line: Line::from(""),
             links: Vec::new(),
-            copy_prefix_width: 0,
-            copy_separator_after: CopyLineSeparator::Newline,
         });
     }
     lines
 }
 
-fn history_copy_prefix_width(
-    prefix: &str,
-    prefix_width: usize,
-    is_code: bool,
-    line_index: usize,
-) -> usize {
-    if line_index > 0 && is_code && !prefix.is_empty() {
-        prefix_width + 1
-    } else {
-        0
-    }
-}
-
-pub(super) fn hard_break_copy_lines(lines: Vec<Line<'static>>) -> Vec<RenderedTranscriptLine> {
+pub(super) fn tag_lines_without_links(lines: Vec<Line<'static>>) -> Vec<RenderedTranscriptLine> {
     lines
         .into_iter()
         .map(|line| RenderedTranscriptLine {
             line,
             links: Vec::new(),
-            copy_prefix_width: 0,
-            copy_separator_after: CopyLineSeparator::Newline,
         })
         .collect()
 }

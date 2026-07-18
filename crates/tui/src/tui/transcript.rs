@@ -26,7 +26,6 @@ use ratatui::{
 use crate::tui::app::TranscriptSpacing;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::scrolling::TranscriptLineMeta;
-use crate::tui::ui_text::CopyLineSeparator;
 
 /// Per-cell cached render output. Reused across `ensure` calls when the
 /// upstream cell's revision counter hasn't changed.
@@ -49,12 +48,6 @@ struct CachedCell {
     /// Hyperlinks aligned with `lines`, in display columns relative to each
     /// line. Targets never enter the ratatui cell buffer.
     links: Arc<Vec<Vec<crate::tui::osc8::LineLink>>>,
-    /// Copy separators aligned with `lines`. These preserve source hard
-    /// newlines while allowing copy to remove visual soft-wrap breaks.
-    copy_separators: Arc<Vec<CopyLineSeparator>>,
-    /// Display-column widths of visual prefixes that should be omitted from
-    /// clipboard text, aligned with `lines`.
-    copy_prefix_widths: Arc<Vec<usize>>,
     /// Whether this cell's rendered output was empty (e.g. Thinking hidden).
     /// Cached so we can skip empty cells without re-rendering.
     is_empty: bool,
@@ -85,11 +78,6 @@ pub struct TranscriptViewCache {
     line_links: Vec<Vec<crate::tui::osc8::LineLink>>,
     /// Per-line metadata aligned with `lines`.
     line_meta: Vec<TranscriptLineMeta>,
-    /// Per-line rail-prefix display-column count (`0` or `2`), aligned with
-    /// `lines`. Populated during flatten so that selection-to-text can shift
-    /// columns past visual-only decoration glyphs without guessing which
-    /// spans are decorative (#1163).
-    rail_prefix_widths: Vec<usize>,
 }
 
 impl TranscriptViewCache {
@@ -103,7 +91,6 @@ impl TranscriptViewCache {
             lines: Vec::new(),
             line_links: Vec::new(),
             line_meta: Vec::new(),
-            rail_prefix_widths: Vec::new(),
         }
     }
 
@@ -235,11 +222,9 @@ impl TranscriptViewCache {
             } else {
                 width
             };
-            let rendered = cell.lines_with_copy_metadata(render_width, options);
+            let rendered = cell.lines_with_render_metadata(render_width, options);
             let mut lines = Vec::with_capacity(rendered.len());
             let mut links = Vec::with_capacity(rendered.len());
-            let mut copy_separators = Vec::with_capacity(rendered.len());
-            let mut copy_prefix_widths = Vec::with_capacity(rendered.len());
             for rendered_line in rendered {
                 let mut line = rendered_line.line;
                 if is_tool_groupable {
@@ -247,16 +232,12 @@ impl TranscriptViewCache {
                 }
                 lines.push(line);
                 links.push(rendered_line.links);
-                copy_prefix_widths.push(rendered_line.copy_prefix_width);
-                copy_separators.push(rendered_line.copy_separator_after);
             }
             let is_empty = lines.is_empty();
             new_per_cell.push(CachedCell {
                 revision: current_rev,
                 lines: Arc::new(lines),
                 links: Arc::new(links),
-                copy_separators: Arc::new(copy_separators),
-                copy_prefix_widths: Arc::new(copy_prefix_widths),
                 is_empty,
                 is_stream_continuation: cell.is_stream_continuation(),
                 is_conversational: cell.is_conversational(),
@@ -293,7 +274,6 @@ impl TranscriptViewCache {
         self.lines.clear();
         self.line_links.clear();
         self.line_meta.clear();
-        self.rail_prefix_widths.clear();
         self.append_flattened_cells(spacing, 0);
     }
 
@@ -319,7 +299,6 @@ impl TranscriptViewCache {
         self.lines.truncate(truncate_at);
         self.line_links.truncate(truncate_at);
         self.line_meta.truncate(truncate_at);
-        self.rail_prefix_widths.truncate(truncate_at);
         self.append_flattened_cells(spacing, first_cell);
     }
 
@@ -345,23 +324,11 @@ impl TranscriptViewCache {
                     rail,
                     usize::from(self.width),
                 );
-                self.rail_prefix_widths
-                    .push(compute_rail_prefix_width(&final_line));
                 self.lines.push(final_line);
                 self.line_links.push(final_links);
                 self.line_meta.push(TranscriptLineMeta::CellLine {
                     cell_index,
                     line_in_cell,
-                    copy_prefix_width: cached
-                        .copy_prefix_widths
-                        .get(line_in_cell)
-                        .copied()
-                        .unwrap_or(0),
-                    copy_separator_after: cached
-                        .copy_separators
-                        .get(line_in_cell)
-                        .copied()
-                        .unwrap_or(CopyLineSeparator::Newline),
                 });
             }
 
@@ -371,7 +338,6 @@ impl TranscriptViewCache {
                     self.lines.push(Line::from(""));
                     self.line_links.push(Vec::new());
                     self.line_meta.push(TranscriptLineMeta::Spacer);
-                    self.rail_prefix_widths.push(0);
                 }
             }
         }
@@ -399,18 +365,6 @@ impl TranscriptViewCache {
     #[must_use]
     pub fn total_lines(&self) -> usize {
         self.lines.len()
-    }
-
-    /// Return the rail-prefix display-column count for the line at
-    /// `line_index`. Callers use this to shift selection coordinates past
-    /// visual-only decoration glyphs without guessing which spans are
-    /// decorative (#1163).
-    #[must_use]
-    pub fn rail_prefix_width(&self, line_index: usize) -> usize {
-        self.rail_prefix_widths
-            .get(line_index)
-            .copied()
-            .unwrap_or(0)
     }
 }
 
@@ -537,75 +491,6 @@ fn links_with_group_rail(
             link
         })
         .collect()
-}
-
-/// Return the display-column count of consecutive visual-only decorative
-/// spans at the start of a rendered transcript line. Iterates through
-/// leading spans matching either of two patterns:
-///
-/// * Pattern A — span is `"<glyph>[<glyph>…]<space>"` where every character
-///   except the trailing space is a rail-drawing character (e.g. `▏ `,
-///   `▶ `, `⋮⋮ `). The entire span width is accumulated.
-/// * Pattern B — span is `"<glyph>"` (1 drawing char) followed by a lone
-///   space span `" "` (e.g. `●` then ` `, `▎` then ` `).
-///
-/// Stops at the first non-matching span. Every decorated glyph used by the
-/// TUI is a single display-column character, so char-count = display width.
-///
-/// Returns `0` for lines whose first span is not a decorative prefix.
-fn compute_rail_prefix_width(line: &Line<'static>) -> usize {
-    let spans = line.spans.as_slice();
-    let mut total = 0;
-    let mut i = 0;
-
-    while i < spans.len() {
-        let content = spans[i].content.as_ref();
-        let n_chars = content.chars().count();
-
-        // Pattern A — span "<glyph>[<glyph>…]<space>" (≥ 2 chars, trailing
-        // space, all preceding chars are drawing chars).
-        if n_chars >= 2
-            && content.ends_with(' ')
-            && content
-                .chars()
-                .take(n_chars.saturating_sub(1))
-                .all(is_rail_drawing_char)
-        {
-            total += n_chars;
-            i += 1;
-            continue;
-        }
-
-        // Pattern B — span "<glyph>" (1 drawing char) + next span " ".
-        if n_chars == 1
-            && content.chars().next().is_some_and(is_rail_drawing_char)
-            && spans.get(i + 1).is_some_and(|s| s.content.as_ref() == " ")
-        {
-            total += 2;
-            i += 2;
-            continue;
-        }
-
-        break;
-    }
-
-    total
-}
-
-/// Characters that serve as decoration glyphs in the TUI left-rail and
-/// tool-header prefix system. All are single display-column characters.
-fn is_rail_drawing_char(ch: char) -> bool {
-    matches!(
-        ch,
-        '\u{2500}'..='\u{257F}'   // Box Drawing (╭ ╮ ╰ ╯ │ ╎ …)
-        | '\u{2580}'..='\u{259F}' // Block Elements (▏ ▎ ▍ ▌ …)
-        | '\u{25A0}'..='\u{25FF}' // Geometric Shapes (● ▶ ▷ ◆ ◐ …)
-        | '\u{2022}'              // • bullet (tool status / generic tool)
-        | '\u{2026}'              // … ellipsis (reasoning opener)
-        | '\u{00B7}'              // · middle dot (tool running symbol)
-        | '\u{2315}'              // ⌕ telephone recorder (find/search tool)
-        | '\u{22EE}'              // ⋮ vertical ellipsis (fanout/tool output)
-    )
 }
 
 fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<Span<'static>> {
@@ -1054,73 +939,6 @@ mod tests {
                 "tool rail line exceeded narrow width: {line:?}"
             );
         }
-    }
-
-    /// Simulate a long, complex conversation (thinking + multi-line tool output +
-    /// tool headers with multiple decorative spans) and report the memory
-    /// consumed by `rail_prefix_widths`. This is informational — the assertion
-    /// only fails if the per-line overhead exceeds a generous bound.
-    // Test prints memory-overhead diagnostics — runs in `cargo test`, never
-    // inside the TUI alt-screen, so the module-level deny doesn't apply.
-    #[allow(clippy::print_stderr)]
-    #[test]
-    fn rail_prefix_widths_memory_overhead_complex_session() {
-        let mut cells: Vec<HistoryCell> = Vec::new();
-        // Build ~60 turns covering the typical deep-reasoning workflow:
-        // user → thinking (5-15 lines) → assistant → tool → tool output →
-        // thinking → assistant → ... repeat.
-        for i in 0..30 {
-            cells.push(user_cell(&format!("complex query {i} about system design")));
-            cells.push(HistoryCell::Thinking {
-                content:
-                    "line A\nline B\nline C\nline D\nline E\nline F\nline G\nline H\nline I\nline J"
-                        .to_string(),
-                streaming: false,
-            });
-            cells.push(assistant_cell(
-                &format!("response {i} with multi-line\ntext content spanning\nseveral lines"),
-                false,
-            ));
-            cells.push(generic_tool_cell(
-                "cargo test --package my_crate -- --nocapture 2>&1 | head -40",
-            ));
-            // Insert a second tool so adjacent tool cells merge into a railed group.
-            cells.push(generic_tool_cell(&format!("git diff --stat HEAD~{i}")));
-        }
-        let revisions: Vec<u64> = (0..cells.len()).map(|i| i as u64 + 1).collect();
-
-        let mut cache = TranscriptViewCache::new();
-        cache.ensure(&cells, &revisions, 80, TranscriptRenderOptions::default());
-
-        let total_lines = cache.total_lines();
-        let pw_len = cache.rail_prefix_widths.len();
-        let pw_cap = cache.rail_prefix_widths.capacity();
-        // The Vec's inlined buffer on most platforms is small; capacity
-        // should be >= len. Both must equal total_lines.
-        assert_eq!(pw_len, total_lines);
-        assert!(pw_cap >= pw_len);
-
-        let memory_bytes = pw_cap * std::mem::size_of::<usize>();
-        let memory_kb = memory_bytes as f64 / 1024.0;
-        // Each usize is 8 bytes on 64-bit. Even with 100k lines this stays
-        // under 1 MB.
-        let kbytes_per_1k_lines = (memory_bytes as f64 / total_lines as f64) * 1000.0 / 1024.0;
-
-        eprintln!("=== rail_prefix_widths memory (complex session) ===");
-        eprintln!("  total_lines:       {total_lines}");
-        eprintln!("  vec len:           {pw_len}");
-        eprintln!("  vec capacity:      {pw_cap}");
-        eprintln!("  memory (bytes):    {memory_bytes}");
-        eprintln!("  memory (KB):       {memory_kb:.2}");
-        eprintln!("  KB per 1k lines:   {kbytes_per_1k_lines:.2}");
-        eprintln!("  lines × 8 bytes:   {} KB", total_lines * 8 / 1024);
-
-        // Sanity: per-line overhead must be reasonable.
-        assert!(
-            memory_kb < 1024.0,
-            "rail_prefix_widths memory unexpectedly large: {memory_kb:.1} KB"
-        );
-        eprintln!("  ✓ well under 1 MB even for very long sessions");
     }
 
     #[test]
