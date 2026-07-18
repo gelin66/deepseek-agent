@@ -81,14 +81,22 @@ Actions:
 ## Incident: MCP/Tool Execution Failures
 
 Checks:
-1. Validate `~/.codewhale/mcp.json` schema and server command paths
-2. Confirm server process can start manually
-3. Check sandbox denials in TUI history / logs
+1. Run `codewhale doctor` and `codewhale mcp list` to confirm the resolved MCP
+   config path and server inventory.
+2. Run `codewhale mcp connect <name>` for an isolated live connection check,
+   or `codewhale mcp validate` to require all enabled servers to connect.
+3. Run `codewhale mcp tools <name>` to verify tool discovery, and inspect the
+   CLI error for command, transport, or authentication details.
 
 Actions:
-1. Retry with required approvals (or YOLO only when appropriate)
-2. Temporarily disable failing MCP server and isolate issue
-3. Re-enable after verification with `/mcp` diagnostics
+1. Correct the server command, URL, environment-backed credentials, OAuth
+   login, or transport setting identified by the CLI diagnostic.
+2. Temporarily disable the failing server with
+   `codewhale mcp disable <name>` and isolate the issue.
+3. Re-enable it with `codewhale mcp enable <name>`, repeat the CLI connection
+   checks, and inspect the reported connection or discovery error. The current
+   TUI has no `/mcp` manager or hot-reload command, and the canonical Agent does
+   not load the discovered MCP tools.
 
 ## Post-Incident Checklist
 

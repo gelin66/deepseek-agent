@@ -685,8 +685,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   canonical slash command/PTY 契约继续由实际 UI 路径验证，不保留与运行时脱节的第二份
   快捷键真相。
 - M4-C 已删除零调用方的旧 `tui/mcp_routing.rs` manager formatter/pager adapter；真实
-  `McpPool`、stdio/HTTP transport、OAuth、配置/CLI 管理和 model-visible MCP 工具保持不变，
-  不把未接线的 TUI 展示器误当作 MCP 能力本身。
+  `McpPool`、stdio/HTTP transport、OAuth 与顶层 CLI 配置/连接/发现保持不变。canonical
+  Agent 固定工具目录没有加载 MCP pool；不把 CLI discovery 或未接线的 TUI 展示器误当作
+  model-visible MCP 能力。
 - M4-C 已删除零消费者的 `fast_hash` 类型别名与用户 regex LRU cache 自测岛，并移除对应
   TUI 直接依赖；真实 hooks/eval/execpolicy/Fleet 正则调用继续使用各自明确实现。
 - M4-C 已删除 904 行、只有自身测试且 App 只默认构造不读取的通用 Provider readiness
@@ -750,6 +751,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   dashboard count 查询面。保留的 `catalog_offering_for_model` 仍服务现有 pricing，Codex
   route metadata 与 canonical Fleet 不经过已删除 API；通用 Provider catalog 的最终物理
   删除仍由 M7 完成。
+- M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
+  restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
+  顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接
+  和工具发现；当前 canonical Agent 固定工具目录没有加载 MCP pool，因此文档不再把 CLI
+  discovery 误写成 model-visible 工具或 TUI `/mcp` manager。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

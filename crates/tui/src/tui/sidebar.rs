@@ -1461,16 +1461,8 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &mut App) {
 
     // ── MCP servers ──────────────────────────────────────────────
     if app.mcp_configured_count > 0 {
-        let restart_hint = if app.mcp_restart_required {
-            " (restart needed)"
-        } else {
-            ""
-        };
         lines.push(Line::from(Span::styled(
-            format!(
-                "mcp: {} server(s){}",
-                app.mcp_configured_count, restart_hint
-            ),
+            format!("mcp: {} server(s)", app.mcp_configured_count),
             Style::default().fg(theme.text_muted),
         )));
     }

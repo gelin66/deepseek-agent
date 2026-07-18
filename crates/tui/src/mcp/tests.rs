@@ -437,7 +437,7 @@ fn mcp_auth_required_error_item_is_model_visible() {
 }
 
 #[test]
-fn test_mcp_config_parse_mcp_servers_alias_and_snapshot() {
+fn test_mcp_config_parses_mcp_servers_alias_and_disabled_state() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     fs::write(
@@ -455,12 +455,11 @@ fn test_mcp_config_parse_mcp_servers_alias_and_snapshot() {
     .unwrap();
 
     let cfg = load_config(&path).unwrap();
-    assert!(cfg.servers.contains_key("disabled"));
-    let snapshot = manager_snapshot_from_config(&path, true).unwrap();
-    assert!(snapshot.restart_required);
-    assert_eq!(snapshot.servers[0].name, "disabled");
-    assert!(!snapshot.servers[0].enabled);
-    assert_eq!(snapshot.servers[0].error.as_deref(), Some("disabled"));
+    let disabled = cfg.servers.get("disabled").expect("disabled server");
+    assert!(!disabled.is_enabled());
+    assert!(disabled.disabled);
+    assert_eq!(disabled.command.as_deref(), Some("node"));
+    assert_eq!(disabled.args, vec!["server.js".to_string()]);
 }
 
 #[test]
@@ -505,7 +504,7 @@ fn workspace_mcp_config_merges_with_project_overrides() {
 }
 
 #[test]
-fn workspace_manager_snapshot_counts_global_and_project_servers() {
+fn workspace_mcp_config_counts_global_and_project_servers() {
     let dir = tempfile::tempdir().unwrap();
     let global_path = dir.path().join("global-mcp.json");
     let workspace = dir.path().join("workspace");
@@ -532,18 +531,14 @@ fn workspace_manager_snapshot_counts_global_and_project_servers() {
     )
     .unwrap();
 
-    let plain = manager_snapshot_from_config(&global_path, false).unwrap();
-    let merged =
-        manager_snapshot_from_config_with_workspace(&global_path, &workspace, false).unwrap();
+    let plain = load_config(&global_path).unwrap();
+    let merged = load_config_with_workspace(&global_path, &workspace).unwrap();
 
     assert_eq!(plain.servers.len(), 2);
     assert_eq!(merged.servers.len(), 3);
     assert!(
-        merged
-            .servers
-            .iter()
-            .any(|server| server.name == "laravel-boost"),
-        "workspace-aware snapshots must include trusted project MCP servers"
+        merged.servers.contains_key("laravel-boost"),
+        "workspace-aware config must include trusted project MCP servers"
     );
 }
 
@@ -983,18 +978,18 @@ fn test_mcp_config_manager_actions_round_trip() {
     )
     .unwrap();
     set_server_enabled(&path, "local", false).unwrap();
-    let disabled = manager_snapshot_from_config(&path, true).unwrap();
+    let disabled = load_config(&path).unwrap();
     let local = disabled
         .servers
-        .iter()
-        .find(|server| server.name == "local")
-        .unwrap();
-    assert!(!local.enabled);
-    assert_eq!(local.transport, "stdio");
+        .get("local")
+        .expect("local server should be persisted");
+    assert!(!local.is_enabled());
+    assert_eq!(local.command.as_deref(), Some("node"));
+    assert!(local.url.is_none());
 
     remove_server_config(&path, "local").unwrap();
-    let removed = manager_snapshot_from_config(&path, true).unwrap();
-    assert!(removed.servers.iter().all(|server| server.name != "local"));
+    let removed = load_config(&path).unwrap();
+    assert!(!removed.servers.contains_key("local"));
 }
 
 #[test]
@@ -1019,9 +1014,6 @@ fn test_mcp_config_adds_explicit_sse_transport() {
             .and_then(|server| server.transport.as_deref()),
         Some("sse")
     );
-
-    let snapshot = manager_snapshot_from_config(&path, false).unwrap();
-    assert_eq!(snapshot.servers[0].transport, "sse");
 }
 
 #[test]
@@ -1854,12 +1846,11 @@ async fn discover_all_ignores_unsupported_optional_capabilities() {
 }
 
 /// #1244: when an MCP stdio server fails to spawn, the underlying OS
-/// error (e.g. ENOENT for a missing binary) must reach the user via the
-/// snapshot.error string. Regression test for `err.to_string()` dropping
-/// the anyhow chain — without `{err:#}` the user sees only the opaque
+/// error (e.g. ENOENT for a missing binary) must reach the CLI through the
+/// `connect_all` error chain. Without `{err:#}` the user sees only the opaque
 /// wrapper "MCP stdio spawn failed (...)" and has nothing to act on.
 #[tokio::test]
-async fn discover_snapshot_includes_underlying_spawn_error_in_chain() {
+async fn connect_all_includes_underlying_spawn_error_in_chain() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     fs::write(
@@ -1875,22 +1866,21 @@ async fn discover_snapshot_includes_underlying_spawn_error_in_chain() {
     )
     .unwrap();
 
-    let snapshot = discover_manager_snapshot(&path, None, false).await.unwrap();
-    let server = snapshot
-        .servers
-        .iter()
-        .find(|s| s.name == "broken")
-        .expect("broken server should appear in snapshot");
-    let err = server
-        .error
-        .as_deref()
-        .expect("broken server should have an error");
-    let lowered = err.to_lowercase();
+    let config = load_config(&path).unwrap();
+    let mut pool = McpPool::new(config);
+    let errors = pool.connect_all().await;
+    let (server, error) = errors
+        .into_iter()
+        .find(|(server, _)| server == "broken")
+        .expect("broken server should report an error");
+    assert_eq!(server, "broken");
+    let rendered = format!("{error:#}");
+    let lowered = rendered.to_lowercase();
     assert!(
         lowered.contains("os error")
             || lowered.contains("not found")
             || lowered.contains("no such"),
-        "expected underlying spawn error in chain, got: {err}"
+        "expected underlying spawn error in chain, got: {rendered}"
     );
 }
 

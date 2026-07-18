@@ -1736,15 +1736,9 @@ pub struct App {
     /// Project documentation (AGENTS.md or CLAUDE.md)
     #[allow(dead_code)]
     pub project_doc: Option<String>,
-    /// Durable runtime services exposed to model-visible task/automation tools.
-    /// Last MCP manager/discovery snapshot shown in the UI.
-    pub mcp_snapshot: Option<crate::mcp::McpManagerSnapshot>,
     /// Number of MCP servers declared in the user's config at app boot.
-    /// Used by the footer chip (#502) so a count is visible even before
-    /// the user runs `/mcp` for the first time. `0` hides the chip.
+    /// Used by passive UI projections; `0` hides the MCP status.
     pub mcp_configured_count: usize,
-    /// Set after in-TUI MCP config edits because the engine caches its MCP pool.
-    pub mcp_restart_required: bool,
     /// Tool execution log
     pub tool_log: Vec<String>,
     /// Active skill to apply to next user message
@@ -2519,14 +2513,10 @@ impl App {
                 .and_then(|tui| tui.status_items.clone())
                 .unwrap_or_else(crate::config::StatusItem::default_footer),
             project_doc: None,
-            mcp_snapshot: None,
-            // Read the MCP config once at boot to know how many servers
-            // the user has declared. The footer chip uses this even when
-            // no live snapshot is available (#502). Cheap (just reads
-            // the JSON files); errors fall through to zero so a missing
-            // or malformed config simply hides the chip.
+            // Read the MCP config once at boot to know how many servers the
+            // user declared. Errors fall through to zero so a missing or
+            // malformed config simply hides the passive UI projections.
             mcp_configured_count,
-            mcp_restart_required: false,
             tool_log: Vec::new(),
             active_skill: None,
             cached_skills,

@@ -69,8 +69,8 @@ pub struct FooterProps {
     pub reasoning_replay: Vec<Span<'static>>,
     /// Cache-hit-rate chip spans (empty when no usage reported).
     pub cache: Vec<Span<'static>>,
-    /// MCP server health chip spans (empty when no MCP servers configured).
-    /// Populated lazily — see [`footer_mcp_chip`]. (#502)
+    /// Configured MCP server count chip (empty when none are configured).
+    /// See [`footer_mcp_chip`].
     pub mcp: Vec<Span<'static>>,
     /// Permission posture chip (Ask / Auto-Review / Full Access) when visible.
     pub permission: Vec<Span<'static>>,
@@ -205,28 +205,18 @@ pub fn footer_worked_chip(elapsed: std::time::Duration) -> Vec<Span<'static>> {
     )]
 }
 
-/// Build the "MCP M/N" health chip (#502) from the user's stored
-/// snapshot. `connected` is the number of servers currently reachable;
-/// `configured` is the number declared in the user's MCP config. When
-/// `configured` is zero the chip is hidden entirely.
-///
-/// Colour-codes the count by health:
-/// - all reachable → success
-/// - some reachable → warning
-/// - none reachable but at least one configured → error
-/// - configured but no live snapshot yet → muted (count only)
+/// Build the passive MCP configured-count chip. Zero configured servers hide
+/// the chip; a non-zero count is steady secondary information rather than a
+/// claim about live connection health.
 #[must_use]
-pub fn footer_mcp_chip(connected: Option<usize>, configured: usize) -> Vec<Span<'static>> {
+pub fn footer_mcp_chip(configured: usize) -> Vec<Span<'static>> {
     if configured == 0 {
         return Vec::new();
     }
-    let (label, color) = match connected {
-        None => (format!("MCP {configured}"), palette::TEXT_MUTED),
-        Some(c) if c == configured => (format!("MCP {c}/{configured}"), palette::STATUS_SUCCESS),
-        Some(0) => (format!("MCP 0/{configured}"), palette::STATUS_ERROR),
-        Some(c) => (format!("MCP {c}/{configured}"), palette::STATUS_WARNING),
-    };
-    vec![Span::styled(label, Style::default().fg(color))]
+    vec![Span::styled(
+        format!("MCP {configured}"),
+        Style::default().fg(palette::TEXT_MUTED),
+    )]
 }
 
 /// A status toast routed to the footer's left segment for a short time.
@@ -259,15 +249,7 @@ impl FooterProps {
         balance: Vec<Span<'static>>,
     ) -> Self {
         let (mode_label, mode_color) = mode_style(app);
-        // MCP chip (#502) — passive, derived from the user's existing
-        // snapshot. `connected` is `None` until the user runs `/mcp`,
-        // which is the same trigger the issue spec accepts for now.
-        let mcp_configured = app.mcp_configured_count;
-        let mcp_connected = app
-            .mcp_snapshot
-            .as_ref()
-            .map(|s| s.servers.iter().filter(|server| server.connected).count());
-        let mcp = footer_mcp_chip(mcp_connected, mcp_configured);
+        let mcp = footer_mcp_chip(app.mcp_configured_count);
         let permission = footer_permission_chip(app);
         // #448: cumulative work-time chip. Sums actual turn durations
         // (set on `TurnComplete`) rather than wall-clock uptime — a TUI
@@ -1013,39 +995,15 @@ mod tests {
 
     #[test]
     fn footer_mcp_chip_hidden_when_no_servers() {
-        assert!(super::footer_mcp_chip(None, 0).is_empty());
-        assert!(super::footer_mcp_chip(Some(0), 0).is_empty());
+        assert!(super::footer_mcp_chip(0).is_empty());
     }
 
     #[test]
-    fn footer_mcp_chip_shows_count_only_until_snapshot_arrives() {
-        let spans = super::footer_mcp_chip(None, 3);
+    fn footer_mcp_chip_shows_configured_count_as_secondary_information() {
+        let spans = super::footer_mcp_chip(3);
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "MCP 3");
-    }
-
-    #[test]
-    fn footer_mcp_chip_uses_success_color_when_all_connected() {
-        let spans = super::footer_mcp_chip(Some(3), 3);
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "MCP 3/3");
-        assert_eq!(spans[0].style.fg, Some(palette::STATUS_SUCCESS));
-    }
-
-    #[test]
-    fn footer_mcp_chip_uses_warning_color_when_partial() {
-        let spans = super::footer_mcp_chip(Some(2), 3);
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "MCP 2/3");
-        assert_eq!(spans[0].style.fg, Some(palette::STATUS_WARNING));
-    }
-
-    #[test]
-    fn footer_mcp_chip_uses_error_color_when_zero_connected() {
-        let spans = super::footer_mcp_chip(Some(0), 3);
-        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "MCP 0/3");
-        assert_eq!(spans[0].style.fg, Some(palette::STATUS_ERROR));
+        assert_eq!(spans[0].style.fg, Some(palette::TEXT_MUTED));
     }
 
     #[test]
