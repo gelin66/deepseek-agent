@@ -356,6 +356,8 @@ M4-C foreground 切换后还已物理删除：
   outcome 而不篡改原始调用。
 - 只有自身测试的旧 `/models` 英文消息 formatter；TUI canonical 命令面没有模型列表或
   picker，运行模型仍由 DeepSeek 配置进入 canonical Run 请求。
+- 从未被生产构造、没有事件 handler 的旧 `ElevationView`/widget/event 整岛；真实审批与
+  结构化提问仍由 canonical interaction 承担，Run 级 `allow_sandbox_elevation` 策略保留。
 
 ## 6. 当前验证事实
 

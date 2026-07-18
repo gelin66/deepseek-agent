@@ -679,6 +679,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   outcome 返回模型，不再由未接线的启发式代码静默改写模型参数。
 - M4-C 已删除只有自身测试的旧 `/models` 英文消息 formatter；canonical 命令面不暴露
   `/models` 或模型 picker，正式运行的模型选择仍由 DeepSeek 配置进入 `StartRunCommand`。
+- M4-C 已删除只有自身测试、从未被生产构造或处理的旧 `ElevationView` 动态提权岛。
+  canonical Approval/UserInput/Pager 交互保持不变；`allow_sandbox_elevation` 仍是 Run 启动时
+  显式授权的宿主策略，不再与一套未接线的“拒绝后弹窗重试”实现混为一谈。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

@@ -12,12 +12,11 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::palette;
 use crate::tools::UserInputResponse;
-use crate::tui::approval::{ElevationOption, ReviewDecision};
+use crate::tui::approval::ReviewDecision;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
     Approval,
-    Elevation,
     UserInput,
     Pager,
 }
@@ -297,11 +296,6 @@ pub enum ViewEvent {
         approval_grouping_key: String,
         /// Ask-only permission rules to append when the decision approves.
         persistent_ask_rules: Vec<codewhale_config::ToolAskRule>,
-    },
-    ElevationDecision {
-        tool_id: String,
-        tool_name: String,
-        option: ElevationOption,
     },
     UserInputSubmitted {
         tool_id: String,

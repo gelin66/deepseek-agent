@@ -181,7 +181,7 @@ impl ShellPhase {
     pub fn from_app(app: &App) -> Self {
         if matches!(
             app.view_stack.top_kind(),
-            Some(ModalKind::Approval | ModalKind::Elevation | ModalKind::UserInput)
+            Some(ModalKind::Approval | ModalKind::UserInput)
         ) {
             return Self::Approval;
         }

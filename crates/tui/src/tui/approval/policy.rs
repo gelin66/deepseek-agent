@@ -1,8 +1,7 @@
 //! Approval risk and stakes policy.
 //!
 //! This module is intentionally UI-free: it classifies tool calls so the
-//! approval and elevation views can render the decision without owning the
-//! policy itself.
+//! approval view can render the decision without owning the policy itself.
 
 use codewhale_tools::command_safety::is_parallel_readonly_command;
 use serde_json::Value;
