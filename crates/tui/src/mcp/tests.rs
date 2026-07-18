@@ -972,28 +972,84 @@ fn test_mcp_config_manager_actions_round_trip() {
         McpWriteStatus::SkippedExists
     );
 
-    add_server_config(
-        &path,
-        "local".to_string(),
-        Some("node".to_string()),
-        None,
-        vec!["server.js".to_string()],
-        None,
-    )
-    .unwrap();
-    set_server_enabled(&path, "local", false).unwrap();
-    let disabled = load_config(&path).unwrap();
-    let local = disabled
-        .servers
-        .get("local")
-        .expect("local server should be persisted");
-    assert!(!local.is_enabled());
-    assert_eq!(local.command.as_deref(), Some("node"));
-    assert!(local.url.is_none());
+    let server = McpServerConfig {
+        command: None,
+        args: vec!["--stdio-compatible-arg".to_string()],
+        env: HashMap::from([("LOCAL_ONLY".to_string(), "1".to_string())]),
+        cwd: Some(dir.path().join("server-workdir")),
+        url: Some("https://example.com/mcp".to_string()),
+        transport: Some("sse".to_string()),
+        connect_timeout: Some(17),
+        execute_timeout: Some(29),
+        read_timeout: Some(43),
+        disabled: false,
+        enabled: true,
+        required: true,
+        enabled_tools: vec!["read".to_string(), "search".to_string()],
+        disabled_tools: vec!["search".to_string()],
+        headers: HashMap::from([("X-MCP-Tenant".to_string(), "local".to_string())]),
+        env_headers: HashMap::from([("Authorization".to_string(), "MCP_AUTH_HEADER".to_string())]),
+        bearer_token_env_var: Some("MCP_BEARER_TOKEN".to_string()),
+        scopes: vec!["tools:read".to_string(), "tools:write".to_string()],
+        oauth: Some(McpServerOAuthConfig {
+            client_id: Some("local-client".to_string()),
+        }),
+        oauth_resource: Some("https://example.com/resource".to_string()),
+    };
 
-    remove_server_config(&path, "local").unwrap();
+    add_server_config(&path, "remote".to_string(), server).unwrap();
+    set_server_enabled(&path, "remote", false).unwrap();
+    let disabled = load_config(&path).unwrap();
+    let remote = disabled
+        .servers
+        .get("remote")
+        .expect("remote server should be persisted");
+    assert!(!remote.is_enabled());
+    assert!(!remote.enabled);
+    assert!(remote.disabled);
+    assert!(remote.command.is_none());
+    assert_eq!(remote.args, ["--stdio-compatible-arg"]);
+    assert_eq!(remote.env.get("LOCAL_ONLY").map(String::as_str), Some("1"));
+    assert_eq!(
+        remote.cwd.as_deref(),
+        Some(dir.path().join("server-workdir").as_path())
+    );
+    assert_eq!(remote.url.as_deref(), Some("https://example.com/mcp"));
+    assert_eq!(remote.transport.as_deref(), Some("sse"));
+    assert_eq!(remote.connect_timeout, Some(17));
+    assert_eq!(remote.execute_timeout, Some(29));
+    assert_eq!(remote.read_timeout, Some(43));
+    assert!(remote.required);
+    assert_eq!(remote.enabled_tools, ["read", "search"]);
+    assert_eq!(remote.disabled_tools, ["search"]);
+    assert_eq!(
+        remote.headers.get("X-MCP-Tenant").map(String::as_str),
+        Some("local")
+    );
+    assert_eq!(
+        remote.env_headers.get("Authorization").map(String::as_str),
+        Some("MCP_AUTH_HEADER")
+    );
+    assert_eq!(
+        remote.bearer_token_env_var.as_deref(),
+        Some("MCP_BEARER_TOKEN")
+    );
+    assert_eq!(remote.scopes, ["tools:read", "tools:write"]);
+    assert_eq!(
+        remote
+            .oauth
+            .as_ref()
+            .and_then(|oauth| oauth.client_id.as_deref()),
+        Some("local-client")
+    );
+    assert_eq!(
+        remote.oauth_resource.as_deref(),
+        Some("https://example.com/resource")
+    );
+
+    remove_server_config(&path, "remote").unwrap();
     let removed = load_config(&path).unwrap();
-    assert!(!removed.servers.contains_key("local"));
+    assert!(!removed.servers.contains_key("remote"));
 }
 
 #[test]
@@ -1001,15 +1057,11 @@ fn test_mcp_config_adds_explicit_sse_transport() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
 
-    add_server_config(
-        &path,
-        "legacy".to_string(),
-        None,
-        Some("https://example.com/v1/mcp/sse".to_string()),
-        Vec::new(),
-        Some("sse".to_string()),
-    )
-    .unwrap();
+    let mut server = test_server_config();
+    server.command = None;
+    server.url = Some("https://example.com/v1/mcp/sse".to_string());
+    server.transport = Some("sse".to_string());
+    add_server_config(&path, "legacy".to_string(), server).unwrap();
 
     let cfg = load_config(&path).unwrap();
     assert_eq!(
@@ -1025,20 +1077,41 @@ fn test_mcp_config_rejects_unknown_transport() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
 
-    let err = add_server_config(
-        &path,
-        "bad".to_string(),
-        None,
-        Some("https://example.com/mcp".to_string()),
-        Vec::new(),
-        Some("streamable".to_string()),
-    )
-    .expect_err("unknown transport should fail");
+    let mut server = test_server_config();
+    server.command = None;
+    server.url = Some("https://example.com/mcp".to_string());
+    server.transport = Some("streamable".to_string());
+    let err = add_server_config(&path, "bad".to_string(), server)
+        .expect_err("unknown transport should fail");
 
     assert!(
         format!("{err:#}").contains("Unsupported MCP transport"),
         "got: {err:#}"
     );
+}
+
+#[test]
+fn mcp_config_atomic_replace_leaves_only_the_destination_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mcp.json");
+    fs::write(&path, r#"{"servers": {}}"#).unwrap();
+
+    let mut server = test_server_config();
+    server.command = Some("node".to_string());
+    server.args = vec!["server.js".to_string()];
+    add_server_config(&path, "local".to_string(), server).unwrap();
+
+    let entries = fs::read_dir(dir.path())
+        .unwrap()
+        .collect::<std::io::Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "atomic writer must not leave a temporary file"
+    );
+    assert_eq!(entries[0].path(), path);
+    assert!(load_config(&path).unwrap().servers.contains_key("local"));
 }
 
 #[test]

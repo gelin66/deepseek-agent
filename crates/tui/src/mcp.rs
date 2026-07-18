@@ -2388,44 +2388,13 @@ pub fn init_config(path: &Path, force: bool) -> Result<McpWriteStatus> {
     Ok(status)
 }
 
-pub fn add_server_config(
-    path: &Path,
-    name: String,
-    command: Option<String>,
-    url: Option<String>,
-    args: Vec<String>,
-    transport: Option<String>,
-) -> Result<()> {
-    if command.is_none() && url.is_none() {
+pub fn add_server_config(path: &Path, name: String, server: McpServerConfig) -> Result<()> {
+    if server.command.is_none() && server.url.is_none() {
         anyhow::bail!("Provide either a command or URL for MCP server '{name}'.");
     }
-    validate_mcp_transport(transport.as_deref())?;
+    validate_mcp_transport(server.transport.as_deref())?;
     let mut cfg = load_config(path)?;
-    cfg.servers.insert(
-        name,
-        McpServerConfig {
-            command,
-            args,
-            env: HashMap::new(),
-            cwd: None,
-            url,
-            transport,
-            connect_timeout: None,
-            execute_timeout: None,
-            read_timeout: None,
-            disabled: false,
-            enabled: true,
-            required: false,
-            enabled_tools: Vec::new(),
-            disabled_tools: Vec::new(),
-            headers: HashMap::new(),
-            env_headers: HashMap::new(),
-            bearer_token_env_var: None,
-            scopes: Vec::new(),
-            oauth: None,
-            oauth_resource: None,
-        },
-    );
+    cfg.servers.insert(name, server);
     save_config(path, &cfg)
 }
 

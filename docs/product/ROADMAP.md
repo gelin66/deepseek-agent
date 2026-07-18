@@ -818,6 +818,15 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   discovery 误写成 model-visible 工具或 TUI `/mcp` manager。随后又删除了 TUI binary 私有
   `mcp` 模块内八个零生产消费者的“public API” wrapper、仅供测试读取的 shutdown report 与
   `#[allow(dead_code)]`；配置 reload、stale-session retry、transport shutdown 和 Drop 清理保留。
+- M4-C 已把 `setup --mcp` 与 `mcp init/add/remove/enable/disable` 收口到现有 TUI
+  `mcp` 模块的唯一配置 owner，物理删除 `main.rs` 重复的模板、读取、初始化和原子写入函数。
+  `add_server_config` 直接接收完整 `McpServerConfig`，不再通过拆散参数丢失 headers、bearer、
+  OAuth、scopes、resource、timeout、tool filter 或 transport 字段；写命令只读写 resolved
+  global `mcp.json`，不会把 workspace/plugin merged inventory 反写。`list`、`login`、
+  `logout`、`connect`、`tools` 和 `validate` 继续使用 workspace-aware 读取；OAuth、
+  network/TLS、stdio/HTTP/SSE 和 MCP execution 方法均未在本切片改动。MCP config 21/21、
+  OAuth 6/6、HTTP auth 2/2、隔离环境
+  真实 CLI 2/2、canonical Run 19/19、PTY 6/6 和 TUI all-target check 均通过。
 - M4-C 已删除整模块以 `#[allow(dead_code)]` 隐藏、从未接入任何生产 caller 的 TUI
   `ResourceTelemetry`/budget pressure/估算吞吐 foundation，以及 App 中只会初始化和清空、
   从不写入或读取的 `last_output_throughput`。canonical Runtime/RunStore usage/accounting、

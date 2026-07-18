@@ -417,6 +417,13 @@ M4-C foreground 切换后还已物理删除：
   固定工具目录并未加载 MCP pool，也不存在 TUI `/mcp` manager 或 model-visible MCP 工具。
   私有 `mcp` 模块中八个没有生产消费者的 public wrapper、对应 dead-code allow 与无人读取的
   shutdown report 也已删除；真实 reload/reconnect/transport shutdown 生命周期不依赖它们。
+- MCP 配置修改现在只有 `crates/tui/src/mcp.rs` 一个 owner：`setup --mcp` 和
+  `mcp init/add/remove/enable/disable` 都经同一套路径校验、完整 `McpServerConfig` 往返和
+  原子写入，`main.rs` 原有的模板/load/save/init 重复实现已删除。修改命令只写 resolved
+  global `mcp.json`，不会把 trusted workspace 或 plugin 合并结果反写；`list`、`login`、
+  `logout`、`connect`、`tools` 和 `validate` 继续 workspace-aware。OAuth、network/TLS、
+  stdio/Streamable HTTP/legacy SSE、连接、发现与尚未接入 canonical Agent 的 execution
+  方法未在该切片改变。
 - 零消费者的 `fast_hash` 类型别名与用户 regex LRU cache；真实正则消费者保留在各自 owner。
 - 只有自身测试、App 只默认构造且从不读取的通用 Provider readiness snapshot；DeepSeek
   production transport 与 Doctor 明确探针继续分别承担请求和诊断职责。

@@ -75,6 +75,12 @@ invocation reloads the configuration it needs. The current interactive and
 canonical Agent paths do not load an MCP pool or advertise MCP tools to the
 model.
 
+`setup --mcp`, `mcp init`, `add`, `remove`, `enable`, and `disable` all use the
+same config owner and atomic writer. Updates load only the resolved global
+file, preserve complete server entries (including headers, bearer-token,
+OAuth, scopes, resource, timeouts, tool filters, and transport), and never
+persist the merged workspace/plugin inventory back into that file.
+
 ## Remote HTTP Auth
 
 URL-based MCP servers can use static headers, env-derived headers, bearer-token

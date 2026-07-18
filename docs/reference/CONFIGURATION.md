@@ -1007,8 +1007,12 @@ If you are upgrading from older releases:
   `skills_dir` override.
 - `mcp_config_path` (string, optional): defaults to `~/.codewhale/mcp.json`, with
   legacy `~/.deepseek/mcp.json` fallback when the CodeWhale path is absent.
-  Change it in the configuration file and restart the TUI to rebuild the
-  model-visible MCP tool pool.
+  It is the only write target for `setup --mcp` and the MCP configuration
+  commands. MCP inventory, connection checks, OAuth, and tool discovery use
+  the resolved global file plus trusted workspace/plugin additions where
+  applicable, but configuration writes never copy those additions into the
+  global file. The canonical Agent does not currently advertise discovered
+  MCP tools to the model.
 - `notes_path` (string, optional): defaults to `~/.codewhale/notes.txt`, with
   legacy `~/.deepseek/notes.txt` fallback when the CodeWhale path is absent, and
   is used by the model-visible `note` tool.
