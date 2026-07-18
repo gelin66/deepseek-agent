@@ -14,23 +14,11 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
 };
 
-use crate::config::ApiProvider;
 use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, OnboardingState};
 
 const ONBOARDED_MARKER_FILE: &str = ".onboarded";
-
-pub const ONBOARDING_PROVIDER_OPTIONS: &[(char, ApiProvider)] = &[
-    ('1', ApiProvider::Deepseek),
-    ('2', ApiProvider::Openai),
-    ('3', ApiProvider::Anthropic),
-    ('4', ApiProvider::Openrouter),
-    ('5', ApiProvider::Zai),
-    ('6', ApiProvider::Moonshot),
-    ('7', ApiProvider::Siliconflow),
-    ('8', ApiProvider::Ollama),
-];
 
 pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let block = Block::default().style(Style::default().bg(palette::WHALE_BG));
@@ -48,7 +36,6 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
     let lines = match app.onboarding {
         OnboardingState::Welcome => welcome::lines(app),
-        OnboardingState::Provider => provider_lines(app),
         OnboardingState::ApiKey => api_key::lines(app),
         OnboardingState::TrustDirectory => trust_directory::lines(app),
         OnboardingState::Tips => tips_lines(app),
@@ -98,7 +85,7 @@ fn onboarding_step(app: &App) -> (usize, usize) {
 
     let step = match app.onboarding {
         OnboardingState::Welcome => 1,
-        OnboardingState::Provider | OnboardingState::ApiKey => 2,
+        OnboardingState::ApiKey => 2,
         OnboardingState::TrustDirectory => {
             if app.onboarding_needs_api_key {
                 3
@@ -255,11 +242,6 @@ pub fn advance_onboarding_from_welcome(app: &mut App) {
     }
 }
 
-pub fn advance_onboarding_from_provider(app: &mut App) {
-    app.status_message = None;
-    app.onboarding = OnboardingState::ApiKey;
-}
-
 pub fn advance_onboarding_after_api_key(app: &mut App) {
     app.status_message = None;
     if needs_trust_at(app.config_path.as_deref(), &app.workspace) {
@@ -267,75 +249,6 @@ pub fn advance_onboarding_after_api_key(app: &mut App) {
     } else {
         app.onboarding = OnboardingState::Tips;
     }
-}
-
-pub fn select_onboarding_provider(app: &mut App, provider: ApiProvider) {
-    app.onboarding_provider = provider;
-}
-
-pub fn move_onboarding_provider_selection(app: &mut App, delta: i32) {
-    let options: Vec<ApiProvider> = ONBOARDING_PROVIDER_OPTIONS
-        .iter()
-        .map(|(_, provider)| *provider)
-        .collect();
-    let current_idx = options
-        .iter()
-        .position(|provider| *provider == app.onboarding_provider)
-        .unwrap_or(0);
-    let len = options.len().max(1) as i32;
-    let next = (current_idx as i32 + delta).rem_euclid(len) as usize;
-    app.onboarding_provider = options[next];
-}
-
-fn provider_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
-    use ratatui::style::Modifier;
-    use ratatui::text::{Line, Span};
-
-    let mut out = vec![
-        Line::from(Span::styled(
-            app.tr(MessageId::OnboardProviderTitle).to_string(),
-            Style::default()
-                .fg(palette::WHALE_INFO)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            app.tr(MessageId::OnboardProviderBlurb).to_string(),
-            Style::default().fg(palette::TEXT_MUTED),
-        )),
-        Line::from(""),
-    ];
-
-    for (hotkey, provider) in ONBOARDING_PROVIDER_OPTIONS {
-        let is_current = app.onboarding_provider == *provider;
-        let bullet = if is_current { "●" } else { "○" };
-        let bullet_color = if is_current {
-            palette::WHALE_ACCENT_PRIMARY
-        } else {
-            palette::TEXT_MUTED
-        };
-        out.push(Line::from(vec![
-            Span::styled(format!("  {bullet}  "), Style::default().fg(bullet_color)),
-            Span::styled(
-                format!("[{hotkey}] "),
-                Style::default()
-                    .fg(palette::TEXT_PRIMARY)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                provider.display_name().to_string(),
-                Style::default().fg(palette::TEXT_PRIMARY),
-            ),
-        ]));
-    }
-
-    out.push(Line::from(""));
-    out.push(Line::from(Span::styled(
-        app.tr(MessageId::OnboardProviderFooter).to_string(),
-        Style::default().fg(palette::TEXT_MUTED),
-    )));
-
-    out
 }
 
 /// Re-validate the current `api_key_input` and project the result onto

@@ -3699,18 +3699,6 @@ fn status_classifier_does_not_paint_negated_success_green() {
 }
 
 #[test]
-fn onboarding_provider_copy_uses_fixed_simplified_chinese_catalog() {
-    use crate::localization::{MessageId, tr};
-
-    assert_eq!(tr(MessageId::OnboardProviderTitle), "选择模型提供商");
-    assert_eq!(
-        tr(MessageId::OnboardProviderBlurb),
-        "选择 API 密钥来源。CodeWhale 平等对待每个提供商——无一特权。"
-    );
-    assert_eq!(tr(MessageId::OnboardApiKeyTitle), "连接你的 API 密钥");
-}
-
-#[test]
 fn onboarding_submit_api_key_routes_non_deepseek_provider_table() -> std::io::Result<()> {
     use crate::config::SavedCredential;
     use std::fs;

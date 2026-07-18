@@ -91,7 +91,6 @@ pub struct ActiveTurnMetadata {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingState {
     Welcome,
-    Provider,
     ApiKey,
     TrustDirectory,
     Tips,
@@ -341,16 +340,6 @@ pub enum SidebarFocus {
     Agents,
     Context,
     Hidden,
-}
-
-/// Browsing context captured when the `/provider` picker is dismissed.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProviderPickerMemory {
-    /// True when the user left the picker in the full-catalog view
-    /// (`A` toggle), false for the configured-only default view.
-    pub catalog_view: bool,
-    /// Provider id highlighted at dismissal, if it was a real row.
-    pub selected_provider_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1672,7 +1661,6 @@ pub struct App {
     /// should not wipe completed checklist/strategy state from the sidebar.
     pub(crate) cached_work_summary: Option<SidebarWorkSummary>,
     /// Browsing context from the last dismissed `/provider` picker.
-    pub provider_picker_memory: Option<ProviderPickerMemory>,
     /// Last known mouse position for tooltip placement.
     pub last_mouse_pos: Option<(u16, u16)>,
     /// Whether the user is currently dragging the sidebar resize handle.
@@ -2531,7 +2519,6 @@ impl App {
             sidebar_hover: SidebarHoverState::default(),
             sidebar_hover_tooltip: None,
             cached_work_summary: None,
-            provider_picker_memory: None,
             last_mouse_pos: None,
             sidebar_resizing: false,
             sidebar_resize_anchor_x: 0,

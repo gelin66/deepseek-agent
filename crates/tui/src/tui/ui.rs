@@ -998,10 +998,6 @@ async fn run_deepseek_onboarding_loop(
                         OnboardingState::Tips => {
                             app.finish_onboarding_without_feature_intro();
                         }
-                        OnboardingState::Provider => {
-                            // Provider selection is not part of this product.
-                            app.onboarding = OnboardingState::ApiKey;
-                        }
                         OnboardingState::None => {}
                     },
                     KeyCode::Char('y' | 'Y' | '1')

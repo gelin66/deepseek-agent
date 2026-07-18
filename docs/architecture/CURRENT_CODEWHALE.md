@@ -366,6 +366,8 @@ M4-C foreground 切换后还已物理删除：
   的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
 - 零生产消费者的通用 `[vision_model]`/`image_analyze` 配置与 feature；正式模型面仍只有
   DeepSeek，图像文本提取继续由 `crates/tools` 的本地 `read_file` OCR backend 承担。
+- 首启状态机不可达的 Provider 选择页与 picker memory；当前真实首启只包含 Welcome、
+  DeepSeek API Key、工作区信任和 Tips，不再编译一页无法到达的多 Provider UI。
 
 ## 6. 当前验证事实
 
