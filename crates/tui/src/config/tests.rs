@@ -7116,25 +7116,6 @@ fn provider_capability_roundtrip_serialization() {
 }
 
 #[test]
-fn status_item_balance_available_only_for_deepseek_providers() {
-    // Balance item should only be offered for DeepSeek / DeepSeekCN.
-    assert!(StatusItem::Balance.is_available_for(ApiProvider::Deepseek));
-    assert!(StatusItem::Balance.is_available_for(ApiProvider::DeepseekCN));
-    // Sanity: all other known providers should hide the Balance toggle.
-    assert!(!StatusItem::Balance.is_available_for(ApiProvider::Openrouter));
-    assert!(!StatusItem::Balance.is_available_for(ApiProvider::Novita));
-    assert!(!StatusItem::Balance.is_available_for(ApiProvider::NvidiaNim));
-    assert!(!StatusItem::Balance.is_available_for(ApiProvider::Fireworks));
-    assert!(!StatusItem::Balance.is_available_for(ApiProvider::Sglang));
-    assert!(!StatusItem::Balance.is_available_for(ApiProvider::Vllm));
-    assert!(!StatusItem::Balance.is_available_for(ApiProvider::Ollama));
-    assert!(!StatusItem::Balance.is_available_for(ApiProvider::Openai));
-    assert!(!StatusItem::Balance.is_available_for(ApiProvider::Atlascloud));
-    // Other StatusItem variants should be available everywhere.
-    assert!(StatusItem::Mode.is_available_for(ApiProvider::Ollama));
-}
-
-#[test]
 fn status_items_deser_ignores_unknown_variants() {
     // Simulate a stable build reading config written by a dev build that
     // knows about items the stable build doesn't (e.g. "balance" or a

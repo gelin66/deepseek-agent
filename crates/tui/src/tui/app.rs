@@ -969,15 +969,6 @@ impl AppMode {
     }
 
     #[must_use]
-    pub fn number(self) -> char {
-        match self {
-            AppMode::Agent | AppMode::Auto | AppMode::Yolo => '1',
-            AppMode::Plan => '2',
-            AppMode::Operate => '3',
-        }
-    }
-
-    #[must_use]
     pub fn uses_agent_baseline(self) -> bool {
         matches!(self, Self::Agent | Self::Auto | Self::Operate)
     }
@@ -990,26 +981,6 @@ impl AppMode {
             Self::Operate => 4,
             _ => 1,
         }
-    }
-
-    /// Localized short name for the mode picker (user-facing surface only).
-    #[must_use]
-    pub fn display_name_localized(self) -> Cow<'static, str> {
-        tr(match self {
-            AppMode::Agent | AppMode::Auto | AppMode::Yolo => MessageId::AppModeAgent,
-            AppMode::Plan => MessageId::AppModePlan,
-            AppMode::Operate => MessageId::AppModeOperate,
-        })
-    }
-
-    /// Localized one-line hint for the mode picker (user-facing surface only).
-    #[must_use]
-    pub fn picker_hint_localized(self) -> Cow<'static, str> {
-        tr(match self {
-            AppMode::Agent | AppMode::Auto | AppMode::Yolo => MessageId::AppModeAgentHint,
-            AppMode::Plan => MessageId::AppModePlanHint,
-            AppMode::Operate => MessageId::AppModeOperateHint,
-        })
     }
 
     #[allow(dead_code)]

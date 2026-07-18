@@ -1523,8 +1523,7 @@ pub enum StatusItem {
 impl StatusItem {
     /// Default footer composition for the always-on status line. Used when
     /// `tui.status_items` is missing from `config.toml` so upgraders see a
-    /// concise footer by default; diagnostic chips remain available via
-    /// `/statusline` without crowding the main UI.
+    /// concise footer by default.
     #[must_use]
     pub fn default_footer() -> Vec<StatusItem> {
         vec![
@@ -1540,29 +1539,8 @@ impl StatusItem {
         ]
     }
 
-    /// Stable canonical name used in TOML and the picker label.
-    #[must_use]
-    pub fn key(self) -> &'static str {
-        match self {
-            StatusItem::Mode => "mode",
-            StatusItem::Model => "model",
-            StatusItem::Cost => "cost",
-            StatusItem::Status => "status",
-            StatusItem::Agents => "agents",
-            StatusItem::ReasoningReplay => "reasoning_replay",
-            StatusItem::Cache => "cache",
-            StatusItem::ContextPercent => "context_percent",
-            StatusItem::GitBranch => "git_branch",
-            StatusItem::LastToolElapsed => "last_tool_elapsed",
-            StatusItem::RateLimit => "rate_limit",
-            StatusItem::Tokens => "tokens",
-            StatusItem::Balance => "balance",
-        }
-    }
-
-    /// Reverse of [`key`](Self::key): parse a config string back to a variant.
-    /// Returns `None` for unknown keys so the config parser can silently skip
-    /// items added by newer versions rather than crashing with "unknown variant".
+    /// Parse a stable TOML name into a footer item. Unknown keys are skipped so
+    /// a newer config does not make an older binary fail to start.
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
@@ -1580,93 +1558,6 @@ impl StatusItem {
             "tokens" => Some(Self::Tokens),
             "balance" => Some(Self::Balance),
             _ => None,
-        }
-    }
-
-    /// Human-readable label for the picker.
-    #[must_use]
-    pub fn label(self) -> &'static str {
-        match self {
-            StatusItem::Mode => "Mode",
-            StatusItem::Model => "Model",
-            StatusItem::Cost => "Session cost",
-            StatusItem::Status => "Activity (idle/busy/draft/working)",
-            StatusItem::Agents => "Sub-agents in flight",
-            StatusItem::ReasoningReplay => "Reasoning replay tokens",
-            StatusItem::Cache => "Prompt cache hit rate",
-            StatusItem::ContextPercent => "Context window %",
-            StatusItem::GitBranch => "Git branch",
-            StatusItem::LastToolElapsed => "Last tool elapsed",
-            StatusItem::RateLimit => "Rate-limit remaining",
-            StatusItem::Tokens => "Session tokens",
-            StatusItem::Balance => "Account balance",
-        }
-    }
-
-    /// One-line hint shown beside the label so the user knows what each item
-    /// surfaces without having to toggle it on first.
-    #[must_use]
-    pub fn hint(self) -> &'static str {
-        match self {
-            StatusItem::Mode => "plan · act · operate",
-            StatusItem::Model => "the model id you'll send to",
-            StatusItem::Cost => "running total for this session",
-            StatusItem::Status => "what the agent is doing right now",
-            StatusItem::Agents => "agent work in progress",
-            StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
-            StatusItem::Cache => "% of prompt served from cache",
-            StatusItem::ContextPercent => "tokens used / model context window",
-            StatusItem::GitBranch => "current workspace branch",
-            StatusItem::LastToolElapsed => "ms of the most recent tool call (reserved)",
-            StatusItem::RateLimit => "remaining requests in the budget (reserved)",
-            StatusItem::Tokens => "input / cache-hit / output token totals",
-            StatusItem::Balance => "topped-up + granted balance from DeepSeek",
-        }
-    }
-
-    /// Every variant in display order — used by the picker to enumerate rows.
-    #[must_use]
-    pub fn all() -> &'static [StatusItem] {
-        &[
-            StatusItem::Mode,
-            StatusItem::Model,
-            StatusItem::Cost,
-            StatusItem::Balance,
-            StatusItem::Status,
-            StatusItem::Agents,
-            StatusItem::ReasoningReplay,
-            StatusItem::Cache,
-            StatusItem::ContextPercent,
-            StatusItem::GitBranch,
-            StatusItem::LastToolElapsed,
-            StatusItem::RateLimit,
-            StatusItem::Tokens,
-        ]
-    }
-
-    /// Items that belong in the footer's left cluster (steady identity).
-    #[must_use]
-    pub fn is_left_cluster(self) -> bool {
-        matches!(
-            self,
-            StatusItem::Mode
-                | StatusItem::Model
-                | StatusItem::Cost
-                | StatusItem::Status
-                | StatusItem::Balance
-        )
-    }
-
-    /// Whether this item is relevant for `provider`.  Provider-specific
-    /// items return `false` for unsupported providers so the picker doesn't
-    /// offer toggles that can never show useful data.
-    #[must_use]
-    pub fn is_available_for(self, provider: ApiProvider) -> bool {
-        match self {
-            StatusItem::Balance => {
-                matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN)
-            }
-            _ => true,
         }
     }
 }

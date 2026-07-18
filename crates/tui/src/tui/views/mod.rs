@@ -20,9 +20,6 @@ use crate::tools::UserInputResponse;
 use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
 
-pub mod mode_picker;
-pub mod status_picker;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModalKind {
     Approval,
@@ -31,9 +28,7 @@ pub enum ModalKind {
     Pager,
     LiveTranscript,
     Config,
-    ModePicker,
     FilePicker,
-    StatusPicker,
     FeedbackPicker,
     ThemePicker,
 }
@@ -581,18 +576,6 @@ pub enum ViewEvent {
     /// position.
     FilePickerSelected {
         path: String,
-    },
-    /// Emitted by the `/mode` picker when the user chooses a mode.
-    ModeSelected {
-        mode: crate::tui::app::AppMode,
-    },
-    /// Emitted by the `/statusline` picker every time the user toggles an
-    /// item (live preview) and once more on Enter (final). The handler
-    /// updates `app.status_items` immediately and persists on `final_save`
-    /// so the footer animates without a write per keystroke.
-    StatusItemsUpdated {
-        items: Vec<crate::config::StatusItem>,
-        final_save: bool,
     },
     /// Emitted by the fleet setup Review step (`m`) to ask the configured
     /// model to draft the agent profile the wizard describes. The host

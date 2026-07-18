@@ -60,6 +60,10 @@ top/left/right 布局。旧键盘/鼠标 handler 从未接入生产事件循环�
 `/jobs` 命令；该交互岛及其焦点、选择、滚动、打开、停止和 hitbox 状态已物理删除。
 WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 
+旧 `ModePickerView` 与 `StatusPickerView` 没有生产构造或打开入口，只有模块内测试；两者及
+其专属 View event 已删除。底层 `AppMode`、`StatusItem`、模式权限与 footer 状态投影仍由
+现有真实调用方拥有。
+
 ## 2. 已统一的生产链
 
 ### Application service

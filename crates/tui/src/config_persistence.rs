@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use crate::config::{ApiProvider, StatusItem, expand_path};
+use crate::config::{ApiProvider, expand_path};
 
 /// Parse the TOML document at `path` (an absent or empty file yields an empty
 /// document), apply `mutate`, and atomically persist the result.
@@ -265,15 +265,6 @@ fn table_like_at_path_mut<'a>(
         }
     }
     Ok(Some(current))
-}
-
-pub(crate) fn persist_status_items(items: &[StatusItem]) -> anyhow::Result<PathBuf> {
-    let path = config_toml_path(None)?;
-    let items: toml_edit::Array = items.iter().map(|item| item.key()).collect();
-    mutate_config_document(&path, |doc| {
-        set_document_value(doc, &["tui", "status_items"], items)
-    })?;
-    Ok(path)
 }
 
 pub(crate) fn persist_root_string_key(
@@ -611,29 +602,6 @@ mod tests {
     }
 
     #[test]
-    fn persist_status_items_writes_tui_section_to_config_toml() {
-        let temp_root = temp_root("codewhale-statusline-persist");
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-
-        let items = vec![
-            crate::config::StatusItem::Mode,
-            crate::config::StatusItem::Model,
-            crate::config::StatusItem::Cost,
-        ];
-
-        let path = persist_status_items(&items).expect("persist should succeed");
-        let body = fs::read_to_string(&path).expect("written file should be readable");
-        assert!(body.contains("[tui]"), "expected [tui] section in {body}");
-        assert!(
-            body.contains("status_items"),
-            "expected status_items key in {body}"
-        );
-        assert!(body.contains("\"mode\""), "expected mode key in {body}");
-        assert!(body.contains("\"cost\""), "expected cost key in {body}");
-    }
-
-    #[test]
     fn config_toml_path_uses_codewhale_home_for_fresh_installs() {
         let temp_root = temp_root("codewhale-config-path-fresh");
         fs::create_dir_all(&temp_root).unwrap();
@@ -715,37 +683,6 @@ mod tests {
 
         assert_eq!(config_toml_path(None).unwrap(), home_config);
         assert!(!missing_env.exists());
-    }
-
-    #[test]
-    fn persist_status_items_preserves_existing_unrelated_keys() {
-        let temp_root = temp_root("codewhale-statusline-preserve");
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-
-        let path = temp_root.join(".deepseek").join("config.toml");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(
-            &path,
-            "api_key = \"sentinel-key\"\nmodel = \"deepseek-v4-pro\"\n",
-        )
-        .unwrap();
-
-        let written = persist_status_items(&[crate::config::StatusItem::Mode])
-            .expect("persist should succeed");
-        let body = fs::read_to_string(&written).expect("written file should be readable");
-        assert!(
-            body.contains("api_key = \"sentinel-key\""),
-            "round-trip lost api_key: {body}"
-        );
-        assert!(
-            body.contains("model = \"deepseek-v4-pro\""),
-            "round-trip lost model: {body}"
-        );
-        assert!(
-            body.contains("status_items"),
-            "expected status_items in {body}"
-        );
     }
 
     #[test]
@@ -916,8 +853,6 @@ base_url = "https://quoted.example/v1"
             "https://openrouter.example/v2",
         )
         .unwrap();
-        persist_status_items(&[crate::config::StatusItem::Mode]).unwrap();
-
         let body = fs::read_to_string(&path).unwrap();
         for comment in [
             "# CodeWhale golden config fixture, top note.",

@@ -625,6 +625,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   只读投影：删除从未被生产事件循环调用的键盘/鼠标输入、焦点/选择/滚动、打开详情、
   停止确认、命中区和失效 `/task`/`/jobs` 动作。top/left/right 布局、状态排序、Todo 和
   canonical child 投影均保留；固定窗口不再显示实际不可操作的滚动条或动作控件。
+- M4-C 已删除只有自测构造、没有生产打开入口的旧 Mode/Status picker modal、专属事件和
+  状态行 picker 文案；`AppMode` 权限基线、`StatusItem` 配置与实际 footer 投影继续由原
+  调用方保留，不恢复不可达的 `/mode` 或 `/statusline` 外壳。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
