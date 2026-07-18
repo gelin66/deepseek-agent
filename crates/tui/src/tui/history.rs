@@ -1,6 +1,5 @@
 //! TUI rendering helpers for chat history and tool output.
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 use ratatui::style::{Color, Modifier, Style};
@@ -450,7 +449,6 @@ pub enum ToolCell {
     PatchSummary(PatchSummaryCell),
     DiffPreview(DiffPreviewCell),
     Mcp(McpToolCell),
-    ViewImage(ViewImageCell),
     WebSearch(WebSearchCell),
     Generic(GenericToolCell),
 }
@@ -482,7 +480,7 @@ impl ToolCell {
             ToolCell::Mcp(cell) => Some(cell.status),
             ToolCell::WebSearch(cell) => Some(cell.status),
             ToolCell::Generic(cell) => Some(cell.status),
-            ToolCell::DiffPreview(_) | ToolCell::ViewImage(_) => Some(ToolStatus::Success),
+            ToolCell::DiffPreview(_) => Some(ToolStatus::Success),
         }
     }
 
@@ -539,7 +537,6 @@ impl ToolCell {
             ToolCell::PatchSummary(cell) => cell.render(width, low_motion, mode),
             ToolCell::DiffPreview(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::Mcp(cell) => cell.render(width, low_motion, mode),
-            ToolCell::ViewImage(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::WebSearch(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::Generic(cell) => cell.lines_with_mode(width, low_motion, mode),
         }
@@ -949,29 +946,6 @@ impl McpToolCell {
                 mode,
             ));
         }
-        lines
-    }
-}
-
-/// Cell for image view actions.
-#[derive(Debug, Clone)]
-pub struct ViewImageCell {
-    pub path: PathBuf,
-}
-
-impl ViewImageCell {
-    /// Render the image view cell into lines.
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
-        let path = self.path.display().to_string();
-        let mut lines = vec![render_tool_header_with_summary(
-            "Image",
-            Some(&path),
-            "done",
-            ToolStatus::Success,
-            None,
-            low_motion,
-        )];
-        lines.extend(render_compact_kv("path", &path, tool_value_style(), width));
         lines
     }
 }

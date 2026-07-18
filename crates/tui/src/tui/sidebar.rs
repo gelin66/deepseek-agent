@@ -1451,12 +1451,6 @@ fn sidebar_tool_row_from_cell(cell: &HistoryCell) -> Option<SidebarToolRow> {
                 .unwrap_or_default(),
             duration_ms: None,
         }),
-        ToolCell::ViewImage(image) => Some(SidebarToolRow {
-            name: "image".to_string(),
-            status: ToolStatus::Success,
-            summary: image.path.display().to_string(),
-            duration_ms: None,
-        }),
         ToolCell::WebSearch(search) => Some(SidebarToolRow {
             name: "web_search".to_string(),
             status: search.status,

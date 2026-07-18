@@ -482,11 +482,6 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
             snapshot.record(format!("diff {}", diff.title), ToolStatus::Success, None);
         }
         ToolCell::Mcp(mcp) => snapshot.record(format!("tool {}", mcp.tool), mcp.status, None),
-        ToolCell::ViewImage(image) => snapshot.record(
-            format!("image {}", image.path.display()),
-            ToolStatus::Success,
-            None,
-        ),
         ToolCell::WebSearch(search) => {
             snapshot.record(format!("search {}", search.query), search.status, None);
         }

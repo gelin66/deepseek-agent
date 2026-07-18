@@ -169,7 +169,6 @@ fn tool_display_name(tool: &ToolCell) -> &str {
         ToolCell::Generic(cell) => cell.name.as_str(),
         ToolCell::Mcp(cell) => cell.tool.as_str(),
         ToolCell::WebSearch(_) => "web_search",
-        ToolCell::ViewImage(_) => "view_image",
         ToolCell::Exploring(_) => "explore",
         ToolCell::Exec(_) => "shell",
         ToolCell::PlanUpdate(_) => "update_plan",
@@ -186,8 +185,9 @@ fn classify_tool_run_activity(tool: &ToolCell) -> ToolRunActivity {
 fn classify_tool_name_activity(name: &str) -> ToolRunActivity {
     let normalized = name.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "read_file" | "list_dir" | "view_image" | "explore" | "git_log" | "git_show"
-        | "git_blame" => ToolRunActivity::File,
+        "read_file" | "list_dir" | "explore" | "git_log" | "git_show" | "git_blame" => {
+            ToolRunActivity::File
+        }
         "grep_files" | "file_search" | "web_search" | "fetch_url" => ToolRunActivity::Search,
         "shell"
         | "exec_shell"

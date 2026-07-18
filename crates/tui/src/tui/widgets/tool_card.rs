@@ -73,9 +73,7 @@ pub fn tool_family_for_title(title: &str) -> ToolFamily {
 #[must_use]
 pub fn tool_family_for_name(name: &str) -> ToolFamily {
     match name {
-        "read_file" | "list_dir" | "view_image" | "git_log" | "git_show" | "git_blame" => {
-            ToolFamily::Read
-        }
+        "read_file" | "list_dir" | "git_log" | "git_show" | "git_blame" => ToolFamily::Read,
         "edit_file" | "apply_patch" | "write_file" => ToolFamily::Patch,
         "exec_shell"
         | "exec_shell_wait"

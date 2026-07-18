@@ -334,6 +334,8 @@ M4-C foreground 切换后还已物理删除：
   canonical Runtime terminal、RunStore 和确定性 `crates/tools::run_verifiers` 保留。
 - 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查和仍被 TUI/hooks 使用的
   `crates/release` 保留，不属于本次删除。
+- 没有构造方、不会读取图片数据的旧 TUI `ToolCell::ViewImage` 文本卡；canonical
+  `read_file` 仍通过 `crates/tools` 的 macOS Vision/Tesseract 后端提供本地图片 OCR。
 
 ## 6. 当前验证事实
 
