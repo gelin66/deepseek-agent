@@ -1888,11 +1888,6 @@ pub struct Config {
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
 
-    /// Workshop / large-tool-output routing (#548). When absent, the global
-    /// default threshold of 4 096 tokens applies and routing is active.
-    #[serde(default)]
-    pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
-
     /// Sibling `permissions.toml` ask-rules compiled for runtime checks.
     ///
     /// This is deliberately not part of `config.toml`; it is loaded from the
@@ -5651,7 +5646,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         fleet: override_cfg.fleet.or(base.fleet),
         subagents: override_cfg.subagents.or(base.subagents),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
-        workshop: override_cfg.workshop.or(base.workshop),
         exec_policy_engine: override_cfg.exec_policy_engine,
     }
 }

@@ -143,12 +143,6 @@ pub struct ToolContext {
     /// result when this is present and the manager is enabled.
     pub lsp_manager: Option<Arc<LspManager>>,
 
-    /// Large-output router (#548). When `Some`, tool results that exceed the
-    /// configured token threshold are routed through a V4-Flash synthesis
-    /// sub-agent before being returned to the parent context. `None` disables
-    /// routing (e.g. in sub-agents and test contexts to avoid recursion).
-    pub large_output_router: Option<crate::tools::large_output_router::LargeOutputRouter>,
-
     /// Which search backend `web_search` should use. Default: DuckDuckGo. Set via
     /// `[search] provider` in config.toml.
     pub search_provider: crate::config::SearchProvider,
@@ -158,13 +152,6 @@ pub struct ToolContext {
     pub search_api_key: Option<String>,
     /// Optional DuckDuckGo-compatible HTML endpoint override for `web_search`.
     pub search_base_url: Option<String>,
-
-    /// Per-session workshop variable store (#548). Holds the raw content of
-    /// the most recent large-tool routing event so the parent can call
-    /// `promote_to_context` later. `None` when the router is disabled.
-    pub workshop_vars: Option<
-        std::sync::Arc<tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>>,
-    >,
 }
 
 impl ToolContext {
@@ -200,11 +187,9 @@ impl ToolContext {
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
-            large_output_router: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
             search_base_url: None,
-            workshop_vars: None,
         }
     }
 
@@ -239,11 +224,9 @@ impl ToolContext {
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
-            large_output_router: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
             search_base_url: None,
-            workshop_vars: None,
         }
     }
 
@@ -280,11 +263,9 @@ impl ToolContext {
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
-            large_output_router: None,
             search_provider: crate::config::SearchProvider::default(),
             search_api_key: None,
             search_base_url: None,
-            workshop_vars: None,
         }
     }
 
@@ -474,22 +455,6 @@ impl ToolContext {
     /// Set the namespace used for session-scoped tool state.
     pub fn with_state_namespace(mut self, namespace: impl Into<String>) -> Self {
         self.state_namespace = namespace.into();
-        self
-    }
-
-    /// Attach the large-output router (#548). When set, tool results that
-    /// exceed the configured token threshold are synthesised by a V4-Flash
-    /// sub-agent before being returned to the parent context.
-    #[must_use]
-    pub fn with_large_output_router(
-        mut self,
-        router: crate::tools::large_output_router::LargeOutputRouter,
-        vars: std::sync::Arc<
-            tokio::sync::Mutex<crate::tools::large_output_router::WorkshopVariables>,
-        >,
-    ) -> Self {
-        self.large_output_router = Some(router);
-        self.workshop_vars = Some(vars);
         self
     }
 }

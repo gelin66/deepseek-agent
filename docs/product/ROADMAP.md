@@ -706,6 +706,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   扫描逻辑的假 E2E、`[tools.plugin_dir]`/`[tools.overrides]` 配置和 `setup --tools`/Doctor
   脚手架；固定 canonical catalog 不再暗示可被本地脚本替换。真实 MCP、skills 与现有
   plugins 目录逻辑保持原调用边界，未被该删除重写。
+- M4-C 已删除只有自身测试、从未被生产读取的 TUI `large_output_router`、`[workshop]`
+  配置、`ToolContext` router/vars 字段和未接线的 V4-Flash synthesis 声明；canonical 工具
+  artifact/evidence 存储不在该路径。旧 TUI spillover writer 另按真实调用图处理，不把两个
+  不同 owner 混为一个切片。
 - M4-C 已把 `key_shortcuts` 收缩为首启输入仍使用的 `is_text_input_key`，删除零调用的
   copy/paste/control-like/Ctrl-H 判定；正式文本粘贴继续由 terminal `Event::Paste` 处理，
   Pager 文本复制继续走 canonical local view event。
