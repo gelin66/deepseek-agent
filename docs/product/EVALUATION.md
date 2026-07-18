@@ -489,6 +489,29 @@ no_key_replay
 
 live canary 重点验证官方协议可能变化的部分，而不是替代离线测试。
 
+### 9.1 当前 M2 官方协议证据（2026-07-18）
+
+在干净 revision `4bd6563b471292ad4bc632b233f0e85b9088df15` 上，当前六请求 Harness
+（SHA-256 `60072577a2e865d82b4a4c025c5756365bef778656cbeb689ff16de624c04cf1`）
+通过官方 DeepSeek 线上 6/6 请求、0 failed，整套耗时 5.465 秒，按 2026-07-16 价格快照
+估算费用为 `USD 0.00009914`。它覆盖：
+
+- Standard Chat non-thinking；
+- Standard Chat thinking 工具调用与 `reasoning_content`/tool-call exact replay；
+- Beta Strict Chat non-thinking 工具调用，以及工具结果轮省略 `reasoning_content` 的 replay；
+- 独立 Beta FIM；
+- 每次请求的 usage/cache 与 finish reason。
+
+原始脱敏 JSONL 为本地忽略文件，权限 `0600`，摘要
+SHA-256 为 `2f5a1956b9fd18ac2b202f4911faef71cf88823ebeeead10f166af4ca6351b10`；
+可提交事实见
+[M2 当前 DeepSeek 官方协议 Canary](../../eval/summaries/m2-current-deepseek-live-2026-07-18.md)。
+
+该结果仍是 `record_class=protocol_canary`、`product_metric_eligible=false`、
+`verified_success=null`。Harness 直接调用官方 API，不经过生产 Agent loop；它是当前 M2
+外部协议复核，不单独证明 Rust `RequestPlan`、transport 或 Agent 链路已接管，也不构成编码
+任务成功率、Token、时延或成本提升证据。历史 M1-B 5/5 结果继续作为旧 revision 基线保留。
+
 ## 10. 结果与决策记录
 
 建议结果格式：
