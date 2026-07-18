@@ -1,13 +1,9 @@
 //! Utility helpers shared across the `DeepSeek` CLI.
 
-use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use crate::models::{ContentBlock, Message};
-use anyhow::{Context, Result};
-use serde_json::Value;
 use std::io;
 
 /// A writer that counts bytes written without storing them.
@@ -209,18 +205,6 @@ pub fn panic_message(panic: &(dyn std::any::Any + Send)) -> String {
     }
 }
 
-/// Record a panic that was caught at a call site (via `catch_unwind`) rather
-/// than by a task supervisor. Logs it on the `panic` target and writes a
-/// best-effort crash dump to `~/.codewhale/crashes/`, so diagnostics land in
-/// the same place `spawn_supervised` writes them even when the caller recovers
-/// and keeps running.
-#[track_caller]
-pub fn record_caught_panic(name: &'static str, message: &str) {
-    let location = std::panic::Location::caller();
-    tracing::error!(target: "panic", "Task '{name}' panicked at {location}: {message}");
-    let _ = write_panic_dump(name, location, message);
-}
-
 /// Write a panic dump file to `~/.codewhale/crashes/`.
 ///
 /// Creates the directory if needed and writes a timestamped log
@@ -265,19 +249,6 @@ fn write_panic_dump_to(
     Ok(())
 }
 
-#[allow(dead_code)]
-pub fn ensure_dir(path: &Path) -> Result<()> {
-    fs::create_dir_all(path)
-        .with_context(|| format!("Failed to create directory: {}", path.display()))
-}
-
-/// Render JSON with pretty formatting, falling back to a compact string on error.
-#[must_use]
-#[allow(dead_code)]
-pub fn pretty_json(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
-}
-
 /// Truncate a string to a maximum length, adding an ellipsis if truncated.
 ///
 /// Uses char boundaries to avoid panicking on multi-byte UTF-8 characters.
@@ -295,25 +266,6 @@ pub fn truncate_with_ellipsis(s: &str, max_len: usize, ellipsis: &str) -> String
         .last()
         .unwrap_or(0);
     format!("{}{}", &s[..safe_end], ellipsis)
-}
-
-/// Percent-encode a string for use in URL query parameters.
-///
-/// Encodes all characters except unreserved characters (A-Z, a-z, 0-9, `-`, `_`, `.`, `~`).
-/// Spaces are encoded as `+`.
-#[must_use]
-pub fn url_encode(input: &str) -> String {
-    let mut encoded = String::new();
-    for ch in input.bytes() {
-        match ch {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                encoded.push(ch as char)
-            }
-            b' ' => encoded.push('+'),
-            _ => encoded.push_str(&format!("%{ch:02X}")),
-        }
-    }
-    encoded
 }
 
 /// Render a path for **user-facing display** with the home directory
@@ -357,31 +309,6 @@ pub fn display_path_with_home(path: &Path, home: Option<&Path>) -> String {
         return out;
     }
     path.display().to_string()
-}
-
-/// Estimate the total character count across message content blocks.
-#[must_use]
-pub fn estimate_message_chars(messages: &[Message]) -> usize {
-    let mut total = 0;
-    for msg in messages {
-        for block in &msg.content {
-            match block {
-                ContentBlock::Text { text, .. } => total += text.len(),
-                ContentBlock::Thinking { thinking, .. } => total += thinking.len(),
-                ContentBlock::ToolUse { input, .. } => {
-                    let mut cw = CountingWriter::new();
-                    let _ = serde_json::to_writer(&mut cw, input);
-                    total += cw.count();
-                }
-                ContentBlock::ToolResult { content, .. } => total += content.len(),
-                ContentBlock::ServerToolUse { .. }
-                | ContentBlock::ToolSearchToolResult { .. }
-                | ContentBlock::CodeExecutionToolResult { .. }
-                | ContentBlock::ImageUrl { .. } => {}
-            }
-        }
-    }
-    total
 }
 
 // Tests use `display_path_with_home` so they never mutate the global `HOME`

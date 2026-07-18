@@ -695,6 +695,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除零生产调用方的 TUI `open_url` 及平台 browser-command 构造器；当前产品没有
   外链打开交互，不保留一套只有自身测试的系统命令能力。OAuth/MCP transport、终端文本复制
   和 DeepSeek HTTP 请求均不经过该 helper。
+- M4-C 已删除零调用的 TUI `record_caught_panic`、`ensure_dir`、`pretty_json`、`url_encode`
+  和 `estimate_message_chars`，并移除其中掩盖遗留的 `allow(dead_code)`；真实使用的受监督任务
+  崩溃转储、原子/追加写入、路径展示和 `CountingWriter` 保留在现有调用方。
 - M4-C 已把 `key_shortcuts` 收缩为首启输入仍使用的 `is_text_input_key`，删除零调用的
   copy/paste/control-like/Ctrl-H 判定；正式文本粘贴继续由 terminal `Event::Paste` 处理，
   Pager 文本复制继续走 canonical local view event。
