@@ -4162,7 +4162,6 @@ mod tests {
         app.history.push(HistoryCell::Thinking {
             content: "private chain of thought".to_string(),
             streaming: true,
-            duration_secs: Some(1.0),
         });
 
         let text = lines_to_text(&task_panel_lines(&app, 96, 12));

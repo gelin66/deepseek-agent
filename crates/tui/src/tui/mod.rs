@@ -57,8 +57,6 @@ mod shell_job_routing;
 pub mod sidebar;
 pub mod slash_menu;
 pub mod spinner;
-pub mod streaming;
-pub mod streaming_thinking;
 pub mod theme_picker;
 pub mod transcript;
 pub mod transcript_cache;

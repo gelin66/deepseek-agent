@@ -531,7 +531,6 @@
     "HistoryReasoningHiddenActivity": "推理内容已隐藏；模型仍在工作",
     "HistoryReasoningStatusLive": "进行中",
     "HistoryReasoningStatusDone": "已完成",
-    "HistoryReasoningStatusIdle": "空闲",
     "HistorySystemNoteLabel": "说明",
     "ExecModelRequestBudgetExhausted": "Agent 模型请求预算已用尽（上限：{limit}）",
     "ExecApiRequestBudgetExhausted": "DeepSeek API 物理请求预算已用尽（上限：{limit}）",

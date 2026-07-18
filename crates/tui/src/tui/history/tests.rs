@@ -679,7 +679,6 @@ fn render_thinking_shows_full_reasoning_without_dead_affordance() {
         "Summary: First line\nSecond line\nThird line\nFourth line\nFifth line",
         80,
         false,
-        Some(2.0),
         false,
     );
     let text = lines
@@ -711,25 +710,20 @@ fn render_thinking_shows_full_reasoning_without_dead_affordance() {
 fn reasoning_chrome_is_chinese_width_safe_and_preserves_model_text() {
     let raw_reasoning = "MODEL-RAW reasoning/live/done src/lib.rs read_file";
 
-    let live = lines_text(&render_thinking(raw_reasoning, 120, true, None, true));
+    let live = lines_text(&render_thinking(raw_reasoning, 120, true, true));
     assert!(live.contains("推理 进行中"), "{live}");
     assert!(live.contains(raw_reasoning), "{live}");
 
-    let done = lines_text(&render_thinking(raw_reasoning, 120, false, Some(1.0), true));
+    let done = lines_text(&render_thinking(raw_reasoning, 120, false, true));
     assert!(done.contains("推理 已完成"), "{done}");
     assert!(done.contains(raw_reasoning), "{done}");
 
-    let idle = lines_text(&render_thinking(raw_reasoning, 120, false, None, true));
-    assert!(idle.contains("推理 空闲"), "{idle}");
-    assert!(idle.contains(raw_reasoning), "{idle}");
-
-    let placeholder = lines_text(&render_thinking("", 40, true, None, true));
+    let placeholder = lines_text(&render_thinking("", 40, true, true));
     assert!(placeholder.contains("推理中…"), "{placeholder}");
 
     let hidden = HistoryCell::Thinking {
         content: raw_reasoning.to_owned(),
         streaming: true,
-        duration_secs: None,
     }
     .lines_with_options(
         18,
@@ -782,7 +776,6 @@ fn render_thinking_streaming_shows_live_content() {
         "Step 1: read the code\nStep 2: trace the call\nStep 3: form a hypothesis",
         80,
         true, // streaming
-        None, // no duration yet
         true, // low_motion (no cursor noise to grep)
     );
     let text = lines
@@ -805,7 +798,6 @@ fn render_hidden_streaming_thinking_shows_activity_without_content() {
     let cell = HistoryCell::Thinking {
         content: "private chain of thought that must not be shown".to_string(),
         streaming: true,
-        duration_secs: None,
     };
 
     let lines = cell.lines_with_options(
@@ -833,7 +825,6 @@ fn render_hidden_completed_thinking_stays_hidden() {
     let cell = HistoryCell::Thinking {
         content: "completed hidden reasoning".to_string(),
         streaming: false,
-        duration_secs: Some(1.0),
     };
 
     let lines = cell.lines_with_options(
@@ -856,7 +847,7 @@ fn render_thinking_streaming_keeps_the_full_visible_record() {
         .map(|i| format!("Reasoning line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let lines = render_thinking(&long, 80, true, None, true);
+    let lines = render_thinking(&long, 80, true, true);
     let text = lines
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
@@ -1541,7 +1532,7 @@ fn exploring_card_read_keeps_read_verb() {
 
 #[test]
 fn render_thinking_uses_dotted_opener_in_header() {
-    let lines = render_thinking("Step one\nStep two", 80, false, Some(2.0), true);
+    let lines = render_thinking("Step one\nStep two", 80, false, true);
     let header = &lines[0];
     // First span carries `…` followed by a space.
     assert!(
@@ -1557,7 +1548,6 @@ fn render_thinking_body_lines_use_dashed_rail_and_italic() {
         "concrete reasoning content",
         80,
         /*streaming*/ false,
-        Some(1.0),
         /*low_motion*/ true,
     );
     // Header is index 0; first body line is index 1.
@@ -1583,7 +1573,6 @@ fn render_thinking_streaming_appends_cursor_when_motion_allowed() {
         "ongoing reasoning...",
         80,
         /*streaming*/ true,
-        None,
         /*low_motion*/ false,
     );
     // Last line is the most recent body line — cursor lives there.
@@ -1602,7 +1591,6 @@ fn render_thinking_streaming_omits_cursor_when_low_motion() {
         "ongoing reasoning...",
         80,
         /*streaming*/ true,
-        None,
         /*low_motion*/ true,
     );
     let last = lines.last().expect("body line present");
@@ -1906,7 +1894,6 @@ fn long_thinking_display_preserves_the_canonical_reasoning_body() {
     let cell = HistoryCell::Thinking {
         content: body.to_string(),
         streaming: false,
-        duration_secs: Some(3.2),
     };
 
     let live = cell.lines_with_options(
@@ -1954,7 +1941,6 @@ fn completed_short_thinking_without_summary_stays_visible_in_live_view() {
     let cell = HistoryCell::Thinking {
         content: "One brief reasoning step.".to_string(),
         streaming: false,
-        duration_secs: Some(0.4),
     };
 
     let live = cell.lines_with_options(
@@ -1988,7 +1974,6 @@ fn completed_reasoning_preserves_model_text_without_a_shadow_expanded_copy() {
     let cell = HistoryCell::Thinking {
         content: "I will call refresh_catalog_cache to refresh the model list.".to_string(),
         streaming: false,
-        duration_secs: Some(1.0),
     };
 
     let live = cell.lines_with_options(

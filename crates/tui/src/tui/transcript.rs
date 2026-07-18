@@ -1081,7 +1081,6 @@ mod tests {
                     "line A\nline B\nline C\nline D\nline E\nline F\nline G\nline H\nline I\nline J"
                         .to_string(),
                 streaming: false,
-                duration_secs: Some(3.5),
             });
             cells.push(assistant_cell(
                 &format!("response {i} with multi-line\ntext content spanning\nseveral lines"),

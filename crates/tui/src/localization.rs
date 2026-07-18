@@ -590,7 +590,6 @@ pub enum MessageId {
     HistoryReasoningHiddenActivity,
     HistoryReasoningStatusLive,
     HistoryReasoningStatusDone,
-    HistoryReasoningStatusIdle,
     HistorySystemNoteLabel,
     // Canonical exec terminal summaries.
     ExecModelRequestBudgetExhausted,
@@ -1147,7 +1146,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::HistoryReasoningHiddenActivity,
     MessageId::HistoryReasoningStatusLive,
     MessageId::HistoryReasoningStatusDone,
-    MessageId::HistoryReasoningStatusIdle,
     MessageId::HistorySystemNoteLabel,
     MessageId::ExecModelRequestBudgetExhausted,
     MessageId::ExecApiRequestBudgetExhausted,

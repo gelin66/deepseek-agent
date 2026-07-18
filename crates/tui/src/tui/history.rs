@@ -99,7 +99,6 @@ pub enum HistoryCell {
     Thinking {
         content: String,
         streaming: bool,
-        duration_secs: Option<f32>,
     },
     /// Archived context metadata or a local history-compaction placeholder.
     /// Rendered dimmed/italic with a level + range label.
@@ -199,11 +198,9 @@ impl HistoryCell {
                 }
                 lines
             }
-            HistoryCell::Thinking {
-                content,
-                streaming,
-                duration_secs,
-            } => render_thinking(content, width, *streaming, *duration_secs, false),
+            HistoryCell::Thinking { content, streaming } => {
+                render_thinking(content, width, *streaming, false)
+            }
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, false),
             HistoryCell::ArchivedContext { .. } => render_archived_context(self, width, false),
         }
@@ -215,28 +212,16 @@ impl HistoryCell {
         options: TranscriptRenderOptions,
     ) -> Vec<Line<'static>> {
         match self {
-            HistoryCell::Thinking {
-                streaming,
-                duration_secs,
-                ..
-            } if !options.show_thinking => {
+            HistoryCell::Thinking { streaming, .. } if !options.show_thinking => {
                 if *streaming {
-                    render_hidden_thinking_activity(width, *duration_secs, options.low_motion)
+                    render_hidden_thinking_activity(width, options.low_motion)
                 } else {
                     Vec::new()
                 }
             }
-            HistoryCell::Thinking {
-                content,
-                streaming,
-                duration_secs,
-            } => render_thinking(
-                content,
-                width,
-                *streaming,
-                *duration_secs,
-                options.low_motion,
-            ),
+            HistoryCell::Thinking { content, streaming } => {
+                render_thinking(content, width, *streaming, options.low_motion)
+            }
             HistoryCell::Tool(cell) if !options.show_tool_details && !cell.is_failed() => {
                 let mut lines = cell.lines_with_motion(width, options.low_motion);
                 if lines.len() > 2 {
@@ -343,11 +328,9 @@ impl HistoryCell {
                 width,
             ),
             HistoryCell::System { .. } | HistoryCell::Error { .. } => self.lines(width),
-            HistoryCell::Thinking {
-                content,
-                streaming,
-                duration_secs,
-            } => render_thinking(content, width, *streaming, *duration_secs, false),
+            HistoryCell::Thinking { content, streaming } => {
+                render_thinking(content, width, *streaming, false)
+            }
             HistoryCell::Tool(cell) => cell.transcript_lines(width),
             HistoryCell::ArchivedContext { .. } => render_archived_context(self, width, true),
         }
@@ -440,7 +423,6 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
                     cells.push(HistoryCell::Thinking {
                         content: thinking.clone(),
                         streaming: false,
-                        duration_secs: None,
                     });
                 }
             }

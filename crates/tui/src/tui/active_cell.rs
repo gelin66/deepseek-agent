@@ -169,25 +169,6 @@ impl ActiveCell {
         entry_idx
     }
 
-    /// Push a thinking entry as a new active-cell entry. Sibling to
-    /// [`Self::push_tool`] but for `HistoryCell::Thinking` content. Returns the
-    /// entry index. Thinking entries do not participate in `tool_to_entry` or
-    /// the exploring aggregation — each thinking block stands on its own.
-    ///
-    /// P2.3: thinking lives in the active cell so a `Thinking → Tool → Tool`
-    /// sequence renders as one logical "Working…" block until the next
-    /// assistant prose chunk flushes the group into history.
-    pub fn push_thinking(&mut self, cell: HistoryCell) -> usize {
-        debug_assert!(
-            matches!(cell, HistoryCell::Thinking { .. }),
-            "push_thinking expects HistoryCell::Thinking",
-        );
-        let entry_idx = self.entries.len();
-        self.entries.push(cell);
-        self.bump_revision();
-        entry_idx
-    }
-
     /// Look up the entry index that holds the given tool id.
     #[must_use]
     #[allow(dead_code)] // Reserved for the Codex-style "exec end target" lookup.
@@ -269,19 +250,6 @@ impl ActiveCell {
 }
 
 fn mark_running_as_interrupted(cell: &mut HistoryCell) {
-    if let HistoryCell::Thinking {
-        streaming,
-        duration_secs,
-        ..
-    } = cell
-    {
-        // A thinking cell stuck mid-stream should stop spinning when the turn
-        // is cancelled. Leave `duration_secs` as-is if it's already populated;
-        // otherwise the renderer simply omits the duration badge.
-        *streaming = false;
-        let _ = duration_secs;
-        return;
-    }
     let HistoryCell::Tool(tool_cell) = cell else {
         return;
     };
@@ -409,72 +377,5 @@ mod tests {
             panic!("expected exec")
         };
         assert_eq!(exec.status, ToolStatus::Failed);
-    }
-
-    fn thinking_cell(content: &str, streaming: bool) -> HistoryCell {
-        HistoryCell::Thinking {
-            content: content.to_string(),
-            streaming,
-            duration_secs: None,
-        }
-    }
-
-    #[test]
-    fn push_thinking_records_entry_at_tail() {
-        let mut cell = ActiveCell::new();
-        let r0 = cell.revision();
-        let idx = cell.push_thinking(thinking_cell("planning…", true));
-        assert_eq!(idx, 0);
-        assert_eq!(cell.entry_count(), 1);
-        assert!(cell.revision() != r0);
-    }
-
-    #[test]
-    fn thinking_then_tools_group_in_one_active_cell() {
-        // P2.3: a turn that emits Thinking → Tool → Tool keeps everything in
-        // one active cell until the next prose chunk flushes the group.
-        let mut cell = ActiveCell::new();
-        cell.push_thinking(thinking_cell("plan…", true));
-        cell.push_tool("t-1", exec_cell("ls"));
-        cell.push_tool("t-2", exploring_cell_with("Read foo.rs"));
-        assert_eq!(
-            cell.entry_count(),
-            3,
-            "thinking, exec, and exploring entries coexist in one active cell"
-        );
-        assert!(matches!(cell.entries()[0], HistoryCell::Thinking { .. }));
-        assert!(matches!(
-            cell.entries()[1],
-            HistoryCell::Tool(ToolCell::Exec(_))
-        ));
-        assert!(matches!(
-            cell.entries()[2],
-            HistoryCell::Tool(ToolCell::Exploring(_))
-        ));
-    }
-
-    #[test]
-    fn drain_flushes_thinking_alongside_tools_in_order() {
-        let mut cell = ActiveCell::new();
-        cell.push_thinking(thinking_cell("plan…", false));
-        cell.push_tool("t", exec_cell("ls"));
-        let drained = cell.drain();
-        assert_eq!(drained.len(), 2);
-        assert!(matches!(drained[0], HistoryCell::Thinking { .. }));
-        assert!(matches!(drained[1], HistoryCell::Tool(ToolCell::Exec(_))));
-    }
-
-    #[test]
-    fn interrupt_stops_streaming_thinking_spinner() {
-        let mut cell = ActiveCell::new();
-        cell.push_thinking(thinking_cell("plan…", true));
-        cell.mark_in_progress_as_interrupted();
-        let HistoryCell::Thinking { streaming, .. } = &cell.entries()[0] else {
-            panic!("expected thinking cell")
-        };
-        assert!(
-            !*streaming,
-            "interrupted thinking should stop streaming so the spinner exits"
-        );
     }
 }

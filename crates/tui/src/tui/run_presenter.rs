@@ -289,12 +289,6 @@ fn reset_run_display(app: &mut App) {
     app.exploring_entries.clear();
     app.ignored_tool_calls.clear();
     app.streaming_message_index = None;
-    app.streaming_thinking_active_entry = None;
-    app.streaming_state.reset();
-    app.streaming_output_token_estimate = 0;
-    app.reasoning_buffer.clear();
-    app.reasoning_header = None;
-    app.last_reasoning = None;
     app.pending_tool_uses.clear();
     app.is_compacting = false;
 }
@@ -326,7 +320,6 @@ fn rebuild_transcript(
                     app.add_message(HistoryCell::Thinking {
                         content: reasoning.clone(),
                         streaming: false,
-                        duration_secs: None,
                     });
                 }
                 if let Some(content) = content
@@ -412,7 +405,6 @@ fn append_reasoning_delta(app: &mut App, delta: &str) {
     app.add_message(HistoryCell::Thinking {
         content: delta.to_owned(),
         streaming: true,
-        duration_secs: None,
     });
 }
 
@@ -431,8 +423,6 @@ fn discard_uncommitted_streams(app: &mut App) {
     ) {
         let _ = app.pop_history();
     }
-    app.streaming_state.reset();
-    app.streaming_output_token_estimate = 0;
 }
 
 fn reconcile_model_output(app: &mut App, output: &ModelOutput) {
@@ -443,7 +433,6 @@ fn reconcile_model_output(app: &mut App, output: &ModelOutput) {
         app.add_message(HistoryCell::Thinking {
             content: reasoning.clone(),
             streaming: false,
-            duration_secs: None,
         });
     }
     if !output.content.is_empty() {
@@ -554,8 +543,6 @@ fn finish_terminal(app: &mut App, terminal: &TerminalState, accounting: &ModelAc
     app.dispatch_started_at = None;
     app.turn_started_at = None;
     app.turn_last_activity_at = None;
-    app.streaming_state.reset();
-    app.streaming_output_token_estimate = 0;
     app.runtime_turn_status = Some(terminal_runtime_status(terminal).to_owned());
     app.status_message = Some(format!("运行已结束：{}", terminal_label(terminal)));
 }

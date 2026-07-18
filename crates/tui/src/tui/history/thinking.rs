@@ -22,17 +22,15 @@ pub(super) const REASONING_CURSOR: &str = "\u{258E}"; // ▎
 enum ThinkingVisualState {
     Live,
     Done,
-    Idle,
 }
 
 pub(super) fn render_thinking(
     content: &str,
     width: u16,
     streaming: bool,
-    duration_secs: Option<f32>,
     low_motion: bool,
 ) -> Vec<Line<'static>> {
-    let state = thinking_visual_state(streaming, duration_secs);
+    let state = thinking_visual_state(streaming);
     let style = thinking_style();
     // 12% reasoning surface tint over the app ink — the only deliberately
     // warm element in the transcript. Dropped on Ansi-16 terminals where the
@@ -59,10 +57,6 @@ pub(super) fn render_thinking(
         tr(thinking_status_message_id(state)),
         thinking_status_style(state),
     ));
-    if let Some(dur) = duration_secs {
-        header_spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
-        header_spans.push(Span::styled(format!("{dur:.1}s"), thinking_meta_style()));
-    }
     lines.push(Line::from(header_spans));
 
     let content_width = width.saturating_sub(3).max(1);
@@ -102,17 +96,13 @@ pub(super) fn render_thinking(
     lines
 }
 
-pub(super) fn render_hidden_thinking_activity(
-    width: u16,
-    duration_secs: Option<f32>,
-    low_motion: bool,
-) -> Vec<Line<'static>> {
+pub(super) fn render_hidden_thinking_activity(width: u16, low_motion: bool) -> Vec<Line<'static>> {
     let state = ThinkingVisualState::Live;
     let rail_style = Style::default().fg(thinking_state_accent(state));
     let body_style = thinking_style().italic();
     let content_width = width.saturating_sub(3).max(1) as usize;
 
-    let mut header_spans = vec![
+    let header_spans = vec![
         Span::styled(
             format!("{REASONING_OPENER} "),
             Style::default().fg(thinking_state_accent(state)),
@@ -124,11 +114,6 @@ pub(super) fn render_hidden_thinking_activity(
             thinking_status_style(state),
         ),
     ];
-    if let Some(dur) = duration_secs {
-        header_spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
-        header_spans.push(Span::styled(format!("{dur:.1}s"), thinking_meta_style()));
-    }
-
     let mut body = truncate_line_to_width(
         &tr(MessageId::HistoryReasoningHiddenActivity),
         content_width,
@@ -151,13 +136,11 @@ fn thinking_style() -> Style {
     Style::default().fg(palette::TEXT_REASONING)
 }
 
-fn thinking_visual_state(streaming: bool, duration_secs: Option<f32>) -> ThinkingVisualState {
+fn thinking_visual_state(streaming: bool) -> ThinkingVisualState {
     if streaming {
         ThinkingVisualState::Live
-    } else if duration_secs.is_some() {
-        ThinkingVisualState::Done
     } else {
-        ThinkingVisualState::Idle
+        ThinkingVisualState::Done
     }
 }
 
@@ -165,7 +148,6 @@ fn thinking_status_message_id(state: ThinkingVisualState) -> MessageId {
     match state {
         ThinkingVisualState::Live => MessageId::HistoryReasoningStatusLive,
         ThinkingVisualState::Done => MessageId::HistoryReasoningStatusDone,
-        ThinkingVisualState::Idle => MessageId::HistoryReasoningStatusIdle,
     }
 }
 
@@ -179,19 +161,13 @@ fn thinking_status_style(state: ThinkingVisualState) -> Style {
     Style::default().fg(match state {
         ThinkingVisualState::Live => palette::ACCENT_REASONING_LIVE,
         ThinkingVisualState::Done => palette::TEXT_DIM,
-        ThinkingVisualState::Idle => palette::TEXT_DIM,
     })
-}
-
-fn thinking_meta_style() -> Style {
-    Style::default().fg(palette::TEXT_DIM)
 }
 
 fn thinking_state_accent(state: ThinkingVisualState) -> Color {
     match state {
         ThinkingVisualState::Live => palette::ACCENT_REASONING_LIVE,
         ThinkingVisualState::Done => palette::TEXT_DIM,
-        ThinkingVisualState::Idle => palette::TEXT_DIM,
     }
 }
 

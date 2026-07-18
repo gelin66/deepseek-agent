@@ -606,6 +606,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   shell 路由、composer 外部编辑器、假 Ctrl+O/Alt+V/Alt+L 文案以及只读不写的推理折叠/
   详情高亮状态。显式开启推理时只显示 canonical 完整内容；canonical 审批的 `v` 参数查看
   和分页复制通过本地 View event 接入通用 `PagerView`，不创建 RuntimeEvent 或第二份状态。
+- M4-C 已删除只有自测、没有 production delta 写入方的旧 TUI `StreamingState` 与
+  `streaming_thinking` collector，以及只初始化或 reset 的影子 reasoning 字段。canonical
+  reasoning/assistant 增量继续由 `run_presenter` 直接从 `RuntimeEvent` 投影到 transcript；
+  已完成 reasoning 只显示 canonical 可证明的“已完成”状态，不再依赖旧 collector 独有的
+  duration 产生错误“空闲”状态；DeepSeek reasoning replay 与 Runtime transcript 不变。
 - M4-C 已物理删除没有 production consumer 的 TUI Goal/Hunt loop、私有
   TaskContract/receipt/Goal completion store、Slop ledger、`ToolContext.goal_contract`、
   假 custom-command allowed-tools/pause 状态及其 Work/UI/config surface。交互 TUI 启动

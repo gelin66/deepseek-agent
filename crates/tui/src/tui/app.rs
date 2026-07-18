@@ -35,7 +35,6 @@ use crate::tui::paste_burst::{FlushResult, PasteBurst};
 use crate::tui::scrolling::{MouseScrollState, TranscriptScroll};
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::sidebar::SidebarWorkSummary;
-use crate::tui::streaming::StreamingState;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 use codewhale_tools::shell::new_shared_shell_manager;
@@ -1876,29 +1875,6 @@ pub struct App {
     /// the cancelled turn are ignored so text does not keep appearing after
     /// Ctrl+C/Esc returns focus to the composer.
     pub suppress_stream_events_until_turn_complete: bool,
-    /// Index into `active_cell.entries` of the thinking entry currently being
-    /// streamed. `None` when no thinking block is in flight. P2.3 routes
-    /// thinking into the active cell so it groups visually with tool calls
-    /// until the next assistant prose chunk flushes the group into history.
-    pub streaming_thinking_active_entry: Option<usize>,
-    /// Instant of the last throttled active-cell revision bump for the
-    /// in-flight thinking stream (#1620). Reasoning chunks arrive faster than
-    /// the eye can read, and each bump invalidates the active cell's wrap
-    /// cache, forcing a full re-wrap. We debounce intermediate bumps to a
-    /// time window so high-frequency thinking deltas no longer trigger a
-    /// re-render per character. `None` means "no bump since the last
-    /// finalize" so the first chunk of a block always renders immediately.
-    pub thinking_revision_last_bump_at: Option<Instant>,
-    /// Newline-gated streaming collector state.
-    pub streaming_state: StreamingState,
-    /// Live approximate output tokens for the current assistant stream.
-    pub streaming_output_token_estimate: u64,
-    /// Accumulated reasoning text
-    pub reasoning_buffer: String,
-    /// Live reasoning header extracted from bold text
-    pub reasoning_header: Option<String>,
-    /// Last completed reasoning block
-    pub last_reasoning: Option<String>,
     /// Tool calls captured for the pending assistant message
     pub pending_tool_uses: Vec<(String, String, Value)>,
     /// User messages queued while a turn is running
@@ -1994,8 +1970,6 @@ pub struct App {
     /// theme switches where the diff engine may miss color-only changes
     /// in sidebar cells that were previously rendered with palette constants.
     pub force_next_full_repaint: bool,
-    /// When the current thinking block started (for duration tracking).
-    pub thinking_started_at: Option<Instant>,
     /// Whether context compaction is currently in progress.
     pub is_compacting: bool,
     /// Whether context purge is currently in progress.
@@ -2708,13 +2682,6 @@ impl App {
             last_exec_wait_command: None,
             streaming_message_index: None,
             suppress_stream_events_until_turn_complete: false,
-            streaming_thinking_active_entry: None,
-            thinking_revision_last_bump_at: None,
-            streaming_state: StreamingState::new(),
-            streaming_output_token_estimate: 0,
-            reasoning_buffer: String::new(),
-            reasoning_header: None,
-            last_reasoning: None,
             pending_tool_uses: Vec::new(),
             queued_messages: VecDeque::new(),
             queued_draft: None,
@@ -2741,7 +2708,6 @@ impl App {
             session_started_at: chrono::Utc::now(),
             needs_redraw: true,
             force_next_full_repaint: false,
-            thinking_started_at: None,
             is_compacting: false,
             is_purging: false,
             user_scrolled_during_stream: false,
@@ -3637,7 +3603,6 @@ impl App {
     /// [`ActiveCell::mark_in_progress_as_interrupted`]).
     pub fn flush_active_cell(&mut self) {
         let Some(mut active) = self.active_cell.take() else {
-            self.streaming_thinking_active_entry = None;
             return;
         };
         if active.is_empty() {
@@ -3645,15 +3610,8 @@ impl App {
             self.exploring_entries.clear();
             self.active_tool_details.clear();
             self.active_tool_entry_completed_at.clear();
-            self.streaming_thinking_active_entry = None;
             self.bump_active_cell_revision();
             return;
-        }
-
-        if let Some(entry_idx) = self.streaming_thinking_active_entry.take()
-            && let Some(HistoryCell::Thinking { streaming, .. }) = active.entry_mut(entry_idx)
-        {
-            *streaming = false;
         }
 
         let drained = active.drain();
