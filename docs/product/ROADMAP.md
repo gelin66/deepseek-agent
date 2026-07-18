@@ -930,8 +930,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除 sidebar 每帧构造但从未被事件处理器、popover 或 renderer 读取的
   `SidebarHoverState`/section/row/action 元数据、全文副本和 tooltip shadow，以及从未被
   构造的 `SidebarAgentCancel` 事件。Activity/Agents/Session 的可见行继续由原 renderer
-  直接生成；`last_sidebar_area`、resize handle、canonical child/Fleet 投影、modal 鼠标和
-  transcript 滚动均保留。该切片不把 producer-only 点击描述误当成真实多 Agent 控制能力。
+  直接生成；canonical child/Fleet 投影、modal 鼠标和 transcript 滚动均保留。后续调用图已
+  证明 `last_sidebar_area` 同样只有 renderer producer 并将其删除；当前只保留可见分隔线，
+  resize 状态是否接通或删除需独立切片决定。该切片不把 producer-only 点击描述误当成真实
+  多 Agent 控制能力。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
@@ -1006,6 +1008,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `InvalidInput`，API Key 认证仍先于普通授权，timeout 仍先于 network，rate-limit 仍先于
   authentication，invalid-input 仍先于 tool。定向 taxonomy 18/18、session diagnostics 7/7
   通过，并通过 TUI check、fmt 和 diff-check。
+- M4-C 已删除没有任何生产 caller 的 `SidebarRenderState` 预判链、三项失效常量，以及只为该
+  预判链提供数据的 sidebar host/area 影子字段。真实 classic sidebar 仍在每一帧直接通过
+  `sidebar_width_for_chat_area` 应用 60 列可见门槛与用户宽度，`sidebar_auto_idle`、sidebar
+  renderer、handle 绘制、canonical child/Fleet 投影和 work-surface 分栏均未改变。本切片不把
+  没有 reader 的旧面积缓存冒充鼠标命中能力，也不顺手删除尚待独立审计的 resize 状态。
+  定向 UI/sidebar 测试、PTY 7/7、TUI check、fmt 和 diff-check 通过。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

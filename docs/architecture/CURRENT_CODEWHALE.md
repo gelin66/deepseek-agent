@@ -483,8 +483,9 @@ M4-C foreground 切换后还已物理删除：
 - sidebar 的旧 hover/click 元数据只有 renderer producer，没有事件 handler、tooltip 或
   popover consumer；`SidebarHoverState`/section/row/action、每帧全文克隆、tooltip shadow
   和从未构造的 `SidebarAgentCancel` 已物理删除。可见 Activity/Agents/Session 行继续直接
-  渲染，`last_sidebar_area`/resize handle、canonical child/Fleet、modal 鼠标与 transcript
-  滚动保持原生产调用链。
+  渲染，canonical child/Fleet、modal 鼠标与 transcript 滚动保持原生产调用链。后续审计已
+  证明 `last_sidebar_area` 也只有 renderer producer 并将其删除；当前保留的是一列可见分隔线，
+  不是已经接通鼠标 reader 的 resize 能力。
 - canonical TUI presenter 曾在 `GenericToolCell` 之外重复写入完整工具参数/输出到
   `ToolDetailRecord`，但该详情图没有任何生产 renderer、交互 handler 或其他语义 reader；
   只有历史前缀重键、active flush 搬运和自身 replay 测试维护这份影子状态。该结构、两个
@@ -548,6 +549,13 @@ M4-C foreground 切换后还已物理删除：
   保证精确 DeepSeek invalid/reasoning replay 错误先于泛化 tool 分类、API Key 认证先于授权、
   timeout 先于 network、rate-limit 先于 authentication、invalid-input 先于 tool。当前定向
   taxonomy 18/18、session diagnostics 7/7 通过，并通过 TUI check、fmt 和 diff-check。
+- `ui` 中没有 caller 的 `SidebarRenderState`、`sidebar_render_state`、
+  `sidebar_host_width_hint` 和三项失效常量已经删除；只由 renderer 写入、没有鼠标或其他
+  reader 的 App/Viewport sidebar host/area 缓存也随之删除。实际 classic sidebar 仍直接由
+  `sidebar_width_for_chat_area`、60 列门槛、用户宽度和 `sidebar_auto_idle` 决定，sidebar
+  renderer、handle 绘制、canonical child/Fleet 投影与 work-surface 分栏不经过旧预判链。
+  尚未独立证明的 resize 状态未在本切片扩张删除。定向 UI/sidebar 测试、TUI check、fmt 与
+  diff-check 通过，PTY 7/7 通过。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

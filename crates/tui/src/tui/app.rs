@@ -1164,10 +1164,6 @@ pub struct ViewportState {
     pub transcript_scrollbar_dragging: bool,
     pub last_transcript_area: Option<Rect>,
     pub last_composer_area: Option<Rect>,
-    /// Outer rect of the right-hand sidebar (when visible), stored at render
-    /// time so mouse hit-testing can keep scroll events over the sidebar from
-    /// leaking into the transcript viewport.
-    pub last_sidebar_area: Option<Rect>,
     pub last_transcript_top: usize,
     pub last_transcript_visible: usize,
     pub last_transcript_total: usize,
@@ -1193,7 +1189,6 @@ impl Default for ViewportState {
             transcript_scrollbar_dragging: false,
             last_transcript_area: None,
             last_composer_area: None,
-            last_sidebar_area: None,
             last_transcript_top: 0,
             last_transcript_visible: 0,
             last_transcript_total: 0,
@@ -1468,10 +1463,6 @@ pub struct App {
     pub sidebar_resize_anchor_x: u16,
     /// Sidebar width in columns at the start of a sidebar-resize drag.
     pub sidebar_resize_anchor_width: u16,
-    /// Last sidebar area rendered (for mouse hit-testing the resize handle).
-    pub last_sidebar_area: Option<Rect>,
-    /// Last total chat/sidebar width considered for sidebar rendering.
-    pub last_sidebar_host_width: Option<u16>,
     /// Handle rect painted on the left edge of the sidebar (1 col).
     pub last_sidebar_handle_area: Option<Rect>,
     /// Total horizontal space (chat + sidebar) used to compute the percentage
@@ -2154,8 +2145,6 @@ impl App {
             sidebar_resizing: false,
             sidebar_resize_anchor_x: 0,
             sidebar_resize_anchor_width: 0,
-            last_sidebar_area: None,
-            last_sidebar_host_width: None,
             last_sidebar_handle_area: None,
             sidebar_resize_total_width: 0,
             sidebar_width_dirty: false,

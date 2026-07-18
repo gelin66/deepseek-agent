@@ -83,7 +83,6 @@ const SLASH_MENU_LIMIT: usize = 128;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
 const UI_ACTIVE_POLL_MS: u64 = 24;
-const WEB_CONFIG_POLL_MS: u64 = 16;
 /// Ambient fish and the completion wake need a smoother cadence than the
 /// deliberately legible status spinner. This remains modest enough for a
 /// terminal renderer while avoiding the five-frame-per-second "jump" seen
@@ -92,56 +91,9 @@ pub(crate) const UI_UNDERWATER_ANIMATION_MS: u64 = 80;
 // Keep a compact 20-column sidebar plus a 40-column transcript.
 pub(crate) const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 60;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
-const TURN_META_PREFIX: &str = "<turn_meta>";
-const SESSION_TITLE_MAX_CHARS: usize = 32;
 
 fn app_auto_approve_enabled(app: &App) -> bool {
     app.mode == AppMode::Yolo || app.approval_mode == ApprovalMode::Bypass
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SidebarRenderState {
-    Hidden,
-    SuppressedByWidth {
-        available_width: u16,
-        min_width: u16,
-    },
-    AutoCollapsed,
-    Visible,
-}
-
-pub(crate) fn sidebar_render_state(app: &mut App) -> SidebarRenderState {
-    if app.sidebar_focus == SidebarFocus::Hidden {
-        return SidebarRenderState::Hidden;
-    }
-
-    if let Some(available_width) = sidebar_host_width_hint(app)
-        && available_width < SIDEBAR_VISIBLE_MIN_WIDTH
-    {
-        return SidebarRenderState::SuppressedByWidth {
-            available_width,
-            min_width: SIDEBAR_VISIBLE_MIN_WIDTH,
-        };
-    }
-
-    if crate::tui::sidebar::sidebar_auto_idle(app) {
-        return SidebarRenderState::AutoCollapsed;
-    }
-
-    SidebarRenderState::Visible
-}
-
-fn sidebar_host_width_hint(app: &App) -> Option<u16> {
-    app.last_sidebar_host_width.or_else(|| {
-        let transcript_width = app.viewport.last_transcript_area.map(|area| area.width)?;
-        let sidebar_width = app
-            .viewport
-            .last_sidebar_area
-            .or(app.last_sidebar_area)
-            .map(|area| area.width)
-            .unwrap_or(0);
-        Some(transcript_width.saturating_add(sidebar_width))
-    })
 }
 
 fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
@@ -1614,7 +1566,6 @@ fn render(f: &mut Frame, app: &mut App) {
             .render(work_chat_area, f.buffer_mut());
 
         let mut chat_area = work_chat_area;
-        app.last_sidebar_host_width = Some(chat_area.width);
         let sidebar_area = if classic_shell
             && !crate::tui::sidebar::sidebar_auto_idle(app)
             && let Some(sidebar_width) = sidebar_width_for_chat_area(app, chat_area.width)
@@ -1629,9 +1580,7 @@ fn render(f: &mut Frame, app: &mut App) {
         } else {
             None
         };
-        app.viewport.last_sidebar_area = sidebar_area;
         if sidebar_area.is_none() {
-            app.last_sidebar_area = None;
             app.last_sidebar_handle_area = None;
             app.sidebar_resizing = false;
         }
@@ -1645,7 +1594,6 @@ fn render(f: &mut Frame, app: &mut App) {
         // compatibility treatment. It is never composed into the underwater
         // default path.
         if let Some(sidebar_area) = sidebar_area {
-            app.last_sidebar_area = Some(sidebar_area);
             super::sidebar::render_sidebar(f, sidebar_area, app);
             let handle_area = Rect {
                 x: sidebar_area.x,
