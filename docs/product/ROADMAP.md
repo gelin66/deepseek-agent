@@ -671,8 +671,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除无生产入口的旧 `FeedbackPickerView`、其私有 command-palette 事件与失效的
   `Ctrl+K` 帮助项；真实 slash menu 仍由输入 `/` 打开并走 canonical 命令面。
 - M4-C 已删除无人调用的旧 `FilePickerView`/`file_picker_relevance`、专属事件、消息与
-  `Ctrl+P` 帮助项；真实 `@mention`、frecency、工作区补全和模糊路径解析继续保留并单独
-  验证，避免把同名遗留 modal 与生产附件能力混淆。
+  `Ctrl+P` 帮助项；`@mention` 只保留由 canonical key handler 驱动的 composer 路径补全，
+  使用 Workspace 确定性排序，第一次 Enter/Tab 只接受候选，下一次 Enter 才原样提交
+  `@path`。无人消费的内联正文/XML renderer、假 pending-context 预览与 `file_frecency`
+  已物理删除，不再把未接入 canonical request 的行为宣传成附件能力。
 - M4-C 已删除无生产调用者、却能绕过 canonical Runtime/Store/accounting 直连任意
   `/chat/completions` 的旧 prompt suggestion 模块，以及永不写入的 ghost-text 状态和配置；
   composer 保留确定性的中文空输入提示，不保留潜在第二模型请求路径。
@@ -689,8 +691,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   移除失效的 `Ctrl+Shift+T` 声明。主 transcript、canonical Run 流式投影和
   `TranscriptViewCache` 继续作为唯一实时对话展示路径。
 - M4-C 已删除始终为 `None`、没有生产打开或按键调用方的旧 File Tree pane、私有后台扫描
-  和失效的 `Ctrl+Shift+E` 声明。真实 `@mention`、frecency、模糊路径解析和 composer
-  菜单保留，文件引用的 canonical context 接线继续作为独立能力缺口处理。
+  和失效的 `Ctrl+Shift+E` 声明。真实 `@mention` 的确定性路径补全和 composer 菜单保留；
+  canonical request 当前只保留原始 `@path`，文件访问仍由模型显式调用 `read_file`，不再
+  保留第二套 TUI-local context owner。
 - M4-C 已物理删除仅由自身测试调用、从未进入 production prompt 的旧 TUI `memory.rs`
   push/inject 实现。canonical `crates/context::production_system_prompt`、instructions、skills、
   WorldState、handoff 与 compaction 保留；历史 memory 配置/Doctor/侧栏假投影另片清理。

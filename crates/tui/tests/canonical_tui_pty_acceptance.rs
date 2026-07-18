@@ -110,7 +110,7 @@ fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> a
         "canonical TUI did not create {}",
         state_path.display()
     );
-    assert_canonical_sqlite_truth(&state_path, &canonical_workspace)?;
+    assert_canonical_sqlite_truth(&state_path, &canonical_workspace, PROMPT)?;
     assert_no_legacy_execution_json(isolated.home());
     assert_no_legacy_execution_json(isolated.workspace());
     Ok(())
@@ -238,7 +238,7 @@ fn first_run_configures_only_deepseek_then_reaches_canonical_terminal() -> anyho
         .join()
         .expect("loopback DeepSeek fixture thread panicked")?;
 
-    assert_canonical_sqlite_truth(&state_path, &canonical_workspace)?;
+    assert_canonical_sqlite_truth(&state_path, &canonical_workspace, PROMPT)?;
     assert_no_legacy_execution_json(isolated.home());
     Ok(())
 }
@@ -382,6 +382,97 @@ fn unknown_billing_blocks_automatic_cli_prompt_and_all_deepseek_posts() -> anyho
 }
 
 #[test]
+fn mention_menu_first_enter_completes_and_second_enter_submits_raw_path() -> anyhow::Result<()> {
+    const PARTIAL_PROMPT: &str = "请检查 @src/al";
+    const RAW_PROMPT: &str = "请检查 @src/alpha.rs";
+    const FILE_SENTINEL: &str = "LOCAL-CONTEXT-SENTINEL-MUST-NOT-BE-SENT";
+
+    let (base_url, request_rx, server) = spawn_deepseek_fixture()?;
+    let isolated = make_sealed_workspace()?;
+    std::fs::create_dir_all(isolated.workspace().join("src"))?;
+    std::fs::write(isolated.workspace().join("src/alpha.rs"), FILE_SENTINEL)?;
+    let codewhale_home = isolated.home().join(".codewhale");
+    let state_path = codewhale_home.join("state.db");
+    let canonical_workspace = std::fs::canonicalize(isolated.workspace())?
+        .display()
+        .to_string();
+
+    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+        .cwd(isolated.workspace())
+        .clear_env()
+        .seal_home(isolated.home())
+        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
+        .env("DEEPSEEK_API_KEY", "offline-canonical-mention-key")
+        .env("DEEPSEEK_BASE_URL", &base_url)
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            isolated
+                .workspace()
+                .to_str()
+                .expect("UTF-8 fixture workspace"),
+            "--no-project-config",
+            "--skip-onboarding",
+        ])
+        .size(40, 140)
+        .spawn()?;
+
+    tui.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
+    tui.paste(PARTIAL_PROMPT)?;
+    tui.wait_for_text("@src/alpha.rs", Duration::from_secs(5))?;
+    tui.send(keys::key::enter())?;
+    tui.wait_for_text(RAW_PROMPT, Duration::from_secs(5))?;
+    assert!(
+        matches!(request_rx.try_recv(), Err(mpsc::TryRecvError::Empty)),
+        "accepting a mention candidate must not submit a DeepSeek request"
+    );
+    assert!(
+        !tui.debug_dump().contains("Context for next send"),
+        "composer must not advertise context that the canonical request does not send"
+    );
+
+    tui.send(keys::key::enter())?;
+    tui.wait_for_text(COMPLETION_MARKER, RUN_TIMEOUT)?;
+    tui.wait_for(|frame| frame.contains("✓ 完成"), RUN_TIMEOUT)?;
+    tui.send(b"\x04")?;
+    assert_eq!(
+        tui.wait_for_exit(EXIT_TIMEOUT),
+        Some(0),
+        "mention completion TUI did not exit cleanly:\n{}",
+        tui.debug_dump()
+    );
+
+    let request_body = request_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("second Enter did not submit the canonical DeepSeek request");
+    assert!(
+        json_strings_contain(&request_body, RAW_PROMPT),
+        "canonical request did not preserve the exact completed @path: {request_body:#}"
+    );
+    for forbidden in [
+        FILE_SENTINEL,
+        "Local context from @mentions",
+        "<file mention=",
+    ] {
+        assert!(
+            !json_strings_contain(&request_body, forbidden),
+            "canonical request leaked retired inline context `{forbidden}`: {request_body:#}"
+        );
+    }
+    server
+        .join()
+        .expect("loopback DeepSeek fixture thread panicked")?;
+
+    assert_canonical_sqlite_truth(&state_path, &canonical_workspace, RAW_PROMPT)?;
+    assert!(
+        !codewhale_home.join("file-frecency.jsonl").exists(),
+        "mention acceptance must not recreate retired frecency state"
+    );
+    Ok(())
+}
+
+#[test]
 fn canonical_local_commands_are_truthful_and_never_post_to_deepseek() -> anyhow::Result<()> {
     let fixture = CountingDeepSeekFixture::spawn()?;
     let isolated = make_sealed_workspace()?;
@@ -447,7 +538,11 @@ fn canonical_local_commands_are_truthful_and_never_post_to_deepseek() -> anyhow:
     Ok(())
 }
 
-fn assert_canonical_sqlite_truth(state_path: &Path, workspace: &str) -> anyhow::Result<()> {
+fn assert_canonical_sqlite_truth(
+    state_path: &Path,
+    workspace: &str,
+    expected_input: &str,
+) -> anyhow::Result<()> {
     let store = StateStore::open(Some(state_path.to_path_buf()))?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -479,7 +574,7 @@ fn assert_canonical_sqlite_truth(state_path: &Path, workspace: &str) -> anyhow::
 
     match &replay.events.first().expect("RunCreated event").event {
         RuntimeEventKind::RunCreated { request } => {
-            assert_eq!(request.input, PROMPT);
+            assert_eq!(request.input, expected_input);
             assert_eq!(request.environment.workspace, workspace);
             assert!(request.parent_run_id.is_none());
         }

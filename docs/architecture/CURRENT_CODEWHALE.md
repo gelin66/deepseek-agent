@@ -76,8 +76,10 @@ WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 旧 `FeedbackPickerView` 也没有生产入口；它及其私有 command-palette 事件、失效的
 `Ctrl+K` 帮助项已删除。输入 `/` 打开的 canonical slash menu 不受影响。
 旧 `FilePickerView` 和 `file_picker_relevance` 只有自测与一个无人调用的 opener；modal、
-事件和失效的 `Ctrl+P` 帮助项已删除。生产 `@mention` 菜单、`file_frecency`、
-`Workspace::completions` 与模糊路径解析继续保留。
+事件和失效的 `Ctrl+P` 帮助项已删除。生产 `@mention` 菜单只通过 canonical key handler
+补全 composer 文本，候选使用 `Workspace::completions` 的确定性排序；接受候选不会提交、
+读文件或构造隐藏上下文，下一次 Enter 才原样发送 `@path`。无人消费的内联 renderer、假
+pending-context 预览与 `file_frecency` 已删除，历史磁盘文件不做破坏性清理。
 旧 `prompt_suggestion` 模块没有生产调用者，却直接请求任意 `/chat/completions` 并绕过
 `AgentRuntime`、`RunStore` 与统一 accounting；该潜在第二模型请求路径、永不写入的 ghost
 text 状态和配置已删除，composer 继续显示确定性的中文空输入提示。
@@ -395,7 +397,7 @@ M4-C foreground 切换后还已物理删除：
 - 只有自测构造、没有生产打开入口的实时对话 overlay、其专用缓存和失效快捷键；主
   transcript 仍由 `CanonicalRunProjection`/presenter 与 `TranscriptViewCache` 实时驱动。
 - App 状态始终为 `None`、没有生产 toggle/key handler 的 File Tree pane 及其后台目录扫描；
-  `file_mention` 与 frecency 继续保留为 composer 文件引用能力，不与旧 pane 混为一体。
+  `file_mention` 仅保留 composer 路径补全，不与旧 pane 或隐藏文件注入混为一体。
 - 只有自身测试消费者、从未被 canonical prompt composition 调用的旧 TUI `memory.rs`；生产
   system prompt 仍由 `crates/context` 唯一构造，项目 instructions/skills/WorldState 不变。
 - 没有任何生产 renderer 或 key handler 读取的静态 `keybindings.rs` 目录；帮助与按键行为

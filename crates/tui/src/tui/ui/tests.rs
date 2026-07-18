@@ -75,6 +75,84 @@ fn canonical_slash_menu_selection_wraps_and_clamps() {
 }
 
 #[test]
+fn canonical_mention_enter_only_completes_the_composer() {
+    let mut app = create_test_app();
+    app.input = "检查 @src/al".to_string();
+    app.cursor_position = app.input.chars().count();
+    app.mention_menu_selected = 0;
+    app.mention_menu_hidden = false;
+    let entries = vec!["src/alpha.rs".to_string()];
+
+    assert!(handle_open_mention_menu_key(
+        &mut app,
+        &KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &entries,
+    ));
+
+    assert_eq!(app.input, "检查 @src/alpha.rs");
+    assert_eq!(app.cursor_position, app.input.chars().count());
+    assert!(app.mention_menu_hidden);
+    assert_eq!(app.mention_menu_selected, 0);
+    assert_eq!(app.status_message.as_deref(), Some("已补全 @src/alpha.rs"));
+}
+
+#[test]
+fn canonical_mention_tab_and_arrows_select_without_submitting() {
+    let mut app = create_test_app();
+    app.input = "检查 @src/".to_string();
+    app.cursor_position = app.input.chars().count();
+    let entries = vec!["src/alpha.rs".to_string(), "src/beta.rs".to_string()];
+
+    assert!(handle_open_mention_menu_key(
+        &mut app,
+        &KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+        &entries,
+    ));
+    assert_eq!(app.mention_menu_selected, 1);
+    assert!(handle_open_mention_menu_key(
+        &mut app,
+        &KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+        &entries,
+    ));
+    assert_eq!(app.mention_menu_selected, 0);
+    assert!(handle_open_mention_menu_key(
+        &mut app,
+        &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+        &entries,
+    ));
+    assert_eq!(app.input, "检查 @src/alpha.rs");
+    assert!(app.mention_menu_hidden);
+}
+
+#[test]
+fn canonical_mention_escape_preserves_input_and_modified_enter_stays_free() {
+    let original = "检查 @src/al";
+    let entries = vec!["src/alpha.rs".to_string()];
+    let mut app = create_test_app();
+    app.input = original.to_string();
+    app.cursor_position = app.input.chars().count();
+
+    assert!(!handle_open_mention_menu_key(
+        &mut app,
+        &KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+        &entries,
+    ));
+    assert!(!handle_open_mention_menu_key(
+        &mut app,
+        &KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+        &entries,
+    ));
+    assert!(handle_open_mention_menu_key(
+        &mut app,
+        &KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        &entries,
+    ));
+    assert_eq!(app.input, original);
+    assert!(app.mention_menu_hidden);
+    assert_eq!(app.mention_menu_selected, 0);
+}
+
+#[test]
 fn canonical_approval_can_inspect_and_copy_full_params_locally() {
     let mut app = create_test_app();
     let request = ApprovalRequest::elevated(

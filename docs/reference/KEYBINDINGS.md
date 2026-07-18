@@ -48,7 +48,11 @@ Editing the message you're about to send.
 
 ### `@` mentions
 
-Type `@<partial>` to open the file mention popup. `↑`/`↓` cycle the entries, `Tab` or `Enter` accepts. `Esc` hides the popup. As of v0.8.10 (#441), completions are re-ranked by mention frecency — files you mention often + recently float to the top.
+Type `@<partial>` to open the file mention popup. `↑`/`↓` select an entry,
+`Tab` or `Enter` completes the composer text, and `Esc` hides the popup without
+changing the input. Completion uses deterministic workspace ranking. Accepting
+a candidate does not send a request; press `Enter` again to submit the exact
+`@path` text.
 
 ### `#` quick-add (memory)
 

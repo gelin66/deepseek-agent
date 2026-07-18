@@ -20,7 +20,6 @@ pub mod clipboard;
 pub mod color_compat;
 pub mod composer_chrome;
 pub mod diff_render;
-pub mod file_frecency;
 pub mod file_mention;
 pub mod footer_ui;
 pub mod history;

@@ -68,7 +68,7 @@ use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
 use super::views::{ModalKind, ViewEvent};
-use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
+use super::widgets::pending_input_preview::PendingInputPreview;
 use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
 
 // === Constants ===
@@ -917,6 +917,40 @@ fn select_next_slash_menu_entry(app: &mut App, entry_count: usize) {
     app.slash_menu_selected = (selected + 1) % entry_count;
 }
 
+/// Handle one key while the canonical composer is showing an `@path` menu.
+///
+/// This path only edits ephemeral composer state. It never submits a Run,
+/// reads the selected file, or expands local content into the request.
+fn handle_open_mention_menu_key(app: &mut App, key: &KeyEvent, entries: &[String]) -> bool {
+    if entries.is_empty() {
+        return false;
+    }
+    match key.code {
+        KeyCode::Enter
+            if !key.modifiers.contains(KeyModifiers::SHIFT)
+                && !key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            crate::tui::file_mention::apply_mention_menu_selection(app, entries)
+        }
+        KeyCode::Tab => crate::tui::file_mention::apply_mention_menu_selection(app, entries),
+        KeyCode::Up if key.modifiers.is_empty() => {
+            app.mention_menu_selected = app.mention_menu_selected.saturating_sub(1);
+            true
+        }
+        KeyCode::Down if key.modifiers.is_empty() => {
+            app.mention_menu_selected =
+                (app.mention_menu_selected + 1).min(entries.len().saturating_sub(1));
+            true
+        }
+        KeyCode::Esc => {
+            app.mention_menu_hidden = true;
+            app.mention_menu_selected = 0;
+            true
+        }
+        _ => false,
+    }
+}
+
 async fn handle_canonical_key(
     app: &mut App,
     config: &Config,
@@ -982,6 +1016,13 @@ async fn handle_canonical_key(
     }
 
     let slash_menu_entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
+    let mention_menu_limit = app.mention_menu_limit;
+    let mention_menu_entries =
+        crate::tui::file_mention::visible_mention_menu_entries(app, mention_menu_limit);
+    if handle_open_mention_menu_key(app, &key, &mention_menu_entries) {
+        app.needs_redraw = true;
+        return Ok(false);
+    }
     match key.code {
         KeyCode::Enter
             if key.modifiers.contains(KeyModifiers::SHIFT)
@@ -1354,19 +1395,6 @@ impl Drop for TerminalCleanupGuard {
 ///   end-of-turn.
 fn build_pending_input_preview(app: &App) -> PendingInputPreview {
     let mut preview = PendingInputPreview::new();
-    preview.context_items = crate::tui::file_mention::pending_context_previews(
-        &app.input,
-        &app.workspace,
-        std::env::current_dir().ok(),
-    )
-    .into_iter()
-    .map(|item| ContextPreviewItem {
-        kind: item.kind,
-        label: item.label,
-        detail: item.detail,
-        included: item.included,
-    })
-    .collect();
     preview.pending_steers = app
         .pending_steers
         .iter()

@@ -779,9 +779,9 @@ Common settings keys:
   `@`-mention completion walks. Set to `0` for unlimited depth in deeply
   nested workspaces; keep the default in very large repos unless needed.
 - `mention_menu_behavior` (`fuzzy`, `browser`; default `fuzzy`): controls how
-  `@`-mention completions are populated. `fuzzy` searches the workspace and
-  applies mention frecency. `browser` lists only the immediate children of the
-  currently typed directory segment in deterministic alphabetical order.
+  `@`-mention completions are populated. `fuzzy` uses deterministic workspace
+  ranking. `browser` lists only the immediate children of the currently typed
+  directory segment in deterministic alphabetical order.
 - `show_thinking` (on/off)
 - `show_tool_details` (on/off)
 - `background_color` (`#RRGGBB`, `RRGGBB`, or `default`): optional main TUI
@@ -1181,10 +1181,11 @@ provider = "searxng" # duckduckgo | bing | tavily | bocha | metaso | searxng | b
 
 ## Local File Context
 
-Use `@path/to/file` in the composer to add local text-file or directory context
-to the next message. Media `@`-mentions remain path hints rather than inline
-Chat payloads. Supported local image formats can be inspected through
-`read_file` OCR; video and other media remain path hints only. Terminal paste
+Use `@path/to/file` in the composer as a visible local path reference. The popup
+only completes composer text; the next submit preserves the exact `@path` and
+does not read or inline the file, directory, image, or hidden XML context.
+DeepSeek can inspect a path through the canonical `read_file` tool; supported
+local images route to OCR only when that tool is invoked. Terminal paste
 continues through normal text paste events.
 
 ## Managed Configuration and Requirements
