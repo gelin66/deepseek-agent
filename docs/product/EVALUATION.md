@@ -284,6 +284,24 @@ prepared/replay 使用该请求实际 advertised catalog，自动 compaction 在
 也不得恢复 v3 提示词或提高请求预算。完整身份、hash、逐 actor 和费用证据见
 [每 Agent 最终请求机制精确 A/B](../../eval/summaries/terminal-turn-exact-ab-2026-07-18.md)。
 
+后续 `528a72f2` 没有增加完成判定或提示词约束，而是把同一轮 `agent` 工具启动的 child
+在下一次 root 模型请求前 eager join，删除父 Agent 等待 handoff 时没有新信息的一轮请求。
+相对相邻基线 `f9dddd5d` 的官方 DeepSeek 24-run、single/multi、6/cell 精确 A/B 为：
+
+- 四个 cell 均 `6/6` verified，合计 0 false success、0 measurement invalid；
+- 12/12 multi run 的 canonical `child_started`/`child_finished`、artifact、workspace 不变
+  handoff 和 handoff 后 root mutation 契约完整；
+- candidate multi 的请求、Token 和费用均值分别下降 `9.62%`、`8.27%` 和 `11.99%`，
+  verified success 不变；平均时间只下降 `0.07%`，视为持平；
+- 成对样本中 multi 请求为 4 对下降、2 对相同；但时间和费用都只有 2 对下降、4 对上升，
+  不能把受少数样本影响的均值外推为稳定提速或成本优势；
+- single 不启动 child，观察差异不归因给该 treatment。
+
+因此保留这个净删 58 行生产代码的 eager-join 小型 Runtime 机制，同时把结论限制为本固定
+任务已证明的请求削减和 lifecycle/handoff 不回归；它不证明广泛的多 Agent 成功率、Token、
+成本或时间提升。完整 revision、binary-pair SHA、四 cell、pair 分布、费用和限制见
+[子 Agent eager join 精确 A/B](../../eval/summaries/eager-join-exact-ab-2026-07-18.md)。
+
 ### 5.2 TaskContract、终态与证据边界
 
 `TaskContract` 是 Host 在一次 generation 开始前确定的验收边界，至少绑定 objective、

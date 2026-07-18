@@ -121,10 +121,12 @@ A/B 在 single 和 multi 两个 lane 内分别比较，不把两类任务混成�
 会把 dispatcher 与相邻 `codewhale-tui` 复制为冻结二进制对，并校验 pair digest；同一对
 二进制即使使用两个不同 revision 标签也没有 A/B 资格。子进程从环境 allowlist 启动，不能
 继承 `DEEPSEEK_TUI_BIN` 等本地覆盖来替换实际被测 Runtime。multi lane 必须恰好启动一个
-只读 Explorer，spawn 的 `agent_id` 必须和唯一 completed wait 回执一致，handoff 前工作区不得
-变化，之后必须由根 Agent 的文件 mutation 工具完成修改。Shell 测试命令不能冒充修改。
-候选生产 stream 会为 settled child 输出脱敏 `artifact_present`；不提供该字段的旧 Runtime
-或确实没有产物的 child，会以 `child_artifact_receipt_missing` 让对应 run 的
+只读 Explorer，spawn 的 `agent_id` 必须与唯一 canonical `child_started`/`child_finished`
+回执匹配；`child_finished` 是 durable handoff 边界，Runtime 在下一次 root 模型请求前完成
+eager join。handoff 前工作区不得变化，之后必须由根 Agent 的文件 mutation 工具完成修改。
+Shell 测试命令不能冒充修改。候选生产 stream 会在 `child_finished` 中输出脱敏
+`artifact_present`；不提供该字段的旧 Runtime 或确实没有产物的 child，会以
+`child_artifact_receipt_missing` 让对应 run 的
 `verified_success=false`，不得把 completed 状态推断成有效 handoff。该失败样本仍保留在
 success/false-success 分母中，不会因能力不足而从 A/B 中被筛掉。每个
 `variant × lane` cell 默认独立运行 3 次；少于 3 次、缺 baseline、运行不完整或 usage/cost

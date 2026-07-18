@@ -11,8 +11,8 @@
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - 当前阶段：M4-C 收尾；交互 TUI foreground 与 root/child projection 已迁移，当前
   canonical RuntimeEvent 为 v6、State schema 为 v10；隐藏 `workflow-tool` 第二模型循环
-  及其私有状态/UI、ACP 独立模型/会话路径已删除；direct `review` 模型路径仍是收尾目标，
-  最终集成门禁待通过
+  及其私有状态/UI、ACP 独立模型/会话路径和 direct `review` 模型路径均已删除；
+  child eager join 已进入 canonical Runtime，最终完整门禁与剩余旧编译岛清理仍待完成
 
 ## 1. 当前结论
 
@@ -88,8 +88,16 @@ ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 Runtime 还为每个 root/child 从共享逻辑预算预留一个可退还的最终请求许可。descendant 与
 child 必须先 join，随后各自以 `tools=[]` 发出最后请求；没有最终容量时不得先提交假的
 `ChildStarted`。自动 compaction 在尚未触及硬上下文限制时不能消耗最后许可，恢复则按该次
-请求实际 advertised tool catalog 拒绝未授权工具。该机制已有离线 conformance/Store replay
-证据，但尚未通过新的真实 multi A/B，不能宣称提升了产品成功率或效率。
+请求实际 advertised tool catalog 拒绝未授权工具。该最终请求许可机制已有离线
+conformance/Store replay 和真实 A/B；A/B 保留可靠性机制，但其原始实现的 multi
+Token/时间/费用均回退，不能作为产品效率提升。
+
+`528a72f2` 又把同一 `agent` 工具 batch 启动的 pending child 在下一次 root 模型请求前
+eager join，使 durable `ChildFinished` 先于 root continuation，删除没有 handoff 新信息的
+父模型等待轮。相对相邻基线 `f9dddd5d` 的 24-run、6/cell 精确 A/B 为 24/24 verified；
+candidate multi 请求均值下降 `9.62%`，Token/费用均值下降 `8.27%/11.99%`，平均时间只变化
+`-0.07%`。12/12 multi lifecycle/handoff 完整，但样本只覆盖一个固定任务，时间和费用的
+成对结果各只有 2/6 更低，因此不能外推为普遍多 Agent 提速或成本优势。
 
 C2 把 continuation 与 recovery 分开：`resume` 继续同一个 run，`continue` 从一个终态
 root 创建新的 root，并用 `continued_from_run_id` 记录 lineage；source 不被改写。完整
@@ -251,6 +259,8 @@ M4-C foreground 切换后还已物理删除：
   app-server 保留；
 - `codewhale serve --acp` 及其 1,210 行独立 session、stream 和 direct
   `DeepSeekClient` 路径；显式 `--prompt "serve --acp"` 仍只是普通 canonical Agent 输入。
+- direct `review` completion、模型内 `ReviewTool`、私有 receipt 状态/文档和退役 review
+  UI；canonical reviewer Agent profile 与普通自然语言代码审查任务保留。
 - 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查和仍被 TUI/hooks 使用的
   `crates/release` 保留，不属于本次删除。
 
@@ -291,13 +301,17 @@ Beta Strict 与 FIM，完整 usage、无 transport retry，费用为 `USD 0.0000
 
 此后交互 TUI foreground 与 child projection 已完成 canonical 切换：canonical Run 20/20、
 canonical PTY 5/5、run presenter 13/13、canonical commands 5/5。最终请求许可机制通过
-Runtime conformance 51/51 与 State `run_store` 18/18；State schema 已升至 v10，
-RuntimeEvent 仍为 v6。严格 workspace clippy 当前仍被遗留 TUI 无消费者代码阻断，告警数量
-随构建目标不同；不得压制，应继续删除。
+Runtime conformance/State replay；eager join 后 Runtime conformance 为 53/53，State
+`run_store` 为 18/18。State schema 已升至 v10，RuntimeEvent 仍为 v6。严格 workspace
+clippy 当前仍被遗留 TUI 无消费者代码阻断，告警数量随构建目标不同；不得压制，应继续删除。
 
 当前证据证明三个 foreground 入口已统一，也证明协议、lineage、持久恢复、accounting 与
-官方 surface 兼容；hidden workflow 第二循环已物理删除，但尚无终局许可机制的真实
-multi A/B 或 compaction on/off A/B，不能声称 Token、成本或任务成功率改善。
+官方 surface 兼容；hidden workflow、ACP 和 direct review 模型路径已物理删除。最终请求
+许可和 eager join 均已有真实 multi A/B：前者的原始实现保留可靠性但 multi 效率未通过，
+后者在一个固定任务中降低请求且不回归 handoff。完整 eager-join 身份、四 cell 与 pair
+边界见
+[子 Agent eager join 精确 A/B](../../eval/summaries/eager-join-exact-ab-2026-07-18.md)。
+compaction on/off A/B、剩余旧编译岛清理和 M4 完整门禁仍未完成。
 
 ## 7. 明确非结论
 
@@ -310,7 +324,7 @@ multi A/B 或 compaction on/off A/B，不能声称 Token、成本或任务成功
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
   [收敛 canary](../../eval/summaries/prompt-convergence-canaries-2026-07-18.md)；
 - RepoGraph、EvidenceReceipt、writer-worktree Orchestrator 已完成；
-- 最终请求许可已经提高 multi verified success、降低 Token 或减少费用；
+- eager join 已在广泛任务上提高 multi verified success、降低 Token/费用或缩短时间；
 - transport 迁移本身提升了真实编码成功率；
 - 单次 live canary 可以成为产品指标。
 

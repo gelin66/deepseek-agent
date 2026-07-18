@@ -11,9 +11,11 @@
   `35fc3cc4` 已把 durable creation delivery 提升为 Run API v4 / State schema v9。交互 TUI
   foreground、canonical root/child Run 投影和旧前台状态删除已经完成；当前
   RuntimeEvent v6、State schema v10。`workflow`/`workflow-tool` 的第二模型循环和
-  `serve --acp` 的独立模型/会话路径均已物理删除，未引入兼容桥；direct `review`
-  completion 仍是 M4-C 的结构收尾目标，完成后再运行 M4 最终集成门禁。M1 的导入基线 A/B
-  与 M2 的完整官方 surface canary 仍是独立证据债务
+  `serve --acp` 的独立模型/会话路径均已物理删除，未引入兼容桥；`83d9487f` 又删除了
+  direct `review` completion、模型内工具和私有 receipt 真相，canonical reviewer Agent
+  profile 保留。`528a72f2` 的 child eager join 已通过 24-run 精确 A/B 并保留。M4 仍待
+  完整集成门禁与剩余旧编译岛清理，不提前标完成。M1 的导入基线 A/B 与 M2 的完整官方
+  surface canary 仍是独立证据债务
 - 上次更新：2026-07-18
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -555,8 +557,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除 `codewhale serve --acp` 与 1,210 行独立 session/stream/direct
   `DeepSeekClient` 实现。裸旧命令在 Config、TUI、RunStore 和模型前由 Clap 拒绝；只有显式
   `--prompt "serve --acp"` 才作为普通任务进入 canonical Agent。
-- M4-C 下一结构切片删除 direct `review -> DeepSeekClient::create_message` 路径；代码审查是
-  Agent profile/任务能力，不应拥有独立模型循环、receipt 真相或 completion 判定。
+- M4-C 已由 `83d9487f` 删除 direct `review -> DeepSeekClient::create_message`、模型内
+  `ReviewTool`、私有 receipt 文档/状态和退役 review UI；代码审查只保留为 canonical
+  reviewer Agent profile/任务能力，不再拥有独立模型循环或 completion 判定。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
@@ -625,8 +628,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   共 64 files、`+7/-25,523`。
 - 证据：canonical Run 20/20、canonical PTY 5/5、run presenter 13/13、canonical commands
   5/5；child blocked/recovery/terminal outcome 与中文宽字符投影有定向回归。
-- 非结论：该切片只完成交互前台切换；后续纯删除切片已移除隐藏 workflow 与 ACP 第二
-  模型路径，direct `review` 仍待收敛。
+- 非结论：该切片只完成交互前台切换；后续纯删除切片已移除隐藏 workflow、ACP 和 direct
+  `review` 模型路径。M4 仍需完整集成门禁和剩余旧编译岛清理，不能因三个已知入口统一就
+  提前关闭。
 
 #### 每 Agent 最终请求许可（机制完成，产品收益未通过）
 
@@ -648,6 +652,24 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   宣称多 Agent 效率提升。下一实现先减少不必要的 child/root 最终轮，再以同任务复测；
   不恢复 v3 提示词、不提高总请求预算。证据见
   [每 Agent 最终请求机制精确 A/B](../../eval/summaries/terminal-turn-exact-ab-2026-07-18.md)。
+
+#### 子 Agent eager join（小型机制保留）
+
+- 真实问题：同一轮 `agent` 工具启动 child 后，旧 Runtime 先让 root 发出一次没有 handoff
+  新信息的模型请求，随后才等待 child；这浪费请求，也让父 Agent 在缺少调查结果时继续。
+- 实现与删除：`528a72f2` 在 `agent` 工具 batch 后立即 join pending child，使 durable
+  `ChildFinished` 先于下一次 root `ModelRequestPrepared`；没有新增状态、工具或抽象，生产
+  代码 `+6/-64`。
+- 离线证据：Runtime conformance 53/53，覆盖 child 多步 search/read、首轮直接完成、
+  同 batch 两个 child、嵌套 join、恢复和原有最终请求许可不变量。
+- 真实 A/B：相对相邻基线 `f9dddd5d` 的 official DeepSeek、single/multi、6/cell 为
+  24/24 verified、0 false success、0 measurement invalid；12/12 multi lifecycle/handoff
+  完整。candidate multi 请求均值下降 `9.62%`，Token 下降 `8.27%`、费用下降 `11.99%`，
+  平均时间仅下降 `0.07%`。
+- Pair 边界：multi 请求 4 对下降、2 对相同；Token 4 对下降、2 对上升；时间与费用均只有
+  2 对下降、4 对上升。保留的是本任务已证明的请求削减和正确 handoff，不宣称普遍提速、
+  成本优势或成功率提升。证据见
+  [子 Agent eager join 精确 A/B](../../eval/summaries/eager-join-exact-ab-2026-07-18.md)。
 
 #### RuntimeEvent v6：请求预算终态 taxonomy 纠偏（已完成）
 
@@ -681,8 +703,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - 内存 Store 与 SQLite Store 重放一致。（M4-A 行为门禁已通过）
 - crash/resume 和 exactly-once completion 通过。（`exec` 与 app-server 已通过）
 - exec/app-server/交互 foreground 不存在第二个生产 loop、可写 Store 或入口私有 completion
-  语义；已删除的 hidden workflow/ACP 不再构成生产例外。direct `review` 收敛后，仍须通过
-  M4 合并门禁确认调用图。
+  语义；已删除的 hidden workflow/ACP/direct `review` 不再构成生产例外。仍须通过 M4 完整
+  workspace 门禁、调用图复核并删除剩余旧编译岛后才能关闭里程碑。
 
 ## 9. M5：RepoGraph、ContextBroker 与现有 WIP 证据链迁移
 
