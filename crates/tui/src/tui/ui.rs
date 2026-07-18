@@ -1262,19 +1262,14 @@ fn apply_presenter_action(
             *presented_interaction_id = Some(interaction_id.clone());
             match request.prompt {
                 UserInteractionPrompt::Approval { prompt, arguments } => {
-                    let mut approval = ApprovalRequest::new_with_intent(
+                    let approval = ApprovalRequest::new_with_intent(
                         &interaction_id.0,
                         &request.tool_name,
                         &prompt.description,
                         &arguments,
+                        project_approval_risk(prompt.risk),
                         Some(&prompt.title),
                     );
-                    approval.risk = match prompt.risk {
-                        ApprovalRisk::Routine => super::approval::RiskLevel::Benign,
-                        ApprovalRisk::Elevated | ApprovalRisk::Critical => {
-                            super::approval::RiskLevel::Destructive
-                        }
-                    };
                     app.view_stack.push(ApprovalView::new(approval));
                 }
                 UserInteractionPrompt::UserInput { request } => {
@@ -1299,6 +1294,14 @@ fn apply_presenter_action(
                 let _ = app.view_stack.pop();
             }
         }
+    }
+}
+
+fn project_approval_risk(risk: ApprovalRisk) -> super::approval::ApprovalStakes {
+    match risk {
+        ApprovalRisk::Routine => super::approval::ApprovalStakes::Routine,
+        ApprovalRisk::Elevated => super::approval::ApprovalStakes::Elevated,
+        ApprovalRisk::Critical => super::approval::ApprovalStakes::Critical,
     }
 }
 

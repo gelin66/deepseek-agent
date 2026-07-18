@@ -26,7 +26,7 @@ use std::time::Duration;
 use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, AppMode, ComposerDensity, VimMode};
-use crate::tui::approval::{ApprovalRequest, ApprovalView, RiskLevel, ToolCategory};
+use crate::tui::approval::{ApprovalRequest, ApprovalStakes, ApprovalView, ToolCategory};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
 use crate::tui::scrolling::TranscriptLineMeta;
 use crate::tui::ui_text::{char_display_width, text_display_width};
@@ -1744,7 +1744,6 @@ impl<'a> ApprovalWidget<'a> {
     /// `render` and `inline_region` use this so the painted band and the
     /// dimmed backdrop region always agree.
     fn build_inline_content(&self, area: Rect) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-        let risk = self.request.risk;
         let stakes = self.request.stakes();
         let repo_law = self.request.is_repo_law_prompt();
         let palette_colors = if repo_law {
@@ -1940,9 +1939,8 @@ impl<'a> ApprovalWidget<'a> {
         }
 
         let controls = build_approval_controls(
-            self.request,
             self.view,
-            risk,
+            stakes,
             palette_colors.accent,
             palette_colors.shortcut,
         );
@@ -2184,9 +2182,8 @@ fn measure_wrapped_rows(lines: &[Line<'static>], width: u16) -> u16 {
 /// numbered/selectable options, and the selection hint. Rendered into a region
 /// reserved off the bottom of the band so it can never be clipped (#3799).
 fn build_approval_controls(
-    request: &ApprovalRequest,
     view: &ApprovalView,
-    risk: RiskLevel,
+    stakes: ApprovalStakes,
     accent: Color,
     shortcut: Color,
 ) -> Vec<Line<'static>> {
@@ -2201,10 +2198,10 @@ fn build_approval_controls(
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
-    let options = approval_options_for_request(request, risk);
+    let options = approval_options_for(stakes);
     for (i, opt) in options.iter().enumerate() {
         let is_selected = i == view.selected();
-        let label_color = if opt.dangerous {
+        let label_color = if opt.emphasized {
             accent
         } else {
             palette::TEXT_BODY
@@ -2466,35 +2463,28 @@ fn footer_controls() -> Cow<'static, str> {
 struct ApprovalOptionRow {
     label: Cow<'static, str>,
     key_hint: &'static str,
-    dangerous: bool,
+    emphasized: bool,
 }
 
-fn approval_options_for(risk: RiskLevel) -> [ApprovalOptionRow; 3] {
-    let dangerous = matches!(risk, RiskLevel::Destructive);
+fn approval_options_for(stakes: ApprovalStakes) -> [ApprovalOptionRow; 3] {
+    let emphasized = !matches!(stakes, ApprovalStakes::Routine);
     [
         ApprovalOptionRow {
             label: option_approve_once(),
             key_hint: "1 / y",
-            dangerous,
+            emphasized,
         },
         ApprovalOptionRow {
             label: option_deny(),
             key_hint: "2 / d / n",
-            dangerous: false,
+            emphasized: false,
         },
         ApprovalOptionRow {
             label: option_abort(),
             key_hint: "Esc",
-            dangerous: false,
+            emphasized: false,
         },
     ]
-}
-
-fn approval_options_for_request(
-    _request: &ApprovalRequest,
-    risk: RiskLevel,
-) -> Vec<ApprovalOptionRow> {
-    approval_options_for(risk).to_vec()
 }
 
 fn option_approve_once() -> Cow<'static, str> {
@@ -3165,6 +3155,7 @@ mod tests {
     use crate::palette;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{App, ComposerDensity, ToolCollapseMode, TuiOptions};
+    use crate::tui::approval::ApprovalStakes;
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
     use crate::tui::scrolling::{TranscriptLineMeta, TranscriptScroll};
     use ratatui::{
@@ -4934,7 +4925,7 @@ mod tests {
 
     #[test]
     fn approval_inline_band_stays_within_short_terminal() {
-        let request = crate::tui::approval::ApprovalRequest::new(
+        let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
             "Run git commit",
@@ -4963,7 +4954,7 @@ mod tests {
 
     #[test]
     fn repo_law_approval_has_distinct_authority_grammar() {
-        let request = crate::tui::approval::ApprovalRequest::new(
+        let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-law",
             "edit_file",
             "Repo law holds this write: \"manifest review\" protects Cargo.toml (matched Cargo.toml, .codewhale/constitution.json)",
@@ -5002,7 +4993,7 @@ mod tests {
 
     #[test]
     fn approval_selected_destructive_option_uses_contrasting_highlight() {
-        let request = crate::tui::approval::ApprovalRequest::new(
+        let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
             "Run git commit",
@@ -5038,7 +5029,7 @@ mod tests {
 
     #[test]
     fn approval_inline_marks_selected_row_and_separator_rule() {
-        let request = crate::tui::approval::ApprovalRequest::new(
+        let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
             "Run git commit",
@@ -5076,6 +5067,7 @@ mod tests {
             &serde_json::json!({
                 "command": "rm -rf ./build && find . -name '*.tmp' -delete && cargo clean && echo done",
             }),
+            ApprovalStakes::Critical,
             Some(
                 "Clearing stale build artifacts and temp files before a fresh run so the next build is reproducible.",
             ),
@@ -5117,7 +5109,7 @@ mod tests {
 
     #[test]
     fn approval_options_only_advertise_canonical_outcomes() {
-        let request = crate::tui::approval::ApprovalRequest::new(
+        let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
             "Run git commit",
@@ -5143,7 +5135,7 @@ mod tests {
 
     #[test]
     fn approval_shell_command_detects_printf_write_file_preview() {
-        let request = crate::tui::approval::ApprovalRequest::new(
+        let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
             "Run shell command",
@@ -5173,7 +5165,7 @@ mod tests {
 
     #[test]
     fn approval_file_write_modal_renders_proposed_change_preview() {
-        let request = crate::tui::approval::ApprovalRequest::new(
+        let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "write_file",
             "Write a file",
@@ -5200,7 +5192,7 @@ mod tests {
 
     #[test]
     fn apply_patch_approval_shows_preview_and_reserved_controls_on_short_terminal() {
-        let request = crate::tui::approval::ApprovalRequest::new(
+        let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "apply_patch",
             "Apply a patch",
@@ -5233,6 +5225,7 @@ mod tests {
                 "command": "cargo build || echo fallback",
                 "cwd": "/tmp/project",
             }),
+            ApprovalStakes::Elevated,
             Some("Need to verify the fallback build path before editing files."),
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
@@ -5260,6 +5253,7 @@ mod tests {
                 "command": "cd /Volumes/VIXinSSD/codewhale; cargo clippy -p codewhale-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/codewhale-clippy.log",
                 "cwd": "/Volumes/VIXinSSD/codewhale",
             }),
+            ApprovalStakes::Elevated,
             Some("Confirmed - passes in isolation, so this is the documentation gate."),
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());

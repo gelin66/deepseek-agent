@@ -39,6 +39,24 @@ fn create_test_app() -> App {
 }
 
 #[test]
+fn canonical_approval_risk_projects_one_to_one_into_tui_stakes() {
+    use crate::tui::approval::ApprovalStakes;
+
+    assert_eq!(
+        project_approval_risk(ApprovalRisk::Routine),
+        ApprovalStakes::Routine
+    );
+    assert_eq!(
+        project_approval_risk(ApprovalRisk::Elevated),
+        ApprovalStakes::Elevated
+    );
+    assert_eq!(
+        project_approval_risk(ApprovalRisk::Critical),
+        ApprovalStakes::Critical
+    );
+}
+
+#[test]
 fn canonical_slash_menu_selection_wraps_and_clamps() {
     let mut app = create_test_app();
 
@@ -59,7 +77,7 @@ fn canonical_slash_menu_selection_wraps_and_clamps() {
 #[test]
 fn canonical_approval_can_inspect_and_copy_full_params_locally() {
     let mut app = create_test_app();
-    let request = ApprovalRequest::new(
+    let request = ApprovalRequest::elevated(
         "interaction-1",
         "read_file",
         "读取完整参数测试",
@@ -107,7 +125,7 @@ fn canonical_mouse_click_on_approval_emits_decision() {
     use crossterm::event::MouseButton;
 
     let mut app = create_test_app();
-    let request = ApprovalRequest::new(
+    let request = ApprovalRequest::routine(
         "interaction-mouse",
         "read_file",
         "测试鼠标批准",
@@ -144,7 +162,7 @@ fn canonical_mouse_wheel_is_consumed_by_active_modal() {
     let mut app = create_test_app();
     app.viewport.transcript_scroll = TranscriptScroll::at_line(7);
     let transcript_before = app.viewport.transcript_scroll;
-    let request = ApprovalRequest::new(
+    let request = ApprovalRequest::routine(
         "interaction-wheel",
         "read_file",
         "测试模态框滚轮",

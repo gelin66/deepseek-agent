@@ -1820,12 +1820,6 @@ pub struct Config {
     pub retry: Option<RetryConfig>,
     pub features: Option<FeaturesToml>,
 
-    /// Deterministic user-level auto-review policy for tool calls. The engine
-    /// applies these rules after built-in safety floors, so config cannot
-    /// bypass publish/destructive-background holds.
-    #[serde(default)]
-    pub auto_review: Option<AutoReviewConfig>,
-
     /// TUI configuration (alternate screen, etc.)
     pub tui: Option<TuiConfig>,
 
@@ -1909,181 +1903,6 @@ pub struct Config {
     /// companion permissions file after profile/env/managed config resolution.
     #[serde(skip)]
     pub exec_policy_engine: ExecPolicyEngine,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct AutoReviewConfig {
-    #[serde(default, alias = "guidance", alias = "naturalLanguageGuidance")]
-    pub natural_language_guidance: Option<String>,
-    #[serde(default)]
-    pub allow: Vec<AutoReviewRuleConfig>,
-    #[serde(default)]
-    pub block: Vec<AutoReviewRuleConfig>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct AutoReviewRuleConfig {
-    pub id: Option<String>,
-    #[serde(default, alias = "toolName", alias = "tool_name")]
-    pub tool: Option<String>,
-    #[serde(default, alias = "actionKind", alias = "action_kind")]
-    pub action_kind: Option<String>,
-    #[serde(default, alias = "textContains", alias = "text_contains")]
-    pub text_contains: Option<String>,
-    pub reason: Option<String>,
-}
-
-impl AutoReviewConfig {
-    fn to_runtime_policy(&self) -> crate::tui::auto_review::AutoReviewPolicy {
-        crate::tui::auto_review::AutoReviewPolicy {
-            allow_rules: self
-                .allow
-                .iter()
-                .enumerate()
-                .map(|(index, rule)| {
-                    rule.to_runtime_rule(index, crate::tui::auto_review::AutoReviewAction::Allow)
-                })
-                .collect(),
-            block_rules: self
-                .block
-                .iter()
-                .enumerate()
-                .map(|(index, rule)| {
-                    rule.to_runtime_rule(index, crate::tui::auto_review::AutoReviewAction::Block)
-                })
-                .collect(),
-            natural_language_guidance: self
-                .natural_language_guidance
-                .as_ref()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
-        }
-    }
-
-    fn validate(&self) -> Result<()> {
-        validate_auto_review_rules("allow", &self.allow)?;
-        validate_auto_review_rules("block", &self.block)?;
-        Ok(())
-    }
-}
-
-impl AutoReviewRuleConfig {
-    fn to_runtime_rule(
-        &self,
-        index: usize,
-        action: crate::tui::auto_review::AutoReviewAction,
-    ) -> crate::tui::auto_review::AutoReviewRule {
-        let id_prefix = match action {
-            crate::tui::auto_review::AutoReviewAction::Allow => "allow",
-            crate::tui::auto_review::AutoReviewAction::Block => "block",
-            crate::tui::auto_review::AutoReviewAction::AskUser => "ask",
-            crate::tui::auto_review::AutoReviewAction::HoldForReview => "hold",
-        };
-        let id = self
-            .id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| format!("config-{id_prefix}-{index}"));
-        let reason = self
-            .reason
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| format!("configured auto-review {id_prefix} rule"));
-        let mut rule = match action {
-            crate::tui::auto_review::AutoReviewAction::Allow => {
-                crate::tui::auto_review::AutoReviewRule::allow(id, reason)
-            }
-            crate::tui::auto_review::AutoReviewAction::Block => {
-                crate::tui::auto_review::AutoReviewRule::block(id, reason)
-            }
-            crate::tui::auto_review::AutoReviewAction::AskUser
-            | crate::tui::auto_review::AutoReviewAction::HoldForReview => {
-                crate::tui::auto_review::AutoReviewRule::block(id, reason)
-            }
-        };
-
-        if let Some(tool) = self
-            .tool
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            rule = rule.tool_name(tool.to_string());
-        }
-        if let Some(action_kind) = self
-            .action_kind
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .and_then(parse_auto_review_action_kind)
-        {
-            rule = rule.action_kind(action_kind);
-        }
-        if let Some(text) = self
-            .text_contains
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            rule = rule.text_contains(text.to_string());
-        }
-
-        rule
-    }
-
-    fn has_matcher(&self) -> bool {
-        self.tool
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty())
-            || self
-                .action_kind
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty())
-            || self
-                .text_contains
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty())
-    }
-}
-
-fn validate_auto_review_rules(kind: &str, rules: &[AutoReviewRuleConfig]) -> Result<()> {
-    for (index, rule) in rules.iter().enumerate() {
-        if !rule.has_matcher() {
-            anyhow::bail!(
-                "Invalid auto_review.{kind}[{index}]: set at least one of tool, action_kind, or text_contains."
-            );
-        }
-        if let Some(action_kind) = rule.action_kind.as_deref()
-            && parse_auto_review_action_kind(action_kind.trim()).is_none()
-        {
-            anyhow::bail!(
-                "Invalid auto_review.{kind}[{index}].action_kind '{action_kind}': expected read, write, shell, network, git, mcp_read, mcp_action, browser, secret, publish, destructive, or unknown."
-            );
-        }
-    }
-    Ok(())
-}
-
-fn parse_auto_review_action_kind(raw: &str) -> Option<crate::tui::auto_review::ToolActionKind> {
-    match raw.trim().to_ascii_lowercase().replace('-', "_").as_str() {
-        "read" => Some(crate::tui::auto_review::ToolActionKind::Read),
-        "write" => Some(crate::tui::auto_review::ToolActionKind::Write),
-        "shell" => Some(crate::tui::auto_review::ToolActionKind::Shell),
-        "network" => Some(crate::tui::auto_review::ToolActionKind::Network),
-        "git" => Some(crate::tui::auto_review::ToolActionKind::Git),
-        "mcp_read" => Some(crate::tui::auto_review::ToolActionKind::McpRead),
-        "mcp_action" => Some(crate::tui::auto_review::ToolActionKind::McpAction),
-        "browser" => Some(crate::tui::auto_review::ToolActionKind::Browser),
-        "secret" => Some(crate::tui::auto_review::ToolActionKind::Secret),
-        "publish" => Some(crate::tui::auto_review::ToolActionKind::Publish),
-        "destructive" => Some(crate::tui::auto_review::ToolActionKind::Destructive),
-        "unknown" => Some(crate::tui::auto_review::ToolActionKind::Unknown),
-        _ => None,
-    }
 }
 
 /// `[skills]` table — knobs for the community-skill installer.
@@ -2750,14 +2569,6 @@ impl Config {
             .unwrap_or_default()
     }
 
-    #[must_use]
-    pub fn auto_review_policy(&self) -> crate::tui::auto_review::AutoReviewPolicy {
-        self.auto_review
-            .as_ref()
-            .map(AutoReviewConfig::to_runtime_policy)
-            .unwrap_or_default()
-    }
-
     /// Load configuration from disk and merge with environment overrides.
     ///
     /// # Examples
@@ -2912,9 +2723,6 @@ impl Config {
                     "Invalid tui.alternate_screen '{mode}': expected auto, always, or never."
                 );
             }
-        }
-        if let Some(auto_review) = &self.auto_review {
-            auto_review.validate()?;
         }
         if let Some(providers) = &self.providers {
             providers.validate()?;
@@ -5638,7 +5446,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         requirements_path: override_cfg.requirements_path.or(base.requirements_path),
         max_subagents: override_cfg.max_subagents.or(base.max_subagents),
         retry: override_cfg.retry.or(base.retry),
-        auto_review: override_cfg.auto_review.or(base.auto_review),
         tui: override_cfg.tui.or(base.tui),
         hooks: override_cfg.hooks.or(base.hooks),
         providers: merge_providers(base.providers, override_cfg.providers),

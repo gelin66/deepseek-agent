@@ -6,18 +6,15 @@
 //! ## v0.6.7: Codex-style takeover with stakes-based variants (#129)
 //!
 //! The modal now renders as a full-screen takeover (calm centered card
-//! against the transcript area) and routes each request to one of two
+//! against the transcript area) and routes each request to one of three
 //! stakes-based variants:
 //!
-//! - **Benign** (`RiskLevel::Benign`) — read-only ops, MCP discovery,
+//! - **Routine** (`ApprovalStakes::Routine`) — read-only ops, MCP discovery,
 //!   query-only network. A single `Enter` / `1` / `y` approves once;
 //!   `2` / `n` / `d` denies the call.
-//! - **Destructive** (`RiskLevel::Destructive`) — file writes, shell
-//!   commands that are not proven read-only, patches, MCP actions,
-//!   unclassified tools, and any "fetch arbitrary content" surface.
-//!   The takeover keeps the destructive badge and
-//!   impact summary visible, then lets `Enter` commit the highlighted
-//!   option or `y` / `n` / `d` commit directly.
+//! - **Elevated** — ordinary state-changing work, rendered as a calm approval.
+//! - **Critical** — dangerous or publish-like work, rendered with the strongest
+//!   warning badge and impact summary.
 //!
 //! The view emits only the canonical interaction identity and the selected
 //! outcome. Auto-approve / YOLO bypasses happen *before* the view is
@@ -35,9 +32,7 @@ use std::cell::RefCell;
 
 pub mod policy;
 
-pub use policy::{
-    ApprovalStakes, RiskLevel, ToolCategory, classify_risk, classify_stakes, get_tool_category,
-};
+pub use policy::{ApprovalStakes, ToolCategory, get_tool_category};
 
 /// Determines when tool executions require user approval
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -120,8 +115,8 @@ pub struct ApprovalRequest {
     pub description: String,
     /// Tool category
     pub category: ToolCategory,
-    /// Stakes-based routing for the takeover modal
-    pub risk: RiskLevel,
+    /// Canonical runtime risk projected into the three presentation stakes.
+    stakes: ApprovalStakes,
     /// Derived impact summary for the approval prompt
     pub impacts: Vec<String>,
     /// Tool parameters (for display)
@@ -155,12 +150,43 @@ impl ApprovalRequest {
     /// Presentation stakes for this request (see [`ApprovalStakes`]).
     #[must_use]
     pub fn stakes(&self) -> ApprovalStakes {
-        classify_stakes(&self.tool_name, self.category, self.risk, &self.params)
+        self.stakes
     }
 
     #[cfg(test)]
-    pub fn new(id: &str, tool_name: &str, description: &str, params: &Value) -> Self {
-        Self::new_with_intent(id, tool_name, description, params, None)
+    pub fn routine(id: &str, tool_name: &str, description: &str, params: &Value) -> Self {
+        Self::new_with_intent(
+            id,
+            tool_name,
+            description,
+            params,
+            ApprovalStakes::Routine,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn elevated(id: &str, tool_name: &str, description: &str, params: &Value) -> Self {
+        Self::new_with_intent(
+            id,
+            tool_name,
+            description,
+            params,
+            ApprovalStakes::Elevated,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    pub fn critical(id: &str, tool_name: &str, description: &str, params: &Value) -> Self {
+        Self::new_with_intent(
+            id,
+            tool_name,
+            description,
+            params,
+            ApprovalStakes::Critical,
+            None,
+        )
     }
 
     pub fn new_with_intent(
@@ -168,17 +194,17 @@ impl ApprovalRequest {
         tool_name: &str,
         description: &str,
         params: &Value,
+        stakes: ApprovalStakes,
         intent_summary: Option<&str>,
     ) -> Self {
         let category = get_tool_category(tool_name);
-        let risk = classify_risk(tool_name, category, params);
 
         Self {
             id: id.to_string(),
             tool_name: tool_name.to_string(),
             description: description.to_string(),
             category,
-            risk,
+            stakes,
             impacts: build_impact_summary(tool_name, category, params),
             params: params.clone(),
             intent_summary: intent_summary.and_then(|summary| {
@@ -1012,10 +1038,10 @@ impl ApprovalView {
         *self.row_hitboxes.borrow_mut() = hitboxes;
     }
 
-    /// Risk level for the renderer's accent picking.
+    /// Canonical presentation stakes for renderer tests.
     #[cfg(test)]
-    pub fn risk(&self) -> RiskLevel {
-        self.request.risk
+    pub fn stakes(&self) -> ApprovalStakes {
+        self.request.stakes
     }
 
     /// Commit the given option and close the approval modal.
@@ -1192,7 +1218,7 @@ mod tests {
     }
 
     fn benign_request() -> ApprovalRequest {
-        ApprovalRequest::new(
+        ApprovalRequest::routine(
             "test-id",
             "read_file",
             "Read a file from disk",
@@ -1200,8 +1226,8 @@ mod tests {
         )
     }
 
-    fn destructive_request() -> ApprovalRequest {
-        ApprovalRequest::new(
+    fn elevated_request() -> ApprovalRequest {
+        ApprovalRequest::elevated(
             "test-id",
             "write_file",
             "Write a file to disk",
@@ -1210,7 +1236,7 @@ mod tests {
     }
 
     fn critical_request() -> ApprovalRequest {
-        ApprovalRequest::new(
+        ApprovalRequest::critical(
             "test-id",
             "exec_shell",
             "Run a shell command",
@@ -1219,7 +1245,7 @@ mod tests {
     }
 
     fn shell_request() -> ApprovalRequest {
-        ApprovalRequest::new(
+        ApprovalRequest::elevated(
             "test-id",
             "exec_shell",
             "Run a shell command",
@@ -1270,91 +1296,6 @@ mod tests {
     }
 
     // ========================================================================
-    // Risk Routing Tests (#129)
-    // ========================================================================
-
-    #[test]
-    fn risk_safe_categories_route_benign() {
-        let cat = ToolCategory::Safe;
-        assert_eq!(
-            classify_risk("read_file", cat, &json!({"path": "x"})),
-            RiskLevel::Benign
-        );
-        let cat = ToolCategory::McpRead;
-        assert_eq!(
-            classify_risk("list_mcp_tools", cat, &json!({})),
-            RiskLevel::Benign
-        );
-    }
-
-    #[test]
-    fn risk_query_only_network_is_benign_but_fetch_is_destructive() {
-        // web_search is read-only enough to use the benign variant.
-        let cat = ToolCategory::Network;
-        assert_eq!(
-            classify_risk("web_search", cat, &json!({"q": "rust"})),
-            RiskLevel::Benign
-        );
-        // fetch_url pulls arbitrary remote content, so it stays destructive.
-        assert_eq!(
-            classify_risk("fetch_url", cat, &json!({"url": "https://example.com"})),
-            RiskLevel::Destructive
-        );
-        // wait_for_dev_server only permits loopback targets.
-        assert_eq!(
-            classify_risk("wait_for_dev_server", cat, &json!({"port": 5173})),
-            RiskLevel::Benign
-        );
-    }
-
-    #[test]
-    fn risk_writes_shell_mcp_action_unknown_route_destructive() {
-        for (name, cat) in [
-            ("write_file", ToolCategory::FileWrite),
-            ("edit_file", ToolCategory::FileWrite),
-            ("apply_patch", ToolCategory::FileWrite),
-            ("exec_shell", ToolCategory::Shell),
-            ("mcp_linear_save_issue", ToolCategory::McpAction),
-            ("totally_new_tool", ToolCategory::Unknown),
-        ] {
-            assert_eq!(
-                classify_risk(name, cat, &json!({})),
-                RiskLevel::Destructive,
-                "expected {name:?} to be Destructive",
-            );
-        }
-    }
-
-    #[test]
-    fn risk_read_only_shell_commands_route_benign() {
-        let cat = ToolCategory::Shell;
-        for command in [
-            "codewhale --version",
-            "codewhale --help",
-            "git status --porcelain",
-        ] {
-            assert_eq!(
-                classify_risk("exec_shell", cat, &json!({ "command": command })),
-                RiskLevel::Benign,
-                "expected read-only shell command {command:?} to be Benign",
-            );
-        }
-    }
-
-    #[test]
-    fn risk_dangerous_shell_command_stays_destructive() {
-        // command_safety would flag this as Dangerous; classify_risk
-        // already routes Shell to Destructive. The check exists so a
-        // future attempt to relax shell to Benign cannot smuggle this
-        // through unexamined.
-        let cat = ToolCategory::Shell;
-        assert_eq!(
-            classify_risk("exec_shell", cat, &json!({"command": "rm -rf /"})),
-            RiskLevel::Destructive
-        );
-    }
-
-    // ========================================================================
     // ApprovalRequest Tests
     // ========================================================================
 
@@ -1362,12 +1303,12 @@ mod tests {
     fn test_approval_request_new() {
         let params = json!({"path": "src/main.rs", "content": "test"});
         let request =
-            ApprovalRequest::new("test-id", "write_file", "Write a file to disk", &params);
+            ApprovalRequest::elevated("test-id", "write_file", "Write a file to disk", &params);
 
         assert_eq!(request.id, "test-id");
         assert_eq!(request.tool_name, "write_file");
         assert_eq!(request.category, ToolCategory::FileWrite);
-        assert_eq!(request.risk, RiskLevel::Destructive);
+        assert_eq!(request.stakes(), ApprovalStakes::Elevated);
         assert_eq!(request.params, params);
     }
 
@@ -1376,7 +1317,7 @@ mod tests {
         let long_content = "x".repeat(300);
         let params = json!({"path": "src/main.rs", "content": long_content});
         let request =
-            ApprovalRequest::new("test-id", "write_file", "Write a file to disk", &params);
+            ApprovalRequest::elevated("test-id", "write_file", "Write a file to disk", &params);
 
         let display = request.params_display();
         assert!(display.len() < 250);
@@ -1387,7 +1328,7 @@ mod tests {
     fn test_approval_request_params_display_short() {
         let params = json!({"path": "src/main.rs"});
         let request =
-            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
+            ApprovalRequest::routine("test-id", "read_file", "Read a file from disk", &params);
 
         let display = request.params_display();
         assert!(display.contains("src/main.rs"));
@@ -1396,7 +1337,8 @@ mod tests {
     #[test]
     fn test_approval_request_derives_impact_summary() {
         let params = json!({"cmd": "cargo test", "workdir": "/tmp/project"});
-        let request = ApprovalRequest::new("test-id", "exec_shell", "Run a shell command", &params);
+        let request =
+            ApprovalRequest::elevated("test-id", "exec_shell", "Run a shell command", &params);
 
         assert_eq!(request.category, ToolCategory::Shell);
         assert!(
@@ -1422,7 +1364,7 @@ mod tests {
 
     #[test]
     fn mcp_impact_summary_preserves_full_target_for_underscored_names() {
-        let request = ApprovalRequest::new(
+        let request = ApprovalRequest::elevated(
             "test-id",
             "mcp_my_db_execute_sql",
             "Call an MCP tool",
@@ -1449,7 +1391,7 @@ mod tests {
     #[test]
     fn test_prominent_details_shell_does_not_truncate_long_command() {
         let command = format!("printf '{}\\n' > /tmp/x && cat /tmp/x", "x".repeat(300));
-        let request = ApprovalRequest::new(
+        let request = ApprovalRequest::elevated(
             "test-id",
             "exec_shell",
             "Run a shell command",
@@ -1473,7 +1415,7 @@ mod tests {
 
     #[test]
     fn test_prominent_details_file_write() {
-        let request = ApprovalRequest::new(
+        let request = ApprovalRequest::elevated(
             "test-id",
             "write_file",
             "Write a file to disk",
@@ -1492,7 +1434,7 @@ mod tests {
 
     #[test]
     fn prominent_details_edit_file_includes_search_replace_preview() {
-        let request = ApprovalRequest::new(
+        let request = ApprovalRequest::elevated(
             "test-id",
             "edit_file",
             "Edit a file on disk",
@@ -1523,7 +1465,7 @@ mod tests {
 -old
 +new
 "#;
-        let request = ApprovalRequest::new(
+        let request = ApprovalRequest::elevated(
             "test-id",
             "apply_patch",
             "Apply a patch",
@@ -1544,7 +1486,7 @@ mod tests {
 
     #[test]
     fn prominent_details_apply_patch_changes_array_preview_stays_bounded() {
-        let request = ApprovalRequest::new(
+        let request = ApprovalRequest::elevated(
             "test-id",
             "apply_patch",
             "Apply a patch",
@@ -1586,7 +1528,7 @@ mod tests {
 
     #[test]
     fn apply_patch_changes_array_preview_reports_second_file_when_first_fills_buffer() {
-        let request = ApprovalRequest::new(
+        let request = ApprovalRequest::elevated(
             "test-id",
             "apply_patch",
             "Apply a patch",
@@ -1674,7 +1616,7 @@ mod tests {
 
     #[test]
     fn preview_sublabels_are_localized_for_zh_hans() {
-        let write = ApprovalRequest::new(
+        let write = ApprovalRequest::elevated(
             "test-id",
             "write_file",
             "Write a file",
@@ -1698,7 +1640,7 @@ mod tests {
                 .any(|line| line == "+ replacement content")
         );
 
-        let edit = ApprovalRequest::new(
+        let edit = ApprovalRequest::elevated(
             "test-id",
             "edit_file",
             "Edit a file",
@@ -1719,7 +1661,7 @@ mod tests {
         assert!(edit_preview.iter().any(|line| line == "- with this"));
         assert!(edit_preview.iter().any(|line| line == "+ replace this"));
 
-        let empty = ApprovalRequest::new(
+        let empty = ApprovalRequest::elevated(
             "test-id",
             "write_file",
             "Write an empty file",
@@ -1759,7 +1701,7 @@ mod tests {
     fn test_approval_view_initial_state() {
         let view = ApprovalView::new(benign_request());
         assert_eq!(view.selected, 0);
-        assert_eq!(view.risk(), RiskLevel::Benign);
+        assert_eq!(view.stakes(), ApprovalStakes::Routine);
     }
 
     #[test]
@@ -1987,19 +1929,19 @@ mod tests {
     }
 
     // ========================================================================
-    // ApprovalView Tests — Destructive Variant (one-step approve with warning)
+    // ApprovalView Tests — Elevated Variant (one-step approve with warning)
     // ========================================================================
 
     #[test]
-    fn destructive_request_routes_destructive() {
-        let view = ApprovalView::new(destructive_request());
-        assert_eq!(view.risk(), RiskLevel::Destructive);
+    fn elevated_request_routes_elevated() {
+        let view = ApprovalView::new(elevated_request());
+        assert_eq!(view.stakes(), ApprovalStakes::Elevated);
     }
 
     #[test]
     fn destructive_y_first_press_approves_once() {
         for code in [KeyCode::Char('y'), KeyCode::Char('Y')] {
-            let mut view = ApprovalView::new(destructive_request());
+            let mut view = ApprovalView::new(elevated_request());
 
             let action = view.handle_key(create_key_event(code));
             assert!(
@@ -2017,7 +1959,7 @@ mod tests {
 
     #[test]
     fn destructive_enter_approves_selected_option() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(elevated_request());
 
         // Selection starts at ApproveOnce — Enter commits the selected option.
         let action = view.handle_key(create_key_event(KeyCode::Enter));
@@ -2032,7 +1974,7 @@ mod tests {
 
     #[test]
     fn destructive_navigation_then_enter_commits_highlighted_option() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(elevated_request());
 
         view.handle_key(create_key_event(KeyCode::Down));
         let action = view.handle_key(create_key_event(KeyCode::Enter));
@@ -2047,7 +1989,7 @@ mod tests {
 
     #[test]
     fn destructive_unrelated_key_keeps_modal_open() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(elevated_request());
 
         let action = view.handle_key(create_key_event(KeyCode::Char('q')));
         assert!(matches!(action, ViewAction::None));
@@ -2056,7 +1998,7 @@ mod tests {
     #[test]
     fn destructive_a_has_no_unenforceable_session_semantics() {
         for code in [KeyCode::Char('a'), KeyCode::Char('A')] {
-            let mut view = ApprovalView::new(destructive_request());
+            let mut view = ApprovalView::new(elevated_request());
             let action = view.handle_key(create_key_event(code));
             assert!(matches!(action, ViewAction::None));
         }
@@ -2071,7 +2013,7 @@ mod tests {
             KeyCode::Char('d'),
             KeyCode::Char('D'),
         ] {
-            let mut view = ApprovalView::new(destructive_request());
+            let mut view = ApprovalView::new(elevated_request());
             let action = view.handle_key(create_key_event(code));
             assert!(
                 matches!(
@@ -2088,7 +2030,7 @@ mod tests {
 
     #[test]
     fn destructive_esc_aborts_immediately() {
-        let mut view = ApprovalView::new(destructive_request());
+        let mut view = ApprovalView::new(elevated_request());
         let action = view.handle_key(create_key_event(KeyCode::Esc));
         assert!(matches!(
             action,
@@ -2132,51 +2074,18 @@ mod tests {
     }
 
     #[test]
-    fn web_run_risk_is_param_aware() {
-        // search/query is benign; open/click fetch arbitrary URLs -> destructive.
-        assert_eq!(
-            classify_risk("web_run", ToolCategory::Network, &json!({"search": "rust"})),
-            RiskLevel::Benign
-        );
-        assert_eq!(
-            classify_risk(
-                "web_run",
-                ToolCategory::Network,
-                &json!({"open": [{"ref": "https://evil.example"}]})
-            ),
-            RiskLevel::Destructive
-        );
-        assert_eq!(
-            classify_risk(
-                "web_run",
-                ToolCategory::Network,
-                &json!({"click": [{"ref": "1"}]})
-            ),
-            RiskLevel::Destructive
-        );
-    }
-
-    #[test]
-    fn stakes_split_routine_elevated_critical() {
+    fn stakes_are_stored_instead_of_reclassified_by_the_tui() {
         assert_eq!(benign_request().stakes(), ApprovalStakes::Routine);
-        assert_eq!(destructive_request().stakes(), ApprovalStakes::Elevated);
+        assert_eq!(elevated_request().stakes(), ApprovalStakes::Elevated);
         assert_eq!(shell_request().stakes(), ApprovalStakes::Elevated);
         assert_eq!(critical_request().stakes(), ApprovalStakes::Critical);
-        // Publish-like shell is critical in every origin.
-        let publish = ApprovalRequest::new(
-            "test-id",
-            "exec_shell",
-            "Run a shell command",
-            &json!({"command": "git push origin main"}),
-        );
-        assert_eq!(publish.stakes(), ApprovalStakes::Critical);
     }
 
     #[test]
     fn agent_tool_is_classified_and_renders_calm() {
         assert_eq!(get_tool_category("agent"), ToolCategory::Agent);
 
-        let request = ApprovalRequest::new(
+        let request = ApprovalRequest::elevated(
             "test-id",
             "agent",
             "Start a sub-agent",
@@ -2204,13 +2113,12 @@ mod tests {
     #[test]
     fn agent_status_and_peek_are_benign() {
         for action in ["status", "peek", "list"] {
-            let request = ApprovalRequest::new(
+            let request = ApprovalRequest::routine(
                 "test-id",
                 "agent",
                 "Inspect a sub-agent",
                 &json!({"action": action, "agent_id": "agent_1"}),
             );
-            assert_eq!(request.risk, RiskLevel::Benign, "{action}");
             assert_eq!(request.stakes(), ApprovalStakes::Routine, "{action}");
         }
     }
@@ -2275,7 +2183,7 @@ mod tests {
         // Ordinary state-touching work (a file write) renders as a calm
         // APPROVAL ask: no DESTRUCTIVE badge, no policy dossier, no
         // impact/category taxonomy — that detail stays one `v` away.
-        let view = ApprovalView::new(destructive_request());
+        let view = ApprovalView::new(elevated_request());
         let lines = render_lines(&view, 100, 40);
         let joined = lines.join("\n");
         let compact = compact_rendered_text(&lines);
@@ -2333,7 +2241,7 @@ mod tests {
 
     #[test]
     fn render_elevated_zh_hans_is_calm_and_localized() {
-        let view = ApprovalView::new(destructive_request());
+        let view = ApprovalView::new(elevated_request());
         let lines = render_lines(&view, 100, 40);
         let joined = compact_rendered_text(&lines);
         assert!(

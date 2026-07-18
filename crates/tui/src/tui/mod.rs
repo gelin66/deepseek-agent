@@ -14,7 +14,6 @@
 pub mod active_cell;
 pub mod app;
 pub mod approval;
-pub mod auto_review;
 mod canonical_commands;
 pub mod child_agents;
 pub mod clipboard;

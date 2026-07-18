@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken as TokioCancellationToken;
 
+use crate::command_safety::command_is_high_impact;
 use crate::sandbox::SandboxPolicy as ExecutionSandboxPolicy;
 use crate::sandbox::backend::{SandboxBackend, SandboxBackendIdentity};
 use crate::shell::{
@@ -471,7 +472,11 @@ impl ToolExecutor for ProductionToolExecutor {
                 Some(ToolApprovalPrompt {
                     title: "确认执行 Shell 命令".to_owned(),
                     description: "该命令可能修改文件、启动进程或访问外部资源。".to_owned(),
-                    risk: ApprovalRisk::Elevated,
+                    risk: input
+                        .and_then(|input| input.get("command"))
+                        .and_then(Value::as_str)
+                        .filter(|command| command_is_high_impact(command))
+                        .map_or(ApprovalRisk::Elevated, |_| ApprovalRisk::Critical),
                 })
             }
             "run_tests" | "run_verifiers" if self.shell.shell_policy == ShellPolicy::Full => {
@@ -876,6 +881,38 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn shell_preflight_reports_canonical_critical_and_elevated_risk() {
+        let workspace = tempfile::tempdir().unwrap();
+        let executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(workspace.path()).with_shell_policy(ShellPolicy::Full),
+        );
+
+        for command in [
+            "rm -rf /tmp/codewhale-critical-test",
+            "git push origin main",
+            "npm publish",
+            "cargo publish",
+            "gh release create v1.0.0",
+            "git tag v1.0.0",
+            "git tag --delete v1.0.0",
+        ] {
+            let prompt = executor
+                .approval_prompt(&invocation("exec_shell", json!({"command": command})))
+                .unwrap()
+                .unwrap();
+            assert_eq!(prompt.risk, ApprovalRisk::Critical, "{command}");
+        }
+
+        for command in ["cargo test --workspace", "touch changed", "git tag --list"] {
+            let prompt = executor
+                .approval_prompt(&invocation("exec_shell", json!({"command": command})))
+                .unwrap()
+                .unwrap();
+            assert_eq!(prompt.risk, ApprovalRisk::Elevated, "{command}");
+        }
     }
 
     #[tokio::test]

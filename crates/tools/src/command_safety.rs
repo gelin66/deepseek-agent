@@ -822,6 +822,84 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
     )
 }
 
+/// Return `true` when an approved shell command has critical impact.
+///
+/// This is deliberately narrower than "requires approval": ordinary builds,
+/// workspace writes, and unknown commands remain elevated. Critical is
+/// reserved for commands the safety analyzer already marks dangerous and for
+/// explicit publish or remote-mutation commands.
+#[must_use]
+pub(crate) fn command_is_high_impact(command: &str) -> bool {
+    if analyze_command(command).level == SafetyLevel::Dangerous {
+        return true;
+    }
+
+    split_command_segments(command).into_iter().any(|segment| {
+        let tokens = shell_words(&segment);
+        let Some(start) = primary_token_index(&tokens) else {
+            return false;
+        };
+        let command_tokens = tokens[start..]
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let canonical = classify_command(&command_tokens);
+
+        match canonical.as_str() {
+            "git push" | "npm publish" | "cargo publish" => true,
+            "git tag" => git_tag_is_mutation(&command_tokens),
+            command if command.starts_with("gh release ") => matches!(
+                command.strip_prefix("gh release "),
+                Some("create" | "delete" | "delete-asset" | "edit" | "upload")
+            ),
+            _ => false,
+        }
+    })
+}
+
+fn git_tag_is_mutation(tokens: &[&str]) -> bool {
+    let Some(args) = tokens.get(2..) else {
+        return false;
+    };
+    if args.is_empty() {
+        return false;
+    }
+    if args.iter().any(|arg| {
+        matches!(
+            *arg,
+            "-d" | "--delete" | "-a" | "--annotate" | "-s" | "--sign" | "-f" | "--force"
+        )
+    }) {
+        return true;
+    }
+    if args.iter().any(|arg| {
+        matches!(
+            *arg,
+            "-l" | "--list"
+                | "-v"
+                | "--verify"
+                | "--contains"
+                | "--points-at"
+                | "--merged"
+                | "--no-merged"
+                | "--sort"
+                | "--format"
+                | "--column"
+        ) || arg.starts_with("--list=")
+            || arg.starts_with("--contains=")
+            || arg.starts_with("--points-at=")
+            || arg.starts_with("--merged=")
+            || arg.starts_with("--no-merged=")
+            || arg.starts_with("--sort=")
+            || arg.starts_with("--format=")
+            || arg.starts_with("--column=")
+    }) {
+        return false;
+    }
+
+    args.iter().any(|arg| !arg.starts_with('-'))
+}
+
 fn analyze_destructive_patterns(command: &str) -> Option<SafetyAnalysis> {
     if primary_shell_command_is(command, "eval") {
         return Some(SafetyAnalysis::dangerous(
