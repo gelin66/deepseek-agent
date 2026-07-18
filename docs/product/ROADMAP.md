@@ -590,6 +590,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `run_verifiers` 仍由 `crates/tools` 提供；`crates/deepseek` 继续拥有 Beta FIM request
   planner、surface 与 accounting 类型。该删除不声称 canonical FIM response parser 或
   事务性编辑链路已经完成，相关缺口仍按 M1/M2 证据债处理。
+- M4-C 已删除退役 TUI model client/cache/mock/retry surface 及其旧请求、响应和 SSE DTO；
+  `models.rs` 暂时只保留仍被 history、pricing、hooks、MCP/工具 schema 和配置状态真实消费的
+  展示、计量与模型元数据，不再承担 DeepSeek transport 或请求规划职责。
 - M4-C 已物理删除没有 production consumer 的 TUI Goal/Hunt loop、私有
   TaskContract/receipt/Goal completion store、Slop ledger、`ToolContext.goal_contract`、
   假 custom-command allowed-tools/pause 状态及其 Work/UI/config surface。交互 TUI 启动

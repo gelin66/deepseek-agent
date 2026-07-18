@@ -281,6 +281,9 @@ M4-C foreground 切换后还已物理删除：
   `DeepSeekClient` 路径；显式 `--prompt "serve --acp"` 仍只是普通 canonical Agent 输入。
 - direct `review` completion、模型内 `ReviewTool`、私有 receipt 状态/文档和退役 review
   UI；canonical reviewer Agent profile 与普通自然语言代码审查任务保留。
+- 退役 TUI model client、cache、mock、retry surface 及其旧请求/响应/SSE DTO；仍在
+  `models.rs` 的类型只服务现有展示、计量、MCP/工具 schema 和模型元数据消费者，不再发送
+  DeepSeek 请求。
 - 无生产消费者的 TUI Goal/Hunt loop、私有 TaskContract/receipt/Goal 工具、Slop ledger、
   verifier preview config、假 custom-command pause/allowed-tools 状态及其 UI/文档；
   canonical Runtime terminal、RunStore 和确定性 `crates/tools::run_verifiers` 保留。

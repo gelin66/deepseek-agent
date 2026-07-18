@@ -1,4 +1,4 @@
-//! API request/response models for `DeepSeek` and OpenAI-compatible endpoints.
+//! Retained TUI model metadata and transitional display/accounting types.
 
 use serde::{Deserialize, Serialize};
 
@@ -6,76 +6,6 @@ use serde::{Deserialize, Serialize};
 /// newer V4 alias and do not carry an explicit `*k` suffix.
 pub const LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
 pub const DEEPSEEK_V4_CONTEXT_WINDOW_TOKENS: u32 = 1_000_000;
-
-// === Core Message Types ===
-
-/// Request payload for sending a message to the API.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MessageRequest {
-    pub model: String,
-    pub messages: Vec<Message>,
-    pub max_tokens: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<SystemPrompt>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<Tool>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_choice: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<serde_json::Value>,
-    /// DeepSeek reasoning-effort tier: "off" | "low" | "medium" | "high" | "max".
-    /// Translated by the client into DeepSeek's `reasoning_effort` + `thinking` fields.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stream: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_p: Option<f32>,
-}
-
-/// System prompt representation (plain text or structured blocks).
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-#[serde(untagged)]
-pub enum SystemPrompt {
-    Text(String),
-    Blocks(Vec<SystemBlock>),
-}
-
-/// A structured system prompt block.
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct SystemBlock {
-    #[serde(rename = "type")]
-    pub block_type: String,
-    pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cache_control: Option<CacheControl>,
-}
-
-/// Temporary interactive-engine representation adapter.
-///
-/// The canonical owner emits runtime prompt blocks directly. The legacy TUI
-/// request model is deleted with the interactive runtime in M4-C; until then
-/// this conversion preserves block body and order without rebuilding prompt
-/// content.
-impl From<codewhale_runtime::SystemPrompt> for SystemPrompt {
-    fn from(prompt: codewhale_runtime::SystemPrompt) -> Self {
-        Self::Blocks(
-            prompt
-                .blocks
-                .into_iter()
-                .map(|block| SystemBlock {
-                    block_type: "text".to_owned(),
-                    text: block.text,
-                    cache_control: None,
-                })
-                .collect(),
-        )
-    }
-}
 
 /// OpenAI-compatible image URL payload inside a multimodal message.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -154,47 +84,6 @@ pub enum ContentBlock {
     },
 }
 
-impl ContentBlock {
-    /// Build model feedback for a native tool result without flattening its
-    /// execution semantics. OpenAI-compatible dialects do not carry an
-    /// `is_error` bit, so failed results also receive a textual prefix. The
-    /// structured metadata sidecar is retained for session/runtime consumers;
-    /// provider serializers intentionally continue to send only `content`.
-    pub(crate) fn native_tool_result(
-        tool_use_id: impl Into<String>,
-        content: impl Into<String>,
-        success: bool,
-        metadata: Option<serde_json::Value>,
-    ) -> Self {
-        let mut content = content.into();
-        if !success
-            && !content
-                .trim_start()
-                .to_ascii_lowercase()
-                .starts_with("error:")
-        {
-            content = if content.trim().is_empty() {
-                "Error: tool reported failure without details".to_string()
-            } else {
-                format!("Error: {content}")
-            };
-        }
-        let content_blocks = metadata.map(|metadata| {
-            vec![serde_json::json!({
-                "type": "codewhale_tool_result_metadata",
-                "metadata": metadata,
-            })]
-        });
-
-        Self::ToolResult {
-            tool_use_id: tool_use_id.into(),
-            content,
-            is_error: (!success).then_some(true),
-            content_blocks,
-        }
-    }
-}
-
 /// Cache control metadata for tool definitions and blocks.
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct CacheControl {
@@ -231,14 +120,6 @@ pub struct Tool {
     pub cache_control: Option<CacheControl>,
 }
 
-/// Container metadata for code-execution style server tools.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct ContainerInfo {
-    pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expires_at: Option<String>,
-}
-
 /// Server-side tool usage counters.
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
 pub struct ServerToolUsage {
@@ -246,21 +127,6 @@ pub struct ServerToolUsage {
     pub code_execution_requests: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_search_requests: Option<u32>,
-}
-
-/// Response payload for a message request.
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MessageResponse {
-    pub id: String,
-    pub r#type: String,
-    pub role: String,
-    pub content: Vec<ContentBlock>,
-    pub model: String,
-    pub stop_reason: Option<String>,
-    pub stop_sequence: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub container: Option<ContainerInfo>,
-    pub usage: Usage,
 }
 
 /// Token usage metadata for a response.
@@ -286,52 +152,6 @@ pub struct Usage {
     pub reasoning_replay_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub server_tool_use: Option<ServerToolUsage>,
-}
-
-impl Usage {
-    /// Saturating aggregation for one provider-reported usage record.
-    ///
-    /// Keeping this in the canonical model prevents root turns, sub-agents,
-    /// FIM, scorecards, and Headless receipts from each maintaining a subtly
-    /// different definition of "total usage".
-    pub fn accumulate(&mut self, other: &Self) {
-        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
-        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
-        accumulate_optional_u32(
-            &mut self.prompt_cache_hit_tokens,
-            other.prompt_cache_hit_tokens,
-        );
-        accumulate_optional_u32(
-            &mut self.prompt_cache_miss_tokens,
-            other.prompt_cache_miss_tokens,
-        );
-        accumulate_optional_u32(
-            &mut self.prompt_cache_write_tokens,
-            other.prompt_cache_write_tokens,
-        );
-        accumulate_optional_u32(&mut self.reasoning_tokens, other.reasoning_tokens);
-        accumulate_optional_u32(
-            &mut self.reasoning_replay_tokens,
-            other.reasoning_replay_tokens,
-        );
-        if let Some(other_tools) = other.server_tool_use.as_ref() {
-            let tools = self.server_tool_use.get_or_insert_default();
-            accumulate_optional_u32(
-                &mut tools.code_execution_requests,
-                other_tools.code_execution_requests,
-            );
-            accumulate_optional_u32(
-                &mut tools.tool_search_requests,
-                other_tools.tool_search_requests,
-            );
-        }
-    }
-}
-
-fn accumulate_optional_u32(total: &mut Option<u32>, delta: Option<u32>) {
-    if let Some(delta) = delta {
-        *total = Some(total.unwrap_or(0).saturating_add(delta));
-    }
 }
 
 /// Map known models to their approximate context window sizes.
@@ -574,14 +394,6 @@ pub fn model_supports_reasoning(model: &str) -> bool {
         || is_openai_codex_model(&lower)
 }
 
-#[must_use]
-pub(crate) fn model_is_openai_reasoning_family(model: &str) -> bool {
-    let lower = model.to_lowercase();
-    is_openai_gpt_55_api_model(&lower)
-        || is_openai_gpt_56_api_model(&lower)
-        || is_openai_codex_model(&lower)
-}
-
 fn is_openai_gpt_55_api_model(model_lower: &str) -> bool {
     matches!(model_lower, "gpt-5.5" | "gpt-5.5-pro")
         || has_date_snapshot_suffix(model_lower, "gpt-5.5-")
@@ -658,89 +470,6 @@ fn explicit_context_window_hint(model_lower: &str) -> Option<u32> {
         }
     }
     None
-}
-
-// === Streaming Structures ===
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize, Clone)]
-#[serde(tag = "type")]
-/// Streaming event types for SSE responses.
-pub enum StreamEvent {
-    #[serde(rename = "message_start")]
-    MessageStart { message: MessageResponse },
-    #[serde(rename = "content_block_start")]
-    ContentBlockStart {
-        index: u32,
-        content_block: ContentBlockStart,
-    },
-    #[serde(rename = "content_block_delta")]
-    ContentBlockDelta { index: u32, delta: Delta },
-    #[serde(rename = "content_block_stop")]
-    ContentBlockStop { index: u32 },
-    #[serde(rename = "message_delta")]
-    MessageDelta {
-        delta: MessageDelta,
-        usage: Option<Usage>,
-    },
-    #[serde(rename = "message_stop")]
-    MessageStop,
-    #[serde(rename = "ping")]
-    Ping,
-    /// Anthropic SSE error event (#3014).
-    #[serde(rename = "error")]
-    Error { error: serde_json::Value },
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize, Clone)]
-#[serde(tag = "type")]
-/// Content block types used in streaming starts.
-pub enum ContentBlockStart {
-    #[serde(rename = "text")]
-    Text { text: String },
-    #[serde(rename = "thinking")]
-    Thinking { thinking: String },
-    #[serde(rename = "tool_use")]
-    ToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value, // usually empty or partial
-        #[serde(skip_serializing_if = "Option::is_none")]
-        caller: Option<ToolCaller>,
-    },
-    #[serde(rename = "server_tool_use")]
-    ServerToolUse {
-        id: String,
-        name: String,
-        input: serde_json::Value,
-    },
-}
-
-// Variant names match legacy streaming spec, suppressing style warning
-#[allow(clippy::enum_variant_names)]
-#[derive(Debug, Deserialize, Clone)]
-#[serde(tag = "type")]
-/// Delta events emitted during streaming responses.
-pub enum Delta {
-    #[serde(rename = "text_delta")]
-    TextDelta { text: String },
-    #[serde(rename = "thinking_delta")]
-    ThinkingDelta { thinking: String },
-    #[serde(rename = "input_json_delta")]
-    InputJsonDelta { partial_json: String },
-    /// Anthropic signed-thinking signature delta (#3014); arrives at the end
-    /// of a thinking block on the native Messages stream.
-    #[serde(rename = "signature_delta")]
-    SignatureDelta { signature: String },
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize, Clone)]
-/// Delta payload for message-level updates.
-pub struct MessageDelta {
-    pub stop_reason: Option<String>,
-    pub stop_sequence: Option<String>,
 }
 
 #[cfg(test)]
@@ -1069,49 +798,6 @@ mod tests {
         assert_eq!(
             context_window_for_model("deepseek-v3.2-2k-preview"),
             Some(LEGACY_DEEPSEEK_CONTEXT_WINDOW_TOKENS)
-        );
-    }
-
-    #[test]
-    fn usage_accumulate_preserves_every_observed_usage_class() {
-        let mut total = Usage {
-            input_tokens: u32::MAX - 1,
-            output_tokens: 10,
-            prompt_cache_hit_tokens: Some(4),
-            reasoning_tokens: Some(2),
-            server_tool_use: Some(ServerToolUsage {
-                code_execution_requests: Some(1),
-                tool_search_requests: None,
-            }),
-            ..Usage::default()
-        };
-        total.accumulate(&Usage {
-            input_tokens: 10,
-            output_tokens: 5,
-            prompt_cache_hit_tokens: Some(3),
-            prompt_cache_miss_tokens: Some(7),
-            prompt_cache_write_tokens: Some(2),
-            reasoning_tokens: Some(3),
-            reasoning_replay_tokens: Some(6),
-            server_tool_use: Some(ServerToolUsage {
-                code_execution_requests: Some(2),
-                tool_search_requests: Some(4),
-            }),
-        });
-
-        assert_eq!(total.input_tokens, u32::MAX);
-        assert_eq!(total.output_tokens, 15);
-        assert_eq!(total.prompt_cache_hit_tokens, Some(7));
-        assert_eq!(total.prompt_cache_miss_tokens, Some(7));
-        assert_eq!(total.prompt_cache_write_tokens, Some(2));
-        assert_eq!(total.reasoning_tokens, Some(5));
-        assert_eq!(total.reasoning_replay_tokens, Some(6));
-        assert_eq!(
-            total.server_tool_use,
-            Some(ServerToolUsage {
-                code_execution_requests: Some(3),
-                tool_search_requests: Some(4),
-            })
         );
     }
 }
