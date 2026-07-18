@@ -77,6 +77,9 @@ WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 旧 `prompt_suggestion` 模块没有生产调用者，却直接请求任意 `/chat/completions` 并绕过
 `AgentRuntime`、`RunStore` 与统一 accounting；该潜在第二模型请求路径、永不写入的 ghost
 text 状态和配置已删除，composer 继续显示确定性的中文空输入提示。
+旧 TUI `schema_sanitize` 只有自身测试且不在 production request path；这份重复 sanitizer 已
+删除。DeepSeek Strict Function Calling 的整目录兼容性判断、原子 fallback 与 Beta Chat
+路由仍由 `crates/deepseek` 唯一拥有。
 
 ## 2. 已统一的生产链
 

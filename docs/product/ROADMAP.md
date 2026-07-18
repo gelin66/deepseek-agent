@@ -643,6 +643,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除无生产调用者、却能绕过 canonical Runtime/Store/accounting 直连任意
   `/chat/completions` 的旧 prompt suggestion 模块，以及永不写入的 ghost-text 状态和配置；
   composer 保留确定性的中文空输入提示，不保留潜在第二模型请求路径。
+- M4-C 已删除只剩自测的 TUI `schema_sanitize` 重复实现；DeepSeek Strict Function Calling
+  的全目录兼容性、原子 ordinary-tool fallback 与官方 Beta Chat 路由继续由
+  `crates/deepseek` 唯一负责，未删除或降级 DeepSeek Beta 能力。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
