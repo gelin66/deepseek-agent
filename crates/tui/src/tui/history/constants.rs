@@ -1,6 +1,5 @@
 //! Shared constants for history transcript rendering.
 
-pub(super) const TOOL_COMMAND_LINE_LIMIT: usize = 3;
 pub(super) const TOOL_OUTPUT_LINE_LIMIT: usize = 6;
 pub(super) const TOOL_TEXT_LIMIT: usize = 300;
 pub(super) const TOOL_HEADER_SUMMARY_LIMIT: usize = 56;

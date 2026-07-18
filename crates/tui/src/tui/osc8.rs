@@ -18,9 +18,9 @@
 //! wrapping produces plain visible spans plus parallel [`LineLink`] metadata.
 //! Transcript surfaces translate those relative columns into absolute
 //! [`LinkRegion`]s for the current viewport. `ColorCompatBackend::draw` then
-//! emits OSC 8 escapes around the corresponding cell runs. This keeps text
-//! layout, selection, and clipboard extraction byte-for-byte identical with
-//! links enabled or disabled, including long links wrapped across rows.
+//! emits OSC 8 escapes around the corresponding cell runs. This keeps visible
+//! text and layout identical with links enabled or disabled, including long
+//! links wrapped across rows.
 //! Markdown contributes only normalized HTTP(S) targets, and emission
 //! percent-encodes terminal control characters as defense in depth.
 //!
@@ -29,8 +29,8 @@
 //! intercept those gestures or launch URLs itself, so mouse selection remains
 //! independent of browser-opening policy.
 //!
-//! The clipboard/selection extraction path still strips any residual codes via
-//! [`strip_into`] / [`strip_ansi_into`] as a defense-in-depth.
+//! Tool output is sanitized through [`strip_ansi_into`] before terminal escape
+//! sequences can enter transcript rendering.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -327,52 +327,6 @@ fn utf8_seq_len(lead: u8) -> usize {
     }
 }
 
-/// Strip OSC 8 escape sequences from `s` into `out`, preserving the visible
-/// label text. Other escapes (color, style) pass through untouched. The
-/// implementation handles both the standard `ESC \` and the lone `BEL`
-/// terminators that some emitters use.
-pub fn strip_into(s: &str, out: &mut String) {
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        // Look for the OSC 8 prefix `ESC ] 8 ;`
-        if i + 4 <= bytes.len()
-            && bytes[i] == 0x1b
-            && bytes[i + 1] == b']'
-            && bytes[i + 2] == b'8'
-            && bytes[i + 3] == b';'
-        {
-            // Skip until the string terminator (ESC \) or BEL.
-            let mut j = i + 4;
-            while j < bytes.len() {
-                if bytes[j] == 0x07 {
-                    j += 1;
-                    break;
-                }
-                if bytes[j] == 0x1b && j + 1 < bytes.len() && bytes[j + 1] == b'\\' {
-                    j += 2;
-                    break;
-                }
-                j += 1;
-            }
-            i = j;
-            continue;
-        }
-        let b = bytes[i];
-        if b < 0x80 {
-            out.push(b as char);
-            i += 1;
-        } else {
-            let len = utf8_seq_len(b);
-            let end = (i + len).min(bytes.len());
-            if let Ok(chunk) = std::str::from_utf8(&bytes[i..end]) {
-                out.push_str(chunk);
-            }
-            i = end;
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -381,12 +335,6 @@ mod tests {
     /// Serialize tests that read or write the `ENABLED` flag so they don't
     /// race each other under cargo's default parallel test runner.
     static FLAG_GUARD: Mutex<()> = Mutex::new(());
-
-    fn strip(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        strip_into(s, &mut out);
-        out
-    }
 
     fn wrapped_link(target: &str, label: &str) -> String {
         format!("{OSC8_PREFIX}{target}{OSC8_TERMINATOR}{label}{OSC8_CLOSE}")
@@ -399,34 +347,6 @@ mod tests {
             wrapped,
             "\x1b]8;;https://example.com\x1b\\click me\x1b]8;;\x1b\\"
         );
-    }
-
-    #[test]
-    fn strip_removes_wrapper_keeps_label() {
-        let wrapped = wrapped_link("https://example.com", "click me");
-        assert_eq!(strip(&wrapped), "click me");
-    }
-
-    #[test]
-    fn strip_handles_bel_terminator() {
-        let wrapped = "\x1b]8;;https://example.com\x07click me\x1b]8;;\x07";
-        assert_eq!(strip(wrapped), "click me");
-    }
-
-    #[test]
-    fn strip_passes_through_text_with_no_escapes() {
-        let plain = "no escapes here";
-        assert_eq!(strip(plain), plain);
-    }
-
-    #[test]
-    fn strip_preserves_non_osc_8_escapes() {
-        // Color escape stays in place; only OSC 8 wrappers are removed.
-        let mixed = format!(
-            "\x1b[31mred\x1b[0m {wrapped}",
-            wrapped = wrapped_link("https://example.com", "click")
-        );
-        assert_eq!(strip(&mixed), "\x1b[31mred\x1b[0m click");
     }
 
     fn strip_ansi(s: &str) -> String {
@@ -470,12 +390,6 @@ mod tests {
 
         let coloured = "\x1b[1;32m第一步\x1b[0m done";
         assert_eq!(strip_ansi(coloured), "第一步 done");
-    }
-
-    #[test]
-    fn strip_preserves_utf8_multibyte_chars() {
-        let wrapped = wrapped_link("https://example.com", "点击我");
-        assert_eq!(strip(&wrapped), "点击我");
     }
 
     #[test]

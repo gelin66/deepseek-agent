@@ -895,6 +895,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `TranscriptLineMeta` 逐行计算与传递，却没有生产消费者。字段、计算器、cache 数组与专属自测已物理删除；
   真实 render metadata helper 已按职责重命名，继续传递 `Line`、links、`is_code` 和 cell/line 映射。
   OSC8、Pager/审批系统复制、composer 选区、scroll/cache 渲染均保持原 owner。
+- M4-C 已继续删除只由自身测试或上述退役 copy/export 假路径调用的 `ui_text`
+  `history_cell_to_text`/`line_to_string`/`line_to_plain`/`append_spans_plain`/`slice_text`。
+  沿调用图成为零消费者的 `HistoryCell::transcript_lines`、`GenericToolCell::transcript_lines`、
+  `osc8::strip_into` 与专属常量/自测同步物理删除；没有把不存在的 transcript export 或 clipboard
+  consumer 写成产品能力。中文/CJK 宽度回归已迁到真实 `text_display_width` owner；
+  `RenderMode::Transcript` 的失败工具 uncapped 路径、ANSI 清理、OSC8 生成/链接区域/发送以及
+  Pager/审批复制、composer 选区、render/cache 均保持原生产路径。
 - M4-C 已删除从未被 canonical key handler 调用的 composer Vim 孤岛：
   `vim_mode.rs` 的 Normal-mode handler 没有任何生产调用方，设置值只能构造 App 状态并显示顶栏标签。
   模块、App helper/字段、设置/别名/列表、标签本地化和 widget 分支已物理删除；普通 composer 输入/选区/渲染、

@@ -27,8 +27,8 @@ use constants::{
 };
 use message::{
     RenderedTranscriptLine, assistant_label_style_for, message_body_style, render_message,
-    render_message_with_metadata, render_plain_message, render_user_message, system_body_style,
-    system_label_style, tag_lines_without_links, user_body_style, user_label_style,
+    render_message_with_metadata, render_user_message, system_body_style, system_label_style,
+    tag_lines_without_links,
 };
 use thinking::{render_hidden_thinking_activity, render_thinking};
 use tool_output::{render_tool_output_mode, wrap_plain_line, wrap_text};
@@ -131,9 +131,8 @@ impl HistoryCell {
     /// This is the live-display path used by widgets that don't already pass
     /// `TranscriptRenderOptions`. Tool output is capped, but thinking is shown
     /// in full because callers using bare `lines()` historically expected the
-    /// uncollapsed body. For the in-stream transcript view prefer
-    /// `lines_with_options`; for full transcript and clipboard output prefer
-    /// `transcript_lines`.
+    /// uncollapsed body. Callers that need configurable transcript rendering
+    /// use `lines_with_options`.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
             HistoryCell::User { content } => render_user_message(content, width),
@@ -280,40 +279,6 @@ impl HistoryCell {
         }
     }
 
-    /// Render the cell in transcript mode with full content and no caps.
-    ///
-    /// Use this for transcript exports, clipboard output, and any
-    /// surface that wants the complete body rather than the live summary.
-    /// For most variants (User / Assistant / System) this matches `lines()`;
-    /// `Thinking` and `Tool` are where the live and transcript surfaces
-    /// diverge.
-    pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
-        match self {
-            HistoryCell::User { content } => render_plain_message(
-                USER_GLYPH,
-                user_label_style(),
-                user_body_style(),
-                content,
-                width,
-            ),
-            HistoryCell::Assistant { content, streaming } => render_message(
-                ASSISTANT_GLYPH,
-                // Pager / clipboard surface — pin the glyph at full
-                // brightness so a screenshot reads the same as a live frame.
-                assistant_label_style_for(*streaming, /*low_motion*/ true),
-                message_body_style(),
-                content,
-                width,
-            ),
-            HistoryCell::System { .. } | HistoryCell::Error { .. } => self.lines(width),
-            HistoryCell::Thinking { content, streaming } => {
-                render_thinking(content, width, *streaming, false)
-            }
-            HistoryCell::Tool(cell) => cell.transcript_lines(width),
-            HistoryCell::ArchivedContext { .. } => render_archived_context(self, width, true),
-        }
-    }
-
     /// Whether this cell is the continuation of a streaming assistant message.
     #[must_use]
     pub fn is_stream_continuation(&self) -> bool {
@@ -401,11 +366,6 @@ impl GenericToolCell {
 
     pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
         self.lines_with_mode(width, low_motion, RenderMode::Live)
-    }
-
-    /// Render the complete tool record for transcript and clipboard output.
-    pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
-        self.lines_with_mode(width, false, RenderMode::Transcript)
     }
 
     /// Render the canonical tool cell into lines.

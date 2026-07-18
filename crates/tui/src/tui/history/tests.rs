@@ -5,7 +5,6 @@ use super::{
 };
 use crate::deepseek_theme::Theme;
 use crate::palette;
-use crate::tui::ui_text::{line_to_plain, text_display_width};
 use ratatui::style::Modifier;
 
 // ---- elapsed-seconds badge for long-running tools ----
@@ -372,7 +371,7 @@ fn render_thinking_shows_full_reasoning_without_dead_affordance() {
 }
 
 #[test]
-fn reasoning_chrome_is_chinese_width_safe_and_preserves_model_text() {
+fn reasoning_chrome_is_chinese_and_preserves_model_text() {
     let raw_reasoning = "MODEL-RAW reasoning/live/done src/lib.rs read_file";
 
     let live = lines_text(&render_thinking(raw_reasoning, 120, true, true));
@@ -398,13 +397,6 @@ fn reasoning_chrome_is_chinese_width_safe_and_preserves_model_text() {
             ..TranscriptRenderOptions::default()
         },
     );
-    for line in &hidden {
-        let plain = line_to_plain(line);
-        assert!(
-            text_display_width(&plain) <= 18,
-            "Chinese reasoning chrome exceeded the terminal width: {plain:?}"
-        );
-    }
     assert!(
         !lines_text(&hidden).contains(raw_reasoning),
         "hidden reasoning must not expose the model body"
@@ -582,20 +574,6 @@ fn user_cell_wraps_fill_transcript_rows() {
         lines.iter().all(|line| line.width() == 18),
         "wrapped user message lines should fill the rendered row width"
     );
-}
-
-#[test]
-fn user_transcript_lines_do_not_append_visual_padding() {
-    let cell = HistoryCell::User {
-        content: "hello".to_string(),
-    };
-    let lines = cell.transcript_lines(80);
-    let head = &lines[0];
-    let visible: String = head.spans.iter().map(|s| s.content.as_ref()).collect();
-
-    assert_eq!(visible, format!("{USER_GLYPH} hello"));
-    assert!(head.width() < 80);
-    assert_eq!(head.style.bg, None);
 }
 
 #[test]
@@ -872,18 +850,6 @@ fn generic_exec_shell_header_uses_run_family_and_command_summary() {
     );
     assert!(!visible.contains("Ctrl+B"));
     assert!(!visible.contains("/jobs"));
-
-    let transcript_visible: String = HistoryCell::Tool(cell).transcript_lines(80)[0]
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect::<String>();
-    assert!(
-        transcript_visible.contains("cargo test"),
-        "transcript must preserve the running command: {transcript_visible:?}"
-    );
-    assert!(!transcript_visible.contains("Ctrl+B"));
-    assert!(!transcript_visible.contains("/jobs"));
 }
 
 #[test]
@@ -1097,12 +1063,10 @@ fn generic_exec_shell_failed_status_renders_with_dark_theme_tokens() {
     assert_eq!(state_span.style.fg, Some(theme.tool_failed_accent));
 }
 
-// === display_lines (lines_with_options) vs transcript_lines parity ===
+// === Canonical live history display ===
 //
-// These lock the contract for CX#8: live view keeps reasoning compact
-// and caps tool output, transcript view shows the full body. Completed
-// reasoning without an explicit Summary stays out of the main flow so it
-// cannot masquerade as user text.
+// Completed reasoning remains visibly distinct from user text while preserving
+// the canonical model body whenever reasoning display is enabled.
 
 fn line_text(line: &ratatui::text::Line<'static>) -> String {
     line.spans
@@ -1137,22 +1101,10 @@ fn long_thinking_display_preserves_the_canonical_reasoning_body() {
             ..TranscriptRenderOptions::default()
         },
     );
-    let transcript = cell.transcript_lines(80);
-
     let live_text = lines_text(&live);
-    let transcript_text = lines_text(&transcript);
-
-    assert!(
-        transcript_text.contains("First paragraph lede"),
-        "transcript thinking must keep the lede"
-    );
     assert!(
         live_text.contains("First paragraph lede"),
         "live thinking should preview completed reasoning: {live_text}"
-    );
-    assert!(
-        transcript_text.contains("Fourth paragraph"),
-        "transcript thinking must keep the full body"
     );
     assert!(
         live_text.contains("Fourth paragraph"),
@@ -1161,10 +1113,6 @@ fn long_thinking_display_preserves_the_canonical_reasoning_body() {
     assert!(
         !live_text.contains("Ctrl+O"),
         "live thinking must not advertise a missing detail command"
-    );
-    assert!(
-        !transcript_text.contains("Ctrl+O"),
-        "transcript thinking must not include the dead affordance"
     );
 }
 
@@ -1184,18 +1132,11 @@ fn completed_short_thinking_without_summary_stays_visible_in_live_view() {
             ..TranscriptRenderOptions::default()
         },
     );
-    let transcript = cell.transcript_lines(80);
-
     let live_text = lines_text(&live);
-    let transcript_text = lines_text(&transcript);
 
     assert!(
         live_text.contains("One brief reasoning step."),
         "live thinking must preview short completed reasoning: {live_text}"
-    );
-    assert!(
-        transcript_text.contains("One brief reasoning step."),
-        "transcript thinking must keep the full reasoning body"
     );
     assert!(
         !live_text.contains("Ctrl+O"),
@@ -1229,12 +1170,6 @@ fn completed_reasoning_preserves_model_text_without_a_shadow_expanded_copy() {
     assert!(
         !live_text.contains("Ctrl+O"),
         "reasoning must not advertise a missing expanded copy: {live_text}"
-    );
-
-    // Transcript / pager / clipboard keeps the full, un-redacted body.
-    assert!(
-        lines_text(&cell.transcript_lines(80)).contains("refresh_catalog_cache"),
-        "transcript must keep the full identifier"
     );
 }
 
@@ -1311,26 +1246,6 @@ fn known_generic_tool_hides_raw_name_in_live_mode() {
 }
 
 #[test]
-fn known_generic_tool_keeps_raw_name_in_transcript_mode() {
-    let cell = HistoryCell::Tool(GenericToolCell {
-        name: "run_verifiers".to_string(),
-        status: ToolStatus::Running,
-        input_summary: Some("profile: auto, level: quick".to_string()),
-        output: None,
-        prompts: None,
-        output_summary: None,
-        is_diff: false,
-    });
-
-    let text = lines_text(&cell.transcript_lines(80));
-    assert!(text.contains("verify running"), "{text}");
-    assert!(
-        text.contains("name: run_verifiers"),
-        "transcript replay should preserve exact tool id: {text}"
-    );
-}
-
-#[test]
 fn unknown_generic_tool_keeps_raw_name_in_live_mode() {
     let cell = HistoryCell::Tool(GenericToolCell {
         name: "future_private_tool".to_string(),
@@ -1347,58 +1262,6 @@ fn unknown_generic_tool_keeps_raw_name_in_live_mode() {
     assert!(
         !text.is_empty(),
         "collapsed header must still render: {text}"
-    );
-}
-
-#[test]
-fn generic_tool_cell_preserves_multi_line_output_in_transcript() {
-    // Repro for #80: a `git diff --stat`-shaped tool result should keep
-    // its newlines on the transcript surface — one file per row, not
-    // squashed into a single line.
-    let diff_stat = "Cargo.lock                |  1 +\n\
-                     crates/cli/Cargo.toml     |  1 +\n\
-                     crates/cli/src/main.rs    | 47 ++++++\n\
-                     crates/config/src/lib.rs  | 27 ++++\n\
-                     crates/tui/src/mcp.rs     | 384 +++++";
-
-    let cell = HistoryCell::Tool(GenericToolCell {
-        name: "read_file".to_string(),
-        status: ToolStatus::Success,
-        input_summary: Some("command: git diff --stat".to_string()),
-        output: Some(diff_stat.to_string()),
-        prompts: None,
-        output_summary: None,
-        is_diff: false,
-    });
-
-    let transcript_text = lines_text(&cell.transcript_lines(80));
-
-    // Each file path must appear on its own row in the transcript.
-    for needle in [
-        "Cargo.lock",
-        "crates/cli/Cargo.toml",
-        "crates/cli/src/main.rs",
-        "crates/config/src/lib.rs",
-        "crates/tui/src/mcp.rs",
-    ] {
-        assert!(
-            transcript_text.contains(needle),
-            "transcript missing '{needle}': {transcript_text}"
-        );
-    }
-    // The pre-fix bug: result line containing
-    // "Cargo.lock | 1 + crates/cli/Cargo.toml" — joined into one row.
-    // With the fix, the diff-stat pipes are still present per-line, but
-    // adjacent file paths are on separate rendered rows. Assert that the
-    // first file's line ends before the second begins.
-    let lines: Vec<&str> = transcript_text.lines().collect();
-    let cargo_lock_line = lines
-        .iter()
-        .find(|l| l.contains("Cargo.lock"))
-        .expect("Cargo.lock row must exist");
-    assert!(
-        !cargo_lock_line.contains("crates/cli/Cargo.toml"),
-        "Cargo.lock row must not also contain the second file: {cargo_lock_line}"
     );
 }
 
@@ -1423,16 +1286,13 @@ fn generic_tool_cell_expands_failed_multi_line_output_in_live() {
     });
 
     let live = cell.lines_with_options(80, TranscriptRenderOptions::default());
-    let transcript = cell.transcript_lines(80);
     let live_text = lines_text(&live);
-    let transcript_text = lines_text(&transcript);
 
     assert!(live_text.contains("command: ls"), "{live_text}");
     assert!(
         !live_text.contains("已省略"),
         "failed output must not be hidden behind an omission marker: {live_text}"
     );
-    assert!(transcript_text.contains("row 29"));
     assert!(live_text.contains("row 29"));
 }
 
@@ -1527,7 +1387,7 @@ fn calm_mode_keeps_failed_generic_output_expanded() {
 }
 
 #[test]
-fn generic_tool_success_live_collapses_output_transcript_keeps_it() {
+fn generic_tool_success_live_collapses_output() {
     let output = (0..24usize)
         .map(|i| format!("row {i:02}: payload"))
         .collect::<Vec<_>>()
@@ -1543,8 +1403,6 @@ fn generic_tool_success_live_collapses_output_transcript_keeps_it() {
     });
 
     let live_text = lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
-    let transcript_text = lines_text(&cell.transcript_lines(80));
-
     assert!(
         !live_text.contains("row 00"),
         "successful generic tool output should be hidden live: {live_text}"
@@ -1553,8 +1411,6 @@ fn generic_tool_success_live_collapses_output_transcript_keeps_it() {
         !live_text.contains("已省略"),
         "collapsed success should not spend a row on an omission marker: {live_text}"
     );
-    assert!(transcript_text.contains("row 00"));
-    assert!(transcript_text.contains("row 23"));
 }
 
 #[test]

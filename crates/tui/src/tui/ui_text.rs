@@ -1,10 +1,6 @@
 //! Shared display-width and plain-text helpers for the TUI.
 
-use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-use crate::tui::history::HistoryCell;
-use crate::tui::osc8;
 
 pub(crate) fn truncate_line_to_width(text: &str, max_width: usize) -> String {
     if max_width == 0 {
@@ -125,66 +121,8 @@ pub(crate) fn semantic_truncate_between_affixes(
     semantic_truncate(text, max_width - fixed_width)
 }
 
-pub(super) fn history_cell_to_text(cell: &HistoryCell, width: u16) -> String {
-    cell.transcript_lines(width)
-        .into_iter()
-        .map(line_to_string)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn line_to_string(line: Line<'static>) -> String {
-    let mut out = String::new();
-    append_spans_plain(line.spans.iter(), &mut out);
-    out
-}
-
-/// Convert every span in a rendered line to plain text, stripping any residual
-/// OSC-8 link escape sequences. Visual decoration remains part of the result;
-/// callers that need semantic text must choose their source spans explicitly.
-pub(super) fn line_to_plain(line: &Line<'static>) -> String {
-    let mut out = String::new();
-    append_spans_plain(line.spans.iter(), &mut out);
-    out
-}
-
-fn append_spans_plain<'a, I>(spans: I, out: &mut String)
-where
-    I: Iterator<Item = &'a Span<'a>>,
-{
-    for span in spans {
-        if span.content.contains('\x1b') {
-            osc8::strip_into(&span.content, out);
-        } else {
-            out.push_str(span.content.as_ref());
-        }
-    }
-}
-
 pub(crate) fn text_display_width(text: &str) -> usize {
     text.chars().map(char_display_width).sum()
-}
-
-pub(super) fn slice_text(text: &str, start: usize, end: usize) -> String {
-    if end <= start {
-        return String::new();
-    }
-
-    let mut out = String::new();
-    let mut col = 0usize;
-    for ch in text.chars() {
-        let ch_width = char_display_width(ch);
-        let ch_start = col;
-        let ch_end = col.saturating_add(ch_width);
-        if ch_end > start && ch_start < end {
-            out.push(ch);
-        }
-        col = ch_end;
-        if col >= end {
-            break;
-        }
-    }
-    out
 }
 
 pub(super) fn char_display_width(ch: char) -> usize {
@@ -194,7 +132,7 @@ pub(super) fn char_display_width(ch: char) -> usize {
         // `width()` returns `None` for control/unassigned chars (default them to
         // one column so layout doesn't collapse) and `Some(0)` for genuinely
         // zero-width chars — combining marks, ZWJ, zero-width spaces — which must
-        // stay 0 so display-width math (truncation, slicing, overflow, copy)
+        // stay 0 so display-width math (truncation and layout)
         // matches what the terminal actually renders.
         UnicodeWidthChar::width(ch).unwrap_or(1)
     }
@@ -203,59 +141,6 @@ pub(super) fn char_display_width(ch: char) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::text::Span;
-
-    #[test]
-    fn line_to_plain_strips_osc_8_wrapper() {
-        let wrapped = format!(
-            "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\",
-            "https://example.com", "https://example.com"
-        );
-        let line = Line::from(vec![
-            Span::raw("see "),
-            Span::raw(wrapped),
-            Span::raw(" for details"),
-        ]);
-        let text = line_to_plain(&line);
-        assert_eq!(text, "see https://example.com for details");
-    }
-
-    #[test]
-    fn line_to_plain_passes_through_plain_spans() {
-        let line = Line::from(vec![Span::raw("plain "), Span::raw("text")]);
-        let text = line_to_plain(&line);
-        assert_eq!(text, "plain text");
-    }
-
-    #[test]
-    fn line_to_plain_includes_all_spans() {
-        // This helper is deliberately a faithful span-to-string pass-through.
-        let line = Line::from(vec![Span::raw("\u{2502} "), Span::raw("tool output")]);
-        let text = line_to_plain(&line);
-        assert_eq!(text, "\u{2502} tool output");
-    }
-
-    #[test]
-    fn slice_text_respects_column_bounds() {
-        let text = "hello world";
-        assert_eq!(slice_text(text, 0, 5), "hello");
-        assert_eq!(slice_text(text, 6, 11), "world");
-        assert_eq!(slice_text(text, 0, 0), "");
-        assert_eq!(slice_text(text, 0, 100), text);
-    }
-
-    #[test]
-    fn slice_text_handles_multibyte_characters() {
-        let text = "a─b"; // U+2500 is 1 display column on supported terminals
-        assert_eq!(slice_text(text, 1, 2), "─");
-        assert_eq!(slice_text(text, 0, 3), text);
-    }
-
-    #[test]
-    fn slice_text_truncates_at_end() {
-        let text = "ab";
-        assert_eq!(slice_text(text, 1, 5), "b");
-    }
 
     // --- Unicode / CJK / terminal-width QA (issue #3488) -------------------
     // These exercise the production width helpers directly so the assertions
@@ -267,6 +152,19 @@ mod tests {
         assert_eq!(text_display_width("Hello世界"), 9); // 5 ASCII + 2×2
         // Full-width (ambiguous→wide) punctuation is two columns each.
         assert_eq!(text_display_width("，。！？"), 8);
+    }
+
+    #[test]
+    fn text_display_width_keeps_chinese_reasoning_labels_within_narrow_contract() {
+        for (label, width) in [
+            ("推理 进行中", 11),
+            ("推理 已完成", 11),
+            ("推理内容已隐藏", 14),
+            ("推理中…", 7),
+        ] {
+            assert_eq!(text_display_width(label), width, "{label:?}");
+            assert!(width <= 18, "{label:?} exceeds narrow reasoning chrome");
+        }
     }
 
     #[test]
@@ -339,15 +237,6 @@ mod tests {
         let row = format!(" > [ ] Context window  ({hint})");
         assert_eq!(hint, "tokens used compared…");
         assert!(text_display_width(&row) <= 49);
-    }
-
-    #[test]
-    fn slice_text_slices_cjk_by_display_column() {
-        // Columns:  中=[0,2) 文=[2,4) a=[4,5) b=[5,6)
-        let text = "中文ab";
-        assert_eq!(slice_text(text, 0, 2), "中");
-        assert_eq!(slice_text(text, 2, 4), "文");
-        assert_eq!(slice_text(text, 4, 6), "ab");
     }
 
     // --- New #3488 fixtures: CJK/wide-glyph truncation on selector-style rows.
