@@ -15,8 +15,8 @@
 //! - Doctor command (`run_doctor` in `main.rs`): for surfacing the
 //!   resolved state to the user so missing dependencies aren't an
 //!   invisible failure.
-//! - Retained TUI tools and snapshot helpers that invoke Git, Pandoc,
-//!   PDF extraction, or other local executables.
+//! - Retained TUI tools that invoke Git, Pandoc, PDF extraction, or other
+//!   local executables.
 //!
 //! Results are cached for the process lifetime via [`std::sync::OnceLock`]
 //! — probing a binary involves a `Command::output` per candidate and

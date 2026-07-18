@@ -1338,13 +1338,6 @@ If you are upgrading from older releases:
   [`MEMORY.md`](MEMORY.md) for the full feature surface (`# foo`
   composer prefix, `/memory` slash command, `remember` tool, opt-in
   toggle).
-- `snapshots.*` (optional): side-git workspace snapshots for file rollback:
-  - `[snapshots].enabled` (bool, default `true`)
-  - `[snapshots].max_age_days` (int, default `7`)
-  - snapshots live under
-    `~/.codewhale/snapshots/<project_hash>/<worktree_hash>/.git`, with legacy
-    `~/.deepseek/snapshots/...` fallback when only the legacy state exists, and
-    never use the workspace's own `.git` directory
 - `context.*` (optional): deterministic project context in the stable prompt:
   - `[context].project_pack` (bool, default `true`)
 - `retry.*` (optional): retry/backoff settings for API requests:

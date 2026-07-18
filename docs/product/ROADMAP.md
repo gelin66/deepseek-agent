@@ -713,6 +713,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   schema、默认显示 `lsp: on` 的虚假侧栏状态和专属配置/参考文档。当前不会启动
   language server 或注入合成模型消息；M5 的 RepoGraph LSP definition/reference 目标保留，
   只能在 canonical context/tools owner 下以纵向实现和 A/B 重新建立。
+- M4-C 已物理删除 1,852 行旧 TUI side-git snapshot 岛、两套 `[snapshots]` schema、死
+  `/restore`/`/undo` 文案和错误产品声明。当前没有任何 production `snapshot()`、
+  `restore()`、列表或 UI/工具调用，唯一生产入口只是交互启动时为旧版本遗留仓库执行保留期
+  prune；切换后的真实行为损失是程序不再自动清理磁盘上的历史 side-git 数据，且不会自动
+  删除这些用户本地文件。canonical `RunSnapshot`/`RunReplay`、SQLite
+  `agent_run_snapshots`、事件 reducer/crash replay、`ToolOutcome.artifacts` 和 Fleet
+  checkpoint 均保持原 owner 与语义。
 - M4-C 已删除未注册、零执行调用方的旧 TUI `RequestUserInputTool`/parser 和永远为 `None`
   的 prompt shadow。保留的 UserInput modal 直接使用 canonical protocol 类型，并继续通过
   `AgentRuntime` interaction 与 `RunStore` 提交或取消，不再经过第二套 TUI ToolSpec。

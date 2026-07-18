@@ -1378,47 +1378,6 @@ pub struct NotificationsConfig {
     pub sound_file: Option<PathBuf>,
 }
 
-fn default_snapshots_enabled() -> bool {
-    true
-}
-
-fn default_snapshot_max_age_days() -> u64 {
-    crate::snapshot::DEFAULT_MAX_AGE.as_secs() / (24 * 60 * 60)
-}
-
-fn default_snapshot_max_workspace_gb() -> u64 {
-    crate::snapshot::DEFAULT_MAX_WORKSPACE_BYTES_FOR_SNAPSHOT / (1024 * 1024 * 1024)
-}
-
-/// Workspace side-git snapshot configuration (#137).
-#[derive(Debug, Clone, Deserialize)]
-pub struct SnapshotsConfig {
-    /// Snapshot the workspace before and after each interactive agent turn.
-    #[serde(default = "default_snapshots_enabled")]
-    pub enabled: bool,
-    /// Prune side-git snapshots older than this many days at session boot.
-    #[serde(default = "default_snapshot_max_age_days")]
-    pub max_age_days: u64,
-    /// Maximum non-excluded workspace size (in GB) before the snapshot
-    /// feature self-disables on first use. Set to `0` to disable the cap
-    /// and snapshot regardless of size (the v0.8.31 behavior). The walk
-    /// honors `.gitignore` and the snapshot module's built-in excludes
-    /// (`node_modules/`, `target/`, ...) so the measured size reflects
-    /// what would actually land in a snapshot commit.
-    #[serde(default = "default_snapshot_max_workspace_gb")]
-    pub max_workspace_gb: u64,
-}
-
-impl Default for SnapshotsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: default_snapshots_enabled(),
-            max_age_days: default_snapshot_max_age_days(),
-            max_workspace_gb: default_snapshot_max_workspace_gb(),
-        }
-    }
-}
-
 /// User-level memory configuration (#489).
 ///
 /// Default is opt-in: when this table is absent or `enabled = false`, the
@@ -1437,13 +1396,6 @@ pub struct MemoryConfig {
     /// skipped even when `enabled = true`. Default `false`.
     #[serde(default)]
     pub moraine_fallback: Option<bool>,
-}
-
-impl SnapshotsConfig {
-    #[must_use]
-    pub fn max_age(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(self.max_age_days.saturating_mul(24 * 60 * 60))
-    }
 }
 
 // Web-search `[search]` table types live in the `search` leaf module and are
@@ -1846,11 +1798,6 @@ pub struct Config {
     /// [`crate::skills::install::DEFAULT_MAX_SIZE_BYTES`]).
     #[serde(default)]
     pub skills: Option<SkillsConfig>,
-
-    /// Workspace side-git snapshots (#137). Defaults to enabled with 7-day
-    /// retention when the table is absent.
-    #[serde(default)]
-    pub snapshots: Option<SnapshotsConfig>,
 
     /// Web search provider configuration. When absent, defaults to DuckDuckGo.
     /// Set `provider` to another supported backend such as `bing`, `tavily`,
@@ -3789,12 +3736,6 @@ impl Config {
         self.notifications.clone().unwrap_or_default()
     }
 
-    /// Resolve workspace side-git snapshot settings with defaults applied.
-    #[must_use]
-    pub fn snapshots_config(&self) -> SnapshotsConfig {
-        self.snapshots.clone().unwrap_or_default()
-    }
-
     /// Resolve community skill settings with defaults applied.
     #[must_use]
     pub fn skills_config(&self) -> SkillsConfig {
@@ -5399,7 +5340,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
         skills: merge_skills_config(base.skills, override_cfg.skills),
-        snapshots: override_cfg.snapshots.or(base.snapshots),
         search: override_cfg.search.or(base.search),
         memory: override_cfg.memory.or(base.memory),
         auto: override_cfg.auto.or(base.auto),

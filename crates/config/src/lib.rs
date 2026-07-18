@@ -472,10 +472,6 @@ pub struct ConfigToml {
     /// `registry_url` when running `deepseek skill install`.
     #[serde(default)]
     pub skills: Option<SkillsToml>,
-    /// Workspace side-git snapshots (#137). The live TUI defaults this to
-    /// enabled with 7-day retention when absent.
-    #[serde(default)]
-    pub snapshots: Option<SnapshotsToml>,
     /// Per-model harness profiles (#2693). Runtime wiring lands in follow-up
     /// v0.9 slices; this is the durable config data model.
     #[serde(default)]
@@ -908,33 +904,6 @@ pub struct ToolsToml {
     /// Native tool names to keep loaded outside the default core catalog.
     #[serde(default)]
     pub always_load: Vec<String>,
-}
-
-/// On-disk schema for the `[snapshots]` table (#137). See
-/// `config.example.toml` for documentation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SnapshotsToml {
-    #[serde(default = "default_snapshots_enabled")]
-    pub enabled: bool,
-    #[serde(default = "default_snapshot_max_age_days")]
-    pub max_age_days: u64,
-}
-
-fn default_snapshots_enabled() -> bool {
-    true
-}
-
-fn default_snapshot_max_age_days() -> u64 {
-    7
-}
-
-impl Default for SnapshotsToml {
-    fn default() -> Self {
-        Self {
-            enabled: default_snapshots_enabled(),
-            max_age_days: default_snapshot_max_age_days(),
-        }
-    }
 }
 
 /// On-disk schema for the `[fleet]` table (#3165). See `config.example.toml`

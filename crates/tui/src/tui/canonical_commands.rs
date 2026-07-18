@@ -215,6 +215,8 @@ mod tests {
         assert!(matches!(parse("/model"), CanonicalSlashParse::Error(_)));
         assert!(matches!(parse("/models"), CanonicalSlashParse::Error(_)));
         assert!(matches!(parse("/jobs"), CanonicalSlashParse::Error(_)));
+        assert!(matches!(parse("/restore 1"), CanonicalSlashParse::Error(_)));
+        assert!(matches!(parse("/undo"), CanonicalSlashParse::Error(_)));
         assert!(matches!(
             parse("/jobs show shell_x"),
             CanonicalSlashParse::Error(_)

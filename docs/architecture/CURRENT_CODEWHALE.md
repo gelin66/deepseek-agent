@@ -426,6 +426,12 @@ M4-C foreground 切换后还已物理删除：
   `[lsp]` schema、侧栏虚假 `lsp: on/off` 状态和专属文档已同步删除。MCP transport 及
   `notifications/initialized` 不在该路径，继续保留。M5 若用 LSP 补强 RepoGraph，必须在
   canonical context/tools 路径重新实现并评测，不恢复 TUI Engine 兼容层。
+- 旧 TUI side-git snapshot 岛及 `[snapshots]` 配置。它没有 production snapshot writer、
+  restore/list UI、`/restore` handler 或 `revert_turn` 工具；唯一真实调用方是交互启动时对旧
+  仓库执行保留期 prune。该 janitor 随整岛删除后，不再自动清理
+  `~/.codewhale/snapshots`/`~/.deepseek/snapshots` 中的历史 side-git 数据，也不会在切换时
+  自动删除用户文件。Runtime `RunSnapshot`/`RunReplay`、State `agent_run_snapshots`、canonical
+  reducer/crash replay、工具 artifact 和 Fleet checkpoint 是不同 owner，均未改变。
 - `key_shortcuts` 中零调用的 copy/paste/control-like/Ctrl-H predicates；保留首启输入所需
   的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
 - 零生产消费者的通用 `[vision_model]`/`image_analyze` 配置与 feature；正式模型面仍只有

@@ -64,7 +64,6 @@ mod session_diagnostics;
 #[allow(dead_code)]
 mod settings;
 mod skills;
-mod snapshot;
 mod startup_trace;
 #[cfg(test)]
 mod test_support;
@@ -6006,27 +6005,6 @@ async fn run_interactive(
     }
 
     startup_trace::mark("interactive_config");
-
-    // Snapshot pruning is best-effort disk hygiene. The git object walk can
-    // dominate startup on large workspaces, so it runs on a blocking worker
-    // while the TUI brings up its first frame.
-    let snapshots = config.snapshots_config();
-    let janitor_snapshots_enabled = snapshots.enabled;
-    let janitor_max_age = snapshots.max_age();
-    let janitor_workspace = workspace.clone();
-    tokio::task::spawn_blocking(move || {
-        if janitor_snapshots_enabled {
-            match crate::snapshot::prune_older_than(&janitor_workspace, janitor_max_age) {
-                Ok(0) => {}
-                Ok(count) => {
-                    tracing::debug!(target: "snapshot", "boot prune removed {count} snapshot(s)");
-                }
-                Err(error) => {
-                    tracing::warn!(target: "snapshot", "boot prune failed: {error}");
-                }
-            }
-        }
-    });
 
     // The `deepseek` launcher forwards `--yolo` to this binary via the
     // DEEPSEEK_YOLO env var (config.yolo), not as a CLI flag. Honour either.
