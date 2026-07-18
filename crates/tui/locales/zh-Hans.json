@@ -399,7 +399,6 @@
     "FleetProfileIdConflict": "配置 id `{id}` 已被 {path} 占用；请重新起草为不同的角色或先移除旧文件。",
     "FleetProfileProviderUnconfigured": "配置指定的 provider `{provider}` 尚未配置凭据（{env}）；请先在 /provider 中设置，再保存。",
     "SidebarTasksLabel": "任务",
-    "SidebarTodoLabel": "待办",
     "SidebarDestructiveArmed": "破坏性操作已就绪 — 按 Enter 确认，或清空草稿以取消",
     "ComposerSlashMenuHint": " enter:运行 · tab:补全 · ↑↓:选择 · esc:继续输入 ",
     "ApprovalRepoLawBadge": "仓库法则",
