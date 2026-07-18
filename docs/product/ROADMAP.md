@@ -746,6 +746,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除首启状态机从不产生的 Provider 选择页、picker memory 与多 Provider 文案；
   真实首启直接进入 DeepSeek API Key/工作区信任/Tips，canonical `/provider` 仍被拒绝。
   通用 Provider 配置的最终 schema 删除仍留给 M7，不在本切片伪造兼容入口。
+- M4-C 已删除 provider-lake 中零生产消费者的 configured-provider、picker model-list 和
+  dashboard count 查询面。保留的 `catalog_offering_for_model` 仍服务现有 pricing，Codex
+  route metadata 与 canonical Fleet 不经过已删除 API；通用 Provider catalog 的最终物理
+  删除仍由 M7 完成。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

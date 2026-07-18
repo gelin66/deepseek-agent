@@ -1,10 +1,8 @@
-//! Configured provider/model lake facade (#3830, Wave 5b / #4188).
+//! Catalog lookup facade retained by pricing and legacy route metadata.
 //!
-//! Single seam over the Models.dev catalog layers and the configured-provider
-//! predicate shared with `/provider`. Precedence is **live Models.dev >
-//! bundled offline snapshot > legacy hardcoded fallback**. Pickers, route
-//! slots, slash completions, and subagent validation should read model lists
-//! from here.
+//! Precedence is **live Models.dev > bundled offline snapshot > legacy
+//! hardcoded fallback**. The TUI has no provider picker or catalog dashboard;
+//! this module does not expose configured-provider queries.
 //!
 //! [`crate::config::model_completion_names_for_provider`] is retained only as a
 //! compatibility fallback for CodeWhale-only / local providers that Models.dev
@@ -16,9 +14,7 @@ use std::sync::RwLock;
 use codewhale_config::catalog::{CatalogOffering, CatalogSnapshot, bundled_catalog_offerings};
 
 use crate::codex_model_cache;
-use crate::config::{
-    ApiProvider, Config, model_completion_names_for_provider, provider_is_configured_for_active,
-};
+use crate::config::{ApiProvider, model_completion_names_for_provider};
 
 static BUNDLED_SNAPSHOT: std::sync::OnceLock<CatalogSnapshot> = std::sync::OnceLock::new();
 
@@ -169,51 +165,6 @@ pub fn catalog_offering_for_model(
         .cloned()
 }
 
-/// Count of merged-catalog models for one provider (catalog view / dashboard).
-#[must_use]
-pub fn catalog_model_count_for_provider(provider: ApiProvider) -> usize {
-    all_catalog_models_for_provider(provider).len()
-}
-
-/// Providers the user has set up — active provider, working credentials/OAuth,
-/// or an explicit `[providers.<name>]` entry (#3830).
-#[must_use]
-pub fn configured_providers(config: &Config, active: ApiProvider) -> Vec<ApiProvider> {
-    ApiProvider::sorted_for_display()
-        .into_iter()
-        .filter(|provider| provider_is_configured_for_active(config, *provider, active))
-        .collect()
-}
-
-/// Catalog models for providers that qualify as configured for `active`.
-#[must_use]
-pub fn models_for_provider(
-    config: &Config,
-    active: ApiProvider,
-    provider: ApiProvider,
-) -> Vec<String> {
-    if provider_is_configured_for_active(config, provider, active) {
-        all_catalog_models_for_provider(provider)
-    } else {
-        Vec::new()
-    }
-}
-
-/// Every built-in provider that carries at least one merged-catalog row.
-#[must_use]
-#[allow(dead_code)]
-pub fn all_catalog_providers() -> Vec<ApiProvider> {
-    let mut seen = Vec::new();
-    for offering in &merged_snapshot().offerings {
-        if let Some(provider) = ApiProvider::parse(&offering.provider)
-            && !seen.contains(&provider)
-        {
-            seen.push(provider);
-        }
-    }
-    seen
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,40 +191,6 @@ mod tests {
         assert!(
             models.contains(&DEFAULT_TOGETHER_FLASH_MODEL.to_string()),
             "missing Together flash: {models:?}"
-        );
-    }
-
-    #[test]
-    fn configured_providers_matches_provider_predicate() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let _auth_file = crate::test_support::EnvVarGuard::set(
-            "OPENAI_CODEX_AUTH_FILE",
-            tmp.path().join("missing-auth.json"),
-        );
-        let _openai_token = crate::test_support::EnvVarGuard::remove("OPENAI_CODEX_ACCESS_TOKEN");
-        let _codex_token = crate::test_support::EnvVarGuard::remove("CODEX_ACCESS_TOKEN");
-        let config = Config::default();
-        let active = ApiProvider::Deepseek;
-        let expected: Vec<_> = ApiProvider::sorted_for_display()
-            .into_iter()
-            .filter(|provider| {
-                crate::config::provider_is_configured_for_active(&config, *provider, active)
-            })
-            .collect();
-        assert_eq!(configured_providers(&config, active), expected);
-    }
-
-    #[test]
-    fn models_for_provider_filters_unconfigured_gateways() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _together = crate::test_support::EnvVarGuard::remove("TOGETHER_API_KEY");
-        let config = Config::default();
-        assert!(
-            models_for_provider(&config, ApiProvider::Deepseek, ApiProvider::Together).is_empty()
-        );
-        assert!(
-            !models_for_provider(&config, ApiProvider::Deepseek, ApiProvider::Deepseek).is_empty()
         );
     }
 
