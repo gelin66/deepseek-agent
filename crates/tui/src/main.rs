@@ -49,7 +49,6 @@ mod localization;
 mod logging;
 mod lsp;
 mod mcp;
-mod memory;
 mod model_catalog;
 mod models;
 mod network_policy;

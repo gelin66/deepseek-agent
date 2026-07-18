@@ -340,6 +340,8 @@ M4-C foreground 切换后还已物理删除：
   transcript 仍由 `CanonicalRunProjection`/presenter 与 `TranscriptViewCache` 实时驱动。
 - App 状态始终为 `None`、没有生产 toggle/key handler 的 File Tree pane 及其后台目录扫描；
   `file_mention` 与 frecency 继续保留为 composer 文件引用能力，不与旧 pane 混为一体。
+- 只有自身测试消费者、从未被 canonical prompt composition 调用的旧 TUI `memory.rs`；生产
+  system prompt 仍由 `crates/context` 唯一构造，项目 instructions/skills/WorldState 不变。
 
 ## 6. 当前验证事实
 

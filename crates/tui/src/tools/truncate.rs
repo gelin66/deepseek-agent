@@ -46,10 +46,8 @@ use std::path::Path;
 /// Name of the spillover directory under the CodeWhale home.
 pub const SPILLOVER_DIR_NAME: &str = "tool_outputs";
 
-/// Default threshold above which a tool result is a candidate for
-/// spillover. Mirrors the `MAX_MEMORY_SIZE` ceiling we use elsewhere
-/// for "too large to inline" so the rules feel consistent. Wired
-/// callers can pass a different value if a tool family has different
+/// Default threshold above which a tool result is a candidate for spillover.
+/// Wired callers can pass a different value if a tool family has different
 /// economics.
 pub const SPILLOVER_THRESHOLD_BYTES: usize = 100 * 1024; // 100 KiB
 

@@ -658,6 +658,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除始终为 `None`、没有生产打开或按键调用方的旧 File Tree pane、私有后台扫描
   和失效的 `Ctrl+Shift+E` 声明。真实 `@mention`、frecency、模糊路径解析和 composer
   菜单保留，文件引用的 canonical context 接线继续作为独立能力缺口处理。
+- M4-C 已物理删除仅由自身测试调用、从未进入 production prompt 的旧 TUI `memory.rs`
+  push/inject 实现。canonical `crates/context::production_system_prompt`、instructions、skills、
+  WorldState、handoff 与 compaction 保留；历史 memory 配置/Doctor/侧栏假投影另片清理。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
