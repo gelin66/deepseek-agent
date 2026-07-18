@@ -10,8 +10,9 @@ use std::borrow::Cow;
 use std::fmt;
 use unicode_width::UnicodeWidthStr;
 
+use codewhale_protocol::agent_runtime::UserInteractionResponse as UserInputResponse;
+
 use crate::palette;
-use crate::tools::UserInputResponse;
 use crate::tui::approval::ReviewDecision;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

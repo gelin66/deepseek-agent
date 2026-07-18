@@ -190,11 +190,10 @@ impl ShellPhase {
         {
             return Self::Failed;
         }
-        if app.pending_user_input_prompt.is_some()
-            || app
-                .task_panel
-                .iter()
-                .any(|task| matches!(task.status.as_str(), "waiting" | "needs_user"))
+        if app
+            .task_panel
+            .iter()
+            .any(|task| matches!(task.status.as_str(), "waiting" | "needs_user"))
         {
             return Self::Waiting;
         }

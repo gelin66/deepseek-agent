@@ -358,6 +358,8 @@ M4-C foreground 切换后还已物理删除：
   picker，运行模型仍由 DeepSeek 配置进入 canonical Run 请求。
 - 从未被生产构造、没有事件 handler 的旧 `ElevationView`/widget/event 整岛；真实审批与
   结构化提问仍由 canonical interaction 承担，Run 级 `allow_sandbox_elevation` 策略保留。
+- 未注册且零执行调用方的旧 TUI `RequestUserInputTool`/parser 与 prompt shadow；保留的
+  UserInput modal 直接消费 protocol request/response，提交仍落入 canonical RunStore。
 
 ## 6. 当前验证事实
 

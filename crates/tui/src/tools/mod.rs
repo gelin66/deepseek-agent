@@ -18,6 +18,3 @@ pub mod plugin;
 pub mod spec;
 pub mod todo;
 pub mod truncate;
-pub mod user_input;
-
-pub use user_input::UserInputResponse;

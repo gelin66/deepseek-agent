@@ -5,10 +5,12 @@ use ratatui::layout::{Alignment, Rect};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 
-use crate::palette;
-use crate::tools::user_input::{
-    UserInputAnswer, UserInputQuestion, UserInputRequest, UserInputResponse,
+use codewhale_protocol::agent_runtime::{
+    UserInputAnswer, UserInputQuestion, UserInputRequest,
+    UserInteractionResponse as UserInputResponse,
 };
+
+use crate::palette;
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent, render_modal_surface};
 
 fn modal_block(title: &str) -> Block<'static> {
@@ -517,7 +519,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::user_input::{UserInputOption, UserInputQuestion, UserInputRequest};
+    use codewhale_protocol::agent_runtime::UserInputOption;
 
     fn render_view(view: &UserInputView, width: u16, height: u16) -> String {
         let area = Rect::new(0, 0, width, height);

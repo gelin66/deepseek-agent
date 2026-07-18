@@ -1747,8 +1747,6 @@ pub struct App {
     pub approval_mode: ApprovalMode,
     // Modal view stack (approval/help/etc.)
     pub view_stack: ViewStack,
-    /// Last `request_user_input` prompt, retained so a failed modal submit can reopen (#1198).
-    pub pending_user_input_prompt: Option<(String, crate::tools::user_input::UserInputRequest)>,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
     /// Ordered footer items loaded from `tui.status_items` at startup. The
@@ -2577,7 +2575,6 @@ impl App {
                 configured_approval_mode
             },
             view_stack: ViewStack::new(),
-            pending_user_input_prompt: None,
             trust_mode: yolo_compat || initial_mode == AppMode::Yolo,
             status_items: config
                 .tui
@@ -3032,7 +3029,6 @@ impl App {
     #[must_use]
     pub fn attention_hold_active(&self) -> bool {
         !self.view_stack.is_empty()
-            || self.pending_user_input_prompt.is_some()
             || self
                 .task_panel
                 .iter()
