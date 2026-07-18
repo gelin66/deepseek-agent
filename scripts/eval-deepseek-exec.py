@@ -73,7 +73,7 @@ ACTIVE_OUTPUT_STREAM: TextIO | None = None
 SCHEDULE_POLICY = "deterministic_pair_order_balance_v1"
 SYSTEM_PROMPT_EVIDENCE_SCHEMA = "codewhale.eval.system-prompt-evidence.v1"
 SYSTEM_PROMPT_FINGERPRINT_SCHEMA = "codewhale.eval.system-prompt-fingerprint.v1"
-SUPPORTED_STATE_SCHEMA_VERSIONS = {9}
+SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({9, 10})
 SUPPORTED_RUNTIME_EVENT_SCHEMA_VERSIONS = {6}
 PROMPT_HASH_DOMAIN = b"codewhale.eval.system-prompt/v1\0"
 PROMPT_BLOCK_HASH_DOMAIN = b"codewhale.eval.system-prompt-block/v1\0"
@@ -3840,8 +3840,17 @@ def self_test_stored_event(
 
 
 def write_self_test_prompt_store(
-    path: Path, stored_events: list[dict[str, Any]]
+    path: Path,
+    stored_events: list[dict[str, Any]],
+    *,
+    state_schema_version: int = 9,
 ) -> None:
+    if (
+        not isinstance(state_schema_version, int)
+        or isinstance(state_schema_version, bool)
+        or not 0 <= state_schema_version <= 2_147_483_647
+    ):
+        raise ValueError("invalid self-test state schema version")
     connection = sqlite3.connect(path)
     try:
         connection.executescript(
@@ -3856,8 +3865,10 @@ def write_self_test_prompt_store(
                 event_json TEXT NOT NULL,
                 PRIMARY KEY(run_id, sequence)
             );
-            PRAGMA user_version = 9;
             """
+        )
+        connection.execute(
+            f"PRAGMA user_version = {state_schema_version:d}"
         )
         for stored in stored_events:
             connection.execute(
@@ -4549,9 +4560,14 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertFalse(temporary_path.exists())
         self.assertTrue(evidence["complete"])
 
-    def test_prompt_evidence_consumes_rust_v6_contract_fixture(self) -> None:
+    def test_prompt_evidence_consumes_rust_v6_contract_fixture_in_state_v9_and_v10(
+        self,
+    ) -> None:
         # crates/protocol/tests/prompt_ledger_fixture.rs proves every record in
         # this same file deserializes and round-trips as StoredRuntimeEvent v6.
+        # State v10 only rematerializes the advertised-catalog snapshot from
+        # this canonical ledger, so prompt identity must remain byte-for-byte
+        # equivalent to v9 while the version whitelist stays fail-closed.
         stored_events = json.loads(
             RUNTIME_EVENT_V6_PROMPT_LEDGER_FIXTURE.read_text(
                 encoding="utf-8"
@@ -4589,33 +4605,71 @@ class HarnessSelfTests(unittest.TestCase):
         )
         child_started = len(in_flight) - root_started
 
-        with tempfile.TemporaryDirectory(
-            prefix="codewhale-deepseek-exec-"
-        ) as temporary:
-            state_root = Path(temporary) / "state"
-            app_home = state_root / "codewhale"
-            app_home.mkdir(parents=True)
-            state_db = app_home / "state.db"
-            write_self_test_prompt_store(state_db, stored_events)
-            evidence = extract_system_prompt_evidence(
-                state_db,
-                state_root,
-                "multi",
-                StreamReceipt(
-                    started_children=[("fixture-call", child_id)],
-                    finished_children=[("fixture-call", child_id)],
-                    child_finished_statuses=["failed"],
-                ),
-                {
-                    "run_id": root_id,
-                    "route_source": "explicit_or_configured",
-                    "status": "failed",
-                    "api_request_count": len(in_flight),
-                    "api_request_root_started": root_started,
-                    "api_request_child_started": child_started,
-                },
+        def extract_fixture(state_schema_version: int) -> dict[str, Any]:
+            with tempfile.TemporaryDirectory(
+                prefix="codewhale-deepseek-exec-"
+            ) as temporary:
+                state_root = Path(temporary) / "state"
+                app_home = state_root / "codewhale"
+                app_home.mkdir(parents=True)
+                state_db = app_home / "state.db"
+                write_self_test_prompt_store(
+                    state_db,
+                    stored_events,
+                    state_schema_version=state_schema_version,
+                )
+                return extract_system_prompt_evidence(
+                    state_db,
+                    state_root,
+                    "multi",
+                    StreamReceipt(
+                        started_children=[("fixture-call", child_id)],
+                        finished_children=[("fixture-call", child_id)],
+                        child_finished_statuses=["failed"],
+                    ),
+                    {
+                        "run_id": root_id,
+                        "route_source": "explicit_or_configured",
+                        "status": "failed",
+                        "api_request_count": len(in_flight),
+                        "api_request_root_started": root_started,
+                        "api_request_child_started": child_started,
+                    },
+                )
+
+        evidence_by_state_schema = {
+            version: extract_fixture(version)
+            for version in sorted(SUPPORTED_STATE_SCHEMA_VERSIONS)
+        }
+        self.assertEqual(set(evidence_by_state_schema), {9, 10})
+        for version, version_evidence in evidence_by_state_schema.items():
+            self.assertTrue(
+                version_evidence["complete"],
+                (version, version_evidence["error_codes"]),
+            )
+            self.assertEqual(
+                version_evidence["state_schema_version"], version
             )
 
+        v9_identity = {
+            key: value
+            for key, value in evidence_by_state_schema[9].items()
+            if key != "state_schema_version"
+        }
+        v10_identity = {
+            key: value
+            for key, value in evidence_by_state_schema[10].items()
+            if key != "state_schema_version"
+        }
+        self.assertEqual(v10_identity, v9_identity)
+        for unsupported_version in (8, 11):
+            unsupported = extract_fixture(unsupported_version)
+            self.assertFalse(unsupported["complete"])
+            self.assertEqual(
+                unsupported["error_codes"], ["unsupported_state_schema"]
+            )
+
+        evidence = evidence_by_state_schema[10]
         self.assertTrue(evidence["complete"], evidence["error_codes"])
         self.assertEqual(evidence["runtime_event_schema_versions"], [6])
         self.assertEqual(evidence["canonical_run_count"], 2)
