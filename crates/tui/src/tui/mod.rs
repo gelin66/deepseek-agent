@@ -53,7 +53,6 @@ pub mod phase_strip;
 pub mod plan_prompt;
 pub mod plan_todo_bridge;
 pub mod prompt_suggestion;
-pub mod provider_picker;
 pub mod run_client;
 pub mod run_presenter;
 pub mod run_projection;

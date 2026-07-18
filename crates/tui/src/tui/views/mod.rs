@@ -38,7 +38,6 @@ pub enum ModalKind {
     LiveTranscript,
     Config,
     ModelPicker,
-    ProviderPicker,
     ModePicker,
     FleetRoster,
     FleetSetup,
@@ -620,59 +619,6 @@ pub enum ViewEvent {
         /// `cheap`, `long_context`) for reopen restore (#4115).
         view: String,
         selected_row_id: Option<String>,
-    },
-    /// Emitted by the `/provider` picker on Esc so the next open can restore
-    /// the browsing context — view mode and highlighted row.
-    ProviderPickerDismissed {
-        catalog_view: bool,
-        selected_provider_id: Option<String>,
-    },
-    /// Emitted by the `/provider` picker when the user selects a provider
-    /// that already has credentials — the handler should perform the same
-    /// switch through the owning application service.
-    ProviderPickerApplied {
-        provider: crate::config::ApiProvider,
-        provider_id: Option<String>,
-    },
-    /// Emitted by the `/provider` picker after the user types an API key
-    /// inline for a provider that lacked one. The handler validates the key
-    /// live; on success it reopens the guided flow at the model-pick stage
-    /// without persisting yet (#3875).
-    ProviderPickerApiKeySubmitted {
-        provider: crate::config::ApiProvider,
-        provider_id: Option<String>,
-        api_key: String,
-    },
-    /// Emitted by the `/provider` guided setup confirm stage after the user
-    /// accepted provider + model. The handler persists the key (and model)
-    /// via the comment-preserving config path, then performs the switch.
-    ProviderPickerSetupConfirmed {
-        provider: crate::config::ApiProvider,
-        provider_id: Option<String>,
-        api_key: String,
-        model: String,
-    },
-    /// Emitted by the `/provider` picker after the custom provider form is
-    /// completed. The handler persists a named OpenAI-compatible provider
-    /// table and switches to it without storing raw secrets.
-    ProviderPickerCustomProviderSubmitted {
-        provider_id: String,
-        base_url: String,
-        model: Option<String>,
-        api_key_env: Option<String>,
-    },
-    /// Emitted by the `/provider` picker when Kimi CLI OAuth credentials can
-    /// be reused for Moonshot/Kimi dispatch.
-    ProviderPickerKimiOAuthEnabled {
-        provider: crate::config::ApiProvider,
-    },
-    /// Emitted by provider/setup UI when xAI device-code OAuth is requested.
-    ProviderPickerXaiOAuthRequested,
-    /// Emitted by the `/provider` picker (the `M` action) to jump straight to
-    /// the `/model` picker pre-filtered to the highlighted provider (#3083).
-    ProviderPickerOpenModels {
-        provider: crate::config::ApiProvider,
-        provider_id: Option<String>,
     },
     /// Emitted by the `/mode` picker when the user chooses a mode.
     ModeSelected {
