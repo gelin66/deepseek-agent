@@ -710,6 +710,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   配置、`ToolContext` router/vars 字段和未接线的 V4-Flash synthesis 声明；canonical 工具
   artifact/evidence 存储不在该路径。旧 TUI spillover writer 另按真实调用图处理，不把两个
   不同 owner 混为一个切片。
+- M4-C 已删除没有生产注册者或 producer、唯一 store 只由默认 `ToolContext` 空建的 TUI
+  `handle_read`/`VarHandle` 原型及其 process-local store；canonical artifact、RuntimeEvent 与
+  RunStore 不经过该路径。随该原型删除后失去最后调用者的 `CountingWriter` 也同步删除。
 - M4-C 已把 `key_shortcuts` 收缩为首启输入仍使用的 `is_text_input_key`，删除零调用的
   copy/paste/control-like/Ctrl-H 判定；正式文本粘贴继续由 terminal `Event::Paste` 处理，
   Pager 文本复制继续走 canonical local view event。

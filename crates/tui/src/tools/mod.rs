@@ -10,7 +10,6 @@
 
 pub mod approval_cache;
 
-pub mod handle;
 pub mod plan;
 pub mod spec;
 pub mod todo;

@@ -16,7 +16,6 @@ use tokio_util::sync::CancellationToken;
 use crate::features::Features;
 use crate::lsp::LspManager;
 use crate::network_policy::NetworkPolicyDecider;
-use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
 use codewhale_tools::ProductionToolContext;
 use codewhale_tools::sandbox::backend::SandboxBackend;
 use codewhale_tools::shell::ShellPolicy;
@@ -47,9 +46,6 @@ pub struct RuntimeToolServices {
     /// tool-side hook events. `None` outside the live engine — test
     /// contexts that don't care about hooks get a no-op.
     pub hook_executor: Option<std::sync::Arc<crate::hooks::HookExecutor>>,
-    /// Per-session backing store for `var_handle` payloads. Cloned tool
-    /// contexts share this Arc so handles survive across turns.
-    pub handle_store: SharedHandleStore,
 }
 
 impl Default for RuntimeToolServices {
@@ -58,7 +54,6 @@ impl Default for RuntimeToolServices {
             shell_manager: None,
             dynamic_tool_executor: None,
             hook_executor: None,
-            handle_store: new_shared_handle_store(),
         }
     }
 }
@@ -72,7 +67,6 @@ impl std::fmt::Debug for RuntimeToolServices {
                 &self.dynamic_tool_executor.is_some(),
             )
             .field("hook_executor", &self.hook_executor.is_some())
-            .field("handle_store", &true)
             .finish()
     }
 }

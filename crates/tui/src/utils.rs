@@ -4,34 +4,6 @@ use std::io::Write;
 use std::path::Path;
 use std::process::Command;
 
-use std::io;
-
-/// A writer that counts bytes written without storing them.
-pub(crate) struct CountingWriter {
-    count: usize,
-}
-
-impl CountingWriter {
-    pub(crate) fn new() -> Self {
-        Self { count: 0 }
-    }
-
-    pub(crate) fn count(&self) -> usize {
-        self.count
-    }
-}
-
-impl io::Write for CountingWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.count += buf.len();
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-
 const LOG_FINGERPRINT_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const LOG_FINGERPRINT_PRIME: u64 = 0x0000_0100_0000_01b3;
 

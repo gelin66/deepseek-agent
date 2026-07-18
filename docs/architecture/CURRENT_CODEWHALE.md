@@ -385,6 +385,9 @@ M4-C foreground 切换后还已物理删除：
 - 只有自身测试、没有生产读取方的 TUI `large_output_router`、`[workshop]` 配置、
   `ToolContext` router/vars 字段与未接线的 V4-Flash synthesis 声明；canonical artifact/
   evidence owner 不在该路径，旧 spillover writer 仍待独立调用图切片。
+- 没有生产注册者或 producer、唯一 store 只由默认 `ToolContext` 空建的 TUI
+  `handle_read`/`VarHandle` 原型与 process-local store；canonical artifact、RuntimeEvent、
+  RunStore 不经该路径，最后仅被它使用的计数 writer 也已删除。
 
 ## 6. 当前验证事实
 
