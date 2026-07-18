@@ -880,6 +880,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   左击产生同一 canonical decision，滚轮只移动 modal 选择，Pager 沿用自己的滚动处理，且
   同一事件不再穿透到底层 transcript/sidebar/composer；没有 modal 时原 transcript 三行
   滚动行为不变。该接线不增加第二事件状态机。
+- M4-C 已删除滚动 owner 中两组未接线叶子：`TranscriptScroll::anchor_for` 只有自身测试，
+  rapid mouse acceleration 状态也只被 `ViewportState` 默认构造、从未读取。canonical mouse
+  继续直接提交固定三行 delta；`pending_scroll_delta`、`resolve_top`/`scrolled_by`、键盘滚动
+  和 Pager 自有 mouse/Vim 键均保持原生产路径。
 - M4-C 已删除 sidebar 每帧构造但从未被事件处理器、popover 或 renderer 读取的
   `SidebarHoverState`/section/row/action 元数据、全文副本和 tooltip shadow，以及从未被
   构造的 `SidebarAgentCancel` 事件。Activity/Agents/Session 的可见行继续由原 renderer

@@ -15,15 +15,7 @@
 //! Codex's pager uses the same line-offset shape; see
 //! `codex-rs/tui/src/pager_overlay.rs::PagerView`.
 
-use std::time::{Duration, Instant};
-
 use crate::tui::ui_text::CopyLineSeparator;
-
-const TRACKPAD_EVENT_WINDOW: Duration = Duration::from_millis(35);
-const WHEEL_LINES_PER_TICK: i32 = 3;
-const TRACKPAD_BASE_LINES_PER_TICK: i32 = 1;
-const TRACKPAD_MID_LINES_PER_TICK: i32 = 2;
-const TRACKPAD_MAX_LINES_PER_TICK: i32 = 3;
 
 // === Transcript Line Metadata ===
 
@@ -199,94 +191,6 @@ impl TranscriptScroll {
             Self::at_line(new_top)
         }
     }
-
-    /// Pin the scroll state to a specific line index in the rendered
-    /// transcript (saturating to the meta buffer length).
-    ///
-    /// Returns `None` if `line_meta` is empty (caller should default to
-    /// [`TranscriptScroll::to_bottom`] in that case).
-    #[must_use]
-    pub fn anchor_for(line_meta: &[TranscriptLineMeta], start: usize) -> Option<Self> {
-        if line_meta.is_empty() {
-            return None;
-        }
-        let clamped = start.min(line_meta.len().saturating_sub(1));
-        Some(Self::at_line(clamped))
-    }
-}
-
-/// Direction for mouse scroll input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScrollDirection {
-    Up,
-    Down,
-}
-
-impl ScrollDirection {
-    fn sign(self) -> i32 {
-        match self {
-            ScrollDirection::Up => -1,
-            ScrollDirection::Down => 1,
-        }
-    }
-}
-
-/// Stateful tracker for mouse scroll accumulation.
-#[derive(Debug, Default)]
-pub struct MouseScrollState {
-    last_event_at: Option<Instant>,
-    last_direction: Option<ScrollDirection>,
-    rapid_same_direction_ticks: u8,
-}
-
-/// A computed scroll delta from user input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ScrollUpdate {
-    pub delta_lines: i32,
-}
-
-impl MouseScrollState {
-    /// Create a new scroll state tracker.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Process a scroll event and return the resulting delta.
-    pub fn on_scroll(&mut self, direction: ScrollDirection) -> ScrollUpdate {
-        let now = Instant::now();
-        self.on_scroll_at(direction, now)
-    }
-
-    fn on_scroll_at(&mut self, direction: ScrollDirection, now: Instant) -> ScrollUpdate {
-        let is_trackpad = self
-            .last_event_at
-            .is_some_and(|last| now.saturating_duration_since(last) < TRACKPAD_EVENT_WINDOW);
-        let same_direction = self.last_direction == Some(direction);
-
-        self.last_event_at = Some(now);
-        self.last_direction = Some(direction);
-
-        let lines_per_tick = if is_trackpad {
-            if same_direction {
-                self.rapid_same_direction_ticks = self.rapid_same_direction_ticks.saturating_add(1);
-            } else {
-                self.rapid_same_direction_ticks = 1;
-            }
-            match self.rapid_same_direction_ticks {
-                0..=2 => TRACKPAD_BASE_LINES_PER_TICK,
-                3..=5 => TRACKPAD_MID_LINES_PER_TICK,
-                _ => TRACKPAD_MAX_LINES_PER_TICK,
-            }
-        } else {
-            self.rapid_same_direction_ticks = 0;
-            WHEEL_LINES_PER_TICK
-        };
-
-        ScrollUpdate {
-            delta_lines: direction.sign() * lines_per_tick,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -455,29 +359,6 @@ mod tests {
         assert_eq!(new_state, TranscriptScroll::at_line(max_start - 3));
     }
 
-    /// `anchor_for` clamps the requested start into the meta range and
-    /// produces a pinned state.
-    #[test]
-    fn anchor_for_clamps_start_into_range() {
-        let meta = synth_line_meta(4, 1);
-        let anchor = TranscriptScroll::anchor_for(&meta, 0).expect("non-empty");
-        assert_eq!(anchor, TranscriptScroll::at_line(0));
-
-        let anchor = TranscriptScroll::anchor_for(&meta, 1_000_000).expect("non-empty");
-        assert_eq!(
-            anchor,
-            TranscriptScroll::at_line(meta.len().saturating_sub(1))
-        );
-    }
-
-    /// Empty `line_meta` returns `None` so callers can fall back to
-    /// [`TranscriptScroll::to_bottom`].
-    #[test]
-    fn anchor_for_empty_returns_none() {
-        let meta: Vec<TranscriptLineMeta> = Vec::new();
-        assert!(TranscriptScroll::anchor_for(&meta, 0).is_none());
-    }
-
     /// Tail state resolves to `max_start` regardless of the `line_meta`
     /// contents.
     #[test]
@@ -487,91 +368,5 @@ mod tests {
         let (state, top) = TranscriptScroll::to_bottom().resolve_top(&meta, max_start);
         assert!(state.is_at_tail());
         assert_eq!(top, max_start);
-    }
-
-    #[test]
-    fn mouse_scroll_single_wheel_tick_moves_three_lines() {
-        let mut state = MouseScrollState::new();
-        let start = Instant::now();
-
-        assert_eq!(
-            state.on_scroll_at(ScrollDirection::Down, start).delta_lines,
-            3
-        );
-        assert_eq!(
-            state.on_scroll_at(ScrollDirection::Up, start).delta_lines,
-            -1,
-            "same timestamp is treated as a rapid precise input"
-        );
-    }
-
-    #[test]
-    fn mouse_scroll_rapid_same_direction_accelerates_but_caps() {
-        let mut state = MouseScrollState::new();
-        let start = Instant::now();
-
-        let deltas = [
-            state.on_scroll_at(ScrollDirection::Down, start).delta_lines,
-            state
-                .on_scroll_at(ScrollDirection::Down, start + Duration::from_millis(10))
-                .delta_lines,
-            state
-                .on_scroll_at(ScrollDirection::Down, start + Duration::from_millis(20))
-                .delta_lines,
-            state
-                .on_scroll_at(ScrollDirection::Down, start + Duration::from_millis(30))
-                .delta_lines,
-            state
-                .on_scroll_at(ScrollDirection::Down, start + Duration::from_millis(40))
-                .delta_lines,
-            state
-                .on_scroll_at(ScrollDirection::Down, start + Duration::from_millis(50))
-                .delta_lines,
-            state
-                .on_scroll_at(ScrollDirection::Down, start + Duration::from_millis(60))
-                .delta_lines,
-            state
-                .on_scroll_at(ScrollDirection::Down, start + Duration::from_millis(70))
-                .delta_lines,
-        ];
-
-        assert_eq!(deltas, [3, 1, 1, 2, 2, 2, 3, 3]);
-    }
-
-    #[test]
-    fn mouse_scroll_direction_change_resets_acceleration() {
-        let mut state = MouseScrollState::new();
-        let start = Instant::now();
-
-        for step in 0..8 {
-            let _ = state.on_scroll_at(
-                ScrollDirection::Down,
-                start + Duration::from_millis(step * 10),
-            );
-        }
-
-        assert_eq!(
-            state
-                .on_scroll_at(ScrollDirection::Up, start + Duration::from_millis(90))
-                .delta_lines,
-            -1
-        );
-    }
-
-    #[test]
-    fn mouse_scroll_slow_gap_resets_to_wheel_tick() {
-        let mut state = MouseScrollState::new();
-        let start = Instant::now();
-
-        assert_eq!(
-            state.on_scroll_at(ScrollDirection::Down, start).delta_lines,
-            3
-        );
-        assert_eq!(
-            state
-                .on_scroll_at(ScrollDirection::Down, start + Duration::from_millis(100))
-                .delta_lines,
-            3
-        );
     }
 }

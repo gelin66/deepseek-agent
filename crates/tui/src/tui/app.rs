@@ -26,7 +26,7 @@ use crate::tui::approval::ApprovalMode;
 use crate::tui::child_agents::ChildAgents;
 use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
-use crate::tui::scrolling::{MouseScrollState, TranscriptScroll};
+use crate::tui::scrolling::TranscriptScroll;
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
@@ -1205,7 +1205,6 @@ impl Default for ComposerState {
 pub struct ViewportState {
     pub transcript_scroll: TranscriptScroll,
     pub pending_scroll_delta: i32,
-    pub mouse_scroll: MouseScrollState,
     pub transcript_cache: TranscriptViewCache,
     pub transcript_selection: TranscriptSelection,
     pub selection_autoscroll: Option<SelectionAutoscroll>,
@@ -1237,7 +1236,6 @@ impl Default for ViewportState {
         Self {
             transcript_scroll: TranscriptScroll::to_bottom(),
             pending_scroll_delta: 0,
-            mouse_scroll: MouseScrollState::new(),
             transcript_cache: TranscriptViewCache::new(),
             transcript_selection: TranscriptSelection::default(),
             selection_autoscroll: None,
