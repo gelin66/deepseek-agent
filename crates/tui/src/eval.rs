@@ -140,9 +140,8 @@ pub struct EvalHarnessConfig {
     /// inside this directory. The fixture file is named after the scenario
     /// (e.g. `offline-tool-loop.jsonl`). Each line follows the schema:
     /// `{ "request": <step descriptor>, "response_events": [<events>] }`.
-    /// The mock LLM client (`crate::llm_client::mock`) can replay these
-    /// fixtures for deterministic offline tests. See
-    /// `crates/tui/tests/README.md` for the full record/replay flow.
+    /// The eval harness tests deserialize these records to verify the stable
+    /// evidence format without involving a model client.
     pub record_dir: Option<PathBuf>,
 }
 
@@ -351,16 +350,12 @@ impl EvalHarness {
     }
 }
 
-// === Fixture record/replay format ===========================================
+// === Fixture record format ==================================================
 //
 // The `--record` flag writes one JSON object per line to a `.jsonl` file:
 //
 //     { "request": { "step": "list_dir", "kind": "List" },
 //       "response_events": [{ "type": "ok", "output": "…" }] }
-//
-// The mock LLM client replays these fixtures via
-// `MockLlmClient::push_message_response` (or the streaming variant) by mapping
-// each `response_events` array onto a canned `Vec<StreamEvent>`.
 //
 // This format is intentionally minimal — additional fields (timing, model,
 // usage) can be added without breaking older fixtures because each line is a

@@ -917,8 +917,7 @@ struct EvalArgs {
     /// Emit machine-readable JSON output
     #[arg(long, default_value_t = false)]
     json: bool,
-    /// Append one JSONL fixture line per step to `<DIR>/<scenario>.jsonl`.
-    /// Mock LLM tests can later replay these fixtures.
+    /// Append one JSONL evidence record per step to `<DIR>/<scenario>.jsonl`.
     #[arg(long, value_name = "DIR")]
     record: Option<PathBuf>,
 }

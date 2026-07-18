@@ -6,8 +6,8 @@
 //! These tests exercise the full validation pipeline against a tiny in-process
 //! HTTP server, so the network gate, download cap, tarball validation, atomic
 //! rename, and `.installed-from` marker all run end-to-end. The module is
-//! pulled in via `#[path]` includes (matching `integration_mock_llm.rs`) so we
-//! get access to private helpers without a separate library crate.
+//! pulled in via `#[path]` includes so we can access private helpers without a
+//! separate library crate.
 
 use std::io::Write;
 use std::path::Path;
