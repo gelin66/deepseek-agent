@@ -27,20 +27,15 @@ codewhale-lane = { path = "../lane", version = "0.8.68" }
 codewhale-workflow = { path = "../workflow", version = "0.8.68" }
 codewhale-execpolicy = { path = "../execpolicy", version = "0.8.68" }
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
-codewhale-release = { path = "../release", version = "0.8.68" }
 codewhale-secrets = { path = "../secrets", version = "0.8.68" }
 codewhale-state = { path = "../state", version = "0.8.68" }
 chrono.workspace = true
 dirs.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-reqwest = { workspace = true, features = ["blocking"] }
 rustls.workspace = true
-semver.workspace = true
 tokio.workspace = true
 mimalloc.workspace = true
-sha2.workspace = true
-tempfile.workspace = true
 tracing.workspace = true
 
 [build-dependencies]
@@ -52,3 +47,4 @@ libc = "0.2"
 
 [dev-dependencies]
 codewhale-runtime = { path = "../runtime", version = "0.8.68" }
+tempfile.workspace = true

@@ -754,13 +754,16 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 ### 剩余清理
 
 - 其他 Provider、模型目录、定价和别名；
-- 旧 updater、release 和品牌耦合；
+- release 和品牌耦合；
 - 其余腾讯云/CNB 等未接线云部署资产；
 - 遗留 evidence 和最终不再需要的导入资产；
 - 无接线 stub、兼容别名、旧语义适配层和新旧双路径。
 
 Telegram、Feishu、bridge-core、remote-setup 调用面和 Tencent Lighthouse 部署链已在 M4-B
 因 app-server 旧控制面删除而同步物理删除，不再列为 M7 待办。
+
+顶层 `codewhale update`、CLI 自更新实现及其专用直接依赖已删除；TUI 启动时版本检查和
+仍有真实消费者的 `release` crate 保留，后续只能按各自消费者单独处置。
 
 清理必须先通过依赖盘点；Cargo 核心能力不得因外围删除而退化。Provider 专用的人类界面
 随对应旧路径一起删除，不投入翻译；每个切片只汉化已经确认保留的 DeepSeek 配置、Agent

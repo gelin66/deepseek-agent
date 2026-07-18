@@ -1,8 +1,6 @@
 #![allow(clippy::uninlined_format_args)]
 
 mod metrics;
-#[cfg(not(target_env = "ohos"))]
-mod update;
 
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -343,21 +341,6 @@ The command prints the completion script to stdout; redirect it to a path your s
     },
     /// Print a usage rollup from the audit log and session store.
     Metrics(MetricsArgs),
-    /// Check for and apply updates to the `codewhale` binary.
-    Update(UpdateArgs),
-}
-
-#[derive(Debug, Args)]
-struct UpdateArgs {
-    /// Update to the latest beta release instead of the latest stable release.
-    #[arg(long)]
-    beta: bool,
-    /// Only check the latest release; do not download or replace binaries.
-    #[arg(long)]
-    check: bool,
-    /// Proxy URL to use for update HTTP requests.
-    #[arg(long, value_name = "URL")]
-    proxy: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1419,6 +1402,9 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
             Some("mcp-server") => bail!(
                 "命令 `codewhale mcp-server` 已删除；如需本地 Agent 接口，请使用 canonical `codewhale app-server --stdio`"
             ),
+            Some("update") => bail!(
+                "命令 `codewhale update` 已删除；本项目不再内置自更新器，请通过当前安装渠道重新安装或升级"
+            ),
             _ => {}
         }
     }
@@ -1575,17 +1561,6 @@ fn run() -> Result<()> {
             unreachable!("completion command dispatched before ConfigStore")
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
-        Some(Commands::Update(args)) => {
-            #[cfg(not(target_env = "ohos"))]
-            {
-                update::run_update(args.beta, args.check, args.proxy)
-            }
-            #[cfg(target_env = "ohos")]
-            {
-                let _ = args;
-                bail!("self-update is not supported on HarmonyOS/OpenHarmony yet");
-            }
-        }
         None => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             let forwarded = root_tui_passthrough(&cli)?;
@@ -2904,7 +2879,7 @@ fn tui_spawn_error(tui: &Path, err: &io::Error) -> String {
 \n\
 The `codewhale` dispatcher found a `codewhale-tui` file, but the OS refused \
 to execute it. Common fixes:\n\
-  - Reinstall with `npm install -g codewhale`, or run `codewhale update`.\n\
+  - Reinstall both binaries through the same installation channel.\n\
   - On Windows, run `where codewhale` and `where codewhale-tui`; both should \
 come from the same install directory.\n\
   - If you downloaded release assets manually, keep both `codewhale` and \
@@ -3182,47 +3157,6 @@ mod tests {
                 command: ConfigCommand::Path
             }))
         ));
-    }
-
-    #[test]
-    fn parses_update_beta_flag() {
-        let cli = parse_ok(&["codewhale", "update"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Update(UpdateArgs {
-                beta: false,
-                check: false,
-                proxy: None
-            }))
-        ));
-
-        let cli = parse_ok(&["codewhale", "update", "--beta"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Update(UpdateArgs {
-                beta: true,
-                check: false,
-                proxy: None
-            }))
-        ));
-
-        let cli = parse_ok(&["codewhale", "update", "--check"]);
-        assert!(matches!(
-            cli.command,
-            Some(Commands::Update(UpdateArgs {
-                beta: false,
-                check: true,
-                proxy: None
-            }))
-        ));
-
-        let cli = parse_ok(&["codewhale", "update", "--proxy", "socks5://127.0.0.1:1080"]);
-        let Some(Commands::Update(args)) = cli.command else {
-            panic!("expected update command");
-        };
-        assert!(!args.beta);
-        assert!(!args.check);
-        assert_eq!(args.proxy.as_deref(), Some("socks5://127.0.0.1:1080"));
     }
 
     #[test]
@@ -5344,7 +5278,7 @@ mod tests {
                 "expected help to contain token: {token}"
             );
         }
-        for retired in ["sessions", "fork", "run", "mcp-server"] {
+        for retired in ["sessions", "fork", "run", "mcp-server", "update"] {
             assert!(
                 !rendered.lines().any(|line| {
                     line.strip_prefix("  ")
@@ -5377,6 +5311,15 @@ mod tests {
         assert_eq!(
             root_tui_passthrough(&explicit_run_prompt).expect("explicit run prompt"),
             vec!["--prompt", "run this task"]
+        );
+
+        let explicit_update_prompt =
+            parse_ok(&["codewhale", "--prompt", "update", "the", "dependencies"]);
+        reject_retired_command(&explicit_update_prompt)
+            .expect("an explicit prompt must not be mistaken for the retired update command");
+        assert_eq!(
+            root_tui_passthrough(&explicit_update_prompt).expect("explicit update prompt"),
+            vec!["--prompt", "update the dependencies"]
         );
 
         let add_self = parse_ok(&["codewhale", "mcp", "add-self"]);

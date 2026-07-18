@@ -253,6 +253,8 @@ M4-C foreground 切换后还已物理删除：
 - registry-driven slash command system（64 files，净删 25,516 行）；
 - CodeWhale 自托管 MCP server 的两套实现与 `crates/mcp`；外部 MCP client、ACP 与
   canonical app-server 保留。
+- 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查和仍被 TUI/hooks 使用的
+  `crates/release` 保留，不属于本次删除。
 
 ## 6. 当前验证事实
 

@@ -280,6 +280,7 @@ fn dispatcher_help_exposes_runs_and_removes_retired_top_level_commands() {
     assert!(!help_has_command(&help, "run"));
     assert!(!help_has_command(&help, "sessions"));
     assert!(!help_has_command(&help, "fork"));
+    assert!(!help_has_command(&help, "update"));
     assert!(!help.contains("Session id/prefix"));
     assert!(!help.contains("Windows note"));
 }
@@ -397,6 +398,13 @@ fn retired_commands_fail_before_config_tui_store_or_model_startup() {
         (vec!["run", "exec", "paid input"], "run"),
         (vec!["mcp-server"], "mcp-server"),
         (vec!["mcp-server", "--legacy"], "mcp-server"),
+        (vec!["update"], "update"),
+        (vec!["update", "--help"], "update"),
+        (vec!["update", "--check"], "update"),
+        (
+            vec!["update", "--proxy", "socks5://127.0.0.1:1080"],
+            "update",
+        ),
         (vec!["mcp", "add-self"], "mcp add-self"),
         (
             vec!["mcp", "add-self", "--name", "legacy-self"],
@@ -432,6 +440,25 @@ fn retired_commands_fail_before_config_tui_store_or_model_startup() {
             "retired command opened the canonical RunStore: {args:?}"
         );
     }
+
+    let explicit_home = tempfile::tempdir().expect("temporary explicit-prompt CODEWHALE_HOME");
+    let (explicit_tui, explicit_marker) = install_tui_probe(explicit_home.path());
+    let explicit_prompt = run_dispatcher_with_tui_probe(
+        explicit_home.path(),
+        workspace.path(),
+        &explicit_tui,
+        &explicit_marker,
+        &["--prompt", "update", "the", "dependencies"],
+    );
+    assert!(
+        explicit_prompt.status.success(),
+        "explicit --prompt update ... should remain a legal prompt: {}",
+        String::from_utf8_lossy(&explicit_prompt.stderr)
+    );
+    assert!(
+        explicit_marker.exists(),
+        "explicit --prompt update ... was mistaken for the retired command"
+    );
 
     // `serve` remains as an ACP-only command, so Clap rejects the removed MCP
     // flag before `run()` can open ConfigStore or delegate to the TUI.

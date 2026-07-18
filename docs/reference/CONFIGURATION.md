@@ -773,9 +773,9 @@ Remaining variables:
 - `CODEWHALE_HOME` (override the base data directory; defaults to `~/.codewhale`).
   If you previously exported `DEEPSEEK_HOME`, rename it to `CODEWHALE_HOME`;
   the old env var is not used for new CodeWhale state paths.
-- `CODEWHALE_RELEASE_BASE_URL` (release asset mirror used by `codewhale update`
-  and by TUI startup update checks when `[update].update_uri` is not set, or as
-  a fallback when that configured URI cannot be fetched)
+- `CODEWHALE_RELEASE_BASE_URL` (release asset mirror used by TUI startup update
+  checks when `[update].update_uri` is not set, or as a fallback when that
+  configured URI cannot be fetched)
 - `DEEPSEEK_AUTOMATIONS_DIR` (override the automations storage directory; uses
   `~/.codewhale/automations` by default, with legacy `~/.deepseek/automations`
   fallback when only the legacy directory exists)
