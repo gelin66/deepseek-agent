@@ -274,10 +274,15 @@ A/B 已完成，但 **没有通过保留门槛**：
 提交 `8ab0e145` 已实现 Runtime 机制修复：每个 root/child 预留可退还的最终请求许可，
 descendant/child 先 join，最后请求固定 `tools=[]`；无容量时不产生 child lifecycle，
 prepared/replay 使用该请求实际 advertised catalog，自动 compaction 在硬限制内不能偷取
-最后许可。State schema v10 持久化该目录身份，RuntimeEvent 保持 v6。该机制已通过离线
-conformance 与 Store replay，v3 提示词仍保持拒绝；必须用当前生产提示重新运行同任务
-multi A/B，逐 actor 记录请求、verified success、Token、时间和费用。在此之前，这只是机制
-正确性证据，不是产品能力提升结论。
+最后许可。State schema v10 持久化该目录身份，RuntimeEvent 保持 v6。
+
+该机制相对 `0ae9cb7f` 的 12-run、single/multi、3/cell 精确 A/B 已完成：四个 cell 均
+`3/3` verified，0 false success，0 measurement invalid；candidate single 的平均 Token、
+时间和费用分别下降 `26.21%`、`20.70%` 和 `21.92%`，但 candidate multi 在成功率不变时
+分别上升 `9.20%`、`15.16%` 和 `17.78%`，请求均值也上升 `3.70%`。因此当前结论为
+**机制正确性保留，产品收益未通过，进入重做/缩小**；不得用 single 改善掩盖 multi 回退，
+也不得恢复 v3 提示词或提高请求预算。完整身份、hash、逐 actor 和费用证据见
+[每 Agent 最终请求机制精确 A/B](../../eval/summaries/terminal-turn-exact-ab-2026-07-18.md)。
 
 ### 5.2 TaskContract、终态与证据边界
 

@@ -621,7 +621,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   5/5；child blocked/recovery/terminal outcome 与中文宽字符投影有定向回归。
 - 非结论：该切片只完成交互前台切换；后续纯删除切片才移除隐藏 workflow 第二循环。
 
-#### 每 Agent 最终请求许可（机制完成，产品收益待验）
+#### 每 Agent 最终请求许可（机制完成，产品收益未通过）
 
 - 真实问题：共享逻辑请求预算可被 child 的工具轮或自动 compaction 全部消耗，使 child
   没有产物轮、父 Agent 也没有集成轮；继续叠加提示词限制在 v3 canary 中使 multi 降至
@@ -633,8 +633,14 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   advertised tool catalog。
 - 离线证据：Runtime conformance 51/51、State `run_store` 18/18，并覆盖嵌套 join、tool-free
   final、prepared/replay、无容量零 lifecycle 和 compaction 不偷取许可。
-- 非结论：v3 提示词仍保持拒绝。必须用当前生产提示重跑同任务 multi A/B，记录 child/root
-  请求、verified success、Token、时间和费用，才能判断产品收益。
+- 真实 A/B：相对 `0ae9cb7f` 的 exact-pair、single/multi、3/cell 官方 DeepSeek A/B 为
+  12/12 verified、0 false success、0 measurement invalid；candidate single 的平均 Token/
+  时间/费用下降 `26.21%/20.70%/21.92%`，但 candidate multi 在成功率不变时上升
+  `9.20%/15.16%/17.78%`，请求均值也上升 `3.70%`。
+- 决策：保留离线反例已经证明的终局可靠性不变量，但产品收益判定为“重做/缩小”，不得
+  宣称多 Agent 效率提升。下一实现先减少不必要的 child/root 最终轮，再以同任务复测；
+  不恢复 v3 提示词、不提高总请求预算。证据见
+  [每 Agent 最终请求机制精确 A/B](../../eval/summaries/terminal-turn-exact-ab-2026-07-18.md)。
 
 #### RuntimeEvent v6：请求预算终态 taxonomy 纠偏（已完成）
 
