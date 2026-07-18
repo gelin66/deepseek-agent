@@ -817,7 +817,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   和工具发现；当前 canonical Agent 固定工具目录没有加载 MCP pool，因此文档不再把 CLI
   discovery 误写成 model-visible 工具或 TUI `/mcp` manager。随后又删除了 TUI binary 私有
   `mcp` 模块内八个零生产消费者的“public API” wrapper、仅供测试读取的 shutdown report 与
-  `#[allow(dead_code)]`；配置 reload、stale-session retry、transport shutdown 和 Drop 清理保留。
+  `#[allow(dead_code)]`；配置 reload、reconnect、transport shutdown 和 Drop 清理保留。
 - M4-C 已把 `setup --mcp` 与 `mcp init/add/remove/enable/disable` 收口到现有 TUI
   `mcp` 模块的唯一配置 owner，物理删除 `main.rs` 重复的模板、读取、初始化和原子写入函数。
   `add_server_config` 直接接收完整 `McpServerConfig`，不再通过拆散参数丢失 headers、bearer、
@@ -827,6 +827,18 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   network/TLS、stdio/HTTP/SSE 和 MCP execution 方法均未在本切片改动。MCP config 21/21、
   OAuth 6/6、HTTP auth 2/2、隔离环境
   真实 CLI 2/2、canonical Run 19/19、PTY 6/6 和 TUI all-target check 均通过。
+- M4-C 随后按真实调用图删除 MCP execution ghost：`McpConnection`/`McpPool` 中没有任何
+  production caller 的 `tools/call`、resource read/list/template、prompt list/get、prefixed-name
+  dispatch、动态 runtime server 和 stale-session execution retry 已物理删除，连接初始化只
+  广告并发现 `tools/list`。顶层 `codewhale mcp list/connect/tools/login/logout/validate`、
+  config merge/reload、workspace trust/plugin、OAuth、network/TLS/proxy/header、stdio、
+  Streamable HTTP/legacy SSE、JSON-RPC framing 和 transport shutdown 保持原 owner。canonical
+  Agent 仍没有加载 MCP pool，因此该删除没有移除可用的 Agent 工具执行能力；若未来要把 MCP
+  工具纳入 Agent，必须经 canonical `crates/tools`/Runtime/RunStore/approval 新建纵向切片，
+  不能恢复私有旁路。`execute_timeout` 仍作为完整配置往返字段保留，但当前没有 execution
+  runtime consumer。当前门禁为 MCP 定向 79/79（另有 1 个既有 flaky TCP listener 测试
+  ignored）、真实 CLI 2/2、OAuth 6/6、HTTP auth 2/2、canonical Run 19/19、PTY 6/6，
+  并通过 TUI all-target check、fmt 和 diff-check。
 - M4-C 已删除整模块以 `#[allow(dead_code)]` 隐藏、从未接入任何生产 caller 的 TUI
   `ResourceTelemetry`/budget pressure/估算吞吐 foundation，以及 App 中只会初始化和清空、
   从不写入或读取的 `last_output_throughput`。canonical Runtime/RunStore usage/accounting、

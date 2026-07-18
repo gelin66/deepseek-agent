@@ -144,27 +144,6 @@ fn test_mcp_config_parse() {
 }
 
 #[test]
-fn mcp_pool_parse_prefixed_name_preserves_registered_underscored_server() {
-    let config: McpConfig = serde_json::from_str(
-        r#"{
-            "servers": {
-                "my": {"command": "node"},
-                "my_db": {"command": "node"}
-            }
-        }"#,
-    )
-    .unwrap();
-    let pool = McpPool::new(config);
-
-    let (server, tool) = pool
-        .parse_prefixed_name("mcp_my_db_execute_sql")
-        .expect("registered underscored server should parse");
-
-    assert_eq!(server, "my_db");
-    assert_eq!(tool, "execute_sql");
-}
-
-#[test]
 fn mcp_server_config_parses_custom_headers() {
     let json = r#"{
         "servers": {
@@ -425,19 +404,6 @@ fn streamable_http_transport_stores_headers() {
         },
     );
     assert_eq!(transport.auth.headers, headers);
-}
-
-#[test]
-fn mcp_auth_required_error_item_is_model_visible() {
-    let item = McpPool::mcp_auth_required_error_item("nordic-mcp");
-    assert_eq!(item["error"], "authentication_required");
-    assert_eq!(item["server"], "nordic-mcp");
-    assert!(
-        item["message"]
-            .as_str()
-            .expect("message")
-            .contains("codewhale mcp login nordic-mcp")
-    );
 }
 
 #[test]
@@ -1142,19 +1108,7 @@ fn test_server_effective_timeouts() {
     };
 
     assert_eq!(server_with_override.effective_connect_timeout(&global), 20);
-    assert_eq!(server_with_override.effective_execute_timeout(&global), 60); // global default
     assert_eq!(server_with_override.effective_read_timeout(&global), 180);
-}
-
-#[test]
-fn test_mcp_pool_is_mcp_tool() {
-    assert!(McpPool::is_mcp_tool("mcp_filesystem_read"));
-    assert!(McpPool::is_mcp_tool("mcp_git_status"));
-    assert!(McpPool::is_mcp_tool("list_mcp_resources"));
-    assert!(McpPool::is_mcp_tool("list_mcp_resource_templates"));
-    assert!(McpPool::is_mcp_tool("read_mcp_resource"));
-    assert!(!McpPool::is_mcp_tool("read_file"));
-    assert!(!McpPool::is_mcp_tool("exec_shell"));
 }
 
 struct ScriptedValueTransport {
@@ -1271,9 +1225,6 @@ fn test_connection(transport: Box<dyn McpTransport>) -> McpConnection {
         name: "mock".to_string(),
         transport,
         tools: Vec::new(),
-        resources: Vec::new(),
-        resource_templates: Vec::new(),
-        prompts: Vec::new(),
         request_id: AtomicU64::new(1),
         state: ConnectionState::Ready,
         config: test_server_config(),
@@ -1339,7 +1290,7 @@ fn json_frame(value: serde_json::Value) -> Vec<u8> {
 }
 
 #[tokio::test]
-async fn call_method_skips_notifications_and_unmatched_responses() {
+async fn recv_skips_notifications_and_unmatched_responses() {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let transport = ScriptedValueTransport {
         sent: Arc::clone(&sent),
@@ -1363,21 +1314,14 @@ async fn call_method_skips_notifications_and_unmatched_responses() {
     };
     let mut conn = test_connection(Box::new(transport));
 
-    let result = conn
-        .call_method("tools/call", serde_json::json!({"name": "echo"}), 1)
-        .await
-        .unwrap();
+    let result = conn.recv("1".to_string()).await.unwrap();
 
-    assert_eq!(result, serde_json::json!({"ok": true}));
-    let sent = sent.lock().unwrap();
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0]["jsonrpc"], "2.0");
-    assert_eq!(sent[0]["id"], "1");
-    assert_eq!(sent[0]["method"], "tools/call");
+    assert_eq!(result["result"], serde_json::json!({"ok": true}));
+    assert!(sent.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn call_method_invalid_json_includes_server_output_preview() {
+async fn recv_invalid_json_includes_server_output_preview() {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let transport = ScriptedValueTransport {
         sent: Arc::clone(&sent),
@@ -1386,7 +1330,7 @@ async fn call_method_invalid_json_includes_server_output_preview() {
     let mut conn = test_connection(Box::new(transport));
 
     let err = conn
-        .call_method("tools/call", serde_json::json!({"name": "burp"}), 1)
+        .recv("1".to_string())
         .await
         .expect_err("non-json MCP stdout should fail");
     let msg = err.to_string();
@@ -1415,26 +1359,6 @@ async fn recv_times_out_waiting_for_mcp_response_and_disconnects() {
         "unexpected error: {err:#}"
     );
     assert_eq!(conn.state, ConnectionState::Disconnected);
-}
-
-#[tokio::test]
-async fn call_method_times_out_while_waiting_for_response() {
-    let sent = Arc::new(Mutex::new(Vec::new()));
-    let mut conn = test_connection(Box::new(HangingValueTransport {
-        sent: Arc::clone(&sent),
-    }));
-
-    let err = conn
-        .call_method("tools/call", serde_json::json!({"name": "echo"}), 0)
-        .await
-        .expect_err("hung receive should time out");
-
-    assert!(
-        err.to_string()
-            .contains("MCP method 'tools/call' on server 'mock' timed out after 0s"),
-        "unexpected error: {err:#}"
-    );
-    assert_eq!(sent.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -1584,11 +1508,10 @@ fn hash_mcp_config_is_stable_and_change_sensitive() {
     );
 }
 
-/// #1319: discovered tools must be sorted by name so the prompt prefix
-/// is stable across runs (cache-hit stability), even when the server
-/// returns them in arbitrary or paginated order.
+/// Discovered tools must be sorted by name so CLI output stays stable even
+/// when the server returns arbitrary or paginated ordering.
 #[tokio::test]
-async fn discover_tools_sorts_by_name_for_cache_stability() {
+async fn discover_tools_sorts_by_name_for_stable_cli_output() {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let transport = ScriptedValueTransport {
         sent: Arc::clone(&sent),
@@ -1628,158 +1551,7 @@ async fn discover_tools_sorts_by_name_for_cache_stability() {
 }
 
 #[tokio::test]
-async fn mcp_pool_call_tool_preserves_tool_names_with_dashes() {
-    let sent = Arc::new(Mutex::new(Vec::new()));
-    let transport = ScriptedValueTransport {
-        sent: Arc::clone(&sent),
-        responses: VecDeque::from([json_frame(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {"ok": true}
-        }))]),
-    };
-    let mut conn = test_connection(Box::new(transport));
-    conn.name = "dephy".to_string();
-    conn.tools = vec![McpTool {
-        name: "company--search".to_string(),
-        description: None,
-        input_schema: serde_json::json!({}),
-    }];
-
-    let mut pool = McpPool::new(McpConfig {
-        timeouts: McpTimeouts::default(),
-        servers: HashMap::new(),
-    });
-    pool.connections.insert("dephy".to_string(), conn);
-
-    let result = pool
-        .call_tool(
-            "mcp_dephy_company--search",
-            serde_json::json!({"query": "dephy"}),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(result, serde_json::json!({"ok": true}));
-    let sent = sent.lock().unwrap();
-    assert_eq!(sent[0]["method"], "tools/call");
-    assert_eq!(sent[0]["params"]["name"], "company--search");
-    assert_eq!(
-        sent[0]["params"]["arguments"],
-        serde_json::json!({"query": "dephy"})
-    );
-}
-
-#[tokio::test]
-async fn mcp_pool_call_tool_preserves_server_names_with_underscores() {
-    let sent = Arc::new(Mutex::new(Vec::new()));
-    let transport = ScriptedValueTransport {
-        sent: Arc::clone(&sent),
-        responses: VecDeque::from([json_frame(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {"ok": true}
-        }))]),
-    };
-    let mut conn = test_connection(Box::new(transport));
-    conn.name = "my_db".to_string();
-    conn.tools = vec![McpTool {
-        name: "execute_sql".to_string(),
-        description: None,
-        input_schema: serde_json::json!({}),
-    }];
-
-    let mut pool = McpPool::new(McpConfig {
-        timeouts: McpTimeouts::default(),
-        servers: HashMap::new(),
-    });
-    pool.connections.insert("my_db".to_string(), conn);
-
-    let result = pool
-        .call_tool(
-            "mcp_my_db_execute_sql",
-            serde_json::json!({"query": "select 1"}),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(result, serde_json::json!({"ok": true}));
-    let sent = sent.lock().unwrap();
-    assert_eq!(sent[0]["method"], "tools/call");
-    assert_eq!(sent[0]["params"]["name"], "execute_sql");
-    assert_eq!(
-        sent[0]["params"]["arguments"],
-        serde_json::json!({"query": "select 1"})
-    );
-}
-
-#[tokio::test]
-async fn mcp_pool_call_tool_prefers_longest_matching_server_name() {
-    let sent_short = Arc::new(Mutex::new(Vec::new()));
-    let short_transport = ScriptedValueTransport {
-        sent: Arc::clone(&sent_short),
-        responses: VecDeque::from([json_frame(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {"short": true}
-        }))]),
-    };
-    let mut short_conn = test_connection(Box::new(short_transport));
-    short_conn.name = "my".to_string();
-    short_conn.tools = vec![McpTool {
-        name: "db_execute_sql".to_string(),
-        description: None,
-        input_schema: serde_json::json!({}),
-    }];
-
-    let sent_long = Arc::new(Mutex::new(Vec::new()));
-    let long_transport = ScriptedValueTransport {
-        sent: Arc::clone(&sent_long),
-        responses: VecDeque::from([json_frame(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "result": {"long": true}
-        }))]),
-    };
-    let mut long_conn = test_connection(Box::new(long_transport));
-    long_conn.name = "my_db".to_string();
-    long_conn.tools = vec![McpTool {
-        name: "execute_sql".to_string(),
-        description: None,
-        input_schema: serde_json::json!({}),
-    }];
-
-    let mut pool = McpPool::new(McpConfig {
-        timeouts: McpTimeouts::default(),
-        servers: HashMap::new(),
-    });
-    pool.connections.insert("my".to_string(), short_conn);
-    pool.connections.insert("my_db".to_string(), long_conn);
-
-    let result = pool
-        .call_tool(
-            "mcp_my_db_execute_sql",
-            serde_json::json!({"query": "select 1"}),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(result, serde_json::json!({"long": true}));
-    assert!(
-        sent_short.lock().unwrap().is_empty(),
-        "the shorter server name must not receive the tool call"
-    );
-    let sent_long = sent_long.lock().unwrap();
-    assert_eq!(sent_long[0]["method"], "tools/call");
-    assert_eq!(sent_long[0]["params"]["name"], "execute_sql");
-    assert_eq!(
-        sent_long[0]["params"]["arguments"],
-        serde_json::json!({"query": "select 1"})
-    );
-}
-
-#[tokio::test]
-async fn json_rpc_session_error_is_marked_stale() {
+async fn recv_reports_json_rpc_session_expiry() {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let transport = ScriptedValueTransport {
         sent: Arc::clone(&sent),
@@ -1795,102 +1567,40 @@ async fn json_rpc_session_error_is_marked_stale() {
     let mut conn = test_connection(Box::new(transport));
 
     let err = conn
-        .call_tool("search", serde_json::json!({"query": "dephy"}), 1)
+        .recv("1".to_string())
         .await
         .expect_err("session error should fail");
 
     assert!(
-        is_mcp_stale_session_error(&err),
-        "JSON-RPC session error should be retryable, got: {err:#}"
-    );
-}
-
-#[test]
-fn sse_transport_closed_is_retryable() {
-    let err = anyhow::anyhow!("SSE transport closed");
-    assert!(
-        is_mcp_stale_session_error(&err),
-        "closed SSE stream should force reconnect before retry"
-    );
-}
-
-#[test]
-fn legacy_sse_post_disconnect_is_retryable() {
-    let err = anyhow::anyhow!(
-        "MCP SSE POST send failed (transport=sse endpoint=http://127.0.0.1:123/messages): connection closed before message completed"
-    );
-    assert!(
-        is_mcp_stale_session_error(&err),
-        "closed legacy SSE POST should force reconnect before retry"
-    );
-
-    let err = anyhow::anyhow!(
-        "MCP SSE POST send failed (transport=sse endpoint=http://127.0.0.1:123/messages): connection reset by peer"
-    );
-    assert!(
-        is_mcp_stale_session_error(&err),
-        "reset legacy SSE POST should force reconnect before retry"
-    );
-
-    let err = anyhow::anyhow!(
-        "MCP SSE POST send failed (transport=sse endpoint=http://127.0.0.1:123/messages): An existing connection was forcibly closed by the remote host."
-    );
-    assert!(
-        is_mcp_stale_session_error(&err),
-        "Windows reset wording should force reconnect before retry"
+        err.to_string().contains("MCP session expired"),
+        "JSON-RPC session expiry should be surfaced, got: {err:#}"
     );
 }
 
 #[tokio::test]
-async fn discover_all_ignores_unsupported_optional_capabilities() {
+async fn discover_tools_does_not_probe_unretained_capabilities() {
     let sent = Arc::new(Mutex::new(Vec::new()));
     let transport = ScriptedValueTransport {
         sent: Arc::clone(&sent),
-        responses: VecDeque::from([
-            json_frame(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 1,
-                "result": {
-                    "tools": [
-                        { "name": "search", "inputSchema": {} }
-                    ]
-                }
-            })),
-            json_frame(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 2,
-                "error": {
-                    "code": -32601,
-                    "message": "resources not supported"
-                }
-            })),
-            json_frame(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 3,
-                "error": {
-                    "code": -32601,
-                    "message": "resource templates not supported"
-                }
-            })),
-            json_frame(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": 4,
-                "error": {
-                    "code": -32601,
-                    "message": "prompts not supported"
-                }
-            })),
-        ]),
+        responses: VecDeque::from([json_frame(serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "tools": [
+                    { "name": "search", "inputSchema": {} }
+                ]
+            }
+        }))]),
     };
     let mut conn = test_connection(Box::new(transport));
 
-    conn.discover_all().await.expect("discover");
+    conn.discover_tools().await.expect("discover tools");
 
     assert_eq!(conn.tools.len(), 1);
     assert_eq!(conn.tools[0].name, "search");
-    assert!(conn.resources.is_empty());
-    assert!(conn.resource_templates.is_empty());
-    assert!(conn.prompts.is_empty());
+    let sent = sent.lock().unwrap();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0]["method"], "tools/list");
 }
 
 /// #1244: when an MCP stdio server fails to spawn, the underlying OS
@@ -2088,7 +1798,7 @@ async fn mcp_connection_supports_streamable_http_event_stream_responses() {
                     "initialize" => serde_json::json!({
                         "protocolVersion": "2024-11-05",
                         "serverInfo": {"name": "mock-streamable", "version": "1.0.0"},
-                        "capabilities": {"tools": {}, "resources": {}, "prompts": {}}
+                        "capabilities": {"tools": {}}
                     }),
                     "tools/list" => serde_json::json!({
                         "tools": [{
@@ -2097,11 +1807,6 @@ async fn mcp_connection_supports_streamable_http_event_stream_responses() {
                             "inputSchema": {"type": "object"}
                         }]
                     }),
-                    "resources/list" => serde_json::json!({"resources": []}),
-                    "resources/templates/list" => {
-                        serde_json::json!({"resourceTemplates": []})
-                    }
-                    "prompts/list" => serde_json::json!({"prompts": []}),
                     other => panic!("unexpected method: {other}"),
                 };
                 write_json_sse(
@@ -2987,193 +2692,7 @@ async fn streamable_http_caps_chunked_bodies_without_content_length() {
 }
 
 #[tokio::test]
-async fn streamable_http_stale_session_reconnects_and_retries_tool_call() {
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::TcpListener;
-
-    async fn write_response(socket: &mut tokio::net::TcpStream, response: &[u8]) {
-        socket.write_all(response).await.unwrap();
-        socket.flush().await.unwrap();
-        socket.shutdown().await.unwrap();
-    }
-
-    let _lock = lock_mcp_loopback_tests().await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let get_count = Arc::new(AtomicUsize::new(0));
-    let stale_seen = Arc::new(AtomicBool::new(false));
-    let success_seen = Arc::new(AtomicBool::new(false));
-    let server_get_count = Arc::clone(&get_count);
-    let server_stale_seen = Arc::clone(&stale_seen);
-    let server_success_seen = Arc::clone(&success_seen);
-
-    let server = tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                break;
-            };
-            let get_count = Arc::clone(&server_get_count);
-            let stale_seen = Arc::clone(&server_stale_seen);
-            let success_seen = Arc::clone(&server_success_seen);
-            tokio::spawn(async move {
-                let mut request = Vec::new();
-                let mut buf = [0; 4096];
-                let header_end = loop {
-                    let n = socket.read(&mut buf).await.unwrap();
-                    if n == 0 {
-                        return;
-                    }
-                    request.extend_from_slice(&buf[..n]);
-                    if let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n") {
-                        break pos + 4;
-                    }
-                };
-                let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
-                let content_length = headers
-                    .lines()
-                    .find_map(|line| {
-                        let (name, value) = line.split_once(':')?;
-                        name.eq_ignore_ascii_case("content-length")
-                            .then(|| value.trim().parse::<usize>().ok())
-                            .flatten()
-                    })
-                    .unwrap_or(0);
-                while request.len() < header_end + content_length {
-                    let n = socket.read(&mut buf).await.unwrap();
-                    if n == 0 {
-                        return;
-                    }
-                    request.extend_from_slice(&buf[..n]);
-                }
-                let body = &request[header_end..header_end + content_length];
-                let session_header = headers.lines().find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("mcp-session-id")
-                        .then(|| value.trim().to_string())
-                });
-
-                if headers.starts_with("GET /mcp ") {
-                    let count = get_count.fetch_add(1, AtomicOrdering::SeqCst);
-                    let session = if count == 0 { "sess-old" } else { "sess-new" };
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nConnection: close\r\nMcp-Session-Id: {session}\r\nContent-Length: 0\r\n\r\n"
-                    );
-                    write_response(&mut socket, response.as_bytes()).await;
-                    return;
-                }
-
-                let request_json: serde_json::Value = serde_json::from_slice(body).unwrap();
-                let method = request_json
-                    .get("method")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                let id = request_json
-                    .get("id")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!("0"));
-
-                if method == "tools/call" && session_header.as_deref() == Some("sess-old") {
-                    stale_seen.store(true, AtomicOrdering::SeqCst);
-                    write_response(
-                        &mut socket,
-                        b"HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"error\":\"session expired\"}",
-                    )
-                    .await;
-                    return;
-                }
-
-                let result = match method {
-                    "initialize" => serde_json::json!({
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {}
-                    }),
-                    "tools/list" => serde_json::json!({
-                        "tools": [
-                            { "name": "search", "inputSchema": {} }
-                        ]
-                    }),
-                    "resources/list" => serde_json::json!({ "resources": [] }),
-                    "resources/templates/list" => {
-                        serde_json::json!({ "resourceTemplates": [] })
-                    }
-                    "prompts/list" => serde_json::json!({ "prompts": [] }),
-                    "tools/call" => {
-                        assert_eq!(session_header.as_deref(), Some("sess-new"));
-                        success_seen.store(true, AtomicOrdering::SeqCst);
-                        serde_json::json!({ "content": [{ "type": "text", "text": "ok" }] })
-                    }
-                    _ => {
-                        write_response(
-                            &mut socket,
-                            b"HTTP/1.1 202 Accepted\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
-                        )
-                        .await;
-                        return;
-                    }
-                };
-                let response_body = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": result
-                })
-                .to_string();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
-                    response_body.len(),
-                    response_body
-                );
-                write_response(&mut socket, response.as_bytes()).await;
-            });
-        }
-    });
-
-    let mut cfg = McpConfig::default();
-    cfg.servers.insert(
-        "dephy".to_string(),
-        McpServerConfig {
-            command: None,
-            args: Vec::new(),
-            env: HashMap::new(),
-            cwd: None,
-            url: Some(format!("http://{addr}/mcp")),
-            transport: None,
-            connect_timeout: Some(10),
-            execute_timeout: Some(10),
-            read_timeout: None,
-            disabled: false,
-            enabled: true,
-            required: false,
-            enabled_tools: Vec::new(),
-            disabled_tools: Vec::new(),
-            headers: HashMap::new(),
-            env_headers: HashMap::new(),
-            bearer_token_env_var: None,
-            scopes: Vec::new(),
-            oauth: None,
-            oauth_resource: None,
-        },
-    );
-    let mut pool = McpPool::new(cfg);
-
-    let result = pool
-        .call_tool("mcp_dephy_search", serde_json::json!({ "query": "dephy" }))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        result,
-        serde_json::json!({ "content": [{ "type": "text", "text": "ok" }] })
-    );
-    assert!(stale_seen.load(AtomicOrdering::SeqCst));
-    assert!(success_seen.load(AtomicOrdering::SeqCst));
-    assert_eq!(get_count.load(AtomicOrdering::SeqCst), 2);
-
-    server.abort();
-}
-
-#[tokio::test]
-async fn legacy_sse_session_expiry_is_marked_stale() {
+async fn legacy_sse_session_expiry_is_reported() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::sync::mpsc;
@@ -3221,231 +2740,14 @@ async fn legacy_sse_session_expiry_is_marked_stale() {
     };
 
     let err = transport
-        .send(br#"{"jsonrpc":"2.0","id":1,"method":"tools/call"}"#.to_vec())
+        .send(br#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#.to_vec())
         .await
         .expect_err("expired SSE session should fail");
 
     assert!(
-        is_mcp_stale_session_error(&err),
-        "SSE session expiry should be retryable, got: {err:#}"
+        is_mcp_stale_session_body(&err.to_string()),
+        "SSE session expiry should be surfaced, got: {err:#}"
     );
-
-    server.abort();
-}
-
-#[tokio::test]
-async fn legacy_sse_closed_stream_reconnects_and_retries_tool_call() {
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    use tokio::net::{TcpListener, TcpStream};
-    use tokio::sync::mpsc;
-
-    async fn read_http_request(socket: &mut TcpStream) -> (String, serde_json::Value) {
-        let mut request = Vec::new();
-        let mut buf = [0; 4096];
-        let header_end = loop {
-            let n = socket.read(&mut buf).await.unwrap();
-            if n == 0 {
-                return (String::new(), serde_json::Value::Null);
-            }
-            request.extend_from_slice(&buf[..n]);
-            if let Some(pos) = request.windows(4).position(|w| w == b"\r\n\r\n") {
-                break pos + 4;
-            }
-        };
-        let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
-        let content_length = headers
-            .lines()
-            .find_map(|line| {
-                let (name, value) = line.split_once(':')?;
-                name.eq_ignore_ascii_case("content-length")
-                    .then(|| value.trim().parse::<usize>().ok())
-                    .flatten()
-            })
-            .unwrap_or(0);
-        while request.len() < header_end + content_length {
-            let n = socket.read(&mut buf).await.unwrap();
-            if n == 0 {
-                return (headers, serde_json::Value::Null);
-            }
-            request.extend_from_slice(&buf[..n]);
-        }
-        let body = &request[header_end..header_end + content_length];
-        let json = if body.is_empty() {
-            serde_json::Value::Null
-        } else {
-            serde_json::from_slice(body).unwrap()
-        };
-        (headers, json)
-    }
-
-    let _lock = lock_mcp_loopback_tests().await;
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let active_sse = Arc::new(Mutex::new(None::<mpsc::UnboundedSender<Option<String>>>));
-    let get_count = Arc::new(AtomicUsize::new(0));
-    let tool_call_count = Arc::new(AtomicUsize::new(0));
-    let success_seen = Arc::new(AtomicBool::new(false));
-    let server_active_sse = Arc::clone(&active_sse);
-    let server_get_count = Arc::clone(&get_count);
-    let server_tool_call_count = Arc::clone(&tool_call_count);
-    let server_success_seen = Arc::clone(&success_seen);
-
-    let server = tokio::spawn(async move {
-        loop {
-            let Ok((mut socket, _)) = listener.accept().await else {
-                break;
-            };
-            let active_sse = Arc::clone(&server_active_sse);
-            let get_count = Arc::clone(&server_get_count);
-            let tool_call_count = Arc::clone(&server_tool_call_count);
-            let success_seen = Arc::clone(&server_success_seen);
-            tokio::spawn(async move {
-                let (headers, request_json) = read_http_request(&mut socket).await;
-                if headers.starts_with("GET /sse ") {
-                    get_count.fetch_add(1, AtomicOrdering::SeqCst);
-                    let (tx, mut rx) = mpsc::unbounded_channel::<Option<String>>();
-                    *active_sse.lock().unwrap() = Some(tx);
-                    socket
-                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
-                        .await
-                        .unwrap();
-                    socket
-                        .write_all(b"event: endpoint\ndata: /messages\n\n")
-                        .await
-                        .unwrap();
-                    while let Some(message) = rx.recv().await {
-                        let Some(message) = message else {
-                            return;
-                        };
-                        let event = format!("event: message\ndata: {message}\n\n");
-                        socket.write_all(event.as_bytes()).await.unwrap();
-                    }
-                    return;
-                }
-
-                if !headers.starts_with("POST /messages ") {
-                    return;
-                }
-
-                socket
-                    .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
-                    .await
-                    .unwrap();
-
-                let method = request_json
-                    .get("method")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("");
-                if method == "notifications/initialized" {
-                    return;
-                }
-
-                let id = request_json
-                    .get("id")
-                    .cloned()
-                    .unwrap_or_else(|| serde_json::json!("0"));
-
-                if method == "tools/call" {
-                    let count = tool_call_count.fetch_add(1, AtomicOrdering::SeqCst);
-                    if count == 0 {
-                        if let Some(tx) = active_sse.lock().unwrap().take() {
-                            let _ = tx.send(None);
-                        }
-                        return;
-                    }
-                }
-
-                let result = match method {
-                    "initialize" => serde_json::json!({
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {}
-                    }),
-                    "tools/list" => serde_json::json!({
-                        "tools": [
-                            { "name": "search", "inputSchema": {} }
-                        ]
-                    }),
-                    "resources/list" => serde_json::json!({ "resources": [] }),
-                    "resources/templates/list" => {
-                        serde_json::json!({ "resourceTemplates": [] })
-                    }
-                    "prompts/list" => serde_json::json!({ "prompts": [] }),
-                    "tools/call" => {
-                        success_seen.store(true, AtomicOrdering::SeqCst);
-                        serde_json::json!({ "content": [{ "type": "text", "text": "ok" }] })
-                    }
-                    other => panic!("unexpected method: {other}"),
-                };
-                let response = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": id,
-                    "result": result
-                })
-                .to_string();
-                // Deliver the response over the *current* SSE channel. The
-                // retry tool call can race ahead of the reconnecting GET
-                // /sse that re-stores the sender; under parallel load those
-                // two server tasks are scheduled in either order, so wait
-                // briefly for the channel instead of dropping the response
-                // (which left the client hanging until timeout) (#2597).
-                let send_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                let tx = loop {
-                    if let Some(tx) = active_sse.lock().unwrap().as_ref().cloned() {
-                        break Some(tx);
-                    }
-                    if std::time::Instant::now() >= send_deadline {
-                        break None;
-                    }
-                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                };
-                if let Some(tx) = tx {
-                    let _ = tx.send(Some(response));
-                }
-            });
-        }
-    });
-
-    let mut cfg = McpConfig::default();
-    cfg.servers.insert(
-        "dephy".to_string(),
-        McpServerConfig {
-            command: None,
-            args: Vec::new(),
-            env: HashMap::new(),
-            cwd: None,
-            url: Some(format!("http://{addr}/sse")),
-            transport: Some("sse".to_string()),
-            connect_timeout: Some(10),
-            execute_timeout: Some(10),
-            read_timeout: None,
-            disabled: false,
-            enabled: true,
-            required: false,
-            enabled_tools: Vec::new(),
-            disabled_tools: Vec::new(),
-            headers: HashMap::new(),
-            env_headers: HashMap::new(),
-            bearer_token_env_var: None,
-            scopes: Vec::new(),
-            oauth: None,
-            oauth_resource: None,
-        },
-    );
-    let mut pool = McpPool::new(cfg);
-
-    let result = pool
-        .call_tool("mcp_dephy_search", serde_json::json!({ "query": "dephy" }))
-        .await
-        .unwrap();
-
-    assert_eq!(
-        result,
-        serde_json::json!({ "content": [{ "type": "text", "text": "ok" }] })
-    );
-    assert_eq!(tool_call_count.load(AtomicOrdering::SeqCst), 2);
-    assert_eq!(get_count.load(AtomicOrdering::SeqCst), 2);
-    assert!(success_seen.load(AtomicOrdering::SeqCst));
 
     server.abort();
 }
@@ -3591,57 +2893,4 @@ async fn custom_headers_applied_to_get_preflight() {
         header_seen.load(AtomicOrdering::SeqCst),
         "GET preflight must include user-configured custom headers"
     );
-}
-
-// === add_runtime_server_config conflict tests ===
-
-#[test]
-fn add_runtime_server_config_rejects_static_conflict() {
-    let config: McpConfig = serde_json::from_str(
-        r#"{
-        "servers": {
-            "existing": {"command": "node server.js"}
-        }
-    }"#,
-    )
-    .unwrap();
-    let pool = McpPool::new(config);
-
-    let err = pool
-        .add_runtime_server_config(
-            "existing".to_string(),
-            serde_json::from_str(r#"{"command": "npx other"}"#).unwrap(),
-        )
-        .unwrap_err();
-    assert!(err.contains("already exists in the config file"));
-}
-
-#[test]
-fn add_runtime_server_config_rejects_dynamic_duplicate() {
-    let pool = McpPool::new(McpConfig::default());
-
-    pool.add_runtime_server_config(
-        "my_server".to_string(),
-        serde_json::from_str(r#"{"command": "node a.js"}"#).unwrap(),
-    )
-    .unwrap();
-
-    let err = pool
-        .add_runtime_server_config(
-            "my_server".to_string(),
-            serde_json::from_str(r#"{"command": "node b.js"}"#).unwrap(),
-        )
-        .unwrap_err();
-    assert!(err.contains("already started earlier"));
-}
-
-#[test]
-fn add_runtime_server_config_accepts_new_name() {
-    let pool = McpPool::new(McpConfig::default());
-
-    pool.add_runtime_server_config(
-        "brand_new".to_string(),
-        serde_json::from_str(r#"{"command": "node x.js"}"#).unwrap(),
-    )
-    .unwrap();
 }

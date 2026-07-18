@@ -9,12 +9,10 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 
 mod headers;
@@ -354,10 +352,6 @@ impl McpServerConfig {
         self.connect_timeout.unwrap_or(global.connect_timeout)
     }
 
-    pub fn effective_execute_timeout(&self, global: &McpTimeouts) -> u64 {
-        self.execute_timeout.unwrap_or(global.execute_timeout)
-    }
-
     pub fn effective_read_timeout(&self, global: &McpTimeouts) -> u64 {
         self.read_timeout.unwrap_or(global.read_timeout)
     }
@@ -389,49 +383,6 @@ pub struct McpTool {
     pub description: Option<String>,
     #[serde(rename = "inputSchema", default)]
     pub input_schema: serde_json::Value,
-}
-
-/// Resource discovered from an MCP server
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct McpResource {
-    pub uri: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(rename = "mimeType", default)]
-    pub mime_type: Option<String>,
-}
-
-/// Resource template discovered from an MCP server
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct McpResourceTemplate {
-    #[serde(rename = "uriTemplate")]
-    pub uri_template: String,
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(rename = "mimeType", default)]
-    pub mime_type: Option<String>,
-}
-
-/// Prompt discovered from an MCP server
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct McpPrompt {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub arguments: Vec<McpPromptArgument>,
-}
-
-/// Argument for an MCP prompt
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct McpPromptArgument {
-    pub name: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub required: bool,
 }
 
 // === Connection State ===
@@ -685,24 +636,6 @@ fn is_mcp_stale_session_body(body: &str) -> bool {
     body.contains("session") && (body.contains("expired") || body.contains("invalid"))
 }
 
-fn is_mcp_stale_session_error(err: &anyhow::Error) -> bool {
-    let err = format!("{err:#}");
-    let lower_err = err.to_ascii_lowercase();
-    err.contains("MCP Streamable HTTP session expired")
-        || err.contains("MCP session expired")
-        || err.contains("SSE transport closed")
-        || (err.contains("MCP SSE POST send failed") && is_connection_closed_error_text(&lower_err))
-        || is_mcp_stale_session_body(&err)
-}
-
-fn is_connection_closed_error_text(err: &str) -> bool {
-    err.contains("connection closed")
-        || err.contains("connection reset")
-        || err.contains("broken pipe")
-        || err.contains("unexpected eof")
-        || err.contains("forcibly closed")
-}
-
 fn parse_sse_message_data(body: &str) -> Vec<Vec<u8>> {
     let normalized = body.replace("\r\n", "\n");
     let mut messages = Vec::new();
@@ -811,9 +744,6 @@ pub struct McpConnection {
     name: String,
     transport: Box<dyn McpTransport>,
     tools: Vec<McpTool>,
-    resources: Vec<McpResource>,
-    resource_templates: Vec<McpResourceTemplate>,
-    prompts: Vec<McpPrompt>,
     request_id: AtomicU64,
     state: ConnectionState,
     config: McpServerConfig,
@@ -867,12 +797,9 @@ impl McpConnection {
             // local Clash / Shadowsocks tunnel, etc. previously had MCP
             // HTTP traffic bypass the proxy entirely while every other
             // tool on the box (curl, npm, …) used it.
-            // `connect_timeout` bounds only the connect phase; the total request
-            // timeout is the read timeout (a sane backstop) so per-call
-            // execute_timeout can actually govern request duration. Previously
-            // this set reqwest's TOTAL `.timeout()` from connect_timeout (10s),
-            // which silently capped every request at 10s and made the per-server
-            // execute_timeout / read_timeout dead for HTTP transports.
+            // `connect_timeout` bounds only the connect phase. The total request
+            // timeout uses the read timeout so slow MCP initialization and tool
+            // discovery are not silently capped by the shorter connect budget.
             let mut client_builder = crate::tls::reqwest_client_builder()
                 .connect_timeout(Duration::from_secs(connect_timeout_secs))
                 .timeout(Duration::from_secs(read_timeout_secs));
@@ -982,9 +909,6 @@ impl McpConnection {
             name: name.clone(),
             transport,
             tools: Vec::new(),
-            resources: Vec::new(),
-            resource_templates: Vec::new(),
-            prompts: Vec::new(),
             request_id: AtomicU64::new(1),
             state: ConnectionState::Connecting,
             config,
@@ -998,13 +922,13 @@ impl McpConnection {
                 .await
                 .with_context(|| format!("MCP server '{name}' initialization timed out"))??;
 
-            // Discover tools, resources, and prompts with timeout
+            // Discover the only MCP capability retained by the product: tools.
             tokio::time::timeout(
                 Duration::from_secs(connect_timeout_secs),
-                conn.discover_all(),
+                conn.discover_tools(),
             )
             .await
-            .with_context(|| format!("MCP server '{name}' discovery timed out"))??;
+            .with_context(|| format!("MCP server '{name}' tool discovery timed out"))??;
             Ok(())
         }
         .await;
@@ -1031,9 +955,7 @@ impl McpConnection {
                     "version": env!("CARGO_PKG_VERSION")
                 },
                 "capabilities": {
-                    "tools": {},
-                    "resources": {},
-                    "prompts": {}
+                    "tools": {}
                 }
             }
         }))
@@ -1048,17 +970,6 @@ impl McpConnection {
         }))
         .await?;
 
-        Ok(())
-    }
-
-    /// Discover tools, resources, and prompts
-    async fn discover_all(&mut self) -> Result<()> {
-        // We use join! to discover everything concurrently if possible,
-        // but for now let's keep it sequential for simplicity in error handling
-        self.discover_tools().await?;
-        self.discover_resources().await?;
-        self.discover_resource_templates().await?;
-        self.discover_prompts().await?;
         Ok(())
     }
 
@@ -1107,266 +1018,15 @@ impl McpConnection {
                 break;
             }
         }
-        // Sort by tool name so the order the model sees doesn't depend on
-        // server-side pagination ordering — keeps the prompt prefix stable
-        // for cache-hit purposes (#1319).
+        // Sort by tool name so CLI discovery output is deterministic even
+        // when server-side pagination returns an unstable order.
         self.tools.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(())
-    }
-
-    /// Discover available resources from the MCP server
-    async fn discover_resources(&mut self) -> Result<()> {
-        let mut cursor: Option<String> = None;
-        loop {
-            let list_id = self.next_id();
-            let params = match &cursor {
-                Some(c) => serde_json::json!({ "cursor": c }),
-                None => serde_json::json!({}),
-            };
-            self.send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": &list_id,
-                "method": "resources/list",
-                "params": params
-            }))
-            .await?;
-
-            let response = self.recv(list_id).await?;
-            let Some(result) = response.get("result") else {
-                break;
-            };
-
-            if let Some(arr) = result.get("resources").and_then(|r| r.as_array()) {
-                for item in arr {
-                    match serde_json::from_value::<McpResource>(item.clone()) {
-                        Ok(resource) => self.resources.push(resource),
-                        Err(err) => {
-                            tracing::debug!(target: "mcp", ?err, "skipping malformed resource item");
-                        }
-                    }
-                }
-            }
-
-            cursor = result
-                .get("nextCursor")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    /// Discover available resource templates from the MCP server
-    async fn discover_resource_templates(&mut self) -> Result<()> {
-        let mut cursor: Option<String> = None;
-        loop {
-            let list_id = self.next_id();
-            let params = match &cursor {
-                Some(c) => serde_json::json!({ "cursor": c }),
-                None => serde_json::json!({}),
-            };
-            self.send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": &list_id,
-                "method": "resources/templates/list",
-                "params": params
-            }))
-            .await?;
-
-            let response = self.recv(list_id).await?;
-            let Some(result) = response.get("result") else {
-                break;
-            };
-
-            let templates = result
-                .get("resourceTemplates")
-                .or_else(|| result.get("templates"))
-                .or_else(|| result.get("resource_templates"));
-            if let Some(arr) = templates.and_then(|t| t.as_array()) {
-                for item in arr {
-                    match serde_json::from_value::<McpResourceTemplate>(item.clone()) {
-                        Ok(tmpl) => self.resource_templates.push(tmpl),
-                        Err(err) => {
-                            tracing::debug!(target: "mcp", ?err, "skipping malformed resource_template item");
-                        }
-                    }
-                }
-            }
-
-            cursor = result
-                .get("nextCursor")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    /// Discover available prompts from the MCP server
-    async fn discover_prompts(&mut self) -> Result<()> {
-        let mut cursor: Option<String> = None;
-        loop {
-            let list_id = self.next_id();
-            let params = match &cursor {
-                Some(c) => serde_json::json!({ "cursor": c }),
-                None => serde_json::json!({}),
-            };
-            self.send(serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": &list_id,
-                "method": "prompts/list",
-                "params": params
-            }))
-            .await?;
-
-            let response = self.recv(list_id).await?;
-            let Some(result) = response.get("result") else {
-                break;
-            };
-
-            if let Some(arr) = result.get("prompts").and_then(|p| p.as_array()) {
-                for item in arr {
-                    match serde_json::from_value::<McpPrompt>(item.clone()) {
-                        Ok(prompt) => self.prompts.push(prompt),
-                        Err(err) => {
-                            tracing::debug!(target: "mcp", ?err, "skipping malformed prompt item");
-                        }
-                    }
-                }
-            }
-
-            cursor = result
-                .get("nextCursor")
-                .and_then(|v| v.as_str())
-                .map(str::to_owned);
-            if cursor.is_none() {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    /// Call a tool on this MCP server
-    pub async fn call_tool(
-        &mut self,
-        tool_name: &str,
-        arguments: serde_json::Value,
-        timeout_secs: u64,
-    ) -> Result<serde_json::Value> {
-        self.call_method(
-            "tools/call",
-            serde_json::json!({
-                "name": tool_name,
-                "arguments": arguments
-            }),
-            timeout_secs,
-        )
-        .await
-    }
-
-    /// Read a resource from this MCP server
-    pub async fn read_resource(
-        &mut self,
-        uri: &str,
-        timeout_secs: u64,
-    ) -> Result<serde_json::Value> {
-        self.call_method(
-            "resources/read",
-            serde_json::json!({
-                "uri": uri
-            }),
-            timeout_secs,
-        )
-        .await
-    }
-
-    /// Get a prompt from this MCP server
-    pub async fn get_prompt(
-        &mut self,
-        prompt_name: &str,
-        arguments: serde_json::Value,
-        timeout_secs: u64,
-    ) -> Result<serde_json::Value> {
-        self.call_method(
-            "prompts/get",
-            serde_json::json!({
-                "name": prompt_name,
-                "arguments": arguments
-            }),
-            timeout_secs,
-        )
-        .await
-    }
-
-    /// Generic method to call an MCP method
-    async fn call_method(
-        &mut self,
-        method: &str,
-        params: serde_json::Value,
-        timeout_secs: u64,
-    ) -> Result<serde_json::Value> {
-        if self.state != ConnectionState::Ready {
-            anyhow::bail!(
-                "Failed to call MCP method '{}': connection '{}' is not ready",
-                method,
-                self.name
-            );
-        }
-
-        let call_id = self.next_id();
-        self.send(serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": &call_id,
-            "method": method,
-            "params": params
-        }))
-        .await?;
-
-        let response = tokio::time::timeout(Duration::from_secs(timeout_secs), self.recv(call_id))
-            .await
-            .with_context(|| {
-                format!(
-                    "MCP method '{}' on server '{}' timed out after {}s",
-                    method, self.name, timeout_secs
-                )
-            })??;
-
-        if let Some(error) = response.get("error") {
-            return Err(anyhow::anyhow!(
-                "MCP error in '{}': {}",
-                method,
-                serde_json::to_string_pretty(error)?
-            ));
-        }
-
-        Ok(response
-            .get("result")
-            .cloned()
-            .unwrap_or(serde_json::json!(null)))
     }
 
     /// Get discovered tools
     pub fn tools(&self) -> &[McpTool] {
         &self.tools
-    }
-
-    /// Get discovered resources
-    pub fn resources(&self) -> &[McpResource] {
-        &self.resources
-    }
-
-    /// Get discovered resource templates
-    pub fn resource_templates(&self) -> &[McpResourceTemplate] {
-        &self.resource_templates
-    }
-
-    /// Get discovered prompts
-    pub fn prompts(&self) -> &[McpPrompt] {
-        &self.prompts
     }
 
     /// Check if connection is ready
@@ -1471,9 +1131,6 @@ pub struct McpPool {
     config_hash: u64,
     /// Most recently observed mtime for `config_sources`.
     last_mtimes: Vec<Option<std::time::SystemTime>>,
-    /// Dynamically added MCP servers (from tool calls at runtime).
-    /// These are not persisted to disk and live for the process lifetime.
-    pub(crate) dynamic_servers: Arc<RwLock<HashMap<String, McpServerConfig>>>,
 }
 
 impl McpPool {
@@ -1488,7 +1145,6 @@ impl McpPool {
             workspace: None,
             config_hash,
             last_mtimes: Vec::new(),
-            dynamic_servers: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -1575,7 +1231,7 @@ impl McpPool {
     /// connections were replaced, `Ok(false)` otherwise.
     ///
     /// This is the lazy half of the auto-reload story for #1267: instead of a
-    /// long-lived file watcher, the next tool invocation pays a single `stat`
+    /// long-lived file watcher, the next connection lookup pays a single `stat`
     /// call (and only re-reads the file when the mtime moved). On networked
     /// or remote filesystems where mtime granularity is poor, the hash
     /// compare keeps us from churning connections on every check.
@@ -1620,7 +1276,7 @@ impl McpPool {
     pub async fn get_or_connect(&mut self, server_name: &str) -> Result<&mut McpConnection> {
         // Lazy auto-reload (#1267 part 2): cheap mtime-then-hash check before
         // each connection lookup. Transient FS errors are logged but not
-        // propagated so a brief hiccup can't take down the whole tool dispatch.
+        // propagated so a brief hiccup can't take down the diagnostic command.
         if let Err(e) = self.reload_if_config_changed().await {
             tracing::warn!("MCP config reload check failed: {e:#}");
         }
@@ -1639,13 +1295,11 @@ impl McpPool {
 
         self.shutdown_connection(server_name, "reconnect").await;
 
-        // Check static config first, then dynamic servers
         let server_config = self
             .config
             .servers
             .get(server_name)
             .cloned()
-            .or_else(|| self.dynamic_servers.read().get(server_name).cloned())
             .ok_or_else(|| anyhow::anyhow!("Failed to find MCP server: {server_name}"))?;
 
         if !server_config.is_enabled() {
@@ -1713,326 +1367,10 @@ impl McpPool {
                 tools.push((format!("mcp_{}_{}", server, tool.name), tool));
             }
         }
-        // Sort by prefixed name so iteration order across servers is
-        // deterministic for prefix-cache stability (#1319).
+        // Sort by prefixed name so combined CLI output is deterministic across
+        // HashMap iteration orders.
         tools.sort_by(|a, b| a.0.cmp(&b.0));
         tools
-    }
-
-    /// Get all discovered resources with server-prefixed names
-    pub fn all_resources(&self) -> Vec<(String, &McpResource)> {
-        let mut resources = Vec::new();
-        for (server, conn) in &self.connections {
-            for resource in conn.resources() {
-                // Format: mcp_{server}_{resource_name}
-                // Note: resource names might contain spaces, we should probably slugify them
-                let safe_name = resource.name.replace(' ', "_").to_lowercase();
-                resources.push((format!("mcp_{server}_{safe_name}"), resource));
-            }
-        }
-        resources
-    }
-
-    async fn list_resources(&mut self, server: Option<String>) -> Result<Vec<serde_json::Value>> {
-        if let Some(server_name) = server {
-            let conn = self.get_or_connect(&server_name).await?;
-            let resources = conn
-                .resources()
-                .iter()
-                .map(|resource| {
-                    serde_json::json!({
-                        "server": server_name.clone(),
-                        "uri": resource.uri,
-                        "name": resource.name,
-                        "description": resource.description,
-                        "mime_type": resource.mime_type,
-                    })
-                })
-                .collect();
-            return Ok(resources);
-        }
-
-        let mut items = Vec::new();
-        let errors = self.connect_all().await;
-        for (server, err) in errors {
-            tracing::warn!("Failed to connect MCP server '{server}' for resources: {err:#}");
-            if oauth::error_looks_auth_required(&err) {
-                items.push(Self::mcp_auth_required_error_item(&server));
-            }
-        }
-        for (server, conn) in &self.connections {
-            for resource in conn.resources() {
-                items.push(serde_json::json!({
-                    "server": server,
-                    "uri": resource.uri,
-                    "name": resource.name,
-                    "description": resource.description,
-                    "mime_type": resource.mime_type,
-                }));
-            }
-        }
-        Ok(items)
-    }
-
-    async fn list_resource_templates(
-        &mut self,
-        server: Option<String>,
-    ) -> Result<Vec<serde_json::Value>> {
-        if let Some(server_name) = server {
-            let conn = self.get_or_connect(&server_name).await?;
-            let templates = conn
-                .resource_templates()
-                .iter()
-                .map(|template| {
-                    serde_json::json!({
-                        "server": server_name.clone(),
-                        "uri_template": template.uri_template,
-                        "name": template.name,
-                        "description": template.description,
-                        "mime_type": template.mime_type,
-                    })
-                })
-                .collect();
-            return Ok(templates);
-        }
-
-        let mut items = Vec::new();
-        let errors = self.connect_all().await;
-        for (server, err) in errors {
-            tracing::warn!(
-                "Failed to connect MCP server '{server}' for resource templates: {err:#}"
-            );
-            if oauth::error_looks_auth_required(&err) {
-                items.push(Self::mcp_auth_required_error_item(&server));
-            }
-        }
-        for (server, conn) in &self.connections {
-            for template in conn.resource_templates() {
-                items.push(serde_json::json!({
-                    "server": server,
-                    "uri_template": template.uri_template,
-                    "name": template.name,
-                    "description": template.description,
-                    "mime_type": template.mime_type,
-                }));
-            }
-        }
-        Ok(items)
-    }
-
-    fn mcp_auth_required_error_item(server: &str) -> serde_json::Value {
-        serde_json::json!({
-            "error": "authentication_required",
-            "server": server,
-            "message": oauth::auth_required_login_hint(server),
-        })
-    }
-
-    /// Get all discovered prompts with server-prefixed names
-    pub fn all_prompts(&self) -> Vec<(String, &McpPrompt)> {
-        let mut prompts = Vec::new();
-        for (server, conn) in &self.connections {
-            for prompt in conn.prompts() {
-                // Format: mcp_{server}_{prompt}
-                prompts.push((format!("mcp_{}_{}", server, prompt.name), prompt));
-            }
-        }
-        prompts
-    }
-
-    /// Read a resource from a specific server
-    pub async fn read_resource(
-        &mut self,
-        server_name: &str,
-        uri: &str,
-    ) -> Result<serde_json::Value> {
-        let global_timeouts = self.config.timeouts;
-        let conn = self.get_or_connect(server_name).await?;
-        let timeout = conn.config().effective_read_timeout(&global_timeouts);
-        conn.read_resource(uri, timeout).await
-    }
-
-    /// Get a prompt from a specific server
-    pub async fn get_prompt(
-        &mut self,
-        server_name: &str,
-        prompt_name: &str,
-        arguments: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        let global_timeouts = self.config.timeouts;
-        let conn = self.get_or_connect(server_name).await?;
-        let timeout = conn.config().effective_execute_timeout(&global_timeouts);
-        conn.get_prompt(prompt_name, arguments, timeout).await
-    }
-
-    /// Parse a prefixed name into (server_name, tool_name)
-    pub(crate) fn parse_prefixed_name<'a>(
-        &self,
-        prefixed_name: &'a str,
-    ) -> Result<(&'a str, &'a str)> {
-        let Some(rest) = prefixed_name.strip_prefix("mcp_") else {
-            anyhow::bail!("Invalid MCP tool name: {prefixed_name}");
-        };
-
-        let mut best_match: Option<(&str, &str)> = None;
-        for server in self.connections.keys().chain(self.config.servers.keys()) {
-            let Some(tool) = rest
-                .strip_prefix(server)
-                .and_then(|tail| tail.strip_prefix('_'))
-            else {
-                continue;
-            };
-            if tool.is_empty() {
-                continue;
-            }
-            if best_match.is_none_or(|(matched, _)| server.len() > matched.len()) {
-                best_match = Some((&rest[..server.len()], tool));
-            }
-        }
-
-        if let Some((server, tool)) = best_match {
-            return Ok((server, tool));
-        }
-
-        let Some((server, tool)) = rest.split_once('_') else {
-            anyhow::bail!("Invalid MCP tool name format: {prefixed_name}");
-        };
-        Ok((server, tool))
-    }
-
-    /// Call a tool by its prefixed name (mcp_{server}_{tool})
-    pub async fn call_tool(
-        &mut self,
-        prefixed_name: &str,
-        arguments: serde_json::Value,
-    ) -> Result<serde_json::Value> {
-        if prefixed_name == "list_mcp_resources" {
-            let server = arguments
-                .get("server")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let resources = self.list_resources(server).await?;
-            return Ok(serde_json::json!({ "resources": resources }));
-        }
-
-        if prefixed_name == "list_mcp_resource_templates" {
-            let server = arguments
-                .get("server")
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let templates = self.list_resource_templates(server).await?;
-            return Ok(serde_json::json!({ "templates": templates }));
-        }
-
-        if prefixed_name == "mcp_read_resource" {
-            let server_name = arguments
-                .get("server")
-                .and_then(|v| v.as_str())
-                .context("Missing 'server' argument")?;
-            let uri = arguments
-                .get("uri")
-                .and_then(|v| v.as_str())
-                .context("Missing 'uri' argument")?;
-            return self.read_resource(server_name, uri).await;
-        }
-
-        if prefixed_name == "read_mcp_resource" {
-            let server_name = arguments
-                .get("server")
-                .and_then(|v| v.as_str())
-                .context("Missing 'server' argument")?;
-            let uri = arguments
-                .get("uri")
-                .and_then(|v| v.as_str())
-                .context("Missing 'uri' argument")?;
-            return self.read_resource(server_name, uri).await;
-        }
-
-        if prefixed_name == "mcp_get_prompt" {
-            let server_name = arguments
-                .get("server")
-                .and_then(|v| v.as_str())
-                .context("Missing 'server' argument")?;
-            let name = arguments
-                .get("name")
-                .and_then(|v| v.as_str())
-                .context("Missing 'name' argument")?;
-            let args = arguments
-                .get("arguments")
-                .cloned()
-                .unwrap_or(serde_json::json!({}));
-            return self.get_prompt(server_name, name, args).await;
-        }
-
-        let (server_name, tool_name) = self.parse_prefixed_name(prefixed_name)?;
-        // Copy the global timeouts to avoid borrow conflict
-        let global_timeouts = self.config.timeouts;
-        let conn = self.get_or_connect(server_name).await?;
-        if !conn.config().is_tool_enabled(tool_name) {
-            anyhow::bail!("MCP tool '{tool_name}' is disabled for server '{server_name}'");
-        }
-        let timeout = conn.config().effective_execute_timeout(&global_timeouts);
-        match conn.call_tool(tool_name, arguments.clone(), timeout).await {
-            Ok(result) => Ok(result),
-            Err(err) if is_mcp_stale_session_error(&err) => {
-                tracing::debug!(
-                    target: "mcp",
-                    server = server_name,
-                    tool = tool_name,
-                    error = %err,
-                    "retrying MCP tool call after stale session"
-                );
-                self.shutdown_connection(server_name, "stale session retry")
-                    .await;
-                let conn = self.get_or_connect(server_name).await?;
-                if !conn.config().is_tool_enabled(tool_name) {
-                    anyhow::bail!("MCP tool '{tool_name}' is disabled for server '{server_name}'");
-                }
-                let timeout = conn.config().effective_execute_timeout(&global_timeouts);
-                conn.call_tool(tool_name, arguments, timeout).await
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    /// Add a runtime server configuration (in-memory only, not persisted).
-    ///
-    /// This is used for dynamically started MCP servers from chat context.
-    /// Stored in `dynamic_servers` so it doesn't interfere with file-based config reload.
-    ///
-    /// Returns `Err` if a server with the same name already exists as a static config
-    /// or a dynamic config. The caller should surface the error to the LLM/user.
-    pub fn add_runtime_server_config(
-        &self,
-        name: String,
-        config: McpServerConfig,
-    ) -> Result<(), String> {
-        if self.config.servers.contains_key(&name) {
-            return Err(format!(
-                "MCP server '{}' already exists in the config file. \
-                 Remove it from the config first, or choose a different name.",
-                name
-            ));
-        }
-        let mut dynamic = self.dynamic_servers.write();
-        if dynamic.contains_key(&name) {
-            return Err(format!(
-                "MCP server '{}' was already started earlier in this session. \
-                 Choose a different name.",
-                name
-            ));
-        }
-        dynamic.insert(name, config);
-        Ok(())
-    }
-
-    /// Check if a tool name is an MCP tool
-    pub fn is_mcp_tool(name: &str) -> bool {
-        name.starts_with("mcp_")
-            || matches!(
-                name,
-                "list_mcp_resources" | "list_mcp_resource_templates" | "read_mcp_resource"
-            )
     }
 }
 

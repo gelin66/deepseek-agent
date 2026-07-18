@@ -119,9 +119,7 @@ During login, the CLI prints the authorization URL and a waiting status while
 the local callback listener is active. If a URL-based server returns 401 or
 Unauthorized during connect/discovery, `codewhale mcp connect <name>` reports
 that OAuth authentication is required and points to
-`codewhale mcp login <name>`. Resource helper listings also surface an
-`authentication_required` entry for auth-shaped failures instead of silently
-looking empty.
+`codewhale mcp login <name>`.
 
 Optional OAuth fields:
 
@@ -277,6 +275,10 @@ Per-server settings:
 - `scopes` (array, optional): default OAuth scopes for `mcp login`.
 - `oauth.client_id` (string, optional): pre-registered OAuth client ID.
 - `oauth_resource` (string, optional): resource parameter appended to the authorization URL.
+
+`execute_timeout` remains a round-tripped configuration field, but the current
+CLI does not execute discovered MCP tools, resources, or prompts, so no runtime
+path consumes that timeout today.
 
 ## Safety Notes
 
