@@ -1014,6 +1014,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   renderer、handle 绘制、canonical child/Fleet 投影和 work-surface 分栏均未改变。本切片不把
   没有 reader 的旧面积缓存冒充鼠标命中能力，也不顺手删除尚待独立审计的 resize 状态。
   定向 UI/sidebar 测试、PTY 7/7、TUI check、fmt 和 diff-check 通过。
+- M4-C 已删除零 production caller 的 `semantic_truncate_with_affixes`、只被它和一条自测调用的
+  `semantic_truncate_between_affixes`，以及该自证测试。真实 modal title 仍使用
+  `semantic_truncate`；footer/sidebar/work-surface/thinking 仍使用 `truncate_line_to_width`，
+  中文/CJK、组合字符、ZWJ、控制字符与窄终端宽度契约均保留。定向 ui-text 11/11 通过，并通过
+  TUI check、fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

@@ -556,6 +556,10 @@ M4-C foreground 切换后还已物理删除：
   renderer、handle 绘制、canonical child/Fleet 投影与 work-surface 分栏不经过旧预判链。
   尚未独立证明的 resize 状态未在本切片扩张删除。定向 UI/sidebar 测试、TUI check、fmt 与
   diff-check 通过，PTY 7/7 通过。
+- `ui_text` 中没有 production caller 的 affix 截断入口及其只被内部调用的 helper、自证测试
+  已删除。真实 modal title 继续使用 `semantic_truncate`，footer/sidebar/work-surface/thinking
+  继续使用 `truncate_line_to_width`；`text_display_width` 对中文/CJK、组合字符、ZWJ、控制字符
+  与窄宽度的契约保持不变。当前定向 ui-text 11/11 通过，并通过 TUI check、fmt 和 diff-check。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

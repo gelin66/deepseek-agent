@@ -92,35 +92,6 @@ pub(crate) fn semantic_truncate(text: &str, max_width: usize) -> String {
     out
 }
 
-pub(crate) fn semantic_truncate_with_affixes(
-    prefix: &str,
-    text: &str,
-    suffix: &str,
-    max_width: usize,
-) -> String {
-    let fixed_width = text_display_width(prefix) + text_display_width(suffix);
-    if fixed_width > max_width {
-        return semantic_truncate(&format!("{prefix}{text}{suffix}"), max_width);
-    }
-    format!(
-        "{prefix}{}{suffix}",
-        semantic_truncate_between_affixes(prefix, text, suffix, max_width)
-    )
-}
-
-pub(crate) fn semantic_truncate_between_affixes(
-    prefix: &str,
-    text: &str,
-    suffix: &str,
-    max_width: usize,
-) -> String {
-    let fixed_width = text_display_width(prefix) + text_display_width(suffix);
-    if fixed_width > max_width {
-        return String::new();
-    }
-    semantic_truncate(text, max_width - fixed_width)
-}
-
 pub(crate) fn text_display_width(text: &str) -> usize {
     text.chars().map(char_display_width).sum()
 }
@@ -224,19 +195,6 @@ mod tests {
         assert_eq!(semantic_truncate("", 10), "");
         assert_eq!(semantic_truncate("hello", 0), "");
         assert_eq!(semantic_truncate("hello", 1), "…");
-    }
-
-    #[test]
-    fn semantic_truncate_between_affixes_reserves_fixed_columns() {
-        let hint = semantic_truncate_between_affixes(
-            " > [ ] Context window  (",
-            "tokens used compared with the model limit",
-            ")",
-            49,
-        );
-        let row = format!(" > [ ] Context window  ({hint})");
-        assert_eq!(hint, "tokens used compared…");
-        assert!(text_display_width(&row) <= 49);
     }
 
     // --- New #3488 fixtures: CJK/wide-glyph truncation on selector-style rows.
