@@ -61,6 +61,61 @@ pub fn redacted_identifier_for_log(identifier: &str) -> String {
     format!("<redacted:{hash:016x}>")
 }
 
+pub(crate) fn redact_url_for_display(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_string();
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        let _ = parsed.set_username("***");
+        let _ = parsed.set_password(Some("***"));
+    }
+    if parsed.query().is_none() {
+        return parsed.to_string();
+    }
+    let pairs: Vec<(String, String)> = parsed
+        .query_pairs()
+        .map(|(key, value)| {
+            let value = if is_sensitive_url_query_key(&key) {
+                "***".to_string()
+            } else {
+                value.into_owned()
+            };
+            (key.into_owned(), value)
+        })
+        .collect();
+    parsed.set_query(None);
+    let mut query = parsed.query_pairs_mut();
+    for (key, value) in pairs {
+        query.append_pair(&key, &value);
+    }
+    drop(query);
+    parsed.to_string()
+}
+
+fn is_sensitive_url_query_key(key: &str) -> bool {
+    let normalized = key.trim().replace(['-', '.'], "_").to_ascii_lowercase();
+    matches!(
+        normalized.as_str(),
+        "api_key"
+            | "apikey"
+            | "access_token"
+            | "auth_token"
+            | "authorization"
+            | "bearer"
+            | "client_secret"
+            | "credential"
+            | "id_token"
+            | "password"
+            | "refresh_token"
+            | "secret"
+            | "token"
+    ) || normalized.ends_with("_api_key")
+        || normalized.ends_with("_authorization")
+        || normalized.ends_with("_password")
+        || normalized.ends_with("_secret")
+        || normalized.ends_with("_token")
+}
+
 #[cfg(windows)]
 pub(crate) fn suppress_console_window(cmd: &mut Command) {
     use std::os::windows::process::CommandExt;
@@ -578,7 +633,7 @@ pub fn estimate_message_chars(messages: &[Message]) -> usize {
 // without additional platform scaffolding.
 #[cfg(test)]
 mod tests {
-    use super::{display_path_with_home, redacted_identifier_for_log};
+    use super::{display_path_with_home, redact_url_for_display, redacted_identifier_for_log};
     use std::path::PathBuf;
 
     fn home(s: &str) -> Option<PathBuf> {
@@ -600,6 +655,18 @@ mod tests {
     #[test]
     fn redacted_identifier_for_log_marks_empty_values() {
         assert_eq!(redacted_identifier_for_log(""), "<redacted:empty>");
+    }
+
+    #[test]
+    fn redact_url_for_display_masks_userinfo_and_sensitive_query_values() {
+        let redacted = redact_url_for_display(
+            "https://user:secret@example.com/v1?api_key=sk-test&region=us&refresh-token=abc",
+        );
+
+        assert_eq!(
+            redacted,
+            "https://***:***@example.com/v1?api_key=***&region=us&refresh-token=***"
+        );
     }
 
     #[test]
