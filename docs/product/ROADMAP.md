@@ -994,6 +994,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - app-server 的 TUI 子进程 bridge、`RuntimeBridge`、`monitor_turn` 与私有事件/状态翻译已删除；
   交互 TUI 的旧 foreground runtime-thread owner 也已删除。
 - TUI 已只保留交互命令和 canonical `RuntimeEvent` 投影。
+- TUI `core/runtime_contract` 中从未编译、没有生产消费者的 10 个 speculative shadow 文件已
+  物理删除；仓库只保留 `crates/protocol` 的 canonical `RuntimeEventKind`。仍被 exec 输出、
+  runtime 与 CLI presentation 消费的 typed `termination.rs` 继续通过真实 path import 编译。
 - 隐藏 workflow 的 Workflow/SubAgent JSON/JSONL 写入链、专属 adapter 和 UI 已随第二
   Runtime 物理删除；未把旧状态迁成 canonical 双写。
 - ACP 独立 session/stream/direct completion 已删除；不保留 editor 协议兼容桥。

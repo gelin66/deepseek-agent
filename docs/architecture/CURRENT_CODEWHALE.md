@@ -323,6 +323,9 @@ M4-B 已物理删除：
 
 M4-C foreground 切换后还已物理删除：
 
+- `core/runtime_contract` 中从未编译、没有生产消费者的 10 个 speculative shadow 文件；
+  `RuntimeEventKind` 现在只在 `crates/protocol` 定义。仍被 exec 输出、runtime 与 CLI
+  presentation 消费的 typed `termination.rs` 保留并继续真实编译。
 - 旧 foreground Engine、EventBroker 和 runtime-thread state owner；
 - `SessionManager` 与旧 session/checkpoint helper；
 - TUI child worker cache、mailbox reducer、fanout card 和第二展示真相；

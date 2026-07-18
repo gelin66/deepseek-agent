@@ -6,6 +6,5 @@
 pub mod events;
 #[path = "runtime_contract/termination.rs"]
 pub mod termination;
-// The rest of `runtime_contract/` stays on disk as staged Core-runtime
-// scaffolding and remains deliberately uncompiled until it has production
-// consumers (TUI-DOG-017).
+// Typed exec termination remains here because exec output, runtime, and CLI
+// presentation still consume it.
