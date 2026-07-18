@@ -10,7 +10,9 @@ Browsing note:
 
 CodeWhale only consumes external MCP tool servers; it no longer exposes itself
 as an MCP server. The canonical local Agent API is `codewhale app-server` over
-HTTP/SSE or stdio. ACP remains a separate editor-agent protocol.
+HTTP/SSE or stdio. The former ACP editor adapter has been deleted because it
+owned an independent model/session loop instead of projecting the canonical Run
+API.
 
 ## Setup wizard vs manual MCP setup (#3407)
 

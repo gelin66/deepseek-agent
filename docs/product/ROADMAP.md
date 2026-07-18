@@ -10,10 +10,10 @@
   验收与费用受限的官方 DeepSeek sender canary，并冻结为提交 `4a3311ac`；后续
   `35fc3cc4` 已把 durable creation delivery 提升为 Run API v4 / State schema v9。交互 TUI
   foreground、canonical root/child Run 投影和旧前台状态删除已经完成；当前
-  RuntimeEvent v6、State schema v10。M4-C 的最后一个结构阻塞已在本切片移除：
-  `workflow`/`workflow-tool` 入口、Workflow/Workflow-JS crate、TUI 私有执行/状态/UI 和
-  专属 SubAgent adapter 已物理删除，未引入兼容桥；M4 最终集成门禁仍须在合并后通过。M1 的
-  导入基线 A/B 与 M2 的完整官方 surface canary 仍是独立证据债务
+  RuntimeEvent v6、State schema v10。`workflow`/`workflow-tool` 的第二模型循环和
+  `serve --acp` 的独立模型/会话路径均已物理删除，未引入兼容桥；direct `review`
+  completion 仍是 M4-C 的结构收尾目标，完成后再运行 M4 最终集成门禁。M1 的导入基线 A/B
+  与 M2 的完整官方 surface canary 仍是独立证据债务
 - 上次更新：2026-07-18
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -552,6 +552,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `workflow`/`workflow-tool` 在任何配置、TUI、Store 或模型初始化前 fail closed。canonical
   `agent` 的根/子同 Runtime 能力保持不变；DAG/worktree 能力以后只能进入唯一
   Orchestrator，不恢复兼容桥。
+- M4-C 已删除 `codewhale serve --acp` 与 1,210 行独立 session/stream/direct
+  `DeepSeekClient` 实现。裸旧命令在 Config、TUI、RunStore 和模型前由 Clap 拒绝；只有显式
+  `--prompt "serve --acp"` 才作为普通任务进入 canonical Agent。
+- M4-C 下一结构切片删除 direct `review -> DeepSeekClient::create_message` 路径；代码审查是
+  Agent profile/任务能力，不应拥有独立模型循环、receipt 真相或 completion 判定。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
@@ -620,7 +625,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   共 64 files、`+7/-25,523`。
 - 证据：canonical Run 20/20、canonical PTY 5/5、run presenter 13/13、canonical commands
   5/5；child blocked/recovery/terminal outcome 与中文宽字符投影有定向回归。
-- 非结论：该切片只完成交互前台切换；后续纯删除切片才移除隐藏 workflow 第二循环。
+- 非结论：该切片只完成交互前台切换；后续纯删除切片已移除隐藏 workflow 与 ACP 第二
+  模型路径，direct `review` 仍待收敛。
 
 #### 每 Agent 最终请求许可（机制完成，产品收益未通过）
 
@@ -667,6 +673,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - TUI 已只保留交互命令和 canonical `RuntimeEvent` 投影。
 - 隐藏 workflow 的 Workflow/SubAgent JSON/JSONL 写入链、专属 adapter 和 UI 已随第二
   Runtime 物理删除；未把旧状态迁成 canonical 双写。
+- ACP 独立 session/stream/direct completion 已删除；不保留 editor 协议兼容桥。
 
 ### 整个 M4 的退出门槛
 
@@ -674,7 +681,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - 内存 Store 与 SQLite Store 重放一致。（M4-A 行为门禁已通过）
 - crash/resume 和 exactly-once completion 通过。（`exec` 与 app-server 已通过）
 - exec/app-server/交互 foreground 不存在第二个生产 loop、可写 Store 或入口私有 completion
-  语义；已删除的 hidden workflow 不再构成生产例外。最终仍须通过 M4 合并门禁确认调用图。
+  语义；已删除的 hidden workflow/ACP 不再构成生产例外。direct `review` 收敛后，仍须通过
+  M4 合并门禁确认调用图。
 
 ## 9. M5：RepoGraph、ContextBroker 与现有 WIP 证据链迁移
 

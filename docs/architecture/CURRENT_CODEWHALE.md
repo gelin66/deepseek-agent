@@ -11,7 +11,8 @@
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - 当前阶段：M4-C 收尾；交互 TUI foreground 与 root/child projection 已迁移，当前
   canonical RuntimeEvent 为 v6、State schema 为 v10；隐藏 `workflow-tool` 第二模型循环
-  及其私有状态/UI 已删除，最终集成门禁待通过
+  及其私有状态/UI、ACP 独立模型/会话路径已删除；direct `review` 模型路径仍是收尾目标，
+  最终集成门禁待通过
 
 ## 1. 当前结论
 
@@ -246,8 +247,10 @@ M4-C foreground 切换后还已物理删除：
 - `SessionManager` 与旧 session/checkpoint helper；
 - TUI child worker cache、mailbox reducer、fanout card 和第二展示真相；
 - registry-driven slash command system（64 files，净删 25,516 行）；
-- CodeWhale 自托管 MCP server 的两套实现与 `crates/mcp`；外部 MCP client、ACP 与
-  canonical app-server 保留。
+- CodeWhale 自托管 MCP server 的两套实现与 `crates/mcp`；外部 MCP client 与 canonical
+  app-server 保留；
+- `codewhale serve --acp` 及其 1,210 行独立 session、stream 和 direct
+  `DeepSeekClient` 路径；显式 `--prompt "serve --acp"` 仍只是普通 canonical Agent 输入。
 - 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查和仍被 TUI/hooks 使用的
   `crates/release` 保留，不属于本次删除。
 
