@@ -341,6 +341,9 @@ M4-C foreground 切换后还已物理删除：
 - 只服务已删除旧工具、没有生产 executor 或 registry 消费者的 TUI `ToolSpec`、
   `ToolContext`、`RuntimeToolServices` 与本地 `SandboxPolicy`；错误分类直接使用
   `codewhale_tools::ToolError`，固定目录、production context、sandbox 与 shell owner 不变。
+- 无调用方的 TUI OpenAI/Anthropic message/tool DTO 与 MCP `to_api_tools` 广告器；它们未进入
+  canonical `AgentRuntime`，删除不会改变 MCP 配置、transport、OAuth、发现或 CLI 管理。
+  当前 model-visible 工具仍只由固定目录和 Runtime 条件内建工具产生。
 - 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查和仍被 TUI/hooks 使用的
   `crates/release` 保留，不属于本次删除。
 - 没有构造方、不会读取图片数据的旧 TUI `ToolCell::ViewImage` 文本卡；canonical

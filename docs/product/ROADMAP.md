@@ -631,6 +631,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `ToolSpec`/`ToolContext`/`RuntimeToolServices` abstraction island。TUI error taxonomy 直接
   消费 `codewhale_tools::ToolError`；固定 11 工具、`ProductionToolContext`、canonical
   sandbox/shell 与 Runtime `ToolExecutor` 保持唯一 owner，不新增兼容 adapter。
+- M4-C 已删除零调用方的 TUI OpenAI/Anthropic message/tool DTO 与 MCP `to_api_tools`
+  广告器。该广告器从未进入 canonical `AgentRuntime` 或 RunStore；MCP 配置、transport、
+  OAuth、发现与 CLI 管理保留，后续若接入模型必须走唯一 `ToolExecutor`/`ToolOutcome` 契约。
 - M4-C 已删除只有自测构造、没有生产打开入口的旧 Mode/Status picker modal、专属事件和
   状态行 picker 文案；`AppMode` 权限基线、`StatusItem` 配置与实际 footer 投影继续由原
   调用方保留，不恢复不可达的 `/mode` 或 `/statusline` 外壳。
