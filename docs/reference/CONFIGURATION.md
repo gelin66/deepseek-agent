@@ -805,6 +805,11 @@ Common settings keys:
   also kept locally for composer history search)
 - `default_model` (model name override)
 
+The composer has one direct-editing path. `composer_vim_mode`, `vim_mode`, and
+`vim` are not settings; printable characters, including `v`, remain ordinary
+composer input. Vim-style `j`/`k`/`g`/`G`/`y`/`q` bindings belong only to the
+separate Pager modal.
+
 Plan and Act are the everyday visible modes in the UI; Operate is an explicit
 preview entry while its Workflow control surface is still being built. Switch
 between them with `/mode`. For compatibility, older settings files with

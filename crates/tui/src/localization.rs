@@ -257,11 +257,6 @@ pub enum MessageId {
     CanonicalRunSubmitFailed,
     CanonicalLegacyActionUnavailable,
     CanonicalMismatchedInteractionReceipt,
-    // Composer vim indicator.
-    VimModeNormal,
-    VimModeInsert,
-    VimModeVisual,
-
     // Approval dialog — risk badges, category labels, field labels, options.
     ApprovalRiskReview,
     ApprovalRiskElevated,
@@ -725,9 +720,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CanonicalRunSubmitFailed,
     MessageId::CanonicalLegacyActionUnavailable,
     MessageId::CanonicalMismatchedInteractionReceipt,
-    MessageId::VimModeNormal,
-    MessageId::VimModeInsert,
-    MessageId::VimModeVisual,
     MessageId::ApprovalRiskReview,
     MessageId::ApprovalRiskElevated,
     MessageId::ApprovalRiskDestructive,

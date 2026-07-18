@@ -1053,37 +1053,6 @@ pub enum InitialInput {
 
 // === Sub-state structs for App field organization (#377) ===
 
-/// Vim modal editing mode for the composer input area.
-///
-/// Enabled via `[composer] mode = "vim"` in `settings.toml`.  When the
-/// composer vim mode is active the user starts in `Normal` mode and presses
-/// `i`, `a`, or `o` to enter `Insert` mode.  `Esc` from `Insert` returns to
-/// `Normal`.  Standard vim motions (`h`/`j`/`k`/`l`, `w`/`b`, `0`/`$`, `x`,
-/// `dd`) work in `Normal` mode.  `Visual` is reserved for future selection
-/// support and currently behaves like `Normal`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum VimMode {
-    /// Normal / command mode — motions and operators, no text insertion.
-    #[default]
-    Normal,
-    /// Insert mode — characters are appended at the cursor as typed.
-    Insert,
-    /// Visual mode — reserved for future selection support.
-    Visual,
-}
-
-impl VimMode {
-    /// Localized status-bar label shown in the composer border (user-facing).
-    #[must_use]
-    pub fn label_localized(self) -> Cow<'static, str> {
-        tr(match self {
-            Self::Normal => MessageId::VimModeNormal,
-            Self::Insert => MessageId::VimModeInsert,
-            Self::Visual => MessageId::VimModeVisual,
-        })
-    }
-}
-
 /// Cached @-mention completion results to avoid re-walking the filesystem when
 /// the cursor moves inside the same mention token.
 #[derive(Debug, Clone)]
@@ -1157,15 +1126,6 @@ pub struct ComposerState {
     /// Cached full candidate list so successive keystrokes inside one mention
     /// token filter in memory instead of re-walking the workspace (#3757).
     pub mention_candidate_cache: Option<MentionCandidateCache>,
-    /// Whether vim modal editing is enabled for this composer.
-    /// Sourced from `Settings::composer_vim_mode` at startup.
-    pub vim_enabled: bool,
-    /// Current vim editing mode.  Only meaningful when `vim_enabled` is true.
-    pub vim_mode: VimMode,
-    /// Pending `d` prefix for the `dd` delete-line operator.  Set when the
-    /// user presses `d` in Normal mode; cleared on the next key (either `d`
-    /// to complete `dd`, or any other key to cancel).
-    pub vim_pending_d: bool,
     /// When set, the cursor is the active end of a text selection and
     /// `selection_anchor` is the fixed end.  Both are char-indexed.
     /// `None` means no selection is active.
@@ -1192,9 +1152,6 @@ impl Default for ComposerState {
             mention_menu_hidden: false,
             mention_completion_cache: None,
             mention_candidate_cache: None,
-            vim_enabled: false,
-            vim_mode: VimMode::Normal,
-            vim_pending_d: false,
             selection_anchor: None,
         }
     }
@@ -1989,10 +1946,6 @@ impl App {
             CostCurrency::from_setting(&settings.cost_currency).unwrap_or(CostCurrency::Usd);
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
-        let composer_vim_enabled = settings
-            .composer_vim_mode
-            .trim()
-            .eq_ignore_ascii_case("vim");
         let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
         let sidebar_width_percent = settings.sidebar_width_percent;
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
@@ -2172,9 +2125,6 @@ impl App {
                 mention_menu_hidden: false,
                 mention_completion_cache: None,
                 mention_candidate_cache: None,
-                vim_enabled: composer_vim_enabled,
-                vim_mode: VimMode::Normal,
-                vim_pending_d: false,
                 selection_anchor: None,
             },
             viewport: ViewportState::default(),
@@ -4007,185 +3957,6 @@ impl App {
     /// Clear the selection without moving the cursor.
     pub fn clear_selection(&mut self) {
         self.selection_anchor = None;
-    }
-
-    // === Vim composer mode helpers ===
-
-    /// Move the cursor to the start of the current logical line (vim `0`).
-    pub fn vim_move_line_start(&mut self) {
-        let text = self.input.clone();
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        // Walk backward until we find a newline or the start of the string.
-        let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
-        self.cursor_position = char_count(&text[..line_start_byte]);
-        self.needs_redraw = true;
-    }
-
-    /// Move the cursor to the end of the current logical line (vim `$`).
-    pub fn vim_move_line_end(&mut self) {
-        let text = self.input.clone();
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        // Walk forward to the next newline or end-of-string.
-        let line_end_char = text[cursor_byte..].find('\n').map_or_else(
-            || char_count(&text),
-            |rel| char_count(&text[..cursor_byte + rel]),
-        );
-        self.cursor_position = line_end_char;
-        self.needs_redraw = true;
-    }
-
-    /// Move forward one word (vim `w`).  Skips over the current word then any
-    /// trailing whitespace to land on the first character of the next word.
-    pub fn vim_move_word_forward(&mut self) {
-        self.move_cursor_word_forward();
-    }
-
-    /// Move backward one word (vim `b`).  Skips leading whitespace then the
-    /// preceding word to land on its first character.
-    pub fn vim_move_word_backward(&mut self) {
-        self.move_cursor_word_backward();
-    }
-
-    /// Delete the character under the cursor (vim `x`).
-    pub fn vim_delete_char_under_cursor(&mut self) {
-        self.auto_expand_oversized_paste();
-        let total = char_count(&self.input);
-        if self.cursor_position >= total {
-            return;
-        }
-        let pos = self.cursor_position;
-        remove_char_at(&mut self.input, pos);
-        // Keep cursor in bounds after deletion.
-        let new_total = char_count(&self.input);
-        if self.cursor_position > 0 && self.cursor_position >= new_total {
-            self.cursor_position = new_total.saturating_sub(1);
-        }
-        self.needs_redraw = true;
-    }
-
-    /// Delete the entire current logical line (vim `dd`).
-    pub fn vim_delete_line(&mut self) {
-        let text = self.input.clone();
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |idx| idx + 1);
-        let line_end_byte = text[cursor_byte..]
-            .find('\n')
-            .map_or(text.len(), |rel| cursor_byte + rel);
-
-        // Include the trailing newline if present, or the leading newline for the
-        // very last non-terminated line to avoid leaving a dangling newline.
-        let (remove_start, remove_end) = if line_end_byte < text.len() {
-            // There is a newline after the line — remove it too.
-            (line_start_byte, line_end_byte + 1)
-        } else if line_start_byte > 0 {
-            // Last line without trailing newline — remove the preceding newline.
-            (line_start_byte - 1, line_end_byte)
-        } else {
-            // Only line in the buffer.
-            (line_start_byte, line_end_byte)
-        };
-
-        self.input.replace_range(remove_start..remove_end, "");
-        self.cursor_position = char_count(&self.input[..remove_start]);
-        self.needs_redraw = true;
-    }
-
-    /// Enter insert mode at the cursor (vim `i`).
-    pub fn vim_enter_insert(&mut self) {
-        self.vim_mode = VimMode::Insert;
-        self.needs_redraw = true;
-    }
-
-    /// Enter insert mode after the cursor (vim `a`).
-    pub fn vim_enter_append(&mut self) {
-        let total = char_count(&self.input);
-        if self.cursor_position < total {
-            self.cursor_position += 1;
-        }
-        self.vim_mode = VimMode::Insert;
-        self.needs_redraw = true;
-    }
-
-    /// Open a new line below and enter insert mode (vim `o`).
-    pub fn vim_open_line_below(&mut self) {
-        // Move to end of line, then insert a newline.
-        self.vim_move_line_end();
-        self.insert_char('\n');
-        self.vim_mode = VimMode::Insert;
-    }
-
-    /// Return to Normal mode from Insert or Visual (vim `Esc`).
-    pub fn vim_enter_normal(&mut self) {
-        self.vim_mode = VimMode::Normal;
-        self.vim_pending_d = false;
-        // In Normal mode the cursor sits on a character, not after the last one.
-        let total = char_count(&self.input);
-        if self.cursor_position > 0 && self.cursor_position >= total {
-            self.cursor_position = total.saturating_sub(1);
-        }
-        self.needs_redraw = true;
-    }
-
-    /// Returns `true` when vim mode is active and the composer is in Normal
-    /// mode, which means character keys should NOT be inserted as text.
-    #[must_use]
-    pub fn vim_is_normal_mode(&self) -> bool {
-        self.composer.vim_enabled && self.composer.vim_mode == VimMode::Normal
-    }
-
-    /// Returns `true` when vim mode is active and the composer is in Visual mode.
-    #[must_use]
-    pub fn vim_is_visual_mode(&self) -> bool {
-        self.composer.vim_enabled && self.composer.vim_mode == VimMode::Visual
-    }
-
-    /// Move the cursor down one logical line within the buffer (vim `j`).
-    /// Falls back to history-down when already on the last line.
-    pub fn vim_move_down(&mut self) {
-        let text = self.input.clone();
-        let total = char_count(&text);
-        if self.cursor_position >= total {
-            self.history_down();
-            return;
-        }
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        let rest = &text[cursor_byte..];
-        if let Some(rel_nl) = rest.find('\n') {
-            // Column offset on the current line.
-            let line_start_byte = text[..cursor_byte].rfind('\n').map_or(0, |i| i + 1);
-            let col = char_count(&text[line_start_byte..cursor_byte]);
-            let next_line_start = cursor_byte + rel_nl + 1;
-            let next_line = &text[next_line_start..];
-            let next_line_len = next_line.find('\n').unwrap_or(next_line.len());
-            let next_line_char_len =
-                char_count(&text[next_line_start..next_line_start + next_line_len]);
-            let target_col = col.min(next_line_char_len);
-            self.cursor_position = char_count(&text[..next_line_start]) + target_col;
-            self.needs_redraw = true;
-        } else {
-            self.history_down();
-        }
-    }
-
-    /// Move the cursor up one logical line within the buffer (vim `k`).
-    /// Falls back to history-up when already on the first line.
-    pub fn vim_move_up(&mut self) {
-        let text = self.input.clone();
-        let cursor_byte = byte_index_at_char(&text, self.cursor_position);
-        if let Some(prev_nl) = text[..cursor_byte].rfind('\n') {
-            // Column on the current line.
-            let line_start_byte = prev_nl + 1;
-            let col = char_count(&text[line_start_byte..cursor_byte]);
-            // Find start of the previous line.
-            let prev_line_end = prev_nl; // byte of the newline itself
-            let prev_start = text[..prev_line_end].rfind('\n').map_or(0, |i| i + 1);
-            let prev_line_len = char_count(&text[prev_start..prev_line_end]);
-            let target_col = col.min(prev_line_len);
-            self.cursor_position = char_count(&text[..prev_start]) + target_col;
-            self.needs_redraw = true;
-        } else {
-            self.history_up();
-        }
     }
 
     pub fn clear_input(&mut self) {

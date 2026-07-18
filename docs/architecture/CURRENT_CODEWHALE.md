@@ -450,6 +450,11 @@ M4-C foreground 切换后还已物理删除：
 - transcript `selection.rs` 的 selection/autoscroll 状态没有任何生产事件 writer，只会默认构造，
   再被自动滚动 guard 与 renderer 读取；该模块、viewport 字段、resize clear、着色 helper 和专属自测
   现已删除。composer `selection_anchor`、菜单/审批 palette 状态、Pager 系统复制及 canonical scroll 均未改变。
+- composer Vim 设置曾只能在 App 启动时构造本地状态和顶栏标签；canonical key handler
+  从未调用 `vim_mode.rs` 或任何 Vim helper，因而所谓 Normal/Insert/Visual 编辑没有生产交互入口。
+  该模块、App 字段/helper、设置与别名、标签本地化和 widget 分支已删除。composer 仍由单一
+  canonical 键盘路由驱动普通输入、选区与渲染，字符 `v` 不再可能被幽灵 modal 状态吞掉；Pager
+  的 `j/k/g/G/y/q` 是独立真实交互，保持不变。
 - sidebar 的旧 hover/click 元数据只有 renderer producer，没有事件 handler、tooltip 或
   popover consumer；`SidebarHoverState`/section/row/action、每帧全文克隆、tooltip shadow
   和从未构造的 `SidebarAgentCancel` 已物理删除。可见 Activity/Agents/Session 行继续直接

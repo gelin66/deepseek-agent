@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use crate::localization::{MessageId, tr};
 use crate::palette;
-use crate::tui::app::{App, AppMode, ComposerDensity, VimMode};
+use crate::tui::app::{App, AppMode, ComposerDensity};
 use crate::tui::approval::{ApprovalRequest, ApprovalStakes, ApprovalView, ToolCategory};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
 use crate::tui::scrolling::TranscriptLineMeta;
@@ -1305,7 +1305,7 @@ impl Renderable for ComposerWidget<'_> {
                     )))
                 };
             }
-            // Top-right corner: editor state plus transient turn receipts.
+            // Top-right corner: transient turn receipts or the session title.
             // Receipts are lifecycle chrome, not transcript content; they
             // should appear briefly without displacing conversation rows.
             if self.app.ocean_treatment.is_classic()
@@ -2571,19 +2571,10 @@ fn truncate_display_width(text: &str, max_width: usize) -> String {
     out
 }
 
-fn vim_mode_style(mode: VimMode) -> Style {
-    let color = match mode {
-        VimMode::Normal => palette::TEXT_MUTED,
-        VimMode::Insert => palette::WHALE_INFO,
-        VimMode::Visual => palette::MODE_PLAN,
-    };
-    Style::default().fg(color).bold()
-}
-
 fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>> {
     let receipt = app.active_receipt_text();
     let session_title = app.session_title.as_deref();
-    if !app.composer.vim_enabled && receipt.is_none() && session_title.is_none() {
+    if receipt.is_none() && session_title.is_none() {
         return None;
     }
 
@@ -2599,58 +2590,18 @@ fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>
         .add_modifier(Modifier::DIM);
     if let Some(receipt) = receipt {
         let receipt_text = receipt.trim();
-        if app.composer.vim_enabled {
-            let vim_label = app.composer.vim_mode.label_localized();
-            let vim_width = UnicodeWidthStr::width(&*vim_label);
-            let sep_width = UnicodeWidthStr::width(" · ");
-            if vim_width + sep_width + 4 <= max_width {
-                let receipt_width = max_width.saturating_sub(vim_width + sep_width);
-                return Some(Line::from(vec![
-                    Span::styled(vim_label.to_string(), vim_mode_style(app.composer.vim_mode)),
-                    Span::styled(" · ", Style::default().fg(palette::TEXT_MUTED)),
-                    Span::styled(
-                        truncate_display_width(receipt_text, receipt_width),
-                        receipt_style,
-                    ),
-                ]));
-            }
-        }
-
         return Some(Line::from(Span::styled(
             truncate_display_width(receipt_text, max_width),
             receipt_style,
         )));
     }
 
-    let mut spans: Vec<Span> = Vec::new();
-    if app.composer.vim_enabled {
-        spans.push(Span::styled(
-            truncate_display_width(&app.composer.vim_mode.label_localized(), max_width),
-            vim_mode_style(app.composer.vim_mode),
-        ));
-    }
-    if let Some(title) = session_title {
-        let used: usize = spans
-            .iter()
-            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
-            .sum();
-        let sep = if spans.is_empty() { 0 } else { 2 };
-        let remaining = max_width.saturating_sub(used + sep);
-        if remaining >= 4 {
-            if !spans.is_empty() {
-                spans.push(Span::raw("  "));
-            }
-            spans.push(Span::styled(
-                truncate_display_width(title, remaining),
-                Style::default().fg(palette::TEXT_MUTED),
-            ));
-        }
-    }
-    if spans.is_empty() {
-        None
-    } else {
-        Some(Line::from(spans))
-    }
+    session_title.map(|title| {
+        Line::from(Span::styled(
+            truncate_display_width(title, max_width),
+            Style::default().fg(palette::TEXT_MUTED),
+        ))
+    })
 }
 
 fn should_render_empty_state(app: &App) -> bool {
@@ -3090,9 +3041,7 @@ mod tests {
             resume_session_id: None,
             initial_input: None,
         };
-        let mut app = App::new(options, &Config::default());
-        app.composer.vim_enabled = false;
-        app
+        App::new(options, &Config::default())
     }
 
     fn buffer_text(buf: &Buffer, area: Rect) -> String {

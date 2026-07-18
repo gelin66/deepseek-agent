@@ -260,10 +260,6 @@ pub struct Settings {
     pub composer_density: String,
     /// Show a border around the composer input area
     pub composer_border: bool,
-    /// Composer editing mode: "normal" (default) or "vim" for modal editing.
-    /// When set to "vim" the composer starts in Normal mode; press i/a/o to
-    /// enter Insert mode and Esc to return to Normal.
-    pub composer_vim_mode: String,
     /// Transcript spacing rhythm: compact, comfortable, spacious
     pub transcript_spacing: String,
     /// Default mode: "agent" or "plan". Legacy permission
@@ -386,7 +382,6 @@ impl Default for Settings {
             background_color: None,
             composer_density: "comfortable".to_string(),
             composer_border: true,
-            composer_vim_mode: "normal".to_string(),
             transcript_spacing: "comfortable".to_string(),
             default_mode: "agent".to_string(),
             sidebar_width_percent: 28,
@@ -734,15 +729,6 @@ impl Settings {
             "composer_border" | "border" => {
                 self.composer_border = parse_bool(value)?;
             }
-            "composer_vim_mode" | "vim_mode" | "vim" => {
-                let normalized = value.trim().to_ascii_lowercase();
-                if !["vim", "normal"].contains(&normalized.as_str()) {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid composer vim mode '{value}'. Expected: normal, vim."
-                    );
-                }
-                self.composer_vim_mode = normalized;
-            }
             "transcript_spacing" | "spacing" => {
                 let normalized = normalize_transcript_spacing(value);
                 if !["compact", "comfortable", "spacious"].contains(&normalized) {
@@ -936,7 +922,6 @@ impl Settings {
         ));
         lines.push(format!("  composer_density:   {}", self.composer_density));
         lines.push(format!("  composer_border:    {}", self.composer_border));
-        lines.push(format!("  composer_vim_mode:  {}", self.composer_vim_mode));
         lines.push(format!("  transcript_spacing: {}", self.transcript_spacing));
         lines.push(format!("  status_indicator:   {}", self.status_indicator));
         lines.push(format!(
@@ -1045,7 +1030,6 @@ impl Settings {
                 "composer_border",
                 "Show a border around the composer input area: on/off",
             ),
-            ("composer_vim_mode", "Composer editing mode: normal, vim"),
             (
                 "transcript_spacing",
                 "Transcript spacing: compact, comfortable, spacious",
