@@ -461,26 +461,6 @@ impl AgentRuntime {
                     }
                 }
             }
-            let terminal_turn_due = state.recovery_output.is_none()
-                && state.recovery_model.is_none()
-                && state.snapshot.local_turns.saturating_add(1)
-                    >= state.snapshot.request.limits.max_turns;
-            if terminal_turn_due && !state.pending_children.is_empty() {
-                match self.join_children(&mut state, &mut control, deadline).await {
-                    Ok(()) => {
-                        if let Err(failure) = self.flush_pending_steers(&mut state).await {
-                            return self
-                                .finalize(&mut state, TerminalState::Failed { failure }, &budget)
-                                .await;
-                        }
-                        continue;
-                    }
-                    Err(terminal) => {
-                        self.cancel_children(&mut state).await;
-                        return self.finalize(&mut state, terminal, &budget).await;
-                    }
-                }
-            }
             let turn = if let Some(output) = state.recovery_output.take() {
                 Ok(ModelTurnControl::Output(ModelTurnOutput::new(
                     output,
@@ -499,26 +479,6 @@ impl AgentRuntime {
                     return self.finalize(&mut state, terminal, &budget).await;
                 }
                 Ok(ModelTurnControl::Output(output)) => output,
-                Ok(ModelTurnControl::JoinChildren) => {
-                    match self.join_children(&mut state, &mut control, deadline).await {
-                        Ok(()) => {
-                            if let Err(failure) = self.flush_pending_steers(&mut state).await {
-                                return self
-                                    .finalize(
-                                        &mut state,
-                                        TerminalState::Failed { failure },
-                                        &budget,
-                                    )
-                                    .await;
-                            }
-                            continue;
-                        }
-                        Err(terminal) => {
-                            self.cancel_children(&mut state).await;
-                            return self.finalize(&mut state, terminal, &budget).await;
-                        }
-                    }
-                }
                 Err(failure) => {
                     self.cancel_children(&mut state).await;
                     return self
@@ -576,27 +536,6 @@ impl AgentRuntime {
                             &budget,
                         )
                         .await;
-                }
-                if !state.pending_children.is_empty() {
-                    match self.join_children(&mut state, &mut control, deadline).await {
-                        Ok(()) => {
-                            if let Err(failure) = self.flush_pending_steers(&mut state).await {
-                                self.cancel_children(&mut state).await;
-                                return self
-                                    .finalize(
-                                        &mut state,
-                                        TerminalState::Failed { failure },
-                                        &budget,
-                                    )
-                                    .await;
-                            }
-                            continue;
-                        }
-                        Err(terminal) => {
-                            self.cancel_children(&mut state).await;
-                            return self.finalize(&mut state, terminal, &budget).await;
-                        }
-                    }
                 }
                 if !state.snapshot.pending_steers.is_empty() {
                     if let Err(failure) = self.flush_pending_steers(&mut state).await {
@@ -670,6 +609,12 @@ impl AgentRuntime {
                         return self.finalize(&mut state, terminal, &budget).await;
                     }
                 }
+            }
+            if !state.pending_children.is_empty()
+                && let Err(terminal) = self.join_children(&mut state, &mut control, deadline).await
+            {
+                self.cancel_children(&mut state).await;
+                return self.finalize(&mut state, terminal, &budget).await;
             }
             if let Err(failure) = self.flush_pending_steers(&mut state).await {
                 self.cancel_children(&mut state).await;
@@ -1209,8 +1154,6 @@ impl AgentRuntime {
                     (state.terminal_model_request.take(), true)
                 } else if let Some(permit) = budget.reserve_model_request() {
                     (Some(permit), false)
-                } else if !state.pending_children.is_empty() {
-                    return Ok(ModelTurnControl::JoinChildren);
                 } else {
                     (state.terminal_model_request.take(), true)
                 };
@@ -2756,7 +2699,6 @@ enum ModelFailurePlan {
 
 enum ModelTurnControl {
     Output(ModelTurnOutput),
-    JoinChildren,
     Terminal(TerminalState),
 }
 

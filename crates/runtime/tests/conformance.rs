@@ -299,6 +299,7 @@ impl ToolExecutor for MockTools {
         vec![
             definition("delay"),
             definition("approval"),
+            definition("grep"),
             definition("read"),
             definition("run_tests"),
             definition("run_verifiers"),
@@ -1698,7 +1699,7 @@ fn agent_catalog_exposes_only_the_implemented_chinese_contract() {
 }
 
 #[tokio::test]
-async fn async_child_launches_then_handoff_integrates_in_four_requests() {
+async fn async_child_handoff_precedes_the_next_root_request() {
     let root_calls = Arc::new(AtomicUsize::new(0));
     let child_calls = Arc::new(AtomicUsize::new(0));
     let root = root_calls.clone();
@@ -1758,16 +1759,10 @@ async fn async_child_launches_then_handoff_integrates_in_four_requests() {
                     ModelFinishReason::ToolCalls,
                 )]),
                 1 => {
-                    assert!(!handoff, "parent must get an early turn before handoff");
-                    ScriptResponse::Events(vec![completed(
-                        "先等待",
-                        None,
-                        Vec::new(),
-                        ModelFinishReason::Stop,
-                    )])
-                }
-                2 => {
-                    assert!(handoff);
+                    assert!(
+                        handoff,
+                        "the first root request after launch must contain the child handoff"
+                    );
                     assert_eq!(
                         request
                             .messages
@@ -1789,12 +1784,12 @@ async fn async_child_launches_then_handoff_integrates_in_four_requests() {
         }
     }));
     let model_for_assertion = model.clone();
-    let (runtime, _, _, store) = fixture(model);
+    let (runtime, _, sink, store) = fixture(model);
     let outcome = runtime.start(request("多Agent")).wait().await.unwrap();
-    assert_eq!(root_calls.load(Ordering::Acquire), 3);
+    assert_eq!(root_calls.load(Ordering::Acquire), 2);
     assert_eq!(child_calls.load(Ordering::Acquire), 1);
-    assert_eq!(outcome.runtime_model_requests, 4);
-    assert_eq!(outcome.accounting.total_started(), 4);
+    assert_eq!(outcome.runtime_model_requests, 3);
+    assert_eq!(outcome.accounting.total_started(), 3);
     {
         let seals = model_for_assertion.seals.lock().expect("seal lock");
         assert_eq!(seals.last(), Some(&true));
@@ -1823,10 +1818,46 @@ async fn async_child_launches_then_handoff_integrates_in_four_requests() {
                     if handoff_content.contains("kind=\"subagent_completion\"")
             ))
     );
+    let events = sink.events();
+    let child_started = events
+        .iter()
+        .position(|event| {
+            matches!(
+                &event.event,
+                RuntimeEventKind::ChildStarted { call_id, .. } if call_id == "agent-1"
+            )
+        })
+        .expect("child start");
+    let child_finished = events
+        .iter()
+        .position(|event| {
+            matches!(
+                &event.event,
+                RuntimeEventKind::ChildFinished { call_id, .. } if call_id == "agent-1"
+            )
+        })
+        .expect("child finish");
+    let next_root_request = events
+        .iter()
+        .enumerate()
+        .skip(child_started + 1)
+        .find_map(|(index, event)| match &event.event {
+            RuntimeEventKind::ModelRequestPrepared { request, .. }
+                if request.actor.kind == AgentActorKind::Root =>
+            {
+                Some(index)
+            }
+            _ => None,
+        })
+        .expect("next root request");
+    assert!(
+        child_finished < next_root_request,
+        "ChildFinished must be durable before the next root ModelRequestPrepared"
+    );
 }
 
 #[tokio::test]
-async fn shared_exact_five_budget_preserves_child_artifact_and_root_integration_turns() {
+async fn shared_exact_four_budget_preserves_child_artifact_and_root_integration_turns() {
     let root_calls = Arc::new(AtomicUsize::new(0));
     let child_calls = Arc::new(AtomicUsize::new(0));
     let roots = root_calls.clone();
@@ -1881,23 +1912,6 @@ async fn shared_exact_five_budget_preserves_child_artifact_and_root_integration_
             )]),
             1 => {
                 assert!(
-                    request.tools.iter().any(|tool| tool.name == "agent"),
-                    "the parent's early ordinary turn keeps its catalog"
-                );
-                assert!(!request.messages.iter().any(|message| matches!(
-                    message,
-                    ModelMessage::User { content }
-                        if content.contains("kind=\"subagent_completion\"")
-                )));
-                ScriptResponse::Events(vec![completed(
-                    "等待子 Agent",
-                    None,
-                    vec![],
-                    ModelFinishReason::Stop,
-                )])
-            }
-            2 => {
-                assert!(
                     request.tools.is_empty(),
                     "the parent's reserved integration turn must be tool-free"
                 );
@@ -1918,9 +1932,9 @@ async fn shared_exact_five_budget_preserves_child_artifact_and_root_integration_
         },
     }));
     let (runtime, tools, sink, store) = fixture(model);
-    let mut run_request = request("共享五次请求");
-    run_request.limits.max_turns = 3;
-    run_request.limits.max_model_requests = 5;
+    let mut run_request = request("共享四次请求");
+    run_request.limits.max_turns = 2;
+    run_request.limits.max_model_requests = 4;
 
     let outcome = runtime.start(run_request).wait().await.unwrap();
 
@@ -1930,20 +1944,20 @@ async fn shared_exact_five_budget_preserves_child_artifact_and_root_integration_
             message: "父 Agent 已整合".into()
         }
     );
-    assert_eq!(root_calls.load(Ordering::Acquire), 3);
+    assert_eq!(root_calls.load(Ordering::Acquire), 2);
     assert_eq!(child_calls.load(Ordering::Acquire), 2);
     assert_eq!(tools.calls.lock().unwrap().len(), 1);
     assert_eq!(outcome.tool_calls, 2);
-    assert_eq!(outcome.runtime_model_requests, 5);
-    assert_eq!(outcome.accounting.total_started(), 5);
-    assert_eq!(outcome.accounting.root.started, 3);
-    assert_eq!(outcome.accounting.root.completed, 3);
+    assert_eq!(outcome.runtime_model_requests, 4);
+    assert_eq!(outcome.accounting.total_started(), 4);
+    assert_eq!(outcome.accounting.root.started, 2);
+    assert_eq!(outcome.accounting.root.completed, 2);
     assert_eq!(outcome.accounting.root.in_flight, 0);
     assert_eq!(outcome.accounting.child.started, 2);
     assert_eq!(outcome.accounting.child.completed, 2);
     assert_eq!(outcome.accounting.child.in_flight, 0);
-    assert_eq!(outcome.accounting.usage.input_tokens, 50);
-    assert_eq!(outcome.accounting.usage.output_tokens, 10);
+    assert_eq!(outcome.accounting.usage.input_tokens, 40);
+    assert_eq!(outcome.accounting.usage.output_tokens, 8);
     assert_eq!(outcome.accounting.exhausted_denied, 0);
     assert!(!outcome.accounting.budget_exhausted);
     let events = sink.events();
@@ -1952,7 +1966,7 @@ async fn shared_exact_five_budget_preserves_child_artifact_and_root_integration_
             .iter()
             .filter(|event| matches!(event.event, RuntimeEventKind::ModelRequestPrepared { .. }))
             .count(),
-        5,
+        4,
         "reservations are not logical requests"
     );
     let child_run_id = events
@@ -1984,7 +1998,7 @@ async fn shared_exact_five_budget_preserves_child_artifact_and_root_integration_
         }
     );
     let root_replay = store.load(&outcome.run_id).await.unwrap().unwrap();
-    assert_eq!(root_replay.snapshot.runtime_model_requests, 5);
+    assert_eq!(root_replay.snapshot.runtime_model_requests, 4);
     assert_eq!(
         root_replay
             .snapshot
@@ -2046,13 +2060,7 @@ async fn child_max_steps_four_makes_only_the_fourth_request_tool_free() {
                 )],
                 ModelFinishReason::ToolCalls,
             )]),
-            1 => ScriptResponse::Events(vec![completed(
-                "等待四轮子任务",
-                None,
-                vec![],
-                ModelFinishReason::Stop,
-            )]),
-            2 => {
+            1 => {
                 assert!(request.tools.is_empty());
                 assert!(request.messages.iter().any(|message| matches!(
                     message,
@@ -2072,15 +2080,114 @@ async fn child_max_steps_four_makes_only_the_fourth_request_tool_free() {
     let (runtime, _, _, _) = fixture(model);
     let mut run_request = request("四轮子 Agent");
     run_request.limits.max_turns = 4;
-    run_request.limits.max_model_requests = 7;
+    run_request.limits.max_model_requests = 6;
 
     let outcome = runtime.start(run_request).wait().await.unwrap();
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
-    assert_eq!(root_calls.load(Ordering::Acquire), 3);
+    assert_eq!(root_calls.load(Ordering::Acquire), 2);
     assert_eq!(child_calls.load(Ordering::Acquire), 4);
-    assert_eq!(outcome.runtime_model_requests, 7);
-    assert_eq!(outcome.accounting.total_started(), 7);
+    assert_eq!(outcome.runtime_model_requests, 6);
+    assert_eq!(outcome.accounting.total_started(), 6);
+}
+
+#[tokio::test]
+async fn child_search_then_read_can_return_on_a_third_ordinary_request() {
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let child_calls = Arc::new(AtomicUsize::new(0));
+    let roots = root_calls.clone();
+    let children = child_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| match request.actor.kind {
+        AgentActorKind::Child => match children.fetch_add(1, Ordering::AcqRel) {
+            0 => {
+                assert!(request.tools.iter().any(|tool| tool.name == "grep"));
+                ScriptResponse::Events(vec![completed(
+                    "",
+                    None,
+                    vec![call("child-search", "grep", "{}")],
+                    ModelFinishReason::ToolCalls,
+                )])
+            }
+            1 => {
+                assert!(request.tools.iter().any(|tool| tool.name == "read"));
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::Tool { call_id, .. } if call_id == "child-search"
+                )));
+                ScriptResponse::Events(vec![completed(
+                    "",
+                    None,
+                    vec![call("child-read", "read", "{}")],
+                    ModelFinishReason::ToolCalls,
+                )])
+            }
+            2 => {
+                assert!(
+                    request.tools.iter().any(|tool| tool.name == "read"),
+                    "a useful search→read child must not be forced tool-free on request three"
+                );
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::Tool { call_id, .. } if call_id == "child-read"
+                )));
+                ScriptResponse::Events(vec![completed(
+                    "搜索并读取后的证据",
+                    None,
+                    vec![],
+                    ModelFinishReason::Stop,
+                )])
+            }
+            _ => panic!("unexpected child request"),
+        },
+        AgentActorKind::Root => match roots.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call(
+                    "search-read-child",
+                    "agent",
+                    r#"{"prompt":"先搜索再读取","allowed_tools":["grep","read"],"max_steps":4}"#,
+                )],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => {
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::User { content }
+                        if content.contains("kind=\"subagent_completion\"")
+                            && content.contains("completed")
+                )));
+                ScriptResponse::Events(vec![completed(
+                    "已整合搜索证据",
+                    None,
+                    vec![],
+                    ModelFinishReason::Stop,
+                )])
+            }
+            _ => panic!("unexpected root request"),
+        },
+    }));
+    let (runtime, tools, _, _) = fixture(model);
+    let mut run_request = request("搜索后读取");
+    run_request.limits.max_turns = 4;
+    run_request.limits.max_model_requests = 6;
+
+    let outcome = runtime.start(run_request).wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(root_calls.load(Ordering::Acquire), 2);
+    assert_eq!(child_calls.load(Ordering::Acquire), 3);
+    assert_eq!(outcome.runtime_model_requests, 5);
+    assert_eq!(
+        tools
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|invocation| invocation.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["grep", "read"]
+    );
 }
 
 #[tokio::test]
@@ -2279,13 +2386,7 @@ async fn unused_child_terminal_permit_is_returned_before_second_child_launch() {
                 )],
                 ModelFinishReason::ToolCalls,
             )]),
-            1 => ScriptResponse::Events(vec![completed(
-                "等待第一个子 Agent",
-                None,
-                vec![],
-                ModelFinishReason::Stop,
-            )]),
-            2 => {
+            1 => {
                 assert!(request.messages.iter().any(|message| matches!(
                     message,
                     ModelMessage::User { content }
@@ -2303,7 +2404,7 @@ async fn unused_child_terminal_permit_is_returned_before_second_child_launch() {
                     ModelFinishReason::ToolCalls,
                 )])
             }
-            3 => {
+            2 => {
                 assert!(request.tools.is_empty());
                 assert_eq!(
                     request
@@ -2329,24 +2430,38 @@ async fn unused_child_terminal_permit_is_returned_before_second_child_launch() {
     }));
     let (runtime, _, sink, _) = fixture(model);
     let mut run_request = request("验证许可归还");
-    run_request.limits.max_turns = 4;
-    run_request.limits.max_model_requests = 6;
+    run_request.limits.max_turns = 3;
+    run_request.limits.max_model_requests = 5;
 
     let outcome = runtime.start(run_request).wait().await.unwrap();
 
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
-    assert_eq!(root_calls.load(Ordering::Acquire), 4);
+    assert_eq!(root_calls.load(Ordering::Acquire), 3);
     assert_eq!(child_calls.load(Ordering::Acquire), 2);
-    assert_eq!(outcome.runtime_model_requests, 6);
+    assert_eq!(outcome.runtime_model_requests, 5);
     assert_eq!(
         sink.events()
-            .into_iter()
+            .iter()
             .filter_map(|event| match event.event {
-                RuntimeEventKind::ChildStarted { call_id, .. } => Some(call_id),
+                RuntimeEventKind::ChildStarted { ref call_id, .. } => Some(call_id.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>(),
         vec!["child-one", "child-two"]
+    );
+    let first_child_requests = sink
+        .events()
+        .into_iter()
+        .find_map(|event| match event.event {
+            RuntimeEventKind::ChildFinished {
+                call_id, outcome, ..
+            } if call_id == "child-one" => Some(outcome.runtime_model_requests),
+            _ => None,
+        })
+        .expect("first child outcome");
+    assert_eq!(
+        first_child_requests, 1,
+        "a child that stops on its first ordinary request must not receive a forced final request"
     );
 }
 
@@ -2443,73 +2558,176 @@ async fn shared_capacity_rejects_second_same_turn_child_without_fake_lifecycle()
 }
 
 #[tokio::test]
-async fn child_limit_rejects_second_same_turn_spawn_without_fake_lifecycle_and_releases_on_join() {
+async fn two_same_batch_children_join_before_one_root_integration_request() {
     let root_calls = Arc::new(AtomicUsize::new(0));
     let child_calls = Arc::new(AtomicUsize::new(0));
     let roots = root_calls.clone();
     let children = child_calls.clone();
-    let model =
-        Arc::new(MockModel::new(move |request| match request.actor.kind {
-            AgentActorKind::Child => {
-                children.fetch_add(1, Ordering::AcqRel);
+    let model = Arc::new(MockModel::new(move |request| match request.actor.kind {
+        AgentActorKind::Child => {
+            children.fetch_add(1, Ordering::AcqRel);
+            assert!(request.tools.is_empty());
+            ScriptResponse::Events(vec![StreamStep::delayed(
+                Duration::from_millis(40),
+                ModelStreamEvent::Completed {
+                    output: model_output(
+                        "并行子 Agent 结果",
+                        None,
+                        vec![],
+                        ModelFinishReason::Stop,
+                    ),
+                },
+            )])
+        }
+        AgentActorKind::Root => match roots.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![
+                    call(
+                        "parallel-child-one",
+                        "agent",
+                        r#"{"prompt":"one","max_steps":1}"#,
+                    ),
+                    call(
+                        "parallel-child-two",
+                        "agent",
+                        r#"{"prompt":"two","max_steps":1}"#,
+                    ),
+                ],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => {
+                assert!(request.tools.is_empty());
+                assert_eq!(
+                    request
+                        .messages
+                        .iter()
+                        .filter(|message| matches!(
+                            message,
+                            ModelMessage::User { content }
+                                if content.contains("kind=\"subagent_completion\"")
+                        ))
+                        .count(),
+                    2
+                );
                 ScriptResponse::Events(vec![completed(
-                    "child result",
+                    "一次整合两个结果",
                     None,
                     vec![],
                     ModelFinishReason::Stop,
                 )])
             }
-            AgentActorKind::Root => match roots.fetch_add(1, Ordering::AcqRel) {
-                0 => ScriptResponse::Events(vec![completed(
-                    "",
-                    None,
-                    vec![
-                        call("agent-1", "agent", r#"{"prompt":"one"}"#),
-                        call("agent-2", "agent", r#"{"prompt":"two"}"#),
-                    ],
-                    ModelFinishReason::ToolCalls,
-                )]),
-                1 => {
-                    let denied = request.messages.iter().any(|message| matches!(
-                    message,
+            _ => panic!("unexpected root request"),
+        },
+    }));
+    let (runtime, _, sink, _) = fixture(model);
+    let mut run_request = request("并行子 Agent");
+    run_request.limits.max_turns = 2;
+    run_request.limits.max_model_requests = 4;
+    run_request.limits.max_concurrent_children = 2;
+
+    let outcome = runtime.start(run_request).wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(root_calls.load(Ordering::Acquire), 2);
+    assert_eq!(child_calls.load(Ordering::Acquire), 2);
+    assert_eq!(outcome.runtime_model_requests, 4);
+    let events = sink.events();
+    let second_start = events
+        .iter()
+        .rposition(|event| matches!(event.event, RuntimeEventKind::ChildStarted { .. }))
+        .expect("second child start");
+    let first_finish = events
+        .iter()
+        .position(|event| matches!(event.event, RuntimeEventKind::ChildFinished { .. }))
+        .expect("first child finish");
+    assert!(
+        second_start < first_finish,
+        "both children must launch before the batch joins either child"
+    );
+    let last_finish = events
+        .iter()
+        .rposition(|event| matches!(event.event, RuntimeEventKind::ChildFinished { .. }))
+        .expect("last child finish");
+    let integration = events
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| match &event.event {
+            RuntimeEventKind::ModelRequestPrepared { request, .. }
+                if request.actor.kind == AgentActorKind::Root =>
+            {
+                Some(index)
+            }
+            _ => None,
+        })
+        .nth(1)
+        .expect("one root integration request");
+    assert!(last_finish < integration);
+}
+
+#[tokio::test]
+async fn child_limit_rejects_second_same_turn_spawn_without_fake_lifecycle_and_releases_on_join() {
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let child_calls = Arc::new(AtomicUsize::new(0));
+    let roots = root_calls.clone();
+    let children = child_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| match request.actor.kind {
+        AgentActorKind::Child => {
+            children.fetch_add(1, Ordering::AcqRel);
+            ScriptResponse::Events(vec![completed(
+                "child result",
+                None,
+                vec![],
+                ModelFinishReason::Stop,
+            )])
+        }
+        AgentActorKind::Root => match roots.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![
+                    call("agent-1", "agent", r#"{"prompt":"one"}"#),
+                    call("agent-2", "agent", r#"{"prompt":"two"}"#),
+                ],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => {
+                let denied = request.messages.iter().any(|message| {
+                    matches!(
+                        message,
                     ModelMessage::Tool { call_id, content, .. }
                         if call_id == "agent-2" && content.contains("child_concurrency_limit")
-                ));
-                    assert!(denied);
-                    ScriptResponse::Events(vec![completed(
-                        "wait first",
-                        None,
-                        vec![],
-                        ModelFinishReason::Stop,
-                    )])
-                }
-                2 => ScriptResponse::Events(vec![completed(
+                    )
+                });
+                assert!(denied);
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::User { content }
+                        if content.contains("kind=\"subagent_completion\"")
+                )));
+                ScriptResponse::Events(vec![completed(
                     "",
                     None,
                     vec![call("agent-3", "agent", r#"{"prompt":"after join"}"#)],
                     ModelFinishReason::ToolCalls,
-                )]),
-                3 => ScriptResponse::Events(vec![completed(
-                    "wait third",
-                    None,
-                    vec![],
-                    ModelFinishReason::Stop,
-                )]),
-                4 => ScriptResponse::Events(vec![completed(
-                    "integrated",
-                    None,
-                    vec![],
-                    ModelFinishReason::Stop,
-                )]),
-                _ => panic!("unexpected root request"),
-            },
-        }));
+                )])
+            }
+            2 => ScriptResponse::Events(vec![completed(
+                "integrated",
+                None,
+                vec![],
+                ModelFinishReason::Stop,
+            )]),
+            _ => panic!("unexpected root request"),
+        },
+    }));
     let (runtime, _, sink, _) = fixture(model);
     let mut request = request("bounded children");
     request.limits.max_concurrent_children = 1;
     let outcome = runtime.start(request).wait().await.unwrap();
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
-    assert_eq!(root_calls.load(Ordering::Acquire), 5);
+    assert_eq!(root_calls.load(Ordering::Acquire), 3);
     assert_eq!(child_calls.load(Ordering::Acquire), 2);
     let child_started = sink
         .events()
@@ -2551,9 +2769,8 @@ async fn nested_runs_join_descendants_before_consuming_each_terminal_permit() {
                     )],
                     ModelFinishReason::ToolCalls,
                 ),
-                (0, 2) => completed("root early", None, vec![], ModelFinishReason::Stop),
-                (0, 3) => {
-                    assert!(request.tools.is_empty());
+                (0, 2) => {
+                    assert!(request.tools.iter().any(|tool| tool.name == "agent"));
                     assert!(marker.as_ref().is_some_and(|content| {
                         content.contains("kind=\"subagent_completion\"")
                     }));
@@ -2590,9 +2807,9 @@ async fn nested_runs_join_descendants_before_consuming_each_terminal_permit() {
     run_request.limits.max_model_requests = 6;
     let outcome = runtime.start(run_request).wait().await.unwrap();
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
-    assert_eq!(calls.load(Ordering::Acquire), 6);
-    assert_eq!(outcome.runtime_model_requests, 6);
-    assert_eq!(outcome.accounting.root.started, 3);
+    assert_eq!(calls.load(Ordering::Acquire), 5);
+    assert_eq!(outcome.runtime_model_requests, 5);
+    assert_eq!(outcome.accounting.root.started, 2);
     assert_eq!(outcome.accounting.child.started, 3);
     let markers = seen_markers.lock().unwrap();
     assert!(
