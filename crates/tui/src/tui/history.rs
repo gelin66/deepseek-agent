@@ -8,6 +8,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::deepseek_theme::active_theme;
+use crate::localization::{MessageId, tr};
 use crate::models::{ContentBlock, Message};
 use crate::palette;
 use crate::tools::plan::PlanSnapshot;
@@ -174,7 +175,7 @@ impl HistoryCell {
                     render_cycle_boundary(content, width)
                 } else {
                     render_message(
-                        "Note",
+                        &tr(MessageId::HistorySystemNoteLabel),
                         system_label_style(),
                         system_body_style(),
                         content,
@@ -327,7 +328,7 @@ impl HistoryCell {
             ),
             HistoryCell::System { content } if !is_cycle_boundary(content) => {
                 render_message_with_copy_metadata(
-                    "Note",
+                    &tr(MessageId::HistorySystemNoteLabel),
                     system_label_style(),
                     system_body_style(),
                     content,

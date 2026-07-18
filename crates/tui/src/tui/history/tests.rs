@@ -702,9 +702,9 @@ fn render_thinking_collapsed_shows_details_affordance() {
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
-    assert!(text.contains("Full reasoning in Ctrl+O"));
-    // Pin the actual header shape ("… reasoning done") — a bare
-    // `contains("reasoning")` is already satisfied by the Ctrl+O
+    assert!(text.contains("按 Ctrl+O 查看完整推理"));
+    // Pin the actual header shape ("… 推理 已完成") — a bare
+    // `contains("推理")` is already satisfied by the Ctrl+O
     // affordance line above and would never fail on its own.
     let header = lines
         .first()
@@ -720,8 +720,92 @@ fn render_thinking_collapsed_shows_details_affordance() {
         "header opens with the dotted opener: {header:?}"
     );
     assert!(
-        header.contains("reasoning done"),
+        header.contains("推理 已完成"),
         "header carries the reasoning title and done status: {header:?}"
+    );
+}
+
+#[test]
+fn reasoning_chrome_is_chinese_width_safe_and_preserves_model_text() {
+    let raw_reasoning = "MODEL-RAW reasoning/live/done src/lib.rs read_file";
+
+    let live = lines_text(&render_thinking(raw_reasoning, 120, true, None, true, true));
+    assert!(live.contains("推理 进行中"), "{live}");
+    assert!(live.contains(raw_reasoning), "{live}");
+
+    let done = lines_text(&render_thinking(
+        raw_reasoning,
+        120,
+        false,
+        Some(1.0),
+        false,
+        true,
+    ));
+    assert!(done.contains("推理 已完成"), "{done}");
+    assert!(done.contains(raw_reasoning), "{done}");
+
+    let idle = lines_text(&render_thinking(
+        raw_reasoning,
+        120,
+        false,
+        None,
+        false,
+        true,
+    ));
+    assert!(idle.contains("推理 空闲"), "{idle}");
+    assert!(idle.contains(raw_reasoning), "{idle}");
+
+    let placeholder = lines_text(&render_thinking("", 40, true, None, true, true));
+    assert!(placeholder.contains("推理中…"), "{placeholder}");
+
+    let hidden = HistoryCell::Thinking {
+        content: raw_reasoning.to_owned(),
+        streaming: true,
+        duration_secs: None,
+    }
+    .lines_with_options(
+        18,
+        TranscriptRenderOptions {
+            show_thinking: false,
+            low_motion: true,
+            ..TranscriptRenderOptions::default()
+        },
+    );
+    for line in &hidden {
+        let plain = line_to_plain(line);
+        assert!(
+            text_display_width(&plain) <= 18,
+            "Chinese reasoning chrome exceeded the terminal width: {plain:?}"
+        );
+    }
+    assert!(
+        !lines_text(&hidden).contains(raw_reasoning),
+        "hidden reasoning must not expose the model body"
+    );
+}
+
+#[test]
+fn system_note_uses_chinese_title_and_preserves_canonical_content() {
+    let raw_content = "event=child_finished path=src/lib.rs tool=read_file child=子一";
+    let cell = HistoryCell::System {
+        content: raw_content.to_owned(),
+    };
+
+    let live = cell.lines(160);
+    assert_eq!(live[0].spans[0].content.as_ref(), "说明");
+    assert!(lines_text(&live).contains(raw_content));
+
+    let copied =
+        cell.lines_with_copy_metadata_folded(160, TranscriptRenderOptions::default(), false);
+    assert_eq!(copied[0].line.spans[0].content.as_ref(), "说明");
+    assert!(
+        lines_text(
+            &copied
+                .iter()
+                .map(|rendered| rendered.line.clone())
+                .collect::<Vec<_>>()
+        )
+        .contains(raw_content)
     );
 }
 
@@ -747,9 +831,9 @@ fn render_thinking_streaming_collapsed_shows_live_content() {
         text.contains("Step 3: form a hypothesis"),
         "the most recent thinking line must be visible during streaming, got: {text}"
     );
-    // "thinking..." placeholder must not be the only thing rendered.
+    // "推理中…" placeholder must not be the only thing rendered.
     assert!(
-        !text.contains("thinking..."),
+        !text.contains("推理中…"),
         "raw content present means the placeholder line should not be drawn, got: {text}"
     );
 }
@@ -773,7 +857,7 @@ fn render_hidden_streaming_thinking_shows_activity_without_content() {
     let text = lines_text(&lines);
 
     assert!(
-        text.contains("reasoning hidden"),
+        text.contains("推理内容已隐藏"),
         "hidden live thinking should still show progress: {text}"
     );
     assert!(
@@ -819,7 +903,7 @@ fn render_thinking_streaming_truncated_shows_continues_affordance() {
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
     assert!(
-        text.contains("More reasoning in Ctrl+O"),
+        text.contains("按 Ctrl+O 查看更多推理"),
         "streaming-truncation affordance missing, got: {text}"
     );
     // The most recent line must be the visible tail (head dropped).
@@ -1938,11 +2022,11 @@ fn long_thinking_display_is_shorter_than_transcript() {
         "live thinking must drop the tail when collapsed"
     );
     assert!(
-        live_text.contains("Full reasoning in Ctrl+O"),
+        live_text.contains("按 Ctrl+O 查看完整推理"),
         "live thinking must offer the pager affordance"
     );
     assert!(
-        !transcript_text.contains("Full reasoning in Ctrl+O"),
+        !transcript_text.contains("按 Ctrl+O 查看完整推理"),
         "transcript thinking must not include the live affordance"
     );
 }
@@ -1979,7 +2063,7 @@ fn completed_short_thinking_without_summary_stays_visible_in_live_view() {
         "transcript thinking must keep the full reasoning body"
     );
     assert!(
-        !live_text.contains("Full reasoning in Ctrl+O"),
+        !live_text.contains("按 Ctrl+O 查看完整推理"),
         "complete short reasoning should not need the detail affordance: {live_text}"
     );
 }
@@ -2014,7 +2098,7 @@ fn completed_reasoning_receipt_hides_internal_function_names_until_expanded() {
         "surrounding prose must still read: {collapsed_text}"
     );
     assert!(
-        collapsed_text.contains("Full reasoning in Ctrl+O"),
+        collapsed_text.contains("按 Ctrl+O 查看完整推理"),
         "collapsed receipt must offer the expand affordance: {collapsed_text}"
     );
 

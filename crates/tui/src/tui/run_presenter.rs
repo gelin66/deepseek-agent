@@ -1337,6 +1337,25 @@ mod tests {
         assert_eq!(row.depth, 2);
         assert!(row.terminal.is_none());
 
+        let child_note = app
+            .history
+            .iter()
+            .find(|cell| matches!(cell, HistoryCell::System { .. }))
+            .expect("canonical child event produces one system note");
+        let note_lines = child_note.lines(80);
+        assert_eq!(
+            note_lines[0].spans[0].content.as_ref(),
+            "说明",
+            "canonical system chrome uses the fixed Chinese title"
+        );
+        assert!(
+            note_lines
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .any(|span| span.content.contains("child")),
+            "the canonical child id remains unchanged"
+        );
+
         apply_events(
             &mut app,
             vec![created(&RunId::from("unrelated-projection"), Vec::new())],

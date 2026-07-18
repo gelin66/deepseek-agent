@@ -3,6 +3,7 @@
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
+use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::markdown_render;
 use crate::tui::ui_text::truncate_line_to_width;
@@ -150,11 +151,11 @@ pub(super) fn render_thinking(
             format!("{REASONING_OPENER} "),
             Style::default().fg(thinking_state_accent(state)),
         ),
-        Span::styled("reasoning", thinking_title_style()),
+        Span::styled(tr(MessageId::HistoryReasoningTitle), thinking_title_style()),
     ];
     header_spans.push(Span::styled(" ", Style::default()));
     header_spans.push(Span::styled(
-        thinking_status_label(state),
+        tr(thinking_status_message_id(state)),
         thinking_status_style(state),
     ));
     if let Some(dur) = duration_secs {
@@ -229,7 +230,10 @@ pub(super) fn render_thinking(
 
     if rendered.is_empty() && streaming {
         let mut spans = vec![Span::styled(REASONING_RAIL.to_string(), rail_style)];
-        spans.push(Span::styled("reasoning...", body_style.italic()));
+        spans.push(Span::styled(
+            tr(MessageId::HistoryReasoningPlaceholder),
+            body_style.italic(),
+        ));
         if !low_motion {
             spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
         }
@@ -259,9 +263,9 @@ pub(super) fn render_thinking(
         };
     if needs_affordance {
         let label = if streaming {
-            "More reasoning in Ctrl+O"
+            tr(MessageId::HistoryReasoningMoreHint)
         } else {
-            "Space to expand · Full reasoning in Ctrl+O"
+            tr(MessageId::HistoryReasoningExpandHint)
         };
         lines.push(Line::from(vec![
             Span::styled(REASONING_RAIL.to_string(), rail_style),
@@ -287,17 +291,22 @@ pub(super) fn render_hidden_thinking_activity(
             format!("{REASONING_OPENER} "),
             Style::default().fg(thinking_state_accent(state)),
         ),
-        Span::styled("reasoning", thinking_title_style()),
+        Span::styled(tr(MessageId::HistoryReasoningTitle), thinking_title_style()),
         Span::styled(" ", Style::default()),
-        Span::styled(thinking_status_label(state), thinking_status_style(state)),
+        Span::styled(
+            tr(thinking_status_message_id(state)),
+            thinking_status_style(state),
+        ),
     ];
     if let Some(dur) = duration_secs {
         header_spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
         header_spans.push(Span::styled(format!("{dur:.1}s"), thinking_meta_style()));
     }
 
-    let mut body =
-        truncate_line_to_width("reasoning hidden; model is still working", content_width);
+    let mut body = truncate_line_to_width(
+        &tr(MessageId::HistoryReasoningHiddenActivity),
+        content_width,
+    );
     if !low_motion {
         body.push(' ');
         body.push_str(REASONING_CURSOR);
@@ -326,11 +335,11 @@ fn thinking_visual_state(streaming: bool, duration_secs: Option<f32>) -> Thinkin
     }
 }
 
-fn thinking_status_label(state: ThinkingVisualState) -> &'static str {
+fn thinking_status_message_id(state: ThinkingVisualState) -> MessageId {
     match state {
-        ThinkingVisualState::Live => "live",
-        ThinkingVisualState::Done => "done",
-        ThinkingVisualState::Idle => "idle",
+        ThinkingVisualState::Live => MessageId::HistoryReasoningStatusLive,
+        ThinkingVisualState::Done => MessageId::HistoryReasoningStatusDone,
+        ThinkingVisualState::Idle => MessageId::HistoryReasoningStatusIdle,
     }
 }
 
