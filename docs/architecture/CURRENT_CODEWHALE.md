@@ -197,9 +197,9 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 - 旧 foreground Engine、EventBroker、runtime-thread owner、`SessionManager`、child display
   cache 和 registry-driven slash command system 已删除；
 - slash command 只剩统一的 `help/compact/cost/exit` canonical contract；
-- `crates/tui/src/compaction.rs` 与 `seam_manager.rs` 已不是 production compaction owner，
-  当前仍被编译的实现属于待物理删除的旧代码；真正的 compaction 位于
-  `crates/context + crates/runtime + crates/app`；
+- 退役的 `crates/tui/src/compaction.rs`、`seam_manager.rs` 以及不再生效的 TUI
+  `auto_compact` 开关/阈值状态均已删除；真正的 compaction 位于
+  `crates/context + crates/runtime + crates/app`，手动 `/compact` 仍提交 canonical command；
 - generic Provider/config/UI 仍未执行 DeepSeek-only 最终清理。
 
 因此三个保留 foreground 入口与所有生产可达根/子 Agent 模型循环已经统一；最终 M4
@@ -300,7 +300,6 @@ multi A/B 或 compaction on/off A/B，不能声称 Token、成本或任务成功
 
 当前源码不证明：
 
-- 退役 `tui/compaction`/`seam_manager` 源码已物理删除；
 - 当前 compaction 已证明节省 Token、降低成本或提高任务成功率；
 - Provider 清理或全面汉化已完成；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，

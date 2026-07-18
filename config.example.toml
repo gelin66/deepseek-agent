@@ -816,11 +816,9 @@ exponential_base = 2.0
 # ─────────────────────────────────────────────────────────────────────────────────
 # Context Compaction
 # ─────────────────────────────────────────────────────────────────────────────────
-# Auto-compaction is a saved UI setting edited with `/config` (`auto_compact`).
-# The optional saved threshold setting is `auto_compact_threshold_percent`
-# (default 80). There is no config-file
-# `[compaction]` table yet; runtime compaction budgets are chosen by the TUI
-# from the active model/context window.
+# Automatic compaction belongs to the canonical AgentRuntime context policy;
+# the TUI does not keep a second enable/threshold setting. Use `/compact` for an
+# explicit manual boundary. There is no config-file `[compaction]` table.
 
 # Include a deterministic project context pack in the stable prompt prefix.
 [context]

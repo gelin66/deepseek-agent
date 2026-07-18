@@ -603,9 +603,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `product_metric_eligible=false`，且不替代 compaction on/off 真实 A/B，因此不得声称
   Token、成本或 verified task success 改善。
 - 切换删除点：C2 切换 exec/app-server 的旧 continuation lookup；其后 C3 已删除交互
-  foreground engine/session/runtime-thread 调用链。`crates/tui/src/compaction.rs` 的退役
-  executor 不再承载 canonical production compaction，应在独立纯删除切片移除。M5 再以 A/B
-  决定 evidence-aware compaction/ContextBroker 的保留设计，不堆叠第二套摘要器。
+  foreground engine/session/runtime-thread 调用链，`afeca3c4` 已物理删除退役的
+  `crates/tui/src/compaction.rs`/`seam_manager.rs`，`1ff73a00` 又删除了不再影响 canonical
+  Runtime 的 TUI `auto_compact` 假设置和阈值状态。M5 再以 A/B 决定
+  evidence-aware compaction/ContextBroker 的保留设计，不堆叠第二套摘要器。
 
 #### M4-C C3：交互前台与 child 投影切换（已完成）
 
@@ -800,7 +801,7 @@ M8 退出前必须通过第 2.1 节的中文端到端、机器协议稳定性、
 | 当前实现 | 目标归属 | 替代后删除 |
 |---|---|---|
 | `client.rs`、`client/chat.rs` | `deepseek` | 通用 Provider/DeepSeek 混合 client |
-| 退役 `tui/compaction`、`seam_manager` | `context` | 无消费者的第二压缩实现 |
+| 退役 `tui/compaction`、`seam_manager`（已删除） | `context` | canonical 实现位于 `context + runtime + app` |
 | `project_context`、`working_set` 遗留半区 | `context` | 浅层 project map 和重复投影 |
 | `tui/src/tools/*` | `tools` | TUI 工具业务逻辑 |
 | legacy thread tables、Fleet ledger | `state` | 多状态真相 |

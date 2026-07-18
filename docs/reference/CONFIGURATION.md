@@ -1131,14 +1131,11 @@ codewhale also stores user preferences in:
 - `~/.deepseek/settings.toml` or the legacy platform config-dir
   `deepseek/settings.toml` when an existing settings file is present
 
-Notable settings include `auto_compact`, which uses a model-aware default-on
-policy for known context windows up to the 1M-token V4 class. Automatic
-compaction runs before the active model limit and carries the compacted summary
-forward into the next request. The trigger defaults to
-`auto_compact_threshold_percent = 80`. Users who prefer manual continuity can
-persist `auto_compact = false`; manual `/compact` / Ctrl+L remains available.
-You can inspect or update these from the TUI with `/settings` and `/config`
-(interactive editor).
+These settings control presentation and input behavior. Automatic compaction is
+owned by the canonical AgentRuntime context policy rather than a TUI
+preference; the TUI exposes no enable or threshold setting. Manual `/compact`
+remains available. You can inspect or update retained preferences from the TUI
+with `/settings` and `/config` (interactive editor).
 
 Common settings keys:
 
@@ -1148,10 +1145,6 @@ Common settings keys:
   palettes, `grayscale` is the low-opinion black/white theme, and the named
   community presets apply across the TUI. Aliases such as `whale`, `mono`,
   `black-white`, `tokyonight`, and `gruvbox` are accepted.
-- `auto_compact` (on/off, model-aware default on for known context windows
-  unless explicitly configured)
-- `auto_compact_threshold_percent` (10-100, default `80`): pre-send
-  auto-compaction threshold used only when `auto_compact` is enabled.
 - `paste_burst_detection` (on/off, default on): fallback rapid-key paste
   detection for terminals that do not emit bracketed-paste events. This is
   independent of terminal bracketed-paste mode.
@@ -1220,19 +1213,19 @@ separate:
 
 | Quantity | Meaning | Allowed to drive |
 |---|---|---|
-| Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload. | Header/footer context percent, auto-compaction trigger, and emergency overflow preflight. |
+| Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload. | Header/footer context percent and canonical Runtime context safeguards. |
 | Reserved response headroom | The internal turn budget plus safety headroom. v0.8.16 keeps normal turns at `262144` reserved output tokens and adds `1024` safety tokens for context-window checks, even though V4 capability metadata reports the official `384000` max output. | Emergency overflow budget checks only. |
 | Cumulative API usage | Provider-reported input plus output tokens summed across completed API calls; multi-tool turns may count the same stable prefix more than once. | Session usage and approximate cost telemetry only. |
 | Prompt cache hit/miss | Provider cache telemetry for the most recent call when available. | Cache-hit display and cost estimation only; never compaction triggers. |
 | Context percent | Active request input estimate divided by the model context window. | Display only; it mirrors the active-input basis used by context safeguards. |
 | Cost estimate | Approximate spend from provider usage and configured DeepSeek rates. | Display only. |
 
-For known context-window models, including 1M-class V4 models, replacement
-compaction is enabled by default unless the user explicitly configures
-`auto_compact = false`. It fires at the active model's compaction threshold and
+Automatic replacement compaction is a fixed canonical Runtime policy. It
 replays the generated summary through the stable system prompt on the next
-request. Unknown model ids remain opt-in. The capacity controller remains
-disabled unless configured.
+request and is accounted as a real model request. The TUI does not implement a
+second pre-send compaction path or user override. Protocol and recovery tests
+prove the mechanism; product benefit still requires the compaction on/off A/B
+defined in the evaluation plan.
 
 ### Command Migration Notes
 
