@@ -39,6 +39,53 @@ fn create_test_app() -> App {
 }
 
 #[test]
+fn canonical_approval_can_inspect_and_copy_full_params_locally() {
+    let mut app = create_test_app();
+    let request = ApprovalRequest::new(
+        "interaction-1",
+        "read_file",
+        "读取完整参数测试",
+        &serde_json::json!({"path": "src/main.rs"}),
+        "tool:read_file",
+    );
+    app.view_stack.push(ApprovalView::new(request));
+
+    let events = app
+        .view_stack
+        .handle_key(KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE));
+    assert_eq!(events.len(), 1);
+    assert!(
+        handle_canonical_local_view_event(&mut app, events.into_iter().next().unwrap()).is_none()
+    );
+    assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Pager));
+
+    let copy_events = app
+        .view_stack
+        .handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE));
+    assert_eq!(copy_events.len(), 1);
+    assert!(
+        handle_canonical_local_view_event(&mut app, copy_events.into_iter().next().unwrap(),)
+            .is_none()
+    );
+    assert!(
+        app.clipboard
+            .last_written_text()
+            .is_some_and(|text| text.contains("src/main.rs"))
+    );
+    assert!(
+        app.status_message
+            .as_deref()
+            .is_some_and(|message| message.contains("已复制到剪贴板"))
+    );
+
+    let close_events = app
+        .view_stack
+        .handle_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(close_events.is_empty());
+    assert_eq!(app.view_stack.top_kind(), Some(ModalKind::Approval));
+}
+
+#[test]
 fn focus_gained_forces_terminal_viewport_recapture() {
     assert!(terminal_event_needs_viewport_recapture(&Event::FocusGained));
     assert!(!terminal_event_needs_viewport_recapture(&Event::FocusLost));

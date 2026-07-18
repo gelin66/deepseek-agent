@@ -190,22 +190,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
-        chord: "Alt+L",
-        description_id: crate::localization::MessageId::KbLastMessagePager,
-        section: KeybindingSection::Submission,
-    },
-    KeybindingEntry {
-        // Bare `v` always types `v`; details is Alt+V only (⌥V on macOS).
-        chord: "Alt+V",
-        description_id: crate::localization::MessageId::KbSelectedDetails,
-        section: KeybindingSection::Submission,
-    },
-    KeybindingEntry {
-        chord: "Ctrl+O",
-        description_id: crate::localization::MessageId::KbThinkingPager,
-        section: KeybindingSection::Submission,
-    },
-    KeybindingEntry {
         chord: "Ctrl+Shift+T",
         description_id: crate::localization::MessageId::KbLiveTranscript,
         section: KeybindingSection::Submission,
@@ -328,49 +312,12 @@ mod tests {
                 "stale handler-free chord remains documented: {stale}"
             );
         }
-        for wired in ["Alt+G / Alt+Shift+G", "Alt+[ / Alt+]", "Alt+L", "Alt+V"] {
+        for wired in ["Alt+G / Alt+Shift+G", "Alt+[ / Alt+]"] {
             assert!(
                 KEYBINDINGS.iter().any(|entry| entry.chord == wired),
                 "wired transcript shortcut missing from help: {wired}"
             );
         }
-    }
-
-    #[test]
-    fn shell_binding_source_matches_help_catalog_chords() {
-        use crate::tui::shell_key_routing::{ShellBindingId, binding};
-        assert_eq!(binding(ShellBindingId::ToolDetails).catalog_chord, "Alt+V");
-        assert_eq!(binding(ShellBindingId::Help).catalog_chord, "F1 / Ctrl+/");
-        for id in [ShellBindingId::ToolDetails, ShellBindingId::Help] {
-            let chord = binding(id).catalog_chord;
-            assert!(
-                KEYBINDINGS
-                    .iter()
-                    .any(|entry| entry.chord == chord || entry.chord.contains(chord)),
-                "shell binding {id:?} chord missing from help catalog: {chord}"
-            );
-        }
-    }
-
-    #[test]
-    fn ctrl_o_help_copy_matches_turn_inspector_behavior() {
-        let ctrl_o = KEYBINDINGS
-            .iter()
-            .find(|entry| entry.chord == "Ctrl+O")
-            .expect("Ctrl+O keybinding should be documented");
-
-        // Ctrl+O now opens the whole-turn Turn Inspector (#4104), not the
-        // single-cell Activity Detail. The message id is intentionally kept
-        // (`KbThinkingPager`) to avoid an existing-symbol rename; only the
-        // copy changes.
-        assert_eq!(
-            ctrl_o.description_id,
-            crate::localization::MessageId::KbThinkingPager
-        );
-        assert_eq!(
-            crate::localization::tr(ctrl_o.description_id),
-            "打开回合检查器"
-        );
     }
 
     #[test]
@@ -383,26 +330,6 @@ mod tests {
         assert_eq!(
             ctrl_x_activity.description_id,
             crate::localization::MessageId::KbCancelBackgroundShellJobs
-        );
-    }
-
-    #[test]
-    fn tool_details_documents_alt_v_only_never_bare_v() {
-        let selected_details = KEYBINDINGS
-            .iter()
-            .filter(|entry| {
-                entry.description_id == crate::localization::MessageId::KbSelectedDetails
-            })
-            .map(|entry| entry.chord)
-            .collect::<Vec<_>>();
-
-        // TUI-DOG-002: bare `v` always types `v`; details is Alt+V only.
-        assert_eq!(selected_details, vec!["Alt+V"]);
-        assert!(
-            KEYBINDINGS
-                .iter()
-                .all(|entry| entry.chord != "v" && !entry.chord.starts_with("v /")),
-            "bare `v` must not be advertised — composer typing owns it"
         );
     }
 

@@ -6,6 +6,7 @@ use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
 use crate::tools::todo::TodoStatus;
 use crate::tui::clipboard::PastedImage;
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
+use crate::tui::scrolling::TranscriptLineMeta;
 
 fn test_options(yolo: bool) -> TuiOptions {
     TuiOptions {

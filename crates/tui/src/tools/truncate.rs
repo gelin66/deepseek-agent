@@ -28,10 +28,9 @@
 //! * Boot prune in `main.rs` deletes files older than
 //!   [`SPILLOVER_MAX_AGE`].
 //!
-//! UI-side rendering of the inline `full output: <path>` annotation
-//! is owned by `tui/history.rs::render_spillover_annotation`. The
-//! tool-details pager opens the spillover file when the user
-//! presses the tool-details shortcut on a spilled tool cell.
+//! The truncated result contains the spillover path so the model can read the
+//! preserved file explicitly. Historical TUI rendering may also display that
+//! path; there is no separate details-pager owner.
 
 use std::fs;
 use std::io;

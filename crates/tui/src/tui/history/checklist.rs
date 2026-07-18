@@ -192,16 +192,9 @@ pub(super) fn render_checklist_change_card(
     ];
     lines.push(Line::from(spans));
 
-    // Tease that the full list is still available without leaving the
-    // transcript. Mirrors the same affordance used by other tool cells.
     lines.push(render_card_detail_line_single(
         None,
-        &format!(
-            "{} item{}; {}",
-            snapshot.total,
-            if snapshot.total == 1 { "" } else { "s" },
-            crate::tui::key_shortcuts::tool_details_shortcut_action_hint("full list")
-        ),
+        &format!("共 {} 项", snapshot.total),
         Style::default().fg(palette::TEXT_MUTED),
     ));
     lines
@@ -285,10 +278,7 @@ pub(super) fn render_checklist_card(
     if omitted > 0 {
         lines.push(render_card_detail_line_single(
             None,
-            &format!(
-                "+{omitted} more; {}",
-                crate::tui::key_shortcuts::tool_details_shortcut_action_hint("full list")
-            ),
+            &format!("另有 {omitted} 项未显示"),
             Style::default().fg(palette::TEXT_DIM),
         ));
     }

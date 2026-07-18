@@ -18,10 +18,6 @@ pub(super) const REASONING_RAIL: &str = "\u{254E} "; // ╎ + space
 /// so the user sees where new tokens land.
 pub(super) const REASONING_CURSOR: &str = "\u{258E}"; // ▎
 
-const THINKING_SUMMARY_LINE_LIMIT: usize = 4;
-const THINKING_COMPLETED_PREVIEW_LINE_LIMIT: usize = 6;
-const THINKING_STREAMING_PREVIEW_LINE_LIMIT: usize = 8;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ThinkingVisualState {
     Live,
@@ -29,106 +25,11 @@ enum ThinkingVisualState {
     Idle,
 }
 
-#[allow(dead_code)] // Kept for compatibility/tests; live view uses explicit summaries only.
-#[must_use]
-pub fn extract_reasoning_summary(text: &str) -> Option<String> {
-    extract_explicit_reasoning_summary(text).or_else(|| {
-        let fallback = text.trim();
-        if fallback.is_empty() {
-            None
-        } else {
-            Some(fallback.to_string())
-        }
-    })
-}
-
-fn extract_explicit_reasoning_summary(text: &str) -> Option<String> {
-    let mut lines = text.lines().peekable();
-    while let Some(line) = lines.next() {
-        let trimmed = line.trim();
-        if trimmed.to_lowercase().starts_with("summary") {
-            let mut summary = String::new();
-            if let Some((_, rest)) = trimmed.split_once(':')
-                && !rest.trim().is_empty()
-            {
-                summary.push_str(rest.trim());
-                summary.push('\n');
-            }
-            while let Some(next) = lines.peek() {
-                let next_trimmed = next.trim();
-                if next_trimmed.is_empty() {
-                    break;
-                }
-                if next_trimmed.starts_with('#') || next_trimmed.starts_with("**") {
-                    break;
-                }
-                summary.push_str(next_trimmed);
-                summary.push('\n');
-                lines.next();
-            }
-            let summary = summary.trim().to_string();
-            return if summary.is_empty() {
-                None
-            } else {
-                Some(summary)
-            };
-        }
-    }
-    None
-}
-
-/// Redact internal code identifiers from a collapsed reasoning preview so
-/// implementation details don't leak into the default transcript
-/// (#4146/#4148). Each `snake_case` token (e.g. `refresh_catalog_cache`,
-/// `agent_id`, `DEEPSEEK_API_KEY`) collapses to a single `…` so the
-/// surrounding prose still reads; the full, un-redacted body remains
-/// available on expand (Space / Ctrl+O) and in the pager/clipboard transcript.
-fn redact_internal_identifiers(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut token = String::new();
-    for ch in text.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' {
-            token.push(ch);
-            continue;
-        }
-        push_identifier_token(&mut out, &mut token);
-        out.push(ch);
-    }
-    push_identifier_token(&mut out, &mut token);
-    out
-}
-
-/// Flush a scanned word token into `out`, replacing it with `…` when it reads
-/// as an internal code identifier. No-op on an empty token.
-fn push_identifier_token(out: &mut String, token: &mut String) {
-    if token.is_empty() {
-        return;
-    }
-    if looks_like_internal_identifier(token) {
-        out.push('\u{2026}');
-    } else {
-        out.push_str(token);
-    }
-    token.clear();
-}
-
-/// A token reads as an internal code identifier when it is a `snake_case`
-/// run: it contains an underscore, has at least one letter, and is otherwise
-/// only ASCII alphanumerics/underscores. Ordinary prose words never match.
-fn looks_like_internal_identifier(token: &str) -> bool {
-    token.contains('_')
-        && token.chars().any(|ch| ch.is_ascii_alphabetic())
-        && token
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-}
-
 pub(super) fn render_thinking(
     content: &str,
     width: u16,
     streaming: bool,
     duration_secs: Option<f32>,
-    collapsed: bool,
     low_motion: bool,
 ) -> Vec<Line<'static>> {
     let state = thinking_visual_state(streaming, duration_secs);
@@ -165,65 +66,11 @@ pub(super) fn render_thinking(
     lines.push(Line::from(header_spans));
 
     let content_width = width.saturating_sub(3).max(1);
-    let mut collapsed_without_explicit_summary = false;
-    let body_text = if collapsed {
-        if streaming {
-            // #861 RC4 / #1324: during streaming we don't yet have a
-            // completed reasoning block, so `extract_reasoning_summary`
-            // is meaningless. Show the raw content and let the
-            // truncation logic below keep the *last* `LIMIT` lines so
-            // the user sees the model's most recent thinking instead of
-            // staring at an empty placeholder.
-            content.to_string()
-        } else {
-            match extract_explicit_reasoning_summary(content) {
-                Some(summary) => summary,
-                None => {
-                    collapsed_without_explicit_summary = true;
-                    content.to_string()
-                }
-            }
-        }
-    } else {
-        content.to_string()
-    };
-    // #4146/#4148: completed reasoning collapses to a quiet receipt in the
-    // default transcript — scrub internal code identifiers (function names
-    // like `refresh_catalog_cache`, raw agent ids) so implementation details
-    // don't leak. Streaming reasoning stays verbatim (the user is watching it
-    // think) and the expanded / pager / clipboard transcript keeps the full,
-    // un-redacted body. The redaction changes `body_text`, which trips the
-    // affordance below so the user still sees the "expand for full reasoning"
-    // hint.
-    let body_text = if collapsed && !streaming {
-        redact_internal_identifiers(&body_text)
-    } else {
-        body_text
-    };
-    let mut rendered = if body_text.trim().is_empty() {
+    let rendered = if content.trim().is_empty() {
         Vec::new()
     } else {
-        markdown_render::render_markdown(&body_text, content_width, body_style)
+        markdown_render::render_markdown(content, content_width, body_style)
     };
-    let mut truncated = false;
-    let line_limit = if streaming {
-        THINKING_STREAMING_PREVIEW_LINE_LIMIT
-    } else if collapsed_without_explicit_summary {
-        THINKING_COMPLETED_PREVIEW_LINE_LIMIT
-    } else {
-        THINKING_SUMMARY_LINE_LIMIT
-    };
-    if collapsed && rendered.len() > line_limit {
-        if streaming {
-            // Drop the *head* during streaming so the visible window
-            // tracks the live cursor at the bottom.
-            let drop = rendered.len() - line_limit;
-            rendered.drain(0..drop);
-        } else {
-            rendered.truncate(line_limit);
-        }
-        truncated = true;
-    }
 
     let rail_style = Style::default().fg(thinking_state_accent(state));
     let cursor_style = Style::default().fg(palette::ACCENT_REASONING_LIVE);
@@ -250,27 +97,6 @@ pub(super) fn render_thinking(
             spans.push(Span::styled(format!(" {REASONING_CURSOR}"), cursor_style));
         }
         lines.push(Line::from(spans));
-    }
-
-    let needs_affordance = collapsed
-        && if streaming {
-            // #861 RC4 / #1324: during streaming, surface the affordance
-            // whenever any head lines have been clipped so the user
-            // knows there's more above and how to reach it.
-            truncated
-        } else {
-            truncated || body_text.trim() != content.trim()
-        };
-    if needs_affordance {
-        let label = if streaming {
-            tr(MessageId::HistoryReasoningMoreHint)
-        } else {
-            tr(MessageId::HistoryReasoningExpandHint)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(REASONING_RAIL.to_string(), rail_style),
-            Span::styled(label, Style::default().fg(palette::TEXT_MUTED).italic()),
-        ]));
     }
 
     lines

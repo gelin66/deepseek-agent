@@ -9,8 +9,8 @@ use crate::palette;
 
 use super::constants::{TOOL_OUTPUT_HEAD_LINES, TOOL_OUTPUT_TAIL_LINES, TOOL_TEXT_LIMIT};
 use super::{
-    RenderMode, details_affordance_line, looks_like_file_path, render_card_detail_line,
-    render_card_detail_line_single, tool_value_style, truncate_text,
+    RenderMode, looks_like_file_path, render_card_detail_line, render_card_detail_line_single,
+    summary_notice_line, tool_value_style, truncate_text,
 };
 
 pub(super) fn render_tool_output_mode(
@@ -389,11 +389,8 @@ fn render_preserved_output_mode(
         if let Some(prev) = previous {
             let omitted = idx.saturating_sub(prev + 1);
             if omitted > 0 {
-                lines.push(details_affordance_line(
-                    &format!(
-                        "{omitted} lines omitted; {}",
-                        crate::tui::key_shortcuts::tool_details_shortcut_action_hint("full output")
-                    ),
+                lines.push(summary_notice_line(
+                    &format!("已省略 {omitted} 行"),
                     Style::default().fg(palette::TEXT_MUTED),
                 ));
             }
@@ -521,8 +518,7 @@ fn is_path_or_url_like(line: &str) -> bool {
     has_separator && has_extension
 }
 
-/// Detect whether a line contains a `path:line` pattern that could be
-/// opened by `try_open_file_at_line`. Returns a distinctive style
+/// Detect whether a line contains a `path:line` pattern. Returns a distinctive style
 /// (underline + blue) when the pattern matches, or `None` otherwise.
 /// The style is applied over the existing value style so the line
 /// remains readable.

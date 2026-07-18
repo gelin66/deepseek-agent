@@ -1,6 +1,6 @@
 //! TUI rendering helpers for chat history and tool output.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use ratatui::style::{Color, Modifier, Style};
@@ -53,8 +53,6 @@ use tool_output::{render_exec_output_mode, render_tool_output_mode, wrap_plain_l
 use agent_activity::extract_agent_id;
 pub use plan::PlanUpdateCell;
 #[cfg(test)]
-use thinking::extract_reasoning_summary;
-#[cfg(test)]
 use tool_run::ToolRunActivitySummary;
 #[cfg(test)]
 pub use tool_run::detect_tool_runs;
@@ -65,18 +63,14 @@ use thinking::{REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL};
 pub(crate) use tool_output::output_looks_like_diff;
 pub use tool_output::{OutputRow, summarize_tool_args, summarize_tool_output};
 
-use std::process::Command;
-
-/// Render mode controlling whether tool/thinking cells render their compact
-/// "live" form (with caps and collapsed reasoning) or their full transcript
-/// form (uncapped, suitable for the pager / clipboard / message export).
+/// Render mode controlling whether tool cells render their compact live form
+/// or their uncapped transcript form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RenderMode {
-    /// Live in-stream view: thinking is collapsed to a summary, tool output is
-    /// truncated with a visible details-pager affordance.
+    /// Live in-stream view: tool output may be summarized.
     Live,
     /// Full transcript view: every line of reasoning and tool output is
-    /// emitted, no caps, no affordance.
+    /// emitted without caps.
     Transcript,
 }
 
@@ -131,7 +125,6 @@ pub enum HistoryCell {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranscriptRenderOptions {
     pub show_thinking: bool,
-    pub verbose: bool,
     pub show_tool_details: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
@@ -142,7 +135,6 @@ impl Default for TranscriptRenderOptions {
     fn default() -> Self {
         Self {
             show_thinking: true,
-            verbose: false,
             show_tool_details: true,
             calm_mode: false,
             low_motion: false,
@@ -158,7 +150,7 @@ impl HistoryCell {
     /// `TranscriptRenderOptions`. Tool output is capped, but thinking is shown
     /// in full because callers using bare `lines()` historically expected the
     /// uncollapsed body. For the in-stream transcript view prefer
-    /// `lines_with_options`; for the pager / clipboard prefer
+    /// `lines_with_options`; for full transcript and clipboard output prefer
     /// `transcript_lines`.
     pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
         match self {
@@ -211,32 +203,16 @@ impl HistoryCell {
                 content,
                 streaming,
                 duration_secs,
-            } => render_thinking(content, width, *streaming, *duration_secs, false, false),
+            } => render_thinking(content, width, *streaming, *duration_secs, false),
             HistoryCell::Tool(cell) => cell.lines_with_motion(width, false),
             HistoryCell::ArchivedContext { .. } => render_archived_context(self, width, false),
         }
     }
 
-    #[allow(dead_code)] // retained for focused/detail renderers and direct rendering tests
     pub fn lines_with_options(
         &self,
         width: u16,
         options: TranscriptRenderOptions,
-    ) -> Vec<Line<'static>> {
-        self.lines_with_options_folded(width, options, false)
-    }
-
-    /// Render with an explicit per-cell fold override for thinking cells.
-    ///
-    /// Uses XOR with the `verbose` flag so that pressing Space toggles
-    /// the collapsed state *relative* to the global setting:
-    /// - verbose off (default): thinking is collapsed; Space unfolds it
-    /// - verbose on: thinking is expanded; Space folds it
-    pub fn lines_with_options_folded(
-        &self,
-        width: u16,
-        options: TranscriptRenderOptions,
-        folded: bool,
     ) -> Vec<Line<'static>> {
         match self {
             HistoryCell::Thinking {
@@ -259,15 +235,14 @@ impl HistoryCell {
                 width,
                 *streaming,
                 *duration_secs,
-                folded ^ !options.verbose,
                 options.low_motion,
             ),
             HistoryCell::Tool(cell) if !options.show_tool_details && !cell.is_failed() => {
                 let mut lines = cell.lines_with_motion(width, options.low_motion);
                 if lines.len() > 2 {
                     lines.truncate(2);
-                    lines.push(details_affordance_line(
-                        &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("details"),
+                    lines.push(summary_notice_line(
+                        "更多输出已折叠",
                         Style::default().fg(palette::TEXT_MUTED).italic(),
                     ));
                 }
@@ -277,8 +252,8 @@ impl HistoryCell {
                 let mut lines = cell.lines_with_motion(width, options.low_motion);
                 if lines.len() > TOOL_CARD_SUMMARY_LINES {
                     lines.truncate(TOOL_CARD_SUMMARY_LINES);
-                    lines.push(details_affordance_line(
-                        &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("details"),
+                    lines.push(summary_notice_line(
+                        "更多输出已折叠",
                         Style::default().fg(palette::TEXT_MUTED).italic(),
                     ));
                 }
@@ -300,20 +275,10 @@ impl HistoryCell {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn lines_with_copy_metadata(
         &self,
         width: u16,
         options: TranscriptRenderOptions,
-    ) -> Vec<RenderedTranscriptLine> {
-        self.lines_with_copy_metadata_folded(width, options, false)
-    }
-
-    pub(crate) fn lines_with_copy_metadata_folded(
-        &self,
-        width: u16,
-        options: TranscriptRenderOptions,
-        folded: bool,
     ) -> Vec<RenderedTranscriptLine> {
         match self {
             HistoryCell::User { content } => {
@@ -336,7 +301,7 @@ impl HistoryCell {
                 )
             }
             HistoryCell::Tool(_) => self
-                .lines_with_options_folded(width, options, folded)
+                .lines_with_options(width, options)
                 .into_iter()
                 .map(|line| {
                     let copy_prefix_width = tool_copy_prefix_width(&line);
@@ -348,14 +313,13 @@ impl HistoryCell {
                     }
                 })
                 .collect(),
-            _ => hard_break_copy_lines(self.lines_with_options_folded(width, options, folded)),
+            _ => hard_break_copy_lines(self.lines_with_options(width, options)),
         }
     }
 
-    /// Render the cell in transcript mode: full content, no caps, no
-    /// visible details-pager affordances.
+    /// Render the cell in transcript mode with full content and no caps.
     ///
-    /// Use this for full-detail pagers, clipboard exports, and any
+    /// Use this for transcript exports, clipboard output, and any
     /// surface that wants the complete body rather than the live summary.
     /// For most variants (User / Assistant / System) this matches `lines()`;
     /// `Thinking` and `Tool` are where the live and transcript surfaces
@@ -383,14 +347,7 @@ impl HistoryCell {
                 content,
                 streaming,
                 duration_secs,
-            } => render_thinking(
-                content,
-                width,
-                *streaming,
-                *duration_secs,
-                /*collapsed*/ false,
-                /*low_motion*/ false,
-            ),
+            } => render_thinking(content, width, *streaming, *duration_secs, false),
             HistoryCell::Tool(cell) => cell.transcript_lines(width),
             HistoryCell::ArchivedContext { .. } => render_archived_context(self, width, true),
         }
@@ -586,9 +543,8 @@ impl ToolCell {
         self.render(width, low_motion, RenderMode::Live)
     }
 
-    /// Full-content rendering for the pager / clipboard. Tool output that
-    /// would be capped + suffixed with a details-pager hint in the live view
-    /// is emitted in full here.
+    /// Full-content rendering for transcript and clipboard output. Tool output that
+    /// would be capped in the live view is emitted in full here.
     pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
         self.render(width, /*low_motion*/ false, RenderMode::Transcript)
     }
@@ -1394,8 +1350,8 @@ fn render_command_mode(command: &str, width: u16, mode: RenderMode) -> Vec<Line<
         .enumerate()
     {
         if count >= cap {
-            lines.push(details_affordance_line(
-                &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("full command"),
+            lines.push(summary_notice_line(
+                "命令已截断",
                 Style::default().fg(palette::TEXT_MUTED),
             ));
             break;
@@ -1592,7 +1548,7 @@ fn status_symbol(
     }
 }
 
-fn details_affordance_line(text: &str, style: Style) -> Line<'static> {
+fn summary_notice_line(text: &str, style: Style) -> Line<'static> {
     Line::from(vec![
         Span::styled(
             TRANSCRIPT_RAIL.to_string(),
@@ -1850,52 +1806,6 @@ fn tool_status_label(status: ToolStatus) -> &'static str {
 
 fn tool_value_style() -> Style {
     active_theme().tool_value_style()
-}
-
-/// Parse `path:line` patterns from `text` and open the file at the given line
-/// in the user's preferred editor (`$VISUAL` / `$EDITOR` / `vim`).
-///
-/// Scans lines of `text` for patterns like `src/main.rs:42`. Resolves the path
-/// relative to `workspace` (if not absolute) and opens the editor. Returns
-/// `true` if at least one file was opened successfully.
-pub fn try_open_file_at_line(text: &str, workspace: &Path) -> bool {
-    let editor = std::env::var("VISUAL")
-        .ok()
-        .filter(|s| !s.trim().is_empty())
-        .or_else(|| {
-            std::env::var("EDITOR")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-        })
-        .unwrap_or_else(|| "vim".to_string());
-
-    let mut any_opened = false;
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if let Some((before, after)) = trimmed.rsplit_once(':')
-            && after.chars().all(|c| c.is_ascii_digit())
-        {
-            let line_num: u32 = after.parse().unwrap_or(1);
-            let path_str = before.trim();
-            if !path_str.is_empty() && looks_like_file_path(path_str) {
-                let abs_path = if Path::new(path_str).is_absolute() {
-                    PathBuf::from(path_str)
-                } else {
-                    workspace.join(path_str)
-                };
-                if abs_path.is_file()
-                    && Command::new(&editor)
-                        .arg(format!("+{line_num}"))
-                        .arg(&abs_path)
-                        .spawn()
-                        .is_ok()
-                {
-                    any_opened = true;
-                }
-            }
-        }
-    }
-    any_opened
 }
 
 /// Heuristic check whether a string looks like a file path (contains a

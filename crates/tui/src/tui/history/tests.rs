@@ -2,8 +2,7 @@ use super::{
     ASSISTANT_GLYPH, ExecCell, ExecSource, GenericToolCell, HistoryCell, PlanUpdateCell,
     REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL, TOOL_RUNNING_SYMBOLS,
     TOOL_STATUS_SYMBOL_MS, ToolCell, ToolStatus, TranscriptRenderOptions, USER_GLYPH,
-    assistant_label_style_for, extract_reasoning_summary, render_thinking,
-    running_status_label_with_elapsed,
+    assistant_label_style_for, render_thinking, running_status_label_with_elapsed,
 };
 use crate::deepseek_theme::Theme;
 use crate::models::{ContentBlock, Message};
@@ -548,7 +547,8 @@ fn render_checklist_change_card_shows_only_changed_item() {
         "should not show other items: {change_line:?}"
     );
 
-    // The summary line carries the count + explicit details-pager hint.
+    // The summary line reports the full list size without advertising a
+    // handler-free details command.
     let summary_line: String = lines
         .last()
         .unwrap()
@@ -556,9 +556,8 @@ fn render_checklist_change_card_shows_only_changed_item() {
         .iter()
         .map(|s| s.content.as_ref())
         .collect();
-    assert!(summary_line.contains("3 items"), "{summary_line:?}");
-    let expected_hint = crate::tui::key_shortcuts::tool_details_shortcut_action_hint("full list");
-    assert!(summary_line.contains(&expected_hint), "{summary_line:?}");
+    assert!(summary_line.contains("共 3 项"), "{summary_line:?}");
+    assert!(!summary_line.contains("opens"), "{summary_line:?}");
 }
 
 #[test]
@@ -603,20 +602,6 @@ fn running_status_label_appends_elapsed_at_three_seconds() {
     assert_eq!(running_status_label_with_elapsed(3), "running (3s)");
     assert_eq!(running_status_label_with_elapsed(7), "running (7s)");
     assert_eq!(running_status_label_with_elapsed(120), "running (120s)");
-}
-
-#[test]
-fn extract_reasoning_summary_prefers_summary_block() {
-    let text = "Thinking...\nSummary: First line\nSecond line\n\nTail";
-    let summary = extract_reasoning_summary(text).expect("summary should exist");
-    assert_eq!(summary, "First line\nSecond line");
-}
-
-#[test]
-fn extract_reasoning_summary_falls_back_to_full_text() {
-    let text = "Line one\nLine two";
-    let summary = extract_reasoning_summary(text).expect("summary should exist");
-    assert_eq!(summary, "Line one\nLine two");
 }
 
 #[test]
@@ -689,23 +674,20 @@ fn history_replays_update_plan_tool_use_as_plan_card() {
 }
 
 #[test]
-fn render_thinking_collapsed_shows_details_affordance() {
+fn render_thinking_shows_full_reasoning_without_dead_affordance() {
     let lines = render_thinking(
         "Summary: First line\nSecond line\nThird line\nFourth line\nFifth line",
         80,
         false,
         Some(2.0),
-        true,
         false,
     );
     let text = lines
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
-    assert!(text.contains("按 Ctrl+O 查看完整推理"));
-    // Pin the actual header shape ("… 推理 已完成") — a bare
-    // `contains("推理")` is already satisfied by the Ctrl+O
-    // affordance line above and would never fail on its own.
+    assert!(text.contains("Fifth line"));
+    assert!(!text.contains("Ctrl+O"));
     let header = lines
         .first()
         .map(|line| {
@@ -729,33 +711,19 @@ fn render_thinking_collapsed_shows_details_affordance() {
 fn reasoning_chrome_is_chinese_width_safe_and_preserves_model_text() {
     let raw_reasoning = "MODEL-RAW reasoning/live/done src/lib.rs read_file";
 
-    let live = lines_text(&render_thinking(raw_reasoning, 120, true, None, true, true));
+    let live = lines_text(&render_thinking(raw_reasoning, 120, true, None, true));
     assert!(live.contains("推理 进行中"), "{live}");
     assert!(live.contains(raw_reasoning), "{live}");
 
-    let done = lines_text(&render_thinking(
-        raw_reasoning,
-        120,
-        false,
-        Some(1.0),
-        false,
-        true,
-    ));
+    let done = lines_text(&render_thinking(raw_reasoning, 120, false, Some(1.0), true));
     assert!(done.contains("推理 已完成"), "{done}");
     assert!(done.contains(raw_reasoning), "{done}");
 
-    let idle = lines_text(&render_thinking(
-        raw_reasoning,
-        120,
-        false,
-        None,
-        false,
-        true,
-    ));
+    let idle = lines_text(&render_thinking(raw_reasoning, 120, false, None, true));
     assert!(idle.contains("推理 空闲"), "{idle}");
     assert!(idle.contains(raw_reasoning), "{idle}");
 
-    let placeholder = lines_text(&render_thinking("", 40, true, None, true, true));
+    let placeholder = lines_text(&render_thinking("", 40, true, None, true));
     assert!(placeholder.contains("推理中…"), "{placeholder}");
 
     let hidden = HistoryCell::Thinking {
@@ -795,8 +763,7 @@ fn system_note_uses_chinese_title_and_preserves_canonical_content() {
     assert_eq!(live[0].spans[0].content.as_ref(), "说明");
     assert!(lines_text(&live).contains(raw_content));
 
-    let copied =
-        cell.lines_with_copy_metadata_folded(160, TranscriptRenderOptions::default(), false);
+    let copied = cell.lines_with_copy_metadata(160, TranscriptRenderOptions::default());
     assert_eq!(copied[0].line.spans[0].content.as_ref(), "说明");
     assert!(
         lines_text(
@@ -810,17 +777,12 @@ fn system_note_uses_chinese_title_and_preserves_canonical_content() {
 }
 
 #[test]
-fn render_thinking_streaming_collapsed_shows_live_content() {
-    // #861 RC4 / #1324: during a live thinking block in collapsed view,
-    // the body must NOT be blanked out. Users want to watch the model
-    // think; the previous behaviour stalled on a "thinking..." spinner
-    // until ThinkingComplete fired.
+fn render_thinking_streaming_shows_live_content() {
     let lines = render_thinking(
         "Step 1: read the code\nStep 2: trace the call\nStep 3: form a hypothesis",
         80,
         true, // streaming
         None, // no duration yet
-        true, // collapsed
         true, // low_motion (no cursor noise to grep)
     );
     let text = lines
@@ -889,22 +851,19 @@ fn render_hidden_completed_thinking_stays_hidden() {
 }
 
 #[test]
-fn render_thinking_streaming_truncated_shows_continues_affordance() {
-    // #861 RC4: when a streaming thinking block exceeds the line cap,
-    // surface a live affordance pointing at Ctrl+O. The earlier code
-    // suppressed the affordance unless `!streaming`.
+fn render_thinking_streaming_keeps_the_full_visible_record() {
     let long = (1..=12)
         .map(|i| format!("Reasoning line {i}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let lines = render_thinking(&long, 80, true, None, true, true);
+    let lines = render_thinking(&long, 80, true, None, true);
     let text = lines
         .iter()
         .flat_map(|line| line.spans.iter().map(|span| span.content.as_ref()))
         .collect::<String>();
     assert!(
-        text.contains("按 Ctrl+O 查看更多推理"),
-        "streaming-truncation affordance missing, got: {text}"
+        !text.contains("Ctrl+O"),
+        "dead detail shortcut must not be advertised: {text}"
     );
     // The most recent line must be the visible tail (head dropped).
     assert!(
@@ -912,8 +871,8 @@ fn render_thinking_streaming_truncated_shows_continues_affordance() {
         "tail line missing, got: {text}"
     );
     assert!(
-        !text.contains("Reasoning line 1\n"),
-        "head should be clipped, got: {text}"
+        text.contains("Reasoning line 1"),
+        "reasoning head must remain visible, got: {text}"
     );
 }
 
@@ -1582,7 +1541,7 @@ fn exploring_card_read_keeps_read_verb() {
 
 #[test]
 fn render_thinking_uses_dotted_opener_in_header() {
-    let lines = render_thinking("Step one\nStep two", 80, false, Some(2.0), false, true);
+    let lines = render_thinking("Step one\nStep two", 80, false, Some(2.0), true);
     let header = &lines[0];
     // First span carries `…` followed by a space.
     assert!(
@@ -1599,7 +1558,6 @@ fn render_thinking_body_lines_use_dashed_rail_and_italic() {
         80,
         /*streaming*/ false,
         Some(1.0),
-        /*collapsed*/ false,
         /*low_motion*/ true,
     );
     // Header is index 0; first body line is index 1.
@@ -1626,7 +1584,6 @@ fn render_thinking_streaming_appends_cursor_when_motion_allowed() {
         80,
         /*streaming*/ true,
         None,
-        /*collapsed*/ false,
         /*low_motion*/ false,
     );
     // Last line is the most recent body line — cursor lives there.
@@ -1646,7 +1603,6 @@ fn render_thinking_streaming_omits_cursor_when_low_motion() {
         80,
         /*streaming*/ true,
         None,
-        /*collapsed*/ false,
         /*low_motion*/ true,
     );
     let last = lines.last().expect("body line present");
@@ -1938,11 +1894,7 @@ fn exec_cell_prefers_final_output_over_live_shell_tail() {
 }
 
 #[test]
-fn long_thinking_display_is_shorter_than_transcript() {
-    // Build a multi-paragraph thinking body so the live view has
-    // something to compress. Without an explicit Summary block, the live
-    // surface should show a bounded preview plus affordance; Ctrl+O
-    // remains the path to the full body.
+fn long_thinking_display_preserves_the_canonical_reasoning_body() {
     let body = "First paragraph lede.\n\
                 Second sentence of the first paragraph.\n\n\
                 Second paragraph: deeper analysis follows.\n\
@@ -1966,13 +1918,6 @@ fn long_thinking_display_is_shorter_than_transcript() {
     );
     let transcript = cell.transcript_lines(80);
 
-    assert!(
-        live.len() < transcript.len(),
-        "live thinking should compress (live = {} lines, transcript = {} lines)",
-        live.len(),
-        transcript.len()
-    );
-
     let live_text = lines_text(&live);
     let transcript_text = lines_text(&transcript);
 
@@ -1989,24 +1934,23 @@ fn long_thinking_display_is_shorter_than_transcript() {
         "transcript thinking must keep the full body"
     );
     assert!(
-        !live_text.contains("Fourth paragraph"),
-        "live thinking must drop the tail when collapsed"
+        live_text.contains("Fourth paragraph"),
+        "live thinking must keep the full body when reasoning is enabled"
     );
     assert!(
-        live_text.contains("按 Ctrl+O 查看完整推理"),
-        "live thinking must offer the pager affordance"
+        !live_text.contains("Ctrl+O"),
+        "live thinking must not advertise a missing detail command"
     );
     assert!(
-        !transcript_text.contains("按 Ctrl+O 查看完整推理"),
-        "transcript thinking must not include the live affordance"
+        !transcript_text.contains("Ctrl+O"),
+        "transcript thinking must not include the dead affordance"
     );
 }
 
 #[test]
 fn completed_short_thinking_without_summary_stays_visible_in_live_view() {
-    // Short completed reasoning should not become a dead "Full reasoning
-    // in Ctrl+O" card. The reasoning rail and tint already distinguish it
-    // from the user's prompt, so show the useful body inline.
+    // The reasoning rail and tint distinguish this from the user's prompt;
+    // the useful body remains inline.
     let cell = HistoryCell::Thinking {
         content: "One brief reasoning step.".to_string(),
         streaming: false,
@@ -2034,58 +1978,38 @@ fn completed_short_thinking_without_summary_stays_visible_in_live_view() {
         "transcript thinking must keep the full reasoning body"
     );
     assert!(
-        !live_text.contains("按 Ctrl+O 查看完整推理"),
+        !live_text.contains("Ctrl+O"),
         "complete short reasoning should not need the detail affordance: {live_text}"
     );
 }
 
 #[test]
-fn completed_reasoning_receipt_hides_internal_function_names_until_expanded() {
-    // #4146/#4148: a completed-reasoning receipt in the default (collapsed)
-    // transcript must not expose internal function names; the full body —
-    // identifiers intact — stays reachable on expand and in the transcript.
+fn completed_reasoning_preserves_model_text_without_a_shadow_expanded_copy() {
     let cell = HistoryCell::Thinking {
         content: "I will call refresh_catalog_cache to refresh the model list.".to_string(),
         streaming: false,
         duration_secs: Some(1.0),
     };
 
-    // Default collapsed view: identifier scrubbed, prose preserved, and the
-    // expand affordance offered.
-    let collapsed = cell.lines_with_options(
+    let live = cell.lines_with_options(
         80,
         TranscriptRenderOptions {
             low_motion: true,
             ..TranscriptRenderOptions::default()
         },
     );
-    let collapsed_text = lines_text(&collapsed);
+    let live_text = lines_text(&live);
     assert!(
-        !collapsed_text.contains("refresh_catalog_cache"),
-        "internal function name must not leak by default: {collapsed_text}"
+        live_text.contains("refresh_catalog_cache"),
+        "enabled reasoning must preserve the model response exactly: {live_text}"
     );
     assert!(
-        collapsed_text.contains("refresh the model list"),
-        "surrounding prose must still read: {collapsed_text}"
+        live_text.contains("refresh the model list"),
+        "surrounding prose must still read: {live_text}"
     );
     assert!(
-        collapsed_text.contains("按 Ctrl+O 查看完整推理"),
-        "collapsed receipt must offer the expand affordance: {collapsed_text}"
-    );
-
-    // Expanded view (Space toggles the fold relative to the default): the full
-    // identifier is restored.
-    let expanded = cell.lines_with_options_folded(
-        80,
-        TranscriptRenderOptions {
-            low_motion: true,
-            ..TranscriptRenderOptions::default()
-        },
-        true,
-    );
-    assert!(
-        lines_text(&expanded).contains("refresh_catalog_cache"),
-        "expanded reasoning must restore the full identifier"
+        !live_text.contains("Ctrl+O"),
+        "reasoning must not advertise a missing expanded copy: {live_text}"
     );
 
     // Transcript / pager / clipboard keeps the full, un-redacted body.
@@ -2098,7 +2022,7 @@ fn completed_reasoning_receipt_hides_internal_function_names_until_expanded() {
 #[test]
 fn tool_exec_live_caps_failed_output_transcript_does_not() {
     // A *failed* exec keeps its output in live mode, capped to head+tail
-    // with a "lines omitted" marker. Transcript mode emits it uncapped.
+    // with an omission marker. Transcript mode emits it uncapped.
     let total_output_lines = 30usize;
     let output = (0..total_output_lines)
         .map(|i| format!("output line {i:02}"))
@@ -2139,11 +2063,11 @@ fn tool_exec_live_caps_failed_output_transcript_does_not() {
         transcript.len()
     );
     assert!(
-        live_text.contains("lines omitted"),
+        live_text.contains("已省略"),
         "live failed-exec output must surface the omission marker: {live_text}"
     );
     assert!(
-        !transcript_text.contains("lines omitted"),
+        !transcript_text.contains("已省略"),
         "transcript exec output must not include the omission marker"
     );
     assert!(transcript_text.contains("output line 00"));
@@ -2198,7 +2122,7 @@ fn tool_exec_live_collapses_successful_command() {
         "successful exec must not render its output body in live mode: {live_text}"
     );
     assert!(
-        !live_text.contains("lines omitted"),
+        !live_text.contains("已省略"),
         "collapsed exec must not show an omission marker: {live_text}"
     );
     // Transcript still has the full output.
@@ -2404,7 +2328,7 @@ fn generic_tool_cell_expands_failed_multi_line_output_in_live() {
 
     assert!(live_text.contains("command: ls"), "{live_text}");
     assert!(
-        !live_text.contains("lines omitted"),
+        !live_text.contains("已省略"),
         "failed output must not be hidden behind an omission marker: {live_text}"
     );
     assert!(transcript_text.contains("row 29"));
@@ -2435,7 +2359,7 @@ fn generic_tool_failed_output_live_renders_card_rail() {
         live_text.starts_with('\u{256D}'),
         "live view must start with card-rail top glyph ╭: {live_text}"
     );
-    assert!(!live_text.contains("lines omitted"), "{live_text}");
+    assert!(!live_text.contains("已省略"), "{live_text}");
     assert!(live_text.contains("line 00"));
     assert!(live_text.contains("line 23"));
 }
@@ -2466,7 +2390,7 @@ fn hidden_tool_details_keeps_failed_generic_output_expanded() {
     ));
 
     assert!(
-        !live_text.contains("lines omitted") && !live_text.contains("details"),
+        !live_text.contains("已省略") && !live_text.contains("details"),
         "failed output must not be hidden behind a details affordance: {live_text}"
     );
     assert!(live_text.contains("row 29"), "{live_text}");
@@ -2498,7 +2422,7 @@ fn calm_mode_keeps_failed_generic_output_expanded() {
     ));
 
     assert!(
-        !live_text.contains("lines omitted") && !live_text.contains("details"),
+        !live_text.contains("已省略") && !live_text.contains("details"),
         "failed output must not be hidden behind a details affordance: {live_text}"
     );
     assert!(live_text.contains("row 29"), "{live_text}");
@@ -2529,7 +2453,7 @@ fn generic_tool_success_live_collapses_output_transcript_keeps_it() {
         "successful generic tool output should be hidden live: {live_text}"
     );
     assert!(
-        !live_text.contains("lines omitted"),
+        !live_text.contains("已省略"),
         "collapsed success should not spend a row on an omission marker: {live_text}"
     );
     assert!(transcript_text.contains("row 00"));
@@ -2564,7 +2488,7 @@ fn tool_output_live_preserves_error_card_rail() {
     let live_text = lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
 
     assert!(
-        !live_text.contains("lines omitted"),
+        !live_text.contains("已省略"),
         "failed output must not be hidden behind an omission marker: {live_text}"
     );
     assert!(

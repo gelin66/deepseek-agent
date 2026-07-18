@@ -45,10 +45,6 @@ pub struct PagerView {
     /// keys (Ctrl+D/U, Ctrl+F/B, Space, etc.) to compute scroll deltas
     /// without access to the render area.
     last_visible_height: Cell<usize>,
-    /// Optional compact Markdown artifact surfaced by the `e` key. Set for the
-    /// Turn Inspector pager (#4108) so `e` copies a pasteable turn handoff;
-    /// `None` for every other pager, where `e` stays inert.
-    export_markdown: Option<String>,
 }
 
 impl PagerView {
@@ -65,16 +61,7 @@ impl PagerView {
             search_mode: false,
             pending_g: false,
             last_visible_height: Cell::new(0),
-            export_markdown: None,
         }
-    }
-
-    /// Attach a compact Markdown export (e.g. the #4108 turn handoff) that the
-    /// `e` key copies to the clipboard. Only the Turn Inspector pager sets this;
-    /// other pagers leave `e` inert.
-    pub fn with_export_markdown(mut self, markdown: impl Into<String>) -> Self {
-        self.export_markdown = Some(markdown.into());
-        self
     }
 
     pub fn from_text(title: impl Into<String>, text: &str, width: u16) -> Self {
@@ -114,13 +101,6 @@ impl PagerView {
     /// the modal (#1354).
     pub fn body_text(&self) -> String {
         self.plain_lines.join("\n")
-    }
-
-    /// The pager's title bar text. Used by tests to assert the raw-detail
-    /// pager is framed at leaf scope (#4105).
-    #[cfg(test)]
-    pub(crate) fn title(&self) -> &str {
-        &self.title
     }
 
     /// Return the page height (in lines) used for paging keys.
@@ -370,18 +350,7 @@ impl ModalView for PagerView {
                 self.pending_g = false;
                 ViewAction::Emit(ViewEvent::CopyToClipboard {
                     text: self.body_text(),
-                    label: "Pager content".to_string(),
-                })
-            }
-            // `e` exports the compact turn handoff (#4108) when this pager
-            // carries one — the Turn Inspector. Elsewhere the guard fails and
-            // `e` falls through to the inert arm below.
-            KeyCode::Char('e') | KeyCode::Char('E') if self.export_markdown.is_some() => {
-                self.pending_g = false;
-                let text = self.export_markdown.clone().unwrap_or_default();
-                ViewAction::Emit(ViewEvent::CopyToClipboard {
-                    text,
-                    label: "Turn handoff".to_string(),
+                    label: "分页内容".to_string(),
                 })
             }
             _ => ViewAction::None,
@@ -409,7 +378,7 @@ impl ModalView for PagerView {
 
         // The wrapping action footer is anchored to the bottom of the inner
         // area; the body fills the rows above it.
-        let mut hints = vec![
+        let hints = vec![
             ActionHint::new("q/Esc", "close"),
             ActionHint::new("j/k", "scroll"),
             ActionHint::new("Space", "page"),
@@ -418,9 +387,6 @@ impl ModalView for PagerView {
             ActionHint::new("/", "search"),
             ActionHint::new("c", "copy"),
         ];
-        if self.export_markdown.is_some() {
-            hints.push(ActionHint::new("e", "copy handoff"));
-        }
         let content = render_modal_footer(inner, buf, &hints);
 
         // `content` already excludes the border, padding, and footer rows.
@@ -825,7 +791,7 @@ mod tests {
         match action {
             ViewAction::Emit(ViewEvent::CopyToClipboard { text, label }) => {
                 assert_eq!(text, "line-000\nline-001\nline-002");
-                assert_eq!(label, "Pager content");
+                assert_eq!(label, "分页内容");
             }
             other => panic!("expected CopyToClipboard emit, got {other:?}"),
         }
@@ -842,24 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn e_exports_turn_handoff_when_attached() {
-        // #4108: the Turn Inspector pager carries a compact Markdown handoff;
-        // `e` copies that artifact (not the visible inspector body) to the
-        // clipboard via the host dispatcher.
-        let mut p = make_pager(3).with_export_markdown("# Turn handoff\n\n## Intent\ndo the thing");
-        let action = p.handle_key(key(KeyCode::Char('e')));
-        match action {
-            ViewAction::Emit(ViewEvent::CopyToClipboard { text, label }) => {
-                assert!(text.contains("# Turn handoff"), "handoff text: {text}");
-                assert_eq!(label, "Turn handoff");
-            }
-            other => panic!("expected CopyToClipboard emit, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn e_is_inert_without_an_attached_handoff() {
-        // Every other pager leaves `e` unbound so it never surprises the user.
+    fn e_is_unbound_in_the_generic_pager() {
         let mut p = make_pager(3);
         assert!(matches!(
             p.handle_key(key(KeyCode::Char('e'))),

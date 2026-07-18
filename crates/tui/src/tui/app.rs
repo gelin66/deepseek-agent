@@ -32,7 +32,7 @@ use crate::tui::child_agents::ChildAgents;
 use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::paste_burst::{FlushResult, PasteBurst};
-use crate::tui::scrolling::{MouseScrollState, TranscriptLineMeta, TranscriptScroll};
+use crate::tui::scrolling::{MouseScrollState, TranscriptScroll};
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::sidebar::SidebarWorkSummary;
 use crate::tui::streaming::StreamingState;
@@ -354,30 +354,6 @@ pub struct ProviderPickerMemory {
     pub catalog_view: bool,
     /// Provider id highlighted at dismissal, if it was a real row.
     pub selected_provider_id: Option<String>,
-}
-
-/// Per-turn LSP repair-loop summary for the Turn Inspector (#4107).
-/// Observable state only — no raw diagnostic text or prompt internals.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LspRepairState {
-    pub diagnostics_found: usize,
-    pub files_touched: usize,
-    pub injected: bool,
-    pub repair_attempted: bool,
-    /// "resolved" | "still_failing" | "unknown" | "unavailable"
-    pub latest: &'static str,
-}
-
-impl Default for LspRepairState {
-    fn default() -> Self {
-        Self {
-            diagnostics_found: 0,
-            files_touched: 0,
-            injected: false,
-            repair_attempted: false,
-            latest: "unavailable",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1716,7 +1692,6 @@ pub struct App {
     /// `/config status_indicator <cw|whale|dots|off>`.
     pub status_indicator: String,
     pub show_thinking: bool,
-    pub verbose_transcript: bool,
     pub show_tool_details: bool,
     pub cost_currency: CostCurrency,
     /// Route payment truth. Model pricing alone cannot distinguish metered
@@ -2048,10 +2023,6 @@ pub struct App {
     /// Transcript cells the user has collapsed (hidden from view).
     /// Stores **original** virtual cell indices (pre-filtering).
     pub collapsed_cells: HashSet<usize>,
-    /// Thinking cells the user has folded (showing summary instead of full
-    /// content). Stores **original** virtual cell indices. Toggled by Space
-    /// when the composer is empty and the cursor is on a thinking cell.
-    pub folded_thinking: HashSet<usize>,
     /// Mapping from filtered cell index → original virtual index.
     /// Populated during `ChatWidget::new` by filtering out collapsed cells.
     /// Used by `build_context_menu_entries` to convert line-meta indices
@@ -2061,8 +2032,6 @@ pub struct App {
     /// Whether LSP diagnostics are currently enabled. Mirrors the config file
     /// `[lsp].enabled` setting. Toggled at runtime via `/lsp on|off`.
     pub lsp_enabled: bool,
-    /// Current-turn LSP repair-loop summary for Ctrl-O Turn Inspector (#4107).
-    pub lsp_repair: LspRepairState,
     /// Optional title shown in the composer border.
     pub session_title: Option<String>,
 
@@ -2641,7 +2610,6 @@ impl App {
             synchronized_output_enabled,
             status_indicator,
             show_thinking,
-            verbose_transcript: false,
             show_tool_details,
             cost_currency,
             billing_presentation: crate::route_billing::for_route(config, provider),
@@ -2782,10 +2750,8 @@ impl App {
             auto_submit_initial_input,
             quit_armed_until: None,
             collapsed_cells: HashSet::new(),
-            folded_thinking: HashSet::new(),
             collapsed_cell_map: Vec::new(),
             lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
-            lsp_repair: LspRepairState::default(),
             composer_arrows_scroll: config
                 .tui
                 .as_ref()
@@ -3635,84 +3601,6 @@ impl App {
             .unwrap_or(rendered_index)
     }
 
-    /// Resolve a virtual cell index to either a committed history cell or an
-    /// active-cell entry. Used by the pager / details lookup code so it can
-    /// transparently address still-in-flight cells.
-    #[must_use]
-    #[allow(dead_code)] // Used by the upcoming pager rewrite (read-only resolver).
-    pub fn cell_at_virtual_index(&self, index: usize) -> Option<&HistoryCell> {
-        if index < self.history.len() {
-            self.history.get(index)
-        } else {
-            let entry_idx = index - self.history.len();
-            self.active_cell
-                .as_ref()
-                .and_then(|active| active.entries().get(entry_idx))
-        }
-    }
-
-    /// Resolve the tool-detail record for a committed or still-active virtual
-    /// transcript cell.
-    #[must_use]
-    pub fn tool_detail_record_for_cell(&self, index: usize) -> Option<&ToolDetailRecord> {
-        if let Some(detail) = self.tool_details_by_cell.get(&index) {
-            return Some(detail);
-        }
-        self.active_tool_details
-            .values()
-            .find(|detail| self.tool_cells.get(&detail.tool_id).copied() == Some(index))
-    }
-
-    /// Whether a virtual transcript cell can open a meaningful `v` detail
-    /// view. Thinking cells render their own raw text inline so there is no
-    /// separate "raw" target — only tool cells get the hint.
-    #[must_use]
-    pub fn cell_has_detail_target(&self, index: usize) -> bool {
-        self.tool_detail_record_for_cell(index).is_some()
-            || matches!(
-                self.cell_at_virtual_index(index),
-                Some(HistoryCell::Tool(_))
-            )
-    }
-
-    /// Pick the detail target for the current viewport. This is used by the
-    /// transcript highlight and footer hint so they agree with `v`.
-    #[must_use]
-    pub fn detail_cell_index_for_viewport(
-        &self,
-        top: usize,
-        visible: usize,
-        line_meta: &[TranscriptLineMeta],
-    ) -> Option<usize> {
-        let selected_cell = self
-            .viewport
-            .transcript_selection
-            .ordered_endpoints()
-            .and_then(|(start, _)| line_meta.get(start.line_index))
-            .and_then(TranscriptLineMeta::cell_line)
-            .map(|(cell_index, _)| self.original_cell_index_for_rendered(cell_index))
-            .filter(|&idx| self.cell_has_detail_target(idx));
-        if selected_cell.is_some() {
-            return selected_cell;
-        }
-
-        let start = top.min(line_meta.len().saturating_sub(1));
-        let end = start.saturating_add(visible).min(line_meta.len());
-        for meta in line_meta.iter().take(end).skip(start) {
-            let Some((cell_index, _)) = meta.cell_line() else {
-                continue;
-            };
-            let cell_index = self.original_cell_index_for_rendered(cell_index);
-            if self.cell_has_detail_target(cell_index) {
-                return Some(cell_index);
-            }
-        }
-
-        (0..self.virtual_cell_count())
-            .rev()
-            .find(|&idx| self.cell_has_detail_target(idx))
-    }
-
     /// Mutable variant of [`Self::cell_at_virtual_index`]. Bumps the
     /// appropriate revision counter (active-cell revision when targeting an
     /// in-flight entry, history version otherwise).
@@ -4089,7 +3977,6 @@ impl App {
     pub fn transcript_render_options(&self) -> TranscriptRenderOptions {
         TranscriptRenderOptions {
             show_thinking: self.show_thinking,
-            verbose: self.verbose_transcript,
             show_tool_details: self.show_tool_details,
             calm_mode: self.calm_mode,
             low_motion: self.low_motion,

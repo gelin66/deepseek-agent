@@ -21,8 +21,6 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `Ctrl-Shift-T`       | Toggle live transcript overlay (sticky-tail auto-scroll)                       |
 | `Ctrl-R`             | Open the resume-session picker                                 |
 | `Ctrl-L`             | Refresh / clear the screen                                     |
-| `Ctrl-O`             | Open Activity Detail for selected/live/recent tool work, or the full reasoning timeline for thinking blocks when the composer is empty |
-| `Alt-V` / `Option-V` (macOS) | Open the details pager for the selected, visible, or most recent tool/sub-agent card; terminals that emit the legacy Option-V glyph are also handled |
 | `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file-tree sidebar                          |
 | `Alt-G`              | Scroll transcript to top when the composer is empty             |
 | `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` / `Alt-0` | Focus Pinned / Tasks / Agents / Context / Auto sidebar |
@@ -50,7 +48,6 @@ Editing the message you're about to send.
 | `Ctrl-P` / `Ctrl-N`         | Cycle composer history (alternative)                     |
 | `Alt-R`                    | Search prompt history (Alt-R to exit)                  |
 | `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
-| `Ctrl-O`                    | Open external editor for the composer draft when it has focus |
 | `! command`                 | Run a shell command through normal approval, sandbox, and output surfaces |
 
 ### `@` mentions

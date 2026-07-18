@@ -602,6 +602,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除唯一构造 helper 自身也无调用方的 TUI Setup Wizard、9 个无 canonical handler
   的 Setup 事件和 175 条专属文案。顶层 `codewhale setup`、Doctor setup 投影、
   `SetupState`/`UserConstitution` 及生产提示词加载语义保留；现有用户 sidecar 不自动删除。
+- M4-C 已删除无任何生产按键入口的 Activity Detail/Turn Inspector、详情专属
+  shell 路由、composer 外部编辑器、假 Ctrl+O/Alt+V/Alt+L 文案以及只读不写的推理折叠/
+  详情高亮状态。显式开启推理时只显示 canonical 完整内容；canonical 审批的 `v` 参数查看
+  和分页复制通过本地 View event 接入通用 `PagerView`，不创建 RuntimeEvent 或第二份状态。
 - M4-C 已物理删除没有 production consumer 的 TUI Goal/Hunt loop、私有
   TaskContract/receipt/Goal completion store、Slop ledger、`ToolContext.goal_contract`、
   假 custom-command allowed-tools/pause 状态及其 Work/UI/config surface。交互 TUI 启动

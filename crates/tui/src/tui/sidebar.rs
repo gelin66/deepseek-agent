@@ -1391,7 +1391,7 @@ fn collapsed_stale_running_row(rows: Vec<SidebarToolRow>) -> SidebarToolRow {
     let first_summary = rows
         .iter()
         .find_map(|row| (!row.summary.trim().is_empty()).then(|| row.summary.clone()))
-        .unwrap_or_else(|| "open Activity Detail".to_string());
+        .unwrap_or_else(|| "工具仍在运行".to_string());
     SidebarToolRow {
         name: if count == 1 {
             "run".to_string()
@@ -1587,10 +1587,7 @@ fn shell_summary_for_sidebar(
     output: Option<&str>,
 ) -> String {
     if status == ToolStatus::Failed && looks_like_pending_ci(command, output_summary, output) {
-        return format!(
-            "Waiting for CI \u{00B7} {}",
-            crate::tui::key_shortcuts::tool_details_shortcut_action_hint("details")
-        );
+        return "等待 CI".to_string();
     }
 
     let summary = compact_join([
@@ -1635,13 +1632,10 @@ fn looks_like_pending_ci(
 }
 
 fn failure_summary_with_hint(summary: &str) -> String {
-    let hint = crate::tui::key_shortcuts::tool_details_shortcut_action_hint("details");
     if summary.trim().is_empty() {
-        hint
-    } else if summary.contains(&hint) {
-        summary.to_string()
+        "执行失败".to_string()
     } else {
-        format!("{summary} \u{00B7} {hint}")
+        summary.to_string()
     }
 }
 
@@ -1857,11 +1851,8 @@ fn editorial_tool_rows(
     for (order, mut row, count) in ci_poll_groups {
         if count > 1 {
             let command = row.name.clone();
-            row.name = "Waiting for CI".to_string();
-            row.summary = format!(
-                "{command} \u{00B7} {count} polls collapsed \u{00B7} {}",
-                crate::tui::key_shortcuts::tool_details_shortcut_action_hint("details")
-            );
+            row.name = "等待 CI".to_string();
+            row.summary = format!("{command} \u{00B7} 已合并 {count} 次轮询");
             row.status = ToolStatus::Running;
         }
         candidates.push(Candidate {
@@ -4809,7 +4800,7 @@ mod tests {
             .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
                 name: "grep_files".to_string(),
                 status: ToolStatus::Failed,
-                input_summary: Some("pattern: Activity Detail".to_string()),
+                input_summary: Some("pattern: canonical projection".to_string()),
                 output: Some("regex parse error".to_string()),
                 prompts: None,
                 spillover_path: None,
@@ -4869,7 +4860,7 @@ mod tests {
         let text = lines_to_text(&task_panel_lines(&app, 80, 12));
 
         assert!(
-            text.iter().any(|line| line.contains("[~] Waiting for CI")),
+            text.iter().any(|line| line.contains("[~] 等待 CI")),
             "pending CI should not render as a hard failure: {text:?}"
         );
         assert!(
@@ -4877,13 +4868,8 @@ mod tests {
             "concise command label should remain visible: {text:?}"
         );
         assert!(
-            text.iter().any(|line| line.contains("3 polls collapsed")),
+            text.iter().any(|line| line.contains("已合并 3 次轮询")),
             "repeated polling should collapse into one row: {text:?}"
-        );
-        assert!(
-            text.iter()
-                .any(|line| line.contains(crate::tui::key_shortcuts::tool_details_shortcut_label())),
-            "collapsed CI row should point to details: {text:?}"
         );
         assert!(
             !text.iter().any(|line| line.contains("[!] gh pr checks")),
@@ -4892,7 +4878,7 @@ mod tests {
     }
 
     #[test]
-    fn tasks_panel_failed_shell_rows_point_to_activity_details() {
+    fn tasks_panel_failed_shell_rows_keep_the_real_failure_summary() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
         app.history.push(HistoryCell::Tool(ToolCell::Exec(ExecCell {
@@ -4917,10 +4903,8 @@ mod tests {
             "failed shell command should keep its concise label: {text:?}"
         );
         assert!(
-            text.iter().any(|line| line.contains(
-                &crate::tui::key_shortcuts::tool_details_shortcut_action_hint("details")
-            )),
-            "failed row should include the next action: {text:?}"
+            text.iter().any(|line| line.contains("test failed")),
+            "failed row should keep the real failure summary: {text:?}"
         );
     }
 

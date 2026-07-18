@@ -54,7 +54,7 @@ impl ToolRunActivitySummary {
 ///
 /// Failed, running, patch, review, diff, and plan-update cells split runs so
 /// important state never disappears into a summary row. Successful command
-/// cells can join dense runs; `v` / expansion keeps their raw details
+/// cells can join dense runs while the canonical record keeps their raw details
 /// available without making routine verifier/shell work dominate the default
 /// transcript.
 #[cfg(test)]

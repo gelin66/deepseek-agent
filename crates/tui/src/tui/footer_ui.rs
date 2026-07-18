@@ -7,12 +7,8 @@ use crate::localization::MessageId;
 use crate::palette;
 use crate::tui::app::{App, TaskPanelEntryKind};
 use crate::tui::history::{HistoryCell, ToolCell, ToolStatus};
-use crate::tui::key_shortcuts;
 use crate::tui::sidebar::{agents_sidebar_surface_visible, running_agent_count};
-use crate::tui::ui::{
-    active_foreground_shell_running, context_usage_snapshot, selected_detail_footer_label,
-    status_color,
-};
+use crate::tui::ui::{active_foreground_shell_running, context_usage_snapshot, status_color};
 use crate::tui::ui_text::{concise_shell_command_label, truncate_line_to_width};
 use crate::tui::widgets::tool_card::tool_activity_label_for_name;
 use crate::tui::widgets::{FooterProps, FooterToast, FooterWidget, Renderable};
@@ -119,11 +115,6 @@ pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         if app.fancy_animations {
             props.working_strip_frame = Some(now_ms);
         }
-    } else if matches!(props.state_label.as_str(), "idle" | "ready")
-        && let Some(label) = selected_detail_footer_label(app)
-    {
-        props.state_label = label;
-        props.state_color = palette::TEXT_MUTED;
     }
 
     let widget = FooterWidget::new(props);
@@ -462,7 +453,6 @@ pub(crate) fn active_tool_status_label(app: &App, include_counts: bool) -> Optio
     if active_foreground_shell_running(app) {
         parts.push("Ctrl+B /jobs".to_string());
     }
-    parts.push(key_shortcuts::tool_details_shortcut_action_hint("details"));
     Some(parts.join(" \u{00B7} "))
 }
 

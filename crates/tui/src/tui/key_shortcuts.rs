@@ -56,42 +56,6 @@ pub(super) fn is_file_tree_toggle_shortcut(key: &KeyEvent) -> bool {
     ctrl_shift_e || cmd_shift_e
 }
 
-pub(super) fn tool_details_shortcut_label() -> &'static str {
-    "v"
-}
-
-pub(super) fn tool_details_shortcut_action_hint(noun: &str) -> String {
-    format!("{} opens {noun}", tool_details_shortcut_label())
-}
-
-pub(super) fn activity_shortcut_label() -> &'static str {
-    "Ctrl+O"
-}
-
-/// Modifier predicate for the v0.8.30 family of `Alt+<key>` transcript-
-/// nav shortcuts (`Alt+G` / `Alt+[` / `Alt+]` / `Alt+?` / `Alt+L`). Requires
-/// `Alt` and disallows `Ctrl` / `Super` so the
-/// bindings don't collide with platform clipboard / window-management
-/// shortcuts. `Shift` is permitted so the capital-letter forms work on
-/// any keyboard layout that produces them as `Alt+Shift+key`.
-///
-/// Plain `Char` events (no modifier, or modifier=`Shift` alone for the
-/// uppercase form) fall through to text insertion, which is the whole
-/// point — typing "good morning" no longer eats the first `g`.
-pub(super) fn alt_nav_modifiers(modifiers: KeyModifiers) -> bool {
-    modifiers.contains(KeyModifiers::ALT)
-        && !modifiers.contains(KeyModifiers::CONTROL)
-        && !modifiers.contains(KeyModifiers::SUPER)
-}
-
-pub(super) fn is_macos_option_v_legacy_key(key: &KeyEvent) -> bool {
-    is_macos_option_v_legacy_key_for_platform(key, cfg!(target_os = "macos"))
-}
-
-pub(super) fn is_macos_option_v_legacy_key_for_platform(key: &KeyEvent, is_macos: bool) -> bool {
-    is_macos && key.modifiers.is_empty() && matches!(key.code, KeyCode::Char('\u{221A}'))
-}
-
 /// Paste-from-clipboard: `Cmd+V` (macOS), `Ctrl+V` (Linux/Windows), or
 /// the legacy raw `\u{16}` ETX byte some terminals emit.
 pub(super) fn is_paste_shortcut(key: &KeyEvent) -> bool {

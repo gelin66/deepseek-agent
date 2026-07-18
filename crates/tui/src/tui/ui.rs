@@ -77,7 +77,6 @@ use super::views::{ModalKind, ViewEvent};
 use super::widgets::pending_input_preview::{ContextPreviewItem, PendingInputPreview};
 use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
 
-pub(crate) use self::activity_detail::selected_detail_footer_label;
 // === Constants ===
 
 /// Upper bound on slash-menu entries returned to the renderer. The composer's
@@ -1401,6 +1400,9 @@ async fn handle_canonical_view_events(
     exit_after_terminal: &mut bool,
 ) -> Result<()> {
     for event in events {
+        let Some(event) = handle_canonical_local_view_event(app, event) else {
+            continue;
+        };
         match event {
             ViewEvent::ApprovalDecision {
                 tool_id, decision, ..
@@ -1451,6 +1453,33 @@ async fn handle_canonical_view_events(
         }
     }
     Ok(())
+}
+
+/// Handle modal events that only affect the local TUI projection. These do
+/// not create Runtime events or durable state; approval remains pending while
+/// its full arguments are inspected in the pager.
+fn handle_canonical_local_view_event(app: &mut App, event: ViewEvent) -> Option<ViewEvent> {
+    match event {
+        ViewEvent::OpenTextPager { title, content } => {
+            let width = app
+                .viewport
+                .last_transcript_area
+                .map(|area| area.width)
+                .unwrap_or(80)
+                .saturating_sub(2);
+            app.view_stack
+                .push(PagerView::from_text(title, &content, width));
+            None
+        }
+        ViewEvent::CopyToClipboard { text, label } => {
+            app.status_message = Some(match app.clipboard.write_text(&text) {
+                Ok(()) => format!("{label}已复制到剪贴板"),
+                Err(error) => format!("{label}复制失败：{error}"),
+            });
+            None
+        }
+        event => Some(event),
+    }
 }
 
 fn apply_presenter_action(
@@ -2268,8 +2297,8 @@ pub(crate) fn pop_keyboard_enhancement_flags<W: Write>(writer: &mut W) {
     // PopKeyboardEnhancementFlags also has is_ansi_code_supported() == false
     // on Windows, so write the pop escape directly to restore the terminal to
     // its pre-launch keyboard mode.
-    // pub(crate) so the panic hook in main.rs and external_editor.rs can
-    // also call the Windows-aware path instead of using the raw crossterm
+    // pub(crate) so the panic hook in main.rs can also call the Windows-aware
+    // path instead of using the raw crossterm
     // execute!() macro which silently no-ops on Windows.
     #[cfg(windows)]
     {
@@ -2869,8 +2898,6 @@ mod localized_canonical_surface_tests {
         }
     }
 }
-
-mod activity_detail;
 
 #[cfg(test)]
 mod tests;

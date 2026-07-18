@@ -248,8 +248,6 @@ impl ChatWidget {
                 &cell_revisions,
                 content_area.width.max(1),
                 render_options,
-                &app.folded_thinking,
-                None,
             );
         } else {
             // Slow path: borrow non-collapsed cells into a filtered ref list
@@ -342,8 +340,6 @@ impl ChatWidget {
                 &filtered_revs,
                 content_area.width.max(1),
                 render_options,
-                &app.folded_thinking,
-                Some(&app.collapsed_cell_map),
             );
         }
 
@@ -398,10 +394,6 @@ impl ChatWidget {
         app.viewport.last_transcript_visible = visible_lines;
         app.viewport.last_transcript_total = total_lines;
         app.viewport.last_transcript_padding_top = 0;
-        let detail_target_cell = (!app.viewport.transcript_selection.is_active())
-            .then(|| app.detail_cell_index_for_viewport(top, visible_lines, line_meta))
-            .flatten();
-
         let end = (top + visible_lines).min(total_lines);
         let mut lines = if total_lines == 0 {
             vec![Line::from("")]
@@ -447,16 +439,6 @@ impl ChatWidget {
             } else {
                 app.last_send_at = None;
             }
-        }
-
-        if let Some(target_cell) = detail_target_cell {
-            apply_detail_target_highlight(
-                &mut lines,
-                top,
-                target_cell,
-                line_meta,
-                &app.collapsed_cell_map,
-            );
         }
 
         apply_selection(&mut lines, top, app);
@@ -1956,8 +1938,8 @@ impl<'a> ApprovalWidget<'a> {
         }
 
         // Secondary context: what it is and what it touches. Only critical
-        // prompts carry the full about/impact/category dossier by default —
-        // everything stays one `v` away in the details pager. Keep a single
+        // prompts carry the full about/impact/category dossier by default;
+        // `v` opens the canonical approval-parameter pager. Keep a single
         // About line as fallback context when nothing else was rendered.
         if critical || details.is_empty() {
             body.push(Line::from(vec![
@@ -2869,30 +2851,6 @@ fn apply_selection(lines: &mut [Line<'static>], top: usize, app: &App) {
     }
 }
 
-fn apply_detail_target_highlight(
-    lines: &mut [Line<'static>],
-    top: usize,
-    target_cell: usize,
-    line_meta: &[TranscriptLineMeta],
-    original_index_map: &[usize],
-) {
-    let highlight_bg = Color::Reset;
-    for (idx, line) in lines.iter_mut().enumerate() {
-        let line_index = top + idx;
-        if let Some(TranscriptLineMeta::CellLine { cell_index, .. }) = line_meta.get(line_index)
-            && original_index_map
-                .get(*cell_index)
-                .copied()
-                .unwrap_or(*cell_index)
-                == target_cell
-        {
-            for span in &mut line.spans {
-                span.style = span.style.bg(highlight_bg);
-            }
-        }
-    }
-}
-
 /// Apply a brief background tint to the last user message's visible lines.
 fn apply_send_flash(
     lines: &mut [Line<'static>],
@@ -3491,14 +3449,13 @@ mod tests {
     use super::{
         ACTIVE_REVISION_DOMAIN, ApprovalWidget, COMPOSER_PANEL_HEIGHT, COMPOSER_PLACEHOLDER,
         ChatWidget, ComposerWidget, Renderable, SlashMenuEntry, active_entry_revision,
-        ambient_ping_pong, apply_detail_target_highlight, apply_selection_to_line,
-        apply_send_flash, build_empty_state_lines, composer_content_geometry,
-        composer_empty_hint_text, composer_height, composer_max_height, composer_min_input_rows,
-        composer_top_padding, cursor_row_col, empty_composer_visual_rows, fish_flee_offset,
-        fish_heading, fish_mark, history_entry_revision, layout_input, layout_input_with_scroll,
-        pad_lines_to_bottom, placeholder_visual_lines, receipt_is_settling, revision_in_domain,
-        should_render_empty_state, tool_run_summary_revision, wrap_input_lines,
-        wrap_input_lines_for_mouse, wrap_text,
+        ambient_ping_pong, apply_selection_to_line, apply_send_flash, build_empty_state_lines,
+        composer_content_geometry, composer_empty_hint_text, composer_height, composer_max_height,
+        composer_min_input_rows, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
+        fish_flee_offset, fish_heading, fish_mark, history_entry_revision, layout_input,
+        layout_input_with_scroll, pad_lines_to_bottom, placeholder_visual_lines,
+        receipt_is_settling, revision_in_domain, should_render_empty_state,
+        tool_run_summary_revision, wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
     };
     use crate::config::Config;
     use crate::palette;
@@ -3679,22 +3636,6 @@ mod tests {
         apply_send_flash(&mut lines, 0, &history, &line_meta, &original_index_map);
 
         assert_eq!(lines[0].spans[0].style.bg, Some(Color::Rgb(30, 40, 55)));
-    }
-
-    #[test]
-    fn detail_highlight_uses_original_index_map_for_collapsed_rows() {
-        let mut lines = vec![Line::from("tool group")];
-        let line_meta = vec![TranscriptLineMeta::CellLine {
-            cell_index: 0,
-            line_in_cell: 0,
-            copy_prefix_width: 0,
-            copy_separator_after: crate::tui::ui_text::CopyLineSeparator::Newline,
-        }];
-        let original_index_map = vec![4];
-
-        apply_detail_target_highlight(&mut lines, 0, 4, &line_meta, &original_index_map);
-
-        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Reset));
     }
 
     #[test]

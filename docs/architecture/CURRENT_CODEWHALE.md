@@ -290,6 +290,9 @@ M4-C foreground 切换后还已物理删除：
   `App::stash_current_input_for_recovery` 的进程内撤销草稿不属于该旧文件能力，继续保留。
 - 唯一构造 helper 自身无调用方、且所有事件都没有 canonical handler 的 TUI Setup Wizard；
   CLI `setup`、Doctor setup 诊断、`SetupState`/`UserConstitution` 和提示词上下文消费继续保留。
+- 无生产按键入口的 Activity Detail/Turn Inspector、shell details 路由、composer 外部编辑器、
+  假快捷键提示和只读不写的推理折叠/详情高亮状态；canonical 审批参数仍可由 `v` 打开本地
+  通用分页器并复制，审批状态继续只由 canonical interaction/RunStore 管理。
 - 无生产消费者的 TUI Goal/Hunt loop、私有 TaskContract/receipt/Goal 工具、Slop ledger、
   verifier preview config、假 custom-command pause/allowed-tools 状态及其 UI/文档；
   canonical Runtime terminal、RunStore 和确定性 `crates/tools::run_verifiers` 保留。
