@@ -14,7 +14,7 @@ use codewhale_protocol::agent_runtime::{
 };
 use serde_json::Value;
 
-use super::app::{App, ToolDetailRecord};
+use super::app::App;
 use super::history::{
     GenericToolCell, HistoryCell, ToolStatus, output_looks_like_diff, summarize_tool_args,
     summarize_tool_output,
@@ -281,10 +281,8 @@ fn present_canonical_event(
 fn reset_run_display(app: &mut App) {
     app.clear_history();
     app.active_cell = None;
-    app.active_tool_details.clear();
     app.active_tool_entry_completed_at.clear();
     app.tool_cells.clear();
-    app.tool_details_by_cell.clear();
     app.ignored_tool_calls.clear();
     app.streaming_message_index = None;
     app.pending_tool_uses.clear();
@@ -461,15 +459,6 @@ fn present_tool_prepared(app: &mut App, id: &str, name: &str, arguments: &ToolAr
         is_diff: false,
     }));
     app.tool_cells.insert(id.to_owned(), index);
-    app.tool_details_by_cell.insert(
-        index,
-        ToolDetailRecord {
-            tool_id: id.to_owned(),
-            tool_name: name.to_owned(),
-            input,
-            output: None,
-        },
-    );
 }
 
 fn present_tool_outcome(app: &mut App, id: &str, name: &str, outcome: &ToolOutcome) {
@@ -490,13 +479,9 @@ fn present_tool_outcome(app: &mut App, id: &str, name: &str, outcome: &ToolOutco
             cell.is_diff = is_diff;
             app.bump_history_cell(index);
         }
-        if let Some(detail) = app.tool_details_by_cell.get_mut(&index) {
-            detail.output = output;
-        }
         return;
     }
 
-    let index = app.history.len();
     app.add_message(HistoryCell::Tool(GenericToolCell {
         name: name.to_owned(),
         status,
@@ -506,15 +491,6 @@ fn present_tool_outcome(app: &mut App, id: &str, name: &str, outcome: &ToolOutco
         output_summary: summary,
         is_diff,
     }));
-    app.tool_details_by_cell.insert(
-        index,
-        ToolDetailRecord {
-            tool_id: id.to_owned(),
-            tool_name: name.to_owned(),
-            input: Value::Null,
-            output,
-        },
-    );
 }
 
 fn finish_terminal(app: &mut App, terminal: &TerminalState, accounting: &ModelAccounting) {
@@ -919,37 +895,33 @@ mod tests {
         apply_events(&mut rebuilt, vec![rebuilt_event]);
 
         let snapshot = |app: &App| {
-            let (index, cell) = app
+            let cell = app
                 .history
                 .iter()
-                .enumerate()
-                .find_map(|(index, cell)| match cell {
-                    HistoryCell::Tool(cell) => Some((index, cell)),
+                .find_map(|cell| match cell {
+                    HistoryCell::Tool(cell) => Some(cell),
                     _ => None,
                 })
                 .expect("one canonical tool cell");
-            let detail = app
-                .tool_details_by_cell
-                .get(&index)
-                .expect("canonical tool detail");
             (
                 cell.name.clone(),
                 cell.status,
+                cell.input_summary.clone(),
                 cell.output.clone(),
-                detail.tool_id.clone(),
-                detail.tool_name.clone(),
-                detail.input.clone(),
-                detail.output.clone(),
+                cell.prompts.clone(),
+                cell.output_summary.clone(),
+                cell.is_diff,
             )
         };
+        let expected_input_summary = summarize_tool_args(&tool_input(&arguments));
         let expected = (
             name.clone(),
             ToolStatus::Success,
+            expected_input_summary,
             Some(output.clone()),
-            call_id.clone(),
-            name,
-            arguments.parsed.expect("valid canonical arguments"),
-            Some(output),
+            None,
+            Some(summarize_tool_output(&output)),
+            false,
         );
 
         assert_eq!(snapshot(&live), expected);

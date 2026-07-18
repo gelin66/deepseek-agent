@@ -452,6 +452,14 @@ M4-C foreground 切换后还已物理删除：
   和从未构造的 `SidebarAgentCancel` 已物理删除。可见 Activity/Agents/Session 行继续直接
   渲染，`last_sidebar_area`/resize handle、canonical child/Fleet、modal 鼠标与 transcript
   滚动保持原生产调用链。
+- canonical TUI presenter 曾在 `GenericToolCell` 之外重复写入完整工具参数/输出到
+  `ToolDetailRecord`，但该详情图没有任何生产 renderer、交互 handler 或其他语义 reader；
+  只有历史前缀重键、active flush 搬运和自身 replay 测试维护这份影子状态。该结构、两个
+  App map 及重复 producer 已删除；`tool_cells` 仍负责 prepared→outcome 的真实 history
+  原位更新，`HistoryCell::Tool(GenericToolCell)` 仍承担 live/replay/transcript/Activity
+  展示，canonical `RuntimeEvent`/`ToolOutcome`、`ActiveCell` 与 child/Fleet 均未改变。当前
+  定向证据为 presenter 13/13、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check、
+  fmt 与 diff-check。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

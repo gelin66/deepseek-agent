@@ -901,6 +901,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   approval、Fleet 和 DeepSeek Doctor；旧 memory、旧 schema sanitizer、旧 model client、
   stream decoder 和 legacy route 测试不再冒充当前核心门禁。过滤器仍先按 `--list` 校验，
   任一零匹配继续 fail closed。
+- M4-C 已删除 canonical TUI presenter 持续双写但没有生产语义消费者的
+  `ToolDetailRecord`、`tool_details_by_cell` 和永远没有写入方的 `active_tool_details`，同步
+  移除历史前缀重键、active flush 搬运与 replay 自测对这份影子详情账本的依赖。工具展示与
+  重放继续直接比较 `GenericToolCell` 的名称、状态、参数摘要、输出、输出摘要和 diff 标记；
+  `tool_cells` 的 prepared→outcome 原位更新、canonical `RuntimeEvent`/`ToolOutcome`、
+  `ActiveCell` 以及 child/Fleet 能力均保持原 owner。定向 presenter 13/13、canonical Run
+  19/19、PTY 6/6、TUI all-target check、fmt 和 diff-check 均通过。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

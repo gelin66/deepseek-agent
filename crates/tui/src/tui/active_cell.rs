@@ -17,8 +17,8 @@
 //!   pending, etc.).
 //! - The owning [`crate::tui::app::App`] renders the active cell's contents
 //!   AFTER `App.history` so they appear at the live tail.
-//! - Cell indices used by helpers like `tool_cells` / `tool_details_by_cell`
-//!   address the virtual sequence `App.history ++ active_cell.entries`. Each
+//! - Cell indices used by helpers like `tool_cells` address the virtual
+//!   sequence `App.history ++ active_cell.entries`. Each
 //!   entry's index is `App.history.len() + entry_offset`.
 //! - When a tool completes whose `tool_id` does not match any active entry
 //!   (orphan), the caller pushes a finalized standalone cell into `App.history`
@@ -27,9 +27,7 @@
 //!   tool work.
 //! - On `TurnComplete` (or cancellation) the active cell is "flushed":
 //!   in-progress entries are marked with the supplied terminal status, then
-//!   every entry is appended to `App.history`. Companion maps
-//!   (`tool_cells`, `tool_details_by_cell`) are rewritten to point at the new
-//!   `App.history` indices.
+//!   every entry is appended to `App.history`.
 //!
 //! ## Revision counter
 //!

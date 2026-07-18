@@ -1607,8 +1607,6 @@ pub struct App {
     /// While a tool call is in flight inside `active_cell`, it is tracked by
     /// `active_tool_entries` instead and migrated here at flush time.
     pub tool_cells: HashMap<String, usize>,
-    /// Full tool input/output keyed by history cell index.
-    pub tool_details_by_cell: HashMap<usize, ToolDetailRecord>,
     /// In-flight tool/exec group for the current turn. Mutated in place as
     /// parallel tool calls start and complete; flushed into `history` on
     /// `TurnComplete`.
@@ -1617,11 +1615,6 @@ pub struct App {
     /// when feeding the transcript cache so cached lines for the synthetic
     /// active-cell row are invalidated on every mutation.
     pub active_cell_revision: u64,
-    /// Pending tool details for entries that live inside `active_cell`.
-    /// Keyed by tool id rather than cell index because the active cell's
-    /// virtual index can shift (orphan completions push real cells in
-    /// between). Migrated into `tool_details_by_cell` on flush.
-    pub active_tool_details: HashMap<String, ToolDetailRecord>,
     /// Completion timestamps for entries still living inside `active_cell`.
     /// The transcript keeps completed entries until turn flush, but the
     /// sidebar can use these timestamps to let settled live rows expire.
@@ -1758,15 +1751,6 @@ pub enum SubmitDisposition {
     /// Legacy path; #382 unified busy states under `Queue`.
     #[allow(dead_code)]
     QueueFollowUp,
-}
-
-/// Detailed tool payload attached to a history cell.
-#[derive(Debug, Clone)]
-pub struct ToolDetailRecord {
-    pub tool_id: String,
-    pub tool_name: String,
-    pub input: Value,
-    pub output: Option<String>,
 }
 
 impl QueuedMessage {
@@ -2325,10 +2309,8 @@ impl App {
             active_skill: None,
             cached_skills,
             tool_cells: HashMap::new(),
-            tool_details_by_cell: HashMap::new(),
             active_cell: None,
             active_cell_revision: 0,
-            active_tool_details: HashMap::new(),
             active_tool_entry_completed_at: HashMap::new(),
             ignored_tool_calls: HashSet::new(),
             streaming_message_index: None,
@@ -2963,18 +2945,6 @@ impl App {
             }
         });
 
-        // tool_details_by_cell: HashMap<usize, ToolDetailRecord>
-        self.tool_details_by_cell = std::mem::take(&mut self.tool_details_by_cell)
-            .into_iter()
-            .filter_map(|(idx, detail)| {
-                if idx >= n {
-                    Some((idx - n, detail))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
         // collapsed_cells
         self.collapsed_cells = std::mem::take(&mut self.collapsed_cells)
             .into_iter()
@@ -3199,11 +3169,8 @@ impl App {
         }
     }
 
-    /// Drain the active cell into history. Companion maps that reference
-    /// active-cell entries by virtual index (`tool_cells`,
-    /// `tool_details_by_cell`) are rewritten to point at the new history
-    /// indices. Idempotent — calling this when there is no active cell is a
-    /// no-op.
+    /// Drain the active cell into history. Idempotent — calling this when
+    /// there is no active cell is a no-op.
     ///
     /// Caller is responsible for first marking in-progress entries with the
     /// terminal status they want (e.g. via
@@ -3213,22 +3180,13 @@ impl App {
             return;
         };
         if active.is_empty() {
-            self.active_tool_details.clear();
             self.active_tool_entry_completed_at.clear();
             self.bump_active_cell_revision();
             return;
         }
 
         let drained = active.drain();
-        let base_index = self.history.len();
-
-        let mut details = std::mem::take(&mut self.active_tool_details);
         self.active_tool_entry_completed_at.clear();
-        for (tool_id, detail) in details.drain() {
-            self.tool_details_by_cell
-                .entry(self.tool_cells.get(&tool_id).copied().unwrap_or(base_index))
-                .or_insert(detail);
-        }
 
         for cell in drained {
             let rev = self.fresh_history_revision();
