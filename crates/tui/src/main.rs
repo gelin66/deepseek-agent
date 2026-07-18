@@ -95,7 +95,6 @@ use crate::core::termination::RunTerminationReason;
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
 use crate::exec_output::ExecTerminalReceipt;
 use crate::features::{Feature, render_feature_table};
-use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig, McpServerOAuthConfig};
 use crate::tui::history::summarize_tool_output;
 
@@ -4828,40 +4827,52 @@ fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
 
 /// Test API connectivity by making a minimal request
 async fn test_api_connectivity(config: &Config) -> Result<()> {
-    use crate::client::DeepSeekClient;
-    use crate::models::{ContentBlock, Message, MessageRequest};
-
-    let client = DeepSeekClient::new(config)?;
-    let model = client.model().to_string();
-
-    // Minimal request: single word prompt, 1 max token
-    let request = MessageRequest {
-        model: model.clone(),
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: "hi".to_string(),
-                cache_control: None,
-            }],
-        }],
-        max_tokens: 1,
-        system: None,
-        tools: None,
-        tool_choice: None,
-        metadata: None,
-        thinking: None,
-        reasoning_effort: None,
-        stream: Some(false),
-        temperature: None,
-        top_p: None,
+    use codewhale_deepseek::{
+        ChatPlanInput, DEEPSEEK_AUTO_ROUTE_PRO_MODEL, DeepSeekCredential, ReasoningMode,
+        ResponseMode, SharedApiRequestBudget, official_model_capabilities, plan_chat,
     };
+
+    let connection = crate::exec_runtime::deepseek_connection_config(config)?;
+    let root = connection.endpoint.root().to_owned();
+    let strict_tools = connection.strict_tools;
+    let request_budget = SharedApiRequestBudget::new(
+        NonZeroU32::new(1).expect("Doctor DeepSeek 探针请求预算必须非零"),
+    );
+    crate::tls::ensure_rustls_crypto_provider();
+    let transport = connection.bind(
+        reqwest::Client::builder().build()?,
+        DeepSeekCredential::new(config.deepseek_api_key()?)?,
+        request_budget,
+    )?;
+    let configured_model = config.default_model();
+    let probe_model = if configured_model.eq_ignore_ascii_case("auto") {
+        DEEPSEEK_AUTO_ROUTE_PRO_MODEL
+    } else {
+        configured_model.as_str()
+    };
+    let model = official_model_capabilities(probe_model)?.model;
+    let plan = plan_chat(
+        &root,
+        strict_tools,
+        ChatPlanInput {
+            model: model.to_owned(),
+            messages: vec![serde_json::json!({"role": "user", "content": "hi"})],
+            max_tokens: 1,
+            response_mode: ResponseMode::NonStreaming,
+            tools: None,
+            tool_choice: None,
+            reasoning: ReasoningMode::Off,
+            temperature: None,
+            top_p: None,
+        },
+    )?;
 
     // Use tokio timeout to catch hanging requests
     let timeout_duration = std::time::Duration::from_secs(15);
-    match tokio::time::timeout(timeout_duration, client.create_message(request)).await {
+    match tokio::time::timeout(timeout_duration, transport.complete(plan)).await {
         Ok(Ok(_response)) => Ok(()),
-        Ok(Err(e)) => Err(e),
-        Err(_) => anyhow::bail!("Request timeout after 15 seconds"),
+        Ok(Err(error)) => Err(error.into()),
+        Err(_) => anyhow::bail!("DeepSeek 连通性探针在 15 秒后超时"),
     }
 }
 
@@ -7160,6 +7171,59 @@ mod doctor_setup_state_tests {
 #[cfg(test)]
 mod doctor_endpoint_tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn doctor_connectivity_uses_canonical_deepseek_transport() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "doctor-probe",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "deepseek-v4-pro",
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop"
+                }],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                    "prompt_cache_hit_tokens": 0,
+                    "prompt_cache_miss_tokens": 1
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let config = Config {
+            api_key: Some("fixture-key".to_owned()),
+            base_url: Some(server.uri()),
+            ..Default::default()
+        };
+
+        test_api_connectivity(&config)
+            .await
+            .expect("canonical DeepSeek Doctor probe");
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("Doctor request journal");
+        assert_eq!(requests.len(), 1);
+        let body = requests[0]
+            .body_json::<serde_json::Value>()
+            .expect("Doctor request JSON");
+        assert_eq!(body["model"], "deepseek-v4-pro");
+        assert_eq!(body["max_tokens"], 1);
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["messages"][0]["content"], "hi");
+        assert!(body.get("tools").is_none());
+    }
 
     #[test]
     fn doctor_api_target_reports_default_endpoint() {

@@ -896,32 +896,7 @@ pub(crate) fn production_application_config(
     trust_mode: bool,
     append_system_prompt: Option<String>,
 ) -> Result<ProductionApplicationConfig> {
-    let provider = config.api_provider();
-    let path_suffix = config
-        .provider_config_for(provider)
-        .and_then(|provider| provider.path_suffix.as_deref());
-    if path_suffix.is_some() {
-        bail!("DeepSeek production AgentApplication 不支持 path_suffix 路由改写");
-    }
-    let base_url = config.deepseek_base_url();
-    let endpoint = if codewhale_deepseek::official_root(&base_url).is_some() {
-        DeepSeekEndpoint::Official
-    } else {
-        DeepSeekEndpoint::loopback_fixture(&base_url)?
-    };
-    let retry = config.retry_policy();
-    let connection = DeepSeekConnectionConfig {
-        endpoint,
-        strict_tools: config.strict_tool_mode.unwrap_or(false),
-        response_header_timeout: Duration::from_secs(45),
-        stream_idle_timeout: Duration::from_secs(config.stream_chunk_timeout_secs()),
-        retry: TransportRetryPolicy {
-            max_retries: if retry.enabled { retry.max_retries } else { 0 },
-            initial_delay: Duration::from_secs_f64(retry.initial_delay.clamp(0.0, 300.0)),
-            max_delay: Duration::from_secs_f64(retry.max_delay.clamp(0.0, 300.0)),
-            exponential_base: retry.exponential_base,
-        },
-    };
+    let connection = deepseek_connection_config(config)?;
 
     let mut instructions = config
         .instructions_paths()
@@ -986,6 +961,36 @@ pub(crate) fn production_application_config(
         application = application.with_api_key(api_key)?;
     }
     Ok(application)
+}
+
+pub(crate) fn deepseek_connection_config(config: &Config) -> Result<DeepSeekConnectionConfig> {
+    let provider = config.api_provider();
+    let path_suffix = config
+        .provider_config_for(provider)
+        .and_then(|provider| provider.path_suffix.as_deref());
+    if path_suffix.is_some() {
+        bail!("DeepSeek production AgentApplication 不支持 path_suffix 路由改写");
+    }
+    let base_url = config.deepseek_base_url();
+    let endpoint = if codewhale_deepseek::official_root(&base_url).is_some() {
+        DeepSeekEndpoint::Official
+    } else {
+        DeepSeekEndpoint::loopback_fixture(&base_url)?
+    };
+    let retry = config.retry_policy();
+    let connection = DeepSeekConnectionConfig {
+        endpoint,
+        strict_tools: config.strict_tool_mode.unwrap_or(false),
+        response_header_timeout: Duration::from_secs(45),
+        stream_idle_timeout: Duration::from_secs(config.stream_chunk_timeout_secs()),
+        retry: TransportRetryPolicy {
+            max_retries: if retry.enabled { retry.max_retries } else { 0 },
+            initial_delay: Duration::from_secs_f64(retry.initial_delay.clamp(0.0, 300.0)),
+            max_delay: Duration::from_secs_f64(retry.max_delay.clamp(0.0, 300.0)),
+            exponential_base: retry.exponential_base,
+        },
+    };
+    Ok(connection)
 }
 
 fn runtime_tool_policy(
