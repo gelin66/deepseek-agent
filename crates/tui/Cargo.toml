@@ -21,7 +21,6 @@ name = "codewhale-tui"
 path = "src/main.rs"
 
 [dependencies]
-ahash = "0.8"
 anyhow.workspace = true
 codewhale-app = { path = "../app", version = "0.8.68" }
 codewhale-config = { path = "../config", version = "0.8.68" }
@@ -77,7 +76,6 @@ tiny_http = "0.12"
 globset = "0.4"
 ignore = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
-lru = "0.18"
 parking_lot = "0.12"
 pdf-extract = { version = "0.12", optional = true }
 tar = "0.4"

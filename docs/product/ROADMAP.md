@@ -667,6 +667,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除零调用方的旧 `tui/mcp_routing.rs` manager formatter/pager adapter；真实
   `McpPool`、stdio/HTTP transport、OAuth、配置/CLI 管理和 model-visible MCP 工具保持不变，
   不把未接线的 TUI 展示器误当作 MCP 能力本身。
+- M4-C 已删除零消费者的 `fast_hash` 类型别名与用户 regex LRU cache 自测岛，并移除对应
+  TUI 直接依赖；真实 hooks/eval/execpolicy/Fleet 正则调用继续使用各自明确实现。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

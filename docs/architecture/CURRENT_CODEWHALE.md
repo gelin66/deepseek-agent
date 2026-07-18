@@ -346,6 +346,7 @@ M4-C foreground 切换后还已物理删除：
   只以真实 UI/PTY 契约为准，不再维护一份自测通过但不可见的快捷键表。
 - 零调用方的旧 TUI MCP manager formatter/pager adapter；`McpPool`、transport、OAuth、
   配置加载与 model-visible MCP 工具仍是独立真实生产能力。
+- 零消费者的 `fast_hash` 类型别名与用户 regex LRU cache；真实正则消费者保留在各自 owner。
 
 ## 6. 当前验证事实
 

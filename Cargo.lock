@@ -1043,7 +1043,6 @@ dependencies = [
 name = "codewhale-tui"
 version = "0.8.68"
 dependencies = [
- "ahash",
  "anyhow",
  "arboard",
  "async-trait",
@@ -1077,7 +1076,6 @@ dependencies = [
  "ignore",
  "image",
  "libc",
- "lru 0.18.1",
  "mimalloc",
  "multimap",
  "oauth2",
@@ -2350,17 +2348,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hashbrown"
-version = "0.17.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
-dependencies = [
- "allocator-api2",
- "equivalent",
- "foldhash",
-]
-
-[[package]]
 name = "hashlink"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3199,15 +3186,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 dependencies = [
  "hashbrown 0.16.1",
-]
-
-[[package]]
-name = "lru"
-version = "0.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b6180140927ee907000b0aa540091f6ea512ead4447c92b8fc35bc72788a5a6"
-dependencies = [
- "hashbrown 0.17.1",
 ]
 
 [[package]]
@@ -4291,7 +4269,7 @@ dependencies = [
  "indoc",
  "itertools 0.14.0",
  "kasuari",
- "lru 0.16.4",
+ "lru",
  "strum",
  "thiserror 2.0.18",
  "unicode-segmentation",
