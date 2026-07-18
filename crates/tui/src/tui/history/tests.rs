@@ -1529,35 +1529,6 @@ fn generic_tool_cell_picks_family_from_tool_name() {
 }
 
 #[test]
-fn generic_tool_cell_renders_rlm_with_rlm_label_not_swarm() {
-    let cell = GenericToolCell {
-        name: "rlm".to_string(),
-        status: ToolStatus::Running,
-        input_summary: Some("task: compare source trees".to_string()),
-        output: None,
-        prompts: None,
-        spillover_path: None,
-        output_summary: None,
-        is_diff: false,
-    };
-    let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
-    let header_visible: String = lines[0]
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect::<String>();
-
-    assert!(
-        header_visible.contains(" rlm "),
-        "RLM card should identify RLM work: {header_visible:?}"
-    );
-    assert!(
-        !header_visible.contains("swarm"),
-        "RLM card must not use removed swarm wording: {header_visible:?}"
-    );
-}
-
-#[test]
 fn exploring_card_search_reads_as_find_not_read() {
     // #4145: a completed grep grouped under the exploration card must not
     // render `read done · Searching …`; the header verb has to agree with the

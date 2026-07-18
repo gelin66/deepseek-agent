@@ -1,6 +1,6 @@
 //! External-binary dependency resolution for tools that shell out to
-//! locally-installed programs (Python for `code_execution` / RLM REPL,
-//! `pdftotext` for PDF reading in `read_file`, future tools as added).
+//! locally-installed programs (Python for project verification, `pdftotext`
+//! for PDF reading in `read_file`, future tools as added).
 //!
 //! Before v0.8.31, tools that called external binaries hardcoded the
 //! command name and failed at execution time when the binary wasn't on
@@ -18,8 +18,8 @@
 //! - Doctor command (`run_doctor` in `main.rs`): for surfacing the
 //!   resolved state to the user so missing dependencies aren't an
 //!   invisible failure.
-//! - Long-lived REPL runtime (`repl::runtime`): for RLM and inline `repl`
-//!   blocks that need to spawn Python on every supported platform.
+//! - Project verifier (`tools::verifier`): for running Python checks on every
+//!   supported platform.
 //!
 //! Results are cached for the process lifetime via [`std::sync::OnceLock`]
 //! — probing a binary involves a `Command::output` per candidate and
@@ -150,11 +150,11 @@ fn resolve_executable_path(spec: &str, version_flag: &str) -> Option<String> {
 /// shell-quoted interpreter spec (including fixed launcher arguments such as
 /// `-3`) or `None` when every candidate failed.
 ///
-/// A version banner is not enough: RLM needs Python's standard and native
-/// modules. Each actual executable on `PATH` therefore runs a bounded import
-/// probe. A wedged or broken interpreter is killed and reaped before the
-/// resolver continues to the next path, including another executable with the
-/// same basename later on `PATH`.
+/// A version banner is not enough: project verification needs Python's
+/// standard and native modules. Each actual executable on `PATH` therefore
+/// runs a bounded import probe. A wedged or broken interpreter is killed and
+/// reaped before the resolver continues to the next path, including another
+/// executable with the same basename later on `PATH`.
 pub fn resolve_python_interpreter() -> Option<String> {
     static CACHE: OnceLock<Option<String>> = OnceLock::new();
     CACHE
@@ -526,10 +526,9 @@ impl ExternalTool for Cargo {
     }
 }
 
-/// Python interpreter — used by `code_execution` tool and RLM REPL.
+/// Python interpreter used by the project verifier.
 /// Delegates to the existing [`resolve_python_interpreter`] so the
-/// multi-candidate ladder (`python3` → `python` → `py -3`) is
-/// shared with legacy callers until they migrate to the trait.
+/// multi-candidate ladder (`python3` → `python` → `py -3`) remains shared.
 pub struct Python;
 
 impl ExternalTool for Python {

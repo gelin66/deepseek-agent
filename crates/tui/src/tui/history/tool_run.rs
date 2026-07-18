@@ -202,9 +202,7 @@ fn classify_tool_name_activity(name: &str) -> ToolRunActivity {
         | "task_gate_run"
         | "validate_data" => ToolRunActivity::Command,
         "edit_file" | "apply_patch" | "write_file" | "diff" => ToolRunActivity::Edit,
-        "agent" | "rlm_open" | "rlm_eval" | "rlm_configure" | "rlm_close" | "rlm" => {
-            ToolRunActivity::Delegate
-        }
+        "agent" => ToolRunActivity::Delegate,
         _ if is_metadata_tool_name(&normalized) => ToolRunActivity::Metadata,
         _ if normalized.contains("search")
             || normalized.contains("grep")
@@ -236,8 +234,7 @@ fn classify_tool_name_activity(name: &str) -> ToolRunActivity {
         }
         _ if normalized.contains("agent")
             || normalized.contains("delegate")
-            || normalized.contains("fanout")
-            || normalized.contains("rlm") =>
+            || normalized.contains("fanout") =>
         {
             ToolRunActivity::Delegate
         }

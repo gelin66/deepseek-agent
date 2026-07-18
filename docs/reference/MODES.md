@@ -57,8 +57,6 @@ embedded scripts, or long manual flows, use single-line commands, write a
 script/file first, or run through `task_shell_start`/background shell.
 Full Access turns shell access on together with trust mode and auto-approval.
 
-All action-capable modes have access to persistent RLM sessions through `rlm_open`, `rlm_eval`, `rlm_configure`, and `rlm_close`. Inside an RLM Python REPL, `sub_query_batch` fans out 1-16 cheap parallel child calls pinned to `deepseek-v4-flash`. The model reaches for it when work is too large or repetitive for the parent transcript.
-
 The fast `deepseek-v4-flash` / thinking-off path is called Fin in the product
 language. Fin is a seam for routing, summaries, cheap child calls, and
 coordination work; it does not change approval behavior.

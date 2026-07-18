@@ -16,8 +16,6 @@ use tokio_util::sync::CancellationToken;
 use crate::features::Features;
 use crate::lsp::LspManager;
 use crate::network_policy::NetworkPolicyDecider;
-use crate::rlm::session::SessionObjectSnapshot;
-use crate::rlm::session::{SharedRlmSessionStore, new_shared_rlm_session_store};
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
 use crate::worker_profile::ShellPolicy;
 use codewhale_tools::ProductionToolContext;
@@ -52,8 +50,6 @@ pub struct RuntimeToolServices {
     /// Per-session backing store for `var_handle` payloads. Cloned tool
     /// contexts share this Arc so handles survive across turns.
     pub handle_store: SharedHandleStore,
-    /// Per-session persistent RLM kernels, keyed by caller-chosen context name.
-    pub rlm_sessions: SharedRlmSessionStore,
 }
 
 impl Default for RuntimeToolServices {
@@ -63,7 +59,6 @@ impl Default for RuntimeToolServices {
             dynamic_tool_executor: None,
             hook_executor: None,
             handle_store: new_shared_handle_store(),
-            rlm_sessions: new_shared_rlm_session_store(),
         }
     }
 }
@@ -78,7 +73,6 @@ impl std::fmt::Debug for RuntimeToolServices {
             )
             .field("hook_executor", &self.hook_executor.is_some())
             .field("handle_store", &true)
-            .field("rlm_sessions", &true)
             .finish()
     }
 }
@@ -138,10 +132,6 @@ pub struct ToolContext {
     /// Durable runtime services for task, gate, PR-attempt, GitHub evidence,
     /// and automation tools.
     pub runtime: RuntimeToolServices,
-    /// Snapshot of the active prompt/session/history exposed as symbolic RLM
-    /// objects. Tools only receive compact cards unless explicitly opening a
-    /// bounded object through `rlm_open`.
-    pub session_objects: Option<SessionObjectSnapshot>,
     /// Optional external sandbox backend for shell execution.
     /// When set, exec_shell routes commands through this instead of spawning
     /// a local process.
@@ -212,7 +202,6 @@ impl ToolContext {
             state_namespace: "workspace".to_string(),
             network_policy: None,
             runtime: RuntimeToolServices::default(),
-            session_objects: None,
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
@@ -253,7 +242,6 @@ impl ToolContext {
             state_namespace: "workspace".to_string(),
             network_policy: None,
             runtime: RuntimeToolServices::default(),
-            session_objects: None,
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
@@ -296,7 +284,6 @@ impl ToolContext {
             state_namespace: "workspace".to_string(),
             network_policy: None,
             runtime: RuntimeToolServices::default(),
-            session_objects: None,
             sandbox_backend: None,
             memory_path: None,
             lsp_manager: None,
@@ -437,13 +424,6 @@ impl ToolContext {
     ) -> Self {
         self.skills_dir = Some(skills_dir.into());
         self.skills_scan_codewhale_only = scan_codewhale_only;
-        self
-    }
-
-    /// Attach active prompt/history/session symbolic objects for RLM tools.
-    #[must_use]
-    pub fn with_session_objects(mut self, snapshot: SessionObjectSnapshot) -> Self {
-        self.session_objects = Some(snapshot);
         self
     }
 

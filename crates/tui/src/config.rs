@@ -1612,7 +1612,7 @@ impl StatusItem {
             StatusItem::Model => "the model id you'll send to",
             StatusItem::Cost => "running total for this session",
             StatusItem::Status => "what the agent is doing right now",
-            StatusItem::Agents => "agents or RLM work in progress",
+            StatusItem::Agents => "agent work in progress",
             StatusItem::ReasoningReplay => "thinking tokens replayed each turn",
             StatusItem::Cache => "% of prompt served from cache",
             StatusItem::ContextPercent => "tokens used / model context window",

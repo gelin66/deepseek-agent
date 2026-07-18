@@ -26,7 +26,7 @@
 //! `Option<DeepSeekClient>` — the [`LlmClient`] trait is implemented but no
 //! consumer takes `Arc<dyn LlmClient>` or generic `<C: LlmClient>`. Wiring the
 //! mock into a full engine turn-loop therefore requires a separate refactor:
-//! every `Option<DeepSeekClient>` consumer (engine, registry, rlm,
+//! every `Option<DeepSeekClient>` consumer (engine, registry,
 //! cycle_manager, compaction, subagent) must move to `Arc<dyn LlmClient>`.
 //!
 //! Per the v0.7.0 mock-LLM issue (the parent of this file): "If the engine's

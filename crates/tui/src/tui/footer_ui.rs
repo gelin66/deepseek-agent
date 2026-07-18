@@ -545,9 +545,7 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
         ToolCell::Generic(generic) => {
             // Sub-agent dispatch represents itself through the DelegateCard
             // + Agents sidebar. Counting it again here would duplicate the
-            // status. RLM is different today: it is a foreground tool call,
-            // so keep it in the live tool footer until the async RLM
-            // workbench lands (#513).
+            // status.
             if generic.name == "agent" {
                 return;
             }

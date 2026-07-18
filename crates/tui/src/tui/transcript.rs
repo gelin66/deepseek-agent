@@ -641,7 +641,7 @@ fn is_rail_drawing_char(ch: char) -> bool {
         | '\u{2026}'              // … ellipsis (reasoning opener)
         | '\u{00B7}'              // · middle dot (tool running symbol)
         | '\u{2315}'              // ⌕ telephone recorder (find/search tool)
-        | '\u{22EE}'              // ⋮ vertical ellipsis (fanout/rlm tool)
+        | '\u{22EE}'              // ⋮ vertical ellipsis (fanout/tool output)
     )
 }
 

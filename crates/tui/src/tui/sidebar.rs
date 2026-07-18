@@ -179,7 +179,7 @@ fn auto_sidebar_state(app: &mut App) -> AutoSidebarState {
     AutoSidebarState {
         work_has_content: sidebar_work_summary(app).has_useful_content(),
         // The jobs/tasks panel appears in Auto mode only for live background
-        // work — running or queued shell jobs, RLM, or durable Fleet tasks.
+        // work — running or queued shell jobs or durable Fleet tasks.
         // Completed jobs, per-turn tools, and model reasoning do not reopen
         // the panel; they remain visible only when Tasks is explicitly focused.
         tasks_empty: !app.task_panel.iter().any(background_task_is_live),
@@ -1921,12 +1921,6 @@ fn background_task_duplicates_live_tool(
         return false;
     }
 
-    if task.id.starts_with("rlm-") || task.prompt_summary.starts_with("RLM: ") {
-        return active_rows
-            .iter()
-            .any(|row| row.status == ToolStatus::Running && row.name.starts_with("rlm_"));
-    }
-
     let Some(command) = task.prompt_summary.strip_prefix("shell: ") else {
         return false;
     };
@@ -2296,7 +2290,6 @@ pub struct SidebarSubagentSummary {
     pub progress_only_count: usize,
     pub fanout_total: Option<usize>,
     pub fanout_running: usize,
-    pub foreground_rlm_running: bool,
     pub role_counts: std::collections::BTreeMap<String, usize>,
 }
 
@@ -2464,7 +2457,7 @@ fn subagent_output_handle(row: &SidebarAgentRow) -> Option<String> {
 
 /// Build the Agents panel lines together with a parallel per-line
 /// click-action vector (#3028). Agent label rows open the Fleet worker status
-/// view via `/fleet status`; header, role-mix, detail, and RLM lines are not
+/// view via `/fleet status`; header, role-mix, and detail lines are not
 /// clickable.
 fn subagent_panel_rows(
     summary: &SidebarSubagentSummary,
@@ -2477,11 +2470,7 @@ fn subagent_panel_rows(
     let mut actions: Vec<Option<SidebarRowAction>> = Vec::with_capacity(max_rows.max(4));
 
     let fanout_total = summary.fanout_total.unwrap_or(0);
-    if summary.cached_total == 0
-        && summary.progress_only_count == 0
-        && fanout_total == 0
-        && !summary.foreground_rlm_running
-    {
+    if summary.cached_total == 0 && summary.progress_only_count == 0 && fanout_total == 0 {
         lines.push(Line::from(Span::styled(
             "No agents",
             Style::default().fg(theme.text_muted),
@@ -2642,17 +2631,6 @@ fn subagent_panel_rows(
         }
     }
 
-    if summary.foreground_rlm_running {
-        lines.push(Line::from(vec![
-            Span::styled("RLM", Style::default().fg(theme.accent_primary).bold()),
-            Span::styled(
-                " foreground work active",
-                Style::default().fg(theme.text_dim),
-            ),
-        ]));
-        actions.push(None);
-    }
-
     debug_assert_eq!(lines.len(), actions.len());
     (lines, actions)
 }
@@ -2710,11 +2688,7 @@ fn subagent_panel_hover_texts(
     let mut texts = Vec::with_capacity(max_rows.max(4));
 
     let fanout_total = summary.fanout_total.unwrap_or(0);
-    if summary.cached_total == 0
-        && summary.progress_only_count == 0
-        && fanout_total == 0
-        && !summary.foreground_rlm_running
-    {
+    if summary.cached_total == 0 && summary.progress_only_count == 0 && fanout_total == 0 {
         texts.push("No agents".to_string());
         return texts;
     }
@@ -2776,10 +2750,6 @@ fn subagent_panel_hover_texts(
             detail_parts.push(format_duration_ms(duration));
         }
         texts.push(format!("  {}", detail_parts.join(" · ")));
-    }
-
-    if summary.foreground_rlm_running && texts.len() < max_rows {
-        texts.push("RLM foreground work active".to_string());
     }
 
     texts
@@ -4180,53 +4150,6 @@ mod tests {
     }
 
     #[test]
-    fn task_panel_row_sets_dedup_background_only_when_tasks_focused() {
-        let mut app = create_test_app();
-        let mut active = ActiveCell::new();
-        active.push_tool(
-            "tool-1",
-            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-                name: "rlm_search".to_string(),
-                status: ToolStatus::Running,
-                input_summary: Some("scanning workspace".to_string()),
-                output: None,
-                prompts: None,
-                spillover_path: None,
-                output_summary: None,
-                is_diff: false,
-            })),
-        );
-        app.active_cell = Some(active);
-        app.task_panel.push(TaskPanelEntry {
-            id: "rlm-123".to_string(),
-            status: "running".to_string(),
-            prompt_summary: "RLM: scanning workspace".to_string(),
-            duration_ms: Some(1_000),
-            kind: TaskPanelEntryKind::Background,
-            stale: false,
-            elapsed_since_output_ms: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-        });
-
-        app.sidebar_focus = SidebarFocus::Tasks;
-        let focused = task_panel_row_sets(&app);
-        assert!(
-            focused.background.is_empty(),
-            "Tasks focus dedups background jobs against live tools: {:?}",
-            focused.background
-        );
-
-        app.sidebar_focus = SidebarFocus::Auto;
-        let auto = task_panel_row_sets(&app);
-        assert_eq!(
-            auto.background.len(),
-            1,
-            "Auto mode keeps background jobs even when a live tool matches"
-        );
-    }
-
-    #[test]
     fn task_panel_rows_and_hover_share_one_snapshot() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
@@ -5459,7 +5382,6 @@ mod tests {
             progress_only_count: 0,
             fanout_total: None,
             fanout_running: 0,
-            foreground_rlm_running: false,
             role_counts,
         };
         let rows = vec![
@@ -5537,7 +5459,6 @@ mod tests {
             progress_only_count: 0,
             fanout_total: Some(6),
             fanout_running: 1,
-            foreground_rlm_running: false,
             role_counts: std::collections::BTreeMap::new(),
         };
 
@@ -5563,7 +5484,6 @@ mod tests {
             progress_only_count: 0,
             fanout_total: None,
             fanout_running: 0,
-            foreground_rlm_running: false,
             role_counts,
         };
         let text = lines_to_text(&subagent_panel_lines(
@@ -5589,7 +5509,6 @@ mod tests {
             progress_only_count: 0,
             fanout_total: None,
             fanout_running: 0,
-            foreground_rlm_running: false,
             role_counts,
         };
         let lines = subagent_panel_lines(&summary, &[], 16, 8, &palette::UI_THEME);
@@ -5601,28 +5520,6 @@ mod tests {
         assert!(
             role_line.chars().count() <= 16,
             "role line {role_line:?} exceeded content_width"
-        );
-    }
-
-    #[test]
-    fn navigator_shows_foreground_rlm_work_when_no_subagents_exist() {
-        let summary = SidebarSubagentSummary {
-            foreground_rlm_running: true,
-            ..SidebarSubagentSummary::default()
-        };
-        let text = lines_to_text(&subagent_panel_lines(
-            &summary,
-            &[],
-            64,
-            8,
-            &palette::UI_THEME,
-        ));
-
-        assert!(!text[0].contains("No agents"), "header: {text:?}");
-        assert!(
-            text.iter()
-                .any(|line| line.contains("RLM foreground work active")),
-            "RLM work must be visible in Agents panel: {text:?}"
         );
     }
 

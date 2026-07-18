@@ -30,7 +30,7 @@ is owned by `crates/tools`; prompt guidance is assembled by `crates/context`.
 | `edit_file` | Search-and-replace inside a single file. Cheaper than a full rewrite. |
 | `apply_patch` | Apply a unified diff. The right tool for multi-hunk edits. |
 | `retrieve_tool_result` | Read summaries or slices of prior large tool outputs spilled to `~/.codewhale/tool_outputs/`; use `summary`, `head`, `tail`, `lines`, or `query` instead of replaying the whole result. |
-| `handle_read` | Read bounded projections from `var_handle` payloads held by live tool environments. This is the foundation for RLM sessions, sub-agent transcripts, and other large symbolic payloads. |
+| `handle_read` | Read bounded projections from `var_handle` payloads held by live tool environments. This supports sub-agent transcripts and other large symbolic payloads. |
 
 ### Search
 
@@ -233,46 +233,6 @@ that should inherit the parent's context. In fork mode, the runtime preserves
 the parent prefill/prompt prefix byte-identically where available so DeepSeek's
 prefix cache can be reused, then appends the child role instructions and task.
 
-### Recursive LM sessions
-
-RLM is now persistent as well:
-
-| Tool | Niche |
-|---|---|
-| `rlm_session_objects` | List compact cards for the active prompt, session metadata, transcript, latest user message, and per-message refs. |
-| `rlm_open` | Open a named Python REPL over a file, inline content, or URL. |
-| `rlm_eval` | Run bounded Python against that session, using deterministic code and in-REPL semantic helpers such as `sub_query_batch`. |
-| `rlm_configure` | Adjust output feedback, child-query timeout/depth, and session-sharing settings. |
-| `rlm_close` | Shut down the Python runtime and return final session stats. |
-
-`rlm_open` also accepts `session_object`, a stable ref returned by
-`rlm_session_objects`, such as `session://active/system_prompt`,
-`session://active/transcript`, or `session://active/messages/0`. This loads
-the selected object into the RLM REPL and returns only metadata to the parent
-transcript. Transcript objects keep thinking blocks and large tool results as
-compact metadata; inspect large payloads through returned `var_handle` values
-and `handle_read`, not by asking the parent transcript to paste the raw text.
-
-Large RLM outputs should come back as `var_handle`s. Use `handle_read` for
-bounded text slices, line ranges, counts, or JSONPath projections instead of
-replaying the full value into the parent transcript.
-
-Inside `rlm_eval`, the loaded source is available as `_context`; `_ctx` and
-`content` are also bound as compatibility aliases because agents naturally
-reach for them during Python analysis. The shorter `context` and `ctx` names
-are intentionally not bound so user variables can use them without colliding
-with the bootstrap.
-
-Child-call timeouts are session policy: use `rlm_configure` with
-`sub_query_timeout_secs` before running a large fan-out. The helpers
-`sub_query`, `sub_query_batch`, `sub_query_map`, and `sub_rlm` accept a
-`timeout_secs` keyword for compatibility with common agent guesses, but the
-effective timeout remains configured at the RLM session level.
-
-`finalize(value, confidence=...)` preserves JSON-serializable values. Strings
-become text handles; dicts, lists, numbers, booleans, and null become JSON
-handles that `handle_read` can project with JSONPath.
-
 ### Session relay
 
 `/relay [focus]` asks the current agent to write `.deepseek/handoff.md` as a
@@ -292,21 +252,14 @@ explicitly. When `update_plan` has a rich PlanArtifact, `/relay` includes that
 strategy metadata so manual relay, fork-state, and compacted continuity do not
 drift into separate stories.
 
-### Parallel fan-out: cost-class caps
-
-Two tools offer parallel fan-out with different concurrency limits that
-reflect very different cost classes:
+### Sub-agent concurrency
 
 | Tool | What each child does | Wall-clock | Token cost | Cap |
 |---|---|---|---|---|
 | `agent` | Full sub-agent loop (planning, tool calls, multi-turn streaming) | minutes | thousands of tokens | 20 running by default (`[subagents].max_concurrent`, hard ceiling 20), with up to 200 running + queued admitted by default |
-| `rlm_eval` helper `sub_query_batch` | One-shot non-streaming Chat Completions calls pinned to `deepseek-v4-flash` inside a live RLM session | seconds | ~hundreds of tokens | 16 per call |
 
-The caps appear in each tool's description and error messages so the model
-(and the user) can choose the right tool for the job. If one sub-agent is
-enough but you need parallel semantic lookups over the same loaded context,
-prefer `rlm_eval` with `sub_query_batch`; if each task needs its own
-tool-carrying agent loop, use `agent` and inspect the returned transcript
+The cap appears in the tool description and error messages. Use `agent` when a
+task needs its own tool-carrying loop, and inspect the returned transcript
 handle when needed.
 
 ## Removed legacy aliases and surfaces
@@ -315,8 +268,8 @@ The old model-facing sub-agent fan-out surface is removed from active prompting
 and tool catalogs. Do not use retired sub-agent lifecycle names in new active
 guidance.
 
-The old one-shot `rlm` model-facing tool is also replaced by persistent
-`rlm_open` / `rlm_eval` / `rlm_configure` / `rlm_close` sessions.
+The retired recursive-model and Python-REPL tool surfaces are deleted rather
+than retained as compatibility paths.
 
 v0.8.68 ships the following hidden-compat aliases (#2682, #2683, #4132) —
 they are deliberately retained for transcript replay, not scheduled for
@@ -350,18 +303,17 @@ codewhale-tui --version
 Tool-surface smoke:
 
 ```bash
-rg -n '"handle_read"|"rlm_open"|"rlm_eval"|"rlm_configure"|"rlm_close"|"agent"' crates/tui/src
-rg -n 'handle_read|rlm_open|rlm_eval|rlm_configure|rlm_close|agent' docs crates/tui/src/prompts crates/tui/src/tools
+rg -n '"handle_read"|"agent"' crates/tui/src
+rg -n 'handle_read|agent' docs crates/tui/src/prompts crates/tui/src/tools
 ```
 
 The canonical live names:
 
 - `handle_read`
-- `rlm_open`, `rlm_eval`, `rlm_configure`, `rlm_close`
 - `agent`
 
-The registry should not actively advertise retired sub-agent lifecycle names or
-the old foreground `rlm` tool outside historical changelog entries.
+The registry should not actively advertise retired recursive-model or
+sub-agent lifecycle names.
 
 ## Additional registered tools (v0.8.49)
 

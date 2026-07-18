@@ -37,8 +37,6 @@ pub enum ToolFamily {
     Find,
     /// Single sub-agent dispatch. `◐ delegate`.
     Delegate,
-    /// Recursive language model work. `⋮⋮ rlm`.
-    Rlm,
     /// Verification gates, tests, and validators. `✓ verify`.
     Verify,
     /// Reasoning / chain-of-thought. `… think`. Reasoning has its own
@@ -87,7 +85,6 @@ pub fn tool_family_for_name(name: &str) -> ToolFamily {
         | "task_shell_wait" => ToolFamily::Run,
         "grep_files" | "file_search" | "web_search" | "fetch_url" => ToolFamily::Find,
         "agent" => ToolFamily::Delegate,
-        "rlm_open" | "rlm_eval" | "rlm_configure" | "rlm_close" | "rlm" => ToolFamily::Rlm,
         "run_tests"
         | "run_verifiers"
         | "task_gate_run"
@@ -117,7 +114,6 @@ fn family_message_id(family: ToolFamily) -> crate::localization::MessageId {
         ToolFamily::Run => crate::localization::MessageId::ToolFamilyRun,
         ToolFamily::Find => crate::localization::MessageId::ToolFamilyFind,
         ToolFamily::Delegate => crate::localization::MessageId::ToolFamilyDelegate,
-        ToolFamily::Rlm => crate::localization::MessageId::ToolFamilyRlm,
         ToolFamily::Verify => crate::localization::MessageId::ToolFamilyVerify,
         ToolFamily::Think => crate::localization::MessageId::ToolFamilyThink,
         ToolFamily::Generic => crate::localization::MessageId::ToolFamilyGeneric,
@@ -150,7 +146,7 @@ pub fn tool_header_summary_for_name(name: &str, input_summary: Option<&str>) -> 
         ToolFamily::Read | ToolFamily::Patch => ["path", "file", "target", "content"].as_slice(),
         ToolFamily::Run => ["command", "cmd", "script"].as_slice(),
         ToolFamily::Find => ["query", "pattern", "path", "scope"].as_slice(),
-        ToolFamily::Delegate | ToolFamily::Rlm => ["prompt", "task", "model"].as_slice(),
+        ToolFamily::Delegate => ["prompt", "task", "model"].as_slice(),
         ToolFamily::Verify => ["profile", "level", "command", "args", "path"].as_slice(),
         ToolFamily::Think | ToolFamily::Generic => {
             ["query", "path", "command", "prompt"].as_slice()
@@ -258,12 +254,11 @@ fn is_noisy_summary_key(key: &str) -> bool {
 #[must_use]
 pub fn family_glyph(family: ToolFamily) -> &'static str {
     match family {
-        ToolFamily::Read => "\u{25B7}",        // ▷
-        ToolFamily::Patch => "\u{25C6}",       // ◆
-        ToolFamily::Run => "\u{25B6}",         // ▶
-        ToolFamily::Find => "\u{2315}",        // ⌕
-        ToolFamily::Delegate => "\u{25D0}",    // ◐
-        ToolFamily::Rlm => "\u{22EE}\u{22EE}", // ⋮⋮ (two cells)
+        ToolFamily::Read => "\u{25B7}",     // ▷
+        ToolFamily::Patch => "\u{25C6}",    // ◆
+        ToolFamily::Run => "\u{25B6}",      // ▶
+        ToolFamily::Find => "\u{2315}",     // ⌕
+        ToolFamily::Delegate => "\u{25D0}", // ◐
         ToolFamily::Verify => "\u{2713}",
         ToolFamily::Think => "\u{2026}",   // …
         ToolFamily::Generic => "\u{2022}", // •
@@ -281,7 +276,6 @@ pub fn family_label(family: ToolFamily) -> &'static str {
         ToolFamily::Run => "run",
         ToolFamily::Find => "find",
         ToolFamily::Delegate => "delegate",
-        ToolFamily::Rlm => "rlm",
         ToolFamily::Verify => "verify",
         ToolFamily::Think => "think",
         ToolFamily::Generic => "tool",
@@ -346,7 +340,6 @@ mod tests {
         assert_eq!(tool_family_for_name("grep_files"), ToolFamily::Find);
         assert_eq!(tool_family_for_name("git_log"), ToolFamily::Read);
         assert_eq!(tool_family_for_name("agent"), ToolFamily::Delegate);
-        assert_eq!(tool_family_for_name("rlm_eval"), ToolFamily::Rlm);
         assert_eq!(tool_family_for_name("run_verifiers"), ToolFamily::Verify);
         assert_eq!(
             tool_family_for_name("wait_for_dev_server"),
@@ -429,7 +422,6 @@ mod tests {
             ToolFamily::Run,
             ToolFamily::Find,
             ToolFamily::Delegate,
-            ToolFamily::Rlm,
             ToolFamily::Verify,
             ToolFamily::Think,
             ToolFamily::Generic,

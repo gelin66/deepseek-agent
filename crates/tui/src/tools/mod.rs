@@ -40,7 +40,6 @@ mod readonly_tool_parity;
 pub mod registry;
 pub mod remember;
 pub mod revert_turn;
-pub mod rlm;
 pub mod runtime_mcp;
 pub mod schema_canonicalize;
 pub mod schema_sanitize;

@@ -1,7 +1,7 @@
 //! Symbolic handle storage and bounded reads.
 //!
 //! `var_handle` is the shared protocol that lets expensive environments
-//! (RLM sessions, sub-agent transcripts, large artifacts) hand the parent a
+//! (sub-agent transcripts and large artifacts) hand the parent a
 //! small symbolic reference instead of copying the whole payload into the
 //! parent transcript.
 
@@ -70,7 +70,7 @@ pub enum HandleValue {
     Json(Value),
 }
 
-#[allow(dead_code)] // Foundation methods used by upcoming RLM/agent session producers.
+#[allow(dead_code)] // Foundation methods used by agent and artifact producers.
 impl HandleValue {
     fn length(&self) -> usize {
         match self {
@@ -179,7 +179,7 @@ impl ToolSpec for HandleReadTool {
 
     fn description(&self) -> &'static str {
         "Read a bounded projection from a var_handle returned by tools such \
-         as RLM sessions or sub-agents. This does not read artifact ids \
+         as sub-agents or artifact producers. This does not read artifact ids \
          (`art_...`), tool-call ids (`call_...`), SHA refs, or files; use \
          retrieve_tool_result for spilled tool results/artifacts and \
          read_file for workspace files. Provide \
@@ -461,9 +461,9 @@ fn parse_projection(input: &Value) -> Result<Projection, ToolError> {
 
 fn projection_usage_hint() -> String {
     "handle_read: provide exactly one projection: `slice`, `range`, `count: true`, `jsonpath`, or `introspect: true`. \
-     Examples: {\"handle\":{\"kind\":\"var_handle\",\"session_id\":\"rlm:abc\",\"name\":\"final_1\"},\"slice\":{\"start\":0,\"end\":500}}; \
-     {\"handle\":\"rlm:abc/final_1\",\"count\":true}; \
-     {\"handle\":\"rlm:abc/final_1\",\"introspect\":true}."
+     Examples: {\"handle\":{\"kind\":\"var_handle\",\"session_id\":\"agent:abc\",\"name\":\"final_1\"},\"slice\":{\"start\":0,\"end\":500}}; \
+     {\"handle\":\"agent:abc/final_1\",\"count\":true}; \
+     {\"handle\":\"agent:abc/final_1\",\"introspect\":true}."
         .to_string()
 }
 
@@ -799,7 +799,7 @@ mod tests {
         let ctx = ctx();
         let handle = {
             let mut store = ctx.runtime.handle_store.lock().await;
-            store.insert_text("rlm:test", "matches", "abcdef")
+            store.insert_text("agent:test", "matches", "abcdef")
         };
 
         let result = HandleReadTool
@@ -840,7 +840,7 @@ mod tests {
         let ctx = ctx();
         let handle = {
             let mut store = ctx.runtime.handle_store.lock().await;
-            store.insert_json("rlm:test", "items", json!([{"a": 1}, {"a": 2}]))
+            store.insert_json("agent:test", "items", json!([{"a": 1}, {"a": 2}]))
         };
 
         let result = HandleReadTool
@@ -857,7 +857,7 @@ mod tests {
         let ctx = ctx();
         let handle = {
             let mut store = ctx.runtime.handle_store.lock().await;
-            store.insert_json("rlm:test", "items", json!({"items": [{"a": 1}]}))
+            store.insert_json("agent:test", "items", json!({"items": [{"a": 1}]}))
         };
 
         let result = HandleReadTool
@@ -883,7 +883,7 @@ mod tests {
         let handle = {
             let mut store = ctx.runtime.handle_store.lock().await;
             store.insert_json(
-                "rlm:test",
+                "agent:test",
                 "items",
                 json!({"items": [{"name": "a"}, {"name": "b"}]}),
             )
@@ -906,7 +906,7 @@ mod tests {
         let ctx = ctx();
         let handle = {
             let mut store = ctx.runtime.handle_store.lock().await;
-            store.insert_text("rlm:test", "body", "abc")
+            store.insert_text("agent:test", "body", "abc")
         };
 
         let err = HandleReadTool

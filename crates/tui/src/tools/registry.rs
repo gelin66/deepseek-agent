@@ -792,19 +792,6 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(RevertTurnTool))
     }
 
-    /// Include persistent RLM session tools.
-    #[must_use]
-    pub fn with_rlm_tool(self, client: Option<DeepSeekClient>, _root_model: String) -> Self {
-        use super::rlm::{
-            RlmCloseTool, RlmConfigureTool, RlmEvalTool, RlmOpenTool, RlmSessionObjectsTool,
-        };
-        self.with_tool(Arc::new(RlmSessionObjectsTool))
-            .with_tool(Arc::new(RlmOpenTool))
-            .with_tool(Arc::new(RlmEvalTool::new(client)))
-            .with_tool(Arc::new(RlmConfigureTool))
-            .with_tool(Arc::new(RlmCloseTool))
-    }
-
     /// Include `handle_read`, the bounded projection reader for symbolic
     /// `var_handle` payloads.
     #[must_use]
@@ -988,7 +975,6 @@ impl ToolRegistryBuilder {
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
             .with_slop_ledger_tools()
-            .with_rlm_tool(client.clone(), model.clone())
             .with_fim_tool(client);
 
         if options.verify_tool_enabled {
@@ -1799,7 +1785,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_tui_agent_surface_excludes_removed_speech_tools() {
+    fn legacy_tui_agent_surface_excludes_removed_tools() {
         use super::AgentToolSurfaceOptions;
         use crate::worker_profile::ShellPolicy;
 
@@ -1815,7 +1801,16 @@ mod tests {
             )
             .build(ctx);
 
-        for removed_name in ["speech", "tts"] {
+        for removed_name in [
+            "speech",
+            "tts",
+            "rlm_session_objects",
+            "rlm_open",
+            "rlm_eval",
+            "rlm_configure",
+            "rlm_close",
+            "rlm",
+        ] {
             assert!(
                 !registry.contains(removed_name),
                 "removed tool {removed_name:?} must not remain callable"

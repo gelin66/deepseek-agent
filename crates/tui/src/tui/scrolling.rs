@@ -6,7 +6,7 @@
 //!
 //! Why a flat offset, not cell anchors? An earlier design anchored the
 //! viewport to a `(cell_index, line_in_cell)` pair on the assumption that
-//! the cell list was append-only. It is not — content rewrites (RLM `repl`
+//! the cell list was append-only. It is not — content rewrites (streaming
 //! blocks expanding into `Thinking + Text`, tool result replacements, and
 //! compaction) can renumber or remove cells underneath the user. When the
 //! anchor cell vanished the viewport teleported to the bottom (issue #56)
@@ -381,8 +381,8 @@ mod tests {
         assert_eq!(top_before, 12);
         assert_eq!(state, TranscriptScroll::at_line(12));
 
-        // Content rewrite: cell 4 expanded by two lines (e.g. inline
-        // RLM `repl` block became Thinking + Text). Total grows.
+        // Content rewrite: cell 4 expanded by two lines (e.g. a streaming
+        // block became Thinking + Text). Total grows.
         let mut post = pre.clone();
         post.insert(13, cell_line(4, 3));
         post.insert(14, cell_line(4, 4));

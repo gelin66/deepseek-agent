@@ -28,7 +28,7 @@ pub fn string_map_env(
 /// Return the environment for a child process after dropping parent secrets.
 ///
 /// `overrides` are trusted call-site values, such as sandbox markers, hook
-/// variables, MCP server config, or RLM context path. They are applied after the
+/// variables or MCP server config. They are applied after the
 /// parent allowlist so explicit values win.
 pub fn sanitized_child_env<I, K, V>(overrides: I) -> Vec<(OsString, OsString)>
 where
