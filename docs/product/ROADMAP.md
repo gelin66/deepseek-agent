@@ -17,7 +17,7 @@
   构造入口但仍参与编译的旧 TUI SubAgent runtime/manager/registry 岛也已删除；M4 仍待
   完整集成门禁与其他旧编译岛复核，不提前标完成。M1 的导入基线 A/B 与 M2 的完整官方
   surface canary 仍是独立证据债务
-- 上次更新：2026-07-18
+- 上次更新：2026-07-19
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -591,8 +591,15 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   planner、surface 与 accounting 类型。该删除不声称 canonical FIM response parser 或
   事务性编辑链路已经完成，相关缺口仍按 M1/M2 证据债处理。
 - M4-C 已删除退役 TUI model client/cache/mock/retry surface 及其旧请求、响应和 SSE DTO；
-  `models.rs` 暂时只保留仍被 history、pricing、hooks、MCP/工具 schema 和配置状态真实消费的
+  `models.rs` 暂时只保留仍被 history、pricing、MCP/工具 schema 和配置状态真实消费的
   展示、计量与模型元数据，不再承担 DeepSeek transport 或请求规划职责。
+- M4-C 已物理删除 2,607 行 TUI 私有生命周期 shell-hook owner、`App` 持有状态、
+  `[hooks]` schema 与从未被 production 覆盖的 `ExecShellHost::collect_shell_env` 端口。
+  切换后唯一真实行为损失是 `mode_change` shell 命令不再执行，交互启动也不再读取
+  `.codewhale/hooks.toml`；`session_*`/`message_submit`/`tool_call_*`/`turn_end`/
+  `subagent_*`/`shell_env` 等宣传过的事件原本就没有 canonical production 派发。
+  canonical RuntimeEvent、RunStore、工具执行、MCP protocol notification、panic hook、Fleet webhook
+  和桌面通知保持原 owner 与语义。
 - M4-C 已删除从未接入当前交互循环的 TUI `FrameRateLimiter`/`FrameRequester`/`MotionPolicy`
   编译岛及其只写不读的 `constrained_frame_rate` 设置。现有 24ms 事件轮询、80ms 动画重绘、
   `low_motion` 和实际 spinner/ocean 渲染保持不变。
@@ -689,7 +696,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   Agent 固定工具目录没有加载 MCP pool；不把 CLI discovery 或未接线的 TUI 展示器误当作
   model-visible MCP 能力。
 - M4-C 已删除零消费者的 `fast_hash` 类型别名与用户 regex LRU cache 自测岛，并移除对应
-  TUI 直接依赖；真实 hooks/eval/execpolicy/Fleet 正则调用继续使用各自明确实现。
+  TUI 直接依赖；真实 eval/execpolicy/Fleet 正则调用继续使用各自明确实现。
 - M4-C 已删除 904 行、只有自身测试且 App 只默认构造不读取的通用 Provider readiness
   快照岛。DeepSeek 正式请求、Doctor 单请求探针和 typed protocol outcome 不变；不保留一套
   从未被真实请求更新的“健康状态”假真相。

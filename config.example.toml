@@ -870,51 +870,6 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # sound_file = "E:\\google\\downloads\\notify.wav"
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Hooks (optional)
-# ─────────────────────────────────────────────────────────────────────────────────
-# Hooks run shell commands on lifecycle events (session start/end, tool calls, etc.).
-# Configure as `[[hooks.hooks]]` under a `[hooks]` table.
-#
-# Available events: session_start, session_end, message_submit,
-# tool_call_before, tool_call_after, mode_change, on_error,
-# subagent_spawn, subagent_complete, shell_env.
-#
-# `shell_env` (#456) is special: the hook runs immediately before each
-# `exec_shell` invocation and its stdout is parsed as `KEY=VALUE\n` lines.
-# Those vars are merged into the spawned process environment (later hooks
-# override earlier ones). Use this for ephemeral credentials, per-skill
-# PATH adjustments, or short-lived tokens. The resolved KEY names (NEVER
-# values) are written to `~/.codewhale/audit.log` so each session can be
-# reconciled later. Hook failure / timeout simply contributes no vars —
-# it does not abort the shell call.
-#
-# [hooks]
-# enabled = true
-# default_timeout_secs = 30
-#
-# [[hooks.hooks]]
-# event = "session_start"
-# command = "echo 'CodeWhale session started'"
-#
-# # Inject ephemeral creds into every shell call. Output one
-# # KEY=VALUE per line on stdout (export prefix optional).
-# [[hooks.hooks]]
-# name = "aws-creds"
-# event = "shell_env"
-# command = "aws-vault export my-profile --format=env"
-# # Optionally limit to specific tool names / categories:
-# # condition = { type = "tool_category", category = "shell" }
-#
-# # Observe sub-agent lifecycle events. These hooks receive bounded JSON
-# # metadata on stdin and are warn-only: failures do not affect sub-agent
-# # scheduling, prompts, or results. continue_on_error has no effect for
-# # these observer events; later matching hooks always continue.
-# [[hooks.hooks]]
-# name = "subagent-audit"
-# event = "subagent_complete"
-# command = "~/.codewhale/hooks/subagent-audit.sh"
-
-# ─────────────────────────────────────────────────────────────────────────────────
 # Runtime API (`deepseek serve --http`) (#561)
 # ─────────────────────────────────────────────────────────────────────────────────
 # Tuning knobs for the local HTTP/SSE daemon. The server binds to 127.0.0.1

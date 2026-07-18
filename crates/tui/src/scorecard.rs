@@ -123,19 +123,17 @@ struct ScorecardTurnRef<'a> {
 }
 
 /// A recorded turn as read from a scorecard input file (a JSON array of these).
-/// The base shape matches the per-turn data a `TurnEnd` hook emits. Recorders
-/// and persisted runtime exports can add `provider` / `effective_provider` plus
-/// non-secret billing-surface provenance. Legacy model-only recordings remain
-/// readable but deliberately unpriced.
+/// Canonical runtime exports may use the `effective_*` aliases for route
+/// provenance. Model-only recordings remain readable but deliberately
+/// unpriced.
 #[derive(Debug, Clone, Deserialize)]
 pub struct RecordedTurn {
     #[serde(default, alias = "id")]
     pub turn_id: String,
     #[serde(default)]
     pub created_at: Option<DateTime<Utc>>,
-    /// New `turn_end` hooks mark shell-only lifecycle records false so the
-    /// model-cost scorecard can ignore them. Missing stays compatible with
-    /// legacy hook rows and persisted runtime turns, which are model-backed.
+    /// Non-model records set this false so the model-cost scorecard can ignore
+    /// them. Missing means the record is model-backed.
     #[serde(default)]
     pub model_backed: Option<bool>,
     #[serde(default, alias = "effective_provider")]
@@ -216,7 +214,7 @@ impl Scorecard {
         }))
     }
 
-    /// Build directly from hook/runtime records, retaining billing provenance
+    /// Build directly from recorded runtime turns, retaining billing provenance
     /// while excluding explicitly non-model lifecycle rows.
     #[must_use]
     pub fn from_recorded_turns(turns: &[RecordedTurn]) -> Self {
@@ -1083,7 +1081,7 @@ mod tests {
     }
 
     #[test]
-    fn recorded_non_model_hook_turn_is_excluded_from_model_scorecard() {
+    fn recorded_non_model_turn_is_excluded_from_model_scorecard() {
         let recorded: RecordedTurn = serde_json::from_value(serde_json::json!({
             "turn_id": "shell-turn",
             "created_at": "2026-07-12T10:30:00Z",
@@ -1095,7 +1093,7 @@ mod tests {
                 "output_tokens": 0
             }
         }))
-        .expect("parse non-model turn_end record");
+        .expect("parse non-model turn record");
 
         assert!(!recorded.contributes_to_scorecard());
     }

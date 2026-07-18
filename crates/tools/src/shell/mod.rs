@@ -1283,10 +1283,8 @@ impl ShellManager {
         )
     }
 
-    /// Same as `execute_with_options`, plus an extra env-var map that is
-    /// merged into the spawned process environment. Used by the `shell_env`
-    /// hook injection path (#456); other callers should use the simpler
-    /// wrapper above.
+    /// Same as `execute_with_options`, plus an explicit env-var map merged into
+    /// the spawned process environment.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_with_options_env(
         &mut self,
@@ -1429,7 +1427,7 @@ impl ShellManager {
         )
     }
 
-    /// Interactive variant that accepts extra env vars (#456 shell_env hook).
+    /// Interactive variant that accepts an explicit env-var map.
     pub fn execute_interactive_with_policy_env(
         &mut self,
         command: &str,

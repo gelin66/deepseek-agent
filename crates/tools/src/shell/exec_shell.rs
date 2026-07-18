@@ -1,9 +1,9 @@
 //! Production `exec_shell` operation.
 //!
 //! The TUI remains responsible for product-surface schema, approval prompts,
-//! legacy exec-policy loading, and hook composition. Command execution and its
-//! canonical structured outcome live here so every caller shares one process,
-//! sandbox, cancellation, timeout, and output contract.
+//! and legacy exec-policy loading. Command execution and its canonical
+//! structured outcome live here so every caller shares one process, sandbox,
+//! cancellation, timeout, and output contract.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -61,15 +61,10 @@ pub trait ExecShellHost: Send + Sync {
     ) -> Result<Option<ExecShellPolicyDecision>, ToolError> {
         Ok(None)
     }
-
-    /// Collect configured environment-hook values immediately before spawn.
-    fn collect_shell_env(&self, _input: &Value) -> HashMap<String, String> {
-        HashMap::new()
-    }
 }
 
-/// Default host for direct production-operation tests and callers without
-/// optional exec-policy or environment hooks.
+/// Default host for direct production-operation tests and callers without an
+/// optional exec policy.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NoopExecShellHost;
 
@@ -636,7 +631,7 @@ pub async fn execute_exec_shell(
         }
         None => None,
     };
-    let extra_env = host.collect_shell_env(&input);
+    let extra_env = HashMap::new();
 
     if let Some(backend) = &options.sandbox_backend {
         if interactive {

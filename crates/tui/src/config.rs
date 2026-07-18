@@ -16,7 +16,6 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 use crate::audit::log_sensitive_event;
 use crate::features::{Feature, Features, FeaturesToml, is_known_feature_key};
-use crate::hooks::HooksConfig;
 
 // Sub-agent concurrency/timeout limit constants and their clamp resolvers live
 // in the `subagent_limits` leaf module. The constants are re-exported (keeping
@@ -1774,10 +1773,6 @@ pub struct Config {
 
     /// TUI configuration (alternate screen, etc.)
     pub tui: Option<TuiConfig>,
-
-    /// Lifecycle hooks configuration
-    #[serde(default)]
-    pub hooks: Option<HooksConfig>,
 
     /// Provider-specific credentials and defaults shared with the `codewhale` facade.
     #[serde(default)]
@@ -3725,11 +3720,6 @@ impl Config {
         self.reasoning_effort.as_deref()
     }
 
-    /// Get hooks configuration, returning default if not configured.
-    pub fn hooks_config(&self) -> HooksConfig {
-        self.hooks.clone().unwrap_or_default()
-    }
-
     /// Resolve the notifications configuration with defaults applied.
     #[must_use]
     pub fn notifications_config(&self) -> NotificationsConfig {
@@ -5334,7 +5324,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         max_subagents: override_cfg.max_subagents.or(base.max_subagents),
         retry: override_cfg.retry.or(base.retry),
         tui: override_cfg.tui.or(base.tui),
-        hooks: override_cfg.hooks.or(base.hooks),
         providers: merge_providers(base.providers, override_cfg.providers),
         features: merge_features(base.features, override_cfg.features),
         notifications: override_cfg.notifications.or(base.notifications),

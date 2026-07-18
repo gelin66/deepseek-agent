@@ -17,7 +17,6 @@ use crate::config::{
     save_api_key, save_api_key_for,
 };
 use crate::core::events::TurnRoute;
-use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{MessageId, tr};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
@@ -1701,8 +1700,6 @@ pub struct App {
     pub api_key_env_only: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
-    // Hooks system
-    pub hooks: HookExecutor,
     #[allow(dead_code)]
     pub yolo: bool,
     /// One-shot YOLO→Act+Bypass migration notice for this session (#0.8.68 M6).
@@ -2314,11 +2311,6 @@ impl App {
             agent_approval_mode: configured_approval_mode,
         };
         let allow_shell = allow_shell || yolo_compat || matches!(initial_mode, AppMode::Yolo);
-        // Initialize hooks executor from config, merged with project-local
-        // `.codewhale/hooks.toml` (#3026).
-        let hooks_config =
-            crate::hooks::HooksConfig::load_with_project(config.hooks_config(), &workspace);
-        let hooks = HookExecutor::new(hooks_config, workspace.clone());
 
         let skills_scan_codewhale_only = config.skills_config().scan_codewhale_only();
         let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
@@ -2478,7 +2470,6 @@ impl App {
             api_key_env_only,
             api_key_input: String::new(),
             api_key_cursor: 0,
-            hooks,
             yolo: yolo_compat,
             yolo_compat_notified: false,
             keybinding_migration_notified: false,
@@ -2693,13 +2684,6 @@ impl App {
             self.yolo = matches!(policy.approval_mode, ApprovalMode::Bypass);
         }
 
-        // Execute mode change hooks
-        let context = HookContext::new()
-            .with_mode(mode.label())
-            .with_previous_mode(previous_mode.label())
-            .with_workspace(self.workspace.clone())
-            .with_model(&self.model);
-        let _ = self.hooks.execute(HookEvent::ModeChange, &context);
         self.needs_redraw = true;
         true
     }
@@ -2933,21 +2917,6 @@ impl App {
         if !self.approval_policy_requirements_managed {
             self.approval_policy_locked = false;
         }
-    }
-
-    /// Execute hooks for a specific event with the given context
-    pub fn execute_hooks(&self, event: HookEvent, context: &HookContext) -> Vec<HookResult> {
-        self.hooks.execute(event, context)
-    }
-
-    /// Create a hook context with common fields pre-populated
-    pub fn base_hook_context(&self) -> HookContext {
-        HookContext::new()
-            .with_mode(self.mode.label())
-            .with_workspace(self.workspace.clone())
-            .with_model(&self.model)
-            .with_session_id(self.hooks.session_id())
-            .with_tokens(self.session.total_tokens)
     }
 
     /// Soft cap on [`Self::history`] length. When history exceeds this count,

@@ -10,7 +10,7 @@ plugin-style extension.
 
 DeepSeek plugins are currently a documented packaging convention, not an
 auto-loaded runtime. Be explicit about that. A plugin becomes active only when
-it is referenced from a skill, hook, MCP server, or future plugin loader.
+it is referenced from a skill, MCP server, or future plugin loader.
 
 ## Workflow
 
@@ -34,7 +34,7 @@ What it does, how to enable it, and any scripts or MCP servers it expects.
 
 4. Add companion folders only when useful:
    - `skills/` for model instructions
-   - `scripts/` for helpers invoked by a skill or hook
+   - `scripts/` for helpers invoked by a skill
    - `mcp/` for an MCP server package or config notes
    - `assets/` for templates, examples, or fixtures
 5. Include an activation section in `PLUGIN.md` that says exactly how the user

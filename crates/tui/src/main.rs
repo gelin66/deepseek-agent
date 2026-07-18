@@ -41,7 +41,6 @@ mod execpolicy;
 mod features;
 mod fleet;
 mod hashing;
-mod hooks;
 mod localization;
 mod logging;
 mod mcp;
@@ -863,11 +862,10 @@ struct SessionDiagnosticsArgs {
 struct ScorecardArgs {
     /// JSON file with the recorded turns to score: an array of
     /// `{ "turn_id", "provider", "model", "billing_surface", "usage": {…} }`.
-    /// `turn_end` hooks emit this route provenance plus `created_at`; persisted
-    /// runtime exports may instead use `id`, `effective_provider`,
-    /// `effective_model`, and `effective_billing_surface`.
-    /// Shell-only hook rows marked `model_backed: false` are excluded. Legacy
-    /// rows without provider remain readable but their cost is unavailable.
+    /// Canonical runtime exports may instead use `id`, `effective_provider`,
+    /// `effective_model`, and `effective_billing_surface`. Rows without usage
+    /// or with `model_backed: false` are excluded. Rows without provider remain
+    /// readable but their cost is unavailable.
     #[arg(long, value_name = "FILE")]
     input: PathBuf,
     /// Optional baseline scorecard-metrics JSON to compare against. When set,
@@ -2064,8 +2062,8 @@ fn plugins_readme_template() -> &'static str {
          PLUGIN.md   # frontmatter + body, same shape as SKILL.md\n\
          scripts/    # optional helpers invoked by the plugin\n\
      ```\n\n\
-     Plugins are not loaded automatically. Wire them up through skills,\n\
-     hooks, or MCP servers when you want them active in a session.\n"
+     Plugins are not loaded automatically. Wire them up through skills or\n\
+     MCP servers when you want them active in a session.\n"
 }
 
 fn plugin_example_template() -> &'static str {

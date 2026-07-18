@@ -54,7 +54,7 @@ CodeWhale 底座已经包含大量真实能力：
 
 - 流式 Agent、工具调用、steer、cancel、compaction 和恢复；
 - 文件读写、patch、shell、git 和测试工具；
-- Skills、MCP、hooks 和本地 runtime API；
+- Skills、MCP 和本地 runtime API；
 - 子 Agent、预算、mailbox、checkpoint 和 worktree 基础；
 - DeepSeek reasoning replay、Strict Function Calling、FIM 和 cache 相关实现。
 

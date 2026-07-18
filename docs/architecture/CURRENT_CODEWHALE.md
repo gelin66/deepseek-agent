@@ -4,7 +4,7 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-18
+- 快照日期：2026-07-19
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
@@ -375,8 +375,12 @@ M4-C foreground 切换后还已物理删除：
 - 无调用方的 TUI OpenAI/Anthropic message/tool DTO 与 MCP `to_api_tools` 广告器；它们未进入
   canonical `AgentRuntime`，删除不会改变 MCP 配置、transport、OAuth、发现或 CLI 管理。
   当前 model-visible 工具仍只由固定目录和 Runtime 条件内建工具产生。
-- 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查和仍被 TUI/hooks 使用的
-  `crates/release` 保留，不属于本次删除。
+- 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查、TLS 和 skills installer
+  仍使用的 `crates/release` 保留，不属于本次删除。
+- TUI 私有生命周期 shell-hook owner、`App.hooks`、`[hooks]` 配置和虚假参考文档已物理删除。
+  切换后 `mode_change` shell hook 不再执行，受信任工作区中的 `.codewhale/hooks.toml`
+  也不再读取；其余生命周期事件原本就没有 canonical production 派发。
+  Runtime/tools/Run projection、MCP notification、panic hook、Fleet webhook 和桌面通知均未改变。
 - 没有构造方、不会读取图片数据的旧 TUI `ToolCell::ViewImage` 文本卡；canonical
   `read_file` 仍通过 `crates/tools` 的 macOS Vision/Tesseract 后端提供本地图片 OCR。
 - 只有自测构造、没有生产打开入口的实时对话 overlay、其专用缓存和失效快捷键；主

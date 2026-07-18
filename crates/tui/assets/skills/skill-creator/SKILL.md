@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: Create or improve codewhale skills. Use when the user wants a new skill, wants to update an existing skill, or needs guidance on when a skill should be a skill versus MCP, hooks, tools, or a plugin scaffold.
+description: Create or improve codewhale skills. Use when the user wants a new skill, wants to update an existing skill, or needs guidance on when a skill should be a skill versus MCP, tools, or a plugin scaffold.
 metadata:
   short-description: Create DeepSeek skills
 ---
@@ -28,9 +28,8 @@ Discovery paths, in precedence order:
 - `~/.deepseek/skills`
 
 Use skills for model instructions, workflows, and lightweight conventions. Use
-MCP for live external APIs or durable tools. Use hooks for automatic local
-events. Use plugin folders only as packaging/scaffolding until a real plugin
-loader exists.
+MCP for live external APIs or durable tools. Use plugin folders only as
+packaging/scaffolding until a real plugin loader exists.
 
 ## Minimum Shape
 

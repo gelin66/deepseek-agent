@@ -83,7 +83,6 @@ const SLASH_MENU_LIMIT: usize = 128;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
 const UI_ACTIVE_POLL_MS: u64 = 24;
-const SUBAGENT_HOOK_PREVIEW_LIMIT: usize = 2_048;
 const WEB_CONFIG_POLL_MS: u64 = 16;
 /// Ambient fish and the completion wake need a smoother cadence than the
 /// deliberately legible status spinner. This remains modest enough for a
