@@ -444,24 +444,6 @@ pub enum ConnectionState {
     Disconnected,
 }
 
-/// Host-visible evidence from every MCP transport settled by one pool.
-/// Counts include connections evicted earlier by reload/reconnect as well as
-/// the connections still present at final Engine shutdown.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct McpShutdownReport {
-    pub(crate) connections: usize,
-    pub(crate) failures: usize,
-}
-
-impl McpShutdownReport {
-    fn record(&mut self, settled: bool) {
-        self.connections = self.connections.saturating_add(1);
-        if !settled {
-            self.failures = self.failures.saturating_add(1);
-        }
-    }
-}
-
 // === McpConnection - Async Connection Management ===
 
 // === Transport Trait ===
@@ -1387,12 +1369,6 @@ impl McpConnection {
         &self.prompts
     }
 
-    /// Get server name
-    #[allow(dead_code)] // Public API for MCP consumers
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
     /// Check if connection is ready
     pub fn is_ready(&self) -> bool {
         self.state == ConnectionState::Ready
@@ -1401,12 +1377,6 @@ impl McpConnection {
     /// Get server config
     pub fn config(&self) -> &McpServerConfig {
         &self.config
-    }
-
-    /// Get connection state
-    #[allow(dead_code)] // Public API for MCP consumers
-    pub fn state(&self) -> ConnectionState {
-        self.state
     }
 
     fn next_id(&self) -> String {
@@ -1504,9 +1474,6 @@ pub struct McpPool {
     /// Dynamically added MCP servers (from tool calls at runtime).
     /// These are not persisted to disk and live for the process lifetime.
     pub(crate) dynamic_servers: Arc<RwLock<HashMap<String, McpServerConfig>>>,
-    /// Cumulative shutdown evidence, including runtime eviction paths whose
-    /// transports no longer exist by final Engine settlement.
-    shutdown_report: McpShutdownReport,
 }
 
 impl McpPool {
@@ -1522,7 +1489,6 @@ impl McpPool {
             config_hash,
             last_mtimes: Vec::new(),
             dynamic_servers: Arc::new(RwLock::new(HashMap::new())),
-            shutdown_report: McpShutdownReport::default(),
         }
     }
 
@@ -1576,8 +1542,7 @@ impl McpPool {
                 reason = %reason,
                 "shutting down MCP connection"
             );
-            let settled = connection.shutdown().await;
-            self.shutdown_report.record(settled);
+            let _ = connection.shutdown().await;
         }
     }
 
@@ -1593,15 +1558,12 @@ impl McpPool {
             reason = %reason,
             "shutting down MCP connections"
         );
-        let results = futures_util::future::join_all(
+        let _ = futures_util::future::join_all(
             connections
                 .into_values()
                 .map(|mut connection| async move { connection.shutdown().await }),
         )
         .await;
-        for settled in results {
-            self.shutdown_report.record(settled);
-        }
     }
 
     /// If the source config file's mtime has changed since the last check,
@@ -1769,19 +1731,6 @@ impl McpPool {
             }
         }
         resources
-    }
-
-    /// Get all discovered resource templates with server-prefixed names
-    #[allow(dead_code)] // Public API for MCP resource discovery
-    pub fn all_resource_templates(&self) -> Vec<(String, &McpResourceTemplate)> {
-        let mut templates = Vec::new();
-        for (server, conn) in &self.connections {
-            for template in conn.resource_templates() {
-                let safe_name = template.name.replace(' ', "_").to_lowercase();
-                templates.push((format!("mcp_{server}_{safe_name}"), template));
-            }
-        }
-        templates
     }
 
     async fn list_resources(&mut self, server: Option<String>) -> Result<Vec<serde_json::Value>> {
@@ -2046,19 +1995,6 @@ impl McpPool {
         }
     }
 
-    /// Get list of configured server names (static + dynamic)
-    #[allow(dead_code)] // Public API for MCP consumers
-    pub fn server_names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.config.servers.keys().cloned().collect();
-        let dynamic = self.dynamic_servers.read();
-        for name in dynamic.keys() {
-            if !names.contains(name) {
-                names.push(name.clone());
-            }
-        }
-        names
-    }
-
     /// Add a runtime server configuration (in-memory only, not persisted).
     ///
     /// This is used for dynamically started MCP servers from chat context.
@@ -2088,38 +2024,6 @@ impl McpPool {
         }
         dynamic.insert(name, config);
         Ok(())
-    }
-
-    /// Get list of connected server names
-    #[allow(dead_code)] // Public API; the HTTP list endpoint no longer spawns a pool to call it (#3532)
-    pub fn connected_servers(&self) -> Vec<&str> {
-        self.connections
-            .iter()
-            .filter(|(_, c)| c.is_ready())
-            .map(|(n, _)| n.as_str())
-            .collect()
-    }
-
-    /// Disconnect all connections
-    #[allow(dead_code)] // Public API for MCP lifecycle management
-    pub async fn disconnect_all(&mut self) -> McpShutdownReport {
-        self.shutdown_all_connections("disconnect all").await;
-        self.shutdown_report
-    }
-
-    /// Concurrently settle every connection in the pool. Stdio transports
-    /// receive a bounded graceful process-tree stop followed by hard kill and
-    /// reap; network transports cancel and join their receive tasks.
-    #[allow(dead_code)] // Wired in by callers that want graceful shutdown
-    pub async fn shutdown_all(&mut self) -> McpShutdownReport {
-        self.shutdown_all_connections("pool shutdown").await;
-        self.shutdown_report
-    }
-
-    /// Get the underlying configuration
-    #[allow(dead_code)] // Public API for MCP consumers
-    pub fn config(&self) -> &McpConfig {
-        &self.config
     }
 
     /// Check if a tool name is an MCP tool

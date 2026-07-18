@@ -1,7 +1,7 @@
 use super::headers::{MCP_HTTP_ACCEPT, is_safe_custom_header, with_default_mcp_http_headers};
 use super::*;
 use reqwest::header::{ACCEPT, CONTENT_TYPE};
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, OnceLock};
 #[cfg(unix)]
@@ -17,6 +17,10 @@ async fn lock_mcp_loopback_tests() -> tokio::sync::MutexGuard<'static, ()> {
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await
+}
+
+fn configured_server_names(pool: &McpPool) -> BTreeSet<String> {
+    pool.config.servers.keys().cloned().collect()
 }
 
 #[cfg(unix)]
@@ -793,7 +797,10 @@ async fn workspace_mcp_pool_reload_picks_up_project_config_creation() {
     .unwrap();
 
     let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace).unwrap();
-    assert_eq!(pool.server_names(), vec!["global".to_string()]);
+    assert_eq!(
+        configured_server_names(&pool),
+        BTreeSet::from(["global".to_string()])
+    );
 
     fs::create_dir_all(&project_dir).unwrap();
     fs::write(
@@ -803,11 +810,8 @@ async fn workspace_mcp_pool_reload_picks_up_project_config_creation() {
     .unwrap();
 
     assert!(pool.reload_if_config_changed().await.unwrap());
-    let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
-    let expected: std::collections::BTreeSet<String> =
-        ["global".to_string(), "project".to_string()]
-            .into_iter()
-            .collect();
+    let names = configured_server_names(&pool);
+    let expected = BTreeSet::from(["global".to_string(), "project".to_string()]);
     assert_eq!(names, expected);
 }
 
@@ -831,16 +835,16 @@ async fn workspace_mcp_pool_reload_picks_up_project_config_after_workspace_trust
     .unwrap();
 
     let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace).unwrap();
-    assert_eq!(pool.server_names(), vec!["global".to_string()]);
+    assert_eq!(
+        configured_server_names(&pool),
+        BTreeSet::from(["global".to_string()])
+    );
 
     write_workspace_trust_config(&trust_env.config_path, &workspace);
 
     assert!(pool.reload_if_config_changed().await.unwrap());
-    let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
-    let expected: std::collections::BTreeSet<String> =
-        ["global".to_string(), "project".to_string()]
-            .into_iter()
-            .collect();
+    let names = configured_server_names(&pool);
+    let expected = BTreeSet::from(["global".to_string(), "project".to_string()]);
     assert_eq!(names, expected);
 }
 
@@ -864,17 +868,17 @@ async fn workspace_mcp_pool_reload_drops_project_config_after_workspace_trust_re
     .unwrap();
 
     let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace).unwrap();
-    let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
-    let expected: std::collections::BTreeSet<String> =
-        ["global".to_string(), "project".to_string()]
-            .into_iter()
-            .collect();
+    let names = configured_server_names(&pool);
+    let expected = BTreeSet::from(["global".to_string(), "project".to_string()]);
     assert_eq!(names, expected);
 
     fs::remove_file(&trust.config_path).unwrap();
 
     assert!(pool.reload_if_config_changed().await.unwrap());
-    assert_eq!(pool.server_names(), vec!["global".to_string()]);
+    assert_eq!(
+        configured_server_names(&pool),
+        BTreeSet::from(["global".to_string()])
+    );
 }
 
 #[tokio::test]
@@ -898,17 +902,17 @@ async fn workspace_mcp_pool_reload_drops_project_config_after_deletion() {
     .unwrap();
 
     let mut pool = McpPool::from_config_path_with_workspace(&global_path, &workspace).unwrap();
-    let names: std::collections::BTreeSet<String> = pool.server_names().into_iter().collect();
-    let expected: std::collections::BTreeSet<String> =
-        ["global".to_string(), "project".to_string()]
-            .into_iter()
-            .collect();
+    let names = configured_server_names(&pool);
+    let expected = BTreeSet::from(["global".to_string(), "project".to_string()]);
     assert_eq!(names, expected);
 
     fs::remove_file(project_path).unwrap();
 
     assert!(pool.reload_if_config_changed().await.unwrap());
-    assert_eq!(pool.server_names(), vec!["global".to_string()]);
+    assert_eq!(
+        configured_server_names(&pool),
+        BTreeSet::from(["global".to_string()])
+    );
 }
 
 #[test]
@@ -1164,23 +1168,6 @@ impl McpTransport for BarrierShutdownTransport {
     }
 }
 
-struct FailedShutdownTransport;
-
-#[async_trait::async_trait]
-impl McpTransport for FailedShutdownTransport {
-    async fn send(&mut self, _msg: Vec<u8>) -> Result<()> {
-        Ok(())
-    }
-
-    async fn recv(&mut self) -> Result<Vec<u8>> {
-        std::future::pending().await
-    }
-
-    async fn shutdown(&mut self) -> bool {
-        false
-    }
-}
-
 fn test_server_config() -> McpServerConfig {
     McpServerConfig {
         command: Some("mock".to_string()),
@@ -1223,7 +1210,7 @@ fn test_connection(transport: Box<dyn McpTransport>) -> McpConnection {
 }
 
 #[tokio::test]
-async fn mcp_pool_shutdown_all_settles_connections_concurrently() {
+async fn mcp_pool_shutdown_all_connections_settles_concurrently() {
     const CONNECTIONS: usize = 3;
     let barrier = Arc::new(tokio::sync::Barrier::new(CONNECTIONS));
     let shutdowns = Arc::new(AtomicUsize::new(0));
@@ -1238,26 +1225,14 @@ async fn mcp_pool_shutdown_all_settles_connections_concurrently() {
         );
     }
 
-    let report = tokio::time::timeout(Duration::from_secs(1), pool.shutdown_all())
-        .await
-        .expect("serial MCP shutdown would deadlock on the first barrier participant");
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        pool.shutdown_all_connections("test pool shutdown"),
+    )
+    .await
+    .expect("serial MCP shutdown would deadlock on the first barrier participant");
     assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), CONNECTIONS);
-    assert_eq!(report.connections, CONNECTIONS);
-    assert_eq!(report.failures, 0);
     assert!(pool.connections.is_empty());
-}
-
-#[tokio::test]
-async fn mcp_pool_shutdown_report_preserves_transport_failure() {
-    let mut pool = McpPool::new(McpConfig::default());
-    pool.connections.insert(
-        "failed".to_string(),
-        test_connection(Box::new(FailedShutdownTransport)),
-    );
-
-    let report = pool.shutdown_all().await;
-    assert_eq!(report.connections, 1);
-    assert_eq!(report.failures, 1);
 }
 
 #[tokio::test]
@@ -1281,7 +1256,7 @@ async fn mcp_runtime_eviction_paths_invoke_transport_shutdown() {
         .insert("reload-a".into(), make_connection());
     pool.connections
         .insert("reload-b".into(), make_connection());
-    pool.disconnect_all().await;
+    pool.shutdown_all_connections("test runtime eviction").await;
     assert_eq!(shutdowns.load(AtomicOrdering::SeqCst), 3);
     assert!(pool.connections.is_empty());
 }
@@ -1345,7 +1320,7 @@ async fn call_method_invalid_json_includes_server_output_preview() {
 
     assert!(msg.contains("Invalid MCP JSON-RPC message from server 'mock'"));
     assert!(msg.contains("Allow Burp MCP connection"));
-    assert_eq!(conn.state(), ConnectionState::Disconnected);
+    assert_eq!(conn.state, ConnectionState::Disconnected);
 }
 
 #[tokio::test]
@@ -1366,7 +1341,7 @@ async fn recv_times_out_waiting_for_mcp_response_and_disconnects() {
             .contains("Timed out waiting for MCP JSON-RPC response from server 'mock' after 0s"),
         "unexpected error: {err:#}"
     );
-    assert_eq!(conn.state(), ConnectionState::Disconnected);
+    assert_eq!(conn.state, ConnectionState::Disconnected);
 }
 
 #[tokio::test]
@@ -1392,7 +1367,7 @@ async fn call_method_times_out_while_waiting_for_response() {
 #[tokio::test]
 async fn test_mcp_pool_empty_config() {
     let pool = McpPool::new(McpConfig::default());
-    assert!(pool.server_names().is_empty());
+    assert!(pool.config.servers.is_empty());
     assert!(pool.all_tools().is_empty());
 }
 
@@ -1429,15 +1404,15 @@ async fn reload_if_config_changed_skips_when_content_unchanged() {
 /// #1267 part 2: when the on-disk config changes content, the next
 /// `reload_if_config_changed` call must swap in the new config and
 /// (would) drop all live connections. We can't stand up a real
-/// `McpConnection` in a unit test, so we observe the swap via the
-/// publicly-readable side: server names go from empty to non-empty.
+/// `McpConnection` in a unit test, so we observe the pool's private active
+/// config directly: server names go from empty to non-empty.
 #[tokio::test]
 async fn reload_if_config_changed_swaps_config_on_content_change() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("mcp.json");
     std::fs::write(&path, r#"{"servers":{}}"#).unwrap();
     let mut pool = McpPool::from_config_path(&path).unwrap();
-    assert!(pool.server_names().is_empty());
+    assert!(pool.config.servers.is_empty());
     // Mutate the file so both the mtime and the hash change.
     std::thread::sleep(std::time::Duration::from_millis(10));
     std::fs::write(
@@ -1447,7 +1422,7 @@ async fn reload_if_config_changed_swaps_config_on_content_change() {
     .unwrap();
     let reloaded = pool.reload_if_config_changed().await.unwrap();
     assert!(reloaded, "content-changed config must trigger reload");
-    let names = pool.server_names();
+    let names = configured_server_names(&pool);
     assert!(
         names.contains(&"new".to_string()),
         "expected new server in pool after reload, got {names:?}"
@@ -2101,7 +2076,7 @@ async fn mcp_connection_supports_streamable_http_event_stream_responses() {
     .await
     .unwrap();
 
-    assert_eq!(conn.state(), ConnectionState::Ready);
+    assert_eq!(conn.state, ConnectionState::Ready);
     assert_eq!(conn.tools().len(), 1);
     assert_eq!(conn.tools()[0].name, "read_wiki_structure");
 

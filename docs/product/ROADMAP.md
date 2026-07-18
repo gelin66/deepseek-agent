@@ -755,7 +755,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接
   和工具发现；当前 canonical Agent 固定工具目录没有加载 MCP pool，因此文档不再把 CLI
-  discovery 误写成 model-visible 工具或 TUI `/mcp` manager。
+  discovery 误写成 model-visible 工具或 TUI `/mcp` manager。随后又删除了 TUI binary 私有
+  `mcp` 模块内八个零生产消费者的“public API” wrapper、仅供测试读取的 shutdown report 与
+  `#[allow(dead_code)]`；配置 reload、stale-session retry、transport shutdown 和 Drop 清理保留。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
