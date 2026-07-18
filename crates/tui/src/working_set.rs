@@ -1,4 +1,4 @@
-//! Repo-aware workspace resolution and file completion.
+//! Repo-aware workspace resolution and `@`-mention completion.
 //!
 //! This module resolves `@`-mentions and discovers completion candidates while
 //! respecting workspace boundaries and repository ignore rules.
@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Repo-aware resolver for `@`-mentions and file pickers.
+/// Repo-aware resolver for `@`-mentions.
 ///
 /// `cwd` is captured at construction; if the host's current directory changes
 /// during a session, build a fresh `Workspace`. Fuzzy lookups are backed by a
@@ -58,15 +58,6 @@ impl SearchContext<'_> {
 }
 
 impl Workspace {
-    /// Construct a workspace anchored at `root`, capturing the process CWD as
-    /// the secondary resolution pass. Convenience entry point intended for
-    /// callers that don't already have a CWD on hand; the App routes through
-    /// [`Workspace::with_cwd`] with its own captured launch directory.
-    #[allow(dead_code)] // Keeps the surface stable for #97 (Ctrl+P picker).
-    pub fn new(root: PathBuf) -> Self {
-        Self::with_cwd(root, std::env::current_dir().ok())
-    }
-
     /// Construct with an explicit cwd. Used by tests that need deterministic
     /// resolution against a known directory without depending on (and
     /// mutating) the process's real working directory.

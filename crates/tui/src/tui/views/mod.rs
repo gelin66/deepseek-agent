@@ -21,7 +21,6 @@ pub enum ModalKind {
     UserInput,
     Pager,
     LiveTranscript,
-    FilePicker,
 }
 
 /// Clear and paint a modal popup with an opaque surface.
@@ -314,12 +313,6 @@ pub enum ViewEvent {
     },
     SidebarAgentCancel {
         agent_id: String,
-    },
-    /// Emitted by the file picker (`Ctrl+P`) when the user presses Enter on a
-    /// candidate. The handler should insert `@<path>` at the composer's cursor
-    /// position.
-    FilePickerSelected {
-        path: String,
     },
     /// Emitted by the fleet setup Review step (`m`) to ask the configured
     /// model to draft the agent profile the wizard describes. The host

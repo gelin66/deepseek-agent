@@ -71,6 +71,9 @@ WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 继续使用同一组 `ThemeId`/`UiTheme`。
 旧 `FeedbackPickerView` 也没有生产入口；它及其私有 command-palette 事件、失效的
 `Ctrl+K` 帮助项已删除。输入 `/` 打开的 canonical slash menu 不受影响。
+旧 `FilePickerView` 和 `file_picker_relevance` 只有自测与一个无人调用的 opener；modal、
+事件和失效的 `Ctrl+P` 帮助项已删除。生产 `@mention` 菜单、`file_frecency`、
+`Workspace::completions` 与模糊路径解析继续保留。
 
 ## 2. 已统一的生产链
 

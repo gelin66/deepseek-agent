@@ -139,9 +139,8 @@ pub fn partial_file_mention_at_cursor(input: &str, cursor_chars: usize) -> Optio
     Some((byte_start, partial))
 }
 
-/// Cwd-aware completion entry point. Shares its walker with the future
-/// Ctrl+P fuzzy picker (#97); see [`Workspace::completions`] for the
-/// ranking + display rules.
+/// Cwd-aware completion entry point. See [`Workspace::completions`] for the
+/// ranking and display rules.
 pub fn find_file_mention_completions(
     workspace: &Workspace,
     partial: &str,
