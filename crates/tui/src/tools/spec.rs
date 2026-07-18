@@ -90,10 +90,6 @@ pub enum SandboxPolicy {
 pub struct ToolContext {
     /// TUI-independent state owned by the production tools crate.
     production: ProductionToolContext,
-    /// Read-only snapshot of the active Goal acceptance contract at the start
-    /// of this tool-execution context. Verifiers bind receipts to this exact
-    /// generation; a later Goal can never inherit an earlier result.
-    pub goal_contract: Option<crate::tools::goal::TaskContract>,
     /// Shared shell manager for background tasks and streaming IO.
     pub shell_manager: SharedShellManager,
     /// Sub-agent that owns tool work started through this context. Root user
@@ -186,7 +182,6 @@ impl ToolContext {
             .1;
         Self {
             production: ProductionToolContext::new(workspace),
-            goal_contract: None,
             shell_manager,
             owner_agent_id: None,
             owner_agent_name: None,
@@ -226,7 +221,6 @@ impl ToolContext {
         let production = ProductionToolContext::new(workspace).with_trust_mode(trust_mode);
         Self {
             production,
-            goal_contract: None,
             shell_manager,
             owner_agent_id: None,
             owner_agent_name: None,
@@ -268,7 +262,6 @@ impl ToolContext {
             .with_auto_approve(auto_approve);
         Self {
             production,
-            goal_contract: None,
             shell_manager,
             owner_agent_id: None,
             owner_agent_name: None,
@@ -387,16 +380,6 @@ impl ToolContext {
     #[must_use]
     pub fn with_runtime_services(mut self, runtime: RuntimeToolServices) -> Self {
         self.runtime = runtime;
-        self
-    }
-
-    /// Bind tool execution to one active Goal acceptance contract.
-    #[must_use]
-    pub fn with_goal_contract(
-        mut self,
-        contract: Option<crate::tools::goal::TaskContract>,
-    ) -> Self {
-        self.goal_contract = contract;
         self
     }
 

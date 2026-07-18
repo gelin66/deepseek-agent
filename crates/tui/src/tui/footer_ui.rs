@@ -309,45 +309,6 @@ mod tests {
     }
 
     #[test]
-    fn footer_state_label_reports_paused_when_command_is_on_hold() {
-        let mut app = create_test_app();
-        app.is_loading = false;
-        app.paused = false;
-        app.paused_quarry = Some("Scan nested git repositories".to_string());
-
-        let (label, _) = footer_state_label(&app);
-        assert_eq!(
-            label, "paused \u{23F8}",
-            "footer should surface a paused command once the turn has drained, got {label:?}"
-        );
-    }
-
-    #[test]
-    fn footer_state_label_reports_paused_via_app_flag_even_without_quarry() {
-        let mut app = create_test_app();
-        app.is_loading = false;
-        app.paused = true;
-        app.paused_quarry = None;
-
-        let (label, _) = footer_state_label(&app);
-        assert_eq!(
-            label, "paused \u{23F8}",
-            "footer should honor app.paused directly, got {label:?}"
-        );
-    }
-
-    #[test]
-    fn footer_state_label_defers_coarse_busy_to_header_during_live_turns() {
-        let mut app = create_test_app();
-        app.is_loading = true;
-        app.paused = true;
-        app.paused_quarry = Some("Deploy to staging".to_string());
-
-        let (label, _) = footer_state_label(&app);
-        assert_eq!(label, "ready");
-    }
-
-    #[test]
     fn footer_state_label_falls_back_to_idle_at_rest() {
         let app = create_test_app();
         let (label, _) = footer_state_label(&app);
@@ -1015,19 +976,6 @@ pub(crate) fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Co
     if running_agent_count(app) > 0 {
         return ("working", app.ui_theme.status_working);
     }
-    // A paused pausable command is an actionable state even after the turn's
-    // tools have drained: the user can resume or ESC-to-cancel. Without this
-    // branch the footer would read "idle" while a command is on hold, so the
-    // pause state would only be visible in the Work sidebar. The sidebar's
-    // `live_pause_indicator` keeps the finer "(Pausing)" vs "(Paused)" split;
-    // here we surface a single coarse "paused" state because the `busy` branch
-    // above already covers the draining transition. `paused_quarry` is checked
-    // alongside `app.paused` so the label survives the turn-end window where
-    // `app.paused` has been cleared but the hold is still resumable.
-    if app.paused || app.paused_quarry.is_some() {
-        return ("paused \u{23F8}", app.ui_theme.status_warning);
-    }
-
     if app.queued_draft.is_some() {
         return ("draft", app.ui_theme.text_muted);
     }

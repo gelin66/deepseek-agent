@@ -5,14 +5,8 @@
 //! This module is a pure, side-effect-free foundation for surfacing how many
 //! tokens and how much wall-clock time a task has consumed, optionally relative
 //! to a budget. It performs no I/O and no rendering; consumers (status lines,
-//! the cost panel, the goal/budget tooling) are wired up separately so the
+//! the cost panel and budget-aware callers) are wired up separately so the
 //! formatting and pressure logic can be unit-tested in isolation.
-//!
-//! The shape intentionally mirrors the budget vocabulary already used by the
-//! goal tooling (`token_budget: Option<_>`) so a consumer can adapt between the
-//! two without inventing new concepts. We keep a local type rather than reusing
-//! `tools::goal` here to avoid coupling a presentation-layer helper to the tool
-//! domain model (whose budgets are `u32` and carry unrelated bookkeeping).
 
 use std::{
     fmt::{self, Write as _},

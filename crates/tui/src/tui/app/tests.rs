@@ -1796,21 +1796,18 @@ fn base_policy_for_mode_projects_the_mode_permission_table() {
     // Plan: read-only, no shell, no trust, Suggest — and it never inherits the
     // (here elevated) Agent baseline.
     let plan = base_policy_for_mode(AppMode::Plan, &prefs);
-    assert_eq!(plan.mode, AppMode::Plan);
     assert!(!plan.allow_shell);
     assert!(!plan.trust_mode);
     assert_eq!(plan.approval_mode, ApprovalMode::Suggest);
 
     // Agent: exactly the durable baseline.
     let agent = base_policy_for_mode(AppMode::Agent, &prefs);
-    assert_eq!(agent.mode, AppMode::Agent);
     assert!(agent.allow_shell);
     assert!(agent.trust_mode);
     assert_eq!(agent.approval_mode, ApprovalMode::Never);
 
     // Auto: compatibility alias for the durable Agent baseline.
     let auto = base_policy_for_mode(AppMode::Auto, &prefs);
-    assert_eq!(auto.mode, AppMode::Auto);
     assert!(auto.allow_shell);
     assert!(auto.trust_mode);
     assert_eq!(auto.approval_mode, ApprovalMode::Never);
@@ -1822,7 +1819,6 @@ fn base_policy_for_mode_projects_the_mode_permission_table() {
     // YOLO: full authority is represented by Bypass, not a separate
     // auto-approve field (#3736).
     let yolo = base_policy_for_mode(AppMode::Yolo, &prefs);
-    assert_eq!(yolo.mode, AppMode::Yolo);
     assert!(yolo.allow_shell);
     assert!(yolo.trust_mode);
     assert_eq!(yolo.approval_mode, ApprovalMode::Bypass);

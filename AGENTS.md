@@ -77,6 +77,11 @@ Changing one of these constraints requires evidence and a new ADR.
   Deterministic evidence remains in `crates/tools`; the canonical DeepSeek FIM
   request surface remains in `crates/deepseek`. Do not restore the deleted TUI
   model or tool loops as compatibility paths.
+- The TUI-local Goal/Hunt loop, private TaskContract/receipt store, Slop ledger,
+  fake custom-command pause state, and their UI/config surfaces have been
+  physically deleted. They had no canonical production consumer. M5 must build
+  the only TaskContract/EvidenceReceipt owner in protocol/runtime/state rather
+  than adapt or restore this prototype.
 
 Never use broad `git clean`, `git restore`, reset, or file moves to make a
 dirty tree look tidy. Inspect consumers with `rg`, preserve unrelated changes,

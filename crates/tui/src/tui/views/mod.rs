@@ -1972,15 +1972,6 @@ fn experimental_config_rows(config: &Config) -> Vec<ConfigRow> {
         });
     }
 
-    rows.push(ConfigRow {
-        section: ConfigSection::Fleet,
-        key: "goal_command".to_string(),
-        value:
-            "/goal sets session objectives with optional token budgets; state shows in Work context"
-                .to_string(),
-        editable: false,
-        scope: ConfigScope::Saved,
-    });
     rows
 }
 
@@ -2045,7 +2036,6 @@ fn config_label_for_key(key: &str) -> String {
         "prefer_external_pdftotext" => "PDF text extractor",
         "mcp_config_path" => "MCP config path",
         "fleet.exec.max_spawn_depth" => "Fleet recursion depth",
-        "goal_command" => "Goal command",
         _ => {
             if let Some(feature) = key.strip_prefix("features.") {
                 return format!("Feature: {}", humanize_config_key(feature));
@@ -2139,7 +2129,6 @@ fn config_hint_for_key(key: &str) -> &'static str {
         "features.mcp" => "read-only feature flag state for MCP tools",
         "features.exec_policy" => "read-only feature flag state for execution policy tools",
         "features.vision_model" => "beta feature flag for vision/model image support",
-        "goal_command" => "/goal sets objectives, budgets, and Work-context status",
         _ => "",
     }
 }
@@ -3293,7 +3282,6 @@ mod tests {
                 "MCP",
                 "舰队",
                 "实验",
-                "舰队",
             ]
         );
     }
@@ -3331,7 +3319,7 @@ mod tests {
         assert!(keys.contains(&"mcp_config_path"));
         assert!(keys.contains(&"fleet.exec.max_spawn_depth"));
         assert!(keys.contains(&"features.vision_model"));
-        assert!(keys.contains(&"goal_command"));
+        assert!(!keys.contains(&"goal_command"));
         assert!(!keys.contains(&"features.subagents"));
         assert!(!keys.contains(&"features.web_search"));
         assert!(!keys.contains(&"features.apply_patch"));
@@ -3602,8 +3590,7 @@ max_spawn_depth = 2
 
         view.clear_filter();
         type_filter(&mut view, "goal");
-        assert_eq!(visible_section_labels(&view), vec!["舰队"]);
-        assert_eq!(visible_row_keys(&view), vec!["goal_command"]);
+        assert!(visible_row_keys(&view).is_empty());
 
         view.clear_filter();
         type_filter(&mut view, "whaleflow");

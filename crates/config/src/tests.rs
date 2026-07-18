@@ -27,37 +27,6 @@ fn network_policy_toml_deserializes_proxy_hosts() {
 }
 
 #[test]
-fn verifier_config_defaults_to_hunt_verdict_policy() {
-    let config: ConfigToml = toml::from_str(
-        r#"
-        [verifier]
-        enabled = true
-        "#,
-    )
-    .expect("verifier config toml");
-
-    let verifier = config.verifier.expect("verifier table");
-    assert!(verifier.enabled);
-    assert_eq!(verifier.verdict_policy, VerifierVerdictPolicy::Hunt);
-}
-
-#[test]
-fn verifier_config_rejects_unknown_verdict_policy() {
-    let err = toml::from_str::<ConfigToml>(
-        r#"
-        [verifier]
-        verdict_policy = "strict"
-        "#,
-    )
-    .expect_err("only the shipped hunt policy should parse");
-
-    assert!(
-        err.message().contains("unknown variant"),
-        "unexpected error: {err}"
-    );
-}
-
-#[test]
 fn permissions_toml_deserializes_typed_ask_rules() {
     let permissions: PermissionsToml = toml::from_str(
         r#"
@@ -2403,36 +2372,36 @@ fn ensure_state_dir_relocates_legacy_subdir_on_first_write() {
         .as_nanos();
     let state_env = StateDirEnv::install(unique);
     // Seed a legacy subdir; primary must not exist yet.
-    fs::create_dir_all(state_env.legacy("slop_ledger")).expect("legacy dir");
+    fs::create_dir_all(state_env.legacy("runtime-cache")).expect("legacy dir");
     fs::write(
-        state_env.legacy("slop_ledger").join("slop_ledger.json"),
+        state_env.legacy("runtime-cache").join("entry.json"),
         b"legacy",
     )
     .expect("legacy file");
-    assert!(!state_env.primary("slop_ledger").exists());
+    assert!(!state_env.primary("runtime-cache").exists());
 
     let (dir, migration) =
-        ensure_state_dir_with_migration("slop_ledger").expect("ensure_state_dir");
-    assert_eq!(dir, state_env.primary("slop_ledger"));
+        ensure_state_dir_with_migration("runtime-cache").expect("ensure_state_dir");
+    assert_eq!(dir, state_env.primary("runtime-cache"));
     let migration = migration.expect("legacy migration should be reported");
     assert_eq!(migration.kind, StateMigrationKind::Relocated);
-    assert_eq!(migration.subdir, "slop_ledger");
-    assert_eq!(migration.legacy_path, state_env.legacy("slop_ledger"));
-    assert_eq!(migration.primary_path, state_env.primary("slop_ledger"));
+    assert_eq!(migration.subdir, "runtime-cache");
+    assert_eq!(migration.legacy_path, state_env.legacy("runtime-cache"));
+    assert_eq!(migration.primary_path, state_env.primary("runtime-cache"));
     // Legacy contents relocated into primary.
     assert_eq!(
-        fs::read_to_string(state_env.primary("slop_ledger").join("slop_ledger.json"))
+        fs::read_to_string(state_env.primary("runtime-cache").join("entry.json"))
             .expect("migrated file"),
         "legacy"
     );
     // The legacy subdir was relocated (moved), so .deepseek stops growing.
     assert!(
-        !state_env.legacy("slop_ledger").exists(),
+        !state_env.legacy("runtime-cache").exists(),
         "legacy subdir should be removed after relocation"
     );
     // Idempotent: a second call is a no-op now that primary exists.
     let (_, repeated_migration) =
-        ensure_state_dir_with_migration("slop_ledger").expect("idempotent ensure");
+        ensure_state_dir_with_migration("runtime-cache").expect("idempotent ensure");
     assert!(repeated_migration.is_none());
     let _ = fs::remove_dir_all(&state_env.home);
 }

@@ -3,9 +3,7 @@
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]
 
-pub mod authority;
 pub mod events;
-pub mod ops;
 #[path = "runtime_contract/termination.rs"]
 pub mod termination;
 // The rest of `runtime_contract/` stays on disk as staged Core-runtime

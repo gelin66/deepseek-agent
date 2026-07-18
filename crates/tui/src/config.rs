@@ -1956,11 +1956,6 @@ pub struct Config {
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
 
-    /// Verifier-preview behavior (#2093). When absent, automatic verifier
-    /// preview stays off and verifier verdicts use the hunt policy.
-    #[serde(default)]
-    pub verifier: Option<codewhale_config::VerifierConfigToml>,
-
     /// Community skill installer settings (#140). When absent, installer
     /// commands fall back to the bundled defaults
     /// ([`crate::skills::install::DEFAULT_REGISTRY_URL`] +
@@ -6087,7 +6082,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         features: merge_features(base.features, override_cfg.features),
         notifications: override_cfg.notifications.or(base.notifications),
         network: override_cfg.network.or(base.network),
-        verifier: override_cfg.verifier.or(base.verifier),
         skills: merge_skills_config(base.skills, override_cfg.skills),
         snapshots: override_cfg.snapshots.or(base.snapshots),
         search: override_cfg.search.or(base.search),

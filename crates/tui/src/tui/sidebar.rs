@@ -5,9 +5,7 @@
 //! reads from `App` snapshots; mutation lives in the main app loop.
 
 use std::fmt::Write;
-use std::time::{Duration, Instant};
-
-use crate::tui::app::HuntVerdict;
+use std::time::Duration;
 
 use ratatui::{
     Frame,
@@ -256,21 +254,11 @@ struct SidebarWorkStrategyStep {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct SidebarWorkSummary {
-    goal_objective: Option<String>,
-    goal_token_budget: Option<u32>,
-    goal_completed: bool,
-    goal_started_at: Option<Instant>,
-    /// When the goal went terminal. While `Some`, the elapsed line freezes at
-    /// `goal_finished_at - goal_started_at` instead of ticking every frame.
-    goal_finished_at: Option<Instant>,
-    tokens_used: u32,
     checklist_completion_pct: u8,
     checklist_items: Vec<SidebarWorkChecklistItem>,
     strategy_explanation: Option<String>,
     strategy_steps: Vec<SidebarWorkStrategyStep>,
     state_updating: bool,
-    pause_indicator: Option<String>,
-    workflow_paused: bool,
 }
 
 impl SidebarWorkSummary {
@@ -294,12 +282,7 @@ impl SidebarWorkSummary {
     }
 
     fn has_useful_content(&self) -> bool {
-        self.goal_objective
-            .as_deref()
-            .is_some_and(|s| !s.trim().is_empty())
-            || !self.checklist_items.is_empty()
-            || self.has_strategy()
-            || self.state_updating
+        !self.checklist_items.is_empty() || self.has_strategy() || self.state_updating
     }
 
     fn strategy_counts(&self) -> (usize, usize, usize) {
@@ -340,9 +323,7 @@ impl SidebarWorkSummary {
         if self.has_strategy() {
             return Some("Work plan active".to_string());
         }
-        self.goal_objective
-            .as_ref()
-            .map(|_| "Work goal active".to_string())
+        None
     }
 }
 
@@ -362,9 +343,6 @@ pub(crate) fn compact_work_indicator(app: &App) -> Option<String> {
     let plan = app.plan_state.try_lock().ok().map(|plan| !plan.is_empty());
     if plan == Some(true) {
         return Some("Work plan active".to_string());
-    }
-    if app.hunt.quarry.is_some() || app.paused_quarry.is_some() {
-        return Some("Work goal active".to_string());
     }
     if todos.is_none() || plan.is_none() {
         return app
@@ -402,38 +380,6 @@ fn has_renderable_strategy(summary: &SidebarWorkSummary) -> bool {
 }
 
 fn sidebar_work_summary(app: &mut App) -> SidebarWorkSummary {
-    fn live_goal_objective(app: &App) -> Option<String> {
-        if app.paused || app.paused_quarry.is_some() {
-            app.hunt
-                .quarry
-                .clone()
-                .or_else(|| app.paused_quarry.clone())
-        } else {
-            app.hunt.quarry.clone()
-        }
-    }
-
-    fn live_pause_indicator(app: &App) -> Option<String> {
-        if app.paused && app.is_loading {
-            Some("(Pausing)".to_string())
-        } else if app.paused || app.paused_quarry.is_some() {
-            Some("(Paused)".to_string())
-        } else {
-            None
-        }
-    }
-
-    fn apply_live_goal_state(summary: &mut SidebarWorkSummary, app: &App) {
-        summary.goal_objective = live_goal_objective(app);
-        summary.goal_token_budget = app.hunt.token_budget;
-        summary.goal_completed = app.hunt.verdict == HuntVerdict::Hunted;
-        summary.goal_started_at = app.hunt.started_at;
-        summary.goal_finished_at = app.hunt.finished_at;
-        summary.tokens_used = app.session.total_conversation_tokens;
-        summary.pause_indicator = live_pause_indicator(app);
-        summary.workflow_paused = app.paused || app.paused_quarry.is_some();
-    }
-
     let fresh = (|| {
         let todos = app.todos.try_lock().ok()?;
         let plan = app.plan_state.try_lock().ok()?;
@@ -480,22 +426,13 @@ fn sidebar_work_summary(app: &mut App) -> SidebarWorkSummary {
             )
         };
 
-        let mut summary = SidebarWorkSummary {
-            goal_objective: live_goal_objective(app),
-            goal_token_budget: app.hunt.token_budget,
-            goal_completed: app.hunt.verdict == HuntVerdict::Hunted,
-            goal_started_at: app.hunt.started_at,
-            goal_finished_at: app.hunt.finished_at,
-            tokens_used: app.session.total_conversation_tokens,
+        let summary = SidebarWorkSummary {
             checklist_completion_pct,
             checklist_items,
             strategy_explanation,
             strategy_steps,
             state_updating: false,
-            pause_indicator: live_pause_indicator(app),
-            workflow_paused: app.paused || app.paused_quarry.is_some(),
         };
-        apply_live_goal_state(&mut summary, app);
         Some(summary)
     })();
 
@@ -505,17 +442,13 @@ fn sidebar_work_summary(app: &mut App) -> SidebarWorkSummary {
     }
 
     if let Some(cached) = app.cached_work_summary.as_ref() {
-        let mut summary = cached.clone();
-        apply_live_goal_state(&mut summary, app);
-        return summary;
+        return cached.clone();
     }
 
-    let mut summary = SidebarWorkSummary {
+    SidebarWorkSummary {
         state_updating: true,
         ..SidebarWorkSummary::default()
-    };
-    apply_live_goal_state(&mut summary, app);
-    summary
+    }
 }
 
 fn work_panel_lines(
@@ -527,8 +460,6 @@ fn work_panel_lines(
 ) -> Vec<Line<'static>> {
     let theme = Theme::for_palette_mode(palette_mode);
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(max_rows.max(4));
-
-    push_work_goal_lines(summary, content_width, max_rows, &mut lines, ui_theme);
 
     if summary.state_updating && lines.len() < max_rows {
         lines.push(Line::from(Span::styled(
@@ -550,60 +481,8 @@ fn work_panel_lines(
     lines
 }
 
-fn work_panel_hover_texts(
-    summary: &SidebarWorkSummary,
-    content_width: usize,
-    max_rows: usize,
-) -> Vec<String> {
+fn work_panel_hover_texts(summary: &SidebarWorkSummary, max_rows: usize) -> Vec<String> {
     let mut texts = Vec::with_capacity(max_rows.max(4));
-
-    if let Some(objective) = summary.goal_objective.as_deref()
-        && !objective.trim().is_empty()
-        && texts.len() < max_rows
-    {
-        let icon = if summary.goal_completed {
-            "✓"
-        } else if summary.workflow_paused {
-            "⏸"
-        } else {
-            "◆"
-        };
-        texts.push(format!("Goal: {icon} {objective}"));
-
-        if let Some(started) = summary.goal_started_at
-            && texts.len() < max_rows
-        {
-            let elapsed = goal_elapsed_for_summary(started, summary.goal_finished_at);
-            let elapsed_str = if summary.goal_completed {
-                format!("completed in {elapsed}")
-            } else {
-                format!("elapsed: {elapsed}")
-            };
-            texts.push(elapsed_str);
-        }
-
-        if let Some(budget) = summary.goal_token_budget
-            && texts.len() < max_rows
-        {
-            let pct = if budget > 0 {
-                ((summary.tokens_used as f64 / budget as f64) * 100.0).min(100.0)
-            } else {
-                0.0
-            };
-            let bar_width = content_width.min(20);
-            let filled = ((pct / 100.0) * bar_width as f64) as usize;
-            let bar = format!(
-                "[{}{}] {:.0}%",
-                "█".repeat(filled),
-                "░".repeat(bar_width.saturating_sub(filled)),
-                pct
-            );
-            texts.push(format!(
-                "tokens: {}/{} {}",
-                summary.tokens_used, budget, bar
-            ));
-        }
-    }
 
     if summary.state_updating && texts.len() < max_rows {
         texts.push("Work state updating...".to_string());
@@ -730,108 +609,6 @@ fn work_panel_hover_texts(
     }
 
     texts
-}
-
-/// Humanized elapsed time for a goal. Once the goal is terminal (`finished`
-/// is `Some`), the elapsed is frozen at `finished - started` so a completed or
-/// escaped goal stops ticking in the sidebar; otherwise it grows live.
-fn goal_elapsed_for_summary(started: Instant, finished: Option<Instant>) -> String {
-    use crate::tui::notifications::humanize_duration;
-    let elapsed = match finished {
-        Some(end) => end.saturating_duration_since(started),
-        None => started.elapsed(),
-    };
-    humanize_duration(elapsed)
-}
-
-fn push_work_goal_lines(
-    summary: &SidebarWorkSummary,
-    content_width: usize,
-    max_rows: usize,
-    lines: &mut Vec<Line<'static>>,
-    theme: &palette::UiTheme,
-) {
-    let Some(objective) = summary.goal_objective.as_deref() else {
-        return;
-    };
-    if objective.trim().is_empty() || lines.len() >= max_rows {
-        return;
-    }
-
-    let icon = if summary.goal_completed {
-        "✓"
-    } else if summary.workflow_paused {
-        "⏸"
-    } else {
-        "◆"
-    };
-    let status_style = if summary.goal_completed {
-        Style::default()
-            .fg(theme.success)
-            .add_modifier(ratatui::style::Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(theme.warning)
-            .add_modifier(ratatui::style::Modifier::BOLD)
-    };
-    // Show the full goal objective — this is goal mode's primary status
-    // surface. Prefix with "Goal:" so the compact row is clearly labelled
-    // as a goal-mode objective, not a generic session title.
-    let label = if let Some(indicator) = summary.pause_indicator.as_deref() {
-        format!("Goal: {objective} {indicator}")
-    } else {
-        format!("Goal: {objective}")
-    };
-
-    lines.push(Line::from(Span::styled(
-        format!(
-            "{} {}",
-            icon,
-            truncate_line_to_width(&label, content_width.saturating_sub(2).max(1))
-        ),
-        status_style,
-    )));
-
-    // Elapsed time
-    if let Some(started) = summary.goal_started_at
-        && lines.len() < max_rows
-    {
-        let elapsed = goal_elapsed_for_summary(started, summary.goal_finished_at);
-        let elapsed_str = if summary.goal_completed {
-            format!("completed in {elapsed}")
-        } else {
-            format!("elapsed: {elapsed}")
-        };
-        lines.push(Line::from(Span::styled(
-            truncate_line_to_width(&elapsed_str, content_width),
-            Style::default().fg(theme.text_muted),
-        )));
-    }
-
-    if let Some(budget) = summary.goal_token_budget
-        && lines.len() < max_rows
-    {
-        let pct = if budget > 0 {
-            ((summary.tokens_used as f64 / budget as f64) * 100.0).min(100.0)
-        } else {
-            0.0
-        };
-        let bar_width = content_width.min(20);
-        let filled = ((pct / 100.0) * bar_width as f64) as usize;
-        let bar = format!(
-            "[{}{}] {:.0}%",
-            "█".repeat(filled),
-            "░".repeat(bar_width.saturating_sub(filled)),
-            pct
-        );
-        lines.push(Line::from(Span::styled(
-            truncate_line_to_width(
-                &format!("tokens: {}/{} {}", summary.tokens_used, budget, bar),
-                content_width,
-            ),
-            Style::default().fg(theme.text_muted),
-        )));
-    }
 }
 
 fn push_work_checklist_lines(
@@ -1054,7 +831,7 @@ fn render_sidebar_work(f: &mut Frame, area: Rect, app: &mut App) {
         &app.ui_theme,
     );
 
-    let full_texts = work_panel_hover_texts(&summary, content_width.max(1), usable_rows);
+    let full_texts = work_panel_hover_texts(&summary, usable_rows);
     render_sidebar_section(f, area, "To-do", lines, full_texts, Vec::new(), app);
 }
 
@@ -1075,8 +852,6 @@ fn render_sidebar_work_compact(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             format!("plan {completed}/{total} · {in_progress} active")
         }
-    } else if summary.goal_objective.is_some() {
-        "goal active".to_string()
     } else {
         "Work state updating...".to_string()
     };
@@ -3117,9 +2892,7 @@ mod tests {
     use crate::tools::plan::StepStatus;
     use crate::tools::todo::TodoStatus;
     use crate::tui::active_cell::ActiveCell;
-    use crate::tui::app::{
-        App, HuntVerdict, SidebarRowAction, TaskPanelEntry, TaskPanelEntryKind, TuiOptions,
-    };
+    use crate::tui::app::{App, SidebarRowAction, TaskPanelEntry, TaskPanelEntryKind, TuiOptions};
     use crate::tui::history::{
         ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
     };
@@ -3574,7 +3347,7 @@ mod tests {
             ..SidebarWorkSummary::default()
         };
 
-        let hover = work_panel_hover_texts(&summary, 80, 16);
+        let hover = work_panel_hover_texts(&summary, 16);
 
         assert!(
             hover.iter().any(|line| line == "Strategy context"),
@@ -3644,7 +3417,7 @@ mod tests {
             PaletteMode::Dark,
             &palette::UI_THEME,
         ));
-        let hover = work_panel_hover_texts(&summary, 80, 16);
+        let hover = work_panel_hover_texts(&summary, 16);
 
         for rendered in [&display, &hover] {
             assert!(
@@ -3724,7 +3497,7 @@ mod tests {
             ..SidebarWorkSummary::default()
         };
 
-        let hover = work_panel_hover_texts(&summary, 80, 6);
+        let hover = work_panel_hover_texts(&summary, 6);
         let overflow = hover
             .iter()
             .find(|text| text.starts_with('+'))
@@ -3860,76 +3633,6 @@ mod tests {
         let summary = sidebar_work_summary(&mut app);
 
         assert!(summary.state_updating, "should be updating without cache");
-    }
-
-    #[test]
-    fn sidebar_work_summary_keeps_live_fields_on_cache_fallback() {
-        let mut app = create_test_app();
-        app.hunt.quarry = Some("test quarry".to_string());
-        app.hunt.verdict = HuntVerdict::Hunted;
-        {
-            let mut todos = app.todos.try_lock().expect("todos lock");
-            todos.add("item".to_string(), TodoStatus::Pending);
-        }
-        let _first = sidebar_work_summary(&mut app);
-
-        app.hunt.quarry = Some("updated quarry".to_string());
-        app.hunt.verdict = HuntVerdict::Hunting;
-        let held_arc = app.todos.clone();
-        let _held = held_arc.try_lock().expect("hold todos lock");
-
-        let summary = sidebar_work_summary(&mut app);
-
-        assert_eq!(summary.goal_objective.as_deref(), Some("updated quarry"));
-        assert!(!summary.goal_completed, "verdict should be live");
-    }
-
-    #[test]
-    fn sidebar_work_summary_uses_paused_quarry_when_goal_is_cleared() {
-        let mut app = create_test_app();
-        app.hunt.quarry = None;
-        app.paused = true;
-        app.paused_quarry = Some("Scan nested git repositories".to_string());
-
-        let summary = sidebar_work_summary(&mut app);
-
-        assert_eq!(
-            summary.goal_objective.as_deref(),
-            Some("Scan nested git repositories")
-        );
-        assert_eq!(summary.pause_indicator.as_deref(), Some("(Paused)"));
-        assert!(summary.workflow_paused);
-    }
-
-    #[test]
-    fn work_panel_renders_paused_command_goal() {
-        let mut app = create_test_app();
-        app.hunt.quarry = None;
-        app.paused = false;
-        app.paused_quarry = Some("Deploy to staging".to_string());
-
-        let summary = sidebar_work_summary(&mut app);
-        let text = lines_to_text(&work_panel_lines(
-            &summary,
-            80,
-            8,
-            PaletteMode::Dark,
-            &palette::UI_THEME,
-        ));
-
-        assert!(
-            text.first().is_some_and(|line| line.contains('⏸')),
-            "paused command should use pause icon: {text:?}"
-        );
-        assert!(
-            text.first()
-                .is_some_and(|line| line.contains("Deploy to staging")),
-            "paused command title should remain visible: {text:?}"
-        );
-        assert!(
-            text.first().is_some_and(|line| line.contains("(Paused)")),
-            "paused state should be visible: {text:?}"
-        );
     }
 
     #[test]
@@ -5590,7 +5293,7 @@ mod tests {
             PaletteMode::Dark,
             &palette::UI_THEME,
         ));
-        let hover = work_panel_hover_texts(&summary, 18, 4);
+        let hover = work_panel_hover_texts(&summary, 4);
 
         assert!(
             display.iter().any(|line| line.contains("...")),

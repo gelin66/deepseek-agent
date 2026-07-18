@@ -1103,7 +1103,7 @@ fn canonical_start_command(app: &App, config: &Config, input: String) -> StartRu
         streaming: true,
         tool_policy: ToolPolicy {
             enabled: true,
-            allowed: app.active_allowed_tools.clone(),
+            allowed: None,
             denied: Vec::new(),
         },
         limits,

@@ -467,10 +467,6 @@ pub struct ConfigToml {
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
-    /// Verifier-preview behavior (#2093). When absent, verifier tools keep the
-    /// shipped defaults: disabled automatic preview and hunt verdict mapping.
-    #[serde(default)]
-    pub verifier: Option<VerifierConfigToml>,
     /// Community skill installer settings (#140). Mirrors
     /// [`SkillsToml`] from the TUI side; the dispatcher consults
     /// `registry_url` when running `deepseek skill install`.
@@ -1467,40 +1463,6 @@ pub fn built_in_role_presets() -> BTreeMap<String, FleetRolePreset> {
         ),
     ]
     .into()
-}
-
-/// Verdict policy for the verifier-preview surface (#2093).
-///
-/// Only the hunt vocabulary is shipped today. Keeping this typed lets future
-/// policy additions reject misspellings instead of silently accepting unknown
-/// strings.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum VerifierVerdictPolicy {
-    #[default]
-    Hunt,
-}
-
-/// On-disk schema for `[verifier]`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VerifierConfigToml {
-    /// Enable automatic verifier preview when the runtime wires a
-    /// claim-of-done trigger. Manual `run_verifiers` remains available
-    /// regardless.
-    #[serde(default)]
-    pub enabled: bool,
-    /// How verifier verdicts map into the goal/hunt system.
-    #[serde(default)]
-    pub verdict_policy: VerifierVerdictPolicy,
-}
-
-impl Default for VerifierConfigToml {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            verdict_policy: VerifierVerdictPolicy::Hunt,
-        }
-    }
 }
 
 /// On-disk schema for the `[network]` table (#135). See `config.example.toml`

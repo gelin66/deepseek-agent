@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use ratatui::layout::Rect;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -17,7 +16,6 @@ use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, has_api_key_for,
     save_api_key, save_api_key_for,
 };
-use crate::core::authority::{ModeSessionPrefs, base_policy_for_mode};
 use crate::core::events::TurnRoute;
 use crate::hooks::{HookContext, HookEvent, HookExecutor, HookResult};
 use crate::localization::{MessageId, tr};
@@ -43,6 +41,43 @@ use crate::tui::views::ViewStack;
 use codewhale_tools::shell::new_shared_shell_manager;
 
 // === Types ===
+
+/// Durable permission baseline restored when the UI returns to Agent mode.
+#[derive(Debug, Clone, Copy)]
+struct ModeSessionPrefs {
+    agent_allow_shell: bool,
+    agent_trust_mode: bool,
+    agent_approval_mode: ApprovalMode,
+}
+
+/// Permission fields projected from the visible mode and the Agent baseline.
+#[derive(Debug, Clone, Copy)]
+struct EffectiveModePolicy {
+    allow_shell: bool,
+    trust_mode: bool,
+    approval_mode: ApprovalMode,
+}
+
+#[must_use]
+fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> EffectiveModePolicy {
+    match mode {
+        AppMode::Plan => EffectiveModePolicy {
+            allow_shell: false,
+            trust_mode: false,
+            approval_mode: ApprovalMode::Suggest,
+        },
+        AppMode::Agent | AppMode::Auto | AppMode::Operate => EffectiveModePolicy {
+            allow_shell: prefs.agent_allow_shell,
+            trust_mode: prefs.agent_trust_mode,
+            approval_mode: prefs.agent_approval_mode,
+        },
+        AppMode::Yolo => EffectiveModePolicy {
+            allow_shell: true,
+            trust_mode: true,
+            approval_mode: ApprovalMode::Bypass,
+        },
+    }
+}
 
 /// Lifecycle identity retained until the matching `TurnComplete` arrives.
 ///
@@ -1337,55 +1372,6 @@ impl Default for ViewportState {
     }
 }
 
-/// Verdict for a hunt (#2092).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HuntVerdict {
-    #[default]
-    Hunting,
-    Hunted,
-    Wounded,
-    Escaped,
-}
-
-impl HuntVerdict {
-    #[must_use]
-    pub fn goal_status(self) -> crate::tools::goal::GoalStatus {
-        match self {
-            Self::Hunting => crate::tools::goal::GoalStatus::Active,
-            Self::Hunted => crate::tools::goal::GoalStatus::Complete,
-            Self::Wounded => crate::tools::goal::GoalStatus::Paused,
-            Self::Escaped => crate::tools::goal::GoalStatus::Blocked,
-        }
-    }
-
-    #[must_use]
-    pub fn from_goal_status(status: crate::tools::goal::GoalStatus) -> Self {
-        match status {
-            crate::tools::goal::GoalStatus::Active => Self::Hunting,
-            crate::tools::goal::GoalStatus::Paused => Self::Wounded,
-            crate::tools::goal::GoalStatus::Complete => Self::Hunted,
-            crate::tools::goal::GoalStatus::Blocked => Self::Escaped,
-        }
-    }
-}
-
-/// Hunt tracking state (#2092 — was GoalState).
-#[derive(Debug, Clone, Default)]
-pub struct HuntState {
-    pub quarry: Option<String>,
-    pub token_budget: Option<u32>,
-    pub tokens_used: u64,
-    pub time_used_seconds: u64,
-    pub continuation_count: u32,
-    pub started_at: Option<Instant>,
-    /// When the goal reached a terminal verdict (Hunted/Wounded/Escaped).
-    /// While `None`, elapsed time keeps growing; once set, the sidebar freezes
-    /// the timer at `finished_at - started_at` so completed goals stop ticking.
-    pub finished_at: Option<Instant>,
-    pub verdict: HuntVerdict,
-}
-
 /// Session cost and token telemetry state.
 #[derive(Debug, Clone)]
 pub struct SessionState {
@@ -1555,19 +1541,8 @@ pub struct App {
     /// Ocean work-surface state. Kept separate from transcript/sidebar state
     /// so the replacement shell can be removed or promoted as one unit.
     pub work_surface: crate::tui::work_surface::WorkSurfaceState,
-    /// Goal sub-state.
-    pub hunt: HuntState,
     /// Session sub-state (cost, tokens, telemetry).
     pub session: SessionState,
-    /// Active tool restriction from custom slash command frontmatter.
-    /// `None` means the current turn may use the normal tool set.
-    pub active_allowed_tools: Option<Vec<String>>,
-    /// True when the active custom slash command opted into pause/resume.
-    pub pausable: bool,
-    /// True after Esc paused a pausable command and before it is resumed or cancelled.
-    pub paused: bool,
-    /// Saved custom-command objective while the command is paused.
-    pub paused_quarry: Option<String>,
     pub history: Vec<HistoryCell>,
     pub history_version: u64,
     /// Per-cell revision counter, kept in lockstep with `history`.
@@ -2641,12 +2616,7 @@ impl App {
             work_surface: crate::tui::work_surface::WorkSurfaceState::with_placement(
                 work_surface_placement,
             ),
-            hunt: HuntState::default(),
             session: SessionState::default(),
-            active_allowed_tools: None,
-            pausable: false,
-            paused: false,
-            paused_quarry: None,
             history: Vec::new(),
             history_version: 0,
             history_revisions: Vec::new(),

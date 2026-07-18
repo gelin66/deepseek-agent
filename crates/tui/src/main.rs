@@ -46,7 +46,6 @@ mod execpolicy;
 mod fast_hash;
 mod features;
 mod fleet;
-mod goal_loop;
 mod hashing;
 mod hooks;
 mod llm_client;
@@ -85,7 +84,6 @@ mod session_diagnostics;
 #[allow(dead_code)]
 mod settings;
 mod skills;
-mod slop_ledger;
 mod snapshot;
 mod startup_trace;
 #[cfg(test)]
@@ -3551,7 +3549,6 @@ const DOCTOR_LEGACY_STATE_ITEMS: &[&str] = &[
     "sessions",
     "tasks",
     "skills",
-    "slop_ledger",
     "trophies",
     "catalog",
     "config.toml",

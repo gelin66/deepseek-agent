@@ -541,44 +541,6 @@ fn network_policy_toml_maps_proxy_hosts_to_runtime_policy() {
 }
 
 #[test]
-fn verifier_config_parses_hunt_policy_and_merges_overrides() {
-    let config: Config = toml::from_str(
-        r#"
-        [verifier]
-        enabled = true
-        verdict_policy = "hunt"
-        "#,
-    )
-    .expect("parse verifier config");
-
-    let verifier = config.verifier.expect("verifier table");
-    assert!(verifier.enabled);
-    assert_eq!(
-        verifier.verdict_policy,
-        codewhale_config::VerifierVerdictPolicy::Hunt
-    );
-
-    let merged = merge_config(
-        Config {
-            verifier: Some(codewhale_config::VerifierConfigToml {
-                enabled: false,
-                verdict_policy: codewhale_config::VerifierVerdictPolicy::Hunt,
-            }),
-            ..Config::default()
-        },
-        Config {
-            verifier: Some(codewhale_config::VerifierConfigToml {
-                enabled: true,
-                verdict_policy: codewhale_config::VerifierVerdictPolicy::Hunt,
-            }),
-            ..Config::default()
-        },
-    );
-
-    assert!(merged.verifier.expect("merged verifier").enabled);
-}
-
-#[test]
 fn search_provider_defaults_to_duckduckgo() {
     assert_eq!(SearchProvider::default(), SearchProvider::DuckDuckGo);
 }

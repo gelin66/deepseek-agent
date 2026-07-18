@@ -49,6 +49,12 @@ Fleet 的真实执行仍是 `FleetExecutor -> codewhale exec`。只有 route、r
 所以仅为其声明 receipt 存在的 `WorkerRole`/`WorkerRuntimeProfile`/
 `FleetWorkerRuntimeSpec` 已删除，`effective_permissions` 在 M6 enforced policy 接管前留空。
 
+旧 TUI Goal/Hunt loop、私有 TaskContract/receipt/Goal completion store、Slop ledger 和
+custom-command allowed-tools/pause 假状态也已物理删除。它们没有 canonical production
+consumer，不能作为 M5 已有 evidence owner。M5 必须在 `protocol/runtime/state` 中新建唯一
+TaskContract/EvidenceReceipt/Host completion 链路；历史测试只能作为反例参考，不能通过
+adapter 恢复旧状态机。
+
 ## 2. 已统一的生产链
 
 ### Application service
@@ -221,6 +227,9 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
   `auto_compact` 开关/阈值状态均已删除；真正的 compaction 位于
   `crates/context + crates/runtime + crates/app`，手动 `/compact` 仍提交 canonical command；
 - generic Provider/config/UI 仍未执行 DeepSeek-only 最终清理。
+- Work surface 只投影仍存在的 plan/todo 与 canonical child facts，不再投影 TUI 私有
+  Goal/Hunt 或 custom-command pause 状态；canonical Run 的工具 allow-list 不从旧 UI 状态
+  注入。
 
 因此三个保留 foreground 入口与所有生产可达根/子 Agent 模型循环已经统一；最终 M4
 集成门禁仍需确认完整调用图和回归。
@@ -272,6 +281,9 @@ M4-C foreground 切换后还已物理删除：
   `DeepSeekClient` 路径；显式 `--prompt "serve --acp"` 仍只是普通 canonical Agent 输入。
 - direct `review` completion、模型内 `ReviewTool`、私有 receipt 状态/文档和退役 review
   UI；canonical reviewer Agent profile 与普通自然语言代码审查任务保留。
+- 无生产消费者的 TUI Goal/Hunt loop、私有 TaskContract/receipt/Goal 工具、Slop ledger、
+  verifier preview config、假 custom-command pause/allowed-tools 状态及其 UI/文档；
+  canonical Runtime terminal、RunStore 和确定性 `crates/tools::run_verifiers` 保留。
 - 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查和仍被 TUI/hooks 使用的
   `crates/release` 保留，不属于本次删除。
 

@@ -121,7 +121,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 收尾中（第二模型循环已删，最终集成门禁待通过） | CLI/TUI/API 同事件，所有生产模型循环统一 |
-| M5 | RepoGraph、ContextBroker 和现有 WIP 证据链迁移 | 待开始 | 现有 TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
+| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 待开始 | TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 部分开始（canonical 根/子同 Runtime 已完成） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
@@ -590,6 +590,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `run_verifiers` 仍由 `crates/tools` 提供；`crates/deepseek` 继续拥有 Beta FIM request
   planner、surface 与 accounting 类型。该删除不声称 canonical FIM response parser 或
   事务性编辑链路已经完成，相关缺口仍按 M1/M2 证据债处理。
+- M4-C 已物理删除没有 production consumer 的 TUI Goal/Hunt loop、私有
+  TaskContract/receipt/Goal completion store、Slop ledger、`ToolContext.goal_contract`、
+  假 custom-command allowed-tools/pause 状态及其 Work/UI/config surface。交互 TUI 启动
+  canonical Run 时 `ToolPolicy.allowed` 明确为 `None`；mode 权限基线只保留在真实调用方
+  `App`。canonical Runtime terminal、RunStore、确定性 `run_verifiers` 和多 Agent/Fleet
+  均未改变。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
@@ -741,7 +747,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   语义；已删除的 hidden workflow/ACP/direct `review` 不再构成生产例外。仍须通过 M4 完整
   workspace 门禁、调用图复核并删除剩余旧编译岛后才能关闭里程碑。
 
-## 9. M5：RepoGraph、ContextBroker 与现有 WIP 证据链迁移
+## 9. M5：RepoGraph、ContextBroker 与 canonical 证据链
 
 ### 工作
 
@@ -751,9 +757,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   TaskContract、未决问题、当前 diff 和最新证据；不得另建第二套 compaction runtime。
 - 用同任务、同预算的 compaction on/off A/B 测量 verified success、false-success、Token、
   时间和费用；M4-C 的协议/恢复通过不能替代该收益证据。
-- 将当前生产 WIP 中已经接线的 `TaskContract`、`workspace_revision`、`EvidenceReceipt`、
-  verifier receipt 和 Goal 终态约束拆分评测后迁入唯一 `AgentRuntime`/`RunStore`；这是迁移
-  和收敛，不是再实现一套 Task、Goal、receipt 或 completion 状态机。
+- 在 canonical `protocol/runtime/state` 中新实现唯一的 `TaskContract`、
+  `EvidenceReceipt` 和 Host completion owner，并让 `workspace_revision` 与确定性 verifier
+  结果进入同一个 `AgentRuntime`/`RunStore`。M4 已删除无生产消费者的历史 TUI prototype；
+  可以参考其测试反例，但不得为旧类型建立 adapter、双写或兼容状态机。
 - 每个 generation 冻结 objective、constraints、non-goals 和 acceptance；显式 verifier
   只接受匹配 generation、精确参数和最新 workspace revision 的 receipt，objective-only
   任务只能由 Host 验收。普通 `run_tests`、参数不匹配的 verifier 和模型自评只记录为
@@ -764,8 +771,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 ### 删除/替代
 
-- 每迁入一段 WIP 证据链，同一切片删除 TUI/Goal 工具中的对应本地判定、receipt 记账和
-  重复状态写入，不保留镜像同步或旧语义 fallback。
+- 历史 TUI/Goal 本地判定、receipt 记账和重复状态已在 M4 物理删除；M5 不恢复镜像同步、
+  adapter 或旧语义 fallback。
 - 最终只保留一套 `TaskContract`、`EvidenceReceipt`、`TerminalState` 和 Host 接受流程。
 
 ### 退出门槛
