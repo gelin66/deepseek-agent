@@ -42,7 +42,7 @@ pub enum TuiRunClientError {
     #[error("Run API 对 {operation} 返回了意外结果：{result:?}")]
     UnexpectedResult {
         operation: &'static str,
-        result: RunCommandResult,
+        result: Box<RunCommandResult>,
     },
 }
 
@@ -286,7 +286,10 @@ impl TuiRunClient {
         match response.result {
             RunCommandResult::Runs { runs, .. } => Ok(agent_roots(runs, limit)),
             RunCommandResult::Error { error } => Err(TuiRunClientError::Application(error)),
-            result => Err(TuiRunClientError::UnexpectedResult { operation, result }),
+            result => Err(TuiRunClientError::UnexpectedResult {
+                operation,
+                result: Box::new(result),
+            }),
         }
     }
 
@@ -312,7 +315,10 @@ impl TuiRunClient {
         match response.result {
             RunCommandResult::Runs { runs, .. } => Ok(runs.into_iter().next()),
             RunCommandResult::Error { error } => Err(TuiRunClientError::Application(error)),
-            result => Err(TuiRunClientError::UnexpectedResult { operation, result }),
+            result => Err(TuiRunClientError::UnexpectedResult {
+                operation,
+                result: Box::new(result),
+            }),
         }
     }
 
@@ -338,7 +344,10 @@ impl TuiRunClient {
         match response.result {
             RunCommandResult::PendingCreations { creations, .. } => Ok(creations),
             RunCommandResult::Error { error } => Err(TuiRunClientError::Application(error)),
-            result => Err(TuiRunClientError::UnexpectedResult { operation, result }),
+            result => Err(TuiRunClientError::UnexpectedResult {
+                operation,
+                result: Box::new(result),
+            }),
         }
     }
 
@@ -508,7 +517,10 @@ impl TuiRunClient {
         match response.result {
             RunCommandResult::Run { run } => Ok(*run),
             RunCommandResult::Error { error } => Err(TuiRunClientError::Application(error)),
-            result => Err(TuiRunClientError::UnexpectedResult { operation, result }),
+            result => Err(TuiRunClientError::UnexpectedResult {
+                operation,
+                result: Box::new(result),
+            }),
         }
     }
 
@@ -534,7 +546,10 @@ impl TuiRunClient {
         match response.result {
             RunCommandResult::Accepted { last_sequence, .. } => Ok(last_sequence),
             RunCommandResult::Error { error } => Err(TuiRunClientError::Application(error)),
-            result => Err(TuiRunClientError::UnexpectedResult { operation, result }),
+            result => Err(TuiRunClientError::UnexpectedResult {
+                operation,
+                result: Box::new(result),
+            }),
         }
     }
 

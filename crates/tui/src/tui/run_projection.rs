@@ -29,7 +29,7 @@ pub struct ProjectionEffect {
 /// at `SteerApplied`, never at `SteerQueued`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProjectionEffectKind {
-    Canonical(StoredRuntimeEvent),
+    Canonical(Box<StoredRuntimeEvent>),
     UserTranscript {
         source: UserTranscriptSource,
         content: String,
@@ -75,7 +75,7 @@ impl CanonicalRunProjection {
         if state.classify(&stored)? == EventDisposition::Replay {
             return Ok(Vec::new());
         }
-        state.validate_and_update(&run_id, sequence, &event)?;
+        state.validate_and_update(&run_id, sequence, event)?;
         state.record(stored.clone());
 
         let transcript = match event {
@@ -99,7 +99,7 @@ impl CanonicalRunProjection {
             run_id: run_id.clone(),
             sequence,
             event_id: event_id.clone(),
-            kind: ProjectionEffectKind::Canonical(stored),
+            kind: ProjectionEffectKind::Canonical(Box::new(stored)),
         }];
         if let Some((source, content)) = transcript {
             effects.push(ProjectionEffect {
@@ -475,13 +475,15 @@ mod tests {
                 .count(),
             1
         );
-        assert!(fresh.iter().any(|effect| matches!(
-            &effect.kind,
-            ProjectionEffectKind::Canonical(StoredRuntimeEvent {
-                event: RuntimeEventKind::ModelResponseCommitted { .. },
-                ..
-            })
-        )));
+        assert!(fresh.iter().any(|effect| {
+            let ProjectionEffectKind::Canonical(stored) = &effect.kind else {
+                return false;
+            };
+            matches!(
+                stored.event,
+                RuntimeEventKind::ModelResponseCommitted { .. }
+            )
+        }));
 
         for event in events {
             assert!(projection.apply(event).expect("exact replay").is_empty());

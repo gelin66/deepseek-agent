@@ -54,6 +54,7 @@ pub fn present_effect(app: &mut App, effect: ProjectionEffect) -> Option<Present
             None
         }
         ProjectionEffectKind::Canonical(stored) => {
+            let stored = *stored;
             debug_assert_eq!(stored.run_id, source_run_id);
             present_canonical_event(app, &source_run_id, stored.event)
         }
@@ -1046,14 +1047,16 @@ mod tests {
             reasoning_replay_tokens: 321,
             ..Usage::default()
         };
-        let mut accounting = ModelAccounting::default();
-        accounting.usage = Usage {
-            input_tokens: 20_000,
-            output_tokens: 1_000,
-            cache_hit_tokens: 15_000,
-            cache_miss_tokens: 5_000,
-            reasoning_replay_tokens: 400,
-            ..Usage::default()
+        let accounting = ModelAccounting {
+            usage: Usage {
+                input_tokens: 20_000,
+                output_tokens: 1_000,
+                cache_hit_tokens: 15_000,
+                cache_miss_tokens: 5_000,
+                reasoning_replay_tokens: 400,
+                ..Usage::default()
+            },
+            ..ModelAccounting::default()
         };
         let event = stored(
             &run_id,

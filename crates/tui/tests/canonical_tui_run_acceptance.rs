@@ -275,7 +275,7 @@ fn assert_canonical_projection(
     let projected_events = effects
         .iter()
         .filter_map(|effect| match &effect.kind {
-            ProjectionEffectKind::Canonical(event) => Some(event.clone()),
+            ProjectionEffectKind::Canonical(event) => Some((**event).clone()),
             ProjectionEffectKind::UserTranscript { .. } => None,
         })
         .collect::<Vec<_>>();
