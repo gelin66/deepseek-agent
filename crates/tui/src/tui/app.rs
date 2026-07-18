@@ -1324,9 +1324,6 @@ pub struct App {
     /// Last status text already promoted from `status_message` into toast state.
     pub last_status_message_seen: Option<String>,
     pub model: String,
-    /// Persisted model selections by provider name. Loaded from settings so
-    /// `/model` and the picker can surface saved provider-specific choices.
-    pub provider_models: HashMap<String, String>,
     /// When true, the model is auto-selected based on request complexity
     /// rather than using a fixed model. The `/model auto` command sets this.
     pub auto_model: bool,
@@ -1870,21 +1867,7 @@ impl App {
             }
         });
 
-        let mut provider = config.api_provider();
-
-        // Let settings preserve runtime switches only when config/CLI did not
-        // explicitly select a provider. A configured provider must not be
-        // pushed back to a stale saved setting on restart.
-        if config
-            .provider
-            .as_deref()
-            .and_then(ApiProvider::parse)
-            .is_none()
-            && let Some(ref provider_str) = settings.default_provider
-            && let Some(parsed) = ApiProvider::parse(provider_str)
-        {
-            provider = parsed;
-        }
+        let provider = config.api_provider();
         let mut effective_auth_config = config.clone();
         effective_auth_config.provider = Some(provider.as_str().to_string());
         let model_ids_passthrough = effective_auth_config.model_ids_pass_through();
@@ -1911,9 +1894,8 @@ impl App {
             })
             .unwrap_or_default();
 
-        // Check if the effective provider has an API key. This must happen
-        // after settings.default_provider is applied; otherwise a saved
-        // third-party provider can be pushed back into DeepSeek onboarding.
+        // Authentication follows the already validated entry configuration.
+        // Saved UI preferences cannot change the production model backend.
         let needs_api_key = !has_api_key(&effective_auth_config);
         let api_key_env_only =
             crate::config::active_provider_uses_env_only_api_key(&effective_auth_config);
@@ -1949,20 +1931,6 @@ impl App {
         {
             ui_theme = ui_theme.with_background_color(background);
         }
-        let provider_models = settings.provider_models.clone().unwrap_or_default();
-        let model = provider_models
-            .get(provider.as_str())
-            .cloned()
-            .or_else(|| {
-                // default_model is a DeepSeek-centric setting; other providers
-                // get their model from config.toml / env (e.g. OPENAI_MODEL).
-                if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
-                    settings.default_model.clone()
-                } else {
-                    None
-                }
-            })
-            .unwrap_or(model);
         let auto_model = model.trim().eq_ignore_ascii_case("auto");
         let active_context_window_override = config.context_window_for_provider_config(provider);
         let active_route_limits = if auto_model {
@@ -2133,7 +2101,6 @@ impl App {
             sticky_status: None,
             last_status_message_seen: None,
             model,
-            provider_models,
             auto_model,
             last_effective_model: None,
             last_effective_provider: None,

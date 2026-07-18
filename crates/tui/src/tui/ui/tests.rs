@@ -39,6 +39,47 @@ fn create_test_app() -> App {
 }
 
 #[test]
+fn interactive_tui_entry_rejects_provider_or_model_truth_mismatch_before_terminal_setup() {
+    let options = TuiOptions {
+        model: "deepseek-v4-flash".to_owned(),
+        workspace: PathBuf::from("."),
+        config_path: None,
+        config_profile: None,
+        allow_shell: false,
+        use_alt_screen: false,
+        use_mouse_capture: false,
+        use_bracketed_paste: false,
+        max_subagents: 1,
+        skills_dir: PathBuf::from("."),
+        memory_path: PathBuf::from("memory.md"),
+        notes_path: PathBuf::from("notes.txt"),
+        mcp_config_path: PathBuf::from("mcp.json"),
+        use_memory: false,
+        start_in_agent_mode: true,
+        skip_onboarding: true,
+        yolo: false,
+        resume_session_id: None,
+        initial_input: None,
+    };
+    let foreign_provider = Config {
+        provider: Some("openrouter".to_owned()),
+        ..Config::default()
+    };
+    let error = validate_interactive_tui_entry(&foreign_provider, &options)
+        .expect_err("foreign provider must fail before terminal setup");
+    assert!(error.to_string().contains("只支持官方 DeepSeek Provider"));
+
+    let deepseek = Config {
+        provider: Some("deepseek".to_owned()),
+        default_text_model: Some("deepseek-v4-pro".to_owned()),
+        ..Config::default()
+    };
+    let error = validate_interactive_tui_entry(&deepseek, &options)
+        .expect_err("disagreeing config and TUI model must fail closed");
+    assert!(error.to_string().contains("模型配置不一致"));
+}
+
+#[test]
 fn canonical_approval_risk_projects_one_to_one_into_tui_stakes() {
     use crate::tui::approval::ApprovalStakes;
 
@@ -461,6 +502,24 @@ fn canonical_start_command_honors_disabled_subagents() {
     let command = canonical_start_command(&app, &config, "检查项目".to_owned());
     assert_eq!(command.limits.max_depth, 0);
     assert_eq!(command.limits.max_concurrent_children, 0);
+}
+
+#[test]
+fn canonical_start_command_projects_exact_model_or_auto() {
+    let config = Config {
+        provider: Some("deepseek".to_owned()),
+        ..Config::default()
+    };
+    let mut app = create_test_app();
+    app.model = "deepseek-v4-flash".to_owned();
+    app.auto_model = false;
+    let explicit = canonical_start_command(&app, &config, "检查项目".to_owned());
+    assert_eq!(explicit.model.as_deref(), Some("deepseek-v4-flash"));
+
+    app.model = "auto".to_owned();
+    app.auto_model = true;
+    let automatic = canonical_start_command(&app, &config, "检查项目".to_owned());
+    assert_eq!(automatic.model, None);
 }
 
 #[test]

@@ -526,6 +526,16 @@ M4-C foreground 切换后还已物理删除：
   child/Fleet、canonical `RuntimeEvent`/`RunStore`、cancel/control 和工具输出展示均保持原 owner。
   当前证据为 presenter 14/14、history 72/72、sidebar 42/42、footer 10/10、phase 22/22、指定
   widget 5/5、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check、fmt 和 diff-check。
+- 交互 TUI 现在在合并 user/workspace/project 配置后只接受官方 DeepSeek Provider，以及
+  `auto`、`deepseek-v4-pro`、`deepseek-v4-flash` 三种模型投影；失败发生在 raw terminal、
+  RunStore 和 HTTP 之前。`run_tui` 会在终端初始化前再次核对 `TuiOptions.model` 与配置投影，
+  `App::new` 不再允许持久 Settings 覆盖 provider/model。旧启动后 Provider 强制改写和 App
+  私有 `provider_models` 状态已经删除。应用层也会在持久 creation reservation 前校验显式
+  模型，因此 CLI、TUI 和本地 API 不会为非法模型留下 pending creation。`auto` 仍走官方
+  DeepSeek production planner，onboarding 仍可写入官方 Key；通用 Provider 配置 schema 尚待
+  M7 删除，Beta FIM transport 也没有被本切片实现或替代。当前 focused、App 38/38（另 1 个
+  外部进程 helper 忽略）、canonical Run 19/19、PTY 7/7、app/TUI all-target check、fmt 和
+  diff-check 均通过。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

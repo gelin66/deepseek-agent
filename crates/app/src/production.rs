@@ -684,6 +684,9 @@ fn canonical_start_workspace(raw: &str) -> Result<PathBuf, RunApiError> {
 fn prepare_production_start_command(
     mut command: StartRunCommand,
 ) -> Result<StartRunCommand, RunApiError> {
+    if let Some(model) = command.model.as_deref() {
+        official_model_capabilities(model).map_err(|error| invalid_request(error.to_string()))?;
+    }
     command.workspace = stable_path(&canonical_start_workspace(&command.workspace)?);
     Ok(command)
 }
@@ -1039,12 +1042,35 @@ mod tests {
         std::os::unix::fs::symlink(&workspace, &alias).expect("create workspace symlink");
 
         let prepared =
-            prepare_production_start_command(start_command(&alias, Some("deepseek-chat")))
+            prepare_production_start_command(start_command(&alias, Some("deepseek-v4-flash")))
                 .expect("prepare canonical start command");
         assert_eq!(
             prepared.workspace,
             stable_path(&workspace.canonicalize().expect("canonical workspace"))
         );
+    }
+
+    #[test]
+    fn production_start_preparation_accepts_only_auto_or_official_models() {
+        let workspace = tempfile::tempdir().expect("temp workspace");
+
+        for model in [None, Some("deepseek-v4-pro"), Some("deepseek-v4-flash")] {
+            let prepared = prepare_production_start_command(start_command(workspace.path(), model))
+                .expect("supported model selection");
+            assert_eq!(prepared.model.as_deref(), model);
+        }
+
+        for model in ["deepseek-chat", "deepseek-reasoner", "gpt-5.5-codex"] {
+            let error =
+                prepare_production_start_command(start_command(workspace.path(), Some(model)))
+                    .expect_err("unsupported model must fail before creation reservation");
+            assert_eq!(error.code, RunApiErrorCode::InvalidRequest);
+            assert!(
+                error
+                    .message
+                    .contains("unsupported official DeepSeek model")
+            );
+        }
     }
 
     #[test]
@@ -1356,6 +1382,26 @@ mod tests {
                 .contains("unsupported official DeepSeek model")
         );
         assert_eq!(accepted.await.expect("zero request fixture"), 0);
+        let workspace = temp
+            .path()
+            .canonicalize()
+            .expect("canonical workspace")
+            .display()
+            .to_string();
+        assert!(
+            app.store
+                .list_root_runs(&workspace, 10)
+                .await
+                .expect("query runs")
+                .is_empty()
+        );
+        assert!(
+            app.store
+                .list_pending_creations(&workspace, 10)
+                .await
+                .expect("query pending creations")
+                .is_empty()
+        );
     }
 
     #[tokio::test]

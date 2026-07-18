@@ -982,6 +982,18 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   定向证据为 presenter 14/14、history 72/72、sidebar 42/42、footer 10/10、phase 22/22、
   指定 widget 5/5、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check、fmt 和
   diff-check。
+- M4-C 已把交互 TUI 的 provider/model 收敛为单一 DeepSeek 入口真相：user、workspace、
+  project 配置合并后，非官方 DeepSeek Provider 或非 `auto`/`deepseek-v4-pro`/
+  `deepseek-v4-flash` 模型会在 raw terminal、RunStore 和 HTTP 之前以简体中文失败；TUI
+  入口还会二次校验 `TuiOptions` 没有偏离同一配置投影。旧的启动后强制改写 Provider、
+  `Settings.default_provider`/`provider_models`/`default_model` 路由覆盖和 App 私有
+  `provider_models` 状态已删除。`AgentApplication` 同时在创建 reservation 之前校验所有入口
+  的显式模型，非法模型不会留下 pending creation。`auto` 仍由 production DeepSeek planner
+  决定官方模型；onboarding 只持久化/安装官方 DeepSeek Key，并幂等写回同一个 DeepSeek
+  Provider，不改变已校验模型路由。通用 Settings/Config schema 的物理清理仍属于 M7，
+  本切片不声称 FIM transport 已完成。定向与 focused 证据为 App 38/38（另 1 个外部进程
+  helper 忽略）、Runtime conformance 53/53、DeepSeek 35/35、工具 299/299、exec 24/24、
+  canonical Run 19/19、PTY 7/7，并通过 app/TUI all-target check、fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

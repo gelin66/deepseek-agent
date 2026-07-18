@@ -49,6 +49,58 @@ const UNKNOWN_PENDING_PROMPT: &str = "这条自动选模请求已经处于未知
 const GUARDED_INITIAL_PROMPT: &str = "这条 CLI 初始提示必须等待我明确按 Enter。";
 
 #[test]
+fn foreign_provider_fails_before_terminal_runstore_or_model_request() -> anyhow::Result<()> {
+    let fixture = CountingDeepSeekFixture::spawn()?;
+    let isolated = make_sealed_workspace()?;
+    let codewhale_home = isolated.home().join(".codewhale");
+    std::fs::create_dir_all(&codewhale_home)?;
+    let config_path = codewhale_home.join("config.toml");
+    let state_path = codewhale_home.join("state.db");
+    std::fs::write(
+        &config_path,
+        concat!(
+            "provider = \"openrouter\"\n",
+            "[providers.openrouter]\n",
+            "model = \"gpt-5.5\"\n",
+        ),
+    )?;
+
+    let mut tui = Harness::builder(Harness::cargo_bin("codewhale-tui"))
+        .cwd(isolated.workspace())
+        .clear_env()
+        .seal_home(isolated.home())
+        .env("CODEWHALE_HOME", codewhale_home.to_string_lossy())
+        .env("DEEPSEEK_CONFIG_PATH", config_path.to_string_lossy())
+        .env("DEEPSEEK_API_KEY", "must-not-be-used")
+        .env("DEEPSEEK_BASE_URL", fixture.base_url())
+        .env("NO_ANIMATIONS", "1")
+        .env("RUST_LOG", "warn")
+        .args([
+            "--workspace",
+            isolated
+                .workspace()
+                .to_str()
+                .expect("UTF-8 fixture workspace"),
+            "--no-project-config",
+            "--skip-onboarding",
+        ])
+        .size(40, 140)
+        .spawn()?;
+
+    let exit = tui.wait_for_exit(EXIT_TIMEOUT);
+    assert_eq!(exit, Some(1), "foreign provider did not fail closed");
+    assert!(
+        tui.debug_dump().contains("只支持官方 DeepSeek Provider"),
+        "missing actionable Chinese failure:\n{}",
+        tui.debug_dump()
+    );
+    assert!(!state_path.exists(), "preflight must not open RunStore");
+    assert_eq!(fixture.post_count(), 0, "preflight must not send HTTP");
+    fixture.shutdown()?;
+    Ok(())
+}
+
+#[test]
 fn real_pty_chinese_multiline_reaches_canonical_terminal_and_sqlite_truth() -> anyhow::Result<()> {
     let (base_url, request_rx, server) = spawn_deepseek_fixture()?;
     let isolated = make_sealed_workspace()?;

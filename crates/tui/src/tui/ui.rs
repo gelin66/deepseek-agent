@@ -8,7 +8,7 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use codewhale_app::AgentApplication;
 use codewhale_protocol::agent_runtime::{
     ApprovalRisk, ReasoningEffort as RuntimeReasoningEffort, RunId, RunLimits, ToolPolicy,
@@ -306,7 +306,23 @@ fn prompt_override_warning(notice: &str) -> String {
 /// crate::tui::run_tui(config, options).await
 /// # }
 /// ```
+fn validate_interactive_tui_entry(config: &Config, options: &TuiOptions) -> Result<()> {
+    let configured_model = crate::resolve_interactive_deepseek_model(config)?;
+    if options.model != configured_model {
+        bail!(
+            "交互式 Agent 模型配置不一致：配置解析为 {configured_model}，TUI 收到 {}。",
+            options.model
+        );
+    }
+    Ok(())
+}
+
 pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
+    validate_interactive_tui_entry(config, &options)?;
+    // Onboarding may persist and install the official DeepSeek key into this
+    // process-local view. The validated provider/model selection is immutable.
+    let mut config = config.clone();
+    let config = &mut config;
     let use_alt_screen = options.use_alt_screen;
     let use_mouse_capture = options.use_mouse_capture;
     let use_bracketed_paste = options.use_bracketed_paste;
@@ -454,13 +470,7 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     let sync_output_at_init = !crate::settings::detected_ptyxis_terminal()
         && !crate::settings::detected_legacy_windows_console_host();
     reset_terminal_viewport(&mut terminal, sync_output_at_init)?;
-    // The product has one model backend. Old provider settings are not a
-    // compatibility route for the canonical foreground.
-    let mut config = config.clone();
-    config.provider = Some(ApiProvider::Deepseek.as_str().to_owned());
-    let config = &mut config;
     let mut app = App::new(options.clone(), config);
-    app.onboarding_provider = ApiProvider::Deepseek;
     crate::startup_trace::mark("app_constructed");
     surface_prompt_override_notices(&mut app);
 

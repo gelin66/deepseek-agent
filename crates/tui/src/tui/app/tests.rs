@@ -426,23 +426,27 @@ fn codex_startup_threads_fresh_roster_context_into_active_route_limits() {
 }
 
 #[test]
-fn settings_default_provider_auth_check_uses_provider_scoped_key() {
+fn stale_settings_cannot_override_the_validated_deepseek_route() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
     std::fs::write(
         tmp.path().join("settings.toml"),
-        "default_provider = \"openai\"\n",
+        concat!(
+            "default_provider = \"openai\"\n",
+            "default_model = \"deepseek-v4-pro\"\n",
+            "provider_models = { deepseek = \"deepseek-chat\", openai = \"gpt-5.5\" }\n",
+        ),
     )
     .expect("settings");
     let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
     let _deepseek_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
-    let _openai_key = EnvVarGuard::remove("OPENAI_API_KEY");
 
     let config = Config {
+        provider: Some("deepseek".to_owned()),
         providers: Some(ProvidersConfig {
-            openai: ProviderConfig {
-                api_key: Some("openai-config-key".to_string()),
+            deepseek: ProviderConfig {
+                api_key: Some("deepseek-config-key".to_string()),
                 ..ProviderConfig::default()
             },
             ..ProvidersConfig::default()
@@ -450,19 +454,30 @@ fn settings_default_provider_auth_check_uses_provider_scoped_key() {
         ..Config::default()
     };
 
-    let app = App::new(test_options(false), &config);
+    let mut options = test_options(false);
+    options.model = "deepseek-v4-flash".to_owned();
+    let app = App::new(options, &config);
 
-    assert_eq!(app.api_provider, ApiProvider::Openai);
+    assert_eq!(app.api_provider, ApiProvider::Deepseek);
+    assert_eq!(app.model, "deepseek-v4-flash");
+    assert!(!app.auto_model);
     assert!(
         !app.onboarding_needs_api_key,
-        "OpenAI provider config key should satisfy startup auth without a DeepSeek key"
+        "validated DeepSeek config key should satisfy startup auth"
     );
     assert_ne!(app.onboarding, OnboardingState::ApiKey);
     assert!(!app.api_key_env_only);
+
+    let mut auto_options = test_options(false);
+    auto_options.model = "auto".to_owned();
+    let auto = App::new(auto_options, &config);
+    assert_eq!(auto.api_provider, ApiProvider::Deepseek);
+    assert_eq!(auto.model, "auto");
+    assert!(auto.auto_model);
 }
 
 #[test]
-fn explicit_config_provider_wins_over_saved_default_provider() {
+fn explicit_config_provider_defines_app_projection() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");

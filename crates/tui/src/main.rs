@@ -15,6 +15,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use clap_complete::{Shell, generate};
+use codewhale_deepseek::official_model_capabilities;
 use dotenvy::dotenv;
 use tempfile::NamedTempFile;
 use wait_timeout::ChildExt;
@@ -758,6 +759,27 @@ fn resolve_exec_model(config: &Config, explicit_model: Option<&str>) -> String {
         .map(ToOwned::to_owned)
         .or_else(exec_model_env_override)
         .unwrap_or_else(|| config.default_model())
+}
+
+fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
+    let provider = config.api_provider();
+    if provider != crate::config::ApiProvider::Deepseek {
+        bail!(
+            "交互式 Agent 只支持官方 DeepSeek Provider；当前配置为 {}。请删除其他 Provider 配置后重试。",
+            provider.as_str()
+        );
+    }
+
+    let model = config.default_model();
+    if model.trim().eq_ignore_ascii_case("auto") {
+        return Ok("auto".to_owned());
+    }
+    official_model_capabilities(&model).map_err(|_| {
+        anyhow!(
+            "交互式 Agent 只支持 auto、deepseek-v4-pro 或 deepseek-v4-flash；当前模型为 {model}。"
+        )
+    })?;
+    Ok(model)
 }
 
 fn apply_exec_provider_override(config: &mut Config, provider_arg: &str) -> Result<()> {
@@ -5795,8 +5817,8 @@ async fn run_interactive(
         Err(err) => logging::warn(format!("Config migration skipped: {err}")),
     }
 
-    let model = config.default_model();
-    let provider = config.api_provider();
+    let model = resolve_interactive_deepseek_model(config)?;
+    let provider = crate::config::ApiProvider::Deepseek;
     let max_subagents = cli.max_subagents.map_or_else(
         || config.max_subagents_for_provider(provider),
         |value| value.clamp(1, MAX_SUBAGENTS),
@@ -7251,6 +7273,46 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn interactive_model_resolution_accepts_only_official_deepseek_entry_truth() {
+        let _env_lock = crate::test_support::lock_test_env();
+        let _default_model =
+            crate::test_support::EnvVarGuard::remove("DEEPSEEK_DEFAULT_TEXT_MODEL");
+
+        for model in ["auto", "deepseek-v4-pro", "deepseek-v4-flash"] {
+            let config = Config {
+                provider: Some("deepseek".to_owned()),
+                default_text_model: Some(model.to_owned()),
+                ..Config::default()
+            };
+            assert_eq!(
+                resolve_interactive_deepseek_model(&config).expect("supported entry"),
+                model
+            );
+        }
+
+        for provider in ["openrouter", "zai", "openai"] {
+            let config = Config {
+                provider: Some(provider.to_owned()),
+                ..Config::default()
+            };
+            let error = resolve_interactive_deepseek_model(&config)
+                .expect_err("foreign provider must fail closed");
+            assert!(error.to_string().contains("只支持官方 DeepSeek Provider"));
+        }
+
+        for model in ["deepseek-chat", "deepseek-reasoner", "gpt-5.5-codex"] {
+            let config = Config {
+                provider: Some("deepseek".to_owned()),
+                default_text_model: Some(model.to_owned()),
+                ..Config::default()
+            };
+            let error = resolve_interactive_deepseek_model(&config)
+                .expect_err("unsupported model must fail closed");
+            assert!(error.to_string().contains("只支持 auto、deepseek-v4-pro"));
+        }
+    }
+
+    #[test]
     fn exec_model_resolution_prefers_codewhale_model_env_override() {
         let _env_lock = crate::test_support::lock_test_env();
         let _codewhale_model = crate::test_support::EnvVarGuard::set("CODEWHALE_MODEL", " auto ");
@@ -8167,6 +8229,30 @@ model = "deepseek-ai/deepseek-v4-pro"
             Some("deepseek-ai/deepseek-v4-pro"),
             "model is allowed at project scope"
         );
+    }
+
+    #[test]
+    fn project_overlay_cannot_admit_an_unsupported_interactive_model() {
+        let _guard = crate::test_support::lock_test_env();
+        let _default_model =
+            crate::test_support::EnvVarGuard::remove("DEEPSEEK_DEFAULT_TEXT_MODEL");
+        let tmp = workspace_with_project_config(
+            r#"
+model = "deepseek-chat"
+"#,
+        );
+        let mut config = Config {
+            provider: Some("deepseek".to_owned()),
+            default_text_model: Some("deepseek-v4-pro".to_owned()),
+            ..Config::default()
+        };
+
+        merge_project_config(&mut config, tmp.path());
+
+        assert_eq!(config.default_text_model.as_deref(), Some("deepseek-chat"));
+        let error = resolve_interactive_deepseek_model(&config)
+            .expect_err("merged unsupported model must fail before TUI startup");
+        assert!(error.to_string().contains("只支持 auto、deepseek-v4-pro"));
     }
 
     #[test]
