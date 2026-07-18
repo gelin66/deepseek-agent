@@ -80,6 +80,9 @@ text 状态和配置已删除，composer 继续显示确定性的中文空输入
 旧 TUI `schema_sanitize` 只有自身测试且不在 production request path；这份重复 sanitizer 已
 删除。DeepSeek Strict Function Calling 的整目录兼容性判断、原子 fallback 与 Beta Chat
 路由仍由 `crates/deepseek` 唯一拥有。
+同目录的 `schema_canonicalize` 也只有自身测试，从未处理 MCP 或 production 请求中的工具
+schema；该 207 行假缓存优化已删除。真正的请求前缀稳定性只按 canonical DeepSeek 投影与
+实际 cache 命中证据评估，不保留未接线的重复变换器。
 
 ## 2. 已统一的生产链
 

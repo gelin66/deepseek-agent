@@ -646,6 +646,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除只剩自测的 TUI `schema_sanitize` 重复实现；DeepSeek Strict Function Calling
   的全目录兼容性、原子 ordinary-tool fallback 与官方 Beta Chat 路由继续由
   `crates/deepseek` 唯一负责，未删除或降级 DeepSeek Beta 能力。
+- M4-C 已删除同样只有自测、从未接入 MCP 或 production request 的 TUI
+  `schema_canonicalize`；上下文缓存依赖 canonical DeepSeek 请求投影的稳定前缀和真实命中
+  证据，不把未接线的通用 schema 变换器算作能力。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

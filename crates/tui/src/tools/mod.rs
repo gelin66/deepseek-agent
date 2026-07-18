@@ -16,7 +16,6 @@ pub mod js_execution;
 pub mod large_output_router;
 pub mod plan;
 pub mod plugin;
-pub mod schema_canonicalize;
 pub mod spec;
 pub mod todo;
 pub mod truncate;
