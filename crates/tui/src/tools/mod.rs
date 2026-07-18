@@ -9,7 +9,6 @@
 #![deny(clippy::print_stderr)]
 
 pub mod approval_cache;
-pub mod arg_repair;
 
 pub mod handle;
 pub mod js_execution;

@@ -351,6 +351,9 @@ M4-C foreground 切换后还已物理删除：
   production transport 与 Doctor 明确探针继续分别承担请求和诊断职责。
 - App 永远为 `None` 且没有生产 writer/handler 的旧 Decision Card overlay；结构化选择的
   唯一真实路径仍是 canonical `request_user_input` interaction。
+- 零生产调用方的 TUI `arg_repair` 启发式修补器；正式路径由 DeepSeek transport 精确拼接
+  SSE 参数，`ToolArguments` 同时保留 raw/parsed，Runtime 对畸形 JSON 产生 typed retry
+  outcome 而不篡改原始调用。
 
 ## 6. 当前验证事实
 

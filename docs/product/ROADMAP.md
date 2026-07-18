@@ -674,6 +674,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   从未被真实请求更新的“健康状态”假真相。
 - M4-C 已删除 App 永远初始化为 `None`、没有任何生产写入或按键处理的旧 Decision Card
   overlay；结构化用户选择继续只走 canonical `request_user_input` interaction 与 RunStore。
+- M4-C 已删除没有生产调用方的旧 TUI `arg_repair`。DeepSeek SSE 仍按增量精确重组参数，
+  canonical `ToolArguments` 保留原始字节并严格解析；畸形 JSON 作为可重试的 typed tool
+  outcome 返回模型，不再由未接线的启发式代码静默改写模型参数。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
