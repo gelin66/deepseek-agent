@@ -1906,10 +1906,6 @@ pub struct Config {
     #[serde(default)]
     pub workshop: Option<crate::tools::large_output_router::WorkshopConfig>,
 
-    /// Vision model configuration for the `image_analyze` tool.
-    #[serde(default)]
-    pub vision_model: Option<VisionModelConfig>,
-
     /// Sibling `permissions.toml` ask-rules compiled for runtime checks.
     ///
     /// This is deliberately not part of `config.toml`; it is loaded from the
@@ -2118,20 +2114,6 @@ pub enum ToolOverride {
     /// Completely disable a built-in tool. The tool will not appear in the
     /// model-visible catalog and cannot be called.
     Disabled,
-}
-
-/// Vision model configuration for the `image_analyze` tool.
-/// Uses an OpenAI-compatible vision model API.
-#[derive(Debug, Clone, Deserialize)]
-pub struct VisionModelConfig {
-    /// Model identifier (e.g., "gemini-3.1-flash-lite-preview").
-    pub model: String,
-    /// API key for the vision model. Inherits from main config if not specified.
-    #[serde(default)]
-    pub api_key: Option<String>,
-    /// Base URL for the vision model API. Defaults to OpenAI.
-    #[serde(default)]
-    pub base_url: Option<String>,
 }
 
 /// `[skills]` table — knobs for the community-skill installer.
@@ -3736,16 +3718,6 @@ impl Config {
             .as_ref()
             .and_then(|m| m.moraine_fallback)
             .unwrap_or(false)
-    }
-
-    /// Return the configured vision model config, inheriting api_key from main config.
-    #[must_use]
-    pub fn vision_model_config(&self) -> Option<VisionModelConfig> {
-        let mut config = self.vision_model.clone()?;
-        if config.api_key.is_none() {
-            config.api_key = self.api_key.clone();
-        }
-        Some(config)
     }
 
     #[must_use]
@@ -5672,7 +5644,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .or(base.mcp_oauth_callback_url),
         notes_path: override_cfg.notes_path.or(base.notes_path),
         memory_path: override_cfg.memory_path.or(base.memory_path),
-        vision_model: override_cfg.vision_model.or(base.vision_model),
         // #454: user-owned overlays such as profiles and managed config may
         // replace the instruction array. Project-scope config is filtered in
         // main.rs and cannot set instruction paths.

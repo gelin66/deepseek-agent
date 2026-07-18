@@ -467,33 +467,6 @@ removes only the unsupported `strict` flag when the final route is not Beta.
 Nested `anyOf` remains available because DeepSeek explicitly includes it in the
 Beta strict subset.
 
-### Vision Model
-
-CodeWhale's chat provider and `image_analyze` tool are configured separately.
-The main chat path remains the selected text/tool provider; image analysis runs
-through `[vision_model]` when the `vision_model` feature is enabled.
-
-Xiaomi's current image-understanding docs include `mimo-v2.5` for image input.
-To use MiMo for `image_analyze`, configure the vision model explicitly:
-
-```toml
-[features]
-vision_model = true
-
-[vision_model]
-model = "mimo-v2.5"
-api_key = "YOUR_XIAOMI_KEY"
-base_url = "https://api.xiaomimimo.com/v1"
-```
-
-The example above uses Xiaomi MiMo's pay-as-you-go OpenAI-compatible endpoint.
-If you are using a Token Plan key (`tp-...`) for `[vision_model]`, you must set
-`base_url` explicitly because this generic OpenAI-compatible block does not
-auto-select MiMo endpoints. Use
-`https://token-plan-sgp.xiaomimimo.com/v1` for Singapore accounts,
-`https://token-plan-cn.xiaomimimo.com/v1` for China-region accounts, or
-`https://token-plan-ams.xiaomimimo.com/v1` for Europe/Amsterdam accounts.
-
 To bootstrap MCP and skills directories at their resolved paths, run `codewhale-tui setup`.
 To only scaffold MCP, run `codewhale-tui mcp init`.
 

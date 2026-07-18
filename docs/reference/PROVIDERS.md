@@ -328,12 +328,6 @@ Evidence captured from Xiaomi's official docs on 2026-06-23 lives in
 [`docs/evidence/xiaomi-mimo-2026-06-23/`](../evidence/xiaomi-mimo-2026-06-23/);
 those notes override the secondary workbook snapshot where they disagree.
 
-Xiaomi's current
-[image-understanding guide](https://platform.xiaomimimo.com/docs/en-US/usage-guide/multimodal-understanding/image-understanding)
-includes `mimo-v2.5` for image input. CodeWhale exposes image analysis through the
-separate `[vision_model]` / `image_analyze` path; set that model to
-`mimo-v2.5` when using MiMo for vision.
-
 ### OpenRouter-Compatible Base URLs
 
 OpenRouter-compatible gateways should usually stay on the `openrouter`

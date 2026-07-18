@@ -364,6 +364,8 @@ M4-C foreground 切换后还已物理删除：
   owner `ui.rs`，其余 escape/history/word-motion/newline helpers 没有生产调用方。
 - `key_shortcuts` 中零调用的 copy/paste/control-like/Ctrl-H predicates；保留首启输入所需
   的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
+- 零生产消费者的通用 `[vision_model]`/`image_analyze` 配置与 feature；正式模型面仍只有
+  DeepSeek，图像文本提取继续由 `crates/tools` 的本地 `read_file` OCR backend 承担。
 
 ## 6. 当前验证事实
 

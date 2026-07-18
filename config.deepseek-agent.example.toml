@@ -34,7 +34,6 @@ exec_policy = true
 # Not part of the focused local surface. Enable per task when needed.
 web_search = false
 mcp = false
-vision_model = false
 
 [retry]
 enabled = true

@@ -44,8 +44,6 @@ pub enum Feature {
     Mcp,
     /// Enable execpolicy integration/tooling.
     ExecPolicy,
-    /// Enable vision model for image analysis.
-    VisionModel,
 }
 
 impl fmt::Display for Stage {
@@ -248,12 +246,6 @@ pub const FEATURES: &[FeatureSpec] = &[
         key: "exec_policy",
         stage: Stage::Stable,
         default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::VisionModel,
-        key: "vision_model",
-        stage: Stage::Beta,
-        default_enabled: false,
     },
 ];
 

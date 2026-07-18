@@ -691,6 +691,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已把 `key_shortcuts` 收缩为首启输入仍使用的 `is_text_input_key`，删除零调用的
   copy/paste/control-like/Ctrl-H 判定；正式文本粘贴继续由 terminal `Event::Paste` 处理，
   Pager 文本复制继续走 canonical local view event。
+- M4-C 已删除零生产消费者且违反单 DeepSeek backend 边界的通用 `[vision_model]`/
+  `image_analyze` 配置与 feature flag。DeepSeek Strict Function Calling 和 Beta FIM 不受
+  影响；真实 `read_file` 本地 OCR 保留，且不会产生第二个远程模型请求面。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

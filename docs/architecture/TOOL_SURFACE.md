@@ -310,7 +310,6 @@ registry also includes these model-visible tools:
 | `code_execution` | Execute Python code in an isolated sandbox |
 | `project_map` | Generate a structural map of the project workspace |
 | `remember` | Store a persistent fact in user memory (gated by `memory_enabled`) |
-| `image_analyze` | Vision-model image understanding (gated by `[vision_model]` config) |
 | `image_ocr` | Extract text from images via local OCR |
 | `finance` | Fetch market data and stock quotes |
 
