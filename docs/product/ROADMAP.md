@@ -171,6 +171,10 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
   RunStore、3 项确定性工具、1 项 app-server 负向架构契约和 3 项真实 exec 用例。只有
   happy-path 与畸形参数两项 exec 仍可 `cross_revision`；当前“未公开工具必须 fail-closed”
   与导入版恢复语义不同，明确为 `candidate_only`，不冒充相对导入基线的能力提升。
+- 当前 canonical 清单已在干净提交 `bb12bb5b395cbd3f0fc756c622ee408fe55240b6` 通过
+  29/29，manifest blob 为 `93d51a22570720b9973a16e3246cae41970c3043`，结果 SHA-256
+  为 `5079d435f3fe7cfc7ebc67cceb561162a1e772ab180461bc6129865afb7bdb56`。这只证明
+  当前回归契约通过；两项 `cross_revision` 尚须在导入 worktree 复跑后才能形成新比较结果。
 - writer worktree 没有 replacement，明确留在 M6；Strict `tool_choice`/嵌套 `anyOf`、FIM
   response parser、畸形 SSE、reasoning-only、工具业务失败恢复、child 失败 handoff 与
   失败测试结果仍是未进 runnable manifest 的证据债。
