@@ -20,7 +20,6 @@ pub mod child_agents;
 pub mod clipboard;
 pub mod color_compat;
 pub mod composer_chrome;
-pub mod composer_ui;
 pub mod diff_render;
 pub mod file_frecency;
 pub mod file_mention;

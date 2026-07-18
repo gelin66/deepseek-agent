@@ -39,6 +39,24 @@ fn create_test_app() -> App {
 }
 
 #[test]
+fn canonical_slash_menu_selection_wraps_and_clamps() {
+    let mut app = create_test_app();
+
+    select_previous_slash_menu_entry(&mut app, 3);
+    assert_eq!(app.slash_menu_selected, 2);
+
+    select_next_slash_menu_entry(&mut app, 3);
+    assert_eq!(app.slash_menu_selected, 0);
+
+    app.slash_menu_selected = 99;
+    select_previous_slash_menu_entry(&mut app, 3);
+    assert_eq!(app.slash_menu_selected, 1);
+
+    select_next_slash_menu_entry(&mut app, 0);
+    assert_eq!(app.slash_menu_selected, 1);
+}
+
+#[test]
 fn canonical_approval_can_inspect_and_copy_full_params_locally() {
     let mut app = create_test_app();
     let request = ApprovalRequest::new(

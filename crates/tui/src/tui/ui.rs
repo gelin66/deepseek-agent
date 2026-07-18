@@ -65,7 +65,6 @@ use super::app::{
 };
 use super::approval::{ApprovalMode, ApprovalRequest, ApprovalView, ReviewDecision};
 use super::canonical_commands::{self, CanonicalSlashCommand, CanonicalSlashParse};
-use super::composer_ui::{select_next_slash_menu_entry, select_previous_slash_menu_entry};
 use super::history::HistoryCell;
 use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
@@ -1173,6 +1172,22 @@ async fn run_canonical_event_loop(
             _ => {}
         }
     }
+}
+
+fn select_previous_slash_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
+    app.slash_menu_selected = (selected + entry_count - 1) % entry_count;
+}
+
+fn select_next_slash_menu_entry(app: &mut App, entry_count: usize) {
+    if entry_count == 0 {
+        return;
+    }
+    let selected = app.slash_menu_selected.min(entry_count.saturating_sub(1));
+    app.slash_menu_selected = (selected + 1) % entry_count;
 }
 
 async fn handle_canonical_key(

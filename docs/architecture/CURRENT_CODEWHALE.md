@@ -360,6 +360,8 @@ M4-C foreground 切换后还已物理删除：
   结构化提问仍由 canonical interaction 承担，Run 级 `allow_sandbox_elevation` 策略保留。
 - 未注册且零执行调用方的旧 TUI `RequestUserInputTool`/parser 与 prompt shadow；保留的
   UserInput modal 直接消费 protocol request/response，提交仍落入 canonical RunStore。
+- 旧 `composer_ui` 键盘处理器岛；唯一真实使用的 slash-menu 选择已迁回 canonical 事件
+  owner `ui.rs`，其余 escape/history/word-motion/newline helpers 没有生产调用方。
 
 ## 6. 当前验证事实
 
