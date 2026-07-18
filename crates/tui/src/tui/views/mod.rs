@@ -17,10 +17,8 @@ use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::settings::Settings;
 use crate::tools::UserInputResponse;
-use crate::tools::subagent::{SubAgentAssignment, SubAgentResult, SubAgentStatus, SubAgentType};
 use crate::tui::app::App;
 use crate::tui::approval::{ElevationOption, ReviewDecision};
-use codewhale_protocol::agent_runtime::TerminalState;
 
 pub mod mode_picker;
 pub mod status_picker;
@@ -30,7 +28,6 @@ pub enum ModalKind {
     Approval,
     Elevation,
     UserInput,
-    SubAgents,
     Pager,
     LiveTranscript,
     Config,
@@ -577,7 +574,6 @@ pub enum ViewEvent {
         value: String,
         persist: bool,
     },
-    SubAgentsRefresh,
     SidebarAgentCancel {
         agent_id: String,
     },
@@ -719,9 +715,6 @@ pub trait ModalView: std::any::Any {
     fn occupied_region(&self, area: Rect) -> Rect {
         area
     }
-    fn update_subagents(&mut self, _agents: &[SubAgentResult]) -> bool {
-        false
-    }
     fn tick(&mut self) -> ViewAction {
         ViewAction::None
     }
@@ -785,13 +778,6 @@ impl ViewStack {
             render_modal_backdrop(region, buf);
             view.render(area, buf);
         }
-    }
-
-    pub fn update_subagents(&mut self, agents: &[SubAgentResult]) -> bool {
-        self.views
-            .last_mut()
-            .map(|view| view.update_subagents(agents))
-            .unwrap_or(false)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> Vec<ViewEvent> {
@@ -2143,7 +2129,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         }
         "mcp_config_path" => "path to mcp.json",
         "fleet.exec.max_spawn_depth" => {
-            "0 blocks child agents; 3 default (same axis as sub-agents); capped at 8"
+            "0 blocks child agents; 3 default (canonical child-agent depth); capped at 8"
         }
         "features.subagents" => {
             "read-only feature flag state; /fleet setup is the user-facing path"
@@ -2927,458 +2913,6 @@ impl ModalView for ConfigView {
     }
 }
 
-pub struct SubAgentsView {
-    agents: Vec<SubAgentResult>,
-    scroll: usize,
-}
-
-/// Build the `/subagents` snapshot exclusively from the canonical runtime
-/// projection. `SubAgentResult` is retained here only as a view DTO.
-pub(crate) fn subagent_view_agents(app: &App) -> Vec<SubAgentResult> {
-    app.child_agents
-        .rows()
-        .iter()
-        .enumerate()
-        .map(|(index, child)| SubAgentResult {
-            name: format!("子 Agent {}", index + 1),
-            agent_id: child.child_run_id.0.clone(),
-            context_mode: "fresh".to_string(),
-            fork_context: false,
-            workspace: None,
-            git_branch: None,
-            agent_type: SubAgentType::General,
-            assignment: SubAgentAssignment {
-                objective: child
-                    .handoff_content
-                    .clone()
-                    .unwrap_or_else(|| "规范子运行".to_string()),
-                role: Some(if child.depth > 1 {
-                    "子级 Agent".to_string()
-                } else {
-                    "子 Agent".to_string()
-                }),
-            },
-            model: String::new(),
-            nickname: None,
-            status: terminal_to_subagent_status(child.terminal.as_ref()),
-            worker_status: None,
-            parent_run_id: Some(child.parent_run_id.0.clone()),
-            spawn_depth: u32::from(child.depth),
-            result: child.handoff_content.clone(),
-            steps_taken: 0,
-            checkpoint: None,
-            needs_input: None,
-            duration_ms: 0,
-            from_prior_session: false,
-        })
-        .collect()
-}
-
-fn terminal_to_subagent_status(terminal: Option<&TerminalState>) -> SubAgentStatus {
-    match terminal {
-        None => SubAgentStatus::Running,
-        Some(TerminalState::Completed { .. }) => SubAgentStatus::Completed,
-        Some(TerminalState::Blocked { reason }) => SubAgentStatus::Interrupted(reason.clone()),
-        Some(TerminalState::Failed { failure }) => SubAgentStatus::Failed(format!("{failure:?}")),
-        Some(TerminalState::Cancelled) => SubAgentStatus::Cancelled,
-        Some(TerminalState::Interrupted) => SubAgentStatus::Interrupted("运行被中断".to_string()),
-        Some(TerminalState::RecoveryRequired { ambiguity }) => {
-            SubAgentStatus::Failed(format!("需要恢复：{ambiguity:?}"))
-        }
-    }
-}
-
-impl SubAgentsView {
-    pub fn new(agents: Vec<SubAgentResult>) -> Self {
-        Self { agents, scroll: 0 }
-    }
-}
-
-impl ModalView for SubAgentsView {
-    fn kind(&self) -> ModalKind {
-        ModalKind::SubAgents
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
-        self
-    }
-
-    fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
-        use crossterm::event::KeyCode;
-
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => ViewAction::Close,
-            KeyCode::Enter | KeyCode::Char('r') | KeyCode::Char('R') => {
-                ViewAction::Emit(ViewEvent::SubAgentsRefresh)
-            }
-            KeyCode::Char('f') | KeyCode::Char('F') => {
-                ViewAction::Emit(ViewEvent::CommandPaletteSelected {
-                    action: CommandPaletteAction::ExecuteCommand {
-                        command: "/fleet".to_string(),
-                    },
-                })
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                self.scroll = self.scroll.saturating_sub(1);
-                ViewAction::None
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                self.scroll = self.scroll.saturating_add(1);
-                ViewAction::None
-            }
-            _ => ViewAction::None,
-        }
-    }
-
-    fn update_subagents(&mut self, agents: &[SubAgentResult]) -> bool {
-        self.agents = agents.to_vec();
-        self.scroll = self.scroll.min(self.agents.len().saturating_sub(1));
-        true
-    }
-
-    fn render(&self, area: Rect, buf: &mut Buffer) {
-        Clear.render(area, buf);
-        Block::default()
-            .style(Style::default().bg(palette::WHALE_BG))
-            .render(area, buf);
-
-        let mut lines: Vec<Line> = Vec::new();
-        let content_width = area.width.saturating_sub(4) as usize;
-
-        if self.agents.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "No Fleet workers running.",
-                Style::default().fg(palette::TEXT_MUTED),
-            )));
-            lines.push(Line::from(Span::styled(
-                "Use /fleet to configure role profiles and launch posture.",
-                Style::default().fg(palette::TEXT_DIM),
-            )));
-        } else {
-            let mut running = Vec::new();
-            let mut completed = Vec::new();
-            let mut interrupted = Vec::new();
-            let mut failed = Vec::new();
-            let mut cancelled = Vec::new();
-
-            for agent in &self.agents {
-                match agent.status {
-                    SubAgentStatus::Running => running.push(agent),
-                    SubAgentStatus::Completed => completed.push(agent),
-                    SubAgentStatus::Interrupted(_) => interrupted.push(agent),
-                    SubAgentStatus::Failed(_) => failed.push(agent),
-                    SubAgentStatus::Cancelled => cancelled.push(agent),
-                    SubAgentStatus::BudgetExhausted => failed.push(agent),
-                }
-            }
-
-            let status_summary = [
-                ("Running", running.len(), palette::STATUS_WARNING),
-                ("Completed", completed.len(), palette::STATUS_SUCCESS),
-                ("Interrupted", interrupted.len(), palette::STATUS_WARNING),
-                ("Failed", failed.len(), palette::WHALE_ERROR),
-                ("Cancelled", cancelled.len(), palette::TEXT_MUTED),
-            ];
-
-            lines.push(Line::from(Span::styled(
-                "Fleet workers",
-                Style::default().fg(palette::WHALE_INFO).bold(),
-            )));
-            lines.push(Line::from(Span::styled(
-                "Sub-agent roles are Fleet worker roles.",
-                Style::default().fg(palette::TEXT_DIM),
-            )));
-
-            let mut summary_parts = Vec::new();
-            for (label, count, color) in status_summary {
-                summary_parts.push(Line::from(Span::styled(
-                    format!("{label}: {count}"),
-                    Style::default().fg(color),
-                )));
-            }
-
-            let mut summary = vec![Span::styled("  ", Style::default().fg(palette::TEXT_DIM))];
-            for (idx, part) in summary_parts.into_iter().enumerate() {
-                if idx > 0 {
-                    summary.push(Span::raw("  ·  "));
-                }
-                summary.extend(part);
-            }
-            lines.push(Line::from(summary));
-            lines.push(Line::from(Span::styled(
-                "",
-                Style::default().fg(palette::TEXT_DIM),
-            )));
-
-            running.sort_by(|a, b| {
-                let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
-                order.then_with(|| a.agent_id.cmp(&b.agent_id))
-            });
-            completed.sort_by(|a, b| {
-                let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
-                order.then_with(|| a.agent_id.cmp(&b.agent_id))
-            });
-            interrupted.sort_by(|a, b| {
-                let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
-                order.then_with(|| a.agent_id.cmp(&b.agent_id))
-            });
-            failed.sort_by(|a, b| {
-                let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
-                order.then_with(|| a.agent_id.cmp(&b.agent_id))
-            });
-            cancelled.sort_by(|a, b| {
-                let order = agent_type_order(&a.agent_type).cmp(&agent_type_order(&b.agent_type));
-                order.then_with(|| a.agent_id.cmp(&b.agent_id))
-            });
-
-            append_subagent_group(
-                &mut lines,
-                "Running",
-                palette::STATUS_WARNING.into(),
-                &running,
-                content_width,
-            );
-            append_subagent_group(
-                &mut lines,
-                "Completed",
-                palette::STATUS_SUCCESS.into(),
-                &completed,
-                content_width,
-            );
-            append_subagent_group(
-                &mut lines,
-                "Interrupted",
-                palette::STATUS_WARNING.into(),
-                &interrupted,
-                content_width,
-            );
-            append_subagent_group(
-                &mut lines,
-                "Failed",
-                palette::WHALE_ERROR.into(),
-                &failed,
-                content_width,
-            );
-            append_subagent_group(
-                &mut lines,
-                "Cancelled",
-                palette::TEXT_MUTED.into(),
-                &cancelled,
-                content_width,
-            );
-        }
-
-        let content = render_modal_footer(
-            area,
-            buf,
-            &[
-                ActionHint::new("Esc", "close"),
-                ActionHint::new("R", "refresh"),
-                ActionHint::new("F", "roster/setup"),
-            ],
-        );
-        let shell = ratatui::layout::Layout::default()
-            .direction(ratatui::layout::Direction::Vertical)
-            .constraints([
-                ratatui::layout::Constraint::Length(3),
-                ratatui::layout::Constraint::Min(1),
-            ])
-            .split(content);
-        Paragraph::new(vec![
-            Line::from(vec![
-                Span::styled(
-                    "─ fleet ",
-                    Style::default().fg(palette::WHALE_ACCENT_PRIMARY).bold(),
-                ),
-                Span::styled(
-                    "──────────────────────── ",
-                    Style::default().fg(palette::BORDER_COLOR),
-                ),
-                Span::styled("roster  setup  ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled("workers", Style::default().fg(palette::WHALE_INFO).bold()),
-                Span::styled(
-                    " ─────────────────",
-                    Style::default().fg(palette::BORDER_COLOR),
-                ),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled(
-                "  live worker status · role · objective · model · elapsed",
-                Style::default().fg(palette::TEXT_MUTED),
-            )),
-        ])
-        .render(shell[0], buf);
-
-        let total_lines = lines.len();
-        let visible_lines = usize::from(shell[1].height).max(1);
-        let max_scroll = total_lines.saturating_sub(visible_lines);
-        let scroll = self.scroll.min(max_scroll);
-
-        Paragraph::new(lines)
-            .scroll((scroll as u16, 0))
-            .render(shell[1], buf);
-    }
-}
-
-fn append_subagent_group(
-    lines: &mut Vec<ratatui::text::Line<'static>>,
-    title: &str,
-    section_style: ratatui::style::Style,
-    agents: &[&SubAgentResult],
-    content_width: usize,
-) {
-    use ratatui::{
-        style::Style,
-        text::{Line, Span},
-    };
-    if agents.is_empty() {
-        return;
-    }
-
-    lines.push(Line::from(Span::styled(
-        format!("{title} ({})", agents.len()),
-        section_style.bold(),
-    )));
-
-    for agent in agents {
-        let id = truncate_view_text(&agent.agent_id, 11);
-        let display_name = agent
-            .nickname
-            .as_deref()
-            .map(|nick| format!("{nick:<12}"))
-            .unwrap_or_else(|| format!("{id:<12}"));
-        let kind = format_agent_type(&agent.agent_type);
-        let (status, status_style, status_detail) = format_agent_status(&agent.status);
-
-        lines.push(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(display_name, Style::default().fg(palette::TEXT_PRIMARY)),
-            Span::raw(" "),
-            Span::styled(format!("{id:<11}"), Style::default().fg(palette::TEXT_DIM)),
-            Span::styled(
-                format!("{kind:<9}"),
-                Style::default().fg(palette::TEXT_MUTED),
-            ),
-            Span::raw("  "),
-            Span::styled(format!("{status:<10}"), status_style),
-            Span::raw("  "),
-            Span::styled(
-                format!("{:>4}✦", agent.steps_taken),
-                Style::default().fg(palette::TEXT_DIM),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("{:>6}ms", agent.duration_ms),
-                Style::default().fg(palette::TEXT_DIM),
-            ),
-        ]));
-
-        if let Some(detail) = status_detail {
-            let max_len = content_width.saturating_sub(10);
-            let detail = truncate_view_text(detail, max_len);
-            lines.push(Line::from(vec![
-                Span::styled("    reason: ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(detail, Style::default().fg(palette::WHALE_ERROR)),
-            ]));
-        }
-
-        if let Some(role) = agent.assignment.role.as_deref() {
-            let max_len = content_width.saturating_sub(14);
-            let role = truncate_view_text(role, max_len);
-            lines.push(Line::from(vec![
-                Span::styled("    role: ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(role, Style::default().fg(palette::WHALE_INFO)),
-            ]));
-        }
-
-        if let Some(branch) = agent.git_branch.as_deref() {
-            let workspace = agent
-                .workspace
-                .as_deref()
-                .and_then(|path| path.file_name())
-                .and_then(|name| name.to_str())
-                .filter(|name| !name.is_empty());
-            let mut branch_detail = format!("branch {branch}");
-            if let Some(workspace) = workspace {
-                branch_detail.push_str(&format!(" @ {workspace}"));
-            }
-            let max_len = content_width.saturating_sub(14);
-            let branch_detail = truncate_view_text(&branch_detail, max_len);
-            lines.push(Line::from(vec![
-                Span::styled("    git: ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(branch_detail, Style::default().fg(palette::WHALE_INFO)),
-            ]));
-        }
-
-        let max_len = content_width.saturating_sub(18);
-        let objective = truncate_view_text(&agent.assignment.objective, max_len);
-        lines.push(Line::from(vec![
-            Span::styled("    objective: ", Style::default().fg(palette::TEXT_MUTED)),
-            Span::styled(objective, Style::default().fg(palette::TEXT_DIM)),
-        ]));
-
-        if let Some(result) = agent.result.as_ref() {
-            let max_len = content_width.saturating_sub(16);
-            let preview = truncate_view_text(result, max_len);
-            lines.push(Line::from(vec![
-                Span::styled("    result: ", Style::default().fg(palette::TEXT_MUTED)),
-                Span::styled(preview, Style::default().fg(palette::TEXT_DIM)),
-            ]));
-        }
-    }
-
-    lines.push(Line::from(""));
-}
-
-fn agent_type_order(agent_type: &SubAgentType) -> u8 {
-    match agent_type {
-        SubAgentType::General => 0,
-        SubAgentType::Explore => 1,
-        SubAgentType::Plan => 2,
-        SubAgentType::Implementer => 3,
-        SubAgentType::Verifier => 4,
-        SubAgentType::Review => 5,
-        SubAgentType::Custom => 6,
-    }
-}
-
-fn format_agent_type(agent_type: &SubAgentType) -> &'static str {
-    // Source of truth lives on the enum so any new role lands in both
-    // the user-visible label and the sort order via the as_str() helper.
-    agent_type.as_str()
-}
-
-fn format_agent_status(
-    status: &SubAgentStatus,
-) -> (&'static str, ratatui::style::Style, Option<&str>) {
-    use ratatui::style::Style;
-
-    match status {
-        SubAgentStatus::Running => ("running", Style::default().fg(palette::WHALE_INFO), None),
-        SubAgentStatus::Completed => (
-            "completed",
-            Style::default().fg(palette::WHALE_ACCENT_PRIMARY),
-            None,
-        ),
-        SubAgentStatus::Interrupted(reason) => (
-            "interrupted",
-            Style::default().fg(palette::STATUS_WARNING),
-            Some(reason.as_str()),
-        ),
-        SubAgentStatus::Cancelled => ("cancelled", Style::default().fg(palette::TEXT_MUTED), None),
-        SubAgentStatus::BudgetExhausted => (
-            "budget_exhausted",
-            Style::default().fg(palette::STATUS_WARNING),
-            None,
-        ),
-        SubAgentStatus::Failed(reason) => (
-            "failed",
-            Style::default().fg(palette::WHALE_ERROR),
-            Some(reason.as_str()),
-        ),
-    }
-}
-
 fn truncate_view_text(text: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
@@ -3392,18 +2926,16 @@ fn truncate_view_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        ActionHint, ConfigListItem, ConfigScope, ConfigView, EmptyState, ListDetailLayout,
-        ModalKind, ModalView, ViewAction, ViewEvent, ViewStack, action_footer_lines,
-        canonical_config_choice, centered_modal_area, config_choice_values, config_label_for_key,
-        render_modal_footer, render_underwater_surface, subagent_view_agents, truncate_view_text,
+        ActionHint, CommandPaletteAction, ConfigListItem, ConfigScope, ConfigView, EmptyState,
+        ListDetailLayout, ModalKind, ModalView, ViewAction, ViewEvent, ViewStack,
+        action_footer_lines, canonical_config_choice, centered_modal_area, config_choice_values,
+        config_label_for_key, render_modal_footer, render_underwater_surface, truncate_view_text,
     };
     use crate::config::Config;
     use crate::localization::{MessageId, tr};
     use crate::palette;
     use crate::settings::Settings;
     use crate::tui::app::{App, TuiOptions};
-    use crate::tui::views::{CommandPaletteAction, SubAgentsView};
-    use codewhale_protocol::agent_runtime::RunId;
     use crossterm::event::{
         KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
@@ -3476,14 +3008,6 @@ mod tests {
         // the opacity/overflow checks) proves the modal renders fully and its
         // footer wraps inside bounds rather than clipping.
         assert_modal_usable_and_opaque(create_config_view, &["Search"]);
-    }
-
-    #[test]
-    fn subagents_modal_is_usable_and_opaque_at_blocker_sizes() {
-        assert_modal_usable_and_opaque(
-            || SubAgentsView::new(Vec::new()),
-            &["close", "refresh", "setup"],
-        );
     }
 
     #[test]
@@ -3700,41 +3224,6 @@ mod tests {
         for ch in text.chars() {
             let action = view.handle_key(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
             assert!(matches!(action, ViewAction::None));
-        }
-    }
-
-    #[test]
-    fn subagent_view_agents_uses_only_canonical_children() {
-        let mut app = create_test_app();
-        app.child_agents.begin_root(RunId("root-run".to_string()));
-        for (child, depth) in [("child-one", 1), ("child-two", 2)] {
-            app.child_agents.record_started(
-                RunId("root-run".to_string()),
-                format!("call-{child}"),
-                RunId(child.to_string()),
-                depth,
-            );
-        }
-
-        let agents = subagent_view_agents(&app);
-        assert_eq!(agents.len(), 2);
-        assert_eq!(agents[0].agent_id, "child-one");
-        assert_eq!(agents[0].assignment.role.as_deref(), Some("子 Agent"));
-        assert_eq!(agents[1].agent_id, "child-two");
-        assert_eq!(agents[1].assignment.role.as_deref(), Some("子级 Agent"));
-    }
-
-    #[test]
-    fn fleet_worker_status_view_can_open_fleet_command() {
-        let mut view = SubAgentsView::new(Vec::new());
-
-        let action = view.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
-
-        match action {
-            ViewAction::Emit(ViewEvent::CommandPaletteSelected {
-                action: CommandPaletteAction::ExecuteCommand { command },
-            }) => assert_eq!(command, "/fleet"),
-            other => panic!("expected /fleet jump action, got {other:?}"),
         }
     }
 

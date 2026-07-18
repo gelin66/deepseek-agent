@@ -27,7 +27,6 @@ use super::task_spec::{
     record_verification_receipt, validate_task_spec_document, verify_task_result,
 };
 use super::worker_runtime;
-use crate::tools::subagent::SharedSubAgentManager;
 
 const DEFAULT_STALE_AFTER_SECONDS: u64 = 300;
 
@@ -40,10 +39,6 @@ pub struct FleetManager {
     /// (#fleet-roster cutover (v0.8.67)). Defaults keep built-in + workspace
     /// members resolvable even when the caller has no parsed config.
     fleet_config: codewhale_config::FleetConfigToml,
-    /// Optional sub-agent manager for headless worker execution.
-    /// When set, fleet workers spawn real sub-agents; when None,
-    /// the manager falls back to local simulation.
-    sub_agent_manager: Option<SharedSubAgentManager>,
     /// The live session route — the operator's model. Workers whose task and
     /// roster profile pin no model inherit this instead of `"auto"`, so the
     /// model the user picked in `/model` is the model that runs the fleet
@@ -59,13 +54,6 @@ impl std::fmt::Debug for FleetManager {
             .field("ledger", &self.ledger)
             .field("stale_after", &self.stale_after)
             .field("exec_config", &self.exec_config)
-            .field(
-                "sub_agent_manager",
-                &self
-                    .sub_agent_manager
-                    .as_ref()
-                    .map(|_| "SharedSubAgentManager"),
-            )
             .finish()
     }
 }
@@ -143,28 +131,6 @@ pub struct FleetWorkerInspection {
     pub receipt_summary: Option<String>,
     pub last_error: Option<String>,
     pub alert_state: Option<String>,
-    /// Lightweight projection from the sub-agent worker runtime.
-    /// Populated when a sub-agent manager is attached.
-    pub runtime_state: Option<FleetWorkerRuntimeProjection>,
-}
-
-/// Lightweight TUI projection of a headless sub-agent worker's current state.
-///
-/// Derived from the sub-agent manager's `AgentWorkerRecord`.
-#[derive(Debug, Clone)]
-pub struct FleetWorkerRuntimeProjection {
-    /// Sub-agent lifecycle status (Queued, Starting, Running, Completed, etc.)
-    pub agent_status: String,
-    /// Steps taken so far (tool calls + model turns)
-    pub steps_taken: u32,
-    /// Latest human-readable message from the worker
-    pub latest_message: Option<String>,
-    /// Error message if the worker failed
-    pub error: Option<String>,
-    /// Result summary if the worker completed
-    pub result_summary: Option<String>,
-    /// Whether the worker has a sub-agent session running
-    pub has_session: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -184,7 +150,6 @@ impl FleetManager {
             stale_after: Duration::from_secs(DEFAULT_STALE_AFTER_SECONDS),
             exec_config: codewhale_config::FleetExecConfig::default(),
             fleet_config: codewhale_config::FleetConfigToml::default(),
-            sub_agent_manager: None,
             session_model: None,
         })
     }
@@ -230,12 +195,6 @@ impl FleetManager {
     /// used everywhere a task references an `agent_profile` id.
     fn agent_roster(&self) -> crate::fleet::roster::FleetRoster {
         crate::fleet::roster::FleetRoster::load(&self.fleet_config, &self.workspace)
-    }
-
-    /// Attach a sub-agent manager so fleet workers can spawn real headless agents.
-    pub fn with_sub_agent_manager(mut self, mgr: SharedSubAgentManager) -> Self {
-        self.sub_agent_manager = Some(mgr);
-        self
     }
 
     pub fn ledger_path(&self) -> &Path {
@@ -540,26 +499,6 @@ impl FleetManager {
             .map(|heartbeat| heartbeat.timestamp.clone());
         let alert_state = latest_alert_for_worker(&state, worker_id);
 
-        // Enrich with sub-agent worker runtime state when available.
-        let runtime_state = self.sub_agent_manager.as_ref().and_then(|mgr| {
-            mgr.try_read()
-                .ok()
-                .and_then(|guard| guard.get_worker_record(worker_id))
-                .map(|record| FleetWorkerRuntimeProjection {
-                    agent_status: format!("{:?}", record.status).to_lowercase(),
-                    steps_taken: record.steps_taken,
-                    latest_message: record.latest_message,
-                    error: record.error,
-                    result_summary: record.result_summary,
-                    has_session: !matches!(
-                        record.status,
-                        crate::tools::subagent::AgentWorkerStatus::Completed
-                            | crate::tools::subagent::AgentWorkerStatus::Failed
-                            | crate::tools::subagent::AgentWorkerStatus::Cancelled
-                    ),
-                })
-        });
-
         Ok(FleetWorkerInspection {
             worker_id: worker_id.to_string(),
             status,
@@ -574,7 +513,6 @@ impl FleetManager {
             receipt_summary,
             last_error,
             alert_state,
-            runtime_state,
         })
     }
 
@@ -726,42 +664,6 @@ impl FleetManager {
         entry: &FleetInboxEntry,
         task_spec: &FleetTaskSpec,
     ) -> Result<()> {
-        let sub_agent_worker = if self.sub_agent_manager.is_some() {
-            let run = self
-                .ledger
-                .rebuild_state()
-                .ok()
-                .and_then(|state| state.runs.get(&entry.run_id.0).cloned());
-            let worker_spec = run
-                .as_ref()
-                .and_then(|r| r.worker_specs.iter().find(|w| w.id == worker_id).cloned())
-                .unwrap_or_else(|| FleetWorkerSpec {
-                    id: worker_id.to_string(),
-                    name: worker_id.to_string(),
-                    host: FleetHostSpec::Local,
-                    trust_level: Some(FleetTrustLevel::Local),
-                    labels: BTreeMap::new(),
-                    capabilities: vec![],
-                    max_concurrent_tasks: Some(1),
-                });
-            let roster = self.agent_roster();
-            let worker = worker_runtime::fleet_task_to_worker_spec_with_profiles(
-                worker_id,
-                &entry.run_id.0,
-                task_spec,
-                &worker_spec,
-                self.run_model(),
-                &self.workspace,
-                roster.members(),
-                None,
-            )?;
-            Some(worker_runtime::apply_exec_hardening(
-                worker,
-                &self.exec_config,
-            ))
-        } else {
-            None
-        };
         let now = timestamp();
         self.ledger
             .lease_task(&entry.run_id, &entry.task_id, worker_id, &now, None)?;
@@ -793,15 +695,6 @@ impl FleetManager {
             FleetWorkerEventPayload::Running,
         )?;
         self.ledger.heartbeat(worker_id, &timestamp(), None, None)?;
-
-        // Register with the sub-agent manager for headless worker tracking.
-        // The engine's agent path handles actual sub-agent spawning.
-        if let Some(ref mgr) = self.sub_agent_manager
-            && let Some(worker) = sub_agent_worker
-            && let Ok(mut guard) = mgr.try_write()
-        {
-            guard.register_worker(worker);
-        }
 
         Ok(())
     }
@@ -941,7 +834,6 @@ impl FleetManager {
         // verification and the simulated/transport fallback below — persists the
         // same honest, secret-free route detail.
         let resolved_route = self.resolve_task_route(&task.task_spec);
-        let effective_permissions = self.resolve_task_effective_permissions(task);
         let verification_input = FleetTaskVerificationInput {
             run_id: task.entry.run_id.clone(),
             task_id: task.entry.task_id.clone(),
@@ -949,7 +841,11 @@ impl FleetManager {
             exit_code,
             artifacts,
             resolved_route,
-            effective_permissions,
+            // Fleet currently launches only the global `FleetExecConfig`
+            // allow/deny policy on `codewhale exec` argv. Task/profile role and
+            // tool declarations are not enforced by that process, so do not
+            // record them as observed effective permissions.
+            effective_permissions: None,
         };
         if task.task_spec.scorer.is_some() {
             let verification =
@@ -1014,42 +910,6 @@ impl FleetManager {
     /// The adopted session route, if any — the operator's model.
     fn session_model(&self) -> Option<&str> {
         self.session_model.as_deref()
-    }
-
-    /// Resolve the effective worker authority to persist on a task's receipt
-    /// (#3211). This mirrors Fleet worker registration and applies exec
-    /// hardening before snapshotting the runtime profile. Failures degrade to
-    /// `None` so receipt writing never widens or fabricates authority.
-    fn resolve_task_effective_permissions(
-        &self,
-        task: &FleetExecutorTaskContext,
-    ) -> Option<FleetEffectivePermissions> {
-        let state = self.ledger.rebuild_state().ok()?;
-        let run = state.runs.get(&task.entry.run_id.0)?;
-        let worker_spec = run
-            .worker_specs
-            .iter()
-            .find(|worker| worker.id == task.worker_id)
-            .cloned()
-            .unwrap_or_else(|| default_local_worker(&task.worker_id));
-        let roster = self.agent_roster();
-        let worker = worker_runtime::fleet_task_to_worker_spec_with_profiles(
-            &task.worker_id,
-            &task.entry.run_id.0,
-            &task.task_spec,
-            &worker_spec,
-            self.run_model(),
-            &self.workspace,
-            roster.members(),
-            None,
-        )
-        .ok()?;
-        let worker = worker_runtime::apply_exec_hardening(worker, &self.exec_config);
-        Some(worker_runtime::fleet_effective_permissions_for_task(
-            &task.task_spec,
-            roster.members(),
-            &worker,
-        ))
     }
 
     fn task_artifacts_for_receipt(
@@ -2512,47 +2372,10 @@ esac
                     .is_some_and(|source| !source.is_empty()),
                 "receipt {key} resolved-route should record model source"
             );
-            let permissions = receipt
-                .effective_permissions
-                .as_ref()
-                .unwrap_or_else(|| panic!("receipt {key} should carry effective permissions"));
-            assert_eq!(
-                permissions.source, "worker_runtime_profile",
-                "receipt {key} permissions source must be the worker runtime profile"
-            );
             assert!(
-                permissions.background,
-                "receipt {key} should record background worker execution"
+                receipt.effective_permissions.is_none(),
+                "receipt {key} must not claim task/profile permissions that were absent from exec argv"
             );
-            assert_eq!(
-                permissions.tool_scope, "explicit",
-                "receipt {key} should preserve explicit tool scope"
-            );
-            assert!(
-                !permissions.tools.is_empty(),
-                "receipt {key} should record explicit tool names"
-            );
-            match route.role.as_deref() {
-                Some("builder") => {
-                    assert!(permissions.write, "builder receipt {key} should write");
-                    assert_eq!(permissions.shell, "full");
-                }
-                Some("scout") => {
-                    assert!(
-                        !permissions.write,
-                        "scout receipt {key} must stay read-only"
-                    );
-                    assert_eq!(permissions.shell, "read_only");
-                }
-                Some("verifier") => {
-                    assert!(
-                        !permissions.write,
-                        "verifier receipt {key} must stay read-only"
-                    );
-                    assert_eq!(permissions.shell, "full");
-                }
-                role => panic!("unexpected receipt role for {key}: {role:?}"),
-            }
 
             let receipt_json = serde_json::to_string(receipt).unwrap();
             let haystack = receipt_json.to_ascii_lowercase();

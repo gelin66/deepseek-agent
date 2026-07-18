@@ -34,7 +34,6 @@ const MULTI_AGENT_ROOT_PROMPT: &str = "exec-multi-agent-root-production-marker";
 const MULTI_AGENT_SPAWN_CALL_ID: &str = "call_exec_multi_agent_spawn";
 const MULTI_AGENT_CHILD_SYSTEM_MARKER: &str = "你是在同一 AgentRuntime 中运行的";
 const MULTI_AGENT_HANDOFF_MARKER: &str = "<codewhale:runtime_event kind=\"subagent_completion\"";
-const MULTI_AGENT_ROOT_WAIT_MARKER: &str = "root-turn-ended-before-child-completion";
 const MULTI_AGENT_CHILD_MARKER: &str = "child-production-complete-marker";
 const MULTI_AGENT_PARENT_MARKER: &str = "parent-integrated-child-production-marker";
 const NESTED_ROOT_PROMPT: &str = "exec-nested-agent-root-production-marker";
@@ -43,9 +42,7 @@ const NESTED_PARENT_PROMPT: &str = "nested-parent-task-production-marker";
 const NESTED_GRANDCHILD_CALL_ID: &str = "call_exec_delayed_grandchild_spawn";
 const NESTED_GRANDCHILD_PROMPT: &str = "nested-grandchild-task-production-marker";
 const NESTED_GRANDCHILD_MARKER: &str = "nested-grandchild-production-complete";
-const NESTED_PARENT_EARLY_MARKER: &str = "nested-parent-tried-to-finish-early";
 const NESTED_PARENT_INTEGRATED_MARKER: &str = "nested-parent-integrated-grandchild";
-const NESTED_ROOT_WAIT_MARKER: &str = "nested-root-ended-before-tree-completion";
 const NESTED_ROOT_INTEGRATED_MARKER: &str = "nested-root-integrated-full-tree";
 const NESTED_CHILD_HANDOFF_MARKER: &str =
     "<codewhale:runtime_event kind=\"child_subagent_completion\"";
@@ -73,7 +70,6 @@ struct NonAgentExecOptions<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MultiAgentRequestKind {
     RootSpawn,
-    RootWait,
     Child,
     ParentIntegration,
     Unexpected,
@@ -82,9 +78,7 @@ enum MultiAgentRequestKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NestedAgentRequestKind {
     RootSpawn,
-    RootWait,
     ParentSpawnGrandchild,
-    ParentEarlyFinish,
     Grandchild,
     ParentIntegration,
     RootIntegration,
@@ -99,18 +93,13 @@ impl Respond for MultiAgentResponder {
         let body = request.body_json::<Value>().unwrap_or(Value::Null);
         match classify_multi_agent_request(&body) {
             MultiAgentRequestKind::RootSpawn => sse_response(agent_spawn_sse()),
-            MultiAgentRequestKind::RootWait => {
-                sse_response(complete_sse(MULTI_AGENT_ROOT_WAIT_MARKER))
-            }
             MultiAgentRequestKind::Child => {
                 assert!(
                     !body.get("stream").and_then(Value::as_bool).unwrap_or(false),
                     "sub-agent request must use the non-streaming response contract: {body:#}"
                 );
-                // Starting the child request may race the parent's post-tool
-                // request. Delay only the child response so the root turn
-                // deterministically reaches TurnComplete first while the
-                // child remains live in the manager.
+                // Delay the child response to prove eager join does not issue
+                // another root request before the child handoff is durable.
                 non_streaming_response(MULTI_AGENT_CHILD_MARKER).set_delay(Duration::from_secs(1))
             }
             MultiAgentRequestKind::ParentIntegration => {
@@ -183,14 +172,9 @@ impl Respond for NestedAgentResponder {
         let body = request.body_json::<Value>().unwrap_or(Value::Null);
         match classify_nested_agent_request(&body) {
             NestedAgentRequestKind::RootSpawn => sse_response(nested_root_spawn_sse()),
-            NestedAgentRequestKind::RootWait => sse_response(complete_sse(NESTED_ROOT_WAIT_MARKER)),
             NestedAgentRequestKind::ParentSpawnGrandchild => {
                 assert_non_streaming(&body, "nested parent spawn");
                 nested_parent_spawn_response()
-            }
-            NestedAgentRequestKind::ParentEarlyFinish => {
-                assert_non_streaming(&body, "nested parent early finish");
-                non_streaming_response(NESTED_PARENT_EARLY_MARKER)
             }
             NestedAgentRequestKind::Grandchild => {
                 assert_non_streaming(&body, "nested grandchild");
@@ -1345,7 +1329,7 @@ async fn explicit_model_alias_fails_before_any_classifier_or_root_request() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn multi_agent_exec_waits_for_child_handoff_before_one_success_terminal() {
+async fn multi_agent_exec_eager_joins_child_before_one_success_terminal() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server).await;
@@ -1373,18 +1357,8 @@ async fn multi_agent_exec_waits_for_child_handoff_before_one_success_terminal() 
     let metadata = assert_terminal_tail(&events, None);
     assert_eq!(metadata["status"], "completed");
     assert_eq!(metadata["termination_reason"], "resolved");
-    // Root spawn reports 19/8 tokens; root wait, child, and parent
-    // integration each report 11/3.
-
-    let root_wait_index = events
-        .iter()
-        .position(|event| {
-            event["type"] == "content"
-                && event["content"]
-                    .as_str()
-                    .is_some_and(|content| content.contains(MULTI_AGENT_ROOT_WAIT_MARKER))
-        })
-        .expect("root turn must visibly finish while the child is still running");
+    // Root spawn reports 19/8 tokens; child and parent integration each
+    // report 11/3. Eager join removes the information-free root wait request.
     let parent_integration_index = events
         .iter()
         .position(|event| {
@@ -1394,10 +1368,6 @@ async fn multi_agent_exec_waits_for_child_handoff_before_one_success_terminal() 
                     .is_some_and(|content| content.contains(MULTI_AGENT_PARENT_MARKER))
         })
         .expect("parent must integrate the child completion in a later turn");
-    assert!(
-        root_wait_index < parent_integration_index,
-        "parent integration appeared before the root waiting turn completed: {events:#?}"
-    );
     assert!(
         events[..=parent_integration_index]
             .iter()
@@ -1499,8 +1469,7 @@ async fn multi_agent_exec_waits_for_child_handoff_before_one_success_terminal() 
     assert!(
         agent_tool_use_index < child_started_index
             && child_started_index < agent_tool_result_index
-            && agent_tool_result_index < root_wait_index
-            && root_wait_index < child_finished_index
+            && agent_tool_result_index < child_finished_index
             && child_finished_index < parent_integration_index,
         "canonical child lifecycle ordering is invalid: {events:#?}"
     );
@@ -1520,33 +1489,22 @@ async fn multi_agent_exec_waits_for_child_handoff_before_one_success_terminal() 
         .collect::<Vec<_>>();
     assert_eq!(
         request_kinds.len(),
-        4,
-        "expected root spawn, root wait, child, and parent integration requests: {request_kinds:?}"
+        3,
+        "expected root spawn, child, and parent integration requests: {request_kinds:?}"
     );
     assert_eq!(request_kinds[0], MultiAgentRequestKind::RootSpawn);
     assert_eq!(
-        request_kinds[3],
+        request_kinds[2],
         MultiAgentRequestKind::ParentIntegration,
         "parent integration must be the final request: {request_kinds:?}"
     );
     assert_eq!(
-        request_kinds[1..3]
-            .iter()
-            .filter(|kind| **kind == MultiAgentRequestKind::RootWait)
-            .count(),
-        1,
-        "root post-tool request missing or duplicated: {request_kinds:?}"
+        request_kinds[1],
+        MultiAgentRequestKind::Child,
+        "child must finish before the root integration request: {request_kinds:?}"
     );
-    assert_eq!(
-        request_kinds[1..3]
-            .iter()
-            .filter(|kind| **kind == MultiAgentRequestKind::Child)
-            .count(),
-        1,
-        "child request missing or duplicated: {request_kinds:?}"
-    );
-    assert_exact_success_accounting(metadata, 4, 52, 17);
-    let integration_body = chat_requests[3]
+    assert_exact_success_accounting(metadata, 3, 41, 14);
+    let integration_body = chat_requests[2]
         .body_json::<Value>()
         .expect("parent integration request JSON");
     assert!(
@@ -1584,16 +1542,12 @@ async fn nested_agent_exec_integrates_delayed_grandchild_before_terminal() {
     let metadata = assert_terminal_tail(&events, None);
     assert_eq!(metadata["status"], "completed");
     assert_eq!(metadata["termination_reason"], "resolved");
-    // Root spawn: 19/8. Parent spawn: 17/6. The remaining five
-    // successful responses each report 11/3.
-    assert_exact_success_accounting(metadata, 7, 91, 29);
+    // Root spawn: 19/8. Parent spawn: 17/6. Grandchild, parent integration,
+    // and root integration each report 11/3. Eager join removes both
+    // information-free early parent turns.
+    assert_exact_success_accounting(metadata, 5, 69, 23);
 
-    let root_wait_index = content_event_index(&events, NESTED_ROOT_WAIT_MARKER);
     let root_integration_index = content_event_index(&events, NESTED_ROOT_INTEGRATED_MARKER);
-    assert!(
-        root_wait_index < root_integration_index,
-        "root integrated the tree before its deliberately early turn: {events:#?}"
-    );
     assert!(
         events[..=root_integration_index]
             .iter()
@@ -1614,12 +1568,10 @@ async fn nested_agent_exec_integrates_delayed_grandchild_before_terminal() {
             classify_nested_agent_request(&request.body_json::<Value>().unwrap_or(Value::Null))
         })
         .collect::<Vec<_>>();
-    assert_eq!(kinds.len(), 7, "unexpected nested request tree: {kinds:?}");
+    assert_eq!(kinds.len(), 5, "unexpected nested request tree: {kinds:?}");
     for expected in [
         NestedAgentRequestKind::RootSpawn,
-        NestedAgentRequestKind::RootWait,
         NestedAgentRequestKind::ParentSpawnGrandchild,
-        NestedAgentRequestKind::ParentEarlyFinish,
         NestedAgentRequestKind::Grandchild,
         NestedAgentRequestKind::ParentIntegration,
         NestedAgentRequestKind::RootIntegration,
@@ -2726,8 +2678,6 @@ fn classify_multi_agent_request(body: &Value) -> MultiAgentRequestKind {
         MultiAgentRequestKind::Child
     } else if json_strings_contain(body, MULTI_AGENT_HANDOFF_MARKER) {
         MultiAgentRequestKind::ParentIntegration
-    } else if json_strings_contain(body, MULTI_AGENT_SPAWN_CALL_ID) {
-        MultiAgentRequestKind::RootWait
     } else if json_strings_contain(body, MULTI_AGENT_ROOT_PROMPT) {
         MultiAgentRequestKind::RootSpawn
     } else {
@@ -2743,8 +2693,6 @@ fn classify_nested_agent_request(body: &Value) -> NestedAgentRequestKind {
     } else if json_strings_contain(body, MULTI_AGENT_CHILD_SYSTEM_MARKER) {
         if json_strings_contain(body, NESTED_CHILD_HANDOFF_MARKER) {
             NestedAgentRequestKind::ParentIntegration
-        } else if json_strings_contain(body, NESTED_GRANDCHILD_CALL_ID) {
-            NestedAgentRequestKind::ParentEarlyFinish
         } else if json_strings_contain(body, NESTED_PARENT_PROMPT) {
             NestedAgentRequestKind::ParentSpawnGrandchild
         } else {
@@ -2754,8 +2702,6 @@ fn classify_nested_agent_request(body: &Value) -> NestedAgentRequestKind {
         && json_strings_contain(body, NESTED_PARENT_INTEGRATED_MARKER)
     {
         NestedAgentRequestKind::RootIntegration
-    } else if json_strings_contain(body, NESTED_ROOT_SPAWN_CALL_ID) {
-        NestedAgentRequestKind::RootWait
     } else if json_strings_contain(body, NESTED_ROOT_PROMPT) {
         NestedAgentRequestKind::RootSpawn
     } else {

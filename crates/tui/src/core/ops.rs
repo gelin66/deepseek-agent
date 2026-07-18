@@ -32,8 +32,6 @@ pub enum UserInputProvenance {
     ExternalUser,
     /// Runtime-generated continuation, diagnostic, or tool feedback.
     Runtime,
-    /// Completion/event text from a child worker or sub-agent handoff.
-    SubAgentHandoff,
     /// Text restored from a saved/imported transcript.
     ImportedTranscript,
     /// Text recalled from memory or another persisted source.
@@ -47,7 +45,6 @@ impl UserInputProvenance {
         match self {
             Self::ExternalUser => "external_user",
             Self::Runtime => "runtime",
-            Self::SubAgentHandoff => "subagent_handoff",
             Self::ImportedTranscript => "imported_transcript",
             Self::MemoryRecall => "memory_recall",
             Self::AssistantGenerated => "assistant_generated",
@@ -137,10 +134,6 @@ pub enum Op {
     #[allow(dead_code)]
     DenyToolCall { id: String },
 
-    /// Spawn a sub-agent
-    #[allow(dead_code)]
-    SpawnSubAgent { prompt: String },
-
     /// Change the operating mode
     #[allow(dead_code)]
     ChangeMode {
@@ -161,16 +154,6 @@ pub enum Op {
 
     /// Update the SSE idle timeout used for subsequent streamed turns.
     SetStreamChunkTimeout { timeout_secs: u64 },
-
-    /// Update sub-agent runtime controls for subsequent turns.
-    SetSubagentRuntimeConfig {
-        enabled: bool,
-        max_subagents: usize,
-        launch_concurrency: usize,
-        max_spawn_depth: u32,
-        api_timeout_secs: u64,
-        heartbeat_timeout_secs: u64,
-    },
 
     /// Run context compaction immediately.
     CompactContext,

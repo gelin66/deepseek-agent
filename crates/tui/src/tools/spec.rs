@@ -17,9 +17,9 @@ use crate::features::Features;
 use crate::lsp::LspManager;
 use crate::network_policy::NetworkPolicyDecider;
 use crate::tools::handle::{SharedHandleStore, new_shared_handle_store};
-use crate::worker_profile::ShellPolicy;
 use codewhale_tools::ProductionToolContext;
 use codewhale_tools::sandbox::backend::SandboxBackend;
+use codewhale_tools::shell::ShellPolicy;
 use codewhale_tools::shell::{SharedShellManager, new_shared_shell_manager};
 #[allow(unused_imports)]
 pub use codewhale_tools::{

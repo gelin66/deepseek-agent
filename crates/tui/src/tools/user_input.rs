@@ -128,9 +128,9 @@ mod tests {
 
     #[test]
     fn from_value_accepts_four_options_and_flags() {
-        // Mirrors the json!-literal style used in tools/subagent/tests.rs and
-        // exercises the schema-loosening from issue #3102: 4 options (was capped
-        // at 3) plus the new allow_free_text / multi_select flags.
+        // Exercise the schema-loosening from issue #3102 with four options
+        // (previously capped at three) plus the allow_free_text and
+        // multi_select flags.
         let input = json!({
             "questions": [{
                 "header": "Scope",

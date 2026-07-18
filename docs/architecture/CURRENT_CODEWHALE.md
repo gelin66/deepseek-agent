@@ -12,7 +12,8 @@
 - 当前阶段：M4-C 收尾；交互 TUI foreground 与 root/child projection 已迁移，当前
   canonical RuntimeEvent 为 v6、State schema 为 v10；隐藏 `workflow-tool` 第二模型循环
   及其私有状态/UI、ACP 独立模型/会话路径和 direct `review` 模型路径均已删除；
-  child eager join 已进入 canonical Runtime，最终完整门禁与剩余旧编译岛清理仍待完成
+  child eager join 已进入 canonical Runtime；无生产构造入口但仍参与编译的旧 TUI
+  SubAgent runtime/manager/registry 岛也已删除，最终完整门禁与其他旧编译岛复核仍待完成
 
 ## 1. 当前结论
 
@@ -39,6 +40,14 @@ DeepSeekClient` 已物理删除；同时删除 Workflow/Workflow-JS crate、私�
 因此当前生产可达的根/子 Agent 模型循环只剩 canonical `AgentRuntime`。尚未实现的
 DAG、writer worktree 和 merge 能力属于 M6 唯一 Orchestrator，而不是保留旧 Workflow
 Runtime 的理由。
+
+旧 TUI `SubAgentRuntime`、`SubAgentManager`、`agents_*` 协调工具、私有 mailbox/
+checkpoint/state、旧 child `ToolRegistry` 以及不可达 `/subagents` modal 也已物理删除。
+Fleet 曾保留但从未接入的 `SharedSubAgentManager` 可选字段和 worker projection 同步删除；
+Fleet 的真实执行仍是 `FleetExecutor -> codewhale exec`。只有 route、reasoning、prompt 和
+全局 `FleetExecConfig` allow/deny 进入实际 argv；task-level role/tool scope 尚未执行，
+所以仅为其声明 receipt 存在的 `WorkerRole`/`WorkerRuntimeProfile`/
+`FleetWorkerRuntimeSpec` 已删除，`effective_permissions` 在 M6 enforced policy 接管前留空。
 
 ## 2. 已统一的生产链
 
@@ -141,8 +150,9 @@ Runtime 在允许的 depth/budget 内追加内建 `agent` control tool；它启�
 不增加固定 Host 工具数量，approval 也是工具执行前置协议，不是模型可见的新工具。
 
 所有 Host handler 返回 canonical `ToolOutcome`，明确区分 invocation、operation、retry、
-side effect、evidence、artifact 和 workspace revision。TUI 下仍编译的宽工具实现只服务
-隐藏旧路径或已无消费者，不代表 canonical production catalog 会自动扩大。
+side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRegistry` 已
+删除。TUI 下仍编译的其他宽工具实现不代表 canonical production catalog 会自动扩大，
+其余无消费者模块按独立调用方切片继续清理。
 
 ### State
 
@@ -311,7 +321,7 @@ clippy 当前仍被遗留 TUI 无消费者代码阻断，告警数量随构建�
 后者在一个固定任务中降低请求且不回归 handoff。完整 eager-join 身份、四 cell 与 pair
 边界见
 [子 Agent eager join 精确 A/B](../../eval/summaries/eager-join-exact-ab-2026-07-18.md)。
-compaction on/off A/B、剩余旧编译岛清理和 M4 完整门禁仍未完成。
+compaction on/off A/B、其他旧编译岛复核和 M4 完整门禁仍未完成。
 
 ## 7. 明确非结论
 

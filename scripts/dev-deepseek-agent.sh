@@ -11,8 +11,7 @@ run_focused_tests() {
   local filters=(
     "tools::verify::tests"
     "memory::tests"
-    "subagent_registry_preserves_native_tool_failure_and_metadata"
-    "subagent_feedback_marks_native_failure_and_retains_metadata"
+    "fleet::worker_runtime::tests"
     "fim_parser"
     "api_url_"
     "deepseek_owned_legacy_routes_never_select_strict_by_url"

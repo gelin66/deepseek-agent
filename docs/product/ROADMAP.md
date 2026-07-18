@@ -13,8 +13,9 @@
   RuntimeEvent v6、State schema v10。`workflow`/`workflow-tool` 的第二模型循环和
   `serve --acp` 的独立模型/会话路径均已物理删除，未引入兼容桥；`83d9487f` 又删除了
   direct `review` completion、模型内工具和私有 receipt 真相，canonical reviewer Agent
-  profile 保留。`528a72f2` 的 child eager join 已通过 24-run 精确 A/B 并保留。M4 仍待
-  完整集成门禁与剩余旧编译岛清理，不提前标完成。M1 的导入基线 A/B 与 M2 的完整官方
+  profile 保留。`528a72f2` 的 child eager join 已通过 24-run 精确 A/B 并保留。无生产
+  构造入口但仍参与编译的旧 TUI SubAgent runtime/manager/registry 岛也已删除；M4 仍待
+  完整集成门禁与其他旧编译岛复核，不提前标完成。M1 的导入基线 A/B 与 M2 的完整官方
   surface canary 仍是独立证据债务
 - 上次更新：2026-07-18
 
@@ -560,6 +561,20 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已由 `83d9487f` 删除 direct `review -> DeepSeekClient::create_message`、模型内
   `ReviewTool`、私有 receipt 文档/状态和退役 review UI；代码审查只保留为 canonical
   reviewer Agent profile/任务能力，不再拥有独立模型循环或 completion 判定。
+- M4-C 已删除无生产构造入口但仍参与编译的旧 TUI
+  `SubAgentRuntime`/`SubAgentManager`、`agents_*` 协调工具、child `ToolRegistry`、
+  私有 mailbox/checkpoint/state 及不可达 `/subagents` modal；Fleet 从未接入的
+  `SharedSubAgentManager` 可选投影也已删除。Fleet 实际 worker 继续只通过 canonical
+  `codewhale exec` 子进程执行。由于 task-level role/tool scope 尚未进入实际 argv，仅为
+  声明 profile 生成权限 receipt 的 `WorkerRole`/`WorkerRuntimeProfile`/
+  `FleetWorkerRuntimeSpec` 已删除，生产 receipt 的 `effective_permissions` 在 M6 enforced
+  policy 接管前固定留空。route、reasoning、prompt 与全局 `FleetExecConfig` allow/deny
+  继续按真实 exec 参数保留。
+- 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
+  app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
+  canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
+  门禁也通过。exec 多 Agent fixture 同步锁定已接受的 eager join：单层 3 次请求、嵌套
+  5 次请求，不再要求已经删除的无信息 wait 轮。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

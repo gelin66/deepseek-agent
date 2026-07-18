@@ -60,10 +60,11 @@ Changing one of these constraints requires evidence and a new ADR.
   and projects root/child facts through `CanonicalRunProjection`. Its old
   foreground Engine, private runtime-thread owners, `SessionManager`, child
   display cache, and registry-driven slash-command system have been deleted.
-- M4-C is not closed: the hidden
-  `workflow-tool -> WorkflowTool -> SubAgentRuntime -> DeepSeekClient` path is
-  still a reachable second model loop and writes separate Workflow/SubAgent
-  JSON/JSONL state. Do not extend or route new callers through it.
+- M4-C is not closed: hidden Workflow/ACP/direct-review model paths and the
+  formerly compiled TUI `SubAgentRuntime`/`SubAgentManager` island have been
+  physically deleted. Production root/child execution now only uses canonical
+  `AgentRuntime` and `RunStore`; M4 still requires the final integration gate
+  and review of other legacy TUI compile islands before it can close.
 - Current State schema is v10 and RuntimeEvent is v6. State v10 persists and
   rebuilds the exact tool catalog advertised by the latest model request.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
@@ -71,9 +72,10 @@ Changing one of these constraints requires evidence and a new ADR.
 - That WIP is not automatically accepted as stable behavior. It must be split
   into protocol, agent reliability, verify experiment, and local-development
   slices and evaluated independently.
-- `crates/tui/src/tools/verify.rs` is wired production code, not disposable
-  scratch. It is also an unproven model-critic experiment, not equivalent to
-  deterministic test evidence.
+- `crates/tui/src/tools/verify.rs` has no canonical production consumer after
+  the old TUI registry deletion. It is still compiled as an unproven
+  model-critic experiment, not equivalent to deterministic test evidence, and
+  is an explicit M4 cleanup target rather than a capability to restore.
 
 Never use broad `git clean`, `git restore`, reset, or file moves to make a
 dirty tree look tidy. Inspect consumers with `rg`, preserve unrelated changes,

@@ -3194,21 +3194,12 @@ mod tests {
     }
 
     #[test]
-    fn agent_coordination_names_are_native_deepseek_function_names() {
-        for name in [
+    fn canonical_agent_name_is_a_native_deepseek_function_name() {
+        assert_eq!(
+            to_api_tool_name("agent"),
             "agent",
-            "agents_list",
-            "agents_message",
-            "agents_followup",
-            "agents_interrupt",
-            "agents_wait",
-        ] {
-            assert_eq!(
-                to_api_tool_name(name),
-                name,
-                "core Agent tools must not rely on wire-name mangling"
-            );
-        }
+            "canonical agent tool must not rely on wire-name mangling"
+        );
     }
 
     #[test]

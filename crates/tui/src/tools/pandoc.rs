@@ -9,10 +9,9 @@
 //! changelog as ..." workflows that previously required the user
 //! to drop into a terminal between turns.
 //!
-//! Registration is gated by [`crate::dependencies::resolve_pandoc`]
-//! (see [`crate::tools::registry::ToolRegistryBuilder::with_pandoc_tools`]).
-//! When pandoc isn't installed the tool simply doesn't appear in the
-//! catalog, so the model never sees a binary it can't actually use.
+//! This imported TUI tool is not registered in the canonical production
+//! catalog. Production tools are owned by `crates/tools`; this module remains
+//! only as isolated implementation/tests for a later tool-owner cleanup.
 //!
 //! ## Format whitelist
 //!

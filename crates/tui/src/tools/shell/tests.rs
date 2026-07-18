@@ -185,7 +185,7 @@ fn exec_shell_interact_requires_approval() {
 async fn read_only_shell_policy_blocks_non_readonly_commands() {
     let tmp = tempdir().expect("tempdir");
     let ctx = ToolContext::new(tmp.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_tools::shell::ShellPolicy::ReadOnly);
     let tool = ExecShellTool;
 
     let result = tool
@@ -210,7 +210,7 @@ async fn read_only_shell_policy_blocks_non_readonly_commands() {
 async fn read_only_shell_policy_allows_readonly_inspection() {
     let tmp = tempdir().expect("tempdir");
     let ctx = ToolContext::new(tmp.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_tools::shell::ShellPolicy::ReadOnly);
 
     let result = ExecShellTool
         .execute(json!({"command": "pwd"}), &ctx)
@@ -1033,7 +1033,7 @@ async fn exec_shell_characterization_preserves_bytes_boundaries_and_no_start_fai
 
     let readonly_marker = tmp.path().join("readonly-marker");
     let readonly = ToolContext::new(tmp.path())
-        .with_shell_policy(crate::worker_profile::ShellPolicy::ReadOnly);
+        .with_shell_policy(codewhale_tools::shell::ShellPolicy::ReadOnly);
     let rejected = ExecShellTool
         .execute(
             json!({"command": "printf changed > readonly-marker"}),

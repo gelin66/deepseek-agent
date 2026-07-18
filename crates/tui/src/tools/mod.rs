@@ -31,13 +31,11 @@ pub mod js_execution;
 pub mod large_output_router;
 pub mod notify;
 pub mod pandoc;
-pub mod parallel;
 pub mod plan;
 pub mod plugin;
 pub mod project;
 #[cfg(test)]
 mod readonly_tool_parity;
-pub mod registry;
 pub mod remember;
 pub mod revert_turn;
 pub mod runtime_mcp;
@@ -47,7 +45,6 @@ pub mod search;
 pub mod shell;
 pub mod skill;
 pub mod spec;
-pub mod subagent;
 pub mod terminal_session;
 pub mod test_runner;
 pub mod todo;
@@ -60,6 +57,4 @@ pub mod verify;
 pub mod web_run;
 pub mod web_search;
 
-pub use registry::{AgentToolSurfaceOptions, ToolRegistry, ToolRegistryBuilder};
-pub use spec::ToolContext;
 pub use user_input::UserInputResponse;

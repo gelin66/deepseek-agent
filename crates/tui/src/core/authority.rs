@@ -8,8 +8,8 @@ use std::path::Path;
 
 use crate::tui::app::AppMode;
 use crate::tui::approval::ApprovalMode;
-use crate::worker_profile::ShellPolicy;
 use codewhale_tools::sandbox::SandboxPolicy;
+use codewhale_tools::shell::ShellPolicy;
 
 use super::ops::UserInputProvenance;
 
@@ -170,9 +170,7 @@ pub(crate) fn provenance_can_inherit_standing_auto_authority(
 ) -> bool {
     matches!(
         provenance,
-        UserInputProvenance::ExternalUser
-            | UserInputProvenance::Runtime
-            | UserInputProvenance::SubAgentHandoff
+        UserInputProvenance::ExternalUser | UserInputProvenance::Runtime
     )
 }
 

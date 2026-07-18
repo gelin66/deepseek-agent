@@ -6,10 +6,9 @@
 //! the complete catalog without rewriting it; incompatible catalogs retain
 //! ordinary tool calling instead of risking a 400 or changing tool semantics.
 //!
-//! The default sanitizer runs in-place on every schema returned by
-//! `ToolRegistry::tools_for_api()` before the registry hands them off.
-//! Provider-specific helpers below add stricter DeepSeek and OpenAI Responses
-//! compatibility passes where their request shapes need it.
+//! The helpers below are called directly by retained generic TUI clients.
+//! Canonical DeepSeek tool planning and whole-catalog strict compatibility are
+//! owned by `crates/deepseek`; this module does not sit on that production path.
 
 use serde_json::{Map, Value};
 
