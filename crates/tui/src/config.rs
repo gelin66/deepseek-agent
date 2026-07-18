@@ -4780,9 +4780,9 @@ pub fn ensure_config_file_exists(path: Option<PathBuf>) -> Result<Option<PathBuf
 # Get your API key from https://platform.deepseek.com
 # Save it with: codewhale auth set --provider deepseek
 
-# Base URL (default: https://api.deepseek.com/beta)
-# Set https://api.deepseek.com to opt out of beta features.
-# base_url = "https://api.deepseek.com/beta"
+# Official DeepSeek API root (default: https://api.deepseek.com)
+# Standard Chat, Beta Strict Chat, and Beta FIM are selected per request.
+# base_url = "https://api.deepseek.com"
 
 # Default model
 default_text_model = "{DEFAULT_TEXT_MODEL}"
@@ -6696,9 +6696,9 @@ fn save_api_key_to_config_file(api_key: &str) -> Result<PathBuf> {
 
 api_key = "{api_key}"
 
-# Base URL (default: https://api.deepseek.com/beta)
-# Set https://api.deepseek.com to opt out of beta features.
-# base_url = "https://api.deepseek.com/beta"
+# Official DeepSeek API root (default: https://api.deepseek.com)
+# Standard Chat, Beta Strict Chat, and Beta FIM are selected per request.
+# base_url = "https://api.deepseek.com"
 
 # Default model
 default_text_model = "{DEFAULT_TEXT_MODEL}"

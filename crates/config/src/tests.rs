@@ -1185,7 +1185,7 @@ fn root_deepseek_fields_are_runtime_fallbacks() {
 }
 
 #[test]
-fn deepseek_runtime_defaults_to_beta_endpoint() {
+fn deepseek_runtime_defaults_to_official_root() {
     let _lock = env_lock();
     let _env = EnvGuard::without_deepseek_runtime_overrides();
     let config = ConfigToml::default();
@@ -1194,6 +1194,7 @@ fn deepseek_runtime_defaults_to_beta_endpoint() {
 
     assert_eq!(resolved.provider, ProviderKind::Deepseek);
     assert_eq!(resolved.base_url, DEFAULT_DEEPSEEK_BASE_URL);
+    assert_eq!(resolved.base_url, "https://api.deepseek.com");
     assert_eq!(resolved.model, DEFAULT_DEEPSEEK_MODEL);
 }
 

@@ -587,7 +587,7 @@ mod tests {
         tools[1].strict = Some(false);
         let plan = plan_tools(
             ApiProvider::DeepseekCN,
-            "https://api.deepseek.com/beta",
+            "https://api.deepseek.com",
             None,
             true,
             Some(&tools),
@@ -617,7 +617,7 @@ mod tests {
         tools[0].strict = Some(true);
         let plan = plan_tools(
             ApiProvider::Deepseek,
-            "https://api.deepseek.com/beta/",
+            "https://api.deepseek.com",
             None,
             false,
             Some(&tools),
@@ -1006,7 +1006,7 @@ mod tests {
         let request = request(Some(tools));
         let prefix_plan = plan_tools(
             ApiProvider::DeepseekCN,
-            "https://api.deepseek.com/beta",
+            "https://api.deepseek.com",
             None,
             true,
             request.tools.as_deref(),
@@ -1014,7 +1014,7 @@ mod tests {
         .expect("prefix projection");
         let plan = plan_chat(
             ApiProvider::DeepseekCN,
-            "https://api.deepseek.com/beta",
+            "https://api.deepseek.com",
             None,
             true,
             &request,
@@ -1124,7 +1124,7 @@ mod tests {
     fn fim_is_fixed_to_official_beta_pro_and_validates_limits() {
         let plan = plan_fim(
             ApiProvider::Deepseek,
-            "https://api.deepseek.com/v1",
+            "https://api.deepseek.com",
             None,
             "prefix",
             "suffix",

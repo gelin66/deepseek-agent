@@ -1722,11 +1722,6 @@ pub(super) fn tool_to_chat(tool: &Tool) -> Value {
     value
 }
 
-#[cfg(test)]
-pub(super) fn tool_to_chat_for_legacy_base_url(tool: &Tool, base_url: &str) -> Value {
-    tool_to_chat_for_legacy_route(tool, base_url, None)
-}
-
 pub(super) fn tool_to_chat_for_legacy_route(
     tool: &Tool,
     base_url: &str,
@@ -1742,13 +1737,6 @@ pub(super) fn tool_to_chat_for_legacy_route(
     value
 }
 
-fn is_official_deepseek_base_url(base_url: &str) -> bool {
-    let trimmed = base_url.trim_end_matches('/').to_ascii_lowercase();
-    trimmed == "https://api.deepseek.com"
-        || trimmed == "https://api.deepseek.com/v1"
-        || trimmed == "https://api.deepseek.com/beta"
-}
-
 fn targets_deepseek_owned_host(base_url: &str) -> bool {
     reqwest::Url::parse(base_url).ok().is_some_and(|url| {
         url.host_str()
@@ -1758,21 +1746,12 @@ fn targets_deepseek_owned_host(base_url: &str) -> bool {
 
 pub(super) fn legacy_route_supports_strict_tools(
     base_url: &str,
-    path_suffix: Option<&str>,
+    _path_suffix: Option<&str>,
 ) -> bool {
-    if !is_official_deepseek_base_url(base_url) {
-        if targets_deepseek_owned_host(base_url) {
-            // A malformed/customized URL on DeepSeek's own host is not an
-            // unknown gateway contract. Refuse to claim Beta strict support
-            // for ports, query strings, userinfo, or undocumented paths.
-            return false;
-        }
-        // Custom OpenAI-compatible routes own their strict-schema contract.
-        return true;
-    }
-    super::api_url_with_suffix(base_url, "chat/completions", path_suffix)
-        .to_ascii_lowercase()
-        .ends_with("/beta/chat/completions")
+    // Official DeepSeek Strict Chat is owned exclusively by RequestPlan.
+    // Any DeepSeek-hosted route that reaches this legacy serializer is a
+    // custom/invalid route and must not recover strict mode from its URL.
+    !targets_deepseek_owned_host(base_url)
 }
 
 pub(super) fn map_tool_choice_for_chat(choice: &Value) -> Option<Value> {

@@ -4898,7 +4898,7 @@ mod tests {
             model: "deepseek-v4-pro".to_string(),
             api_key: Some("config-file-key".to_string()),
             api_key_source: Some(RuntimeApiKeySource::ConfigFile),
-            base_url: "https://api.deepseek.com/beta".to_string(),
+            base_url: "https://api.deepseek.com".to_string(),
             auth_mode: Some("api_key".to_string()),
             insecure_skip_tls_verify: false,
             output_mode: None,

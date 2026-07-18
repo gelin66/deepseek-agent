@@ -2181,6 +2181,8 @@ fn ensure_config_file_exists_creates_first_run_template() -> Result<()> {
     let content = fs::read_to_string(&created)?;
 
     assert_eq!(created, temp_root.join(".deepseek").join("config.toml"));
+    assert!(content.contains("# base_url = \"https://api.deepseek.com\""));
+    assert!(!content.contains("api.deepseek.com/beta"));
     assert!(content.contains("default_text_model = \"deepseek-v4-pro\""));
     assert!(content.contains("reasoning_effort = \"auto\""));
     assert!(!content.contains("api_key ="));
@@ -3988,22 +3990,23 @@ fn validate_accepts_auto_default_text_model() -> Result<()> {
 }
 
 #[test]
-fn deepseek_provider_defaults_to_beta_endpoint() {
+fn deepseek_provider_defaults_to_official_root() {
     let config = Config::default();
 
     assert_eq!(config.api_provider(), ApiProvider::Deepseek);
     assert_eq!(config.deepseek_base_url(), DEFAULT_DEEPSEEK_BASE_URL);
+    assert_eq!(config.deepseek_base_url(), "https://api.deepseek.com");
 }
 
 #[test]
-fn explicit_deepseek_base_url_overrides_beta_default() {
+fn explicit_deepseek_base_url_overrides_official_root() {
     let config = Config {
-        base_url: Some("https://api.deepseek.com".to_string()),
+        base_url: Some("https://gateway.example/v1".to_string()),
         ..Default::default()
     };
 
     assert_eq!(config.api_provider(), ApiProvider::Deepseek);
-    assert_eq!(config.deepseek_base_url(), "https://api.deepseek.com");
+    assert_eq!(config.deepseek_base_url(), "https://gateway.example/v1");
 }
 
 #[test]

@@ -2244,7 +2244,7 @@ fn config_hint_for_key(key: &str) -> &'static str {
         }
         "background_color" => "#RRGGBB | default",
         "work_surface_placement" => "top | left | right",
-        "base_url" => "global DeepSeek/root fallback; e.g. https://api.deepseek.com/beta",
+        "base_url" => "global DeepSeek/root fallback; e.g. https://api.deepseek.com",
         "provider_url" => {
             "current provider endpoint; Xiaomi: token-plan | pay-as-you-go | custom URL"
         }

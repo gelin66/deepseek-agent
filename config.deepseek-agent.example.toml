@@ -3,13 +3,13 @@
 #   export DEEPSEEK_API_KEY='your-key'
 
 provider = "deepseek"
-base_url = "https://api.deepseek.com/beta"
+base_url = "https://api.deepseek.com"
 default_text_model = "deepseek-v4-pro"
 reasoning_effort = "max"
 
-# DeepSeek strict schemas require /beta. The runtime prepares them atomically;
-# if any active tool is incompatible, the whole request safely stays non-strict
-# while ordinary tool calling remains available with the original schemas.
+# DeepSeek strict schemas use Beta Chat. The request planner selects that
+# surface atomically; if any active tool is incompatible, the whole request
+# stays on Standard Chat with every original tool preserved.
 strict_tool_mode = true
 
 allow_shell = true

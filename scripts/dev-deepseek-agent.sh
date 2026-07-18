@@ -15,7 +15,7 @@ run_focused_tests() {
     "subagent_feedback_marks_native_failure_and_retains_metadata"
     "fim_parser"
     "api_url_"
-    "deepseek_beta_strict_flag_follows_the_final_custom_chat_path"
+    "deepseek_owned_legacy_routes_never_select_strict_by_url"
     "deepseek_tool_reasoning_replay_tests"
     "stream_decoder_tests"
     "schema_sanitize::tests"

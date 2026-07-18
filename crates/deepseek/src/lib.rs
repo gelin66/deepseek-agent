@@ -813,6 +813,25 @@ mod tests {
     }
 
     #[test]
+    fn official_root_routes_compatible_strict_catalog_to_beta_chat() {
+        let request = runtime_request(false);
+        let plan = plan_runtime_chat(
+            RuntimeChatPlanInput {
+                root: "https://api.deepseek.com",
+                strict_enabled: true,
+                wire_model: request.model.clone(),
+                max_tokens: 64,
+            },
+            &request,
+        )
+        .unwrap();
+
+        assert_eq!(plan.surface, ApiSurface::StrictChat);
+        assert_eq!(plan.url, "https://api.deepseek.com/beta/chat/completions");
+        assert_eq!(plan.body["tools"][0]["function"]["strict"], true);
+    }
+
+    #[test]
     fn strict_catalog_falls_back_atomically_without_losing_tools() {
         let mut request = runtime_request(false);
         request.tools.push(ToolDefinition {
@@ -837,6 +856,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(plan.surface, ApiSurface::StandardChat);
+        assert_eq!(plan.url, "https://api.deepseek.com/chat/completions");
         assert_eq!(plan.body["tools"].as_array().unwrap().len(), 2);
         assert!(
             plan.body["tools"]
@@ -845,6 +865,16 @@ mod tests {
                 .iter()
                 .all(|tool| tool["function"].get("strict").is_none())
         );
+    }
+
+    #[test]
+    fn official_root_routes_fim_to_beta_completions() {
+        let plan = plan_fim("https://api.deepseek.com", None, "fn main() {", "}", 64)
+            .expect("valid official FIM plan");
+
+        assert_eq!(plan.surface, ApiSurface::Fim);
+        assert_eq!(plan.url, "https://api.deepseek.com/beta/completions");
+        assert_eq!(plan.model, FIM_MODEL);
     }
 
     #[test]

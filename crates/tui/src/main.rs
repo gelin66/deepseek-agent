@@ -4890,7 +4890,7 @@ fn doctor_strict_tool_mode_status(config: &Config) -> DoctorStrictToolModeStatus
             enabled: true,
             status: "route_ready_catalog_dependent",
             function_strict_sent: false,
-            message: "official DeepSeek planner will select /beta only when every active tool schema matches DeepSeek's strict subset; otherwise it keeps all tools on /v1"
+            message: "official DeepSeek planner will select Beta Strict Chat only when every active tool schema matches DeepSeek's strict subset; otherwise it keeps all tools on Standard Chat"
                 .to_string(),
             recommended_base_url: None,
         }
@@ -8340,7 +8340,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn doctor_api_target_routes_deepseek_cn_alias_to_beta_endpoint() {
+    fn doctor_api_target_routes_deepseek_cn_alias_to_official_root() {
         let config = Config {
             provider: Some("deepseek-cn".to_string()),
             ..Default::default()
@@ -8374,7 +8374,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn strict_tool_mode_doctor_accepts_default_beta_endpoint() {
+    fn strict_tool_mode_doctor_accepts_default_official_root() {
         let config = Config {
             strict_tool_mode: Some(true),
             ..Default::default()
@@ -8391,7 +8391,7 @@ mod doctor_endpoint_tests {
     }
 
     #[test]
-    fn strict_tool_mode_doctor_accepts_official_non_beta_base() {
+    fn strict_tool_mode_doctor_accepts_explicit_official_root() {
         let config = Config {
             strict_tool_mode: Some(true),
             base_url: Some("https://api.deepseek.com".to_string()),
@@ -8402,7 +8402,7 @@ mod doctor_endpoint_tests {
 
         assert_eq!(status.status, "route_ready_catalog_dependent");
         assert!(!status.function_strict_sent);
-        assert!(status.message.contains("select /beta"));
+        assert!(status.message.contains("Beta Strict Chat"));
         assert!(status.recommended_base_url.is_none());
     }
 

@@ -24,9 +24,9 @@
 # (backward compatibility).
 provider = "deepseek" # deepseek | deepseek-cn | deepseek-anthropic | nvidia-nim | openai | atlascloud | wanjie-ark | volcengine | openrouter | xiaomi-mimo | novita | fireworks | siliconflow | siliconflow-CN | arcee | moonshot | zai | stepfun | minimax | sglang | vllm | ollama | huggingface | together | qianfan | openai-codex | anthropic | openmodel | deepinfra | sakana | longcat | meta | xai
 api_key = "YOUR_DEEPSEEK_API_KEY" # must be non-empty
-base_url = "https://api.deepseek.com/beta"
+base_url = "https://api.deepseek.com"
 # provider = "deepseek-cn"                       # legacy alias (official host is still https://api.deepseek.com)
-# base_url = "https://api.deepseek.com"         # opt out of DeepSeek beta features
+# Strict Chat and FIM select their Beta surfaces per request; keep the root stable.
 # Optional custom model request headers for OpenAI-compatible gateways.
 # Authorization and Content-Type are managed by the client and cannot be overridden here.
 # http_headers = { "X-Model-Provider-Id" = "your-model-provider" }
@@ -363,7 +363,7 @@ max_subagents = 10 # optional (1-20)
 # DeepSeek Platform (https://platform.deepseek.com)
 [providers.deepseek]
 # api_key = "YOUR_DEEPSEEK_API_KEY"
-# base_url = "https://api.deepseek.com/beta"
+# base_url = "https://api.deepseek.com"
 # model = "deepseek-v4-pro"
 # Custom DeepSeek-compatible example:
 # base_url = "https://your-provider.example/v1"
@@ -900,7 +900,7 @@ fallback_default_prior = 3.8
 # Select a profile with `deepseek --profile <name>` or `DEEPSEEK_PROFILE=<name>`.
 [profiles.work]
 api_key = "WORK_DEEPSEEK_API_KEY"
-base_url = "https://api.deepseek.com/beta"
+base_url = "https://api.deepseek.com"
 
 [profiles.dev]
 api_key = "DEV_DEEPSEEK_API_KEY"

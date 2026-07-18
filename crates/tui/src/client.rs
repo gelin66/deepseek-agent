@@ -572,23 +572,8 @@ pub(super) fn api_url_with_suffix(base_url: &str, path: &str, path_suffix: Optio
             suffix.trim_start_matches('/')
         );
     }
-    let mut versioned = versioned_base_url(base_url);
-    // DeepSeek gates beta chat features such as strict tool schemas behind
-    // `/beta/chat/completions`, so a beta base must remain beta for that route.
-    // Discovery and health probes still use `/v1/models`; explicit beta paths
-    // were handled above, and custom chat path suffixes return before here.
-    if path != "chat/completions" && base_url_has_beta_suffix(&versioned) {
-        versioned = format!("{}/v1", unversioned_base_url(base_url));
-    }
+    let versioned = versioned_base_url(base_url);
     format!("{}/{}", versioned.trim_end_matches('/'), path)
-}
-
-fn base_url_has_beta_suffix(base_url: &str) -> bool {
-    base_url
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .is_some_and(|segment| segment.eq_ignore_ascii_case("beta"))
 }
 
 fn normalize_audio_format(format: &str) -> String {
@@ -2462,7 +2447,7 @@ mod tests {
         build_chat_messages, build_chat_messages_for_request,
         build_chat_messages_for_request_and_provider, count_reasoning_replay_chars,
         parse_chat_message, parse_sse_chunk, reasoning_replay_tokens_for_messages, tool_to_chat,
-        tool_to_chat_for_legacy_base_url, tool_to_chat_for_legacy_route,
+        tool_to_chat_for_legacy_route,
     };
     use crate::config::{ProviderConfig, ProvidersConfig, RetryConfig};
     use crate::models::{
@@ -3528,7 +3513,7 @@ mod tests {
     }
 
     #[test]
-    fn api_url_handles_default_v1_and_beta_base_urls() {
+    fn api_url_handles_unversioned_and_versioned_base_urls() {
         assert_eq!(
             api_url("https://api.deepseek.com", "chat/completions"),
             "https://api.deepseek.com/v1/chat/completions"
@@ -3537,11 +3522,9 @@ mod tests {
             api_url("https://api.deepseek.com/v1", "chat/completions"),
             "https://api.deepseek.com/v1/chat/completions"
         );
-        // Strict tool schemas are a beta Chat Completions feature, so the
-        // configured beta base must survive URL construction for chat.
         assert_eq!(
-            api_url("https://api.deepseek.com/beta", "chat/completions"),
-            "https://api.deepseek.com/beta/chat/completions"
+            api_url("https://openai-compatible.example/beta", "chat/completions"),
+            "https://openai-compatible.example/beta/chat/completions"
         );
         assert_eq!(
             api_url(
@@ -3553,36 +3536,29 @@ mod tests {
     }
 
     #[test]
-    fn api_url_routes_beta_paths_from_any_deepseek_base() {
+    fn api_url_routes_explicit_beta_paths_from_versioned_bases() {
         assert_eq!(
-            api_url("https://api.deepseek.com", "beta/completions"),
-            "https://api.deepseek.com/beta/completions"
+            api_url("https://openai-compatible.example", "beta/completions"),
+            "https://openai-compatible.example/beta/completions"
         );
         assert_eq!(
-            api_url("https://api.deepseek.com/v1", "beta/completions"),
-            "https://api.deepseek.com/beta/completions"
+            api_url("https://openai-compatible.example/v1", "beta/completions"),
+            "https://openai-compatible.example/beta/completions"
         );
         assert_eq!(
-            api_url("https://api.deepseek.com/beta", "beta/completions"),
-            "https://api.deepseek.com/beta/completions"
+            api_url("https://openai-compatible.example/beta", "beta/completions"),
+            "https://openai-compatible.example/beta/completions"
         );
     }
 
     #[test]
-    fn api_url_routes_models_and_non_beta_paths_to_v1() {
-        // The /models endpoint only exists at /v1/models, never at
-        // /beta/models. Discovery and health checks from a /beta base URL
-        // must still route to /v1.
+    fn api_url_routes_models_to_the_configured_version() {
         assert_eq!(
             api_url("https://api.deepseek.com", "models"),
             "https://api.deepseek.com/v1/models"
         );
         assert_eq!(
             api_url("https://api.deepseek.com/v1", "models"),
-            "https://api.deepseek.com/v1/models"
-        );
-        assert_eq!(
-            api_url("https://api.deepseek.com/beta", "models"),
             "https://api.deepseek.com/v1/models"
         );
         assert_eq!(
@@ -4935,7 +4911,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_non_beta_base_url_strips_strict_tool_flag() {
+    fn deepseek_owned_legacy_routes_never_select_strict_by_url() {
         let tool = Tool {
             tool_type: Some("function".to_string()),
             name: "emit_json".to_string(),
@@ -4948,92 +4924,27 @@ mod tests {
             cache_control: None,
         };
 
-        let encoded = tool_to_chat_for_legacy_base_url(&tool, "https://api.deepseek.com/v1");
-
-        assert!(
-            encoded
-                .get("function")
-                .and_then(|function| function.get("strict"))
-                .is_none()
-        );
-        assert_eq!(
-            encoded.pointer("/function/name").and_then(Value::as_str),
-            Some("emit_json"),
-            "standard DeepSeek tool calls remain available outside beta strict mode"
-        );
-        assert_eq!(
-            encoded.pointer("/function/parameters"),
-            Some(&tool.input_schema),
-            "leaving beta strict mode must remove only the strict flag"
-        );
-    }
-
-    #[test]
-    fn deepseek_beta_and_custom_base_urls_keep_strict_tool_flag() {
-        let tool = Tool {
-            tool_type: Some("function".to_string()),
-            name: "emit_json".to_string(),
-            description: "Emit JSON".to_string(),
-            input_schema: json!({"type": "object", "properties": {}}),
-            allowed_callers: None,
-            defer_loading: None,
-            input_examples: None,
-            strict: Some(true),
-            cache_control: None,
-        };
-
-        for base_url in [
-            "https://api.deepseek.com/beta",
-            "https://example.com/openai/v1",
+        for (base_url, path_suffix) in [
+            ("https://api.deepseek.com", None),
+            ("https://api.deepseek.com/v1", None),
+            ("https://api.deepseek.com/beta", None),
+            ("https://api.deepseek.com", Some("/beta/chat/completions")),
+            ("https://api.deepseek.com/proxy", None),
         ] {
-            let encoded = tool_to_chat_for_legacy_base_url(&tool, base_url);
-            assert_eq!(
-                encoded
-                    .get("function")
-                    .and_then(|function| function.get("strict"))
-                    .and_then(Value::as_bool),
-                Some(true)
-            );
-        }
-    }
-
-    #[test]
-    fn deepseek_beta_strict_flag_follows_the_final_custom_chat_path() {
-        let tool = test_tool("emit_json");
-
-        let non_beta = tool_to_chat_for_legacy_route(
-            &tool,
-            "https://api.deepseek.com/beta",
-            Some("/chat/completions"),
-        );
-        assert!(
-            non_beta
-                .pointer("/function/strict")
-                .and_then(Value::as_bool)
-                .is_none(),
-            "custom suffix bypassed /beta and must not retain strict: {non_beta}"
-        );
-
-        let beta = tool_to_chat_for_legacy_route(
-            &tool,
-            "https://api.deepseek.com/beta",
-            Some("/beta/chat/completions"),
-        );
-        assert_eq!(
-            beta.pointer("/function/strict").and_then(Value::as_bool),
-            Some(true)
-        );
-
-        for malformed_official_base in [
-            "https://api.deepseek.com:443/beta",
-            "https://user@api.deepseek.com/beta",
-            "https://api.deepseek.com/beta?tenant=custom",
-            "https://api.deepseek.com/proxy/beta",
-        ] {
-            let encoded = tool_to_chat_for_legacy_route(&tool, malformed_official_base, None);
+            let encoded = tool_to_chat_for_legacy_route(&tool, base_url, path_suffix);
             assert!(
                 encoded.pointer("/function/strict").is_none(),
-                "undocumented DeepSeek-owned route must not be reported as Beta strict: {malformed_official_base}"
+                "DeepSeek URL spelling must not select Beta strict: {base_url}"
+            );
+            assert_eq!(
+                encoded.pointer("/function/name").and_then(Value::as_str),
+                Some("emit_json"),
+                "ordinary tool calling must remain available"
+            );
+            assert_eq!(
+                encoded.pointer("/function/parameters"),
+                Some(&tool.input_schema),
+                "only the stale strict flag may be removed"
             );
         }
     }
@@ -5118,7 +5029,7 @@ mod tests {
         };
 
         let encoded =
-            tool_to_chat_for_legacy_base_url(&tool, "https://api.fireworks.ai/inference/v1");
+            tool_to_chat_for_legacy_route(&tool, "https://api.fireworks.ai/inference/v1", None);
 
         assert!(encoded.get("allowed_callers").is_none());
         assert!(encoded.get("defer_loading").is_none());
@@ -6374,8 +6285,12 @@ mod tests {
             "https://api.deepseek.com/v1/chat/completions"
         );
         assert_eq!(
-            api_url_with_suffix("https://api.deepseek.com/beta/", "/chat/completions", None),
-            "https://api.deepseek.com/beta/chat/completions"
+            api_url_with_suffix(
+                "https://openai-compatible.example/beta/",
+                "/chat/completions",
+                None
+            ),
+            "https://openai-compatible.example/beta/chat/completions"
         );
     }
 
