@@ -9,7 +9,6 @@ members = [
     "crates/context",
     "crates/deepseek",
     "crates/execpolicy",
-    "crates/hooks",
     "crates/lane",
     "crates/protocol",
     "crates/release",

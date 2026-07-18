@@ -381,6 +381,12 @@ M4-C foreground 切换后还已物理删除：
   切换后 `mode_change` shell hook 不再执行，受信任工作区中的 `.codewhale/hooks.toml`
   也不再读取；其余生命周期事件原本就没有 canonical production 派发。
   Runtime/tools/Run projection、MCP notification、panic hook、Fleet webhook 和桌面通知均未改变。
+- 零反向依赖的通用 `crates/hooks` 及其 stdout/JSONL/webhook/Unix-socket fan-out 原型；删除前
+  workspace Cargo 反向图只返回该 crate 自身。`codewhale-config` 的 `[hook_sinks]` typed
+  schema 与 key-value API 分支同样没有 sink 注册方或生产读取方，现已连同只验证旧 TUI
+  lifecycle `[hooks]` 透传的自测承诺删除。该切片没有生产行为损失，也不改变通用 unknown
+  extras 处理；MCP protocol notification、panic hook、Fleet alerts/webhook、桌面通知和
+  canonical Runtime/tools/RunStore 都由其他真实 owner 保留。
 - 没有构造方、不会读取图片数据的旧 TUI `ToolCell::ViewImage` 文本卡；canonical
   `read_file` 仍通过 `crates/tools` 的 macOS Vision/Tesseract 后端提供本地图片 OCR。
 - 只有自测构造、没有生产打开入口的实时对话 overlay、其专用缓存和失效快捷键；主

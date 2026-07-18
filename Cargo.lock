@@ -909,21 +909,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "codewhale-hooks"
-version = "0.8.68"
-dependencies = [
- "anyhow",
- "async-trait",
- "chrono",
- "codewhale-protocol",
- "codewhale-release",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "codewhale-lane"
 version = "0.8.68"
 dependencies = [

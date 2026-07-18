@@ -476,10 +476,6 @@ pub struct ConfigToml {
     /// v0.9 slices; this is the durable config data model.
     #[serde(default)]
     pub harness_profiles: Vec<HarnessProfile>,
-    /// App-server hook sink configuration. Kept separate from the TUI
-    /// lifecycle `[hooks]` table so config rewrites preserve existing hooks.
-    #[serde(default)]
-    pub hook_sinks: Option<HookSinksToml>,
     /// Agent Fleet trust and security policy (#3165). When absent, fleet
     /// workers inherit conservative Sandbox defaults.
     #[serde(default)]
@@ -871,17 +867,6 @@ mod provider_chain_tests {
         };
         assert_eq!(chain.current(), ProviderKind::default());
     }
-}
-
-/// On-disk schema for the `[hook_sinks]` table.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct HookSinksToml {
-    /// Unix domain socket path used by the app-server event sink.
-    ///
-    /// When unset, no Unix socket sink is registered. There is deliberately no
-    /// shared `/tmp` default because socket ownership should be explicit.
-    #[serde(default)]
-    pub unix_socket_path: Option<PathBuf>,
 }
 
 /// On-disk schema for the `[skills]` table (#140). See `config.example.toml`
@@ -1544,11 +1529,6 @@ impl ConfigToml {
             "approval_policy" => self.approval_policy.clone(),
             "sandbox_mode" => self.sandbox_mode.clone(),
             "tools.always_load" => self.tools.as_ref().map(|tools| tools.always_load.join(",")),
-            "hook_sinks.unix_socket_path" => self
-                .hook_sinks
-                .as_ref()
-                .and_then(|sinks| sinks.unix_socket_path.as_ref())
-                .map(|path| path.display().to_string()),
             _ => self.extras.get(key).map(toml::Value::to_string),
         }
     }
@@ -1630,11 +1610,6 @@ impl ConfigToml {
             }
             "approval_policy" => self.approval_policy = Some(value.to_string()),
             "sandbox_mode" => self.sandbox_mode = Some(value.to_string()),
-            "hook_sinks.unix_socket_path" => {
-                self.hook_sinks
-                    .get_or_insert_with(HookSinksToml::default)
-                    .unix_socket_path = Some(PathBuf::from(value));
-            }
             _ => {
                 self.extras
                     .insert(key.to_string(), toml::Value::String(value.to_string()));
@@ -1663,11 +1638,6 @@ impl ConfigToml {
             "telemetry" => self.telemetry = None,
             "approval_policy" => self.approval_policy = None,
             "sandbox_mode" => self.sandbox_mode = None,
-            "hook_sinks.unix_socket_path" => {
-                if let Some(sinks) = self.hook_sinks.as_mut() {
-                    sinks.unix_socket_path = None;
-                }
-            }
             _ => {
                 self.extras.remove(key);
             }
@@ -1716,17 +1686,6 @@ impl ConfigToml {
         if let Some(v) = self.sandbox_mode.as_ref() {
             out.insert("sandbox_mode".to_string(), v.clone());
         }
-        if let Some(v) = self
-            .hook_sinks
-            .as_ref()
-            .and_then(|sinks| sinks.unix_socket_path.as_ref())
-        {
-            out.insert(
-                "hook_sinks.unix_socket_path".to_string(),
-                v.display().to_string(),
-            );
-        }
-
         for provider in ProviderKind::ALL {
             insert_provider_config_values(
                 &mut out,

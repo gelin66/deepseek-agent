@@ -600,6 +600,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `subagent_*`/`shell_env` 等宣传过的事件原本就没有 canonical production 派发。
   canonical RuntimeEvent、RunStore、工具执行、MCP protocol notification、panic hook、Fleet webhook
   和桌面通知保持原 owner 与语义。
+- M4-C 已继续删除零反向依赖的通用 `crates/hooks` workspace crate，以及
+  `codewhale-config` 中没有 sink 注册方或读取方的 `[hook_sinks]` typed schema、
+  get/set/unset/list 分支和自测承诺。删除前 Cargo 反向依赖图只包含该 crate 自身，配置字段
+  也只被自身测试读取，因此没有生产行为损失；未知配置 extras 继续遵循既有通用行为，
+  不为已删除能力建立专门兼容。MCP protocol notification、panic hook、Fleet alerts/webhook、
+  桌面通知以及 canonical Runtime/tools/RunStore 均不依赖这两个旧 owner。
 - M4-C 已删除从未接入当前交互循环的 TUI `FrameRateLimiter`/`FrameRequester`/`MotionPolicy`
   编译岛及其只写不读的 `constrained_frame_rate` 设置。现有 24ms 事件轮询、80ms 动画重绘、
   `low_motion` 和实际 spinner/ocean 渲染保持不变。
