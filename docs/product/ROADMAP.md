@@ -664,6 +664,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除没有任何 renderer 或 handler 消费的静态 `keybindings.rs` 目录；真实帮助与
   canonical slash command/PTY 契约继续由实际 UI 路径验证，不保留与运行时脱节的第二份
   快捷键真相。
+- M4-C 已删除零调用方的旧 `tui/mcp_routing.rs` manager formatter/pager adapter；真实
+  `McpPool`、stdio/HTTP transport、OAuth、配置/CLI 管理和 model-visible MCP 工具保持不变，
+  不把未接线的 TUI 展示器误当作 MCP 能力本身。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

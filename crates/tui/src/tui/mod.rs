@@ -29,7 +29,6 @@ pub mod format_helpers;
 pub mod history;
 pub mod key_shortcuts;
 pub mod markdown_render;
-mod mcp_routing;
 pub mod notifications;
 pub mod ocean;
 pub mod onboarding;

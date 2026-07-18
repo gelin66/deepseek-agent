@@ -344,6 +344,8 @@ M4-C foreground 切换后还已物理删除：
   system prompt 仍由 `crates/context` 唯一构造，项目 instructions/skills/WorldState 不变。
 - 没有任何生产 renderer 或 key handler 读取的静态 `keybindings.rs` 目录；帮助与按键行为
   只以真实 UI/PTY 契约为准，不再维护一份自测通过但不可见的快捷键表。
+- 零调用方的旧 TUI MCP manager formatter/pager adapter；`McpPool`、transport、OAuth、
+  配置加载与 model-visible MCP 工具仍是独立真实生产能力。
 
 ## 6. 当前验证事实
 
