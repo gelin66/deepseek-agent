@@ -107,9 +107,8 @@ pub enum HistoryCell {
         streaming: bool,
         duration_secs: Option<f32>,
     },
-    /// An `<archived_context>` seam block produced by the Flash seam manager
-    /// (issue #159). Rendered dimmed/italic with a level + range label so
-    /// the user can see at a glance where context seams exist.
+    /// Archived context metadata or a local history-compaction placeholder.
+    /// Rendered dimmed/italic with a level + range label.
     ArchivedContext {
         /// Seam level (1, 2, 3, or 0 for cycle-level).
         level: u8,

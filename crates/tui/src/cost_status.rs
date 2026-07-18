@@ -1,7 +1,6 @@
 //! Process-wide cost-accrual side-channel (#526).
 //!
-//! Background LLM calls outside the main turn-complete path
-//! (compaction summaries, seam recompaction) used
+//! Background LLM calls outside the main turn-complete path used
 //! to drop their token usage on the floor — the dashboard's
 //! session-cost only saw the parent turn's tokens, so a long
 //! session that triggered compaction under-reported
@@ -12,10 +11,9 @@
 //! render loop calls [`drain`] every frame, and any drained amount
 //! gets folded into `App::accrue_subagent_cost_estimate`.
 //!
-//! Why a side-channel and not a plumbed callback: the leaky callers
-//! (`compaction.rs`, `seam_manager.rs`) are
-//! engine-internal machinery without a direct handle to `App` or
-//! the engine's event channel. A side-channel keeps the change
+//! Why a side-channel and not a plumbed callback: background maintenance
+//! callers do not have a direct handle to `App` or the engine's event
+//! channel. A side-channel keeps the change
 //! surface tiny — one new `report` line per call site — and any
 //! future background caller (summarizers, retrieval helpers) gets
 //! accrued for free without further plumbing.

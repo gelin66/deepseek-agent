@@ -1800,10 +1800,9 @@ fn runtime_input_analysis(transcript: &CanonicalTranscript) -> ExecStreamInputAn
                         &mut analysis.text_chars,
                         &mut analysis.text_estimated_tokens,
                     );
-                    analysis.estimated_system_tokens =
-                        analysis.estimated_system_tokens.saturating_add(
-                            crate::compaction::estimate_text_tokens_conservative(&block.text),
-                        );
+                    analysis.estimated_system_tokens = analysis
+                        .estimated_system_tokens
+                        .saturating_add(estimate_receipt_text_tokens(&block.text));
                 }
             }
             TranscriptEntry::User { content } => {
@@ -1883,7 +1882,11 @@ fn runtime_input_analysis(transcript: &CanonicalTranscript) -> ExecStreamInputAn
 
 fn add_text(text: &str, chars: &mut usize, tokens: &mut usize) {
     *chars = chars.saturating_add(text.chars().count());
-    *tokens = tokens.saturating_add(crate::compaction::estimate_text_tokens_conservative(text));
+    *tokens = tokens.saturating_add(estimate_receipt_text_tokens(text));
+}
+
+fn estimate_receipt_text_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(3)
 }
 
 fn timestamp(unix_ms: u64) -> String {

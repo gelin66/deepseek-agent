@@ -822,17 +822,9 @@ exponential_base = 2.0
 # `[compaction]` table yet; runtime compaction budgets are chosen by the TUI
 # from the active model/context window.
 
-# Append-only Flash seams (layered context). Opt-in; defaults to off.
-# See `crates/tui/src/seam_manager.rs` for the implementation.
+# Include a deterministic project context pack in the stable prompt prefix.
 [context]
-enabled = false
-verbatim_window_turns = 16
-# Thresholds are based on the active request input estimate, not lifetime
-# summed API usage.
-l1_threshold = 192000
-l2_threshold = 384000
-l3_threshold = 576000
-seam_model = "deepseek-v4-flash"
+project_pack = true
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Workshop / Large-Output Routing (#548)

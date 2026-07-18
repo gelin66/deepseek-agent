@@ -5,11 +5,6 @@
 
 pub mod authority;
 pub mod events;
-// The first production consumer of the staged runtime contract is the
-// provider-neutral model boundary. Keep the remaining contract files staged
-// until their own consumers land instead of compiling dead scaffolding.
-#[path = "runtime_contract/model.rs"]
-pub mod model_client;
 pub mod ops;
 #[path = "runtime_contract/termination.rs"]
 pub mod termination;

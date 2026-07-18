@@ -13,7 +13,6 @@ use thiserror::Error;
 
 use codewhale_config::{ProviderChain, route::RouteLimits};
 
-use crate::compaction::CompactionConfig;
 use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, has_api_key_for,
     save_api_key, save_api_key_for,
@@ -5995,20 +5994,6 @@ impl App {
         self.reasoning_effort
             .display_label_for_provider(self.api_provider)
             .to_string()
-    }
-
-    pub fn compaction_config(&self) -> CompactionConfig {
-        CompactionConfig {
-            enabled: self.auto_compact,
-            token_threshold: self.compact_threshold,
-            model: self.effective_model_for_budget().to_string(),
-            effective_context_window: Some(crate::route_budget::route_context_window_tokens(
-                self.api_provider,
-                self.effective_model_for_budget(),
-                self.active_route_limits,
-            )),
-            ..Default::default()
-        }
     }
 
     pub fn fallback_chain_entries(&self) -> Vec<(usize, ApiProvider, bool)> {

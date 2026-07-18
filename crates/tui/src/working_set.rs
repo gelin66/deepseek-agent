@@ -1853,13 +1853,6 @@ mod tests {
     }
 
     #[test]
-    fn estimate_tokens_is_available_for_future_budgeting() {
-        use crate::compaction::estimate_tokens;
-        let messages = vec![make_message("user", "src/main.rs")];
-        assert!(estimate_tokens(&messages) > 0);
-    }
-
-    #[test]
     fn workspace_resolve_respects_cwd_and_workspace() {
         let tmp = TempDir::new().unwrap();
 

@@ -1720,30 +1720,13 @@ impl RetryPolicy {
     }
 }
 
-/// Context management configuration (append-only layered context with Flash seams).
+/// Stable project context included in the production prompt.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ContextConfig {
-    /// Master enable for layered context management. Default: false while
-    /// v0.7.5 audits V4 prefix-cache behavior.
-    #[serde(default)]
-    pub enabled: Option<bool>,
     /// Include a deterministic project context pack in the stable prompt
     /// prefix. Default: true; set `[context] project_pack = false` to disable.
     #[serde(default)]
     pub project_pack: Option<bool>,
-    /// Verbatim window: last N turns never summarized. Default: 16.
-    #[serde(default)]
-    pub verbatim_window_turns: Option<usize>,
-    /// Soft seam thresholds based on the active request input estimate.
-    #[serde(default)]
-    pub l1_threshold: Option<usize>,
-    #[serde(default)]
-    pub l2_threshold: Option<usize>,
-    #[serde(default)]
-    pub l3_threshold: Option<usize>,
-    /// Model used for seam/briefing work. Default: "deepseek-v4-flash".
-    #[serde(default)]
-    pub seam_model: Option<String>,
 }
 
 /// Sub-agent model overrides. Keys in `models` can be role names (`worker`,
@@ -2053,7 +2036,7 @@ pub struct Config {
     #[serde(default)]
     pub lsp: Option<LspConfigToml>,
 
-    /// Append-only layered context management with Flash seam manager (#159).
+    /// Stable project context included in the production prompt.
     #[serde(default)]
     pub context: ContextConfig,
 
@@ -6180,28 +6163,10 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         update: override_cfg.update.or(base.update),
         lsp: override_cfg.lsp.or(base.lsp),
         context: ContextConfig {
-            enabled: override_cfg.context.enabled.or(base.context.enabled),
             project_pack: override_cfg
                 .context
                 .project_pack
                 .or(base.context.project_pack),
-            verbatim_window_turns: override_cfg
-                .context
-                .verbatim_window_turns
-                .or(base.context.verbatim_window_turns),
-            l1_threshold: override_cfg
-                .context
-                .l1_threshold
-                .or(base.context.l1_threshold),
-            l2_threshold: override_cfg
-                .context
-                .l2_threshold
-                .or(base.context.l2_threshold),
-            l3_threshold: override_cfg
-                .context
-                .l3_threshold
-                .or(base.context.l3_threshold),
-            seam_model: override_cfg.context.seam_model.or(base.context.seam_model),
         },
         fleet: override_cfg.fleet.or(base.fleet),
         workflow: override_cfg.workflow.or(base.workflow),

@@ -3,7 +3,6 @@
 //! These operations flow from the TUI to the engine via a channel,
 //! allowing the UI to remain responsive while the engine processes requests.
 
-use crate::compaction::CompactionConfig;
 use crate::config::ApiProvider;
 use crate::tools::goal::GoalStatus;
 use crate::tui::app::AppMode;
@@ -74,9 +73,6 @@ pub enum Op {
         model: String,
         /// Provider-route limits resolved by the host for this exact turn.
         route_limits: Option<codewhale_config::route::RouteLimits>,
-        /// Compaction policy derived from the same provider route. Carrying it
-        /// atomically avoids a model/limit mismatch before `SendMessage`.
-        compaction: Box<CompactionConfig>,
         goal_objective: Option<String>,
         goal_token_budget: Option<u32>,
         goal_status: GoalStatus,
@@ -162,9 +158,6 @@ pub enum Op {
         mode: AppMode,
         route_limits: Option<codewhale_config::route::RouteLimits>,
     },
-
-    /// Update auto-compaction settings
-    SetCompaction { config: CompactionConfig },
 
     /// Update the SSE idle timeout used for subsequent streamed turns.
     SetStreamChunkTimeout { timeout_secs: u64 },

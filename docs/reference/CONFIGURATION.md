@@ -1220,10 +1220,10 @@ separate:
 
 | Quantity | Meaning | Allowed to drive |
 |---|---|---|
-| Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload. | Header/footer context percent, auto-compaction trigger, opt-in Flash seam trigger, and emergency overflow preflight. |
+| Active request input estimate | Conservative estimate of the next request's live system prompt and transcript payload. | Header/footer context percent, auto-compaction trigger, and emergency overflow preflight. |
 | Reserved response headroom | The internal turn budget plus safety headroom. v0.8.16 keeps normal turns at `262144` reserved output tokens and adds `1024` safety tokens for context-window checks, even though V4 capability metadata reports the official `384000` max output. | Emergency overflow budget checks only. |
 | Cumulative API usage | Provider-reported input plus output tokens summed across completed API calls; multi-tool turns may count the same stable prefix more than once. | Session usage and approximate cost telemetry only. |
-| Prompt cache hit/miss | Provider cache telemetry for the most recent call when available. | Cache-hit display and cost estimation only; never compaction or seam triggers. |
+| Prompt cache hit/miss | Provider cache telemetry for the most recent call when available. | Cache-hit display and cost estimation only; never compaction triggers. |
 | Context percent | Active request input estimate divided by the model context window. | Display only; it mirrors the active-input basis used by context safeguards. |
 | Cost estimate | Approximate spend from provider usage and configured DeepSeek rates. | Display only. |
 
@@ -1231,9 +1231,8 @@ For known context-window models, including 1M-class V4 models, replacement
 compaction is enabled by default unless the user explicitly configures
 `auto_compact = false`. It fires at the active model's compaction threshold and
 replays the generated summary through the stable system prompt on the next
-request. Unknown model ids remain opt-in. The Flash seam manager remains opt-in
-(`[context].enabled = false`), and the capacity controller remains disabled
-unless configured.
+request. Unknown model ids remain opt-in. The capacity controller remains
+disabled unless configured.
 
 ### Command Migration Notes
 
@@ -1462,17 +1461,8 @@ If you are upgrading from older releases:
     `~/.codewhale/snapshots/<project_hash>/<worktree_hash>/.git`, with legacy
     `~/.deepseek/snapshots/...` fallback when only the legacy state exists, and
     never use the workspace's own `.git` directory
-- `context.*` (optional): append-only Fin seam manager, currently opt-in.
-  Fin is the fast `deepseek-v4-flash` path with thinking off used for
-  coordination work such as routing, summaries, and context maintenance.
-  Thresholds use the active request input estimate, not lifetime summed API
-  usage:
-  - `[context].enabled` (bool, default `false`)
-  - `[context].verbatim_window_turns` (int, default `16`)
-  - `[context].l1_threshold` (int, default `192000`)
-  - `[context].l2_threshold` (int, default `384000`)
-  - `[context].l3_threshold` (int, default `576000`)
-  - `[context].seam_model` (string, default `deepseek-v4-flash`)
+- `context.*` (optional): deterministic project context in the stable prompt:
+  - `[context].project_pack` (bool, default `true`)
 - `retry.*` (optional): retry/backoff settings for API requests:
   - `[retry].enabled` (bool, default `true`)
   - `[retry].max_retries` (int, default `3`)

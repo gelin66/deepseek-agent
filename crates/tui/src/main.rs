@@ -31,7 +31,6 @@ mod audit;
 mod auto_reasoning;
 mod client;
 mod codex_model_cache;
-mod compaction;
 mod composer_history;
 mod composer_stash;
 mod config;
@@ -87,7 +86,6 @@ mod route_runtime;
 mod runtime_log;
 mod sandbox_backend;
 mod scorecard;
-mod seam_manager;
 #[allow(dead_code)]
 mod session_diagnostics;
 #[allow(dead_code)]

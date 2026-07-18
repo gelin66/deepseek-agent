@@ -3873,29 +3873,13 @@ fn normalize_model_name_accepts_provider_prefixed_deepseek_ids() {
 }
 
 #[test]
-fn default_context_seams_are_opt_in() {
-    let config = Config::default();
-    assert!(!config.context.enabled.unwrap_or(false));
-    assert_eq!(config.context.l1_threshold.unwrap_or(192_000), 192_000);
-    assert_eq!(
-        config
-            .context
-            .seam_model
-            .as_deref()
-            .unwrap_or("deepseek-v4-flash"),
-        "deepseek-v4-flash"
-    );
-}
-
-#[test]
-fn profile_without_context_does_not_disable_base_context() {
+fn profile_without_context_preserves_base_project_pack_setting() {
     let mut profiles = HashMap::new();
     profiles.insert("work".to_string(), Config::default());
     let config = ConfigFile {
         base: Config {
             context: ContextConfig {
-                enabled: Some(true),
-                ..Default::default()
+                project_pack: Some(false),
             },
             ..Default::default()
         },
@@ -3903,7 +3887,7 @@ fn profile_without_context_does_not_disable_base_context() {
     };
 
     let merged = apply_profile(config, Some("work")).expect("profile");
-    assert_eq!(merged.context.enabled, Some(true));
+    assert_eq!(merged.context.project_pack, Some(false));
 }
 
 #[test]
@@ -3939,24 +3923,6 @@ fn profile_skills_config_merges_individual_fields() {
     );
     assert_eq!(skills.max_install_size_bytes, Some(1234));
     assert_eq!(skills.scan_codewhale_only, Some(true));
-}
-
-#[test]
-fn removed_context_per_model_table_is_ignored_for_compatibility() -> Result<()> {
-    let parsed: ConfigFile = toml::from_str(
-        r#"
-        [context]
-        enabled = true
-
-        [context.per_model.deepseek-v4-pro]
-        l1_threshold = 111
-        l2_threshold = 222
-        l3_threshold = 333
-        "#,
-    )?;
-
-    assert_eq!(parsed.base.context.enabled, Some(true));
-    Ok(())
 }
 
 #[test]
