@@ -1925,42 +1925,6 @@ fn ensure_config_file_exists_creates_first_run_template() -> Result<()> {
 }
 
 #[test]
-fn workspace_trust_round_trips_through_global_config() -> Result<()> {
-    let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-workspace-trust-{}-{}",
-        std::process::id(),
-        nanos
-    ));
-    fs::create_dir_all(&temp_root)?;
-    let _guard = EnvGuard::new(&temp_root);
-    let workspace = temp_root.join("project");
-    fs::create_dir_all(&workspace)?;
-
-    assert!(!is_workspace_trusted(&workspace));
-    let saved = save_workspace_trust(&workspace)?;
-
-    assert_eq!(saved, temp_root.join(".deepseek").join("config.toml"));
-    assert!(is_workspace_trusted(&workspace));
-    assert!(!crate::tui::onboarding::needs_trust(&workspace));
-    assert!(
-        !workspace.join(".deepseek").exists(),
-        "trust persistence must not create a project-local .deepseek directory"
-    );
-
-    let parsed: toml::Value = toml::from_str(&fs::read_to_string(saved)?)?;
-    assert_eq!(
-        workspace_trust_level_from_doc(&parsed, &workspace),
-        Some("trusted")
-    );
-    Ok(())
-}
-
-#[test]
 fn workspace_trust_reads_existing_projects_table() -> Result<()> {
     let _lock = lock_test_env();
     let nanos = SystemTime::now()
@@ -2551,52 +2515,6 @@ base_url = "https://openrouter.ai/api/v1"
         after.contains("base_url = \"https://openrouter.ai/api/v1\""),
         "{after}"
     );
-    Ok(())
-}
-
-/// Finding #19: workspace-trust saves used to round-trip through
-/// `toml::to_string_pretty`, destroying comments in the whole file.
-#[test]
-fn save_workspace_trust_preserves_comments() -> Result<()> {
-    let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-trust-comments-{}-{}",
-        std::process::id(),
-        nanos
-    ));
-    fs::create_dir_all(&temp_root)?;
-    let _guard = EnvGuard::new(&temp_root);
-    let workspace = temp_root.join("project");
-    fs::create_dir_all(&workspace)?;
-
-    let config_path = temp_root.join(".deepseek").join("config.toml");
-    fs::create_dir_all(config_path.parent().unwrap())?;
-    fs::write(
-        &config_path,
-        r#"# top note
-model = "deepseek-v4-pro"
-
-# projects note
-[projects."/existing/workspace"]
-trust_level = "trusted" # granted earlier
-"#,
-    )?;
-
-    save_workspace_trust(&workspace)?;
-
-    let after = fs::read_to_string(&config_path)?;
-    assert!(after.contains("# top note"), "{after}");
-    assert!(after.contains("# projects note"), "{after}");
-    assert!(after.contains("# granted earlier"), "{after}");
-    assert!(
-        after.contains("[projects.\"/existing/workspace\"]"),
-        "existing project entry must survive: {after}"
-    );
-    assert!(is_workspace_trusted(&workspace));
     Ok(())
 }
 

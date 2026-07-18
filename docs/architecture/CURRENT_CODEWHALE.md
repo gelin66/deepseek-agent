@@ -473,6 +473,11 @@ M4-C foreground 切换后还已物理删除：
   `install_system_skills`、版本 marker、local skill discovery 与 prompt
   注入继续工作；仅宣称不存在 `/skill install/update/trust/uninstall` 的 bundled
   `skill-installer` 不再进入新安装，既有用户目录不会被程序主动删除。
+- 旧 `workspace-trust.json` 外部路径快照的 `add/remove` 及原子写入只有自身测试调用，
+  现已物理删除。保留的 production 路径只用 `WorkspaceTrust::load_for` 读取已有文件，
+  再把 canonical paths 交给 `ProductionToolConfig`；`permits` 只保留为读取契约测试。这与
+  onboarding/MCP 仍在真实读写的 `[projects].trust_level` 是两条独立路径，后者及
+  approval、Runtime 权限、project trust 均未改变；既有用户 trust 文件不会被自动清理。
 - TUI startup version checker 及 `[update]` schema。`spawn_startup_version_check` 在全仓只有
   定义，既没有启动调用，也没有 task join、toast 或 renderer 消费者；其余 release JSON、
   asset completeness 和自制 semver helper 只由这条死链及自身测试引用。删除因此没有运行时

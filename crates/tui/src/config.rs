@@ -3668,10 +3668,6 @@ pub(crate) fn is_workspace_trusted_at(config_path: Option<&Path>, workspace: &Pa
     workspace_trust_level_from_doc(&doc, workspace).is_some_and(is_trusted_level)
 }
 
-pub(crate) fn save_workspace_trust(workspace: &Path) -> Result<PathBuf> {
-    save_workspace_trust_at(None, workspace)
-}
-
 pub(crate) fn save_workspace_trust_at(
     config_path: Option<&Path>,
     workspace: &Path,

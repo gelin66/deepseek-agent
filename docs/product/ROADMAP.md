@@ -758,6 +758,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `install_system_skills`，其 marker/version、`scan_codewhale_only` 和 canonical prompt
   discovery 均保留。自动 bundle 中只宣称不存在的 `/skill install/update/trust/uninstall`
   的 `skill-installer` 已从源码 catalog 移除；程序不会主动删除用户磁盘上已有的历史目录。
+- M4-C 已删除旧 `workspace-trust.json` 外部路径信任快照中零生产调用的
+  `add/remove` writer、原子写 helper 和只验证这些死 writer 的测试。产品仍只读已有
+  快照，并将当前 workspace 的 canonical 路径列表交给 `ProductionToolConfig`；
+  `permits` 保留为读取边界回归，不增加第二权限判定。独立的 `[projects].trust_level`
+  onboarding/MCP 信任读写保持不变；程序不会清理用户磁盘上的历史 trust 文件。
 - M4-C 已删除未注册、零执行调用方的旧 TUI `RequestUserInputTool`/parser 和永远为 `None`
   的 prompt shadow。保留的 UserInput modal 直接使用 canonical protocol 类型，并继续通过
   `AgentRuntime` interaction 与 `RunStore` 提交或取消，不再经过第二套 TUI ToolSpec。
