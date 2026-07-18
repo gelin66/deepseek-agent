@@ -689,36 +689,6 @@ pub fn thread_goal_status_as_goal_status(
     }
 }
 
-/// Render the continuation prompt injected when a goal is still active after a
-/// turn. There is no run-level cap, so this shows progress (turn count, tokens)
-/// rather than a "N/max" meter — the loop runs until done, blocked, or paused.
-#[must_use]
-pub fn render_continuation_prompt(snapshot: &GoalSnapshot, continuation_index: u32) -> String {
-    let goal_json = serde_json::to_string_pretty(snapshot).unwrap_or_else(|_| "{}".to_string());
-    let acceptance_guidance = match snapshot
-        .task_contract
-        .as_ref()
-        .map(|contract| &contract.acceptance)
-    {
-        Some(TaskAcceptance::Verifier { .. }) => {
-            "完成目标前，先在最终代码状态上运行前台 `run_verifiers`，并使用任务契约中的精确参数。普通 `run_tests` 和非契约参数只产生证据 artifact，不能完成 Goal。宿主会绑定 Goal generation、目标、约束/非目标、验证器参数和工作区版本；验证通过后再调用 `update_goal`，传入 `status: \"complete\"` 和具体完成证据。若工作区在验证后发生变化，必须重新验证。"
-        }
-        Some(TaskAcceptance::HostAcceptanceRequired) => {
-            "这是 objective-only Goal，只能由宿主验收。`run_tests`、`run_verifiers` 和模型文字都只能形成辅助证据，不能生成完成凭据；不要调用 `update_goal(status=\"complete\")`。完成实际工作并给出可核验的最终证据，等待宿主接受。"
-        }
-        None => {
-            "当前快照没有可执行的验收契约。可以运行必要检查作为辅助证据，但不要调用 `update_goal(status=\"complete\")`；完成实际工作后等待宿主确认或补充契约。"
-        }
-    };
-    format!(
-        "{}\n\n## Active Goal State\n\n```json\n{}\n```\n\nContinuation pass #{}.\n{}\n若确实阻塞，调用 `update_goal` 并传入 `status: \"blocked\"` 与 blocker；否则继续推进目标。",
-        crate::prompts::GOAL_CONTINUATION_PROMPT.trim(),
-        goal_json,
-        continuation_index,
-        acceptance_guidance,
-    )
-}
-
 fn lock_goal_state(
     state: &SharedGoalState,
 ) -> Result<std::sync::MutexGuard<'_, GoalState>, ToolError> {
@@ -2606,67 +2576,5 @@ mod tests {
         assert_eq!(snapshot.tokens_used, 750);
         assert_eq!(snapshot.time_used_seconds, 44);
         assert_eq!(snapshot.continuation_count, 3);
-    }
-
-    #[test]
-    fn continuation_prompt_includes_bound_and_goal_state() {
-        let contract = TaskContract::derived(
-            1,
-            "finish issue 2199".to_string(),
-            Vec::new(),
-            Vec::new(),
-            TaskAcceptance::HostAcceptanceRequired,
-        );
-        let snapshot = GoalSnapshot {
-            objective: Some("finish issue 2199".to_string()),
-            status: "active".to_string(),
-            token_budget: None,
-            tokens_used: 0,
-            time_used_seconds: 0,
-            continuation_count: 0,
-            elapsed_seconds: Some(5),
-            evidence: None,
-            blocker: None,
-            completion_verification: None,
-            task_contract: Some(contract),
-            host_verification: None,
-        };
-
-        let prompt = render_continuation_prompt(&snapshot, 2);
-        assert!(prompt.contains("Goal Continuation"));
-        assert!(prompt.contains("finish issue 2199"));
-        assert!(prompt.contains("Continuation pass #2"));
-        assert!(prompt.contains("只能由宿主验收"));
-        assert!(!prompt.contains("精确参数"));
-    }
-
-    #[test]
-    fn continuation_prompt_requires_exact_verifier_only_for_explicit_contract() {
-        let contract = TaskContract::derived(
-            7,
-            "verify release".to_string(),
-            Vec::new(),
-            Vec::new(),
-            TaskAcceptance::run_verifiers(default_run_verifiers_contract_params()),
-        );
-        let snapshot = GoalSnapshot {
-            objective: Some("verify release".to_string()),
-            status: "active".to_string(),
-            token_budget: None,
-            tokens_used: 0,
-            time_used_seconds: 0,
-            continuation_count: 0,
-            elapsed_seconds: Some(1),
-            evidence: None,
-            blocker: None,
-            completion_verification: None,
-            task_contract: Some(contract),
-            host_verification: None,
-        };
-
-        let prompt = render_continuation_prompt(&snapshot, 1);
-        assert!(prompt.contains("精确参数"));
-        assert!(prompt.contains("再调用 `update_goal`"));
-        assert!(!prompt.contains("只能由宿主验收"));
     }
 }
