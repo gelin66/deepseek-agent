@@ -698,6 +698,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除零调用的 TUI `record_caught_panic`、`ensure_dir`、`pretty_json`、`url_encode`
   和 `estimate_message_chars`，并移除其中掩盖遗留的 `allow(dead_code)`；真实使用的受监督任务
   崩溃转储、原子/追加写入、路径展示和 `CountingWriter` 保留在现有调用方。
+- M4-C 已删除从未进入固定 production catalog 的旧 TUI `js_execution`、Node resolver 与
+  Doctor 假注册提示，并同步删除只服务该路径的 async/status dependency trait API。MCP 仍可
+  按显式配置启动 Node server，canonical `run_verifiers` 仍覆盖 Node 项目；两者不依赖这套
+  模型可见 JavaScript 执行器。
 - M4-C 已把 `key_shortcuts` 收缩为首启输入仍使用的 `is_text_input_key`，删除零调用的
   copy/paste/control-like/Ctrl-H 判定；正式文本粘贴继续由 terminal `Event::Paste` 处理，
   Pager 文本复制继续走 canonical local view event。

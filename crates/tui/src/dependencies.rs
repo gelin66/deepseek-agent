@@ -15,7 +15,7 @@
 //! - Doctor command (`run_doctor` in `main.rs`): for surfacing the
 //!   resolved state to the user so missing dependencies aren't an
 //!   invisible failure.
-//! - Retained TUI tools and snapshot helpers that invoke Git, Node, Pandoc,
+//! - Retained TUI tools and snapshot helpers that invoke Git, Pandoc,
 //!   PDF extraction, or other local executables.
 //!
 //! Results are cached for the process lifetime via [`std::sync::OnceLock`]
@@ -299,33 +299,6 @@ pub fn resolve_pandoc() -> Option<String> {
         .clone()
 }
 
-/// Resolve the Node.js runtime once per process. Used by the
-/// `js_execution` tool to decide whether to advertise itself in
-/// the catalog. Unlike Python, the executable name `node` is the
-/// same across every platform we ship to — there's no `node3` or
-/// `node.exe` variant to fall through to — so this is a single
-/// probe rather than a candidate ladder.
-pub fn resolve_node() -> Option<String> {
-    static CACHE: OnceLock<Option<String>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            if probe_executable("node") {
-                tracing::info!(
-                    target: "tool_dependencies",
-                    "Resolved Node.js runtime for js_execution",
-                );
-                Some("node".to_string())
-            } else {
-                tracing::warn!(
-                    target: "tool_dependencies",
-                    "Node.js runtime not found; js_execution tool will not be advertised",
-                );
-                None
-            }
-        })
-        .clone()
-}
-
 // ---------------------------------------------------------------------------
 // ExternalTool trait — unified subprocess interface
 // ---------------------------------------------------------------------------
@@ -388,36 +361,6 @@ pub trait ExternalTool {
             )
         })?;
         cmd.args(args).current_dir(cwd).output()
-    }
-
-    /// Convenience: run the tool with arguments and return only the
-    /// exit status (discards stdout/stderr).
-    #[allow(dead_code)]
-    fn status(args: &[&str], cwd: &std::path::Path) -> std::io::Result<std::process::ExitStatus> {
-        let mut cmd = Self::command().ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("{} not found on PATH", std::any::type_name::<Self>()),
-            )
-        })?;
-        cmd.args(args).current_dir(cwd).status()
-    }
-
-    /// Build a `tokio::process::Command` pre-populated with the resolved
-    /// binary (and any fixed arguments from a multi-word candidate like
-    /// `"py -3"`). Returns `None` when the tool isn't installed.
-    ///
-    /// Async callers (`code_execution`, `js_execution`) use this instead
-    /// of [`ExternalTool::command`] so they can `.await` the child.
-    fn tokio_command() -> Option<tokio::process::Command> {
-        let spec = Self::resolve()?;
-        let (program, fixed_args) = split_interpreter_spec(&spec);
-        let mut cmd = tokio::process::Command::new(&program);
-        crate::utils::suppress_tokio_console_window(&mut cmd);
-        for arg in &fixed_args {
-            cmd.arg(arg);
-        }
-        Some(cmd)
     }
 }
 
@@ -535,21 +478,6 @@ impl ExternalTool for Python {
 
     fn resolve() -> Option<String> {
         resolve_python_interpreter()
-    }
-}
-
-/// Node.js runtime — used by the `js_execution` tool.
-/// The binary name `node` is the same on every platform we support,
-/// so this is a single probe rather than a candidate ladder.
-pub struct Node;
-
-impl ExternalTool for Node {
-    fn candidates() -> &'static [&'static str] {
-        &["node"]
-    }
-
-    fn resolve() -> Option<String> {
-        resolve_node()
     }
 }
 
@@ -746,11 +674,6 @@ mod tests {
     }
 
     #[test]
-    fn node_candidates_is_node_only() {
-        assert_eq!(Node::candidates(), &["node"]);
-    }
-
-    #[test]
     fn git_candidates_is_git_only() {
         assert_eq!(Git::candidates(), &["git"]);
     }
@@ -777,7 +700,6 @@ mod tests {
             Gh::resolve().map(|v| ("gh", v)),
             RustC::resolve().map(|v| ("rustc", v)),
             Cargo::resolve().map(|v| ("cargo", v)),
-            Node::resolve().map(|v| ("node", v)),
         ];
         let resolved: Vec<(&str, String)> = values.into_iter().flatten().collect();
 
@@ -814,13 +736,6 @@ mod tests {
     }
 
     #[test]
-    fn node_resolve_is_cached() {
-        let first = Node::resolve();
-        let second = Node::resolve();
-        assert_eq!(first, second);
-    }
-
-    #[test]
     fn rustc_resolve_is_cached() {
         let first = RustC::resolve();
         let second = RustC::resolve();
@@ -845,11 +760,6 @@ mod tests {
     }
 
     #[test]
-    fn node_available_matches_resolve() {
-        assert_eq!(Node::available(), Node::resolve().is_some());
-    }
-
-    #[test]
     fn rustc_available_matches_resolve() {
         assert_eq!(RustC::available(), RustC::resolve().is_some());
     }
@@ -870,20 +780,6 @@ mod tests {
     fn python_command_returns_some_when_available() {
         if Python::available() {
             assert!(Python::command().is_some());
-        }
-    }
-
-    #[test]
-    fn python_tokio_command_returns_some_when_available() {
-        if Python::available() {
-            assert!(Python::tokio_command().is_some());
-        }
-    }
-
-    #[test]
-    fn node_tokio_command_returns_some_when_available() {
-        if Node::available() {
-            assert!(Node::tokio_command().is_some());
         }
     }
 
@@ -921,18 +817,6 @@ mod tests {
         // Python --version writes to stdout on 3.x, so just check
         // that it succeeded (exit 0).
         assert!(out.status.success(), "python --version must exit 0");
-    }
-
-    #[test]
-    fn node_output_version_succeeds() {
-        if !Node::available() {
-            return;
-        }
-        let tmp = std::env::temp_dir();
-        let out = Node::output(&["--version"], &tmp);
-        assert!(out.is_ok(), "node --version must spawn");
-        let out = out.unwrap();
-        assert!(out.status.success(), "node --version must exit 0");
     }
 
     #[test]

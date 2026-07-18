@@ -376,6 +376,9 @@ M4-C foreground 切换后还已物理删除：
 - 零调用的 TUI `record_caught_panic`、`ensure_dir`、`pretty_json`、`url_encode` 与
   `estimate_message_chars`；真实使用的 supervised panic dump、写入、路径显示和计数 writer
   继续由各自生产调用方保留。
+- 从未进入固定 production catalog 的旧 TUI `js_execution`、Node resolver 和 Doctor 假
+  注册提示；显式配置的 Node MCP server 与 canonical `run_verifiers` 的 Node 项目检查不经
+  过该旧模型工具，继续保留。
 
 ## 6. 当前验证事实
 
