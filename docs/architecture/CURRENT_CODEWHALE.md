@@ -55,9 +55,12 @@ consumer，不能作为 M5 已有 evidence owner。M5 必须在 `protocol/runtim
 TaskContract/EvidenceReceipt/Host completion 链路；历史测试只能作为反例参考，不能通过
 adapter 恢复旧状态机。
 
-WorkSurface 现在只从 task panel、canonical child projection 和 TodoStore 读取状态并渲染
+WorkSurface 现在只投影 task panel、同步 shell run 和 canonical child Agent，并保留
 top/left/right 布局。旧键盘/鼠标 handler 从未接入生产事件循环，却生成不存在的 `/task` 与
 `/jobs` 命令；该交互岛及其焦点、选择、滚动、打开、停止和 hitbox 状态已物理删除。
+没有生产 writer、没有 RunStore 表或 RuntimeEvent 的 TUI-local Plan/Todo Store、假工具、
+sidebar/footer 和旧 transcript 特判也已删除。`AppMode::Plan` 的只读权限语义和 canonical
+child 投影继续保留；M5 的 TaskContract/EvidenceReceipt 不通过恢复这些私有状态实现。
 WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 
 旧 `ModePickerView` 与 `StatusPickerView` 没有生产构造或打开入口，只有模块内测试；两者及
@@ -332,6 +335,9 @@ M4-C foreground 切换后还已物理删除：
 - 无生产消费者的 TUI Goal/Hunt loop、私有 TaskContract/receipt/Goal 工具、Slop ledger、
   verifier preview config、假 custom-command pause/allowed-tools 状态及其 UI/文档；
   canonical Runtime terminal、RunStore 和确定性 `crates/tools::run_verifiers` 保留。
+- 没有生产构造或写入方的 TUI-local Plan/Todo Store 与 `update_plan`/`todo_*` 假工具，以及
+  只读取永久空状态的 WorkSurface/sidebar/footer 和旧 transcript/checklist 特判；
+  `AppMode::Plan`、canonical root/child Run 投影和多 Agent 能力保留。
 - 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查和仍被 TUI/hooks 使用的
   `crates/release` 保留，不属于本次删除。
 - 没有构造方、不会读取图片数据的旧 TUI `ToolCell::ViewImage` 文本卡；canonical

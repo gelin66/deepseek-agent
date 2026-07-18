@@ -16,7 +16,6 @@ pub mod resources;
 pub mod retry;
 pub mod terminal;
 pub mod termination;
-pub mod work;
 
 /// Schema shared by the initial Core runtime contracts.
 pub const RUNTIME_CONTRACT_SCHEMA_VERSION: u32 = 1;

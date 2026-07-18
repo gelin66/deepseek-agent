@@ -264,9 +264,6 @@ fn mark_running_as_interrupted(cell: &mut HistoryCell) {
                 }
             }
         }
-        ToolCell::PlanUpdate(plan) if plan.status == ToolStatus::Running => {
-            plan.status = ToolStatus::Failed;
-        }
         ToolCell::PatchSummary(patch) if patch.status == ToolStatus::Running => {
             patch.status = ToolStatus::Failed;
         }

@@ -2,8 +2,6 @@ use super::*;
 use crate::config::{ApiProvider, Config, ProviderConfig, ProvidersConfig};
 use crate::settings::Settings;
 use crate::test_support::{EnvVarGuard, lock_test_env};
-use crate::tools::plan::{PlanItemArg, StepStatus, UpdatePlanArgs};
-use crate::tools::todo::TodoStatus;
 use crate::tui::clipboard::PastedImage;
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
 use crate::tui::scrolling::TranscriptLineMeta;
@@ -569,12 +567,9 @@ fn cny_cache_savings_falls_back_to_usd_for_usd_only_models() {
 }
 
 #[test]
-fn sidebar_focus_accepts_pinned_and_maps_legacy_trackers_to_pinned() {
+fn sidebar_focus_accepts_current_values() {
     assert_eq!(SidebarFocus::from_setting("auto"), SidebarFocus::Auto);
     assert_eq!(SidebarFocus::from_setting("pinned"), SidebarFocus::Pinned);
-    assert_eq!(SidebarFocus::from_setting("work"), SidebarFocus::Pinned);
-    assert_eq!(SidebarFocus::from_setting("plan"), SidebarFocus::Pinned);
-    assert_eq!(SidebarFocus::from_setting("todos"), SidebarFocus::Pinned);
     assert_eq!(SidebarFocus::from_setting("tasks"), SidebarFocus::Tasks);
     assert_eq!(SidebarFocus::from_setting("activity"), SidebarFocus::Tasks);
     assert_eq!(SidebarFocus::from_setting("live"), SidebarFocus::Tasks);
@@ -1438,80 +1433,6 @@ fn app_starts_without_seeded_transcript_messages() {
     let app = App::new(test_options(false), &Config::default());
     assert!(app.history.is_empty());
     assert_eq!(app.history_version, 0);
-}
-
-#[test]
-fn clear_todos_resets_todos_list() {
-    let mut app = App::new(test_options(false), &Config::default());
-
-    // Seed some todos.
-    {
-        let mut todos = app.todos.try_lock().expect("todos lock");
-        todos.add("buy milk".to_string(), TodoStatus::Pending);
-        todos.add("write code".to_string(), TodoStatus::InProgress);
-        assert_eq!(todos.snapshot().items.len(), 2);
-    }
-
-    assert!(app.clear_todos());
-
-    let todos = app.todos.try_lock().expect("todos lock");
-    assert!(todos.snapshot().items.is_empty());
-}
-
-#[test]
-fn clear_todos_resets_plan_state() {
-    let mut app = App::new(test_options(false), &Config::default());
-
-    {
-        let mut plan = app
-            .plan_state
-            .try_lock()
-            .expect("plan lock should be available");
-        plan.update(UpdatePlanArgs {
-            explanation: Some("test plan".to_string()),
-            plan: vec![PlanItemArg {
-                step: "step 1".to_string(),
-                status: StepStatus::InProgress,
-            }],
-            ..UpdatePlanArgs::default()
-        });
-        assert!(!plan.is_empty());
-    }
-
-    assert!(app.clear_todos());
-
-    let plan = app
-        .plan_state
-        .try_lock()
-        .expect("plan lock should be available");
-    assert!(plan.is_empty());
-}
-
-#[test]
-fn clear_todos_is_atomic_and_invalidates_cached_work_summary() {
-    let mut app = App::new(test_options(false), &Config::default());
-    {
-        let mut todos = app.todos.try_lock().expect("todos lock");
-        todos.add("clear me".to_string(), TodoStatus::Pending);
-    }
-    app.cached_work_summary = Some(SidebarWorkSummary::default());
-
-    assert!(app.clear_todos());
-    assert!(app.cached_work_summary.is_none());
-    assert!(
-        app.todos
-            .try_lock()
-            .expect("todos lock")
-            .snapshot()
-            .is_empty()
-    );
-    assert!(
-        app.plan_state
-            .try_lock()
-            .expect("plan lock")
-            .snapshot()
-            .is_empty()
-    );
 }
 
 #[test]

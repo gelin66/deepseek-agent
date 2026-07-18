@@ -474,7 +474,6 @@ pub enum MessageId {
     FleetProfileProviderUnconfigured,
     // Sidebar work strip.
     SidebarTasksLabel,
-    SidebarTodoLabel,
     SidebarDestructiveArmed,
     // Composer slash menu.
     ComposerSlashMenuHint,
@@ -939,7 +938,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::FleetProfileIdConflict,
     MessageId::FleetProfileProviderUnconfigured,
     MessageId::SidebarTasksLabel,
-    MessageId::SidebarTodoLabel,
     MessageId::SidebarDestructiveArmed,
     MessageId::ComposerSlashMenuHint,
     MessageId::ApprovalRepoLawBadge,

@@ -122,7 +122,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
     if body_area.height <= 2 {
         // On a two-row surface, prefer actual work over section headings.
         let mut compact = Vec::new();
-        for prefix in ["task:", "todo:", "worker:"] {
+        for prefix in ["task:", "worker:"] {
             if let Some(row) = rows.iter().find(|row| row.id.starts_with(prefix)) {
                 compact.push(row.clone());
             }
@@ -156,7 +156,6 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut App) {
                     .split_once(':')
                     .map(|(kind, _)| match kind {
                         "task" => format!("{} · ", app.tr(MessageId::SidebarTasksLabel)),
-                        "todo" => format!("{} · ", app.tr(MessageId::SidebarTodoLabel)),
                         "worker" => format!("{} · ", app.tr(MessageId::FleetRosterWorkers)),
                         _ => String::new(),
                     })

@@ -7,57 +7,6 @@ use crate::palette;
 
 use super::{HistoryCell, TRANSCRIPT_RAIL};
 
-/// Parse an `<archived_context>` block from an assistant Text block.
-///
-/// Returns `Some(HistoryCell::ArchivedContext)` when the text contains a
-/// well-formed `<archived_context>...</archived_context>` block, or `None`
-/// if the text is regular assistant content.
-pub(super) fn parse_archived_context(text: &str) -> Option<HistoryCell> {
-    let text = text.trim();
-    if !text.starts_with("<archived_context") || !text.ends_with("</archived_context>") {
-        return None;
-    }
-
-    let tag_end = text.find('>')?;
-    let tag = &text[..tag_end];
-
-    let level = archived_context_attr(tag, "level")
-        .and_then(|v| v.parse::<u8>().ok())
-        .unwrap_or(0);
-
-    let range = archived_context_attr(tag, "range").unwrap_or_default();
-
-    let tokens = archived_context_attr(tag, "tokens").unwrap_or_default();
-
-    let density = archived_context_attr(tag, "density").unwrap_or_default();
-
-    let model = archived_context_attr(tag, "model").unwrap_or_default();
-
-    let timestamp = archived_context_attr(tag, "timestamp").unwrap_or_default();
-
-    let close_tag = text.rfind("</archived_context>")?;
-    let summary_start = tag_end + 1;
-    let summary = text[summary_start..close_tag].trim().to_string();
-
-    Some(HistoryCell::ArchivedContext {
-        level,
-        range,
-        tokens,
-        density,
-        model,
-        timestamp,
-        summary,
-    })
-}
-
-fn archived_context_attr(tag: &str, name: &str) -> Option<String> {
-    let needle = format!("{name}=\"");
-    let start = tag.find(&needle)? + needle.len();
-    let rest = &tag[start..];
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
 /// Render an `<archived_context>` block with dimmed/italic styling.
 pub(super) fn render_archived_context(
     cell: &HistoryCell,

@@ -23,8 +23,6 @@ use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
 use crate::resource_telemetry::TokenThroughput;
 use crate::settings::Settings;
-use crate::tools::plan::{PlanState, SharedPlanState, new_shared_plan_state};
-use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
 use crate::tui::child_agents::ChildAgents;
@@ -33,7 +31,6 @@ use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::paste_burst::{FlushResult, PasteBurst};
 use crate::tui::scrolling::{MouseScrollState, TranscriptScroll};
 use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
-use crate::tui::sidebar::SidebarWorkSummary;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
 
@@ -382,7 +379,7 @@ impl SidebarFocus {
     #[must_use]
     pub fn from_setting(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
-            "pinned" | "visible" | "show" | "on" | "work" | "plan" | "todos" => Self::Pinned,
+            "pinned" | "visible" | "show" | "on" => Self::Pinned,
             // Persist/compat key remains "tasks"; user-facing panel is Activity (#4147/#4135).
             "tasks" | "activity" | "live" | "running" => Self::Tasks,
             "agents" | "subagents" | "sub-agents" => Self::Agents,
@@ -1346,7 +1343,7 @@ pub enum SidebarRowAction {
     #[allow(dead_code)] // destructive confirm path; mouse_ui already matches it (TUI-DOG-008)
     PrefillCommand(String),
     /// Safe read-only inspection for work rows without a mutable backend
-    /// action (for example an agent-owned To-do item).
+    /// action (for example an agent-owned child run).
     InspectText {
         label: String,
         detail: String,
@@ -1657,10 +1654,6 @@ pub struct App {
     pub sidebar_hover: SidebarHoverState,
     /// Current hover tooltip text, if any.
     pub sidebar_hover_tooltip: Option<String>,
-    /// Last successfully rendered Work panel summary. Transient mutex misses
-    /// should not wipe completed checklist/strategy state from the sidebar.
-    pub(crate) cached_work_summary: Option<SidebarWorkSummary>,
-    /// Browsing context from the last dismissed `/provider` picker.
     /// Last known mouse position for tooltip placement.
     pub last_mouse_pos: Option<(u16, u16)>,
     /// Whether the user is currently dragging the sidebar resize handle.
@@ -1743,13 +1736,6 @@ pub struct App {
     /// Project documentation (AGENTS.md or CLAUDE.md)
     #[allow(dead_code)]
     pub project_doc: Option<String>,
-    /// Plan state for tracking tasks
-    pub plan_state: SharedPlanState,
-    /// Whether update_plan was called during the current turn
-    pub plan_tool_used_in_turn: bool,
-    /// Todo list for `TodoWriteTool`. Read by the plan confirmation modal to
-    /// show the active checklist alongside the plan.
-    pub todos: SharedTodoList,
     /// Durable runtime services exposed to model-visible task/automation tools.
     /// Last MCP manager/discovery snapshot shown in the UI.
     pub mcp_snapshot: Option<crate::mcp::McpManagerSnapshot>,
@@ -2386,9 +2372,6 @@ impl App {
             crate::hooks::HooksConfig::load_with_project(config.hooks_config(), &workspace);
         let hooks = HookExecutor::new(hooks_config, workspace.clone());
 
-        // Initialize plan state
-        let plan_state = new_shared_plan_state();
-
         let skills_scan_codewhale_only = config.skills_config().scan_codewhale_only();
         let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
         let cached_skills =
@@ -2518,7 +2501,6 @@ impl App {
             sidebar_focus,
             sidebar_hover: SidebarHoverState::default(),
             sidebar_hover_tooltip: None,
-            cached_work_summary: None,
             last_mouse_pos: None,
             sidebar_resizing: false,
             sidebar_resize_anchor_x: 0,
@@ -2569,9 +2551,6 @@ impl App {
                 .and_then(|tui| tui.status_items.clone())
                 .unwrap_or_else(crate::config::StatusItem::default_footer),
             project_doc: None,
-            plan_state,
-            plan_tool_used_in_turn: false,
-            todos: new_shared_todo_list(),
             mcp_snapshot: None,
             // Read the MCP config once at boot to know how many servers
             // the user has declared. The footer chip uses this even when
@@ -2776,10 +2755,6 @@ impl App {
             self.trust_mode = policy.trust_mode;
             self.approval_mode = policy.approval_mode;
             self.yolo = matches!(policy.approval_mode, ApprovalMode::Bypass);
-        }
-
-        if mode != AppMode::Plan {
-            self.plan_tool_used_in_turn = false;
         }
 
         // Execute mode change hooks
@@ -5378,39 +5353,6 @@ impl App {
     fn clear_input_history_navigation(&mut self) {
         self.history_index = None;
         self.history_navigation_draft = None;
-    }
-
-    /// Retry a `try_lock` up to `retries` times with a 1ms pause between
-    /// attempts. Returns `Some(guard)` on success, `None` if the lock
-    /// remains contended after all retries.
-    fn retry_lock<T>(
-        mutex: &tokio::sync::Mutex<T>,
-        retries: u32,
-    ) -> Option<tokio::sync::MutexGuard<'_, T>> {
-        for _ in 0..retries {
-            if let Ok(guard) = mutex.try_lock() {
-                return Some(guard);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(1));
-        }
-        None
-    }
-
-    pub fn clear_todos(&mut self) -> bool {
-        // Acquire both stores before mutating either one. `/clear` must never
-        // report success after clearing only half of the Work surface.
-        let Some(mut todos) = Self::retry_lock(&self.todos, 100) else {
-            return false;
-        };
-        let Some(mut plan) = Self::retry_lock(&self.plan_state, 100) else {
-            return false;
-        };
-        todos.clear();
-        *plan = PlanState::default();
-        drop(plan);
-        drop(todos);
-        self.cached_work_summary = None;
-        true
     }
 
     pub fn set_active_route_limits(&mut self, limits: RouteLimits) {

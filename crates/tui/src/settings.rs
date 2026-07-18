@@ -227,7 +227,7 @@ pub struct Settings {
     /// Background treatment: `ombre` paints the terminal-native water column;
     /// `flat` preserves all state marks on the theme's plain surface.
     pub ocean_treatment: String,
-    /// Ocean Tasks / To-do / Workers rail placement: top, left, or right.
+    /// Ocean Tasks / Runs / Workers rail placement: top, left, or right.
     /// The lower edge remains owned by the composer and phase footer.
     pub work_surface_placement: String,
     /// Enable terminal bracketed-paste mode. Default true. Disable if your
@@ -821,7 +821,7 @@ impl Settings {
             "sidebar_focus" | "focus" => {
                 let normalized = match value.trim().to_ascii_lowercase().as_str() {
                     "auto" => "auto",
-                    "pinned" | "visible" | "show" | "on" | "work" | "plan" | "todos" => "pinned",
+                    "pinned" | "visible" | "show" | "on" => "pinned",
                     // Persist as "tasks"; user-facing panel label is Activity (#4147/#4135).
                     "tasks" | "activity" | "live" | "running" => "tasks",
                     "agents" | "subagents" | "sub-agents" => "agents",
@@ -1025,7 +1025,7 @@ impl Settings {
             ),
             (
                 "work_surface_placement",
-                "Ocean Tasks/To-do/Workers rail placement: top/left/right",
+                "Ocean Tasks/Runs/Workers rail placement: top/left/right",
             ),
             (
                 "bracketed_paste",
@@ -1426,7 +1426,7 @@ fn normalize_background_color_setting(value: &str) -> Result<Option<String>> {
 
 fn normalize_sidebar_focus(value: &str) -> &str {
     match value.trim().to_ascii_lowercase().as_str() {
-        "pinned" | "visible" | "show" | "on" | "work" | "plan" | "todos" => "pinned",
+        "pinned" | "visible" | "show" | "on" => "pinned",
         "tasks" | "activity" | "live" | "running" => "tasks",
         "agents" | "subagents" | "sub-agents" => "agents",
         "context" | "session" => "context",
@@ -1745,19 +1745,10 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_focus_accepts_pinned_values_and_legacy_aliases() {
+    fn sidebar_focus_accepts_current_values() {
         let mut settings = Settings::default();
 
         settings.set("sidebar_focus", "pinned").expect("set pinned");
-        assert_eq!(settings.sidebar_focus, "pinned");
-
-        settings.set("sidebar_focus", "work").expect("set work");
-        assert_eq!(settings.sidebar_focus, "pinned");
-
-        settings.set("focus", "plan").expect("legacy plan alias");
-        assert_eq!(settings.sidebar_focus, "pinned");
-
-        settings.set("focus", "todos").expect("legacy todos alias");
         assert_eq!(settings.sidebar_focus, "pinned");
 
         settings.set("focus", "context").expect("context focus");

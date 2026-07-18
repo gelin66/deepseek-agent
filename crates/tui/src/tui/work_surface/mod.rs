@@ -1,5 +1,5 @@
-//! Read-only work projection for tasks, tool runs, canonical child agents and
-//! todos. Runtime and stores remain the sole owners of all displayed facts.
+//! Read-only work projection for tasks, tool runs and canonical child agents.
+//! Runtime and stores remain the sole owners of all displayed facts.
 
 mod live_projection;
 mod model;
@@ -16,7 +16,6 @@ mod tests {
     use unicode_width::UnicodeWidthStr;
 
     use crate::config::Config;
-    use crate::tools::todo::TodoStatus;
     use crate::tui::app::{App, TaskPanelEntry, TaskPanelEntryKind, TuiOptions};
 
     fn app() -> App {
@@ -85,38 +84,9 @@ mod tests {
     }
 
     #[test]
-    fn projection_keeps_every_todo_in_the_read_only_view_model() {
-        let mut app = app();
-        add_task(&mut app, "one");
-        let mut todos = app.todos.try_lock().expect("todos");
-        for (text, status) in [
-            ("done", TodoStatus::Completed),
-            ("current", TodoStatus::InProgress),
-            ("next", TodoStatus::Pending),
-            ("later", TodoStatus::Pending),
-        ] {
-            todos.add(text.to_string(), status);
-        }
-        drop(todos);
-
-        let rows = super::model::project(&mut app);
-        assert_eq!(
-            rows.iter()
-                .filter(|row| row.id.starts_with("todo:"))
-                .count(),
-            4
-        );
-        assert!(rows.iter().any(|row| row.label == "later"));
-    }
-
-    #[test]
-    fn compact_surface_preserves_task_and_todo_without_fake_controls() {
+    fn compact_surface_preserves_task_without_fake_controls() {
         let mut app = app();
         add_task(&mut app, "shell_compact");
-        app.todos
-            .try_lock()
-            .expect("todos")
-            .add("keep prompt readable".to_string(), TodoStatus::InProgress);
         let backend = TestBackend::new(40, 3);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
@@ -124,7 +94,6 @@ mod tests {
             .expect("draw");
         let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("task shell_compact"), "{text}");
-        assert!(text.contains("keep prompt"), "{text}");
         for fake_control in ["[打开]", "[停止]", "确认", "正在停止"] {
             assert!(!text.contains(fake_control), "{fake_control}: {text}");
         }

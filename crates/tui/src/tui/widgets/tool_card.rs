@@ -195,23 +195,7 @@ fn summary_value(summary: &str, key: &str) -> Option<String> {
 }
 
 fn should_show_tool_name_in_header(name: &str, family: ToolFamily) -> bool {
-    (matches!(family, ToolFamily::Generic) && !is_known_metadata_tool_name(name))
-        || matches!(name, "git_log" | "git_show" | "git_blame")
-}
-
-fn is_known_metadata_tool_name(name: &str) -> bool {
-    matches!(
-        name,
-        "update_plan"
-            | "work_update"
-            | "todo_write"
-            | "todo_add"
-            | "todo_update"
-            | "checklist_write"
-            | "checklist_add"
-            | "checklist_update"
-            | "checklist_list"
-    )
+    matches!(family, ToolFamily::Generic) || matches!(name, "git_log" | "git_show" | "git_blame")
 }
 
 fn summary_is_noisy_control_only(summary: &str) -> bool {
@@ -404,10 +388,6 @@ mod tests {
         assert_eq!(
             tool_header_summary_for_name("future_private_tool", None).as_deref(),
             Some("future_private_tool")
-        );
-        assert_eq!(
-            tool_header_summary_for_name("todo_write", Some("items: <2 items>")).as_deref(),
-            Some("items: <2 items>")
         );
     }
 

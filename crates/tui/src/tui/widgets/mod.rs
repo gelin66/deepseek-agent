@@ -2825,7 +2825,6 @@ fn should_render_empty_state(app: &App) -> bool {
             .task_panel
             .iter()
             .any(|task| task.kind == crate::tui::app::TaskPanelEntryKind::Background)
-        && crate::tui::sidebar::compact_work_indicator(app).is_none()
 }
 
 fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
@@ -4664,9 +4663,9 @@ mod tests {
     #[test]
     fn long_tool_result_lines_fit_requested_width() {
         let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-            name: "todo_write".to_string(),
+            name: "read_file".to_string(),
             status: ToolStatus::Success,
-            input_summary: Some("items: <2 items>".to_string()),
+            input_summary: Some("path: large.log".to_string()),
             output: Some("hello world ".repeat(420)),
             prompts: None,
             output_summary: None,
@@ -4705,10 +4704,9 @@ mod tests {
     /// `chat_area` is still the default empty cell.
     #[test]
     fn chat_widget_does_not_bleed_into_sidebar_for_long_tool_result() {
-        // Reproduces the actual `todo_write` output shape: a status line,
-        // a newline, then a pretty-printed JSON payload with long string
-        // values. Run at several widths since the leak in the issue was
-        // observed at ~165 cols.
+        // Reproduce a large structured tool result with long string values.
+        // Run at several widths since the leak in the issue was observed at
+        // about 165 columns.
         let cases: Vec<(u16, u16)> = vec![(80, 50), (120, 80), (165, 111), (200, 140)];
         for (total_width, chat_width) in cases {
             let mut app = create_test_app();
@@ -4716,11 +4714,11 @@ mod tests {
             let json_payload = format!(
                 "{{\n  \"items\": [\n    {{ \"id\": 1, \"content\": \"{long_value}\", \"status\": \"pending\" }}\n  ]\n}}"
             );
-            let output = format!("Todo list updated (1 items, 0% complete)\n{json_payload}");
+            let output = format!("large file metadata\n{json_payload}");
             app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-                name: "todo_write".to_string(),
+                name: "read_file".to_string(),
                 status: ToolStatus::Success,
-                input_summary: Some("todos: <1 items>".to_string()),
+                input_summary: Some("path: large.json".to_string()),
                 output: Some(output),
                 prompts: None,
                 output_summary: None,

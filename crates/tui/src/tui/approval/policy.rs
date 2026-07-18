@@ -93,18 +93,7 @@ pub fn get_tool_category(name: &str) -> ToolCategory {
         ToolCategory::McpAction
     } else if matches!(
         name,
-        "read_file"
-            | "list_dir"
-            | "work_update"
-            | "todo_write"
-            | "todo_read"
-            | "checklist_write"
-            | "note"
-            | "update_plan"
-            | "search"
-            | "file_search"
-            | "project"
-            | "diagnostics"
+        "read_file" | "list_dir" | "note" | "search" | "file_search" | "project" | "diagnostics"
     ) || name.starts_with("read_")
         || name.starts_with("list_")
         || name.starts_with("get_")

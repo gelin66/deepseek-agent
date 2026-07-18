@@ -1840,7 +1840,7 @@ fn render(f: &mut Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .flex(ratatui::layout::Flex::Start)
         .constraints([
-            Constraint::Length(top_work_strip_height), // Tasks + To-do above transcript
+            Constraint::Length(top_work_strip_height), // Tasks + Runs above transcript
             Constraint::Min(1),                        // Chat area
             Constraint::Length(preview_height),        // Pending input preview (0 if empty)
             tail_constraints[0],
@@ -1864,7 +1864,7 @@ fn render(f: &mut Frame, app: &mut App) {
     }
 
     // Render the transcript. The underwater default deliberately has no
-    // legacy right sidebar: Tasks and To-do own
+    // legacy right sidebar: Tasks and Agents own
     // the strip above, Fleet owns `/fleet`, and dense context owns its
     // inspector. Keeping the sidebar here was the architectural reason the
     // rejected build still read as the old TUI under a gradient.

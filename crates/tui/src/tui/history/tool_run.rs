@@ -135,10 +135,6 @@ fn is_collapsible_tool_cell(cell: &HistoryCell) -> bool {
 
 pub(super) fn generic_tool_name_is_collapse_guard(name: &str) -> bool {
     let normalized = name.trim().to_ascii_lowercase();
-    if is_metadata_tool_name(&normalized) {
-        return false;
-    }
-
     normalized.contains("patch")
         || normalized.contains("write")
         || normalized.contains("edit")
@@ -149,21 +145,6 @@ pub(super) fn generic_tool_name_is_collapse_guard(name: &str) -> bool {
         || normalized.contains("review")
 }
 
-fn is_metadata_tool_name(name: &str) -> bool {
-    matches!(
-        name,
-        "update_plan"
-            | "work_update"
-            | "todo_write"
-            | "todo_add"
-            | "todo_update"
-            | "checklist_write"
-            | "checklist_add"
-            | "checklist_update"
-            | "checklist_list"
-    )
-}
-
 fn tool_display_name(tool: &ToolCell) -> &str {
     match tool {
         ToolCell::Generic(cell) => cell.name.as_str(),
@@ -171,7 +152,6 @@ fn tool_display_name(tool: &ToolCell) -> &str {
         ToolCell::WebSearch(_) => "web_search",
         ToolCell::Exploring(_) => "explore",
         ToolCell::Exec(_) => "shell",
-        ToolCell::PlanUpdate(_) => "update_plan",
         ToolCell::PatchSummary(_) => "apply_patch",
         ToolCell::DiffPreview(_) => "diff",
     }
@@ -203,7 +183,6 @@ fn classify_tool_name_activity(name: &str) -> ToolRunActivity {
         | "validate_data" => ToolRunActivity::Command,
         "edit_file" | "apply_patch" | "write_file" | "diff" => ToolRunActivity::Edit,
         "agent" => ToolRunActivity::Delegate,
-        _ if is_metadata_tool_name(&normalized) => ToolRunActivity::Metadata,
         _ if normalized.contains("search")
             || normalized.contains("grep")
             || normalized.contains("find") =>
@@ -240,9 +219,7 @@ fn classify_tool_name_activity(name: &str) -> ToolRunActivity {
         }
         _ if normalized.contains("metadata")
             || normalized.contains("session")
-            || normalized.contains("context")
-            || normalized.contains("plan")
-            || normalized.contains("todo") =>
+            || normalized.contains("context") =>
         {
             ToolRunActivity::Metadata
         }

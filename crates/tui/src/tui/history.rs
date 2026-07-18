@@ -8,31 +8,20 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::deepseek_theme::active_theme;
 use crate::localization::{MessageId, tr};
-use crate::models::{ContentBlock, Message};
 use crate::palette;
-use crate::tools::plan::PlanSnapshot;
 use crate::tui::app::TranscriptSpacing;
 use crate::tui::diff_render;
 use crate::tui::ui_text::CopyLineSeparator;
 
 mod agent_activity;
 mod archived_context;
-mod checklist;
 mod constants;
 mod message;
-mod plan;
 mod thinking;
 mod tool_output;
 mod tool_run;
 
-use archived_context::{parse_archived_context, render_archived_context};
-use checklist::{
-    is_checklist_tool_name, parse_checklist_snapshot, parse_update_prefix, render_checklist_card,
-    render_checklist_change_card,
-};
-
-#[cfg(test)]
-use checklist::{ChecklistChange, ChecklistItemSnapshot, ChecklistSnapshot};
+use archived_context::render_archived_context;
 use constants::{
     ASSISTANT_GLYPH, TOOL_CARD_SUMMARY_LINES, TOOL_COMMAND_LINE_LIMIT, TOOL_DONE_SYMBOL,
     TOOL_FAILED_SYMBOL, TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TRANSCRIPT_RAIL,
@@ -50,7 +39,6 @@ use tool_output::{render_exec_output_mode, render_tool_output_mode, wrap_plain_l
 
 #[cfg(test)]
 use agent_activity::extract_agent_id;
-pub use plan::PlanUpdateCell;
 #[cfg(test)]
 use tool_run::ToolRunActivitySummary;
 #[cfg(test)]
@@ -356,88 +344,6 @@ impl HistoryCell {
     }
 }
 
-/// Convert a message into history cells for rendering.
-#[must_use]
-pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
-    let mut cells = Vec::new();
-
-    for block in &msg.content {
-        match block {
-            ContentBlock::Text { text, .. } => {
-                // Check if this is an `<archived_context>` block.
-                if msg.role == "assistant"
-                    && let Some(archived) = parse_archived_context(text)
-                {
-                    cells.push(archived);
-                    continue;
-                }
-                match msg.role.as_str() {
-                    "user" => {
-                        if let Some(HistoryCell::User { content }) = cells.last_mut() {
-                            if !content.is_empty() {
-                                content.push('\n');
-                            }
-                            content.push_str(text);
-                        } else {
-                            cells.push(HistoryCell::User {
-                                content: text.clone(),
-                            });
-                        }
-                    }
-                    "assistant" => {
-                        if let Some(HistoryCell::Assistant { content, .. }) = cells.last_mut() {
-                            if !content.is_empty() {
-                                content.push('\n');
-                            }
-                            content.push_str(text);
-                        } else {
-                            cells.push(HistoryCell::Assistant {
-                                content: text.clone(),
-                                streaming: false,
-                            });
-                        }
-                    }
-                    "system" => {
-                        if let Some(HistoryCell::System { content }) = cells.last_mut() {
-                            if !content.is_empty() {
-                                content.push('\n');
-                            }
-                            content.push_str(text);
-                        } else {
-                            cells.push(HistoryCell::System {
-                                content: text.clone(),
-                            });
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            ContentBlock::Thinking { thinking, .. } => {
-                if let Some(HistoryCell::Thinking { content, .. }) = cells.last_mut() {
-                    if !content.is_empty() {
-                        content.push('\n');
-                    }
-                    content.push_str(thinking);
-                } else {
-                    cells.push(HistoryCell::Thinking {
-                        content: thinking.clone(),
-                        streaming: false,
-                    });
-                }
-            }
-            ContentBlock::ToolUse { name, input, .. } if name == "update_plan" => {
-                cells.push(HistoryCell::Tool(ToolCell::PlanUpdate(PlanUpdateCell {
-                    snapshot: PlanSnapshot::from_tool_input(input),
-                    status: ToolStatus::Success,
-                })));
-            }
-            _ => {}
-        }
-    }
-
-    cells
-}
-
 // === Tool Cells ===
 
 /// Variants describing a tool result cell.
@@ -445,7 +351,6 @@ pub fn history_cells_from_message(msg: &Message) -> Vec<HistoryCell> {
 pub enum ToolCell {
     Exec(ExecCell),
     Exploring(ExploringCell),
-    PlanUpdate(PlanUpdateCell),
     PatchSummary(PatchSummaryCell),
     DiffPreview(DiffPreviewCell),
     Mcp(McpToolCell),
@@ -475,7 +380,6 @@ impl ToolCell {
                     ToolStatus::Success
                 })
             }
-            ToolCell::PlanUpdate(cell) => Some(cell.status),
             ToolCell::PatchSummary(cell) => Some(cell.status),
             ToolCell::Mcp(cell) => Some(cell.status),
             ToolCell::WebSearch(cell) => Some(cell.status),
@@ -506,10 +410,7 @@ impl ToolCell {
             || self.is_failed()
             || matches!(
                 self,
-                ToolCell::Exec(_)
-                    | ToolCell::PatchSummary(_)
-                    | ToolCell::DiffPreview(_)
-                    | ToolCell::PlanUpdate(_)
+                ToolCell::Exec(_) | ToolCell::PatchSummary(_) | ToolCell::DiffPreview(_)
             )
             || matches!(self, ToolCell::Generic(cell) if tool_run::generic_tool_name_is_collapse_guard(&cell.name) || cell.is_diff)
     }
@@ -533,7 +434,6 @@ impl ToolCell {
         match self {
             ToolCell::Exec(cell) => cell.render(width, low_motion, mode),
             ToolCell::Exploring(cell) => cell.lines_with_motion(width, low_motion),
-            ToolCell::PlanUpdate(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::PatchSummary(cell) => cell.render(width, low_motion, mode),
             ToolCell::DiffPreview(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::Mcp(cell) => cell.render(width, low_motion, mode),
@@ -1032,13 +932,6 @@ impl GenericToolCell {
             return agent_activity::render_activity_group(self, width);
         }
 
-        // Issue #241: when the underlying tool is a checklist/todo update and
-        // the output is parseable, render a purpose-built progress card
-        // instead of dumping the JSON into the generic tool block.
-        if let Some(lines) = self.try_render_as_checklist(width, low_motion, mode) {
-            return lines;
-        }
-
         // Sub-agent launch already gets a dedicated `DelegateCard`
         // that owns the live action tree, status, and final summary (#4133).
         // Spawns therefore render nothing here in either mode — one visible
@@ -1186,51 +1079,6 @@ impl GenericToolCell {
             }
         }
         wrap_card_rail(lines)
-    }
-
-    /// If this cell is a checklist/todo write/add/update and the output is
-    /// parseable as a checklist snapshot, render a purpose-built checklist
-    /// card instead of the generic `name: ... { json }` block (issue #241).
-    fn try_render_as_checklist(
-        &self,
-        width: u16,
-        low_motion: bool,
-        mode: RenderMode,
-    ) -> Option<Vec<Line<'static>>> {
-        if !is_checklist_tool_name(&self.name) {
-            return None;
-        }
-        let output = self.output.as_ref()?;
-        let snapshot = parse_checklist_snapshot(output)?;
-
-        // Concise update rendering (#403). When the tool emits an
-        // "Updated todo #N to STATUS" prefix line — which `todo_update` /
-        // `checklist_update` always do on a successful match — render
-        // only the changed item plus a `M/N · pct%` summary instead of
-        // dumping the full list every time. The full list is still
-        // reachable via `v` on the tool detail record. This keeps the
-        // transcript scannable in long sessions.
-        if matches!(mode, RenderMode::Live)
-            && let Some(change) = parse_update_prefix(output)
-        {
-            return Some(render_checklist_change_card(
-                &self.name,
-                self.status,
-                &snapshot,
-                &change,
-                width,
-                low_motion,
-            ));
-        }
-
-        Some(render_checklist_card(
-            &self.name,
-            self.status,
-            &snapshot,
-            width,
-            low_motion,
-            mode,
-        ))
     }
 }
 

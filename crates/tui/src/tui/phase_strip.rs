@@ -134,7 +134,7 @@ fn count_running_tools(cell: &HistoryCell) -> usize {
 }
 
 /// Paint the one-line phase band. Owns phase, optional working detail, cost,
-/// and detail-key hints — never route/context (header) or Tasks/To-do
+/// and detail-key hints — never route/context (header) or Tasks/Runs
 /// (work surface).
 pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
     if area.width == 0 || area.height == 0 {

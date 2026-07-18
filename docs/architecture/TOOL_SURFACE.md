@@ -1,327 +1,97 @@
-# Tool surface
+# Canonical tool surface
 
-> Category: current capability map and migration input.
+> 文档类别：当前能力事实。目标架构以
+> [`PRODUCT_PLAN.md`](../product/PRODUCT_PLAN.md) 为准；源码 owner 是
+> `crates/tools/src/production.rs` 与 `crates/runtime/src/agent.rs`。
 
-Why these specific tools, in this groupings, and how each one is meant to be
-chosen over the available shell equivalent. The canonical production catalog
-is owned by `crates/tools`; prompt guidance is assembled by `crates/context`.
+## 1. 设计原则
 
-## Design stance
+- 一个工具只有进入 `AgentRuntime::tool_definitions`、可由同一个
+  `ProductionToolExecutor` 执行并产生 canonical `ToolOutcome`，才算生产能力。
+- 专用工具必须比 `exec_shell` 提供更稳定的 schema、边界或证据；不保留同义别名。
+- TUI 不拥有第二份 registry、handler 或工具状态；CLI、TUI 和 app-server 使用同一目录。
+- 工具名和 JSON 字段保持英文稳定；给 DeepSeek 的描述、错误和用户界面使用简体中文。
+- 旧 transcript 名称不做兼容注册。被替换的工具在切换后物理删除。
 
-- **Dedicated tools over `exec_shell` whenever the dedicated tool returns
-  structured output.** Bash escaping is error-prone and platform behavior
-  varies (GNU vs BSD `grep`, `rg` is not always installed). Structured
-  output also frees the model from re-parsing free-form text.
-- **`exec_shell` for everything else.** Build, test, format, lint, ad-hoc
-  commands, anything platform-specific. We don't try to wrap the long tail.
-- **Drop tools that don't beat their shell equivalent.** Two-tool aliases
-  for the same backing operation are a model trap — the LLM will alternate
-  between them and the cache hit rate suffers.
+## 2. 固定生产目录
 
-## Current surface (v0.8.68)
+`crates/tools` 按名称排序并固定公开以下 11 个代码工具：
 
-### File operations
-
-| Tool | Niche |
+| 工具 | 当前职责 |
 |---|---|
-| `read_file` | Read a UTF-8 file. PDFs auto-extracted via bundled pure-Rust extractor (no Poppler install required); `pages: "1-5"` slices large docs. |
-| `list_dir` | Structured, gitignore-aware listing. Preferred over `exec_shell("ls")`. |
-| `write_file` | Create or overwrite a file. |
-| `edit_file` | Search-and-replace inside a single file. Cheaper than a full rewrite. |
-| `apply_patch` | Apply a unified diff. The right tool for multi-hunk edits. |
+| `apply_patch` | 用 unified diff 或完整文件内容原子修改一个或多个工作区文件。 |
+| `edit_file` | 对已读取的单个文件执行一次精确搜索替换。 |
+| `exec_shell` | 在工作区同步执行一条有界命令，返回退出状态和输出。 |
+| `file_search` | 按文件名或路径片段模糊查找工作区文件。 |
+| `git_diff` | 读取未提交或已暂存的 Git 差异。 |
+| `git_status` | 读取分支和工作区文件状态。 |
+| `grep_files` | 用正则搜索工作区文本并返回结构化匹配。 |
+| `list_dir` | 列出工作区内指定目录的直接子项。 |
+| `read_file` | 读取 UTF-8 文本、PDF 或可由本地后端 OCR 的图片。 |
+| `run_tests` | 在工作区运行 `cargo test` 并返回确定性结果。 |
+| `run_verifiers` | 按项目类型运行确定性验证，产生 verifier evidence/artifact。 |
 
-### Search
+固定目录没有 `write_file`、`web_search`、`update_plan`、`work_update`、`todo_*`、
+`checklist_*`、`handle_read`、后台 shell、GitHub、自动化、脚本插件或通用代码执行工具。
+它们不是隐藏能力，也不会为旧 transcript 保留 alias。
 
-| Tool | Niche |
-|---|---|
-| `grep_files` | Regex search file contents within the workspace; structured matches + context lines. Pure-Rust (`regex` crate), no `rg`/`grep` shell-out. |
-| `file_search` | Fuzzy-match filenames (not contents). Use when you know roughly the name. |
-| `web_search` | DuckDuckGo by default with Bing fallback; Bing, Tavily, Bocha, Metaso, SearXNG, Baidu, Volcengine, and Sofya are selectable in config. Ranked snippets + `ref_id` for citation. |
-| `fetch_url` | Direct HTTP GET on a known URL. Faster than `web_search` when the link is already known. HTML stripped to text by default. |
+## 3. Runtime 内建工具
 
-### Shell
+`AgentRuntime` 在固定目录上按运行条件追加两个内建工具：
 
-Shell access is represented by one model-visible operation. The application
-may omit it from a run through `ToolPolicy`; the TUI does not own a second
-shell catalog or process manager.
-
-| Tool | Niche |
-|---|---|
-| `exec_shell` | Synchronize one bounded command with the active tool call. Its schema is exactly `command`, optional `timeout_ms`, and optional `cwd`. Cancellation and timeout terminate the managed process tree and return a typed outcome. |
-
-The fixed production catalog rejects old background, interactive, TTY and
-stdin parameters, and rejects retired aliases such as `exec_shell_wait` and
-`task_shell_start`. A running command and its current output remain visible in
-the canonical tool card. There is no `/jobs` slash command or TUI-local job
-center; `Ctrl+C` interrupts the active canonical run.
-
-Shell permission policy is evaluated by `crates/execpolicy`. Deny prefixes are
-checked before trusted prefixes and block matching commands regardless of layer.
-Trusted prefixes only skip approval in modes that permit trust shortcuts.
-Manually authored `permissions.toml` records support
-`action = "deny" | "ask" | "allow"`: `deny` blocks matching invocations before
-mode-based approval handling, `allow` skips approval for matching invocations,
-and `ask` forces approval only in modes that can prompt. Outside the TUI
-auto-approve path, a matching `ask` rule under `AskForApproval::Never` is
-rejected because the runtime cannot ask the user. In YOLO / auto-approval
-sessions, `ask` rules do not downgrade the session into prompting or blocking;
-explicit `deny` rules still block according to the current execution-policy
-logic.
-
-The TUI runtime loads typed records from the sibling `permissions.toml` file and
-applies matching `exec_shell` command rules and explicit file-path rules. In
-supported approval cards, `S` approves once and appends persistent
-`action = "ask"` rules:
-
-- `exec_shell`: the exact approved command string (matched by the existing
-  arity-aware command matcher).
-- `write_file`: the exact workspace-relative target path.
-- `edit_file`: the exact workspace-relative target path.
-- `apply_patch`: one exact workspace-relative path rule per validated touched
-  file reported by apply-patch preflight.
-
-`read_file` path rules can be authored in `permissions.toml` and matched at
-runtime, but the approval UI does not save `read_file` rules. This is still not
-a policy editor: the UI does not save `allow`/`deny`, edit or delete rules,
-expand globs, or create broad directory rules.
-
-### MCP manager and palette discovery
-
-MCP server configuration is surfaced through `/mcp`; `mcp_config_path` is read
-from `~/.codewhale/config.toml`. `/mcp` shows the resolved config path, server
-enabled/disabled state, transport, command or URL, timeouts, connection errors,
-and discovered tools/resources/prompts. It supports narrow manager actions for
-init, add, enable, disable, remove, validate, and reload/reconnect. Rebuilding
-the model-visible MCP tool pool requires a restart after path changes.
-
-The command palette includes MCP entries grouped by server. Disabled and failed
-servers stay visible, and discovered tools/prompts use the runtime names shown
-to the model, such as `mcp_<server>_<tool>`.
-
-### Git / diagnostics / testing
-
-| Tool | Niche |
-|---|---|
-| `git_status` | Inspect repo status without running shell. |
-| `git_diff` | Inspect working-tree or staged diffs. |
-| `diagnostics` | Workspace, git, sandbox, and toolchain info in one call. |
-| `run_tests` | `cargo test` with optional args. |
-| `run_verifiers` | Run independent verifier gates in parallel across detected Rust, Node, Python, and Go projects, with optional custom `program` + `args` gates for other ecosystems. |
-
-### Task management and durable work
-
-| Tool | Niche |
-|---|---|
-| `update_plan` | Optional high-level Strategy metadata/context/route for complex multi-phase work — not a second checklist. |
-| `task_create` | Create/enqueue a durable background task through `TaskManager`. This is the real executable work object for long-running agent work. |
-| `task_list` | List durable tasks with status and linked runtime ids. |
-| `task_read` | Read durable task detail: thread/turn linkage, timeline, checklist, gates, artifacts, PR attempts, GitHub events. |
-| `task_cancel` | Cancel a queued or running durable task. Approval-required. |
-| `work_update` | Canonical To-do / Work progress under the active thread/task. Ordinary in-flight progress flows through this tool. |
-| `note` | One-off important fact for later. |
-
-The legacy `checklist_write` / `checklist_add` / `checklist_update` /
-`checklist_list` and older `todo_write` / `todo_add` / `todo_update` /
-`todo_list` names are hidden compatibility aliases for saved transcript
-replay. They remain callable by exact name, but they are not part of the
-model-visible catalog (#4132).
-
-`update_plan` accepts both the legacy shape (`explanation` plus `plan` steps)
-and a richer PlanArtifact shape for Plan mode review. The richer fields are
-optional and should be filled only when grounded in evidence: `title`,
-`objective`, `context_summary`, `sources_used`, `critical_files`,
-`constraints`, `recommended_approach`, `verification_plan`,
-`risks_and_unknowns`, and `handoff_packet`. The transcript card, Plan-mode
-confirmation prompt, `/relay`, and fork-state handoff all render the same
-artifact so a plan can be reviewed, accepted, revised, replayed, or delegated
-without losing its source context.
-
-Strategy metadata and checklist work are one Work surface. Treat
-`update_plan` as phase context and sequencing intent, while `checklist_*`
-remains the counted task ledger. When both exist, UI projections should group
-strategy around the checklist instead of showing two peer checklist/progress
-systems for the same run.
-
-### Verification gates and artifacts
-
-| Tool | Niche |
-|---|---|
-| `task_gate_run` | Run an approved verification command and attach structured evidence to the active durable task: command, cwd, exit code, duration, classification, summary, and log artifact. |
-
-Large logs and command outputs should be artifacts with compact summaries in the transcript. `task_gate_run` handles this automatically for active durable tasks.
-
-Sub-agent runs expose a compact run receipt through `agent`: `run_id`,
-`follow_up`, `takeover`, `artifacts`, `usage`, `verification`, and
-`worker_record`. Usage is marked
-`unknown` until worker-level token accounting is available, and verification is
-`self_report_only` unless a separate gate or artifact proves the claim.
-
-### GitHub context and guarded writes
-
-| Tool | Niche |
-|---|---|
-| `github_issue_context` | Read-only issue context via `gh issue view`; large bodies become task artifacts when possible. |
-| `github_pr_context` | Read-only PR context via `gh pr view`; optional diff capture via `gh pr diff --patch`; large bodies/diffs become task artifacts when possible. |
-| `github_comment` | Approval-required issue/PR comment with structured evidence. |
-| `github_close_issue` | Approval-required issue closure. Requires non-empty acceptance criteria and evidence; refuses dirty worktrees unless explicitly allowed. Never use for PRs. |
-| `github_close_pr` | Approval-required PR closure. Requires the same structured evidence as issue closure and keeps PR wording in tool output/audit records. |
-
-### PR attempts
-
-| Tool | Niche |
-|---|---|
-| `pr_attempt_record` | Capture the current git diff as attempt metadata plus a patch artifact on a durable task. |
-| `pr_attempt_list` | List attempts recorded on a task. |
-| `pr_attempt_read` | Inspect one recorded attempt and its artifact reference. |
-| `pr_attempt_preflight` | Run `git apply --check` against an attempt patch. No worktree mutation. |
-
-### Automations
-
-| Tool | Niche |
-|---|---|
-| `automation_create` | Create a scheduled automation. Approval-required. |
-| `automation_list` / `automation_read` | Inspect durable automations and recent runs. |
-| `automation_update` | Update prompt, schedule, cwds, or status. Approval-required. |
-| `automation_pause` / `automation_resume` / `automation_delete` | Lifecycle controls. Approval-required. |
-| `automation_run` | Run an automation now; the run enqueues a normal durable task. Approval-required. |
-
-### Sub-agents
-
-v0.8.33 began moving large tool outputs toward symbolic handles: tools return
-small `var_handle` objects, and `handle_read` retrieves bounded slices, counts,
-or JSON projections from the backing environment. This keeps the parent
-transcript small while preserving a recovery path to the full payload.
-
-The active model-facing sub-agent surface is intentionally small:
-
-| Tool | Niche |
-|---|---|
-| `agent` | Launch one focused child run. Returns an agent id, compact receipt, and transcript handle while the parent can keep coordinating. |
-
-See [`SUBAGENTS.md`](SUBAGENTS.md) for the role taxonomy
-(`general` / `explore` / `plan` / `review` / `implementer` /
-`verifier` / `custom`).
-
-`agent` defaults to a fresh child conversation. Pass
-`fork_context: true` for continuation-style work or multi-perspective reviews
-that should inherit the parent's context. In fork mode, the runtime preserves
-the parent prefill/prompt prefix byte-identically where available so DeepSeek's
-prefix cache can be reused, then appends the child role instructions and task.
-
-### Session relay
-
-`/relay [focus]` asks the current agent to write `.deepseek/handoff.md` as a
-compact `# Session relay` artifact for the next thread. The filename remains
-for compatibility with existing prompt loading and older sessions; the visible
-mental model is relay / 接力.
-
-Aliases: `/batonpass`, `/接力`.
-
-Use it before a long break, compaction, or moving work to a fresh session. The
-relay should preserve the goal, current Work checklist item, changed files,
-decisions, verification state, and one concrete next action.
-Treat it as the deliberate counterpart to automatic compaction: both exist to
-preserve continuity for the next session or sub-agent, but `/relay` lets the
-current agent inspect live evidence and choose the durable handoff facts
-explicitly. When `update_plan` has a rich PlanArtifact, `/relay` includes that
-strategy metadata so manual relay, fork-state, and compacted continuity do not
-drift into separate stories.
-
-### Sub-agent concurrency
-
-| Tool | What each child does | Wall-clock | Token cost | Cap |
-|---|---|---|---|---|
-| `agent` | Full sub-agent loop (planning, tool calls, multi-turn streaming) | minutes | thousands of tokens | 20 running by default (`[subagents].max_concurrent`, hard ceiling 20), with up to 200 running + queued admitted by default |
-
-The cap appears in the tool description and error messages. Use `agent` when a
-task needs its own tool-carrying loop, and inspect the returned transcript
-handle when needed.
-
-## Removed legacy aliases and surfaces
-
-The old model-facing sub-agent fan-out surface is removed from active prompting
-and tool catalogs. Do not use retired sub-agent lifecycle names in new active
-guidance.
-
-The retired recursive-model and Python-REPL tool surfaces are deleted rather
-than retained as compatibility paths.
-
-v0.8.68 ships the following hidden-compat aliases (#2682, #2683, #4132) —
-they are deliberately retained for transcript replay, not scheduled for
-removal (the earlier plan to drop `todo_*` at the next major was
-superseded by #4132):
-
-| Hidden alias | Canonical replacement | Status |
+| 工具 | 出现条件 | owner |
 |---|---|---|
-| `checklist_write` | `work_update` | Hidden, callable for replay (#4132) |
-| `checklist_add` / `checklist_update` / `checklist_list` | `work_update` | Hidden, callable for replay |
-| `todo_write` / `todo_add` / `todo_update` / `todo_list` | `work_update` | Hidden, callable for replay |
-| `exec_wait` | `exec_shell_wait` | Hidden, callable for replay |
-| `exec_interact` | `exec_shell_interact` | Hidden, callable for replay |
+| `agent` | 工具开启、策略允许且当前深度小于 `max_depth` | `crates/runtime` |
+| `request_user_input` | 交互式 root 运行且策略允许 | `crates/runtime` |
 
-All hidden aliases remain registered and callable so saved transcripts can
-replay without teaching new sessions the deprecated spelling.
+`agent` 启动的 child 与 root 使用同一个 `AgentRuntime`。它不是第二套子 Agent
+runtime。`request_user_input` 通过 canonical interaction、RuntimeEvent 和 RunStore
+完成请求与响应，TUI 只投影和提交用户选择。
 
-## Release smoke: verify the live names
+每次模型请求实际 advertised 的完整工具目录会持久化到 RunStore。恢复时按这份目录
+判定调用是否合法，不能靠当前进程猜测或 TUI 私有缓存。
 
-When validating a release, verify the model-visible registry names directly.
-Do not grep random handler function names; handler names are allowed to drift
-while the registry contract stays stable.
+## 4. DeepSeek 协议语义
 
-Version smoke:
+- 普通 Chat 与普通工具调用走官方标准 Chat surface。
+- 只有整份请求目录都满足 strict schema 时，才使用 DeepSeek Beta Strict Function
+  Calling；任一工具不兼容就整目录回退到普通工具调用，不能静默丢工具。
+- Beta FIM 是独立的 Completions surface，不是工具目录成员。
+- 工具目录和稳定提示词前缀会影响 DeepSeek context cache，因此不增加无收益别名或
+  每轮漂移的描述。
+
+## 5. 执行与证据边界
+
+- `ProductionToolExecutor` 只按上述 11 个固定名称直接分派，未知名称返回不可用结果。
+- 修改文件、可能产生副作用的完整 Shell、测试和 verifier 按运行策略请求审批；审批前
+  不产生副作用。
+- `exec_shell` schema 只有 `command`、可选 `timeout_ms` 和可选 `cwd`。旧后台、TTY、
+  stdin 和 wait/interact alias 不在生产目录。
+- 取消、超时、操作状态、重试建议、副作用状态、evidence 和 artifact 都进入 typed
+  `ToolOutcome`，而不是藏在展示文本中。
+- `run_verifiers` 是当前确定性验证入口。模型自评不是确定性证据，也不能单独令 Host
+  接受完成。
+
+## 6. MCP 当前边界
+
+仓库仍有 MCP 配置、stdio/HTTP transport、OAuth、发现和 CLI 管理代码，但当前 canonical
+`AgentRuntime` 的 model-visible 目录只来自固定 11 工具和两个条件内建工具。MCP 发现结果
+尚未接入这条唯一执行链，因此不能把 MCP tool 当作已经可由当前 Agent 调用的能力。
+
+如果后续保留 MCP，必须作为同一 `ToolExecutor`/`ToolOutcome`/RunStore 契约下的可测垂直
+切片接入，不能恢复 TUI 私有模型循环或第二套 registry。
+
+## 7. 真实性门禁
 
 ```bash
-codewhale --version
-codewhale-tui --version
+cargo test -p codewhale-tools --locked catalog_is_exact_chinese_and_description_free
+cargo test -p codewhale-deepseek --locked strict_catalog_falls_back_atomically_without_losing_tools
+cargo test -p codewhale-state --test run_store --locked sqlite_replay_matches_memory_and_survives_reopen
 ```
 
-Tool-surface smoke:
+调用图审计还必须证明：
 
-```bash
-rg -n '"handle_read"|"agent"' crates/tui/src
-rg -n 'handle_read|agent' docs crates/tui/src/prompts crates/tui/src/tools
-```
-
-The canonical live names:
-
-- `handle_read`
-- `agent`
-
-The registry should not actively advertise retired recursive-model or
-sub-agent lifecycle names.
-
-## Additional registered tools (v0.8.49)
-
-The category tables above cover the most commonly used tools. The full
-registry also includes these model-visible tools:
-
-| Tool | Niche |
-|---|---|
-| `web.run` | Browser-based web interaction (JavaScript-rendered pages, form filling) |
-| `multi_tool_use.parallel` | Execute multiple independent tools in a single turn |
-| `request_user_input` | Prompt the user for input mid-turn |
-| `git_show` / `git_log` / `git_blame` | Inspect commit details, history, and line authorship |
-| `load_skill` | Load a skill by id from the installed skill set |
-| `revert_turn` | Roll back the workspace to a pre-turn snapshot |
-| `pandoc_convert` | Convert between document formats via pandoc (gated by binary presence) |
-| `validate_data` | Validate JSON or TOML against a schema |
-| `code_execution` | Execute Python code in an isolated sandbox |
-| `project_map` | Generate a structural map of the project workspace |
-| `remember` | Store a persistent fact in user memory (gated by `memory_enabled`) |
-| `image_ocr` | Extract text from images via local OCR |
-| `finance` | Fetch market data and stock quotes |
-
-MCP tools, plugin-provided tools, and feature-gated tools may also be
-visible depending on runtime configuration. Use `codewhale tools list` or
-the TUI `/tools` palette to inspect the active catalog.
-
-## Why we don't ship a single `bash` tool
-
-Single-`bash` agents (Claude Code's design) are powerful but hand the model
-all the foot-guns of shell scripting: quoting, platform divergence,
-side-effects from misread cwd, `cd` not persisting between calls, etc. Our
-file tools are also significantly cheaper to render in the transcript
-(structured JSON-shaped output collapses better than `ls -la` walls of text).
-
-The model can always fall back to `exec_shell` when something is missing.
-The dedicated tools just take the common 80% off the shell escape-hatch.
+1. 固定工具定义只有 `crates/tools` 一个 owner；
+2. `agent` 与 `request_user_input` 只有 `crates/runtime` 一个 owner；
+3. TUI 没有第二套工具 executor、Store 或 completion 判定；
+4. 被删除的旧工具名在生产 Rust 源码中没有注册或 dispatch 路径。
