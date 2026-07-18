@@ -8,19 +8,14 @@
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]
 
-pub mod apply_patch;
 pub mod approval_cache;
 pub mod arg_repair;
 pub mod dev_server_readiness;
 pub mod diagnostics;
-pub mod diff_format;
 pub mod dynamic;
-pub mod file;
-pub mod file_search;
 pub mod finance;
 
 pub mod fetch_url;
-pub mod git;
 pub mod git_history;
 pub mod github;
 pub mod handle;
@@ -32,15 +27,11 @@ pub mod pandoc;
 pub mod plan;
 pub mod plugin;
 pub mod project;
-#[cfg(test)]
-mod readonly_tool_parity;
 pub mod remember;
 pub mod revert_turn;
 pub mod runtime_mcp;
 pub mod schema_canonicalize;
 pub mod schema_sanitize;
-pub mod search;
-pub mod shell;
 pub mod skill;
 pub mod spec;
 pub mod terminal_session;

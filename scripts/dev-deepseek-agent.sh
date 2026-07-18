@@ -16,7 +16,6 @@ run_focused_tests() {
     "deepseek_tool_reasoning_replay_tests"
     "stream_decoder_tests"
     "schema_sanitize::tests"
-    "tools::search::tests"
     "client::deepseek::tests"
     "strict_tool_mode_doctor"
   )
@@ -34,6 +33,7 @@ run_focused_tests() {
     cargo test "${test_args[@]}" "$filter"
   done
 
+  cargo test -p codewhale-tools --locked
   cargo test -p codewhale-deepseek --locked
   cargo test -p codewhale-runtime --test conformance --locked
   cargo test -p codewhale-app --locked
