@@ -286,6 +286,8 @@ M4-C foreground 切换后还已物理删除：
   DeepSeek 请求。
 - 没有当前事件循环消费者的 TUI frame limiter、frame requester、motion policy 及其
   `constrained_frame_rate` 假设置；实际事件轮询、动画 cadence 和 `low_motion` 路径保留。
+- 无生产写入方的持久 composer stash、Doctor 假投影和不可达 Ctrl+S/`/stash` 产品声明；
+  `App::stash_current_input_for_recovery` 的进程内撤销草稿不属于该旧文件能力，继续保留。
 - 无生产消费者的 TUI Goal/Hunt loop、私有 TaskContract/receipt/Goal 工具、Slop ledger、
   verifier preview config、假 custom-command pause/allowed-tools 状态及其 UI/文档；
   canonical Runtime terminal、RunStore 和确定性 `crates/tools::run_verifiers` 保留。

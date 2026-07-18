@@ -29,7 +29,6 @@ mod artifacts;
 mod audit;
 mod codex_model_cache;
 mod composer_history;
-mod composer_stash;
 mod config;
 mod config_persistence;
 mod context_budget;
@@ -3236,27 +3235,6 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
             );
         }
     }
-    let stash_path = codewhale_config::codewhale_home()
-        .ok()
-        .map(|h| h.join("composer_stash.jsonl"));
-    if let Some(stash_path) = stash_path {
-        let stash_count = crate::composer_stash::load_stash().len();
-        if stash_path.exists() {
-            println!(
-                "  {} composer stash at {} ({} parked draft{})",
-                "✓".truecolor(aqua_r, aqua_g, aqua_b),
-                crate::utils::display_path(&stash_path),
-                stash_count,
-                if stash_count == 1 { "" } else { "s" }
-            );
-        } else {
-            println!(
-                "  {} composer stash empty (Ctrl+S in the composer to park a draft)",
-                "·".dimmed()
-            );
-        }
-    }
-
     // Tool dependencies — probe external binaries that individual
     // tools rely on (Python for code_execution, pdftotext for PDF
     // reading) so users see explicit ✓/✗ rather than the tool failing
@@ -4478,17 +4456,6 @@ fn run_doctor_json(
                     .filter(|p| p.is_dir())
                     .map(|p| count_dir_entries(&p))
                     .unwrap_or(0),
-            },
-            "stash": {
-                "path": codewhale_config::codewhale_home()
-                    .ok()
-                    .map(|h| h.join("composer_stash.jsonl").display().to_string())
-                    .unwrap_or_default(),
-                "present": codewhale_config::codewhale_home()
-                    .ok()
-                    .map(|h| h.join("composer_stash.jsonl"))
-                    .is_some_and(|p| p.exists()),
-                "count": crate::composer_stash::load_stash().len(),
             },
         },
         "sandbox": match codewhale_tools::sandbox::get_platform_sandbox() {

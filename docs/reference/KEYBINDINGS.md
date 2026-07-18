@@ -48,7 +48,6 @@ Editing the message you're about to send.
 | `Ctrl-Y`                    | Yank (paste) from kill buffer                           |
 | `↑` / `↓`                   | Cycle composer history (also selects popup/attachment items) |
 | `Ctrl-P` / `Ctrl-N`         | Cycle composer history (alternative)                     |
-| `Ctrl-S`                    | Stash current draft; with queued follow-ups during a running turn, send the next queued item now |
 | `Alt-R`                    | Search prompt history (Alt-R to exit)                  |
 | `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
 | `Ctrl-O`                    | Open external editor for the composer draft when it has focus |
@@ -134,7 +133,6 @@ selection step or runtime language shortcut.
 
 ## v0.8.13 audit notes
 
-- **Ctrl-S is stash, not history search.** Fixed in this revision — `Alt-R` is history search.
 - **Phantom `Alt+Up` removed.** The "Edit last queued message" binding was listed in README but never existed in the key dispatch code.
 - **Bare Up/Down arrows scroll transcript when composer empty (v0.8.13).** Previously the `should_scroll_with_arrows` gate was hardcoded to false, meaning bare arrows always navigated composer history even when the composer was empty. Users in virtual terminals (Ghostty, Codex, Kitty-protocol) were especially affected because they couldn't use Cmd+Up / Alt+Up shortcuts.
 - **Configurable keymap (#436) and `tui.toml` (#437) remain deferred.** The `TuiPrefs` struct and loader exist in `settings.rs` but are not wired at startup. The named-binding registry that would let `~/.codewhale/tui.toml` override individual entries is still pending.

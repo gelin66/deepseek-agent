@@ -596,6 +596,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除从未接入当前交互循环的 TUI `FrameRateLimiter`/`FrameRequester`/`MotionPolicy`
   编译岛及其只写不读的 `constrained_frame_rate` 设置。现有 24ms 事件轮询、80ms 动画重绘、
   `low_motion` 和实际 spinner/ocean 渲染保持不变。
+- M4-C 已删除没有写入、弹出或清空调用方的持久 composer stash，以及 Doctor 对历史
+  `composer_stash.jsonl` 的假诊断、不可达 Ctrl+S/`/stash` 帮助和提示；清空输入前用于撤销的
+  进程内 recovery draft 仍由 `App` 保留。
 - M4-C 已物理删除没有 production consumer 的 TUI Goal/Hunt loop、私有
   TaskContract/receipt/Goal completion store、Slop ledger、`ToolContext.goal_contract`、
   假 custom-command allowed-tools/pause 状态及其 Work/UI/config surface。交互 TUI 启动

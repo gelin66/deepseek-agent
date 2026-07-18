@@ -139,11 +139,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Editing,
     },
     KeybindingEntry {
-        chord: "Ctrl+S",
-        description_id: crate::localization::MessageId::KbStashDraft,
-        section: KeybindingSection::Editing,
-    },
-    KeybindingEntry {
         chord: "Alt+R",
         description_id: crate::localization::MessageId::KbSearchHistory,
         section: KeybindingSection::Editing,
