@@ -437,6 +437,11 @@ M4-C foreground 切换后还已物理删除：
 - 交互循环中曾零调用的 `ViewStack::handle_mouse` 现已成为唯一 modal 鼠标入口；活动 modal
   优先消费点击/滚轮并阻止背景穿透，产生的事件仍交给现有 canonical view-event handler。
   无 modal 的 transcript 滚动路径保持不变，没有新增私有 interaction owner。
+- sidebar 的旧 hover/click 元数据只有 renderer producer，没有事件 handler、tooltip 或
+  popover consumer；`SidebarHoverState`/section/row/action、每帧全文克隆、tooltip shadow
+  和从未构造的 `SidebarAgentCancel` 已物理删除。可见 Activity/Agents/Session 行继续直接
+  渲染，`last_sidebar_area`/resize handle、canonical child/Fleet、modal 鼠标与 transcript
+  滚动保持原生产调用链。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

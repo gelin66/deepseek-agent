@@ -297,9 +297,6 @@ pub enum ViewEvent {
     UserInputCancelled {
         tool_id: String,
     },
-    SidebarAgentCancel {
-        agent_id: String,
-    },
     /// Emitted by the fleet setup Review step (`m`) to ask the configured
     /// model to draft the agent profile the wizard describes. The host
     /// performs the one-shot call, pushes the sanitized/bounded draft back

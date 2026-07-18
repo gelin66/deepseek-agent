@@ -875,6 +875,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   左击产生同一 canonical decision，滚轮只移动 modal 选择，Pager 沿用自己的滚动处理，且
   同一事件不再穿透到底层 transcript/sidebar/composer；没有 modal 时原 transcript 三行
   滚动行为不变。该接线不增加第二事件状态机。
+- M4-C 已删除 sidebar 每帧构造但从未被事件处理器、popover 或 renderer 读取的
+  `SidebarHoverState`/section/row/action 元数据、全文副本和 tooltip shadow，以及从未被
+  构造的 `SidebarAgentCancel` 事件。Activity/Agents/Session 的可见行继续由原 renderer
+  直接生成；`last_sidebar_area`、resize handle、canonical child/Fleet 投影、modal 鼠标和
+  transcript 滚动均保留。该切片不把 producer-only 点击描述误当成真实多 Agent 控制能力。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

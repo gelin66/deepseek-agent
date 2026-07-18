@@ -1281,80 +1281,6 @@ pub struct SessionState {
     pub total_output_tokens: u32,
 }
 
-/// Sidebar hover state for mouse tooltip support.
-#[derive(Debug, Clone, Default)]
-pub struct SidebarHoverState {
-    /// Rendered sections with their areas and full-text lines.
-    pub sections: Vec<SidebarHoverSection>,
-}
-
-/// Per-row metadata for sidebar detail popovers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SidebarRowAction {
-    Command(String),
-    /// Put a destructive command in the composer instead of executing it.
-    /// The user confirms with Enter or cancels by editing/clearing the draft.
-    #[allow(dead_code)] // destructive confirm path; mouse_ui already matches it (TUI-DOG-008)
-    PrefillCommand(String),
-    /// Safe read-only inspection for work rows without a mutable backend
-    /// action (for example an agent-owned child run).
-    InspectText {
-        label: String,
-        detail: String,
-    },
-}
-
-impl SidebarRowAction {
-    #[must_use]
-    pub fn as_command(&self) -> Option<&str> {
-        match self {
-            Self::Command(command) => Some(command.as_str()),
-            Self::PrefillCommand(_) | Self::InspectText { .. } => None,
-        }
-    }
-
-    #[must_use]
-    pub fn is_cancel_action(&self) -> bool {
-        match self {
-            Self::Command(command) => command.contains(" cancel "),
-            Self::PrefillCommand(command) => command.contains(" cancel "),
-            Self::InspectText { .. } => false,
-        }
-    }
-}
-
-/// Per-row metadata for sidebar detail popovers.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SidebarHoverRow {
-    /// Absolute row position in the terminal.
-    pub row_y: u16,
-    /// Text shown in the compact sidebar row.
-    pub display_text: String,
-    /// Full untruncated text for the popover.
-    pub full_text: String,
-    /// Optional additional detail line.
-    pub detail: Option<String>,
-    /// Whether the compact row lost information.
-    pub is_truncated: bool,
-    /// Canonical command or local inspection action for this row.
-    pub click_action: Option<SidebarRowAction>,
-    /// Optional narrower stop target for rows that show an inline `[x]`.
-    pub stop_action: Option<SidebarRowAction>,
-    pub stop_zone_start_col: Option<u16>,
-    pub stop_zone_end_col: Option<u16>,
-}
-
-/// Per-section metadata for sidebar hover detection.
-#[derive(Debug, Clone)]
-pub struct SidebarHoverSection {
-    /// Content area within the section (inside border + padding).
-    pub content_area: Rect,
-    /// Full original text for each content line rendered.
-    pub lines: Vec<String>,
-    /// Per-row metadata for rich hover popovers.
-    pub rows: Vec<SidebarHoverRow>,
-}
-
 impl Default for SessionState {
     fn default() -> Self {
         Self {
@@ -1588,10 +1514,6 @@ pub struct App {
     pub transcript_spacing: TranscriptSpacing,
     pub sidebar_width_percent: u16,
     pub sidebar_focus: SidebarFocus,
-    /// Sidebar hover state for mouse tooltip support.
-    pub sidebar_hover: SidebarHoverState,
-    /// Current hover tooltip text, if any.
-    pub sidebar_hover_tooltip: Option<String>,
     /// Last known mouse position for tooltip placement.
     pub last_mouse_pos: Option<(u16, u16)>,
     /// Whether the user is currently dragging the sidebar resize handle.
@@ -2371,8 +2293,6 @@ impl App {
             transcript_spacing,
             sidebar_width_percent,
             sidebar_focus,
-            sidebar_hover: SidebarHoverState::default(),
-            sidebar_hover_tooltip: None,
             last_mouse_pos: None,
             sidebar_resizing: false,
             sidebar_resize_anchor_x: 0,

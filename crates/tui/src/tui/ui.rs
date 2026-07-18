@@ -1461,7 +1461,6 @@ fn render_classic_header(area: Rect, buf: &mut Buffer, app: &App) {
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
     let classic_shell = app.ocean_treatment.is_classic();
-    app.sidebar_hover = crate::tui::app::SidebarHoverState::default();
 
     // Clear entire area with the configured app background.
     let background = Block::default().style(Style::default().bg(app.ui_theme.surface_bg));
@@ -1625,7 +1624,6 @@ fn render(f: &mut Frame, app: &mut App) {
             app.last_sidebar_area = None;
             app.last_sidebar_handle_area = None;
             app.sidebar_resizing = false;
-            app.sidebar_hover_tooltip = None;
         }
 
         let chat_widget = ChatWidget::new(app, chat_area).with_ocean_viewport(size);
