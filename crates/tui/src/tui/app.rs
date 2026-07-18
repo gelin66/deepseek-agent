@@ -1581,8 +1581,6 @@ pub struct App {
     pub provider_models: HashMap<String, String>,
     /// When true, the model is auto-selected based on request complexity
     /// rather than using a fixed model. The `/model auto` command sets this.
-    /// `dispatch_user_message` calls `auto_model_heuristic` to resolve the
-    /// effective model for each outbound message.
     pub auto_model: bool,
     /// Last concrete model chosen while `auto_model` is active.
     pub last_effective_model: Option<String>,
