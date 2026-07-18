@@ -250,8 +250,6 @@ Lane records persist under $CODEWHALE_HOME/lanes/. tmux durability belongs to
 Runtime, not Fleet.
 ")]
     Lane(LaneArgs),
-    /// Run a CodeWhale-powered code review over a git diff.
-    Review(TuiPassthroughArgs),
     /// Apply a patch file or stdin to the working tree.
     Apply(TuiPassthroughArgs),
     /// Run the offline TUI evaluation harness.
@@ -1008,6 +1006,9 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
             Some("workflow-tool") => {
                 bail!("命令 `codewhale workflow-tool` 已删除；旧 Workflow 第二运行时不再提供")
             }
+            Some("review") => {
+                bail!("命令 `codewhale review` 已删除；请使用 canonical Agent 审查当前 git diff")
+            }
             _ => {}
         }
     }
@@ -1100,10 +1101,6 @@ fn run() -> Result<()> {
         }
         Some(Commands::LaneLogProxy(_)) => unreachable!("lane log proxy dispatched above"),
         Some(Commands::Lane(args)) => run_lane_command(args),
-        Some(Commands::Review(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, tui_args("review", args))
-        }
         Some(Commands::Apply(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("apply", args))
@@ -4742,6 +4739,7 @@ mod tests {
             "update",
             "workflow",
             "workflow-tool",
+            "review",
         ] {
             assert!(
                 !rendered.lines().any(|line| {
@@ -4793,6 +4791,14 @@ mod tests {
         assert_eq!(
             root_tui_passthrough(&explicit_workflow_prompt).expect("explicit workflow prompt"),
             vec!["--prompt", "workflow run an audit"]
+        );
+
+        let explicit_review_prompt = parse_ok(&["codewhale", "--prompt", "审查当前 git diff"]);
+        reject_retired_command(&explicit_review_prompt)
+            .expect("an explicit review prompt must remain legal");
+        assert_eq!(
+            root_tui_passthrough(&explicit_review_prompt).expect("explicit review prompt"),
+            vec!["--prompt", "审查当前 git diff"]
         );
 
         let add_self = parse_ok(&["codewhale", "mcp", "add-self"]);

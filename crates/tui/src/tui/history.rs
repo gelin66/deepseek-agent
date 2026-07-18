@@ -11,7 +11,6 @@ use crate::deepseek_theme::active_theme;
 use crate::models::{ContentBlock, Message};
 use crate::palette;
 use crate::tools::plan::PlanSnapshot;
-use crate::tools::review::ReviewOutput;
 use crate::tui::app::TranscriptSpacing;
 use crate::tui::diff_render;
 use crate::tui::ui_text::CopyLineSeparator;
@@ -509,7 +508,6 @@ pub enum ToolCell {
     Exploring(ExploringCell),
     PlanUpdate(PlanUpdateCell),
     PatchSummary(PatchSummaryCell),
-    Review(ReviewCell),
     DiffPreview(DiffPreviewCell),
     Mcp(McpToolCell),
     ViewImage(ViewImageCell),
@@ -541,7 +539,6 @@ impl ToolCell {
             }
             ToolCell::PlanUpdate(cell) => Some(cell.status),
             ToolCell::PatchSummary(cell) => Some(cell.status),
-            ToolCell::Review(cell) => Some(cell.status),
             ToolCell::Mcp(cell) => Some(cell.status),
             ToolCell::WebSearch(cell) => Some(cell.status),
             ToolCell::Generic(cell) => Some(cell.status),
@@ -573,7 +570,6 @@ impl ToolCell {
                 self,
                 ToolCell::Exec(_)
                     | ToolCell::PatchSummary(_)
-                    | ToolCell::Review(_)
                     | ToolCell::DiffPreview(_)
                     | ToolCell::PlanUpdate(_)
             )
@@ -602,7 +598,6 @@ impl ToolCell {
             ToolCell::Exploring(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::PlanUpdate(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::PatchSummary(cell) => cell.render(width, low_motion, mode),
-            ToolCell::Review(cell) => cell.render(width, low_motion, mode),
             ToolCell::DiffPreview(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::Mcp(cell) => cell.render(width, low_motion, mode),
             ToolCell::ViewImage(cell) => cell.lines_with_motion(width, low_motion),
@@ -957,142 +952,6 @@ impl PatchSummaryCell {
                 mode,
             ));
         }
-        lines
-    }
-}
-
-/// Cell for structured review output.
-#[derive(Debug, Clone)]
-pub struct ReviewCell {
-    pub target: String,
-    pub status: ToolStatus,
-    pub output: Option<ReviewOutput>,
-    pub error: Option<String>,
-}
-
-impl ReviewCell {
-    pub(super) fn render(
-        &self,
-        width: u16,
-        low_motion: bool,
-        mode: RenderMode,
-    ) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        lines.push(render_tool_header(
-            "Review",
-            tool_status_label(self.status),
-            self.status,
-            None,
-            low_motion,
-        ));
-
-        if !self.target.trim().is_empty() {
-            lines.extend(render_compact_kv(
-                "target",
-                self.target.trim(),
-                tool_value_style(),
-                width,
-            ));
-        }
-
-        if self.status == ToolStatus::Running {
-            return lines;
-        }
-
-        if let Some(error) = self.error.as_ref() {
-            lines.extend(render_tool_output_mode(
-                error,
-                width,
-                TOOL_COMMAND_LINE_LIMIT,
-                mode,
-            ));
-            return lines;
-        }
-
-        let Some(output) = self.output.as_ref() else {
-            return lines;
-        };
-
-        if !output.summary.trim().is_empty() {
-            lines.extend(wrap_plain_line(
-                &format!("Summary: {}", output.summary.trim()),
-                Style::default().fg(palette::TEXT_PRIMARY),
-                width,
-            ));
-        }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Issues",
-            Style::default()
-                .fg(palette::WHALE_ACCENT_PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        )));
-        if output.issues.is_empty() {
-            lines.extend(wrap_plain_line(
-                "  (none)",
-                Style::default().fg(palette::TEXT_MUTED),
-                width,
-            ));
-        } else {
-            for issue in &output.issues {
-                let severity = issue.severity.trim().to_ascii_lowercase();
-                let color = review_severity_color(&severity);
-                let location = format_review_location(issue.path.as_ref(), issue.line);
-                let label = if location.is_empty() {
-                    format!("  - [{}] {}", severity, issue.title.trim())
-                } else {
-                    format!("  - [{}] {} ({})", severity, issue.title.trim(), location)
-                };
-                lines.extend(wrap_plain_line(&label, Style::default().fg(color), width));
-                if !issue.description.trim().is_empty() {
-                    lines.extend(wrap_plain_line(
-                        &format!("    {}", issue.description.trim()),
-                        Style::default().fg(palette::TEXT_MUTED),
-                        width,
-                    ));
-                }
-            }
-        }
-
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Suggestions",
-            Style::default()
-                .fg(palette::WHALE_ACCENT_PRIMARY)
-                .add_modifier(Modifier::BOLD),
-        )));
-        if output.suggestions.is_empty() {
-            lines.extend(wrap_plain_line(
-                "  (none)",
-                Style::default().fg(palette::TEXT_MUTED),
-                width,
-            ));
-        } else {
-            for suggestion in &output.suggestions {
-                let location = format_review_location(suggestion.path.as_ref(), suggestion.line);
-                let label = if location.is_empty() {
-                    format!("  - {}", suggestion.suggestion.trim())
-                } else {
-                    format!("  - {} ({})", suggestion.suggestion.trim(), location)
-                };
-                lines.extend(wrap_plain_line(
-                    &label,
-                    Style::default().fg(palette::TEXT_PRIMARY),
-                    width,
-                ));
-            }
-        }
-
-        if !output.overall_assessment.trim().is_empty() {
-            lines.push(Line::from(""));
-            lines.extend(wrap_plain_line(
-                &format!("Overall: {}", output.overall_assessment.trim()),
-                Style::default().fg(palette::TEXT_PRIMARY),
-                width,
-            ));
-        }
-
         lines
     }
 }
@@ -1676,24 +1535,6 @@ fn is_tool_status_glyph(text: &str) -> bool {
                 | '\u{00B7}' // ·
                 | '\u{2800}'..='\u{28FF}' // braille spinner frames
         )
-}
-
-fn review_severity_color(severity: &str) -> Color {
-    match severity {
-        "error" => palette::STATUS_ERROR,
-        "warning" => palette::STATUS_WARNING,
-        _ => palette::STATUS_INFO,
-    }
-}
-
-fn format_review_location(path: Option<&String>, line: Option<u32>) -> String {
-    let path = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
-    match (path, line) {
-        (Some(path), Some(line)) => format!("{path}:{line}"),
-        (Some(path), None) => path,
-        (None, Some(line)) => format!("line {line}"),
-        (None, None) => String::new(),
-    }
 }
 
 /// Detect whether a system message is a cycle-boundary announcement

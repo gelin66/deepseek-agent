@@ -302,9 +302,6 @@ fn mark_running_as_interrupted(cell: &mut HistoryCell) {
         ToolCell::PatchSummary(patch) if patch.status == ToolStatus::Running => {
             patch.status = ToolStatus::Failed;
         }
-        ToolCell::Review(review) if review.status == ToolStatus::Running => {
-            review.status = ToolStatus::Failed;
-        }
         ToolCell::Mcp(mcp) if mcp.status == ToolStatus::Running => {
             mcp.status = ToolStatus::Failed;
         }

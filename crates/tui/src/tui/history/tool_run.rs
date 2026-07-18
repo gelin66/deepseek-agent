@@ -174,7 +174,6 @@ fn tool_display_name(tool: &ToolCell) -> &str {
         ToolCell::Exec(_) => "shell",
         ToolCell::PlanUpdate(_) => "update_plan",
         ToolCell::PatchSummary(_) => "apply_patch",
-        ToolCell::Review(_) => "review",
         ToolCell::DiffPreview(_) => "diff",
     }
 }

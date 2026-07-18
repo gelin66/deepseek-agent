@@ -530,15 +530,6 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
         ToolCell::PatchSummary(patch) => {
             snapshot.record(format!("patch {}", patch.path), patch.status, None);
         }
-        ToolCell::Review(review) => {
-            let target = one_line_summary(&review.target, 80);
-            let label = if target.is_empty() {
-                "review".to_string()
-            } else {
-                format!("review {target}")
-            };
-            snapshot.record(label, review.status, None);
-        }
         ToolCell::DiffPreview(diff) => {
             snapshot.record(format!("diff {}", diff.title), ToolStatus::Success, None);
         }

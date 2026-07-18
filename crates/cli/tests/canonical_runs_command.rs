@@ -412,6 +412,8 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
         ],
         vec!["mcp", "add-self"],
         vec!["mcp", "add-self", "--name", "legacy-self"],
+        vec!["review"],
+        vec!["review", "--staged"],
         vec!["serve", "--acp"],
         vec!["serve", "--mcp"],
     ] {
@@ -505,5 +507,26 @@ fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
     assert!(
         explicit_acp_marker.exists(),
         "explicit --prompt \"serve --acp\" was mistaken for the removed command"
+    );
+
+    let explicit_review_home =
+        tempfile::tempdir().expect("temporary explicit-review-prompt CODEWHALE_HOME");
+    let (explicit_review_tui, explicit_review_marker) =
+        install_tui_probe(explicit_review_home.path());
+    let explicit_review_prompt = run_dispatcher_with_tui_probe(
+        explicit_review_home.path(),
+        workspace.path(),
+        &explicit_review_tui,
+        &explicit_review_marker,
+        &["--prompt", "审查当前 git diff"],
+    );
+    assert!(
+        explicit_review_prompt.status.success(),
+        "explicit --prompt \"审查当前 git diff\" should remain legal: {}",
+        String::from_utf8_lossy(&explicit_review_prompt.stderr)
+    );
+    assert!(
+        explicit_review_marker.exists(),
+        "explicit --prompt \"审查当前 git diff\" was mistaken for the removed command"
     );
 }

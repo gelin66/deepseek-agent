@@ -110,7 +110,6 @@ use crate::exec_output::ExecTerminalReceipt;
 use crate::features::{Feature, render_feature_table};
 use crate::llm_client::LlmClient;
 use crate::mcp::{McpConfig, McpPool, McpServerConfig, McpServerOAuthConfig};
-use crate::models::{ContentBlock, Message, MessageRequest, SystemPrompt};
 use crate::tui::history::summarize_tool_output;
 
 #[cfg(windows)]
@@ -244,8 +243,6 @@ enum Commands {
     Exec(ExecArgs),
     /// Manage local Agent Fleet runs and workers
     Fleet(FleetArgs),
-    /// Run a code review over a git diff
-    Review(ReviewArgs),
     /// Open the TUI pre-seeded with a GitHub PR's title, body, and diff
     Pr {
         /// PR number
@@ -1020,37 +1017,6 @@ impl FeatureToggles {
 }
 
 #[derive(Args, Debug, Clone)]
-struct ReviewArgs {
-    /// Review staged changes instead of the working tree
-    #[arg(long, conflicts_with = "base")]
-    staged: bool,
-    /// Base ref to diff against (e.g. origin/main)
-    #[arg(long)]
-    base: Option<String>,
-    /// Limit diff to a specific path
-    #[arg(long)]
-    path: Option<PathBuf>,
-    /// Override model for this review
-    #[arg(long)]
-    model: Option<String>,
-    /// Maximum diff characters to include
-    #[arg(long, default_value_t = 200_000)]
-    max_chars: usize,
-    /// Write a durable pre-push review receipt after a successful review
-    #[arg(long, default_value_t = false)]
-    write_receipt: bool,
-    /// Validate the current diff against a durable review receipt without calling a model
-    #[arg(long, default_value_t = false)]
-    check_receipt: bool,
-    /// Override where the review receipt is written or read
-    #[arg(long)]
-    receipt_path: Option<PathBuf>,
-    /// Emit machine-readable JSON output
-    #[arg(long, default_value_t = false)]
-    json: bool,
-}
-
-#[derive(Args, Debug, Clone)]
 struct ApplyArgs {
     /// Patch file to apply (defaults to stdin)
     #[arg(value_name = "PATCH_FILE")]
@@ -1458,10 +1424,6 @@ async fn run_async_main() -> Result<()> {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = resolve_workspace(&cli);
                 run_fleet_command(&workspace, &config, args).await
-            }
-            Commands::Review(args) => {
-                let config = load_config_from_cli(&cli)?;
-                run_review(&config, args).await
             }
             Commands::Pr {
                 number,
@@ -3646,7 +3608,6 @@ const DOCTOR_LEGACY_STATE_ITEMS: &[&str] = &[
     "slop_ledger",
     "trophies",
     "catalog",
-    "review-receipts",
     "config.toml",
     "settings.toml",
     "mcp.json",
@@ -5320,196 +5281,6 @@ fn run_xai_device_auth(config_path: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-async fn run_review(config: &Config, args: ReviewArgs) -> Result<()> {
-    use crate::client::DeepSeekClient;
-
-    let diff = collect_diff(&args)?;
-    if diff.trim().is_empty() {
-        bail!("No diff to review.");
-    }
-    validate_review_receipt_args(&args)?;
-    if args.check_receipt {
-        return run_review_receipt_check(&diff, &args);
-    }
-
-    let model = args
-        .model
-        .clone()
-        .or_else(|| config.default_text_model.clone())
-        .unwrap_or_else(|| config.default_model());
-    let route = resolve_cli_auto_route(config, &model, &diff, None).await?;
-    let execution_config = config_for_cli_route(config, &route);
-    let model = route.model.clone();
-    let reasoning_effort = route
-        .reasoning_effort
-        .and_then(|effort| cli_reasoning_effort_value(&execution_config, effort));
-
-    let system = SystemPrompt::Text(
-        "You are a senior code reviewer. Focus on bugs, risks, behavioral regressions, and missing tests. \
-Provide findings ordered by severity with file references, then open questions, then a brief summary."
-            .to_string(),
-    );
-    let user_prompt =
-        format!("Review the following diff and provide feedback:\n\n{diff}\n\nEnd of diff.");
-
-    let client = DeepSeekClient::new(&execution_config)?;
-    let request = MessageRequest {
-        model: model.clone(),
-        messages: vec![Message {
-            role: "user".to_string(),
-            content: vec![ContentBlock::Text {
-                text: user_prompt,
-                cache_control: None,
-            }],
-        }],
-        max_tokens: 4096,
-        system: Some(system),
-        tools: None,
-        tool_choice: None,
-        metadata: None,
-        thinking: None,
-        reasoning_effort,
-        stream: Some(false),
-        temperature: Some(0.2),
-        top_p: Some(0.9),
-    };
-
-    let response = client.create_message(request).await?;
-    let mut output = String::new();
-    for block in response.content {
-        if let ContentBlock::Text { text, .. } = block {
-            output.push_str(&text);
-        }
-    }
-    let receipt = if args.write_receipt {
-        let parsed_output = crate::tools::review::ReviewOutput::from_str(&output);
-        let receipt = crate::tools::review::build_review_receipt(
-            review_target_label(&args),
-            &diff,
-            route.provider.as_str(),
-            &model,
-            &parsed_output,
-            &output,
-            Vec::new(),
-        );
-        let path =
-            crate::tools::review::write_review_receipt(&receipt, args.receipt_path.as_deref())?;
-        Some((path, receipt))
-    } else {
-        None
-    };
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "mode": "review",
-                "model": model,
-                "success": true,
-                "content": output,
-                "receipt_path": receipt
-                    .as_ref()
-                    .map(|(path, _)| path.display().to_string()),
-                "receipt": receipt.as_ref().map(|(_, receipt)| receipt),
-            }))?
-        );
-    } else {
-        println!("{output}");
-        if let Some((path, _)) = receipt {
-            eprintln!("Review receipt written: {}", path.display());
-        }
-    }
-    Ok(())
-}
-
-fn validate_review_receipt_args(args: &ReviewArgs) -> Result<()> {
-    if args.receipt_path.is_some() && !args.write_receipt && !args.check_receipt {
-        bail!("--receipt-path requires --write-receipt or --check-receipt");
-    }
-    if args.write_receipt && args.check_receipt {
-        bail!("--write-receipt and --check-receipt are mutually exclusive");
-    }
-    Ok(())
-}
-
-fn run_review_receipt_check(diff: &str, args: &ReviewArgs) -> Result<()> {
-    let (path, receipt) = if let Some(path) = args.receipt_path.as_ref() {
-        (
-            path.clone(),
-            crate::tools::review::read_review_receipt(path)
-                .with_context(|| format!("failed to read review receipt {}", path.display()))?,
-        )
-    } else {
-        crate::tools::review::latest_review_receipt_for_diff(diff)?.ok_or_else(|| {
-            anyhow!(
-                "No review receipt found for the current diff. Run `codewhale review --write-receipt` first, or pass --receipt-path."
-            )
-        })?
-    };
-    let validation =
-        crate::tools::review::validate_review_receipt_for_diff(diff, &receipt, Some(path.clone()));
-
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "mode": "review_receipt_check",
-                "success": validation.passed,
-                "validation": review_receipt_validation_public_json(&validation),
-            }))?
-        );
-    } else if validation.passed {
-        println!("Review receipt valid: {}", path.display());
-    }
-
-    if !validation.passed {
-        bail!("Review receipt check failed: {}", validation.reason);
-    }
-    Ok(())
-}
-
-fn review_receipt_validation_public_json(
-    validation: &crate::tools::review::ReviewReceiptValidation,
-) -> serde_json::Value {
-    let unresolved_risk = validation.unresolved_risk.as_ref();
-    serde_json::json!({
-        "passed": validation.passed,
-        "status": review_receipt_validation_status(validation),
-        "diff_fingerprint": validation.diff_fingerprint.as_str(),
-        "receipt_fingerprint": validation.receipt_fingerprint.as_deref(),
-        "unresolved": unresolved_risk.is_some_and(|risk| risk.unresolved),
-        "risk_level": unresolved_risk.map(|risk| risk.level.as_str()),
-    })
-}
-
-fn review_receipt_validation_status(
-    validation: &crate::tools::review::ReviewReceiptValidation,
-) -> &'static str {
-    if validation.passed {
-        "valid"
-    } else if validation
-        .receipt_fingerprint
-        .as_deref()
-        .is_some_and(|fingerprint| fingerprint != validation.diff_fingerprint.as_str())
-    {
-        "diff_mismatch"
-    } else if validation
-        .unresolved_risk
-        .as_ref()
-        .is_some_and(|risk| risk.unresolved)
-    {
-        "unresolved_risk"
-    } else if validation
-        .reason
-        .starts_with("unsupported review receipt schema version")
-    {
-        "unsupported_schema"
-    } else if validation.reason.starts_with("review receipt check ") {
-        "check_failed"
-    } else {
-        "invalid"
-    }
-}
-
 /// `codewhale pr <N>` (#451) — fetch a GitHub PR via `gh`, format
 /// title + body + diff as the composer's first message, and launch
 /// the interactive TUI. Falls back gracefully if `gh` is missing.
@@ -5724,54 +5495,6 @@ fn format_pr_prompt(number: u32, view: &GhPullRequest, diff: &str) -> String {
             view.url.as_str()
         },
     )
-}
-
-fn collect_diff(args: &ReviewArgs) -> Result<String> {
-    let mut cmd = crate::dependencies::Git::command()
-        .ok_or_else(|| anyhow::anyhow!("git not found on PATH"))?;
-    cmd.arg("diff");
-    if args.staged {
-        cmd.arg("--cached");
-    }
-    if let Some(base) = &args.base {
-        cmd.arg(format!("{base}...HEAD"));
-    }
-    if let Some(path) = &args.path {
-        cmd.arg("--").arg(path);
-    }
-
-    let output = cmd
-        .output()
-        .map_err(|e| anyhow::anyhow!("Failed to run git diff. Is git installed? ({e})"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git diff failed: {}", stderr.trim());
-    }
-    let mut diff = String::from_utf8_lossy(&output.stdout).to_string();
-    if diff.len() > args.max_chars {
-        diff = crate::utils::truncate_with_ellipsis(&diff, args.max_chars, "\n...[truncated]\n");
-    }
-    Ok(diff)
-}
-
-fn review_target_label(args: &ReviewArgs) -> String {
-    let mut label = if args.staged {
-        "staged".to_string()
-    } else if let Some(base) = args
-        .base
-        .as_deref()
-        .map(str::trim)
-        .filter(|base| !base.is_empty())
-    {
-        format!("base:{base}")
-    } else {
-        "working-tree".to_string()
-    };
-    if let Some(path) = &args.path {
-        label.push(' ');
-        label.push_str(path.to_string_lossy().as_ref());
-    }
-    label
 }
 
 fn run_apply(args: ApplyArgs) -> Result<()> {
@@ -6852,23 +6575,6 @@ async fn run_interactive(
     .await
 }
 
-#[derive(Debug)]
-struct CliAutoRoute {
-    provider: crate::config::ApiProvider,
-    model: String,
-    reasoning_effort: Option<crate::tui::app::ReasoningEffort>,
-    auto_model: bool,
-}
-
-fn cli_reasoning_effort_value(
-    config: &Config,
-    effort: crate::tui::app::ReasoningEffort,
-) -> Option<String> {
-    effort
-        .api_value_for_provider(config.api_provider())
-        .map(str::to_string)
-}
-
 fn normalize_cli_reasoning_effort(value: &str) -> Result<Option<String>> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -6887,86 +6593,6 @@ fn normalize_cli_reasoning_effort(value: &str) -> Result<Option<String>> {
         ),
     };
     Ok(Some(normalized.to_string()))
-}
-
-fn config_for_cli_route(config: &Config, route: &CliAutoRoute) -> Config {
-    let mut execution_config = config.clone();
-    execution_config.provider = Some(route.provider.as_str().to_string());
-    execution_config
-        .provider_config_for_mut(route.provider)
-        .model = Some(route.model.clone());
-    if matches!(
-        route.provider,
-        crate::config::ApiProvider::Deepseek | crate::config::ApiProvider::DeepseekCN
-    ) {
-        execution_config.default_text_model = Some(route.model.clone());
-    }
-    execution_config
-}
-
-async fn resolve_cli_auto_route(
-    config: &Config,
-    model: &str,
-    prompt: &str,
-    api_request_budget: Option<&codewhale_deepseek::SharedApiRequestBudget>,
-) -> Result<CliAutoRoute> {
-    if model.trim().eq_ignore_ascii_case("auto") {
-        let selection = model_routing::resolve_auto_route_with_inventory(
-            config,
-            prompt,
-            "",
-            "auto",
-            "auto",
-            api_request_budget,
-        )
-        .await?;
-        Ok(CliAutoRoute {
-            provider: selection.provider,
-            model: selection.model,
-            reasoning_effort: selection.reasoning_effort,
-            auto_model: true,
-        })
-    } else {
-        if let Some(selection) = model_routing::resolve_explicit_route_with_inventory(config, model)
-        {
-            return Ok(CliAutoRoute {
-                provider: selection.provider,
-                model: selection.model,
-                reasoning_effort: selection.reasoning_effort,
-                auto_model: false,
-            });
-        }
-
-        let candidate_providers = model_routing::explicit_route_candidate_providers(config, model);
-        if !candidate_providers.is_empty() && !candidate_providers.contains(&config.api_provider())
-        {
-            let providers = candidate_providers
-                .iter()
-                .map(|provider| provider.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!(
-                "model `{model}` is available from configured provider route(s): {providers}. \
-                 Pass `--provider <provider>` with `--model {model}` to choose one explicitly. \
-                 In the TUI, use `/provider`, `/model`, or `/setup` to resolve the route before sending."
-            );
-        }
-
-        // When --model is not `auto`, fall back to the reasoning_effort
-        // declared in the user's config.toml. The previous hard-coded `None`
-        // silently dropped the user's setting on every non-auto-route exec
-        // call, which (for example) prevented vllm + Qwen3 users from
-        // disabling thinking via `reasoning_effort = "off"` and caused
-        // 30+ second SSE idle timeouts on trivial prompts.
-        Ok(CliAutoRoute {
-            provider: config.api_provider(),
-            model: model.to_string(),
-            reasoning_effort: config
-                .reasoning_effort()
-                .map(crate::tui::app::ReasoningEffort::from_setting),
-            auto_model: false,
-        })
-    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
@@ -8234,8 +7860,10 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn removed_server_commands_fail_during_argument_parsing() {
+    fn removed_direct_model_and_server_commands_fail_during_argument_parsing() {
         for args in [
+            ["codewhale-tui", "review"].as_slice(),
+            ["codewhale-tui", "review", "--staged"].as_slice(),
             ["codewhale-tui", "serve", "--acp"].as_slice(),
             ["codewhale-tui", "serve", "--mcp"].as_slice(),
             ["codewhale-tui", "mcp", "add-self"].as_slice(),
@@ -8251,6 +7879,14 @@ mod terminal_mode_tests {
                 "unexpected parser outcome for {args:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn explicit_review_prompt_remains_legal() {
+        let cli = parse_cli(&["codewhale-tui", "--prompt", "审查当前 git diff"]);
+
+        assert!(cli.command.is_none());
+        assert_eq!(cli.prompt, ["审查当前 git diff"]);
     }
 
     #[test]
@@ -8322,80 +7958,6 @@ mod terminal_mode_tests {
         assert_eq!(
             resolve_exec_model(&config, None),
             crate::config::DEFAULT_ZAI_MODEL
-        );
-    }
-
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
-    async fn explicit_exec_model_routes_to_unique_authenticated_provider_candidate() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let _openrouter = crate::test_support::EnvVarGuard::remove("OPENROUTER_API_KEY");
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-            ..Default::default()
-        };
-
-        let route = resolve_cli_auto_route(&config, crate::config::ZAI_GLM_5_2_MODEL, "pong", None)
-            .await
-            .expect("explicit GLM should route to the configured Z.ai provider");
-
-        assert_eq!(route.provider, crate::config::ApiProvider::Zai);
-        assert_eq!(route.model, crate::config::ZAI_GLM_5_2_MODEL);
-        assert!(!route.auto_model);
-    }
-
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
-    async fn explicit_exec_model_reports_ambiguous_authenticated_provider_candidates() {
-        let _env_lock = crate::test_support::lock_test_env();
-        let _zai = crate::test_support::EnvVarGuard::set("ZAI_API_KEY", "zai-key");
-        let _openrouter = crate::test_support::EnvVarGuard::set("OPENROUTER_API_KEY", "or-key");
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            default_text_model: Some(crate::config::DEFAULT_TEXT_MODEL.to_string()),
-            ..Default::default()
-        };
-
-        let err = resolve_cli_auto_route(&config, crate::config::ZAI_GLM_5_2_MODEL, "pong", None)
-            .await
-            .expect_err("ambiguous GLM route should ask for an explicit provider");
-        let message = err.to_string();
-
-        assert!(message.contains("model `GLM-5.2` is available"));
-        assert!(message.contains("openrouter"));
-        assert!(message.contains("zai"));
-        assert!(message.contains("--provider"));
-        assert!(message.contains("/provider"));
-        assert!(message.contains("/model"));
-        assert!(message.contains("/setup"));
-    }
-
-    #[test]
-    fn cli_route_execution_config_stamps_routed_model_into_provider_slot() {
-        let mut providers = crate::config::ProvidersConfig::default();
-        providers.deepseek.model = Some("deepseek-v4-pro".to_string());
-        let config = Config {
-            provider: Some("deepseek".to_string()),
-            providers: Some(providers),
-            ..Default::default()
-        };
-        let route = CliAutoRoute {
-            provider: crate::config::ApiProvider::Deepseek,
-            model: "deepseek-v4-flash".to_string(),
-            reasoning_effort: None,
-            auto_model: true,
-        };
-
-        let execution_config = config_for_cli_route(&config, &route);
-
-        assert_eq!(execution_config.default_model(), "deepseek-v4-flash");
-        assert_eq!(
-            execution_config
-                .provider_config_for(crate::config::ApiProvider::Deepseek)
-                .and_then(|entry| entry.model.as_deref()),
-            Some("deepseek-v4-flash")
         );
     }
 
@@ -8874,31 +8436,6 @@ mod terminal_mode_tests {
         assert!(!exec_supports_provider(
             crate::config::ApiProvider::Openrouter
         ));
-    }
-
-    #[test]
-    fn review_receipt_check_public_json_omits_private_details() {
-        let validation = crate::tools::review::ReviewReceiptValidation {
-            passed: false,
-            reason: "secret reason with /tmp/private/receipt.json".to_string(),
-            diff_fingerprint: "sha256:current".to_string(),
-            receipt_fingerprint: Some("sha256:current".to_string()),
-            receipt_path: Some(PathBuf::from("/tmp/private/receipt.json")),
-            unresolved_risk: Some(crate::tools::review::ReviewReceiptRisk {
-                unresolved: true,
-                level: "error".to_string(),
-                summary: "secret summary".to_string(),
-            }),
-        };
-
-        let public = review_receipt_validation_public_json(&validation);
-        let encoded = serde_json::to_string(&public).expect("public json");
-
-        assert_eq!(public["passed"], false);
-        assert_eq!(public["status"], "unresolved_risk");
-        assert_eq!(public["risk_level"], "error");
-        assert!(!encoded.contains("secret"));
-        assert!(!encoded.contains("/tmp/private"));
     }
 
     #[test]

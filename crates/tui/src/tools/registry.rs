@@ -831,13 +831,6 @@ impl ToolRegistryBuilder {
         self.with_tool(Arc::new(HandleReadTool))
     }
 
-    /// Include the review tool.
-    #[must_use]
-    pub fn with_review_tool(self, client: Option<DeepSeekClient>, model: String) -> Self {
-        use super::review::ReviewTool;
-        self.with_tool(Arc::new(ReviewTool::new(client, model)))
-    }
-
     /// Include the agent-callable `verify` self-critique tool (#4196). The
     /// critic runs at elevated reasoning (default `Max`) independent of the
     /// session tier and is given no tools, so it cannot recurse into `verify`.
@@ -1013,7 +1006,6 @@ impl ToolRegistryBuilder {
             .with_agent_tools_policy(options.shell_policy)
             .with_todo_tool(todo_list)
             .with_plan_tool(plan_state)
-            .with_review_tool(client.clone(), model.clone())
             .with_slop_ledger_tools()
             .with_rlm_tool(client.clone(), model.clone())
             .with_fim_tool(client)

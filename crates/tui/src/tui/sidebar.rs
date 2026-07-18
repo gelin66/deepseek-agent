@@ -1752,12 +1752,6 @@ fn sidebar_tool_row_from_cell(cell: &HistoryCell) -> Option<SidebarToolRow> {
             summary: compact_join([patch.path.clone(), patch.summary.clone()]),
             duration_ms: None,
         }),
-        ToolCell::Review(review) => Some(SidebarToolRow {
-            name: "review".to_string(),
-            status: review.status,
-            summary: review.target.clone(),
-            duration_ms: None,
-        }),
         ToolCell::DiffPreview(diff) => Some(SidebarToolRow {
             name: "diff".to_string(),
             status: ToolStatus::Success,

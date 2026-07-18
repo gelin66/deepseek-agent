@@ -123,7 +123,6 @@
     "CmdQueueIndexMin": "索引必须 >= 1",
     "CmdRestoreDescription": "将工作区回滚到此前的轮次前/后快照。不带参数时列出最近的快照。",
     "CmdRetryDescription": "重试上一次请求",
-    "CmdReviewDescription": "对文件、diff 或 PR 进行结构化代码审查",
     "CmdRlmDescription": "打开持久 RLM 上下文：/rlm [0-3] <file_or_text>",
     "CmdSaveDescription": "将会话保存到文件",
     "CmdForkDescription": "将当前对话分叉为兄弟会话",

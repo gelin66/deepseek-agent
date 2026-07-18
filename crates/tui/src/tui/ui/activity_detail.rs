@@ -363,7 +363,6 @@ fn tool_status_for_activity(tool: &ToolCell) -> Option<ToolStatus> {
         }
         ToolCell::PlanUpdate(cell) => Some(cell.status),
         ToolCell::PatchSummary(cell) => Some(cell.status),
-        ToolCell::Review(cell) => Some(cell.status),
         ToolCell::DiffPreview(_) => Some(ToolStatus::Success),
         ToolCell::Mcp(cell) => Some(cell.status),
         ToolCell::ViewImage(_) => Some(ToolStatus::Success),
@@ -736,14 +735,6 @@ pub(crate) fn detail_target_label(app: &App, cell_index: usize) -> Option<String
         )),
         HistoryCell::Tool(ToolCell::PlanUpdate(_)) => Some("update Strategy".to_string()),
         HistoryCell::Tool(ToolCell::PatchSummary(patch)) => Some(format!("patch {}", patch.path)),
-        HistoryCell::Tool(ToolCell::Review(review)) => {
-            let target = one_line_summary(&review.target, 80);
-            Some(if target.is_empty() {
-                "review".to_string()
-            } else {
-                format!("review {target}")
-            })
-        }
         HistoryCell::Tool(ToolCell::DiffPreview(diff)) => Some(format!("diff {}", diff.title)),
         HistoryCell::Tool(ToolCell::Mcp(mcp)) => Some(format!("tool {}", mcp.tool)),
         HistoryCell::Tool(ToolCell::ViewImage(image)) => {
@@ -1220,17 +1211,6 @@ fn timeline_tool_summary(app: &App, idx: usize, tool: &ToolCell) -> (&'static st
                 )
             }
         }
-        ToolCell::Review(review) => {
-            let target = one_line_summary(&review.target, 88);
-            (
-                "review",
-                if target.is_empty() {
-                    "code review".to_string()
-                } else {
-                    target
-                },
-            )
-        }
         ToolCell::DiffPreview(diff) => ("diff", truncate_line_to_width(&diff.title, 88)),
         ToolCell::Mcp(mcp) => ("MCP tool", truncate_line_to_width(&mcp.tool, 88)),
         ToolCell::ViewImage(image) => (
@@ -1461,18 +1441,6 @@ fn turn_verifier_lines(app: &App, start: usize, end: usize) -> Vec<String> {
                     "• {} — {}",
                     truncate_line_to_width(&exec.command, 56),
                     activity_status_label(exec.status)
-                ));
-            }
-            ToolCell::Review(review) => {
-                let target = truncate_line_to_width(review.target.trim(), 48);
-                let target = if target.is_empty() {
-                    "review".to_string()
-                } else {
-                    format!("review {target}")
-                };
-                lines.push(format!(
-                    "• {target} — {}",
-                    activity_status_label(review.status)
                 ));
             }
             _ => {}
