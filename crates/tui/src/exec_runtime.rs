@@ -907,7 +907,7 @@ pub(crate) fn production_application_config(
     let endpoint = if codewhale_deepseek::official_root(&base_url).is_some() {
         DeepSeekEndpoint::Official
     } else {
-        DeepSeekEndpoint::loopback_fixture(crate::client::versioned_base_url(&base_url))?
+        DeepSeekEndpoint::loopback_fixture(&base_url)?
     };
     let retry = config.retry_policy();
     let connection = DeepSeekConnectionConfig {

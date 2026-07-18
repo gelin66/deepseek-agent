@@ -123,7 +123,11 @@ fn normalize_fixture_root(raw: &str) -> Result<String, DeepSeekTransportError> {
             "DeepSeek fixture root path must be empty or /v1".to_string(),
         ));
     }
-    Ok(raw.trim_end_matches('/').to_string())
+    let mut root = raw.trim_end_matches('/').to_string();
+    if path.is_empty() {
+        root.push_str("/v1");
+    }
+    Ok(root)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1016,6 +1020,12 @@ mod tests {
         assert_eq!(
             DeepSeekEndpoint::loopback_fixture("http://127.0.0.1:9000/v1")
                 .expect("valid fixture")
+                .root(),
+            "http://127.0.0.1:9000/v1"
+        );
+        assert_eq!(
+            DeepSeekEndpoint::loopback_fixture("http://127.0.0.1:9000/")
+                .expect("unversioned loopback fixture")
                 .root(),
             "http://127.0.0.1:9000/v1"
         );
