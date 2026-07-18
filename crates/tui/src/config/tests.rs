@@ -356,34 +356,6 @@ web_search = true
 }
 
 #[test]
-fn update_config_defaults_to_enabled_without_uri() {
-    let config = Config::default();
-    assert_eq!(config.update, None);
-    assert_eq!(config.update_config(), UpdateConfig::default());
-    assert!(config.update_config().check_for_updates);
-    assert_eq!(config.update_config().update_uri(), None);
-}
-
-#[test]
-fn update_config_deserializes_disable_and_custom_uri() {
-    let config: Config = toml::from_str(
-        r#"
-        [update]
-        check_for_updates = false
-        update_uri = "https://mirror.example/releases/latest"
-        "#,
-    )
-    .expect("update config");
-
-    let update = config.update_config();
-    assert!(!update.check_for_updates);
-    assert_eq!(
-        update.update_uri(),
-        Some("https://mirror.example/releases/latest")
-    );
-}
-
-#[test]
 fn network_policy_toml_maps_proxy_hosts_to_runtime_policy() {
     let policy: NetworkPolicyToml = toml::from_str(
         r#"

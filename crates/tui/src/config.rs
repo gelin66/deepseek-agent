@@ -1549,40 +1549,6 @@ pub struct AutoConfig {
     pub cost_saving: Option<bool>,
 }
 
-fn default_update_check_for_updates() -> bool {
-    true
-}
-
-/// Startup update-check configuration (`[update]` table in config.toml).
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-pub struct UpdateConfig {
-    /// When false, skip the TUI startup background update check entirely.
-    #[serde(default = "default_update_check_for_updates")]
-    pub check_for_updates: bool,
-    /// Optional GitHub-compatible latest-release JSON endpoint.
-    #[serde(default)]
-    pub update_uri: Option<String>,
-}
-
-impl Default for UpdateConfig {
-    fn default() -> Self {
-        Self {
-            check_for_updates: true,
-            update_uri: None,
-        }
-    }
-}
-
-impl UpdateConfig {
-    #[must_use]
-    pub fn update_uri(&self) -> Option<&str> {
-        self.update_uri
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    }
-}
-
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -1700,11 +1666,6 @@ pub struct Config {
     /// keeps its existing balanced behaviour.
     #[serde(default)]
     pub auto: Option<AutoConfig>,
-
-    /// Startup update-check behavior. When absent, the TUI keeps the default
-    /// fire-and-forget latest-release check.
-    #[serde(default)]
-    pub update: Option<UpdateConfig>,
 
     /// Stable project context included in the production prompt.
     #[serde(default)]
@@ -3610,12 +3571,6 @@ impl Config {
         self.skills.clone().unwrap_or_default()
     }
 
-    /// Resolve startup update-check settings with defaults applied.
-    #[must_use]
-    pub fn update_config(&self) -> UpdateConfig {
-        self.update.clone().unwrap_or_default()
-    }
-
     /// Resolve enabled features from defaults and config entries.
     #[must_use]
     pub fn features(&self) -> Features {
@@ -3832,10 +3787,6 @@ default_text_model = "{DEFAULT_TEXT_MODEL}"
 # Shift+Tab in the TUI cycles between off / high / max.
 reasoning_effort = "auto"
 
-# Startup update check
-[update]
-check_for_updates = true
-# update_uri = "https://internal.mirror.example/codewhale/releases/latest"
 "#
     );
     write_config_file_secure(&config_path, &content)
@@ -5209,7 +5160,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         search: override_cfg.search.or(base.search),
         memory: override_cfg.memory.or(base.memory),
         auto: override_cfg.auto.or(base.auto),
-        update: override_cfg.update.or(base.update),
         context: ContextConfig {
             project_pack: override_cfg
                 .context

@@ -740,6 +740,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   已存在的历史文件，它们会留在磁盘直至用户手工处理。交互启动仍生产调用
   `install_system_skills`；Setup `--force`、canonical `state.db`/`agent_run_snapshots`、crash
   replay、进程内 busy-message queue、Fleet ledger/checkpoint 和 constitution checkpoint 均未改变。
+- M4-C 已删除从未被启动入口调用的 TUI 后台版本检查闭环、专属 release-asset/semver
+  helper、`[update]` typed schema、默认模板与假文档。全仓调用图中
+  `spawn_startup_version_check` 只有定义，没有 spawn、join、toast 或 renderer 消费者，因此
+  删除没有运行时行为损失；旧 `[update]` 表不再作为受支持配置。Doctor 的显式 release
+  诊断、`crates/release`、平台 TLS builder、MCP/OAuth/Fleet alerts 与 skills installer 均有
+  独立生产调用方并保持不变，本切片没有把 updater 名称相似性误判为可整 crate 删除。
 - M4-C 已删除未注册、零执行调用方的旧 TUI `RequestUserInputTool`/parser 和永远为 `None`
   的 prompt shadow。保留的 UserInput modal 直接使用 canonical protocol 类型，并继续通过
   `AgentRuntime` interaction 与 `RunStore` 提交或取消，不再经过第二套 TUI ToolSpec。

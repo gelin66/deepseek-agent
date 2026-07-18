@@ -449,6 +449,12 @@ M4-C foreground 切换后还已物理删除：
   bundled-name helper 同步删除。Setup `--force`、SQLite RunStore/`agent_run_snapshots`、crash
   replay、进程内 busy-message queue、Fleet ledger/checkpoint 和 constitution checkpoint 均不经
   该路径。
+- TUI startup version checker 及 `[update]` schema。`spawn_startup_version_check` 在全仓只有
+  定义，既没有启动调用，也没有 task join、toast 或 renderer 消费者；其余 release JSON、
+  asset completeness 和自制 semver helper 只由这条死链及自身测试引用。删除因此没有运行时
+  行为损失，旧 `[update]` 表不再由 typed config 消费。Doctor 仍显式执行 release 诊断；
+  `crates/release` 的平台 HTTP/TLS builder 继续服务 MCP/OAuth/Fleet alerts、配置网络调用与
+  skills installer，均未随幽灵启动检查删除。
 - pre-session Launch menu 的 `LaunchState`、action/handler、renderer/hitbox、`launch_screen`
   设置和专属本地化。生产启动曾构造该状态并同步执行 `git rev-parse`，随后在第一帧前无条件
   将其隐藏；没有 launch action 进入事件循环、Run command、Lane 或 Fleet。删除因此只移除
