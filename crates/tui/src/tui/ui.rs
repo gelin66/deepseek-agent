@@ -2000,14 +2000,7 @@ fn render(f: &mut Frame, app: &mut App) {
             budget,
         );
         let visual_rows = if input_text.is_empty() {
-            let hint: Option<std::borrow::Cow<'_, str>> = if let Some(ref suggestion) =
-                app.prompt_suggestion
-                && !app.is_history_search_active()
-            {
-                Some(std::borrow::Cow::Borrowed(suggestion.as_str()))
-            } else {
-                Some(crate::tui::widgets::composer_empty_hint_text(app))
-            };
+            let hint = Some(crate::tui::widgets::composer_empty_hint_text(app));
             crate::tui::widgets::empty_composer_visual_rows(hint.as_deref(), content_width, budget)
         } else {
             // Count wrapped lines (approximation matching the render path).

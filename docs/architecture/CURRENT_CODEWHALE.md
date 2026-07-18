@@ -74,6 +74,9 @@ WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 旧 `FilePickerView` 和 `file_picker_relevance` 只有自测与一个无人调用的 opener；modal、
 事件和失效的 `Ctrl+P` 帮助项已删除。生产 `@mention` 菜单、`file_frecency`、
 `Workspace::completions` 与模糊路径解析继续保留。
+旧 `prompt_suggestion` 模块没有生产调用者，却直接请求任意 `/chat/completions` 并绕过
+`AgentRuntime`、`RunStore` 与统一 accounting；该潜在第二模型请求路径、永不写入的 ghost
+text 状态和配置已删除，composer 继续显示确定性的中文空输入提示。
 
 ## 2. 已统一的生产链
 

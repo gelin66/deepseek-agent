@@ -640,6 +640,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除无人调用的旧 `FilePickerView`/`file_picker_relevance`、专属事件、消息与
   `Ctrl+P` 帮助项；真实 `@mention`、frecency、工作区补全和模糊路径解析继续保留并单独
   验证，避免把同名遗留 modal 与生产附件能力混淆。
+- M4-C 已删除无生产调用者、却能绕过 canonical Runtime/Store/accounting 直连任意
+  `/chat/completions` 的旧 prompt suggestion 模块，以及永不写入的 ghost-text 状态和配置；
+  composer 保留确定性的中文空输入提示，不保留潜在第二模型请求路径。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

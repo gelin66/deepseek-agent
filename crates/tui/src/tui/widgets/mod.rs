@@ -1343,20 +1343,8 @@ impl Renderable for ComposerWidget<'_> {
 
         let mut input_lines = Vec::new();
         if input_text.is_empty() {
-            let (placeholder, style): (Cow<'_, str>, Style) = if let Some(ref suggestion) =
-                self.app.prompt_suggestion
-                && !self.app.is_history_search_active()
-            {
-                (
-                    Cow::Borrowed(suggestion.as_str()),
-                    Style::default().fg(palette::TEXT_HINT),
-                )
-            } else {
-                (
-                    composer_empty_hint_text(self.app),
-                    Style::default().fg(palette::TEXT_MUTED).italic(),
-                )
-            };
+            let placeholder = composer_empty_hint_text(self.app);
+            let style = Style::default().fg(palette::TEXT_MUTED).italic();
             input_lines.push(Line::from(vec![
                 Span::raw(content_geometry.prompt_padding()),
                 Span::styled(placeholder, style),
@@ -1401,14 +1389,7 @@ impl Renderable for ComposerWidget<'_> {
         // layout_input. For empty input, keep the first row reserved for the
         // real terminal cursor so IME preedit text has a clean surface.
         let visual_rows = if input_text.is_empty() {
-            let hint: Option<Cow<'_, str>> = if let Some(ref suggestion) =
-                self.app.prompt_suggestion
-                && !self.app.is_history_search_active()
-            {
-                Some(Cow::Borrowed(suggestion.as_str()))
-            } else {
-                Some(composer_empty_hint_text(self.app))
-            };
+            let hint = Some(composer_empty_hint_text(self.app));
             empty_composer_visual_rows(hint.as_deref(), input_content_width, input_rows_budget)
         } else {
             input_lines.len()
@@ -1725,14 +1706,7 @@ impl Renderable for ComposerWidget<'_> {
             input_rows_budget,
         );
         let visual_rows = if input_text.is_empty() {
-            let hint: Option<Cow<'_, str>> = if let Some(ref suggestion) =
-                self.app.prompt_suggestion
-                && !self.app.is_history_search_active()
-            {
-                Some(Cow::Borrowed(suggestion.as_str()))
-            } else {
-                Some(composer_empty_hint_text(self.app))
-            };
+            let hint = Some(composer_empty_hint_text(self.app));
             empty_composer_visual_rows(hint.as_deref(), input_content_width, input_rows_budget)
         } else {
             visible_lines.len()
@@ -5888,90 +5862,6 @@ diff --git a/src/b.rs b/src/b.rs\n\
         assert!(
             narrow_total_lines > wide_total_lines,
             "narrow render should produce more wrapped lines (got {narrow_total_lines}, wide={wide_total_lines})"
-        );
-    }
-
-    // ── Ghost-text prompt suggestion rendering ────────────────────────
-
-    #[test]
-    fn ghost_text_renders_when_suggestion_set_and_input_empty() {
-        let mut app = create_test_app();
-        app.prompt_suggestion = Some("What about error handling?".to_string());
-        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
-        let mention_menu_entries = Vec::<String>::new();
-        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 5,
-        };
-        let mut buf = Buffer::empty(area);
-        widget.render(area, &mut buf);
-
-        let rendered: String = buf
-            .content
-            .iter()
-            .map(|c| c.symbol())
-            .collect::<Vec<_>>()
-            .join("");
-        assert!(
-            rendered.contains("What about error handling?"),
-            "ghost text should render the suggestion. Got: {rendered}"
-        );
-    }
-
-    #[test]
-    fn ghost_text_hidden_when_input_not_empty() {
-        let mut app = create_test_app();
-        app.prompt_suggestion = Some("A suggestion".to_string());
-        app.input = "hello".to_string();
-        app.cursor_position = 5;
-        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
-        let mention_menu_entries = Vec::<String>::new();
-        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 5,
-        };
-        let mut buf = Buffer::empty(area);
-        widget.render(area, &mut buf);
-
-        let has_suggestion = buf
-            .content
-            .iter()
-            .any(|c| c.symbol().contains("A suggestion"));
-        assert!(
-            !has_suggestion,
-            "suggestion should not render when input is non-empty"
-        );
-    }
-
-    #[test]
-    fn ghost_text_hidden_when_no_suggestion() {
-        let mut app = create_test_app();
-        app.prompt_suggestion = None;
-        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
-        let mention_menu_entries = Vec::<String>::new();
-        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 5,
-        };
-        let mut buf = Buffer::empty(area);
-        widget.render(area, &mut buf);
-
-        // When no suggestion and input is empty, placeholder text should appear
-        // instead. The exact placeholder text is locale-dependent, so we check
-        // that the suggestion text is NOT present.
-        let has_placeholder_like_text = buf.content.iter().any(|c| !c.symbol().trim().is_empty());
-        assert!(
-            has_placeholder_like_text,
-            "some non-empty text should render as placeholder"
         );
     }
 

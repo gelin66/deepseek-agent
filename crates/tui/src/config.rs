@@ -1784,9 +1784,6 @@ pub struct Config {
     /// a missing optional file doesn't fail the launch.
     pub instructions: Option<Vec<String>>,
     pub allow_shell: Option<bool>,
-    /// Opt-in ghost-text follow-up prompt suggestion after each completed turn.
-    /// Default: false — the user must explicitly set this to true to enable.
-    pub prompt_suggestion: Option<bool>,
     #[serde(alias = "approvalPolicy")]
     pub approval_policy: Option<String>,
     #[serde(alias = "sandboxMode")]
@@ -3778,11 +3775,6 @@ impl Config {
         self.allow_shell.unwrap_or(true)
     }
 
-    /// Whether ghost-text prompt suggestion is enabled (opt-in, default off).
-    pub fn prompt_suggestion_enabled(&self) -> bool {
-        self.prompt_suggestion.unwrap_or(false)
-    }
-
     /// Return the maximum number of concurrent sub-agents.
     /// Checks `[subagents] max_concurrent` first, then top-level `max_subagents`,
     /// then falls back to `DEFAULT_MAX_SUBAGENTS`.
@@ -5686,7 +5678,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         // main.rs and cannot set instruction paths.
         instructions: override_cfg.instructions.or(base.instructions),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
-        prompt_suggestion: override_cfg.prompt_suggestion.or(base.prompt_suggestion),
         yolo: override_cfg.yolo.or(base.yolo),
         verbosity: override_cfg.verbosity.or(base.verbosity),
         approval_policy: override_cfg.approval_policy.or(base.approval_policy),

@@ -190,28 +190,6 @@ fn interactive_allow_shell_defaults_to_true_but_honors_explicit_opt_out() {
 }
 
 #[test]
-fn prompt_suggestion_defaults_to_false() {
-    let config = Config::default();
-    assert_eq!(
-        config.prompt_suggestion, None,
-        "default Config must not opt in"
-    );
-    assert!(
-        !config.prompt_suggestion_enabled(),
-        "prompt_suggestion must be opt-in (default off)"
-    );
-}
-
-#[test]
-fn prompt_suggestion_enabled_when_set_true() {
-    let config = Config {
-        prompt_suggestion: Some(true),
-        ..Default::default()
-    };
-    assert!(config.prompt_suggestion_enabled());
-}
-
-#[test]
 fn auto_review_config_builds_runtime_policy() -> Result<()> {
     let config: Config = toml::from_str(
         r#"

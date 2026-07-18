@@ -43,7 +43,6 @@ pub mod pager;
 pub mod paste;
 pub mod paste_burst;
 pub mod phase_strip;
-pub mod prompt_suggestion;
 pub mod run_client;
 pub mod run_presenter;
 pub mod run_projection;

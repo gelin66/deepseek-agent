@@ -1495,13 +1495,6 @@ pub struct App {
     /// Timestamp of the most recent Enter while the engine was busy.
     /// Used by `enter_with_double_tap()` to detect a double-tap within 500 ms.
     pub last_enter_instant: Option<Instant>,
-    /// Ghost-text follow-up suggestion shown in the composer when empty.
-    /// Generated asynchronously after each completed turn; cleared on new input.
-    pub prompt_suggestion: Option<String>,
-    /// Monotonic turn counter for stale-suggestion protection. Incremented on
-    /// each TurnStarted; background suggestion tasks capture the token and
-    /// discard their result if the token no longer matches.
-    pub prompt_suggestion_gen: std::sync::atomic::AtomicU64,
     /// Degraded connectivity mode; new user inputs are queued for later retry.
     pub offline_mode: bool,
     /// Whether an `EngineEvent::Error` has already been posted for the
@@ -1893,8 +1886,6 @@ pub struct App {
             )>,
         >,
     >,
-    /// Shared cell for async prompt suggestion delivery from background task.
-    pub prompt_suggestion_cell: std::sync::Arc<std::sync::Mutex<Option<(u64, String)>>>,
     /// Tracks whether the initial balance fetch has been attempted for this session.
     pub balance_initiated: bool,
     /// Timestamp of the last balance fetch, used to debounce rapid requests.
@@ -2488,8 +2479,6 @@ impl App {
             next_history_revision: 1,
             is_loading: false,
             last_enter_instant: None,
-            prompt_suggestion: None,
-            prompt_suggestion_gen: std::sync::atomic::AtomicU64::new(0),
             offline_mode: false,
             turn_error_posted: false,
             // Surface parse warnings so the user knows their config file is
@@ -2647,7 +2636,6 @@ impl App {
             cumulative_turn_duration: std::time::Duration::ZERO,
             balance_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             fleet_draft_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            prompt_suggestion_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
             balance_initiated: false,
             last_balance_fetch: None,
             runtime_turn_id: None,
