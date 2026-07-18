@@ -96,8 +96,14 @@ budget pressure、格式化和估算 token throughput 只由自身测试调用�
 真实消费的 token/cache/reasoning/cost 状态不变。
 旧 TUI `ContextBudget` 也只有自身测试和一个零调用的 `route_context_budget` wrapper，文件
 注释明确其 engine/TUI consumers 从未接线。该 505 行 foundation 与 wrapper 已删除；仍有
-真实调用方的 route context window/output limit、canonical `crates/context` projection/
-compaction 和 Runtime/RunStore 的预算、恢复及 accounting 语义不变。
+真实调用方的 route context window、canonical DeepSeek output limit、`crates/context`
+projection/compaction 和 Runtime/RunStore 的预算、恢复及 accounting 语义不变。
+`route_runtime` 现只保留生产 `resolve_route_candidate` 与 context override：交互 TUI 用它
+建立 active route limits，Fleet 用它生成 `FleetResolvedRoute` receipt。没有生产调用方的
+`ResolvedRuntimeRoute` 配置快照包装、`resolve_runtime_route`、私有 base-URL 猜测器及其
+五个自测已删除；全仓零调用的 `route_output_limit_tokens` wrapper 同步删除。
+`known_route_limits`、`route_context_window_tokens`、pricing/provider-lake 和 Provider/M7
+范围未改变。
 旧 `workspace_context` 的 refresh/collect 链没有生产 caller，App 的 cache/cell/timestamp
 始终保持空值；footer 与 empty-state 却把这个空值解释为非 Git 仓库。该模块及三个 ghost
 字段已删除，`StatusItem::GitBranch` 断代替换为只读取真实 `App.workspace` 的

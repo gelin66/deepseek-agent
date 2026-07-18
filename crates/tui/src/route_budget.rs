@@ -26,15 +26,6 @@ pub(crate) fn route_context_window_tokens(
         .unwrap_or_else(|| provider_capability(provider, model).context_window)
 }
 
-/// Provider/offering output cap, when the resolved route reports one.
-#[must_use]
-pub(crate) fn route_output_limit_tokens(route_limits: Option<RouteLimits>) -> Option<u32> {
-    route_limits
-        .and_then(|limits| limits.output_tokens)
-        .and_then(|tokens| u32::try_from(tokens).ok())
-        .filter(|tokens| *tokens > 0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

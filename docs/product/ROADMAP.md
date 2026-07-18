@@ -820,9 +820,15 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   一个未接线的第二遥测模型冒充预算或性能能力。
 - M4-C 已删除同样整模块以 `#[allow(dead_code)]` 隐藏、说明中明确“等待以后接线”的 TUI
   `ContextBudget` foundation，以及唯一引用它但自身零调用的 `route_context_budget`。
-  `route_context_window_tokens`、route output limit、canonical `crates/context` projection/
+  `route_context_window_tokens`、canonical DeepSeek output limit、`crates/context` projection/
   compaction 和 Runtime/RunStore 预算恢复语义均保留；M5 不通过复活未接线的 TUI 预算模型
   建设第二套 ContextBroker。
+- M4-C 已删除 `route_runtime` 中没有生产调用方的 `ResolvedRuntimeRoute ->
+  resolve_runtime_route -> prepared_route_config` 配置快照包装链、其私有 base-URL 猜测器和
+  五个只验证该死链的自测；同时删除全仓零调用的 `route_output_limit_tokens` wrapper。
+  `resolve_route_candidate` 仍由交互 TUI 与 Fleet route receipt 直接消费，Codex route
+  metadata、`known_route_limits`、`route_context_window_tokens`、pricing/provider-lake 与
+  所有 Provider 配置保持原生产 owner；通用 Provider 最终清理仍属于 M7。
 - M4-C 已删除从未被生产事件循环刷新、运行期永远为 `None` 的 TUI workspace/git cache、
   后台 cell、TTL 和整套 `workspace_context` 模块。旧 footer/empty-state 因此会把真实 Git
   仓库谎报为 `(no git)`/“无 git”；现在 `StatusItem::GitBranch` 断代改为只接受
