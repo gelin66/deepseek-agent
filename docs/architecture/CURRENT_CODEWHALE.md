@@ -453,6 +453,12 @@ M4-C foreground 切换后还已物理删除：
   footer 对 `humanize_duration` 的调用，该 helper 和边界测试现由 footer 直接拥有。MCP
   `notifications/initialized`/`notifications/progress`、Fleet alerts/webhooks、canonical
   active/run status 和 panic hook 均为独立生产路径，未被删除。
+- 系统剪贴板 read/image 与伪 composer attachment 状态。生产只有 Pager copy 经
+  `ClipboardHandler::write_text` 写系统剪贴板；图片读取/PNG 落盘、App attachment
+  插入/选择/移除、手写 `[Attached ...]` parser 和对应 UI/文档均没有生产入口，删除为零
+  生产行为损失。arboard 现关闭默认 image feature，TUI direct `image` dependency 已删除；
+  terminal `Event::Paste`/onboarding/paste burst、文本 writer、普通 `@mention`、canonical
+  `read_file` OCR 和现役 composer 文本编辑均保持原 owner。
 - `key_shortcuts` 中零调用的 copy/paste/control-like/Ctrl-H predicates；保留首启输入所需
   的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
 - 零生产消费者的通用 `[vision_model]`/`image_analyze` 配置与 feature；正式模型面仍只有

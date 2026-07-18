@@ -1379,30 +1379,17 @@ impl Drop for TerminalCleanupGuard {
 ///   end-of-turn.
 fn build_pending_input_preview(app: &App) -> PendingInputPreview {
     let mut preview = PendingInputPreview::new();
-    let selected_attachment = app.selected_composer_attachment_index();
-    let mut attachment_index = 0usize;
     preview.context_items = crate::tui::file_mention::pending_context_previews(
         &app.input,
         &app.workspace,
         std::env::current_dir().ok(),
     )
     .into_iter()
-    .map(|item| {
-        let selected = if item.removable {
-            let selected = selected_attachment == Some(attachment_index);
-            attachment_index += 1;
-            selected
-        } else {
-            false
-        };
-        ContextPreviewItem {
-            kind: item.kind,
-            label: item.label,
-            detail: item.detail,
-            included: item.included,
-            removable: item.removable,
-            selected,
-        }
+    .map(|item| ContextPreviewItem {
+        kind: item.kind,
+        label: item.label,
+        detail: item.detail,
+        included: item.included,
     })
     .collect();
     preview.pending_steers = app

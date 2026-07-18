@@ -823,6 +823,13 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `[notifications]`、`tui.notification_condition` 和 Windows Audio/Debug/UI features 同步
   删除。MCP JSON-RPC notifications、Fleet alerts/webhooks、canonical Run 状态及 panic hook
   是不同 owner，均保持不变。
+- M4-C 已删除系统剪贴板读取/图片落盘和伪 composer attachment 岛。生产只调用
+  `ClipboardHandler::write_text`；`read`、image PNG、`PastedImage`/`ClipboardContent`、
+  App paste/attachment/selection 方法和手写 `[Attached ...]` parser 只在死方法、自测与伪
+  renderer 状态内闭环，因此没有生产行为损失。arboard 继续以纯文本写入模式服务 Pager
+  copy，OSC52/wl-copy/pbcopy/PowerShell fallback 保留；terminal `Event::Paste`、onboarding、
+  paste burst、普通 `@mention` 和 `read_file` OCR 仍是原生产 owner。不存在的 `/attach` 与
+  Ctrl-V 图片能力声明已删除，TUI direct `image` dependency 也随唯一消费者移除。
 - M4-C 已把审批事件收缩为真实的 `interaction_id + decision`，继续经 canonical
   `resolve_interaction`/`cancel` 写入并重放 RunStore。删除从未有 Runtime 消费者的 TUI
   approval cache/grouping key、永远未设置的 timeout/tick 链，以及虚假的“批准并保存询问

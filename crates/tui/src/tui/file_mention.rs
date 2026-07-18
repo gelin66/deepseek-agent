@@ -10,7 +10,7 @@
 //! 2. **Expansion before send** — when the user hits Enter on a message that
 //!    contains `@<path>` references, `user_request_with_file_mentions`
 //!    appends a "Local context from @mentions" block with the file contents
-//!    (or directory listings, or media-attachment hints) so the model can see
+//!    (or directory listings and media-path hints) so the model can see
 //!    what the user pointed at. Capped per-message and per-file.
 //!
 //! The module is deliberately self-contained: nothing inside reaches into UI
@@ -51,13 +51,12 @@ pub struct FileMentionPreview {
     pub label: String,
     pub detail: Option<String>,
     pub included: bool,
-    pub removable: bool,
 }
 
 /// Durable, compact metadata for a user-visible context reference.
 ///
-/// The transcript keeps the user's compact text (`@path` or `[Attached ...]`)
-/// readable. This record preserves the exact target and inclusion state for
+/// The transcript keeps the user's compact `@path` text readable. This record
+/// preserves the exact target and inclusion state for
 /// file-relevance and session metadata without leaking raw metadata into the
 /// visible history cell.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,14 +83,12 @@ pub enum ContextReferenceKind {
     Missing,
     Unsupported,
     MediaMention,
-    MediaAttachment,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextReferenceSource {
     AtMention,
-    Attachment,
 }
 
 // ---------------------------------------------------------------------------
@@ -493,7 +490,6 @@ pub fn pending_context_previews(
             label: reference.label,
             detail: reference.detail,
             included: reference.included,
-            removable: reference.source == ContextReferenceSource::Attachment,
         })
         .collect()
 }
@@ -530,29 +526,6 @@ pub fn context_references_from_input(
             continue;
         }
         references.push(reference);
-    }
-
-    for reference in extract_media_attachment_references(input) {
-        let context_reference = ContextReference {
-            kind: ContextReferenceKind::MediaAttachment,
-            source: ContextReferenceSource::Attachment,
-            badge: reference.kind,
-            label: reference.path.clone(),
-            target: reference.path,
-            included: true,
-            expanded: false,
-            detail: Some("attached media".to_string()),
-        };
-        if !seen.insert(format!(
-            "{:?}:{:?}:{}:{}",
-            context_reference.source,
-            context_reference.kind,
-            context_reference.target,
-            context_reference.label
-        )) {
-            continue;
-        }
-        references.push(context_reference);
     }
 
     references
@@ -609,7 +582,7 @@ fn context_reference_for_mention(
             target: display_path.to_string(),
             included: false,
             expanded: false,
-            detail: Some("use /attach for media bytes".to_string()),
+            detail: Some("path hint only; not included inline".to_string()),
         };
     }
 
@@ -631,51 +604,6 @@ fn context_reference_for_mention(
         expanded: true,
         detail: detail.or_else(|| Some(display_path.to_string())),
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MediaAttachmentReference {
-    pub kind: String,
-    pub path: String,
-    pub start_byte: usize,
-    pub end_byte: usize,
-}
-
-pub fn media_attachment_references(input: &str) -> Vec<MediaAttachmentReference> {
-    let mut out = Vec::new();
-    let mut offset = 0usize;
-    for line in input.split_inclusive('\n') {
-        let start_byte = offset;
-        let end_byte = offset + line.len();
-        offset = end_byte;
-        let trimmed = line.trim();
-        let Some(body) = trimmed
-            .strip_prefix("[Attached ")
-            .and_then(|value| value.strip_suffix(']'))
-        else {
-            continue;
-        };
-        let Some((kind, rest)) = body.split_once(": ") else {
-            continue;
-        };
-        let path = rest
-            .rsplit_once(" at ")
-            .map_or(rest, |(_, path)| path)
-            .trim();
-        if !path.is_empty() {
-            out.push(MediaAttachmentReference {
-                kind: kind.trim().to_string(),
-                path: path.to_string(),
-                start_byte,
-                end_byte,
-            });
-        }
-    }
-    out
-}
-
-fn extract_media_attachment_references(input: &str) -> Vec<MediaAttachmentReference> {
-    media_attachment_references(input)
 }
 
 fn local_context_from_file_mentions(
@@ -825,7 +753,7 @@ fn render_file_mention_context(raw: &str, path: &Path, display_path: &str) -> St
     }
     if is_media_path(path) {
         return format!(
-            "<media-file mention=\"@{raw}\" path=\"{display_path}\">\nUse /attach {raw} when the intent is to attach this image or video to the next message.\n</media-file>"
+            "<media-file mention=\"@{raw}\" path=\"{display_path}\">\nThis path is a hint only; no inline media payload is attached.\n</media-file>"
         );
     }
 
@@ -1072,42 +1000,24 @@ mod tests {
     }
 
     #[test]
-    fn pending_context_preview_distinguishes_attach_media_from_at_media() {
+    fn pending_context_preview_keeps_media_mentions_as_path_hints() {
         let tmp = TempDir::new().expect("tempdir");
         std::fs::write(tmp.path().join("photo.png"), b"png").expect("write");
-        let attached = tmp.path().join("photo.png").display().to_string();
-        let input = format!("inspect @photo.png\n[Attached image: {attached}]");
+        let input = "inspect @photo.png";
 
-        let previews = pending_context_previews(&input, tmp.path(), Some(tmp.path().to_path_buf()));
+        let previews = pending_context_previews(input, tmp.path(), Some(tmp.path().to_path_buf()));
 
-        assert!(
-            previews
-                .iter()
-                .any(|item| item.kind == "media" && !item.included),
-            "at-mention media should be hint-only: {previews:?}"
-        );
-        assert!(
-            previews
-                .iter()
-                .any(|item| item.kind == "image" && item.included),
-            "/attach media should be included: {previews:?}"
-        );
-    }
-
-    #[test]
-    fn media_attachment_references_include_removable_line_ranges() {
-        let input = "before\n[Attached image: 8x4 PNG at /tmp/pasted.png]\nafter";
-
-        let references = media_attachment_references(input);
-
-        assert_eq!(references.len(), 1);
-        let reference = &references[0];
-        assert_eq!(reference.kind, "image");
-        assert_eq!(reference.path, "/tmp/pasted.png");
+        assert_eq!(previews.len(), 1);
+        assert_eq!(previews[0].kind, "media");
+        assert!(!previews[0].included);
         assert_eq!(
-            &input[reference.start_byte..reference.end_byte],
-            "[Attached image: 8x4 PNG at /tmp/pasted.png]\n"
+            previews[0].detail.as_deref(),
+            Some("path hint only; not included inline")
         );
+        let request =
+            user_request_with_file_mentions(input, tmp.path(), Some(tmp.path().to_path_buf()));
+        assert!(request.contains("no inline media payload is attached"));
+        assert!(!request.contains("/attach"));
     }
 
     #[test]

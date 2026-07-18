@@ -24,7 +24,7 @@ use crate::settings::Settings;
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
 use crate::tui::child_agents::ChildAgents;
-use crate::tui::clipboard::{ClipboardContent, ClipboardHandler};
+use crate::tui::clipboard::ClipboardHandler;
 use crate::tui::history::{HistoryCell, TranscriptRenderOptions};
 use crate::tui::paste_burst::{FlushResult, PasteBurst};
 use crate::tui::scrolling::{MouseScrollState, TranscriptScroll};
@@ -1150,7 +1150,6 @@ pub struct ComposerState {
     pub history_index: Option<usize>,
     pub(crate) history_navigation_draft: Option<InputHistoryDraft>,
     pub composer_history_search: Option<ComposerHistorySearch>,
-    pub selected_attachment_index: Option<usize>,
     pub slash_menu_selected: usize,
     pub slash_menu_hidden: bool,
     pub mention_menu_selected: usize,
@@ -1191,7 +1190,6 @@ impl Default for ComposerState {
             history_index: None,
             history_navigation_draft: None,
             composer_history_search: None,
-            selected_attachment_index: None,
             slash_menu_selected: 0,
             slash_menu_hidden: false,
             mention_menu_selected: 0,
@@ -2306,7 +2304,6 @@ impl App {
                 history_index: None,
                 history_navigation_draft: None,
                 composer_history_search: None,
-                selected_attachment_index: None,
                 slash_menu_selected: 0,
                 slash_menu_hidden: false,
                 mention_menu_selected: 0,
@@ -3715,7 +3712,6 @@ impl App {
         }
         self.auto_expand_oversized_paste();
         self.delete_selection();
-        self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert_str(byte_index, text);
@@ -3741,123 +3737,6 @@ impl App {
         // an @paste-...md mention before dispatch, so no path silently
         // truncates user input.
         // self.consolidate_large_input_if_oversized(); // deferred to submit time
-    }
-
-    pub fn insert_media_attachment(&mut self, kind: &str, path: &Path, description: Option<&str>) {
-        let reference = media_attachment_reference(kind, path, description);
-        let cursor = self.cursor_position.min(char_count(&self.input));
-        let byte_index = byte_index_at_char(&self.input, cursor);
-        let needs_prefix_newline = self.input[..byte_index]
-            .chars()
-            .last()
-            .is_some_and(|ch| !ch.is_whitespace());
-        let needs_suffix_newline = self.input[byte_index..]
-            .chars()
-            .next()
-            .is_some_and(|ch| !ch.is_whitespace());
-
-        let mut inserted = String::new();
-        if needs_prefix_newline {
-            inserted.push('\n');
-        }
-        inserted.push_str(&reference);
-        if needs_suffix_newline || self.input[byte_index..].is_empty() {
-            inserted.push('\n');
-        }
-        self.insert_str(&inserted);
-        self.paste_burst.clear_after_explicit_paste();
-    }
-
-    pub fn composer_attachment_count(&self) -> usize {
-        crate::tui::file_mention::media_attachment_references(&self.input).len()
-    }
-
-    pub fn selected_composer_attachment_index(&self) -> Option<usize> {
-        let count = self.composer_attachment_count();
-        self.selected_attachment_index
-            .filter(|index| *index < count)
-    }
-
-    pub fn select_previous_composer_attachment(&mut self) -> bool {
-        let count = self.composer_attachment_count();
-        if count == 0 {
-            self.selected_attachment_index = None;
-            return false;
-        }
-
-        let next = self
-            .selected_composer_attachment_index()
-            .map_or(count.saturating_sub(1), |index| index.saturating_sub(1));
-        self.selected_attachment_index = Some(next);
-        self.cursor_position = 0;
-        self.status_message = Some("Attachment selected - Backspace/Delete removes it".to_string());
-        self.needs_redraw = true;
-        true
-    }
-
-    pub fn select_next_composer_attachment(&mut self) -> bool {
-        let count = self.composer_attachment_count();
-        let Some(index) = self.selected_composer_attachment_index() else {
-            return false;
-        };
-        if index + 1 < count {
-            self.selected_attachment_index = Some(index + 1);
-            self.status_message =
-                Some("Attachment selected - Backspace/Delete removes it".to_string());
-        } else {
-            self.selected_attachment_index = None;
-            self.status_message = Some("Composer focused".to_string());
-        }
-        self.needs_redraw = true;
-        true
-    }
-
-    pub fn clear_composer_attachment_selection(&mut self) -> bool {
-        if self.selected_attachment_index.take().is_some() {
-            self.status_message = Some("Composer focused".to_string());
-            self.needs_redraw = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn remove_selected_composer_attachment(&mut self) -> bool {
-        let references = crate::tui::file_mention::media_attachment_references(&self.input);
-        let Some(index) = self
-            .selected_composer_attachment_index()
-            .filter(|index| *index < references.len())
-        else {
-            self.selected_attachment_index = None;
-            return false;
-        };
-        let reference = references[index].clone();
-        let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
-        let new_cursor_byte = if cursor_byte <= reference.start_byte {
-            cursor_byte
-        } else if cursor_byte >= reference.end_byte {
-            cursor_byte.saturating_sub(reference.end_byte - reference.start_byte)
-        } else {
-            reference.start_byte
-        };
-
-        self.input
-            .replace_range(reference.start_byte..reference.end_byte, "");
-        self.cursor_position = self.input[..new_cursor_byte.min(self.input.len())]
-            .chars()
-            .count();
-        let remaining = self.composer_attachment_count();
-        self.selected_attachment_index = if remaining == 0 {
-            None
-        } else {
-            Some(index.min(remaining.saturating_sub(1)))
-        };
-        self.slash_menu_hidden = false;
-        self.mention_menu_hidden = false;
-        self.mention_menu_selected = 0;
-        self.status_message = Some(format!("Removed attachment: {}", reference.path));
-        self.needs_redraw = true;
-        true
     }
 
     pub fn flush_paste_burst_if_due(&mut self, now: Instant) -> bool {
@@ -3922,32 +3801,6 @@ impl App {
         }
     }
 
-    /// Paste from clipboard into input
-    pub fn paste_from_clipboard(&mut self) {
-        if let Some(content) = self.clipboard.read(self.workspace.as_path()) {
-            self.apply_clipboard_content(content);
-        }
-    }
-
-    pub fn apply_clipboard_content(&mut self, content: ClipboardContent) {
-        match content {
-            ClipboardContent::Text(text) => {
-                self.insert_paste_text(&text);
-            }
-            ClipboardContent::Image(pasted) => {
-                let description = format!("{} ({})", pasted.short_label(), pasted.size_label());
-                self.insert_media_attachment("image", &pasted.path, Some(&description));
-                self.status_message = Some(format!("Attached image: {description}"));
-            }
-        }
-    }
-
-    pub fn paste_api_key_from_clipboard(&mut self) {
-        if let Some(ClipboardContent::Text(text)) = self.clipboard.read(self.workspace.as_path()) {
-            self.insert_api_key_str(&text);
-        }
-    }
-
     pub fn scroll_up(&mut self, amount: usize) {
         let delta = i32::try_from(amount).unwrap_or(i32::MAX);
         self.viewport.pending_scroll_delta =
@@ -3976,7 +3829,6 @@ impl App {
         self.clear_input_history_navigation();
         self.auto_expand_oversized_paste();
         self.delete_selection();
-        self.selected_attachment_index = None;
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert(byte_index, c);
@@ -4003,7 +3855,6 @@ impl App {
         if self.delete_selection() {
             return;
         }
-        self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
         }
@@ -4024,7 +3875,6 @@ impl App {
         if self.delete_selection() {
             return;
         }
-        self.selected_attachment_index = None;
         if self.input.is_empty() {
             return;
         }
@@ -4045,7 +3895,6 @@ impl App {
         if self.delete_selection() {
             return;
         }
-        self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
         }
@@ -4089,7 +3938,6 @@ impl App {
         if self.delete_selection() {
             return;
         }
-        self.selected_attachment_index = None;
         if self.cursor_position == 0 {
             return;
         }
@@ -4117,7 +3965,6 @@ impl App {
         if self.delete_selection() {
             return;
         }
-        self.selected_attachment_index = None;
         let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
         if cursor_byte >= self.input.len() {
             return;
@@ -4580,7 +4427,6 @@ impl App {
         self.pending_paste_reference = None;
         self.oversized_paste_full_text = None;
         self.selection_anchor = None;
-        self.selected_attachment_index = None;
         self.slash_menu_selected = 0;
         self.slash_menu_hidden = false;
         self.paste_burst.clear_after_explicit_paste();
@@ -4849,7 +4695,6 @@ impl App {
         self.cursor_position = char_count(&self.input);
         self.history_index = None;
         self.history_navigation_draft = None;
-        self.selected_attachment_index = None;
         self.needs_redraw = true;
         true
     }
@@ -4868,7 +4713,6 @@ impl App {
         self.cursor_position = char_count(&self.input);
         self.history_index = None;
         self.history_navigation_draft = None;
-        self.selected_attachment_index = None;
         self.slash_menu_selected = 0;
         self.slash_menu_hidden = false;
         self.needs_redraw = true;
@@ -5017,7 +4861,6 @@ impl App {
         };
         self.input = msg.display.clone();
         self.cursor_position = char_count(&self.input);
-        self.selected_attachment_index = None;
         self.queued_draft = Some(msg);
         self.needs_redraw = true;
         true
@@ -5155,7 +4998,6 @@ impl App {
         self.input = self.input_history[new_index].clone();
         self.cursor_position = char_count(&self.input);
         self.selection_anchor = None;
-        self.selected_attachment_index = None;
         self.slash_menu_hidden = false;
         self.paste_burst.clear_after_explicit_paste();
     }
@@ -5172,7 +5014,6 @@ impl App {
                     self.input = self.input_history[i + 1].clone();
                     self.cursor_position = char_count(&self.input);
                     self.selection_anchor = None;
-                    self.selected_attachment_index = None;
                     self.slash_menu_hidden = false;
                     self.paste_burst.clear_after_explicit_paste();
                 } else {
@@ -5181,7 +5022,6 @@ impl App {
                         self.input = draft.input;
                         self.cursor_position = draft.cursor.min(char_count(&self.input));
                         self.selection_anchor = None;
-                        self.selected_attachment_index = None;
                         self.slash_menu_hidden = false;
                         self.paste_burst.clear_after_explicit_paste();
                         self.needs_redraw = true;
@@ -5424,19 +5264,6 @@ impl App {
         self.provider_chain
             .as_ref()
             .is_some_and(ProviderChain::is_fallback_active)
-    }
-}
-
-pub fn media_attachment_reference(kind: &str, path: &Path, description: Option<&str>) -> String {
-    match description {
-        Some(description) if !description.trim().is_empty() => {
-            format!(
-                "[Attached {kind}: {} at {}]",
-                description.trim(),
-                path.display()
-            )
-        }
-        _ => format!("[Attached {kind}: {}]", path.display()),
     }
 }
 

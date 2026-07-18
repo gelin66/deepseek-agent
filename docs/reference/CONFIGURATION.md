@@ -1213,16 +1213,13 @@ provider = "searxng" # duckduckgo | bing | tavily | bocha | metaso | searxng | b
 # api_key = "YOUR_KEY" # required for tavily, bocha, baidu, volcengine, and sofya; optional for metaso; unused by searxng
 ```
 
-## Local Media Attachments
+## Local File Context
 
-Use `@path/to/file` in the composer to add local text file or directory context
-to the next message. Use `/attach <path>` for local image/video media paths, or
-`Ctrl+V` to attach an image from the clipboard. DeepSeek's public Chat
-Completions API currently accepts text message content, so media attachments are
-sent as explicit local path references instead of native image/video payloads.
-Attachment rows appear above the composer before submit; move to the start of
-the composer, press `↑` to select an attachment row, then press `Backspace` or
-`Delete` to remove it without editing the sample text by hand.
+Use `@path/to/file` in the composer to add local text-file or directory context
+to the next message. Media `@`-mentions remain path hints rather than inline
+Chat payloads. Supported local image formats can be inspected through
+`read_file` OCR; video and other media remain path hints only. Terminal paste
+continues through normal text paste events.
 
 ## Managed Configuration and Requirements
 

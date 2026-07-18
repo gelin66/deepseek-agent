@@ -2,7 +2,6 @@ use super::*;
 use crate::config::{ApiProvider, Config, ProviderConfig, ProvidersConfig};
 use crate::settings::Settings;
 use crate::test_support::{EnvVarGuard, lock_test_env};
-use crate::tui::clipboard::PastedImage;
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
 use crate::tui::scrolling::TranscriptLineMeta;
 
@@ -2651,97 +2650,6 @@ fn enter_with_paste_burst_detection_disabled_submits_normally() {
     let result = app.handle_composer_enter();
 
     assert_eq!(result.as_deref(), Some("ship it"));
-}
-
-#[test]
-fn clipboard_text_paste_matches_bracketed_paste_state() {
-    let text = "alpha\r\nbeta";
-    let mut bracketed = App::new(test_options(false), &Config::default());
-    let mut clipboard = App::new(test_options(false), &Config::default());
-
-    bracketed.insert_paste_text(text);
-    clipboard.apply_clipboard_content(ClipboardContent::Text(text.to_string()));
-
-    assert_eq!(clipboard.input, bracketed.input);
-    assert_eq!(clipboard.cursor_position, bracketed.cursor_position);
-    assert_eq!(clipboard.slash_menu_hidden, bracketed.slash_menu_hidden);
-    assert_eq!(clipboard.mention_menu_hidden, bracketed.mention_menu_hidden);
-}
-
-#[test]
-fn clipboard_image_paste_keeps_adjacent_text_and_concise_status() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "before after".to_string();
-    app.cursor_position = "before".chars().count();
-
-    app.apply_clipboard_content(ClipboardContent::Image(PastedImage {
-        path: PathBuf::from("/tmp/pasted.png"),
-        width: 8,
-        height: 4,
-        byte_len: 2048,
-    }));
-
-    assert!(
-        app.input
-            .contains("before\n[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]")
-    );
-    assert!(app.input.contains("] after"));
-    let status = app.status_message.as_deref().expect("status message");
-    assert_eq!(status, "Attached image: 8x4 PNG (2KB)");
-}
-
-#[test]
-fn pasted_text_and_image_placeholders_survive_history_and_queue_paths() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.insert_paste_text("line 1\r\nline 2");
-    app.insert_media_attachment("image", Path::new("/tmp/pasted.png"), Some("8x4 PNG (2KB)"));
-
-    let submitted = app.submit_input().expect("submitted input");
-    assert!(submitted.contains("line 1\nline 2"));
-    assert!(submitted.contains("[Attached image: 8x4 PNG (2KB) at /tmp/pasted.png]"));
-
-    app.history_up();
-    assert_eq!(app.input, submitted);
-    assert_eq!(app.composer_attachment_count(), 1);
-
-    app.clear_input();
-    app.queue_message(QueuedMessage::new(
-        submitted.clone(),
-        Some("Use this skill".to_string()),
-    ));
-    assert!(app.pop_last_queued_into_draft());
-    assert_eq!(app.input, submitted);
-    assert_eq!(app.composer_attachment_count(), 1);
-    assert_eq!(
-        app.queued_draft
-            .as_ref()
-            .and_then(|draft| draft.skill_instruction.as_deref()),
-        Some("Use this skill")
-    );
-
-    app.push_pending_steer(QueuedMessage::new(submitted.clone(), None));
-    let steers = app.drain_pending_steers();
-    assert_eq!(steers[0].display, submitted);
-}
-
-#[test]
-fn selected_attachment_row_removes_placeholder_without_manual_editing() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "before".to_string();
-    app.cursor_position = "before".chars().count();
-    app.insert_media_attachment("image", Path::new("/tmp/pasted.png"), Some("8x4 PNG"));
-    app.insert_str("after");
-
-    app.move_cursor_start();
-    assert!(app.select_previous_composer_attachment());
-    assert_eq!(app.selected_composer_attachment_index(), Some(0));
-    assert!(app.remove_selected_composer_attachment());
-
-    assert!(!app.input.contains("[Attached image:"));
-    assert!(app.input.contains("before"));
-    assert!(app.input.contains("after"));
-    assert_eq!(app.composer_attachment_count(), 0);
-    assert!(app.selected_composer_attachment_index().is_none());
 }
 
 #[test]
