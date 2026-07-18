@@ -746,20 +746,13 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
         lines.push(Line::from(""));
     }
 
-    let identity = crate::tui::workspace_context::identity_from_context(
-        &app.workspace,
-        app.workspace_context.as_deref(),
-    );
     let workspace = crate::utils::display_path(&app.workspace);
-    let branch = identity.branch.as_deref().map_or_else(
-        || tr(MessageId::EmptyStateNoGit),
-        |branch| Cow::Owned(branch.to_string()),
-    );
+    let workspace = format!("{}：{workspace}", tr(MessageId::FooterWorkspacePrefix));
     let context = if tier == ShellTier::Compact {
-        format!("codewhale · {branch}")
+        format!("codewhale · {workspace}")
     } else {
         format!(
-            "codewhale · {workspace} · {branch} · {} {}",
+            "codewhale · {workspace} · {} {}",
             tr(MessageId::EmptyStateMcpLabel),
             app.mcp_configured_count
         )
@@ -821,6 +814,25 @@ mod tests {
             workspace_session_count: 2,
             worktree_available: true,
             row_areas: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn empty_state_uses_workspace_without_fabricated_git_state() {
+        let mut app = test_app();
+        app.workspace = PathBuf::from("/tmp/真实项目");
+
+        for area in [Rect::new(0, 0, 40, 8), Rect::new(0, 0, 100, 20)] {
+            let text = empty_state_lines(&app, area)
+                .iter()
+                .flat_map(|line| line.spans.iter())
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+
+            assert!(text.contains("工作区"), "missing Chinese label: {text}");
+            assert!(text.contains("真实项目"), "missing workspace path: {text}");
+            assert!(!text.contains("无 git"), "{text}");
+            assert!(!text.to_ascii_lowercase().contains("branch"), "{text}");
         }
     }
 

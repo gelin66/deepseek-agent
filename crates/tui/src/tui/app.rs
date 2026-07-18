@@ -1846,12 +1846,6 @@ pub struct App {
     /// When the UI accepted a user message but has not observed `TurnStarted` yet.
     pub dispatch_started_at: Option<Instant>,
 
-    /// Cached git context snapshot for the footer.
-    pub workspace_context: Option<String>,
-    /// Shared cell for async git context updates (#399 S1).
-    pub workspace_context_cell: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    /// Timestamp for cached workspace context.
-    pub workspace_context_refreshed_at: Option<Instant>,
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
     /// When true, the next draw will be a full repaint (terminal clear +
@@ -2541,9 +2535,6 @@ impl App {
             runtime_turn_status: None,
             turn_counter: 0,
             dispatch_started_at: None,
-            workspace_context: None,
-            workspace_context_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            workspace_context_refreshed_at: None,
             needs_redraw: true,
             force_next_full_repaint: false,
             is_compacting: false,

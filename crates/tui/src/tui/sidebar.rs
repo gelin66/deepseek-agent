@@ -17,6 +17,7 @@ use ratatui::{
 };
 
 use crate::deepseek_theme::Theme;
+use crate::localization::MessageId;
 use crate::palette;
 use codewhale_protocol::agent_runtime::TerminalState;
 
@@ -1427,16 +1428,11 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &mut App) {
         .and_then(|s| s.to_str())
         .unwrap_or("(root)")
         .to_string();
-    lines.push(Line::from(vec![
-        Span::styled(
-            truncate_line_to_width(&ws_name, content_width.max(1)),
-            Style::default().fg(theme.accent_primary).bold(),
-        ),
-        Span::styled(
-            format!("  {}", app.workspace_context.as_deref().unwrap_or("")),
-            Style::default().fg(theme.text_dim),
-        ),
-    ]));
+    let workspace_label = format!("{}：{ws_name}", app.tr(MessageId::FooterWorkspacePrefix));
+    lines.push(Line::from(Span::styled(
+        truncate_line_to_width(&workspace_label, content_width.max(1)),
+        Style::default().fg(theme.accent_primary).bold(),
+    )));
 
     // ── Token usage ──────────────────────────────────────────────
     // Context % is disclosed in the header; the sidebar keeps the raw token

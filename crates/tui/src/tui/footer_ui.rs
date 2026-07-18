@@ -12,7 +12,6 @@ use crate::tui::ui::{context_usage_snapshot, status_color};
 use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::widgets::tool_card::tool_activity_label_for_name;
 use crate::tui::widgets::{FooterProps, FooterToast, FooterWidget, Renderable};
-use crate::tui::workspace_context;
 
 pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     if area.width == 0 || area.height == 0 {
@@ -219,7 +218,7 @@ pub(crate) fn footer_working_label_frame(now_ms: u64, fancy_animations: bool) ->
 mod tests {
     use super::{
         active_subagent_status_label, footer_state_label, footer_working_label_frame,
-        one_line_summary, render_footer_from,
+        footer_workspace_spans, one_line_summary, render_footer_from,
     };
     use crate::config::Config;
     use crate::tui::app::{App, TuiOptions};
@@ -302,6 +301,22 @@ mod tests {
         assert!(props.model.is_empty());
         assert!(props.mode_label.is_empty());
         assert_eq!(props.state_label, "idle");
+    }
+
+    #[test]
+    fn workspace_chip_uses_app_workspace_without_git_claim() {
+        let mut app = create_test_app();
+        app.workspace = PathBuf::from("/tmp/真实项目");
+
+        let text = footer_workspace_spans(&app)
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(text.contains("工作区"), "missing Chinese label: {text}");
+        assert!(text.contains("真实项目"), "missing workspace path: {text}");
+        assert!(!text.to_ascii_lowercase().contains("git"), "{text}");
+        assert!(!text.to_ascii_lowercase().contains("branch"), "{text}");
     }
 
     // #3189: provider-wait reason thresholds
@@ -538,7 +553,7 @@ pub(crate) fn render_footer_from(
         let chip = match *item {
             S::Cache => cache_chip.clone(),
             S::ContextPercent => footer_context_percent_spans(app),
-            S::GitBranch => footer_git_branch_spans(app),
+            S::Workspace => footer_workspace_spans(app),
             S::LastToolElapsed | S::RateLimit => Vec::new(),
             S::Tokens => footer_session_tokens_spans(app),
             _ => continue,
@@ -564,25 +579,12 @@ pub(crate) fn render_footer_from(
     props
 }
 
-pub(crate) fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
-    // Identity is sourced strictly from workspace/git detection (the cached
-    // "branch | status" context and the workspace path) — never from
-    // provider/model/config text (#3188). The cached context being `None`
-    // means "not a git repo", which we surface as an explicit non-repo state
-    // rather than an empty `Repo:` label.
-    //
-    // We render the full `Repo: <name> @ <branch>` identity and let the footer
-    // widget clip the whole bar to the real terminal width (matching the prior
-    // branch-only chip, which also emitted its full string). The width-aware
-    // `format_repo_identity` truncation policy is exercised in unit tests with
-    // explicit widths; here we pass an effectively unbounded budget so a normal
-    // branch name is never dropped on a wide terminal.
-    let identity =
-        workspace_context::identity_from_context(&app.workspace, app.workspace_context.as_deref());
-    let label = workspace_context::format_repo_identity(&identity, usize::MAX);
-    if label.is_empty() {
-        return Vec::new();
-    }
+pub(crate) fn footer_workspace_spans(app: &App) -> Vec<Span<'static>> {
+    let label = format!(
+        "{}：{}",
+        app.tr(MessageId::FooterWorkspacePrefix),
+        crate::utils::display_path(&app.workspace)
+    );
     vec![Span::styled(
         label,
         Style::default().fg(app.ui_theme.text_muted),

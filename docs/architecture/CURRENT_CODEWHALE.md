@@ -96,6 +96,11 @@ budget pressure、格式化和估算 token throughput 只由自身测试调用�
 注释明确其 engine/TUI consumers 从未接线。该 505 行 foundation 与 wrapper 已删除；仍有
 真实调用方的 route context window/output limit、canonical `crates/context` projection/
 compaction 和 Runtime/RunStore 的预算、恢复及 accounting 语义不变。
+旧 `workspace_context` 的 refresh/collect 链没有生产 caller，App 的 cache/cell/timestamp
+始终保持空值；footer 与 empty-state 却把这个空值解释为非 Git 仓库。该模块及三个 ghost
+字段已删除，`StatusItem::GitBranch` 断代替换为只读取真实 `App.workspace` 的
+`StatusItem::Workspace`，旧 `git_branch` 配置键不设 alias。canonical Run workspace、
+workspace guard、`git_status`/`git_diff`、Fleet branch 与 writer worktree 均未改变。
 
 ## 2. 已统一的生产链
 

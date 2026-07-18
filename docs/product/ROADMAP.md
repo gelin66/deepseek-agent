@@ -768,6 +768,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `route_context_window_tokens`、route output limit、canonical `crates/context` projection/
   compaction 和 Runtime/RunStore 预算恢复语义均保留；M5 不通过复活未接线的 TUI 预算模型
   建设第二套 ContextBroker。
+- M4-C 已删除从未被生产事件循环刷新、运行期永远为 `None` 的 TUI workspace/git cache、
+  后台 cell、TTL 和整套 `workspace_context` 模块。旧 footer/empty-state 因此会把真实 Git
+  仓库谎报为 `(no git)`/“无 git”；现在 `StatusItem::GitBranch` 断代改为只接受
+  `workspace` 的 `StatusItem::Workspace`，footer/sidebar/empty-state 直接投影 canonical
+  `App.workspace` 并显示“工作区”。旧 `git_branch` 配置键不保留 alias；真实
+  `git_status`/`git_diff`、Run workspace guard、Fleet branch/worktree 字段不变。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

@@ -1466,7 +1466,7 @@ pub struct ToolsConfig {
 /// Order in the user's `Vec<StatusItem>` is preserved: items in the left
 /// cluster (`Mode`, `Model`, `Cost`, `Status`) render in the order given;
 /// right-cluster chips (`Agents`, `ReasoningReplay`, `Cache`,
-/// `ContextPercent`, `GitBranch`, `LastToolElapsed`, `RateLimit`)
+/// `ContextPercent`, `Workspace`, `LastToolElapsed`, `RateLimit`)
 /// likewise honour ordering inside their cluster. The split between left and right is deliberate — left holds steady
 /// identity (mode/model/cost), right holds transient signals — so we route
 /// each variant to the correct side rather than letting users reorder across
@@ -1495,8 +1495,8 @@ pub enum StatusItem {
     Cache,
     /// Context-window utilisation percent ("48%").
     ContextPercent,
-    /// Current git branch name.
-    GitBranch,
+    /// Current workspace path.
+    Workspace,
     /// Elapsed time of the most recent tool call (placeholder until wired).
     LastToolElapsed,
     /// Remaining rate-limit budget (placeholder until wired).
@@ -1521,7 +1521,7 @@ impl StatusItem {
             StatusItem::Agents,
             StatusItem::ReasoningReplay,
             StatusItem::Cache,
-            StatusItem::GitBranch,
+            StatusItem::Workspace,
             StatusItem::Tokens,
         ]
     }
@@ -1539,13 +1539,28 @@ impl StatusItem {
             "reasoning_replay" => Some(Self::ReasoningReplay),
             "cache" => Some(Self::Cache),
             "context_percent" => Some(Self::ContextPercent),
-            "git_branch" => Some(Self::GitBranch),
+            "workspace" => Some(Self::Workspace),
             "last_tool_elapsed" => Some(Self::LastToolElapsed),
             "rate_limit" => Some(Self::RateLimit),
             "tokens" => Some(Self::Tokens),
             "balance" => Some(Self::Balance),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod truthful_workspace_status_tests {
+    use super::StatusItem;
+
+    #[test]
+    fn workspace_is_canonical_and_git_branch_is_retired() {
+        assert_eq!(
+            StatusItem::from_key("workspace"),
+            Some(StatusItem::Workspace)
+        );
+        assert_eq!(StatusItem::from_key("git_branch"), None);
+        assert!(StatusItem::default_footer().contains(&StatusItem::Workspace));
     }
 }
 
