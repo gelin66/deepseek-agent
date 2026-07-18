@@ -342,6 +342,8 @@ M4-C foreground 切换后还已物理删除：
   `file_mention` 与 frecency 继续保留为 composer 文件引用能力，不与旧 pane 混为一体。
 - 只有自身测试消费者、从未被 canonical prompt composition 调用的旧 TUI `memory.rs`；生产
   system prompt 仍由 `crates/context` 唯一构造，项目 instructions/skills/WorldState 不变。
+- 没有任何生产 renderer 或 key handler 读取的静态 `keybindings.rs` 目录；帮助与按键行为
+  只以真实 UI/PTY 契约为准，不再维护一份自测通过但不可见的快捷键表。
 
 ## 6. 当前验证事实
 
