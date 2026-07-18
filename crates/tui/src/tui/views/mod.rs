@@ -22,7 +22,6 @@ pub enum ModalKind {
     Pager,
     LiveTranscript,
     FilePicker,
-    FeedbackPicker,
 }
 
 /// Clear and paint a modal popup with an opaque surface.
@@ -161,36 +160,6 @@ fn render_modal_backdrop(area: Rect, buf: &mut Buffer) {
     }
 }
 
-/// Compute a centered, responsive popup rect for a modal.
-///
-/// The size starts from `preferred_*`, but is clamped so it never exceeds the
-/// frame (leaving a small breathing-room margin when there is space) and never
-/// drops below `min_*` unless the frame itself is smaller. Centering the result
-/// inside `area` replaces the repeated, error-prone
-/// `N.min(area.width.saturating_sub(..))` arithmetic scattered across modals so
-/// every overlay sizes itself the same way at 80x24, 100x30, 120x32, 160x40,
-/// and beyond. See #3732.
-pub(crate) fn centered_modal_area(
-    area: Rect,
-    preferred_width: u16,
-    preferred_height: u16,
-    min_width: u16,
-    min_height: u16,
-) -> Rect {
-    // Keep a 2-cell margin on each axis when the frame can spare it so the
-    // backdrop stays visible around the card; otherwise fill the frame.
-    let avail_width = area.width.saturating_sub(2).max(1);
-    let avail_height = area.height.saturating_sub(2).max(1);
-    let width = preferred_width.clamp(min_width.min(avail_width), avail_width);
-    let height = preferred_height.clamp(min_height.min(avail_height), avail_height);
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width,
-        height,
-    }
-}
-
 /// A single key/label hint shown in a modal's action footer.
 ///
 /// Footers built from `ActionHint`s are laid out by [`action_footer_lines`],
@@ -314,17 +283,7 @@ pub(crate) fn render_modal_footer(inner: Rect, buf: &mut Buffer, hints: &[Action
 }
 
 #[derive(Debug, Clone)]
-pub enum CommandPaletteAction {
-    ExecuteCommand { command: String },
-    InsertText { text: String },
-    OpenTextPager { title: String, content: String },
-}
-
-#[derive(Debug, Clone)]
 pub enum ViewEvent {
-    CommandPaletteSelected {
-        action: CommandPaletteAction,
-    },
     OpenTextPager {
         title: String,
         content: String,
@@ -569,7 +528,7 @@ impl fmt::Debug for ViewStack {
 mod tests {
     use super::{
         ActionHint, ModalKind, ModalView, ViewAction, ViewStack, action_footer_lines,
-        centered_modal_area, render_modal_footer, render_underwater_surface,
+        render_modal_footer, render_underwater_surface,
     };
     use crate::palette;
     use crossterm::event::KeyEvent;
@@ -578,24 +537,6 @@ mod tests {
         layout::Rect,
         style::{Color, Style},
     };
-    #[test]
-    fn centered_modal_area_clamps_and_centers() {
-        // Roomy frame: preferred size honoured, centered.
-        let area = Rect::new(0, 0, 160, 40);
-        let rect = centered_modal_area(area, 80, 20, 40, 10);
-        assert_eq!((rect.width, rect.height), (80, 20));
-        assert_eq!(rect.x, (160 - 80) / 2);
-        assert_eq!(rect.y, (40 - 20) / 2);
-
-        // Tiny frame: never exceeds the frame even below the requested minimum.
-        let tiny = Rect::new(0, 0, 30, 8);
-        let rect = centered_modal_area(tiny, 80, 20, 40, 10);
-        assert!(rect.width <= tiny.width, "width must fit frame");
-        assert!(rect.height <= tiny.height, "height must fit frame");
-        assert!(rect.x + rect.width <= tiny.width);
-        assert!(rect.y + rect.height <= tiny.height);
-    }
-
     #[test]
     fn action_footer_wraps_instead_of_overflowing() {
         let hints = [

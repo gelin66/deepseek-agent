@@ -69,6 +69,8 @@ WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 旧 `ThemePickerView` 及其 `settings_picker` 框架也只有自测构造；两者、无消费者的
 `ConfigUpdated` 事件与专属消息已删除。主题解析、持久化加载、Ocean 渲染与主题对比测试
 继续使用同一组 `ThemeId`/`UiTheme`。
+旧 `FeedbackPickerView` 也没有生产入口；它及其私有 command-palette 事件、失效的
+`Ctrl+K` 帮助项已删除。输入 `/` 打开的 canonical slash menu 不受影响。
 
 ## 2. 已统一的生产链
 

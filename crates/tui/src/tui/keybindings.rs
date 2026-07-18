@@ -170,11 +170,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
-        chord: "Ctrl+K",
-        description_id: crate::localization::MessageId::KbCommandPalette,
-        section: KeybindingSection::Submission,
-    },
-    KeybindingEntry {
         chord: "Ctrl+P",
         description_id: crate::localization::MessageId::KbFuzzyFilePicker,
         section: KeybindingSection::Submission,

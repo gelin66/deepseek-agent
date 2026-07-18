@@ -11,7 +11,6 @@ Global key chords are not yet user-configurable — tracked for a future release
 | Chord                | Action                                                        |
 |----------------------|---------------------------------------------------------------|
 | `F1` or `Ctrl-/`     | Toggle the help overlay                                       |
-| `Ctrl-K`             | Open the command palette (slash-command finder)                |
 | `Ctrl-C`             | Cancel current turn / dismiss modal / arm-then-confirm quit    |
 | `Ctrl-D`             | Quit (only when the composer is empty)                         |
 | `Tab`                | Cycle TUI mode: Plan ↔ Act; choose Operate preview explicitly with `/mode`  |
@@ -80,7 +79,7 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 | `Ctrl-X`             | Cancel all running background shell jobs when the Tasks panel is focused |
 | `Esc`                | Return focus to composer                           |
 
-## Slash-command palette (after `Ctrl-K` or typing `/`)
+## Slash-command menu (after typing `/`)
 
 | Chord                          | Action                                              |
 |--------------------------------|-----------------------------------------------------|

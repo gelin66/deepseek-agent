@@ -22,7 +22,6 @@ pub mod color_compat;
 pub mod composer_chrome;
 pub mod composer_ui;
 pub mod diff_render;
-pub mod feedback_picker;
 pub mod file_frecency;
 pub mod file_mention;
 pub mod file_picker;

@@ -635,6 +635,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除只有自测构造的旧 `ThemePickerView` 及其专用 `settings_picker` 框架、
   `ConfigUpdated` 事件与主题 picker 消息；主题配置文件加载、`ThemeId`/`UiTheme`、Ocean
   渲染和主题对比测试继续保留，未把不可达 modal 当成真实主题能力。
+- M4-C 已删除无生产入口的旧 `FeedbackPickerView`、其私有 command-palette 事件与失效的
+  `Ctrl+K` 帮助项；真实 slash menu 仍由输入 `/` 打开并走 canonical 命令面。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
