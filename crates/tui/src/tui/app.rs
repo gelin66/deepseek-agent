@@ -1680,7 +1680,6 @@ pub struct App {
     pub bracketed_paste_seen: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
-    pub constrained_frame_rate: bool,
     pub ocean_started_at: Instant,
     /// Start of the underwater shell's one-shot successful-turn exhale.
     /// Kept separate from the ambient ocean clock so completion can settle
@@ -2396,7 +2395,6 @@ impl App {
         let was_onboarded = crate::tui::onboarding::is_onboarded();
         let calm_mode = settings.calm_mode;
         let low_motion = settings.low_motion;
-        let constrained_frame_rate = settings.constrained_frame_rate;
         let fancy_animations = settings.fancy_animations;
         let ocean_treatment = crate::tui::ocean::OceanTreatment::parse(&settings.ocean_treatment);
         let work_surface_placement =
@@ -2665,7 +2663,6 @@ impl App {
             bracketed_paste_seen: false,
             calm_mode,
             low_motion,
-            constrained_frame_rate,
             ocean_started_at: Instant::now(),
             ocean_completion_started_at: None,
             ocean_turn_history_start: 0,

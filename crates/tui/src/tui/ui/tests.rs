@@ -257,61 +257,6 @@ fn pending_input_preview_projects_all_live_buckets() {
 }
 
 #[test]
-fn event_poll_timeout_has_a_nonzero_floor() {
-    assert_eq!(
-        clamp_event_poll_timeout(Duration::ZERO),
-        Duration::from_millis(1)
-    );
-    assert_eq!(
-        clamp_event_poll_timeout(Duration::from_micros(250)),
-        Duration::from_millis(1)
-    );
-    assert_eq!(
-        clamp_event_poll_timeout(Duration::from_millis(24)),
-        Duration::from_millis(24)
-    );
-}
-
-#[test]
-fn animation_and_poll_intervals_follow_motion_preferences() {
-    let mut app = create_test_app();
-    app.low_motion = false;
-    assert_eq!(
-        animation_interval_ms(&app, true, false),
-        UI_STATUS_ANIMATION_MS
-    );
-    assert_eq!(
-        animation_interval_ms(&app, false, true),
-        UI_UNDERWATER_ANIMATION_MS
-    );
-    assert_eq!(
-        animation_interval_ms(&app, true, true),
-        UI_STATUS_ANIMATION_MS.min(UI_UNDERWATER_ANIMATION_MS)
-    );
-    assert_eq!(active_poll_ms(&app), UI_ACTIVE_POLL_MS);
-    assert_eq!(idle_poll_ms(&app), UI_IDLE_POLL_MS);
-
-    app.low_motion = true;
-    assert_eq!(animation_interval_ms(&app, true, false), 2_400);
-    assert_eq!(
-        animation_interval_ms(&app, true, true),
-        UI_UNDERWATER_ANIMATION_MS
-    );
-    assert_eq!(active_poll_ms(&app), 96);
-    assert_eq!(idle_poll_ms(&app), 120);
-}
-
-#[test]
-fn status_animation_ticks_only_for_live_state() {
-    let mut app = create_test_app();
-    assert!(!should_tick_status_animation(&app, false, false, false));
-    assert!(should_tick_status_animation(&app, true, false, false));
-
-    app.is_loading = true;
-    assert!(should_tick_status_animation(&app, false, false, false));
-}
-
-#[test]
 fn context_usage_uses_latest_canonical_prompt_usage() {
     let mut app = create_test_app();
     app.session.last_prompt_tokens = Some(320_000);

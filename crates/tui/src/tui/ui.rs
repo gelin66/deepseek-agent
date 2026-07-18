@@ -89,7 +89,6 @@ pub(crate) use self::activity_detail::selected_detail_footer_label;
 const SLASH_MENU_LIMIT: usize = 128;
 const MIN_CHAT_HEIGHT: u16 = 3;
 const MIN_COMPOSER_HEIGHT: u16 = 2;
-const UI_IDLE_POLL_MS: u64 = 48;
 const UI_ACTIVE_POLL_MS: u64 = 24;
 const SUBAGENT_HOOK_PREVIEW_LIMIT: usize = 2_048;
 const WEB_CONFIG_POLL_MS: u64 = 16;
@@ -106,11 +105,6 @@ const TURN_STALL_WATCHDOG_GRACE: Duration = Duration::from_secs(30);
 // Must stay comfortably above `turn_stall_watchdog_timeout` so a running tool
 // gets extra grace beyond the turn-stall threshold (#1862 trimmed 15m → 10m).
 const TOOL_HANG_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(600);
-// Forced repaint cadence while a turn is live (model loading, compacting,
-// sub-agents running). Drives the footer water-spout animation as well as
-// the per-tool spinner pulse — keep this fast enough that the whale-spout
-// braille pattern reads as continuous motion instead of teleport-frames.
-const UI_STATUS_ANIMATION_MS: u64 = crate::tui::spinner::BRAILLE_SPINNER_FRAME_MS;
 /// Ambient fish and the completion wake need a smoother cadence than the
 /// deliberately legible status spinner. This remains modest enough for a
 /// terminal renderer while avoiding the five-frame-per-second "jump" seen
@@ -2684,54 +2678,6 @@ pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
     let used_f64 = used as f64;
     let percent = ((used_f64 / max_f64) * 100.0).clamp(0.0, 100.0);
     Some((used, max, percent))
-}
-
-fn status_animation_interval_ms(app: &App) -> u64 {
-    if app.low_motion {
-        2_400
-    } else {
-        UI_STATUS_ANIMATION_MS
-    }
-}
-
-fn animation_interval_ms(app: &App, status_motion: bool, underwater_motion: bool) -> u64 {
-    match (status_motion, underwater_motion) {
-        (true, true) => status_animation_interval_ms(app).min(UI_UNDERWATER_ANIMATION_MS),
-        (true, false) => status_animation_interval_ms(app),
-        (false, true) => UI_UNDERWATER_ANIMATION_MS,
-        (false, false) => UI_UNDERWATER_ANIMATION_MS,
-    }
-}
-
-fn active_poll_ms(app: &App) -> u64 {
-    if app.low_motion {
-        96
-    } else {
-        UI_ACTIVE_POLL_MS
-    }
-}
-
-fn idle_poll_ms(app: &App) -> u64 {
-    if app.low_motion { 120 } else { UI_IDLE_POLL_MS }
-}
-
-fn clamp_event_poll_timeout(timeout: Duration) -> Duration {
-    const MIN_EVENT_POLL_TIMEOUT: Duration = Duration::from_millis(1);
-    timeout.max(MIN_EVENT_POLL_TIMEOUT)
-}
-
-fn should_tick_status_animation(
-    app: &App,
-    has_running_agents: bool,
-    history_has_live_motion: bool,
-    active_cell_has_live_motion: bool,
-) -> bool {
-    app.is_loading
-        || has_running_agents
-        || app.is_compacting
-        || app.is_purging
-        || history_has_live_motion
-        || active_cell_has_live_motion
 }
 
 fn open_pager_for_last_message(app: &mut App) -> bool {

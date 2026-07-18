@@ -3,10 +3,9 @@
 //! Keep the braille spinner in one place so transcript tool cards, sidebars,
 //! and any future running-job surfaces advance with the same cadence.
 //!
-//! Motion *policy* (whether to animate at all) lives in
-//! [`crate::tui::motion::MotionPolicy`]. Callers that already have a policy
-//! should prefer [`crate::tui::motion::MotionPolicy::spinner_glyph`]; the
-//! helpers here remain the shared frame table + elapsed-time index.
+//! Callers choose whether to animate through the existing `low_motion`
+//! product setting; this module owns only the shared frame table and elapsed
+//! time index.
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 

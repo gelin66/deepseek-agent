@@ -230,10 +230,6 @@ pub struct Settings {
     /// Ocean Tasks / To-do / Workers rail placement: top, left, or right.
     /// The lower edge remains owned by the composer and phase footer.
     pub work_surface_placement: String,
-    /// Runtime-only 30 FPS cap for terminals that flicker at high redraw
-    /// rates. Separate from accessibility motion and text delivery.
-    #[serde(skip)]
-    pub constrained_frame_rate: bool,
     /// Enable terminal bracketed-paste mode. Default true. Disable if your
     /// terminal mishandles the `\e[?2004h` escape (rare; some legacy
     /// terminals over SSH+screen multiplex without the cap).
@@ -385,7 +381,6 @@ impl Default for Settings {
             fancy_animations: true,
             ocean_treatment: "ombre".to_string(),
             work_surface_placement: "top".to_string(),
-            constrained_frame_rate: false,
             bracketed_paste: true,
             paste_burst_detection: true,
             mention_menu_limit: 128,
@@ -577,28 +572,6 @@ impl Settings {
             self.low_motion = true;
             self.fancy_animations = false;
         }
-        // VS Code (TERM_PROGRAM=vscode, #1356), Ghostty (#1445), and a few
-        // VTE terminals (#1470) produce visible flicker at 120 FPS. Cap their
-        // redraw rate without changing motion semantics or model text pacing.
-        // Ghostty may report
-        // either TERM_PROGRAM=Ghostty/ghostty or TERM=xterm-ghostty.
-        // Like NO_ANIMATIONS above, this unconditionally overrides any
-        // disk-loaded value — consistent precedence: env signals always win.
-        let term_program = std::env::var("TERM_PROGRAM")
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let term = std::env::var("TERM")
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        let term_constrains_frame_rate =
-            matches!(term_program.as_str(), "vscode" | "ghostty") || term.contains("ghostty");
-        let vte_env_constrains_frame_rate = std::env::var_os("TILIX_ID")
-            .is_some_and(|v| !v.is_empty())
-            || std::env::var_os("TERMINATOR_UUID").is_some_and(|v| !v.is_empty());
-        if term_constrains_frame_rate || vte_env_constrains_frame_rate {
-            self.constrained_frame_rate = true;
-        }
-
         // Termius (TERM_PROGRAM=Termius) and SSH sessions exhibit the
         // same 120-FPS flicker class as VS Code — the SSH round-trip
         // races ahead of what the remote renderer can flush, so rapid
@@ -616,15 +589,6 @@ impl Settings {
         if term_is_termius || in_ssh_session {
             self.low_motion = true;
             self.fancy_animations = false;
-        }
-
-        // Multiplexers need a bounded redraw rate, not a different product.
-        // Preserve authored motion and let the frame limiter protect tmux /
-        // screen; NO_ANIMATIONS remains the explicit hard-off contract.
-        let in_terminal_multiplexer = std::env::var_os("TMUX").is_some_and(|v| !v.is_empty())
-            || std::env::var_os("STY").is_some_and(|v| !v.is_empty());
-        if in_terminal_multiplexer {
-            self.constrained_frame_rate = true;
         }
 
         // Plain Windows PowerShell / cmd.exe under legacy ConHost exposes none
@@ -1961,32 +1925,19 @@ mod tests {
     fn no_animations_env_recognises_truthy_spellings_only() {
         let _g = no_animations_test_guard();
         let prev_wt_session = std::env::var_os("WT_SESSION");
-        let prev_tmux = std::env::var_os("TMUX");
-        let prev_sty = std::env::var_os("STY");
         let prev_term_program = std::env::var_os("TERM_PROGRAM");
-        let prev_term = std::env::var_os("TERM");
         let prev_ssh_client = std::env::var_os("SSH_CLIENT");
         let prev_ssh_tty = std::env::var_os("SSH_TTY");
-        let prev_tilix_id = std::env::var_os("TILIX_ID");
-        let prev_terminator_uuid = std::env::var_os("TERMINATOR_UUID");
 
         // The test is about NO_ANIMATIONS only. On Windows CI, an unmarked
         // console host now independently enables low_motion, so mark the host
         // as non-legacy while checking falsy spellings.
-        // Clear multiplexer markers for the same reason: they also force
-        // low_motion independently of NO_ANIMATIONS.
-        // Clear TERM_PROGRAM, SSH, and other terminal-specific variables as they
-        // also force low_motion independently of NO_ANIMATIONS.
+        // Termius and SSH also force low_motion, so clear those signals.
         // SAFETY: serialised by the guard.
         unsafe {
-            std::env::remove_var("TMUX");
-            std::env::remove_var("STY");
             std::env::remove_var("TERM_PROGRAM");
-            std::env::remove_var("TERM");
             std::env::remove_var("SSH_CLIENT");
             std::env::remove_var("SSH_TTY");
-            std::env::remove_var("TILIX_ID");
-            std::env::remove_var("TERMINATOR_UUID");
         }
         #[cfg(windows)]
         unsafe {
@@ -2017,21 +1968,9 @@ mod tests {
                 Some(v) => std::env::set_var("WT_SESSION", v),
                 None => std::env::remove_var("WT_SESSION"),
             }
-            match prev_tmux {
-                Some(v) => std::env::set_var("TMUX", v),
-                None => std::env::remove_var("TMUX"),
-            }
-            match prev_sty {
-                Some(v) => std::env::set_var("STY", v),
-                None => std::env::remove_var("STY"),
-            }
             match prev_term_program {
                 Some(v) => std::env::set_var("TERM_PROGRAM", v),
                 None => std::env::remove_var("TERM_PROGRAM"),
-            }
-            match prev_term {
-                Some(v) => std::env::set_var("TERM", v),
-                None => std::env::remove_var("TERM"),
             }
             match prev_ssh_client {
                 Some(v) => std::env::set_var("SSH_CLIENT", v),
@@ -2040,14 +1979,6 @@ mod tests {
             match prev_ssh_tty {
                 Some(v) => std::env::set_var("SSH_TTY", v),
                 None => std::env::remove_var("SSH_TTY"),
-            }
-            match prev_tilix_id {
-                Some(v) => std::env::set_var("TILIX_ID", v),
-                None => std::env::remove_var("TILIX_ID"),
-            }
-            match prev_terminator_uuid {
-                Some(v) => std::env::set_var("TERMINATOR_UUID", v),
-                None => std::env::remove_var("TERMINATOR_UUID"),
             }
         }
     }
@@ -2063,93 +1994,11 @@ mod tests {
     }
 
     #[test]
-    fn vscode_caps_redraws_without_disabling_motion_or_text_cadence() {
+    fn ordinary_term_program_does_not_force_low_motion() {
         let _g = term_program_test_guard();
         let prev = std::env::var_os("TERM_PROGRAM");
-        // SAFETY: serialised by the guard.
-        unsafe {
-            std::env::set_var("TERM_PROGRAM", "vscode");
-        }
-        let mut settings = animated_settings();
-        assert!(!settings.low_motion, "default is animated");
-        settings.apply_env_overrides();
-        assert!(!settings.low_motion);
-        assert!(settings.fancy_animations);
-        assert!(
-            settings.constrained_frame_rate,
-            "TERM_PROGRAM=vscode should cap redraws without changing animation semantics"
-        );
-        // SAFETY: cleanup under the guard.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("TERM_PROGRAM", v),
-                None => std::env::remove_var("TERM_PROGRAM"),
-            }
-        }
-    }
-
-    #[test]
-    fn ghostty_term_program_caps_redraws_without_disabling_motion() {
-        let _g = term_program_test_guard();
-        let prev = std::env::var_os("TERM_PROGRAM");
-        // SAFETY: serialised by the guard.
-        unsafe {
-            std::env::set_var("TERM_PROGRAM", "Ghostty");
-        }
-        let mut settings = animated_settings();
-        assert!(!settings.low_motion, "default is animated");
-        settings.apply_env_overrides();
-        assert!(!settings.low_motion);
-        assert!(settings.fancy_animations);
-        assert!(settings.constrained_frame_rate);
-        // SAFETY: cleanup under the guard.
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("TERM_PROGRAM", v),
-                None => std::env::remove_var("TERM_PROGRAM"),
-            }
-        }
-    }
-
-    #[test]
-    fn ghostty_term_fallback_caps_redraws_without_disabling_motion() {
-        let _g = term_program_test_guard();
-        let prev_program = std::env::var_os("TERM_PROGRAM");
-        let prev_term = std::env::var_os("TERM");
-        // SAFETY: serialised by the guard.
-        unsafe {
-            std::env::remove_var("TERM_PROGRAM");
-            std::env::set_var("TERM", "xterm-ghostty");
-        }
-        let mut settings = Settings::default();
-        settings.apply_env_overrides();
-        assert!(!settings.low_motion);
-        assert!(settings.fancy_animations);
-        assert!(settings.constrained_frame_rate);
-        // SAFETY: cleanup under the guard.
-        unsafe {
-            match prev_program {
-                Some(v) => std::env::set_var("TERM_PROGRAM", v),
-                None => std::env::remove_var("TERM_PROGRAM"),
-            }
-            match prev_term {
-                Some(v) => std::env::set_var("TERM", v),
-                None => std::env::remove_var("TERM"),
-            }
-        }
-    }
-
-    #[test]
-    fn non_vscode_term_program_does_not_force_low_motion() {
-        let _g = term_program_test_guard();
-        let prev = std::env::var_os("TERM_PROGRAM");
-        let prev_term = std::env::var_os("TERM");
         let prev_ssh_client = std::env::var_os("SSH_CLIENT");
         let prev_ssh_tty = std::env::var_os("SSH_TTY");
-        let prev_tilix_id = std::env::var_os("TILIX_ID");
-        let prev_terminator_uuid = std::env::var_os("TERMINATOR_UUID");
-        let prev_tmux = std::env::var_os("TMUX");
-        let prev_sty = std::env::var_os("STY");
         // SAFETY: serialised by the guard. Clear SSH_* so a real
         // SSH session running the test suite doesn't make this
         // assertion trivially fail — the SSH path is exercised
@@ -2157,11 +2006,6 @@ mod tests {
         unsafe {
             std::env::remove_var("SSH_CLIENT");
             std::env::remove_var("SSH_TTY");
-            std::env::remove_var("TERM");
-            std::env::remove_var("TILIX_ID");
-            std::env::remove_var("TERMINATOR_UUID");
-            std::env::remove_var("TMUX");
-            std::env::remove_var("STY");
         }
         for program in ["iTerm.app", "Apple_Terminal", "WezTerm", "xterm-256color"] {
             // SAFETY: serialised by the guard.
@@ -2181,90 +2025,11 @@ mod tests {
                 Some(v) => std::env::set_var("TERM_PROGRAM", v),
                 None => std::env::remove_var("TERM_PROGRAM"),
             }
-            match prev_term {
-                Some(v) => std::env::set_var("TERM", v),
-                None => std::env::remove_var("TERM"),
-            }
             if let Some(v) = prev_ssh_client {
                 std::env::set_var("SSH_CLIENT", v);
             }
             if let Some(v) = prev_ssh_tty {
                 std::env::set_var("SSH_TTY", v);
-            }
-            if let Some(v) = prev_tilix_id {
-                std::env::set_var("TILIX_ID", v);
-            }
-            if let Some(v) = prev_terminator_uuid {
-                std::env::set_var("TERMINATOR_UUID", v);
-            }
-            if let Some(v) = prev_tmux {
-                std::env::set_var("TMUX", v);
-            }
-            if let Some(v) = prev_sty {
-                std::env::set_var("STY", v);
-            }
-        }
-    }
-
-    #[test]
-    fn tilix_and_terminator_cap_redraws_without_disabling_motion() {
-        let _g = term_program_test_guard();
-        let prev_term_program = std::env::var_os("TERM_PROGRAM");
-        let prev_tilix_id = std::env::var_os("TILIX_ID");
-        let prev_terminator_uuid = std::env::var_os("TERMINATOR_UUID");
-        let prev_wt_session = std::env::var_os("WT_SESSION");
-
-        for (var, val) in [
-            ("TILIX_ID", "d5b5b5d6-tilix-session"),
-            ("TERMINATOR_UUID", "urn:uuid:terminator-session"),
-        ] {
-            // SAFETY: serialised by the guard.
-            unsafe {
-                std::env::remove_var("TERM_PROGRAM");
-                std::env::remove_var("TILIX_ID");
-                std::env::remove_var("TERMINATOR_UUID");
-                std::env::set_var(var, val);
-                // A native Windows test process without any modern-terminal
-                // marker is intentionally treated as legacy ConHost. This
-                // test isolates the VTE signal instead, so keep that separate
-                // platform heuristic from changing its motion assertions.
-                #[cfg(windows)]
-                std::env::set_var("WT_SESSION", "codewhale-test");
-            }
-            let mut settings = animated_settings();
-            assert!(!settings.low_motion, "default is animated");
-            settings.apply_env_overrides();
-            assert!(
-                settings.constrained_frame_rate,
-                "{var} must cap redraws to prevent VTE flicker (#1470)"
-            );
-            assert!(
-                !settings.low_motion,
-                "{var} must not change motion semantics"
-            );
-            assert!(
-                settings.fancy_animations,
-                "{var} must not disable the ocean treatment"
-            );
-        }
-
-        // SAFETY: cleanup under the guard.
-        unsafe {
-            match prev_term_program {
-                Some(v) => std::env::set_var("TERM_PROGRAM", v),
-                None => std::env::remove_var("TERM_PROGRAM"),
-            }
-            match prev_tilix_id {
-                Some(v) => std::env::set_var("TILIX_ID", v),
-                None => std::env::remove_var("TILIX_ID"),
-            }
-            match prev_terminator_uuid {
-                Some(v) => std::env::set_var("TERMINATOR_UUID", v),
-                None => std::env::remove_var("TERMINATOR_UUID"),
-            }
-            match prev_wt_session {
-                Some(v) => std::env::set_var("WT_SESSION", v),
-                None => std::env::remove_var("WT_SESSION"),
             }
         }
     }
@@ -2438,64 +2203,6 @@ mod tests {
             match prev_term_program {
                 Some(v) => std::env::set_var("TERM_PROGRAM", v),
                 None => std::env::remove_var("TERM_PROGRAM"),
-            }
-        }
-    }
-
-    #[test]
-    fn terminal_multiplexer_caps_redraws_without_disabling_motion() {
-        let _g = term_program_test_guard();
-        let vars = [
-            "TMUX",
-            "STY",
-            "TERM_PROGRAM",
-            "SSH_CLIENT",
-            "SSH_TTY",
-            "TILIX_ID",
-            "TERMINATOR_UUID",
-            "NO_ANIMATIONS",
-            "WT_SESSION",
-        ];
-        let prev: Vec<_> = vars
-            .iter()
-            .map(|name| (*name, std::env::var_os(name)))
-            .collect();
-
-        for (var, val) in [
-            ("TMUX", "/tmp/tmux-501/default,1234,0"),
-            ("STY", "1234.pts-0.host"),
-        ] {
-            // SAFETY: serialised by the guard.
-            unsafe {
-                for name in vars {
-                    std::env::remove_var(name);
-                }
-                std::env::set_var(var, val);
-                #[cfg(windows)]
-                std::env::set_var("WT_SESSION", "codewhale-test");
-            }
-            let mut settings = animated_settings();
-            assert!(!settings.low_motion, "default is animated");
-            assert!(settings.fancy_animations, "default shows the water strip");
-            settings.apply_env_overrides();
-            assert!(!settings.low_motion, "{var} must preserve authored motion");
-            assert!(
-                settings.fancy_animations,
-                "{var} must preserve Ocean motion"
-            );
-            assert!(
-                settings.constrained_frame_rate,
-                "{var}={val:?} must cap redraws under terminal multiplexers"
-            );
-        }
-
-        // SAFETY: cleanup under the guard.
-        unsafe {
-            for (name, value) in prev {
-                match value {
-                    Some(value) => std::env::set_var(name, value),
-                    None => std::env::remove_var(name),
-                }
             }
         }
     }

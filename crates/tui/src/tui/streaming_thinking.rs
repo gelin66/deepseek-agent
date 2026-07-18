@@ -23,8 +23,8 @@ use crate::tui::history::HistoryCell;
 /// follow, and each revision bump invalidates the active cell's wrap cache,
 /// forcing a full re-wrap of the live tail. Coalescing intermediate bumps to
 /// one per window keeps the perceived stream smooth without re-wrapping per
-/// character. ~100ms ≈ 10 intermediate repaints/sec, well below the 120 FPS
-/// frame cap (see `frame_rate_limiter`) yet imperceptible as lag.
+/// character. ~100ms means at most 10 intermediate revision bumps per second,
+/// while finalization still forces the latest content into the projection.
 ///
 /// Correctness: this only skips *intermediate* repaints. Appended content is
 /// never dropped — it lands in the cell immediately — and finalize always
