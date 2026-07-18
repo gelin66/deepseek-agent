@@ -16,9 +16,9 @@ fn assert_workflow_trace_schema(conn: &Connection) {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("read user_version");
-    // v5 adds the canonical AgentRuntime event store without replacing the
-    // existing thread/workflow data in this same state database.
-    assert_eq!(user_version, 10);
+    // v5 adds the canonical AgentRuntime event store; v11 deletes the retired
+    // thread-goal truth without changing the canonical run tables.
+    assert_eq!(user_version, 11);
 
     for table in [
         "workflow_runs",
@@ -26,7 +26,6 @@ fn assert_workflow_trace_schema(conn: &Connection) {
         "leaf_runs",
         "control_node_runs",
         "teacher_candidates",
-        "thread_goals",
         "agent_runs",
         "agent_run_events",
         "agent_run_snapshots",
@@ -40,6 +39,18 @@ fn assert_workflow_trace_schema(conn: &Connection) {
             .unwrap_or_else(|err| panic!("read sqlite_master for {table}: {err}"));
         assert!(exists, "missing workflow trace table {table}");
     }
+
+    let retired_goal_table_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_goals')",
+            [],
+            |row| row.get(0),
+        )
+        .expect("inspect retired thread goal table");
+    assert!(
+        !retired_goal_table_exists,
+        "retired thread_goals table survived schema v11"
+    );
 }
 
 #[test]

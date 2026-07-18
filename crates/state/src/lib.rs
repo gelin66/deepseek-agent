@@ -24,7 +24,7 @@ use serde_json::Value;
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 10;
+const STATE_SCHEMA_VERSION: u32 = 11;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -184,49 +184,6 @@ pub struct JobStateRecord {
     /// Unix timestamp (seconds) when the job was created.
     pub created_at: i64,
     /// Unix timestamp (seconds) of the most recent status update.
-    pub updated_at: i64,
-}
-
-/// Persisted lifecycle status for a thread goal.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ThreadGoalStatus {
-    /// Goal is active and should continue receiving work.
-    Active,
-    /// Goal is paused by the user.
-    Paused,
-    /// Goal is blocked and cannot make meaningful progress.
-    Blocked,
-    /// Goal stopped because account/service usage limits were reached.
-    UsageLimited,
-    /// Goal stopped because its explicit token budget was reached.
-    BudgetLimited,
-    /// Goal has been completed.
-    Complete,
-}
-
-/// Persisted goal state attached to a thread.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ThreadGoalRecord {
-    /// Thread this goal belongs to.
-    pub thread_id: String,
-    /// Stable identifier for this goal revision.
-    pub goal_id: String,
-    /// User-visible objective.
-    pub objective: String,
-    /// Current lifecycle status.
-    pub status: ThreadGoalStatus,
-    /// Optional token budget requested by the user.
-    pub token_budget: Option<i64>,
-    /// Tokens consumed while pursuing the goal.
-    pub tokens_used: i64,
-    /// Elapsed wall-clock work time in seconds.
-    pub time_used_seconds: i64,
-    /// Durable continuation passes dispatched for this objective.
-    pub continuation_count: i64,
-    /// Unix timestamp (seconds) when the goal was created.
-    pub created_at: i64,
-    /// Unix timestamp (seconds) when the goal was last updated.
     pub updated_at: i64,
 }
 
@@ -549,47 +506,6 @@ impl StateStore {
             .context("failed to initialize workflow trace schema")?;
             user_version = 2;
         }
-        if user_version < 3 {
-            tx.execute_batch(
-                r#"
-                CREATE TABLE IF NOT EXISTS thread_goals (
-                    thread_id TEXT PRIMARY KEY NOT NULL,
-                    goal_id TEXT NOT NULL,
-                    objective TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN (
-                        'active',
-                        'paused',
-                        'blocked',
-                        'usage_limited',
-                        'budget_limited',
-                        'complete'
-                    )),
-                    token_budget INTEGER,
-                    tokens_used INTEGER NOT NULL DEFAULT 0,
-                    time_used_seconds INTEGER NOT NULL DEFAULT 0,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
-                );
-
-                PRAGMA user_version = 3;
-                "#,
-            )
-            .context("failed to initialize thread goal schema")?;
-            user_version = 3;
-        }
-        if user_version < 4 {
-            tx.execute_batch(
-                r#"
-                ALTER TABLE thread_goals
-                    ADD COLUMN continuation_count INTEGER NOT NULL DEFAULT 0;
-
-                PRAGMA user_version = 4;
-                "#,
-            )
-            .context("failed to initialize thread goal continuation schema")?;
-            user_version = 4;
-        }
         if user_version < 5 {
             tx.execute_batch(
                 r#"
@@ -722,6 +638,13 @@ impl StateStore {
                 .context("failed to rebuild model catalog snapshot projections")?;
             tx.pragma_update(None, "user_version", 10)
                 .context("failed to commit model catalog snapshot schema version")?;
+            user_version = 10;
+        }
+        if user_version < 11 {
+            tx.execute_batch("DROP TABLE IF EXISTS thread_goals;")
+                .context("failed to delete the retired thread goal schema")?;
+            tx.pragma_update(None, "user_version", 11)
+                .context("failed to commit retired thread goal schema deletion")?;
         }
         tx.commit()
             .context("failed to commit state schema migration")?;
@@ -945,160 +868,6 @@ impl StateStore {
         .optional()
         .context("failed to read thread memory mode")
         .map(Option::flatten)
-    }
-
-    /// Insert or replace the persisted goal for a thread.
-    pub fn upsert_thread_goal(&self, goal: &ThreadGoalRecord) -> Result<()> {
-        let conn = self.conn()?;
-        let exists: Option<i64> = conn
-            .query_row(
-                "SELECT 1 FROM threads WHERE id = ?1",
-                params![goal.thread_id],
-                |row| row.get(0),
-            )
-            .optional()
-            .context("failed to verify thread before saving goal")?;
-        if exists.is_none() {
-            anyhow::bail!("thread {} not found", goal.thread_id);
-        }
-
-        conn.execute(
-            r#"
-            INSERT INTO thread_goals (
-                thread_id, goal_id, objective, status, token_budget, tokens_used,
-                time_used_seconds, continuation_count, created_at, updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-            ON CONFLICT(thread_id) DO UPDATE SET
-                goal_id=excluded.goal_id,
-                objective=excluded.objective,
-                status=excluded.status,
-                token_budget=excluded.token_budget,
-                tokens_used=excluded.tokens_used,
-                time_used_seconds=excluded.time_used_seconds,
-                continuation_count=excluded.continuation_count,
-                created_at=excluded.created_at,
-                updated_at=excluded.updated_at
-            "#,
-            params![
-                goal.thread_id,
-                goal.goal_id,
-                goal.objective,
-                thread_goal_status_to_str(&goal.status),
-                goal.token_budget,
-                goal.tokens_used,
-                goal.time_used_seconds,
-                goal.continuation_count,
-                goal.created_at,
-                goal.updated_at,
-            ],
-        )
-        .context("failed to upsert thread goal")?;
-        Ok(())
-    }
-
-    /// Accrue additional token and wall-clock usage onto a thread's persisted goal.
-    ///
-    /// This is the durable, additive accounting path for the persistent goal loop: it
-    /// increments `tokens_used` and `time_used_seconds` in a single atomic SQL `UPDATE`
-    /// (`col = col + ?`) so concurrent accruals do not race a read-modify-write. The
-    /// goal's `updated_at` is advanced to the larger of its current value and `now`,
-    /// keeping the timestamp monotonic even if a stale `now` is supplied.
-    ///
-    /// `token_delta` and `time_delta_seconds` are added on the database side; callers
-    /// should pass non-negative deltas (negative values are accepted and will decrement,
-    /// which is intentionally left to the caller's discretion).
-    ///
-    /// Returns the updated [`ThreadGoalRecord`], or `Ok(None)` if the thread has no
-    /// persisted goal. Unlike [`upsert_thread_goal`](Self::upsert_thread_goal) this never
-    /// creates a goal row; it only accumulates onto an existing one.
-    pub fn record_thread_goal_usage(
-        &self,
-        thread_id: &str,
-        token_delta: i64,
-        time_delta_seconds: i64,
-        now: i64,
-    ) -> Result<Option<ThreadGoalRecord>> {
-        let conn = self.conn()?;
-        let changed = conn
-            .execute(
-                r#"
-                UPDATE thread_goals
-                SET tokens_used = tokens_used + ?2,
-                    time_used_seconds = time_used_seconds + ?3,
-                    updated_at = MAX(updated_at, ?4)
-                WHERE thread_id = ?1
-                "#,
-                params![thread_id, token_delta, time_delta_seconds, now],
-            )
-            .context("failed to record thread goal usage")?;
-        if changed == 0 {
-            return Ok(None);
-        }
-        Self::read_thread_goal(&conn, thread_id)
-    }
-
-    /// Increment the durable cross-turn continuation counter for a thread goal.
-    ///
-    /// The older TUI continuation guard is scoped to one engine turn. This
-    /// counter is intentionally persisted so a resumed goal loop can feed
-    /// `goal_loop::decide_continuation` with the true cross-turn count.
-    pub fn record_thread_goal_continuation(
-        &self,
-        thread_id: &str,
-        now: i64,
-    ) -> Result<Option<ThreadGoalRecord>> {
-        let conn = self.conn()?;
-        let changed = conn
-            .execute(
-                r#"
-                UPDATE thread_goals
-                SET continuation_count = continuation_count + 1,
-                    updated_at = MAX(updated_at, ?2)
-                WHERE thread_id = ?1
-                "#,
-                params![thread_id, now],
-            )
-            .context("failed to record thread goal continuation")?;
-        if changed == 0 {
-            return Ok(None);
-        }
-        Self::read_thread_goal(&conn, thread_id)
-    }
-
-    /// Retrieve the persisted goal for a thread.
-    pub fn get_thread_goal(&self, thread_id: &str) -> Result<Option<ThreadGoalRecord>> {
-        let conn = self.conn()?;
-        Self::read_thread_goal(&conn, thread_id)
-    }
-
-    /// Read a goal on an already-held connection. The `record_*` mutators call
-    /// this instead of [`Self::get_thread_goal`], which would re-lock the
-    /// connection mutex and self-deadlock.
-    fn read_thread_goal(conn: &Connection, thread_id: &str) -> Result<Option<ThreadGoalRecord>> {
-        conn.query_row(
-            r#"
-            SELECT thread_id, goal_id, objective, status, token_budget, tokens_used,
-                   time_used_seconds, continuation_count, created_at, updated_at
-            FROM thread_goals
-            WHERE thread_id = ?1
-            "#,
-            params![thread_id],
-            row_to_thread_goal,
-        )
-        .optional()
-        .context("failed to read thread goal")
-    }
-
-    /// Delete the persisted goal for a thread.
-    pub fn delete_thread_goal(&self, thread_id: &str) -> Result<bool> {
-        let conn = self.conn()?;
-        let changed = conn
-            .execute(
-                "DELETE FROM thread_goals WHERE thread_id = ?1",
-                params![thread_id],
-            )
-            .context("failed to delete thread goal")?;
-        Ok(changed > 0)
     }
 
     /// List all leaf messages in a thread.
@@ -1999,29 +1768,6 @@ fn job_state_status_from_str(value: &str) -> JobStateStatus {
     }
 }
 
-fn thread_goal_status_to_str(status: &ThreadGoalStatus) -> &'static str {
-    match status {
-        ThreadGoalStatus::Active => "active",
-        ThreadGoalStatus::Paused => "paused",
-        ThreadGoalStatus::Blocked => "blocked",
-        ThreadGoalStatus::UsageLimited => "usage_limited",
-        ThreadGoalStatus::BudgetLimited => "budget_limited",
-        ThreadGoalStatus::Complete => "complete",
-    }
-}
-
-fn thread_goal_status_from_str(value: &str) -> ThreadGoalStatus {
-    match value {
-        "active" => ThreadGoalStatus::Active,
-        "paused" => ThreadGoalStatus::Paused,
-        "blocked" => ThreadGoalStatus::Blocked,
-        "usage_limited" => ThreadGoalStatus::UsageLimited,
-        "budget_limited" => ThreadGoalStatus::BudgetLimited,
-        "complete" => ThreadGoalStatus::Complete,
-        _ => ThreadGoalStatus::Active,
-    }
-}
-
 fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
     let status_raw: String = row.get(7)?;
     let source_raw: String = row.get(11)?;
@@ -2050,22 +1796,6 @@ fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
         git_origin_url: row.get(19)?,
         memory_mode: row.get(20)?,
         current_leaf_id: row.get(21)?,
-    })
-}
-
-fn row_to_thread_goal(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadGoalRecord> {
-    let status_raw: String = row.get(3)?;
-    Ok(ThreadGoalRecord {
-        thread_id: row.get(0)?,
-        goal_id: row.get(1)?,
-        objective: row.get(2)?,
-        status: thread_goal_status_from_str(&status_raw),
-        token_budget: row.get(4)?,
-        tokens_used: row.get(5)?,
-        time_used_seconds: row.get(6)?,
-        continuation_count: row.get(7)?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
     })
 }
 
@@ -2115,70 +1845,6 @@ mod tests {
         }
     }
 
-    fn test_goal(thread_id: &str, objective: &str) -> ThreadGoalRecord {
-        ThreadGoalRecord {
-            thread_id: thread_id.to_string(),
-            goal_id: "goal-1".to_string(),
-            objective: objective.to_string(),
-            status: ThreadGoalStatus::Active,
-            token_budget: Some(123),
-            tokens_used: 7,
-            time_used_seconds: 11,
-            continuation_count: 0,
-            created_at: 100,
-            updated_at: 101,
-        }
-    }
-
-    #[test]
-    fn thread_goal_crud_round_trips_and_replaces() {
-        let store = temp_state_store("thread-goal-crud");
-        store
-            .upsert_thread(&test_thread("thread-1"))
-            .expect("upsert thread");
-
-        let goal = test_goal("thread-1", "Ship v0.8.59");
-        store.upsert_thread_goal(&goal).expect("upsert goal");
-        assert_eq!(
-            store
-                .get_thread_goal("thread-1")
-                .expect("read goal")
-                .as_ref(),
-            Some(&goal)
-        );
-
-        let mut replacement = test_goal("thread-1", "Ship v0.8.59 safely");
-        replacement.goal_id = "goal-2".to_string();
-        replacement.status = ThreadGoalStatus::BudgetLimited;
-        replacement.token_budget = None;
-        replacement.updated_at = 202;
-        store
-            .upsert_thread_goal(&replacement)
-            .expect("replace goal");
-        assert_eq!(
-            store.get_thread_goal("thread-1").expect("read replacement"),
-            Some(replacement)
-        );
-
-        assert!(store.delete_thread_goal("thread-1").expect("delete goal"));
-        assert!(
-            store
-                .get_thread_goal("thread-1")
-                .expect("read empty")
-                .is_none()
-        );
-        assert!(!store.delete_thread_goal("thread-1").expect("delete empty"));
-    }
-
-    #[test]
-    fn thread_goal_requires_existing_thread() {
-        let store = temp_state_store("thread-goal-missing-thread");
-        let err = store
-            .upsert_thread_goal(&test_goal("missing-thread", "nope"))
-            .expect_err("goal without a thread should fail");
-        assert!(err.to_string().contains("thread missing-thread not found"));
-    }
-
     #[test]
     fn delete_thread_cascades_child_rows() {
         let store = temp_state_store("thread-delete-cascade");
@@ -2202,19 +1868,10 @@ mod tests {
                 }],
             )
             .expect("persist dynamic tools");
-        store
-            .upsert_thread_goal(&test_goal("thread-1", "Ship v0.8.67"))
-            .expect("upsert goal");
-
         store.delete_thread("thread-1").expect("delete thread");
 
         let conn = store.conn().expect("conn");
-        for table in [
-            "messages",
-            "checkpoints",
-            "thread_dynamic_tools",
-            "thread_goals",
-        ] {
+        for table in ["messages", "checkpoints", "thread_dynamic_tools"] {
             let sql = format!("SELECT COUNT(*) FROM {table} WHERE thread_id = ?1");
             let count: i64 = conn
                 .query_row(&sql, params!["thread-1"], |row| row.get(0))
@@ -2256,117 +1913,6 @@ mod tests {
             .query_row("PRAGMA foreign_keys;", [], |row| row.get(0))
             .expect("read foreign_keys pragma");
         assert_eq!(foreign_keys, 1);
-    }
-
-    #[test]
-    fn record_thread_goal_usage_accumulates_tokens_and_time() {
-        let store = temp_state_store("thread-goal-usage");
-        store
-            .upsert_thread(&test_thread("thread-1"))
-            .expect("upsert thread");
-
-        // Mirror the runtime, which creates goals with zeroed accounting.
-        let mut goal = test_goal("thread-1", "Ship the persistent goal loop");
-        goal.tokens_used = 0;
-        goal.time_used_seconds = 0;
-        goal.updated_at = 100;
-        store.upsert_thread_goal(&goal).expect("upsert goal");
-
-        // First accrual lands the deltas and advances updated_at.
-        let after_first = store
-            .record_thread_goal_usage("thread-1", 250, 12, 150)
-            .expect("record usage")
-            .expect("goal exists");
-        assert_eq!(after_first.tokens_used, 250);
-        assert_eq!(after_first.time_used_seconds, 12);
-        assert_eq!(after_first.updated_at, 150);
-        // Identity fields are preserved across accrual.
-        assert_eq!(after_first.goal_id, goal.goal_id);
-        assert_eq!(after_first.objective, goal.objective);
-        assert_eq!(after_first.status, goal.status);
-        assert_eq!(after_first.token_budget, goal.token_budget);
-        assert_eq!(after_first.created_at, goal.created_at);
-        assert_eq!(after_first.continuation_count, 0);
-
-        // Second accrual adds on top of the first (additive, not replacing).
-        let after_second = store
-            .record_thread_goal_usage("thread-1", 75, 8, 200)
-            .expect("record usage")
-            .expect("goal exists");
-        assert_eq!(after_second.tokens_used, 325);
-        assert_eq!(after_second.time_used_seconds, 20);
-        assert_eq!(after_second.updated_at, 200);
-
-        // A stale `now` must not move updated_at backwards.
-        let after_stale = store
-            .record_thread_goal_usage("thread-1", 5, 1, 1)
-            .expect("record usage")
-            .expect("goal exists");
-        assert_eq!(after_stale.tokens_used, 330);
-        assert_eq!(after_stale.time_used_seconds, 21);
-        assert_eq!(after_stale.updated_at, 200);
-
-        // Read back through the normal getter to confirm durability.
-        let persisted = store
-            .get_thread_goal("thread-1")
-            .expect("read goal")
-            .expect("goal exists");
-        assert_eq!(persisted.tokens_used, 330);
-        assert_eq!(persisted.time_used_seconds, 21);
-    }
-
-    #[test]
-    fn record_thread_goal_usage_returns_none_without_goal() {
-        let store = temp_state_store("thread-goal-usage-missing");
-        store
-            .upsert_thread(&test_thread("thread-1"))
-            .expect("upsert thread");
-        // Thread exists but has no goal row yet: accrual is a no-op, not an error,
-        // and must not create a goal.
-        let result = store
-            .record_thread_goal_usage("thread-1", 100, 5, 999)
-            .expect("record usage on goalless thread");
-        assert!(result.is_none());
-        assert!(
-            store
-                .get_thread_goal("thread-1")
-                .expect("read goal")
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn record_thread_goal_continuation_accumulates_durably() {
-        let store = temp_state_store("thread-goal-continuation");
-        store
-            .upsert_thread(&test_thread("thread-1"))
-            .expect("upsert thread");
-
-        let mut goal = test_goal("thread-1", "Keep working across turns");
-        goal.updated_at = 100;
-        store.upsert_thread_goal(&goal).expect("upsert goal");
-
-        let after_first = store
-            .record_thread_goal_continuation("thread-1", 120)
-            .expect("record continuation")
-            .expect("goal exists");
-        assert_eq!(after_first.continuation_count, 1);
-        assert_eq!(after_first.tokens_used, goal.tokens_used);
-        assert_eq!(after_first.time_used_seconds, goal.time_used_seconds);
-        assert_eq!(after_first.updated_at, 120);
-
-        let after_second = store
-            .record_thread_goal_continuation("thread-1", 110)
-            .expect("record second continuation")
-            .expect("goal exists");
-        assert_eq!(after_second.continuation_count, 2);
-        assert_eq!(after_second.updated_at, 120);
-
-        let persisted = store
-            .get_thread_goal("thread-1")
-            .expect("read goal")
-            .expect("goal exists");
-        assert_eq!(persisted.continuation_count, 2);
     }
 
     // ── $CODEWHALE_HOME override tests ──────────────────────────────
