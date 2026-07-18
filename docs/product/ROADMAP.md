@@ -947,6 +947,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   输出渲染保持不变；MCP config/connect/tools/OAuth 及 stdio/HTTP/SSE transport 不经过该
   TUI helper，均未改变。定向 history 72/72、tool-output renderer 1/1、presenter 13/13、
   canonical Run 19/19、PTY 6/6 和 TUI all-target check 均通过。
+- M4-C 已删除只由自身测试调用的 `footer_ui::one_line_summary`。真实 footer/sidebar/tool
+  output 摘要、截断和 `strip_ansi_into` 路径均保留；footer 9/9、canonical Run 19/19、
+  PTY 6/6 与 TUI all-target check 通过。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

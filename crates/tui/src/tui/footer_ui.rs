@@ -218,7 +218,7 @@ pub(crate) fn footer_working_label_frame(now_ms: u64, fancy_animations: bool) ->
 mod tests {
     use super::{
         active_subagent_status_label, footer_state_label, footer_working_label_frame,
-        footer_workspace_spans, one_line_summary, render_footer_from,
+        footer_workspace_spans, render_footer_from,
     };
     use crate::config::Config;
     use crate::tui::app::{App, TuiOptions};
@@ -230,13 +230,6 @@ mod tests {
         assert_eq!(footer_working_label_frame(399, false), 0);
         assert_eq!(footer_working_label_frame(1_600, false), 0);
         assert_eq!(footer_working_label_frame(1_600, true), 4);
-    }
-
-    #[test]
-    fn one_line_summary_strips_ansi_before_collapsing_text() {
-        let summary = one_line_summary("read \x1b[38;2;6;174;242mfile.rs\x1b[0m", 80);
-        assert_eq!(summary, "read file.rs");
-        assert!(!summary.contains("38;2"));
     }
 
     #[test]
@@ -467,15 +460,6 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
         return;
     }
     snapshot.record(tool_activity_label_for_name(&tool.name), tool.status, None);
-}
-
-pub(crate) fn one_line_summary(text: &str, max_width: usize) -> String {
-    let mut cleaned = String::with_capacity(text.len());
-    crate::tui::osc8::strip_ansi_into(text, &mut cleaned);
-    truncate_line_to_width(
-        &cleaned.split_whitespace().collect::<Vec<_>>().join(" "),
-        max_width,
-    )
 }
 
 /// Build [`FooterProps`] from a user-configured `status_items` slice.
