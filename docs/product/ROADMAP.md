@@ -707,6 +707,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   shell/action 风险解析。`crates/tools` 的 production executor 现在是
   `ToolApprovalPrompt::risk` 的唯一事实 owner，TUI 只把 canonical `Routine`/`Elevated`/
   `Critical` 一对一投影成展示 stakes；实际批准仍只通过 canonical interaction/RunStore。
+- M4-C 已物理删除旧 Engine 遗留的 post-edit LSP 编译岛：`LspManager`、stdio
+  transport、diagnostic renderer 和 language registry 的所有构造/诊断调用都仅存在于
+  模块自测，canonical Runtime 从未消费。同步删除两套零消费者 `[lsp]` typed
+  schema、默认显示 `lsp: on` 的虚假侧栏状态和专属配置/参考文档。当前不会启动
+  language server 或注入合成模型消息；M5 的 RepoGraph LSP definition/reference 目标保留，
+  只能在 canonical context/tools owner 下以纵向实现和 A/B 重新建立。
 - M4-C 已删除未注册、零执行调用方的旧 TUI `RequestUserInputTool`/parser 和永远为 `None`
   的 prompt shadow。保留的 UserInput modal 直接使用 canonical protocol 类型，并继续通过
   `AgentRuntime` interaction 与 `RunStore` 提交或取消，不再经过第二套 TUI ToolSpec。

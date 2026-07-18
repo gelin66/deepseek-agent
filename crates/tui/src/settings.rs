@@ -284,7 +284,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "is_false")]
     pub sidebar_auto_collapse_opt_in: bool,
     /// Enable the session-context panel (#504). Shows working set, tokens,
-    /// cost, MCP/LSP status, cycle count, and memory info.
+    /// cost, MCP status, cycle count, and memory info.
     pub context_panel: bool,
     /// Cost display currency: usd or cny.
     pub cost_currency: String,

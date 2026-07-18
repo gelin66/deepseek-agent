@@ -476,10 +476,6 @@ pub struct ConfigToml {
     /// enabled with 7-day retention when absent.
     #[serde(default)]
     pub snapshots: Option<SnapshotsToml>,
-    /// Post-edit LSP diagnostics injection (#136). When absent, the engine
-    /// applies the defaults documented in [`LspConfigToml`].
-    #[serde(default)]
-    pub lsp: Option<LspConfigToml>,
     /// Per-model harness profiles (#2693). Runtime wiring lands in follow-up
     /// v0.9 slices; this is the durable config data model.
     #[serde(default)]
@@ -1509,46 +1505,13 @@ impl Default for NetworkPolicyToml {
     }
 }
 
-/// User-defined LSP server for one file extension (used inside
-/// [`LspConfigToml::custom`]).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct CustomLspDef {
-    /// LSP `languageId` value used in `textDocument/didOpen`.
-    pub language_id: String,
-    /// Executable to spawn.
-    pub command: String,
-    /// Arguments passed to the executable.
-    #[serde(default)]
-    pub args: Vec<String>,
-}
-
-/// On-disk schema for the `[lsp]` table (#136). See `config.example.toml`
-/// for documentation. All fields are optional so the TUI runtime can fall
-/// back to its own defaults when keys are absent.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct LspConfigToml {
-    /// Master switch.
-    pub enabled: Option<bool>,
-    /// Maximum time to wait for diagnostics after an edit, in milliseconds.
-    pub poll_after_edit_ms: Option<u64>,
-    /// Cap on diagnostics surfaced per file.
-    pub max_diagnostics_per_file: Option<usize>,
-    /// When `true`, warnings (severity 2) are surfaced in addition to errors.
-    pub include_warnings: Option<bool>,
-    /// Optional override for the `language -> [cmd, ...args]` table.
-    pub servers: Option<BTreeMap<String, Vec<String>>>,
-    /// User-defined LSP servers for file extensions not in the built-in
-    /// registry. Keyed by extension (e.g. `"php"`, `"rb"`).
-    pub custom: Option<BTreeMap<String, CustomLspDef>>,
-}
-
 impl ConfigToml {
     /// Merge safe project-level overrides from `$WORKSPACE/.codewhale/config.toml`
     /// or legacy `$WORKSPACE/.deepseek/config.toml`.
     ///
     /// Repo-local config is untrusted input. This helper intentionally ignores
     /// credentials, endpoints, provider selection, auth/session values, telemetry,
-    /// network policy, skill registry, LSP command tables, and unknown extras.
+    /// network policy, skill registry, and unknown extras.
     /// Approval and sandbox values may only tighten the existing user/global
     /// posture.
     pub fn merge_project_overrides(&mut self, project: ConfigToml) {

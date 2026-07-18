@@ -420,6 +420,12 @@ M4-C foreground 切换后还已物理删除：
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与
   展示，不再根据工具名或参数重算风险。
+- 旧 Engine 的 post-edit LSP 集成。`crates/tui/src/lsp` 中的 `LspManager`、stdio transport、
+  `publishDiagnostics` parser、diagnostic renderer 和 language registry 没有任何生产构造方，
+  所有 manager 调用都仅属于自测；该四文件编译岛、TUI/`codewhale-config` 的重复
+  `[lsp]` schema、侧栏虚假 `lsp: on/off` 状态和专属文档已同步删除。MCP transport 及
+  `notifications/initialized` 不在该路径，继续保留。M5 若用 LSP 补强 RepoGraph，必须在
+  canonical context/tools 路径重新实现并评测，不恢复 TUI Engine 兼容层。
 - `key_shortcuts` 中零调用的 copy/paste/control-like/Ctrl-H predicates；保留首启输入所需
   的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
 - 零生产消费者的通用 `[vision_model]`/`image_analyze` 配置与 feature；正式模型面仍只有

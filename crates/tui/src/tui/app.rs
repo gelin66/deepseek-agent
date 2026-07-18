@@ -1886,9 +1886,6 @@ pub struct App {
     /// back to original indices for the `HideCell` / `ShowCell` actions.
     pub collapsed_cell_map: Vec<usize>,
 
-    /// Whether LSP diagnostics are currently enabled. Mirrors the config file
-    /// `[lsp].enabled` setting. Toggled at runtime via `/lsp on|off`.
-    pub lsp_enabled: bool,
     /// Optional title shown in the composer border.
     pub session_title: Option<String>,
 
@@ -2546,7 +2543,6 @@ impl App {
             quit_armed_until: None,
             collapsed_cells: HashSet::new(),
             collapsed_cell_map: Vec::new(),
-            lsp_enabled: config.lsp.as_ref().and_then(|l| l.enabled).unwrap_or(true),
             composer_arrows_scroll: config
                 .tui
                 .as_ref()

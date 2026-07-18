@@ -1409,7 +1409,7 @@ fn agent_status_marker(
 /// Session-context panel (#504) — consolidated session state overview.
 ///
 /// Surfaces at-a-glance: working set, token usage / context %, running
-/// cost, MCP server count, LSP toggle state, cycle count, and memory
+/// cost, MCP server count, cycle count, and memory
 /// file size + mtime. Each section is a compact one-liner so the panel
 /// reads as a dashboard rather than a scrolling list.
 fn render_context_panel(f: &mut Frame, area: Rect, app: &mut App) {
@@ -1462,13 +1462,6 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &mut App) {
             Style::default().fg(theme.text_muted),
         )));
     }
-
-    // ── LSP ──────────────────────────────────────────────────────
-    let lsp_label = if app.lsp_enabled { "on" } else { "off" };
-    lines.push(Line::from(Span::styled(
-        format!("lsp: {lsp_label}"),
-        Style::default().fg(theme.text_muted),
-    )));
 
     // ── Memory ───────────────────────────────────────────────────
     if app.use_memory {

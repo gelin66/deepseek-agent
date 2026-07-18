@@ -44,7 +44,6 @@ mod hashing;
 mod hooks;
 mod localization;
 mod logging;
-mod lsp;
 mod mcp;
 mod model_catalog;
 mod models;
