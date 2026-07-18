@@ -621,6 +621,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   canonical Run 时 `ToolPolicy.allowed` 明确为 `None`；mode 权限基线只保留在真实调用方
   `App`。canonical Runtime terminal、RunStore、确定性 `run_verifiers` 和多 Agent/Fleet
   均未改变。
+- M4-C 已将 WorkSurface 收敛为 task、同步 shell run、canonical child Agent 与 Todo 的
+  只读投影：删除从未被生产事件循环调用的键盘/鼠标输入、焦点/选择/滚动、打开详情、
+  停止确认、命中区和失效 `/task`/`/jobs` 动作。top/left/right 布局、状态排序、Todo 和
+  canonical child 投影均保留；固定窗口不再显示实际不可操作的滚动条或动作控件。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

@@ -55,6 +55,11 @@ consumer，不能作为 M5 已有 evidence owner。M5 必须在 `protocol/runtim
 TaskContract/EvidenceReceipt/Host completion 链路；历史测试只能作为反例参考，不能通过
 adapter 恢复旧状态机。
 
+WorkSurface 现在只从 task panel、canonical child projection 和 TodoStore 读取状态并渲染
+top/left/right 布局。旧键盘/鼠标 handler 从未接入生产事件循环，却生成不存在的 `/task` 与
+`/jobs` 命令；该交互岛及其焦点、选择、滚动、打开、停止和 hitbox 状态已物理删除。
+WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
+
 ## 2. 已统一的生产链
 
 ### Application service

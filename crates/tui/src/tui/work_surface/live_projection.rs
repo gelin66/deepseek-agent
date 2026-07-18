@@ -42,7 +42,6 @@ pub(super) struct LiveWorkRow {
     pub state: LiveWorkState,
     pub status: String,
     pub label: String,
-    pub detail: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -94,7 +93,6 @@ impl LiveWorkProjection {
                                     state: LiveWorkState::Active,
                                     status: "running".to_string(),
                                     label: format!("shell: {}", exec.command),
-                                    detail: shell_id.to_string(),
                                 },
                             );
                         }
@@ -113,7 +111,6 @@ impl LiveWorkProjection {
                                     state: LiveWorkState::Waiting,
                                     status: "waiting".to_string(),
                                     label: "shell wait".to_string(),
-                                    detail: shell_id,
                                 },
                             );
                         }
@@ -137,10 +134,6 @@ impl LiveWorkProjection {
                     },
                     status: status.to_string(),
                     label: format!("子 Agent {}", index + 1),
-                    detail: child
-                        .handoff_content
-                        .clone()
-                        .unwrap_or_else(|| child.child_run_id.to_string()),
                 },
             );
         }
@@ -188,7 +181,6 @@ fn row_from_task(task: &TaskPanelEntry, kind: LiveWorkKind, identity: String) ->
         state,
         status: task.status.clone(),
         label: task.prompt_summary.clone(),
-        detail: task.id.clone(),
     }
 }
 

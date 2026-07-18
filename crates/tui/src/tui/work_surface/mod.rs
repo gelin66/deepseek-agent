@@ -1,17 +1,10 @@
-//! Ocean work-surface ownership.
-//!
-//! This is the replacement boundary for the transcript-top Tasks / To-do /
-//! workers UI. Legacy sidebar code may feed other treatments, but Ocean state,
-//! rendering, focus, scrolling, and row actions live here as one component.
+//! Read-only work projection for tasks, tool runs, canonical child agents and
+//! todos. Runtime and stores remain the sole owners of all displayed facts.
 
-mod input;
-mod interaction;
 mod live_projection;
 mod model;
 mod render;
 
-pub use input::{handle_key, handle_mouse};
-pub use interaction::tick_stop_arm;
 pub use model::{WorkSurfacePlacement, WorkSurfaceState};
 pub use render::{height, render, split_chat};
 
@@ -19,7 +12,6 @@ pub use render::{height, render, split_chat};
 mod tests {
     use std::path::PathBuf;
 
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
     use unicode_width::UnicodeWidthStr;
 
@@ -93,7 +85,7 @@ mod tests {
     }
 
     #[test]
-    fn projection_keeps_every_todo_reachable() {
+    fn projection_keeps_every_todo_in_the_read_only_view_model() {
         let mut app = app();
         add_task(&mut app, "one");
         let mut todos = app.todos.try_lock().expect("todos");
@@ -108,86 +100,17 @@ mod tests {
         drop(todos);
 
         let rows = super::model::project(&mut app);
-        let todo_rows = rows
-            .iter()
-            .filter(|row| row.id.0.starts_with("todo:"))
-            .count();
-        assert_eq!(todo_rows, 4);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.id.starts_with("todo:"))
+                .count(),
+            4
+        );
         assert!(rows.iter().any(|row| row.label == "later"));
     }
 
     #[test]
-    fn overflow_has_panel_owned_scroll_and_stable_selection() {
-        let mut app = app();
-        for id in ["one", "two", "three", "four"] {
-            add_task(&mut app, id);
-        }
-        let backend = TestBackend::new(80, 5);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| super::render(frame, frame.area(), &mut app))
-            .expect("draw");
-        assert!(app.work_surface.total_rows > app.work_surface.visible_rows);
-        assert_eq!(app.work_surface.last_area.expect("area").width, 80);
-
-        let transcript_delta = app.viewport.pending_scroll_delta;
-        let outcome = super::handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: 10,
-                row: 2,
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert!(outcome.consumed);
-        assert_eq!(app.viewport.pending_scroll_delta, transcript_delta);
-        assert!(app.work_surface.scroll_offset > 0);
-    }
-
-    #[test]
-    fn keyboard_navigation_is_panel_local_when_focused() {
-        let mut app = app();
-        for id in ["one", "two", "three"] {
-            add_task(&mut app, id);
-        }
-        app.work_surface.visible_rows = 2;
-        assert!(
-            super::handle_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT)
-            )
-            .is_some()
-        );
-        let first = app.work_surface.selected.clone();
-        let _ = super::handle_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-        assert_ne!(app.work_surface.selected, first);
-        assert!(app.work_surface.focused);
-    }
-
-    #[test]
-    fn printable_keys_release_panel_focus_for_the_composer() {
-        let mut app = app();
-        add_task(&mut app, "one");
-        assert!(
-            super::handle_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT)
-            )
-            .is_some()
-        );
-        assert!(app.work_surface.focused);
-
-        let outcome = super::handle_key(
-            &mut app,
-            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
-        );
-        assert!(outcome.is_none(), "composer must receive the printable key");
-        assert!(!app.work_surface.focused);
-    }
-
-    #[test]
-    fn compact_surface_preserves_task_todo_and_stop_control() {
+    fn compact_surface_preserves_task_and_todo_without_fake_controls() {
         let mut app = app();
         add_task(&mut app, "shell_compact");
         app.todos
@@ -199,22 +122,12 @@ mod tests {
         terminal
             .draw(|frame| super::render(frame, frame.area(), &mut app))
             .expect("draw");
-        let text = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains("task shell_compact"), "{text}");
         assert!(text.contains("keep prompt"), "{text}");
-        assert_eq!(app.work_surface.total_rows, 2);
-        assert!(
-            app.work_surface
-                .hitboxes
-                .iter()
-                .any(|hitbox| hitbox.stop_zone_start_col.is_some())
-        );
+        for fake_control in ["[打开]", "[停止]", "确认", "正在停止"] {
+            assert!(!text.contains(fake_control), "{fake_control}: {text}");
+        }
     }
 
     #[test]
@@ -228,13 +141,7 @@ mod tests {
         terminal
             .draw(|frame| super::render(frame, frame.area(), &mut app))
             .expect("draw");
-        let text = terminal
-            .backend()
-            .buffer()
-            .content()
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
+        let text = buffer_text(terminal.backend().buffer());
         assert!(text.contains('◆'), "waiting keeps a still attention mark");
         assert!(
             !text.contains('›'),
@@ -254,56 +161,40 @@ mod tests {
             .draw(|frame| super::render(frame, frame.area(), &mut app))
             .expect("draw");
         let text = buffer_text(terminal.backend().buffer());
-        assert_eq!(app.work_surface.total_rows, 4, "section plus three workers");
+        assert_eq!(
+            app.work_surface
+                .latest_rows
+                .iter()
+                .filter(|row| row.id.starts_with("worker:"))
+                .count(),
+            3
+        );
         assert!(text.contains("子 Agent 1"), "{text}");
         assert!(text.contains("子 Agent 3"), "{text}");
     }
 
     #[test]
-    fn disappearing_work_clears_owned_mouse_state() {
+    fn bounded_projection_is_deterministic_and_does_not_claim_scrollability() {
         let mut app = app();
-        add_task(&mut app, "gone");
-        let backend = TestBackend::new(80, 8);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| super::render(frame, frame.area(), &mut app))
-            .expect("draw");
-        assert!(app.work_surface.last_area.is_some());
-        app.work_surface.focused = true;
-        app.task_panel.clear();
-
-        assert_eq!(super::height(&mut app, 80, 8, false), 0);
-        assert!(app.work_surface.last_area.is_none());
-        assert!(app.work_surface.hitboxes.is_empty());
-        assert!(!app.work_surface.focused);
-    }
-
-    #[test]
-    fn compact_surface_keeps_overflow_rows_reachable() {
-        let mut app = app();
-        for id in ["one", "two", "three"] {
+        for id in ["one", "two", "three", "four", "five", "six"] {
             add_task(&mut app, id);
         }
-        for text in ["first", "second", "third"] {
-            app.todos
-                .try_lock()
-                .expect("todos")
-                .add(text.to_string(), TodoStatus::Pending);
-        }
-        let backend = TestBackend::new(40, 3);
+        let backend = TestBackend::new(80, 4);
         let mut terminal = Terminal::new(backend).expect("terminal");
         terminal
             .draw(|frame| super::render(frame, frame.area(), &mut app))
-            .expect("draw");
-        assert_eq!(app.work_surface.total_rows, 6);
-        app.work_surface.focused = true;
-        let _ = super::handle_key(&mut app, KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
-        assert!(app.work_surface.scroll_offset > 0);
+            .expect("first draw");
+        let first = buffer_text(terminal.backend().buffer());
+        terminal
+            .draw(|frame| super::render(frame, frame.area(), &mut app))
+            .expect("second draw");
+        let second = buffer_text(terminal.backend().buffer());
+
+        assert_eq!(first, second);
+        assert_eq!(app.work_surface.latest_rows.len(), 7);
         assert!(
-            app.work_surface
-                .selected
-                .as_ref()
-                .is_some_and(|id| id.0.starts_with("todo:"))
+            !first.contains('┃'),
+            "read-only view must not show a fake thumb"
         );
     }
 
@@ -331,7 +222,6 @@ mod tests {
             terminal
                 .draw(|frame| super::render(frame, rail, &mut app))
                 .expect("draw");
-            assert_eq!(app.work_surface.last_area, Some(rail));
             let divider_x = if placement == super::WorkSurfacePlacement::Left {
                 rail.right().saturating_sub(1)
             } else {
@@ -339,47 +229,6 @@ mod tests {
             };
             assert_eq!(terminal.backend().buffer()[(divider_x, 0)].symbol(), "│");
         }
-    }
-
-    #[test]
-    fn side_rail_mouse_capture_stays_inside_the_rail() {
-        let mut app = app();
-        for id in ["one", "two", "three", "four"] {
-            add_task(&mut app, id);
-        }
-        app.work_surface.placement = super::WorkSurfacePlacement::Right;
-        assert_eq!(super::height(&mut app, 100, 24, false), 0);
-        let area = ratatui::layout::Rect::new(0, 0, 100, 4);
-        let (chat, rail) = super::split_chat(&mut app, area, false);
-        let rail = rail.expect("right rail");
-        let backend = TestBackend::new(100, 4);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| super::render(frame, rail, &mut app))
-            .expect("draw");
-
-        let inside = super::handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: rail.x.saturating_add(2),
-                row: rail.y.saturating_add(1),
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert!(inside.consumed);
-        assert!(app.work_surface.scroll_offset > 0);
-
-        let outside = super::handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::ScrollDown,
-                column: chat.x.saturating_add(2),
-                row: chat.y.saturating_add(1),
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert!(!outside.consumed);
     }
 
     #[test]
@@ -396,7 +245,7 @@ mod tests {
         assert_eq!(
             app.work_surface.placement,
             super::WorkSurfacePlacement::Right,
-            "Classic fallback must not overwrite the saved Ocean preference"
+            "fallback must not overwrite the saved preference"
         );
 
         assert_eq!(super::height(&mut app, 60, 16, false), 5);
@@ -404,187 +253,5 @@ mod tests {
         let (chat, rail) = super::split_chat(&mut app, narrow, false);
         assert_eq!(chat, narrow);
         assert!(rail.is_none());
-    }
-
-    #[test]
-    fn enter_toggles_already_opened_worker_closed() {
-        let mut app = app();
-        for index in 1..=2 {
-            start_child(&mut app, &format!("agent_{index}"));
-        }
-        app.work_surface.focused = true;
-        let rows = super::model::project(&mut app);
-        let worker = rows
-            .iter()
-            .find(|row| row.id.0 == "worker:agent_1")
-            .expect("worker");
-        app.work_surface.selected = Some(worker.id.clone());
-        let open = worker.primary_action.clone();
-        assert!(super::interaction::activate_primary(&mut app, &worker.id, open.clone()).is_some());
-        assert_eq!(app.work_surface.opened.as_ref(), Some(&worker.id));
-        assert!(super::interaction::activate_primary(&mut app, &worker.id, open).is_none());
-        assert!(app.work_surface.opened.is_none());
-        assert_eq!(app.work_surface.selected.as_ref(), Some(&worker.id));
-    }
-
-    #[test]
-    fn canonical_worker_has_no_fake_direct_stop_action() {
-        let mut app = app();
-        start_child(&mut app, "agent_1");
-        let backend = TestBackend::new(100, 8);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| super::render(frame, frame.area(), &mut app))
-            .expect("draw");
-        let worker = app
-            .work_surface
-            .latest_rows
-            .iter()
-            .find(|row| row.id.0 == "worker:agent_1")
-            .expect("worker")
-            .clone();
-        assert!(worker.stop_action.is_none());
-    }
-
-    #[test]
-    fn todo_open_records_click_action() {
-        let mut app = app();
-        app.todos
-            .try_lock()
-            .expect("todos")
-            .add("ship underwater strip".into(), TodoStatus::InProgress);
-        let backend = TestBackend::new(100, 8);
-        let mut terminal = Terminal::new(backend).expect("terminal");
-        terminal
-            .draw(|frame| super::render(frame, frame.area(), &mut app))
-            .expect("draw");
-        let hit = app
-            .work_surface
-            .hitboxes
-            .iter()
-            .find(|hit| hit.id.0.starts_with("todo:"))
-            .expect("todo hitbox");
-        assert!(hit.open_zone_start_col.is_some());
-        assert!(hit.open_zone_end_col.is_some());
-        let open_col = hit.open_zone_start_col.expect("open");
-        let row_y = hit.row_y;
-        let outcome = super::handle_mouse(
-            &mut app,
-            MouseEvent {
-                kind: MouseEventKind::Down(crossterm::event::MouseButton::Left),
-                column: open_col,
-                row: row_y,
-                modifiers: KeyModifiers::NONE,
-            },
-        );
-        assert!(outcome.consumed);
-        assert!(matches!(
-            outcome.action,
-            Some(crate::tui::app::SidebarRowAction::InspectText { .. })
-        ));
-    }
-
-    #[test]
-    fn focus_claim_clears_transcript_selection_owner() {
-        use crate::tui::selection::TranscriptSelectionPoint;
-        let mut app = app();
-        add_task(&mut app, "one");
-        app.viewport.transcript_selection.anchor = Some(TranscriptSelectionPoint {
-            line_index: 0,
-            column: 0,
-        });
-        app.viewport.transcript_selection.head = app.viewport.transcript_selection.anchor;
-        assert!(
-            super::handle_key(
-                &mut app,
-                KeyEvent::new(KeyCode::Char('w'), KeyModifiers::ALT)
-            )
-            .is_some()
-        );
-        assert!(app.work_surface.focused);
-        assert!(!app.viewport.transcript_selection.is_active());
-    }
-
-    #[test]
-    fn placements_share_keyboard_toggle_without_worker_stop() {
-        for placement in [
-            super::WorkSurfacePlacement::Top,
-            super::WorkSurfacePlacement::Left,
-            super::WorkSurfacePlacement::Right,
-        ] {
-            let mut app = app();
-            app.work_surface.placement = placement;
-            start_child(&mut app, "agent_1");
-            let area = ratatui::layout::Rect::new(0, 0, 100, 12);
-            let render_area = match placement {
-                super::WorkSurfacePlacement::Top => {
-                    let _ = super::height(&mut app, 100, 24, false);
-                    area
-                }
-                super::WorkSurfacePlacement::Left | super::WorkSurfacePlacement::Right => {
-                    // Project rows before split_chat so the side rail exists.
-                    let _ = super::model::project(&mut app);
-                    let (_, rail) = super::split_chat(&mut app, area, false);
-                    rail.expect("rail")
-                }
-            };
-            let backend = TestBackend::new(100, 12);
-            let mut terminal = Terminal::new(backend).expect("terminal");
-            terminal
-                .draw(|frame| super::render(frame, render_area, &mut app))
-                .expect("draw");
-            app.work_surface.focused = true;
-            let worker_id = app
-                .work_surface
-                .latest_rows
-                .iter()
-                .find(|row| row.id.0.starts_with("worker:"))
-                .map(|row| row.id.clone())
-                .expect("worker");
-            app.work_surface.selected = Some(worker_id.clone());
-            let worker = app
-                .work_surface
-                .latest_rows
-                .iter()
-                .find(|row| row.id == worker_id)
-                .expect("worker row");
-            let open = worker.primary_action.clone();
-            assert!(worker.stop_action.is_none(), "{placement:?}");
-            assert!(
-                super::interaction::activate_primary(&mut app, &worker_id, open.clone()).is_some(),
-                "{placement:?}"
-            );
-            assert!(
-                super::interaction::activate_primary(&mut app, &worker_id, open).is_none(),
-                "{placement:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn moving_selection_clears_armed_stop() {
-        let mut app = app();
-        add_task(&mut app, "task_1");
-        add_task(&mut app, "task_2");
-        app.work_surface.focused = true;
-        let rows = super::model::project(&mut app);
-        let selectable: Vec<_> = rows
-            .iter()
-            .filter(|row| row.selectable)
-            .map(|row| row.id.clone())
-            .collect();
-        assert!(selectable.len() >= 2);
-        let first = selectable[0].clone();
-        let second = selectable[1].clone();
-        app.work_surface.selected = Some(first.clone());
-        let stop = rows
-            .iter()
-            .find(|row| row.id == first)
-            .and_then(|row| row.stop_action.clone())
-            .expect("task stop");
-        assert!(super::interaction::activate_stop(&mut app, &first, stop).is_none());
-        app.work_surface.selected = Some(second);
-        super::interaction::on_selection_changed(&mut app);
-        assert!(app.work_surface.stop_arm.is_none());
     }
 }

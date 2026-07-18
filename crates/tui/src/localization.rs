@@ -565,13 +565,7 @@ pub enum MessageId {
     // Sidebar work strip.
     SidebarTasksLabel,
     SidebarTodoLabel,
-    SidebarOpenControl,
-    SidebarStopControl,
     SidebarDestructiveArmed,
-    /// Row-local Stop confirm label once armed (TUI-DOG-006).
-    WorkSurfaceStopConfirmControl,
-    /// Transient label while a confirmed Stop is in flight.
-    WorkSurfaceStoppingControl,
     // Composer slash menu.
     ComposerSlashMenuHint,
     // Approval modal — repository law band.
@@ -1125,11 +1119,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::FleetProfileProviderUnconfigured,
     MessageId::SidebarTasksLabel,
     MessageId::SidebarTodoLabel,
-    MessageId::SidebarOpenControl,
-    MessageId::SidebarStopControl,
     MessageId::SidebarDestructiveArmed,
-    MessageId::WorkSurfaceStopConfirmControl,
-    MessageId::WorkSurfaceStoppingControl,
     MessageId::ComposerSlashMenuHint,
     MessageId::ApprovalRepoLawBadge,
     MessageId::ApprovalRepoLawTitle,
