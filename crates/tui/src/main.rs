@@ -25,7 +25,6 @@ use codewhale_context::{project_context, prompts, skills as skill_context};
 use rust_i18n::i18n;
 i18n!("locales", fallback = ["zh-Hans"]);
 
-mod acp_server;
 mod artifacts;
 mod audit;
 mod auto_reasoning;
@@ -279,8 +278,6 @@ enum Commands {
     Features(FeaturesCli),
     /// Run a command inside the sandbox
     Sandbox(SandboxArgs),
-    /// Run the ACP stdio server
-    Serve(ServeArgs),
     /// Resume a canonical Agent run by exact Run ID (use --last for newest)
     Resume {
         /// Exact canonical Run ID
@@ -1060,13 +1057,6 @@ struct ApplyArgs {
     patch_file: Option<PathBuf>,
 }
 
-#[derive(Args, Debug, Clone)]
-struct ServeArgs {
-    /// Start ACP server over stdio for editor clients such as Zed
-    #[arg(long, required = true)]
-    acp: bool,
-}
-
 #[derive(Subcommand, Debug, Clone)]
 enum McpCommand {
     /// List configured MCP servers
@@ -1503,15 +1493,6 @@ async fn run_async_main() -> Result<()> {
                 run_features_command(&config, command)
             }
             Commands::Sandbox(args) => run_sandbox_command(args),
-            Commands::Serve(args) => {
-                let workspace = cli.workspace.clone().unwrap_or_else(|| {
-                    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
-                });
-                debug_assert!(args.acp);
-                let config = load_config_from_cli(&cli)?;
-                let model = config.default_model();
-                acp_server::run_acp_server(config, model, workspace).await
-            }
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
                 let resume_id = if last {
@@ -8253,8 +8234,9 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn removed_mcp_server_commands_fail_during_argument_parsing() {
+    fn removed_server_commands_fail_during_argument_parsing() {
         for args in [
+            ["codewhale-tui", "serve", "--acp"].as_slice(),
             ["codewhale-tui", "serve", "--mcp"].as_slice(),
             ["codewhale-tui", "mcp", "add-self"].as_slice(),
         ] {

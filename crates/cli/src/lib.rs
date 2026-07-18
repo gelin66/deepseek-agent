@@ -187,11 +187,7 @@ struct Cli {
     continue_session: bool,
     #[arg(short = 'p', long = "prompt", value_name = "PROMPT")]
     prompt_flag: Option<String>,
-    #[arg(
-        value_name = "PROMPT",
-        trailing_var_arg = true,
-        allow_hyphen_values = true
-    )]
+    #[arg(value_name = "PROMPT")]
     prompt: Vec<String>,
     #[command(subcommand)]
     command: Option<Commands>,
@@ -264,13 +260,6 @@ Runtime, not Fleet.
     Mcp(TuiPassthroughArgs),
     /// Inspect TUI feature flags.
     Features(TuiPassthroughArgs),
-    /// Run the existing ACP stdio server.
-    #[command(after_help = "\
-Modes:
-  codewhale serve --acp     Start ACP over stdio for editor clients
-
-The canonical local HTTP/SSE Run API is `codewhale app-server`.")]
-    Serve(ServeArgs),
     /// Generate shell completions for the TUI binary.
     Completions(TuiPassthroughArgs),
     /// Configure provider credentials.
@@ -357,13 +346,6 @@ struct RunsArgs {
 struct TuiPassthroughArgs {
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     args: Vec<String>,
-}
-
-#[derive(Debug, Args, Clone)]
-struct ServeArgs {
-    /// Start the existing ACP server over stdio.
-    #[arg(long, required = true)]
-    acp: bool,
 }
 
 #[derive(Debug, Args)]
@@ -1138,10 +1120,6 @@ fn run() -> Result<()> {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("features", args))
         }
-        Some(Commands::Serve(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, serve_tui_args(args))
-        }
         Some(Commands::Completions(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("completions", args))
@@ -1258,11 +1236,6 @@ fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
     forwarded.push(command.to_string());
     forwarded.extend(args.args);
     forwarded
-}
-
-fn serve_tui_args(args: ServeArgs) -> Vec<String> {
-    debug_assert!(args.acp);
-    vec!["serve".to_owned(), "--acp".to_owned()]
 }
 
 fn reject_exec_global_flags(args: &[String]) -> Result<()> {
@@ -3014,15 +2987,13 @@ mod tests {
     }
 
     #[test]
-    fn obsolete_app_server_and_serve_flags_fail_closed() {
+    fn obsolete_app_server_flags_fail_closed() {
         for argv in [
             ["deepseek", "app-server", "--http"].as_slice(),
             ["deepseek", "app-server", "--mobile"].as_slice(),
             ["deepseek", "app-server", "--qr"].as_slice(),
             ["deepseek", "app-server", "--workers", "2"].as_slice(),
             ["deepseek", "app-server", "--config", "old.toml"].as_slice(),
-            ["deepseek", "serve", "--http"].as_slice(),
-            ["deepseek", "serve", "--mobile"].as_slice(),
         ] {
             let error = Cli::try_parse_from(argv).expect_err("obsolete flag must fail closed");
             assert_eq!(error.kind(), ErrorKind::UnknownArgument, "argv={argv:?}");
@@ -3035,12 +3006,19 @@ mod tests {
     }
 
     #[test]
-    fn serve_help_only_documents_acp() {
-        let help = help_for(&["codewhale", "serve", "--help"]);
-        assert!(help.contains("--acp"));
-        assert!(!help.contains("--mcp"));
-        assert!(!help.contains("--http"));
-        assert!(!help.contains("--mobile"));
+    fn removed_acp_command_is_not_dispatchable_but_explicit_prompt_remains_legal() {
+        let error = Cli::try_parse_from(["codewhale", "serve", "--acp"])
+            .expect_err("removed ACP command must fail during argument parsing");
+        assert_eq!(error.kind(), ErrorKind::UnknownArgument);
+
+        let explicit_prompt = parse_ok(&["codewhale", "--prompt", "serve --acp"]);
+        assert!(explicit_prompt.command.is_none());
+        assert_eq!(explicit_prompt.prompt_flag.as_deref(), Some("serve --acp"));
+        assert!(explicit_prompt.prompt.is_empty());
+        assert_eq!(
+            root_tui_passthrough(&explicit_prompt).expect("explicit ACP-shaped prompt"),
+            vec!["--prompt", "serve --acp"]
+        );
     }
 
     #[test]

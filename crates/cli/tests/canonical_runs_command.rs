@@ -378,7 +378,7 @@ async fn canonical_runs_bypasses_malformed_config_without_tui_or_credentials() {
 }
 
 #[test]
-fn retired_commands_fail_before_config_tui_store_or_model_startup() {
+fn removed_commands_and_flags_fail_before_config_tui_store_or_model_startup() {
     let home = tempfile::tempdir().expect("temporary CODEWHALE_HOME");
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let (fake_tui, marker) = install_tui_probe(home.path());
@@ -387,73 +387,63 @@ fn retired_commands_fail_before_config_tui_store_or_model_startup() {
     std::fs::write(home.path().join("config.toml"), "provider = [")
         .expect("write malformed config");
 
-    for (args, retired) in [
-        (vec!["sessions"], "sessions"),
-        (vec!["sessions", "--json"], "sessions"),
-        (vec!["fork", "legacy-session-id"], "fork"),
-        (vec!["fork", "--last"], "fork"),
-        (vec!["run"], "run"),
-        (vec!["run", "--help"], "run"),
-        (vec!["run", "speech", "paid input"], "run"),
-        (vec!["run", "exec", "paid input"], "run"),
-        (vec!["mcp-server"], "mcp-server"),
-        (vec!["mcp-server", "--legacy"], "mcp-server"),
-        (vec!["update"], "update"),
-        (vec!["update", "--help"], "update"),
-        (vec!["update", "--check"], "update"),
-        (
-            vec!["update", "--proxy", "socks5://127.0.0.1:1080"],
-            "update",
-        ),
-        (vec!["workflow"], "workflow"),
-        (
-            vec!["workflow", "run", "stopship", "--fleet", "v0868-stopship"],
-            "workflow",
-        ),
-        (vec!["workflow-tool"], "workflow-tool"),
-        (
-            vec![
-                "workflow-tool",
-                "--approval-source",
-                "explicit-workflow-command",
-                "--input-json",
-                r#"{"action":"run"}"#,
-            ],
+    for args in [
+        vec!["sessions"],
+        vec!["sessions", "--json"],
+        vec!["fork", "legacy-session-id"],
+        vec!["fork", "--last"],
+        vec!["run"],
+        vec!["run", "speech", "paid input"],
+        vec!["run", "exec", "paid input"],
+        vec!["mcp-server"],
+        vec!["mcp-server", "--legacy"],
+        vec!["update"],
+        vec!["update", "--check"],
+        vec!["update", "--proxy", "socks5://127.0.0.1:1080"],
+        vec!["workflow"],
+        vec!["workflow", "run", "stopship", "--fleet", "v0868-stopship"],
+        vec!["workflow-tool"],
+        vec![
             "workflow-tool",
-        ),
-        (vec!["mcp", "add-self"], "mcp add-self"),
-        (
-            vec!["mcp", "add-self", "--name", "legacy-self"],
-            "mcp add-self",
-        ),
+            "--approval-source",
+            "explicit-workflow-command",
+            "--input-json",
+            r#"{"action":"run"}"#,
+        ],
+        vec!["mcp", "add-self"],
+        vec!["mcp", "add-self", "--name", "legacy-self"],
+        vec!["serve", "--acp"],
+        vec!["serve", "--mcp"],
     ] {
         let output =
             run_dispatcher_with_tui_probe(home.path(), workspace.path(), &fake_tui, &marker, &args);
         assert!(
             !output.status.success(),
-            "retired command unexpectedly succeeded: {args:?}"
+            "removed command or flag unexpectedly succeeded: {args:?}"
         );
         assert!(
             output.stdout.is_empty(),
-            "retired command wrote stdout: {}",
+            "removed command or flag wrote stdout: {}",
             String::from_utf8_lossy(&output.stdout)
         );
         let stderr = String::from_utf8(output.stderr).expect("UTF-8 rejection");
-        assert!(
-            stderr.contains(&format!("命令 `codewhale {retired}` 已删除")),
-            "missing Chinese retired-command rejection for {args:?}: {stderr}"
-        );
+        if args.first() == Some(&"serve") {
+            assert!(
+                stderr.contains(&format!("unexpected argument '{}'", args[1])),
+                "removed serve flag did not fail in Clap: {args:?}: {stderr}"
+            );
+        }
         assert!(
             !stderr.contains("failed to parse config"),
-            "retired command reached ConfigStore: {stderr}"
+            "removed command or flag reached ConfigStore: {args:?}: {stderr}"
         );
         assert!(
             !marker.exists(),
-            "retired command started the TUI: {args:?}"
+            "removed command or flag started the TUI: {args:?}"
         );
         assert!(
             !home.path().join("state.db").exists(),
-            "retired command opened the canonical RunStore: {args:?}"
+            "removed command or flag opened the canonical RunStore: {args:?}"
         );
     }
 
@@ -497,35 +487,23 @@ fn retired_commands_fail_before_config_tui_store_or_model_startup() {
         "explicit --prompt workflow ... was mistaken for the retired command"
     );
 
-    // `serve` remains as an ACP-only command, so Clap rejects the removed MCP
-    // flag before `run()` can open ConfigStore or delegate to the TUI.
-    let output = Command::new(codewhale_binary())
-        .current_dir(workspace.path())
-        .env("CODEWHALE_HOME", home.path())
-        .env("DEEPSEEK_TUI_BIN", &fake_tui)
-        .env("CODEWHALE_TUI_MARKER", &marker)
-        .env_remove("DEEPSEEK_API_KEY")
-        .env_remove("CODEWHALE_CLI_API_KEY")
-        .args(["serve", "--mcp"])
-        .output()
-        .expect("run removed serve --mcp command");
-    assert!(
-        !output.status.success(),
-        "serve --mcp unexpectedly succeeded"
-    );
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8(output.stderr).expect("UTF-8 rejection");
-    assert!(
-        stderr.contains("unexpected argument '--mcp'"),
-        "serve --mcp was not rejected by argument parsing: {stderr}"
+    let explicit_acp_home =
+        tempfile::tempdir().expect("temporary explicit-ACP-prompt CODEWHALE_HOME");
+    let (explicit_acp_tui, explicit_acp_marker) = install_tui_probe(explicit_acp_home.path());
+    let explicit_acp_prompt = run_dispatcher_with_tui_probe(
+        explicit_acp_home.path(),
+        workspace.path(),
+        &explicit_acp_tui,
+        &explicit_acp_marker,
+        &["--prompt", "serve --acp"],
     );
     assert!(
-        !stderr.contains("failed to parse config"),
-        "serve --mcp reached ConfigStore: {stderr}"
+        explicit_acp_prompt.status.success(),
+        "explicit --prompt \"serve --acp\" should remain legal: {}",
+        String::from_utf8_lossy(&explicit_acp_prompt.stderr)
     );
-    assert!(!marker.exists(), "serve --mcp started the TUI");
     assert!(
-        !home.path().join("state.db").exists(),
-        "serve --mcp opened the canonical RunStore"
+        explicit_acp_marker.exists(),
+        "explicit --prompt \"serve --acp\" was mistaken for the removed command"
     );
 }
