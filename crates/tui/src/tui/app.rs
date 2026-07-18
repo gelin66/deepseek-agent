@@ -1543,10 +1543,6 @@ pub struct App {
     /// ready)` pairs; lookups fall back to "ready" for providers not present so
     /// an unknown entry is tried rather than silently skipped.
     provider_readiness: Vec<(ApiProvider, bool)>,
-    /// Session-local evidence from real provider requests and verification
-    /// probes. Unlike `provider_readiness` above, this never treats a saved key
-    /// as proof that the endpoint is healthy.
-    pub(crate) provider_health: crate::provider_readiness::ProviderReadinessSnapshot,
     /// Human-readable description of the last provider fallback event.
     pub last_fallback_reason: Option<String>,
     /// True when the active provider/base URL accepts arbitrary model IDs
@@ -2492,7 +2488,6 @@ impl App {
             api_provider: provider,
             provider_chain,
             provider_readiness,
-            provider_health: crate::provider_readiness::ProviderReadinessSnapshot::default(),
             last_fallback_reason: None,
             model_ids_passthrough,
             active_route_limits,

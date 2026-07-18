@@ -347,6 +347,8 @@ M4-C foreground 切换后还已物理删除：
 - 零调用方的旧 TUI MCP manager formatter/pager adapter；`McpPool`、transport、OAuth、
   配置加载与 model-visible MCP 工具仍是独立真实生产能力。
 - 零消费者的 `fast_hash` 类型别名与用户 regex LRU cache；真实正则消费者保留在各自 owner。
+- 只有自身测试、App 只默认构造且从不读取的通用 Provider readiness snapshot；DeepSeek
+  production transport 与 Doctor 明确探针继续分别承担请求和诊断职责。
 
 ## 6. 当前验证事实
 
