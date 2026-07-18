@@ -221,8 +221,6 @@ enum Commands {
     Logout,
     /// Manage provider authentication flows.
     Auth(TuiAuthArgs),
-    /// List available models from the configured API endpoint
-    Models(ModelsArgs),
     /// Run a non-interactive prompt. Use --auto for agent-with-tools mode.
     Exec(ExecArgs),
     /// Manage local Agent Fleet runs and workers
@@ -926,13 +924,6 @@ struct EvalArgs {
     record: Option<PathBuf>,
 }
 
-#[derive(Args, Debug, Clone, Default)]
-struct ModelsArgs {
-    /// Print models as pretty JSON
-    #[arg(long, default_value_t = false)]
-    json: bool,
-}
-
 #[derive(Args, Debug, Default, Clone)]
 struct FeatureToggles {
     /// Enable a feature (repeatable). Equivalent to `features.<name>=true`.
@@ -1252,10 +1243,6 @@ async fn run_async_main() -> Result<()> {
             Commands::Auth(args) => match args.command {
                 TuiAuthCommand::XaiDevice => run_xai_device_auth(cli.config.as_deref()),
             },
-            Commands::Models(args) => {
-                let config = load_config_from_cli(&cli)?;
-                run_models(&config, args).await
-            }
             Commands::Exec(args) => {
                 let config = load_config_from_cli(&cli)?;
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
@@ -4839,38 +4826,6 @@ fn run_features_command(config: &Config, command: FeaturesCli) -> Result<()> {
     }
 }
 
-async fn run_models(config: &Config, args: ModelsArgs) -> Result<()> {
-    use crate::client::DeepSeekClient;
-
-    let client = DeepSeekClient::new(config)?;
-    let mut models = client.list_models().await?;
-    models.sort_by(|a, b| a.id.cmp(&b.id));
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&models)?);
-        return Ok(());
-    }
-
-    if models.is_empty() {
-        println!("No models returned by the API.");
-        return Ok(());
-    }
-
-    let default_model = config.default_model();
-
-    println!("Available models (default: {default_model})");
-    for model in models {
-        let marker = if model.id == default_model { "*" } else { " " };
-        if let Some(owner) = model.owned_by {
-            println!("{marker} {} ({owner})", model.id);
-        } else {
-            println!("{marker} {}", model.id);
-        }
-    }
-
-    Ok(())
-}
-
 /// Test API connectivity by making a minimal request
 async fn test_api_connectivity(config: &Config) -> Result<()> {
     use crate::client::DeepSeekClient;
@@ -7604,6 +7559,8 @@ mod terminal_mode_tests {
             ["codewhale-tui", "speech"].as_slice(),
             ["codewhale-tui", "speech", "paid input", "--model", "tts"].as_slice(),
             ["codewhale-tui", "tts"].as_slice(),
+            ["codewhale-tui", "models"].as_slice(),
+            ["codewhale-tui", "models", "--json"].as_slice(),
             ["codewhale-tui", "serve", "--acp"].as_slice(),
             ["codewhale-tui", "serve", "--mcp"].as_slice(),
             ["codewhale-tui", "mcp", "add-self"].as_slice(),

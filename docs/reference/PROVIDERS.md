@@ -380,8 +380,6 @@ used by faster/explore sub-agents.
 
 `codewhale model list` and `codewhale model resolve` use the static registry in
 `crates/agent/src/lib.rs`. This is not the same as live `/models` discovery.
-Use `/models` or `codewhale models` to fetch model IDs from the active API
-endpoint when the endpoint supports model listing.
 
 | Provider | Static registry entries | Tool calls | Registry reasoning flag |
 | --- | --- | --- | --- |
