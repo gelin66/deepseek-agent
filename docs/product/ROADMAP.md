@@ -692,6 +692,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `project_tree` 浅层 project-map helpers；当前生产上下文继续由 `crates/context`、显式文件
   工具和 canonical transcript 构造，M5 的 RepoGraph/ContextBroker 不通过保留旧 helper
   或兼容适配器实现。
+- M4-C 已删除零生产调用方的 TUI `open_url` 及平台 browser-command 构造器；当前产品没有
+  外链打开交互，不保留一套只有自身测试的系统命令能力。OAuth/MCP transport、终端文本复制
+  和 DeepSeek HTTP 请求均不经过该 helper。
 - M4-C 已把 `key_shortcuts` 收缩为首启输入仍使用的 `is_text_input_key`，删除零调用的
   copy/paste/control-like/Ctrl-H 判定；正式文本粘贴继续由 terminal `Event::Paste` 处理，
   Pager 文本复制继续走 canonical local view event。

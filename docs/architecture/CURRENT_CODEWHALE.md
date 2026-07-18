@@ -371,6 +371,8 @@ M4-C foreground 切换后还已物理删除：
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
   没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。
+- 零生产调用方的 TUI `open_url` 及其平台 browser-command 构造器；当前没有外链打开交互，
+  OAuth/MCP transport、终端复制和 DeepSeek HTTP 请求不依赖该 helper。
 
 ## 6. 当前验证事实
 
