@@ -1001,7 +1001,7 @@ async fn explicit_allowed_tools_enable_the_runtime_tool_catalog() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stream_json_without_auto_denies_a_hallucinated_write() {
+async fn stream_json_without_auto_rejects_a_hallucinated_unadvertised_write() {
     let _serial = EXEC_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     mount_models(&server).await;
@@ -1022,8 +1022,8 @@ async fn stream_json_without_auto_denies_a_hallucinated_write() {
     let forbidden_path = workspace.path().join(UNAUTHORIZED_WRITE_PATH);
     let output = run_with_timeout(command, PROCESS_TIMEOUT);
     assert!(
-        output.status.success(),
-        "tool-less stream-json exec failed\nstdout:\n{}\nstderr:\n{}",
+        !output.status.success(),
+        "an unadvertised tool call must fail closed\nstdout:\n{}\nstderr:\n{}",
         output.stdout,
         output.stderr
     );
@@ -1034,16 +1034,19 @@ async fn stream_json_without_auto_denies_a_hallucinated_write() {
     );
 
     let events = parse_strict_ndjson(&output.stdout);
-    let metadata = assert_terminal_tail(&events, None);
-    assert_eq!(metadata["status"], "completed");
+    let metadata = assert_terminal_tail(&events, Some("llm_invalid_output"));
+    assert_eq!(metadata["status"], "failed");
     assert!(events.iter().any(|event| {
-        event["type"] == "tool_result"
-            && event["name"] == "apply_patch"
-            && event["status"] == "error"
-            && event["output"]
+        event["type"] == "error"
+            && event["code"] == "llm_invalid_output"
+            && event["error"]
                 .as_str()
-                .is_some_and(|output| output.contains("tool_not_allowed"))
+                .is_some_and(|error| error.contains("tool 'apply_patch' was not advertised"))
     }));
+    assert!(
+        events.iter().all(|event| event["type"] != "tool_result"),
+        "an unadvertised call must be rejected before tool execution: {events:#?}"
+    );
 
     let requests = server
         .received_requests()
@@ -1052,11 +1055,7 @@ async fn stream_json_without_auto_denies_a_hallucinated_write() {
         .into_iter()
         .filter(|request| request.url.path() == "/v1/chat/completions")
         .collect::<Vec<_>>();
-    assert_eq!(
-        requests.len(),
-        2,
-        "denial must be returned to the model once"
-    );
+    assert_eq!(requests.len(), 1, "fail-closed rejection must not retry");
     for request in requests {
         let body = request
             .body_json::<Value>()
