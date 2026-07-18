@@ -626,6 +626,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit
   门禁也通过。exec 多 Agent fixture 同步锁定已接受的 eager join：单层 3 次请求、嵌套
   5 次请求，不再要求已经删除的无信息 wait 轮。
+- focused 的 TUI 子集已迁移到 canonical command、Run client/projection/presenter、本地
+  approval、Fleet 和 DeepSeek Doctor；旧 memory、旧 schema sanitizer、旧 model client、
+  stream decoder 和 legacy route 测试不再冒充当前核心门禁。过滤器仍先按 `--list` 校验，
+  任一零匹配继续 fail closed。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

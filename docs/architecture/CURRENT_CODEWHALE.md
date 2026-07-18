@@ -344,7 +344,9 @@ Beta Strict 与 FIM，完整 usage、无 transport retry，费用为 `USD 0.0000
 此后交互 TUI foreground 与 child projection 已完成 canonical 切换：canonical Run 20/20、
 canonical PTY 5/5、run presenter 13/13、canonical commands 5/5。最终请求许可机制通过
 Runtime conformance/State replay；eager join 后 Runtime conformance 为 53/53，State
-`run_store` 为 18/18。State schema 已升至 v10，RuntimeEvent 仍为 v6。严格 workspace
+`run_store` 为 18/18。focused 的 TUI 过滤器现只覆盖 canonical Run 投影、命令、本地
+approval、Fleet 和 DeepSeek Doctor，并继续对零匹配 fail closed；旧 memory/schema/client/
+stream 测试已退出该门禁。State schema 已升至 v10，RuntimeEvent 仍为 v6。严格 workspace
 clippy 当前仍被遗留 TUI 无消费者代码阻断，告警数量随构建目标不同；不得压制，应继续删除。
 
 当前证据证明三个 foreground 入口已统一，也证明协议、lineage、持久恢复、accounting 与
