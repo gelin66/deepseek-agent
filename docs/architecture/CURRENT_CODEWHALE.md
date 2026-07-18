@@ -517,6 +517,15 @@ M4-C foreground 切换后还已物理删除：
 - `footer_ui::one_line_summary` 只有自身测试调用，现已连同该测试删除。真实 footer/sidebar/
   tool output 的摘要、截断及 `strip_ansi_into` consumers 均未改变；footer 9/9、canonical
   Run 19/19、PTY 6/6 与 TUI all-target check 通过。
+- `ActiveCell` 没有 production producer；canonical presenter 已经把 `ToolPrepared` 直接写入
+  `App.history` 和 `tool_cells`，再由 `ToolOutcomeCommitted` 更新同一 `GenericToolCell`。
+  该模块、三个 App 字段、virtual transcript/cache、active footer/sidebar/phase 分支及其
+  自测和本地化键现已删除，tool-run 检测只遍历 canonical history。terminal 只收束 streaming、
+  loading 和 accounting，不会凭终态补写工具结果；没有 `ToolOutcome` 时保留真实 `Running`
+  状态，不伪造 `Failed`。无真实等待来源时也不新增旧路径从未展示的 stall 文案。
+  child/Fleet、canonical `RuntimeEvent`/`RunStore`、cancel/control 和工具输出展示均保持原 owner。
+  当前证据为 presenter 14/14、history 72/72、sidebar 42/42、footer 10/10、phase 22/22、指定
+  widget 5/5、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check、fmt 和 diff-check。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

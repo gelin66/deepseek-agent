@@ -19,10 +19,8 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use crate::localization::MessageId;
 use crate::tui::{
     app::App,
-    history::{HistoryCell, ToolStatus},
     underwater::{ShellPhase, ShellTier, phase_marker},
 };
 
@@ -42,7 +40,6 @@ impl PhaseStripPlacement {
     pub fn for_phase(phase: ShellPhase) -> Self {
         match phase {
             ShellPhase::Working
-            | ShellPhase::Verifying
             | ShellPhase::Waiting
             | ShellPhase::Approval
             | ShellPhase::Failed
@@ -91,39 +88,14 @@ fn truncate_to_width(text: &str, width: usize) -> String {
     result
 }
 
-/// Compact working detail for the phase band: `运行 ×N · 12s`.
+/// Compact elapsed-time detail for the phase band.
 /// Kept quieter than the classic footer's verbose tool-status line so the
 /// transcript owns the ledger and the strip only names the live pulse.
 fn working_detail(app: &App) -> Option<String> {
-    let mut running = 0usize;
-    if let Some(active) = app.active_cell.as_ref() {
-        for cell in active.entries() {
-            running = running.saturating_add(count_running_tools(cell));
-        }
-    }
-    let secs = app
-        .turn_started_at
-        .map(|started| started.elapsed().as_secs());
-    match (running, secs) {
-        (0, Some(secs)) if secs > 0 => Some(format!("{secs}s")),
-        (n, Some(secs)) if n > 0 => Some(
-            app.tr(MessageId::PhaseRunningCountDuration)
-                .replace("{count}", &n.to_string())
-                .replace("{seconds}", &secs.to_string()),
-        ),
-        (n, None) if n > 0 => Some(
-            app.tr(MessageId::PhaseRunningCount)
-                .replace("{count}", &n.to_string()),
-        ),
-        _ => None,
-    }
-}
-
-fn count_running_tools(cell: &HistoryCell) -> usize {
-    let HistoryCell::Tool(tool) = cell else {
-        return 0;
-    };
-    usize::from(tool.status == ToolStatus::Running)
+    app.turn_started_at
+        .map(|started| started.elapsed().as_secs())
+        .filter(|secs| *secs > 0)
+        .map(|secs| format!("{secs}s"))
 }
 
 /// Paint the one-line phase band. Owns phase, optional working detail, cost,
@@ -155,7 +127,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
     ];
 
     if tier != ShellTier::Compact
-        && matches!(phase, ShellPhase::Working | ShellPhase::Verifying)
+        && phase == ShellPhase::Working
         && let Some(detail) = working_detail(app)
     {
         left.push(Span::styled(
@@ -236,12 +208,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::Config,
-        tui::active_cell::ActiveCell,
-        tui::app::TuiOptions,
-        tui::history::{GenericToolCell, ToolStatus},
-    };
+    use crate::{config::Config, tui::app::TuiOptions};
     use ratatui::{Terminal, backend::TestBackend};
     use std::{
         path::PathBuf,
@@ -329,24 +296,10 @@ mod tests {
     }
 
     #[test]
-    fn working_band_names_run_count_without_key_chorus() {
+    fn working_band_shows_elapsed_time_without_key_chorus() {
         let mut app = test_app();
         app.is_loading = true;
         app.turn_started_at = Some(Instant::now() - Duration::from_secs(12));
-        let mut active = ActiveCell::new();
-        active.push_tool(
-            "shell-1",
-            HistoryCell::Tool(GenericToolCell {
-                name: "exec_shell".to_string(),
-                status: ToolStatus::Running,
-                input_summary: Some("command: cargo build -p tui".to_string()),
-                output: None,
-                prompts: None,
-                output_summary: None,
-                is_diff: false,
-            }),
-        );
-        app.active_cell = Some(active);
 
         let backend = TestBackend::new(80, 1);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -356,7 +309,7 @@ mod tests {
         let area = Rect::new(0, 0, 80, 1);
         let text = buffer_row_text(terminal.backend().buffer(), area);
         assert!(text.contains("工作中"), "{text}");
-        assert!(text.contains("运行 ×1"), "{text}");
+        assert!(text.contains("12s"), "{text}");
         assert!(
             !text.contains("/help") && !text.contains("/compact"),
             "live phase strip stays quiet: {text}"

@@ -57,30 +57,15 @@ impl ToolRunActivitySummary {
 /// cells can join dense runs while the canonical record keeps their raw details
 /// available without making routine verifier/shell work dominate the default
 /// transcript.
-#[cfg(test)]
 pub fn detect_tool_runs(history: &[HistoryCell], min_size: usize) -> Vec<ToolRun> {
-    detect_tool_runs_from_slices(history, &[], min_size)
-}
-
-/// Detect contiguous runs across committed history plus the active in-flight
-/// tail. `ToolRun::start` is always the virtual transcript index:
-/// `history.len() + active_offset` for active entries.
-pub fn detect_tool_runs_from_slices(
-    history: &[HistoryCell],
-    active_entries: &[HistoryCell],
-    min_size: usize,
-) -> Vec<ToolRun> {
     if min_size == 0 {
         return Vec::new();
     }
 
     let mut runs = Vec::new();
     let mut index = 0;
-    let total_len = history.len().saturating_add(active_entries.len());
-    while index < total_len {
-        if !cell_at_virtual_index(history, active_entries, index)
-            .is_some_and(is_collapsible_tool_cell)
-        {
+    while index < history.len() {
+        if !history.get(index).is_some_and(is_collapsible_tool_cell) {
             index += 1;
             continue;
         }
@@ -88,13 +73,8 @@ pub fn detect_tool_runs_from_slices(
         let start = index;
         let mut names: Vec<String> = Vec::new();
         let mut activity = ToolRunActivitySummary::default();
-        while index < total_len
-            && cell_at_virtual_index(history, active_entries, index)
-                .is_some_and(is_collapsible_tool_cell)
-        {
-            if let Some(HistoryCell::Tool(tool)) =
-                cell_at_virtual_index(history, active_entries, index)
-            {
+        while index < history.len() && history.get(index).is_some_and(is_collapsible_tool_cell) {
+            if let Some(HistoryCell::Tool(tool)) = history.get(index) {
                 let name = tool.name.as_str();
                 if !names.iter().any(|existing| existing == name) {
                     names.push(name.to_string());
@@ -117,16 +97,6 @@ pub fn detect_tool_runs_from_slices(
     }
 
     runs
-}
-
-fn cell_at_virtual_index<'a>(
-    history: &'a [HistoryCell],
-    active_entries: &'a [HistoryCell],
-    index: usize,
-) -> Option<&'a HistoryCell> {
-    history
-        .get(index)
-        .or_else(|| active_entries.get(index.checked_sub(history.len())?))
 }
 
 fn is_collapsible_tool_cell(cell: &HistoryCell) -> bool {

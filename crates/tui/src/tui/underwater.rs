@@ -64,10 +64,6 @@ pub enum ShellPhase {
     Idle,
     Typing,
     Working,
-    /// A live verification pass (tests/checks/lints). Same clock family as
-    /// `Working` but rendered as the metered braille tick — checking, not
-    /// searching (ocean state model).
-    Verifying,
     Waiting,
     Approval,
     Done,
@@ -92,16 +88,7 @@ impl ShellPhase {
         {
             return Self::Failed;
         }
-        if app.is_loading
-            || matches!(app.runtime_turn_status.as_deref(), Some("in_progress"))
-            || app
-                .active_cell
-                .as_ref()
-                .is_some_and(|active| !active.is_empty())
-        {
-            if verification_run_active(app) {
-                return Self::Verifying;
-            }
+        if app.is_loading || matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) {
             return Self::Working;
         }
         if matches!(app.runtime_turn_status.as_deref(), Some("completed")) {
@@ -119,7 +106,6 @@ impl ShellPhase {
             Self::Idle => tr(MessageId::PhaseIdle),
             Self::Typing => tr(MessageId::PhaseDraft),
             Self::Working => tr(MessageId::PhaseWorking),
-            Self::Verifying => tr(MessageId::PhaseVerifying),
             Self::Waiting | Self::Approval => tr(MessageId::PhaseWaitingOnYou),
             Self::Done => tr(MessageId::PhaseDone),
             Self::Failed => tr(MessageId::PhaseFailed),
@@ -132,31 +118,11 @@ impl ShellPhase {
             Self::Idle => app.ui_theme.text_muted,
             Self::Done => app.ui_theme.success,
             Self::Typing => app.ui_theme.accent_primary,
-            // Verifying shares the live seafoam hue; the tick-vs-bubble
-            // marker carries the checking/searching distinction.
-            Self::Working | Self::Verifying => app.ui_theme.status_working,
+            Self::Working => app.ui_theme.status_working,
             Self::Waiting | Self::Approval => app.ui_theme.accent_action,
             Self::Failed => app.ui_theme.error_fg,
         }
     }
-}
-
-/// True when the live active cell is running one of the canonical
-/// deterministic verification tools. Shell command text is deliberately not
-/// inspected: `exec_shell` remains ordinary work even when its command happens
-/// to contain a test runner.
-fn verification_run_active(app: &App) -> bool {
-    use crate::tui::history::{HistoryCell, ToolStatus};
-    let Some(active) = app.active_cell.as_ref() else {
-        return false;
-    };
-    active.entries().iter().any(|cell| {
-        let HistoryCell::Tool(tool) = cell else {
-            return false;
-        };
-        tool.status == ToolStatus::Running
-            && matches!(tool.name.as_str(), "run_tests" | "run_verifiers")
-    })
 }
 
 fn completion_elapsed_ms(app: &App) -> Option<u128> {
@@ -183,15 +149,6 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
                 let index = (elapsed.as_millis() / 300) as usize % WORKING_BUBBLE_FRAMES.len();
                 WORKING_BUBBLE_FRAMES[index]
             };
-            (frame, phase.label())
-        }
-        ShellPhase::Verifying => {
-            // Metered braille tick on the shared live clock — checking, not
-            // searching. Reduced motion holds the legible mid frame.
-            let frame = crate::tui::spinner::verification_tick_frame(
-                app.turn_started_at,
-                app.low_motion || !app.fancy_animations,
-            );
             (frame, phase.label())
         }
         ShellPhase::Waiting | ShellPhase::Approval => ("◆", phase.label()),
@@ -612,66 +569,6 @@ mod tests {
     }
 
     #[test]
-    fn verifying_phase_meters_a_tick_for_test_runs_only() {
-        use crate::tui::active_cell::ActiveCell;
-        use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
-
-        let running_tool = |name: &str, input_summary: Option<&str>| {
-            HistoryCell::Tool(GenericToolCell {
-                name: name.to_string(),
-                status: ToolStatus::Running,
-                input_summary: input_summary.map(str::to_string),
-                output: None,
-                prompts: None,
-                output_summary: None,
-                is_diff: false,
-            })
-        };
-
-        let mut app = test_app();
-        app.runtime_turn_status = Some("in_progress".to_string());
-        app.turn_started_at = Some(Instant::now() - Duration::from_secs(3));
-
-        // A live test run reads as `verifying` with the metered tick.
-        let mut active = ActiveCell::new();
-        active.push_tool("verify-1", running_tool("run_tests", None));
-        app.active_cell = Some(active);
-        assert_eq!(ShellPhase::from_app(&app), ShellPhase::Verifying);
-        app.low_motion = true;
-        let (marker, label) = phase_marker(&app, ShellPhase::Verifying);
-        assert_eq!(marker, crate::tui::spinner::VERIFY_TICK_FRAMES[4]);
-        assert_eq!(label, "校验中");
-        app.low_motion = false;
-
-        // Both canonical deterministic verification tools select the phase.
-        let mut active = ActiveCell::new();
-        active.push_tool("verify-2", running_tool("run_verifiers", None));
-        app.active_cell = Some(active);
-        assert_eq!(ShellPhase::from_app(&app), ShellPhase::Verifying);
-
-        // Shell text is not a verification contract. Even an explicit test
-        // command remains ordinary work when projected as `exec_shell`.
-        let mut active = ActiveCell::new();
-        active.push_tool(
-            "shell-1",
-            running_tool("exec_shell", Some("cargo test -p codewhale-tui --locked")),
-        );
-        app.active_cell = Some(active);
-        assert_eq!(ShellPhase::from_app(&app), ShellPhase::Working);
-
-        // Verifying is a live phase: strip sits above the composer and
-        // shares the live seafoam hue.
-        assert!(
-            crate::tui::phase_strip::PhaseStripPlacement::for_phase(ShellPhase::Verifying)
-                .is_above_composer()
-        );
-        assert_eq!(
-            ShellPhase::Verifying.color(&app),
-            app.ui_theme.status_working
-        );
-    }
-
-    #[test]
     fn attention_and_failure_keep_distinct_semantic_hues() {
         let app = test_app();
         assert_eq!(ShellPhase::Waiting.color(&app), app.ui_theme.accent_action);
@@ -711,7 +608,6 @@ mod tests {
     fn phase_labels_are_simplified_chinese() {
         assert_eq!(ShellPhase::Idle.label(), "空闲");
         assert_eq!(ShellPhase::Working.label(), "工作中");
-        assert_eq!(ShellPhase::Verifying.label(), "校验中");
         assert_eq!(ShellPhase::Done.label(), "完成");
     }
 }

@@ -86,32 +86,6 @@ fn tool_display_label_for_name(name: &str) -> String {
     }
 }
 
-fn family_message_id(family: ToolFamily) -> crate::localization::MessageId {
-    match family {
-        ToolFamily::Read => crate::localization::MessageId::ToolFamilyRead,
-        ToolFamily::Patch => crate::localization::MessageId::ToolFamilyPatch,
-        ToolFamily::Run => crate::localization::MessageId::ToolFamilyRun,
-        ToolFamily::Find => crate::localization::MessageId::ToolFamilyFind,
-        ToolFamily::Delegate => crate::localization::MessageId::ToolFamilyDelegate,
-        ToolFamily::Verify => crate::localization::MessageId::ToolFamilyVerify,
-        ToolFamily::Think => crate::localization::MessageId::ToolFamilyThink,
-        ToolFamily::Generic => crate::localization::MessageId::ToolFamilyGeneric,
-    }
-}
-
-/// Compact activity/status label for arbitrary tool names. Known built-ins use
-/// the semantic verb; unknown tools keep the `tool NAME` form.
-#[must_use]
-pub fn tool_activity_label_for_name(name: &str) -> String {
-    let family = tool_family_for_name(name);
-    let mid = family_message_id(family);
-    if matches!(family, ToolFamily::Generic) {
-        format!("{} {name}", crate::localization::tr(mid))
-    } else {
-        crate::localization::tr(mid).to_string()
-    }
-}
-
 /// Build a compact semantic summary for a tool header from the public tool
 /// name and the already-sanitized argument summary.
 #[must_use]
@@ -276,10 +250,9 @@ pub fn rail_glyph(rail: CardRail) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        CardRail, ToolFamily, family_glyph, family_label, rail_glyph, tool_activity_label_for_name,
-        tool_display_label_for_name, tool_family_for_name, tool_header_summary_for_name,
+        CardRail, ToolFamily, family_glyph, family_label, rail_glyph, tool_display_label_for_name,
+        tool_family_for_name, tool_header_summary_for_name,
     };
-    use crate::localization::{MessageId, tr};
 
     #[test]
     fn fixed_tool_catalog_routes_to_semantic_families() {
@@ -323,13 +296,6 @@ mod tests {
         assert_eq!(
             tool_display_label_for_name("future_private_tool"),
             "future_private_tool"
-        );
-
-        assert_eq!(tool_activity_label_for_name("exec_shell"), "运行");
-        assert_eq!(tool_activity_label_for_name("run_verifiers"), "验证");
-        assert_eq!(
-            tool_activity_label_for_name("future_private_tool"),
-            "工具 future_private_tool"
         );
     }
 
@@ -403,45 +369,5 @@ mod tests {
         assert_eq!(rail_glyph(CardRail::Middle), "\u{2502}");
         assert_eq!(rail_glyph(CardRail::Bottom), "\u{2570}");
         assert!(rail_glyph(CardRail::Single).is_empty());
-    }
-
-    #[test]
-    fn tool_family_labels_use_simplified_chinese() {
-        let checks: &[(MessageId, &str)] = &[
-            (MessageId::ToolFamilyRead, "read"),
-            (MessageId::ToolFamilyPatch, "patch"),
-            (MessageId::ToolFamilyRun, "run"),
-            (MessageId::ToolFamilyFind, "find"),
-            (MessageId::ToolFamilyDelegate, "delegate"),
-            (MessageId::ToolFamilyVerify, "verify"),
-            (MessageId::ToolFamilyThink, "think"),
-            (MessageId::ToolFamilyGeneric, "tool"),
-        ];
-        for (id, english) in checks {
-            let msg = tr(*id);
-            assert!(
-                !msg.eq_ignore_ascii_case(english),
-                "leaked exact English '{english}' for '{id:?}': {msg}"
-            );
-        }
-    }
-
-    #[test]
-    fn tool_family_activity_labels_use_simplified_chinese() {
-        let known = [
-            "exec_shell",
-            "read_file",
-            "apply_patch",
-            "grep_files",
-            "run_verifiers",
-        ];
-        let english_labels = ["run", "read", "patch", "find", "verify"];
-        for (tool, english) in known.iter().zip(english_labels.iter()) {
-            let label = tool_activity_label_for_name(tool);
-            assert!(
-                !label.eq_ignore_ascii_case(english),
-                "leaked English '{english}' for tool '{tool}': {label}",
-            );
-        }
     }
 }

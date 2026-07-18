@@ -48,7 +48,6 @@ pub fn present_effect(app: &mut App, effect: ProjectionEffect) -> Option<Present
             ..
         } if app.runtime_turn_status.as_deref() != Some("in_progress") => None,
         ProjectionEffectKind::UserTranscript { content, .. } => {
-            app.flush_active_cell();
             app.add_message(HistoryCell::User { content });
             app.status_message = None;
             None
@@ -230,7 +229,6 @@ fn present_canonical_event(
                 child_run_id.clone(),
                 depth,
             );
-            app.flush_active_cell();
             app.add_message(HistoryCell::System {
                 content: format!("子 Agent 已启动：{}（深度 {depth}）", child_run_id.0),
             });
@@ -248,7 +246,6 @@ fn present_canonical_event(
                 &outcome,
                 &handoff_content,
             );
-            app.flush_active_cell();
             let status = terminal_label(&outcome.terminal);
             let content = if handoff_content.trim().is_empty() {
                 format!("子 Agent 已结束：{status}")
@@ -280,8 +277,6 @@ fn present_canonical_event(
 
 fn reset_run_display(app: &mut App) {
     app.clear_history();
-    app.active_cell = None;
-    app.active_tool_entry_completed_at.clear();
     app.tool_cells.clear();
     app.ignored_tool_calls.clear();
     app.streaming_message_index = None;
@@ -299,7 +294,6 @@ fn rebuild_transcript(
             // The system prompt is execution context, not chat transcript.
             TranscriptEntry::System { .. } => {}
             TranscriptEntry::User { content } => {
-                app.flush_active_cell();
                 app.add_message(HistoryCell::User {
                     content: content.clone(),
                 });
@@ -309,7 +303,6 @@ fn rebuild_transcript(
                 reasoning_content,
                 tool_calls,
             } => {
-                app.flush_active_cell();
                 if let Some(reasoning) = reasoning_content
                     && !reasoning.is_empty()
                 {
@@ -347,7 +340,6 @@ fn rebuild_transcript(
                     outcome,
                     handoff_content,
                 );
-                app.flush_active_cell();
                 let status = terminal_label(&outcome.terminal);
                 let content = if handoff_content.trim().is_empty() {
                     format!("子 Agent {}：{status}", child_run_id.0)
@@ -358,7 +350,6 @@ fn rebuild_transcript(
             }
         }
     }
-    app.flush_active_cell();
 }
 
 fn append_content_delta(app: &mut App, delta: &str) {
@@ -494,20 +485,7 @@ fn present_tool_outcome(app: &mut App, id: &str, name: &str, outcome: &ToolOutco
 }
 
 fn finish_terminal(app: &mut App, terminal: &TerminalState, accounting: &ModelAccounting) {
-    match terminal {
-        TerminalState::Completed { .. } => {
-            app.flush_active_cell();
-            finalize_streaming_cells(app);
-        }
-        TerminalState::Blocked { .. }
-        | TerminalState::Failed { .. }
-        | TerminalState::Cancelled
-        | TerminalState::Interrupted
-        | TerminalState::RecoveryRequired { .. } => {
-            app.finalize_active_cell_as_interrupted();
-            finalize_streaming_cells(app);
-        }
-    }
+    finalize_streaming_cells(app);
 
     project_accounting(app, accounting);
     app.is_loading = false;
@@ -637,8 +615,9 @@ mod tests {
     use codewhale_protocol::agent_runtime::{
         AgentActor, AgentOutcome, AttemptId, CommandId, DurableControlAction, ModelAccounting,
         ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall, OperationId,
-        PreparedModelRetry, ReasoningEffort, RunId, RunRequest, RuntimeEventId, StoredRuntimeEvent,
-        SystemPrompt, TerminalState, ToolInvocation, TranscriptEntry, Usage,
+        PreparedModelRetry, ReasoningEffort, RecoveryAmbiguity, RecoveryAmbiguityPhase, RunId,
+        RunRequest, RuntimeEventId, RuntimeFailure, StoredRuntimeEvent, SystemPrompt,
+        TerminalState, ToolInvocation, TranscriptEntry, Usage,
     };
 
     use super::*;
@@ -717,6 +696,20 @@ mod tests {
     }
 
     fn terminal(run_id: &RunId, sequence: u64) -> StoredRuntimeEvent {
+        terminal_with_state(
+            run_id,
+            sequence,
+            TerminalState::Completed {
+                message: "完成".to_owned(),
+            },
+        )
+    }
+
+    fn terminal_with_state(
+        run_id: &RunId,
+        sequence: u64,
+        terminal: TerminalState,
+    ) -> StoredRuntimeEvent {
         stored(
             run_id,
             sequence,
@@ -724,9 +717,7 @@ mod tests {
                 outcome: Box::new(AgentOutcome {
                     run_id: run_id.clone(),
                     parent_run_id: None,
-                    terminal: TerminalState::Completed {
-                        message: "完成".to_owned(),
-                    },
+                    terminal,
                     accounting: ModelAccounting::default(),
                     runtime_model_requests: 1,
                     runtime_retries: 0,
@@ -1186,6 +1177,84 @@ mod tests {
             terminal_app.runtime_turn_status.as_deref(),
             Some("completed")
         );
+    }
+
+    #[test]
+    fn terminal_without_tool_outcome_does_not_invent_tool_failure() {
+        let run_id = RunId::from("run");
+        let terminal_states = [
+            (
+                "completed",
+                TerminalState::Completed {
+                    message: "完成".to_owned(),
+                },
+            ),
+            (
+                "blocked",
+                TerminalState::Blocked {
+                    reason: "等待外部输入".to_owned(),
+                },
+            ),
+            (
+                "failed",
+                TerminalState::Failed {
+                    failure: RuntimeFailure::Join {
+                        message: "worker failed".to_owned(),
+                    },
+                },
+            ),
+            ("cancelled", TerminalState::Cancelled),
+            ("interrupted", TerminalState::Interrupted),
+            (
+                "recovery_required",
+                TerminalState::RecoveryRequired {
+                    ambiguity: RecoveryAmbiguity {
+                        phase: RecoveryAmbiguityPhase::ToolExecution,
+                        action_id: "operation-still-running".to_owned(),
+                        message: "工具结果未知".to_owned(),
+                    },
+                },
+            ),
+        ];
+
+        for (label, terminal_state) in terminal_states {
+            let call_id = format!("call-still-running-{label}");
+            let mut terminal_app = app();
+            apply_events(
+                &mut terminal_app,
+                vec![
+                    created(&run_id, Vec::new()),
+                    stored(
+                        &run_id,
+                        2,
+                        RuntimeEventKind::ToolPrepared {
+                            operation_id: OperationId("operation-still-running".to_owned()),
+                            invocation: ToolInvocation {
+                                run_id: run_id.clone(),
+                                call_id: call_id.clone(),
+                                name: "read_file".to_owned(),
+                                arguments: ToolArguments::parse(r#"{"path":"src/lib.rs"}"#),
+                            },
+                        },
+                    ),
+                    terminal_with_state(&run_id, 3, terminal_state),
+                ],
+            );
+
+            let tool = terminal_app
+                .history
+                .iter()
+                .find_map(|cell| match cell {
+                    HistoryCell::Tool(tool) => Some(tool),
+                    _ => None,
+                })
+                .expect("prepared tool remains visible");
+            assert_eq!(tool.status, ToolStatus::Running, "terminal={label}");
+            assert!(
+                terminal_app.tool_cells.contains_key(&call_id),
+                "terminal={label}"
+            );
+        }
     }
 
     #[test]

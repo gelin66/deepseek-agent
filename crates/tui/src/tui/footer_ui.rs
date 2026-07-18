@@ -1,16 +1,13 @@
 use ratatui::{Frame, layout::Rect, style::Style, text::Span};
-use std::time::Instant;
 #[cfg(test)]
 use unicode_width::UnicodeWidthStr;
 
 use crate::localization::MessageId;
 use crate::palette;
 use crate::tui::app::App;
-use crate::tui::history::{HistoryCell, ToolStatus};
 use crate::tui::sidebar::{agents_sidebar_surface_visible, running_agent_count};
 use crate::tui::ui::{context_usage_snapshot, status_color};
 use crate::tui::ui_text::truncate_line_to_width;
-use crate::tui::widgets::tool_card::tool_activity_label_for_name;
 use crate::tui::widgets::{FooterProps, FooterToast, FooterWidget, Renderable};
 
 pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
@@ -68,21 +65,17 @@ pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
         let mut label = if header_owns_live_pulse(app) {
             active_subagent_label
                 .clone()
-                .or_else(|| active_tool_status_label(app, false))
                 .or_else(|| stall_reason(app))
                 .unwrap_or_default()
         } else {
-            active_subagent_label
-                .clone()
-                .or_else(|| active_tool_status_label(app, true))
-                .unwrap_or_else(|| {
-                    let base = crate::tui::widgets::footer_working_label(dot_frame);
-                    if elapsed_secs > 0 {
-                        format!("{base} ({elapsed_secs}s)")
-                    } else {
-                        base.to_string()
-                    }
-                })
+            active_subagent_label.clone().unwrap_or_else(|| {
+                let base = crate::tui::widgets::footer_working_label(dot_frame);
+                if elapsed_secs > 0 {
+                    format!("{base} ({elapsed_secs}s)")
+                } else {
+                    base.to_string()
+                }
+            })
         };
         if header_owns_live_pulse(app) {
             if let Some(reason) = stall_reason(app)
@@ -137,17 +130,6 @@ pub(crate) fn stall_reason(app: &App) -> Option<String> {
     }
     if running_agent_count(app) > 0 {
         return Some("sub-agents working".to_string());
-    }
-    let active = app.active_cell.as_ref()?;
-    if active
-        .entries()
-        .iter()
-        .any(|cell| matches!(cell, HistoryCell::Tool(tool) if tool.status == ToolStatus::Running))
-    {
-        return Some("tools executing".to_string());
-    }
-    if app.runtime_turn_status.as_deref() == Some("in_progress") {
-        return Some("waiting - no recent activity".to_string());
     }
     None
 }
@@ -359,6 +341,15 @@ mod tests {
         assert!(reason.contains("waiting for model"));
         assert!(reason.contains("25s/30s idle timeout"), "{reason}");
     }
+
+    #[test]
+    fn in_progress_without_a_real_wait_source_does_not_invent_a_stall_reason() {
+        let mut app = create_test_app();
+        app.turn_started_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(31));
+        app.runtime_turn_status = Some("in_progress".to_string());
+
+        assert_eq!(super::stall_reason(&app), None);
+    }
 }
 
 pub(crate) fn active_subagent_status_label(app: &App) -> Option<String> {
@@ -378,88 +369,6 @@ pub(crate) fn active_subagent_status_label(app: &App) -> Option<String> {
         .unwrap_or_else(|| "子 Agent 工作中".to_string());
     let detail = truncate_line_to_width(&detail, 34);
     Some(format!("Agent {running}/{total} 运行中 \u{00B7} {detail}"))
-}
-
-#[derive(Default)]
-struct ActiveToolStatusSnapshot {
-    primary_running: Option<String>,
-    primary_any: Option<String>,
-    running: usize,
-    completed: usize,
-    started_at: Option<Instant>,
-}
-
-impl ActiveToolStatusSnapshot {
-    fn record(&mut self, label: String, status: ToolStatus, started_at: Option<Instant>) {
-        if self.primary_any.is_none() {
-            self.primary_any = Some(label.clone());
-        }
-        if status == ToolStatus::Running {
-            self.running += 1;
-            if self.primary_running.is_none() {
-                self.primary_running = Some(label);
-            }
-        } else {
-            self.completed += 1;
-        }
-        if let Some(started) = started_at {
-            self.started_at = Some(match self.started_at {
-                Some(current) => current.min(started),
-                None => started,
-            });
-        }
-    }
-
-    fn total(&self) -> usize {
-        self.running + self.completed
-    }
-}
-
-pub(crate) fn active_tool_status_label(app: &App, include_counts: bool) -> Option<String> {
-    let active = app.active_cell.as_ref()?;
-    if active.is_empty() {
-        return None;
-    }
-
-    let mut snapshot = ActiveToolStatusSnapshot::default();
-    for cell in active.entries() {
-        collect_active_tool_status(cell, &mut snapshot);
-    }
-    if snapshot.total() == 0 {
-        return None;
-    }
-
-    let primary = snapshot
-        .primary_running
-        .or(snapshot.primary_any)
-        .unwrap_or_else(|| "tools".to_string());
-    let primary = truncate_line_to_width(&primary, 30);
-    let elapsed = snapshot
-        .started_at
-        .or(app.turn_started_at)
-        .map(|started| format!("{}s", started.elapsed().as_secs()));
-
-    let mut parts = vec![primary];
-    if include_counts {
-        parts.push(format!("{} active", snapshot.running));
-        parts.push(format!("{} done", snapshot.completed));
-    }
-    if let Some(elapsed) = elapsed {
-        parts.push(elapsed);
-    }
-    Some(parts.join(" \u{00B7} "))
-}
-
-fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatusSnapshot) {
-    let HistoryCell::Tool(tool) = cell else {
-        return;
-    };
-    // Sub-agent dispatch represents itself through the DelegateCard + Agents
-    // sidebar. Counting it again here would duplicate the status.
-    if tool.name == "agent" {
-        return;
-    }
-    snapshot.record(tool_activity_label_for_name(&tool.name), tool.status, None);
 }
 
 /// Build [`FooterProps`] from a user-configured `status_items` slice.

@@ -225,7 +225,6 @@ impl OceanRamp {
             ShellPhase::Idle => (0.035, 1.0 - depth),
             ShellPhase::Typing => (0.025, 1.0 - depth),
             ShellPhase::Working => (0.045, 0.35 + depth * 0.65),
-            ShellPhase::Verifying => (0.055, 0.65 + (1.0 - depth) * 0.35),
             ShellPhase::Done => (0.018, 1.0 - depth),
             ShellPhase::Waiting | ShellPhase::Approval | ShellPhase::Failed => unreachable!(),
         };
@@ -400,7 +399,7 @@ mod tests {
     }
 
     #[test]
-    fn attention_phases_are_still_and_work_phases_have_distinct_depth_bias() {
+    fn attention_phases_are_still() {
         let ramp = OceanRamp::for_theme(&crate::palette::UI_THEME).expect("RGB theme");
         for phase in [
             ShellPhase::Waiting,
@@ -412,10 +411,6 @@ mod tests {
                 ramp.color_at_phase(4, 20, 45_000, phase)
             );
         }
-        assert_ne!(
-            ramp.color_at_phase(10, 20, 22_500, ShellPhase::Working),
-            ramp.color_at_phase(10, 20, 22_500, ShellPhase::Verifying)
-        );
     }
 
     #[test]

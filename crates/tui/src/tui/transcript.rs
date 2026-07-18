@@ -104,10 +104,6 @@ impl TranscriptViewCache {
     /// disagree (shouldn't happen in normal use) the cache treats every cell
     /// as dirty.
     ///
-    /// Retained for tests and external use; the live render path uses the
-    /// `ensure_split` variant to avoid concatenating history + active-cell
-    /// entries every frame.
-    #[allow(dead_code)]
     pub fn ensure(
         &mut self,
         cells: &[HistoryCell],

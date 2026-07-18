@@ -11,7 +11,6 @@
 
 // === Submodules ===
 
-pub mod active_cell;
 pub mod app;
 pub mod approval;
 mod canonical_commands;

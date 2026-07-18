@@ -4,8 +4,6 @@
 //! the chat transcript when the available width allows it. Each section
 //! reads from `App` snapshots; mutation lives in the main app loop.
 
-use std::time::Duration;
-
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -29,8 +27,6 @@ use super::ui_text::truncate_line_to_width;
 /// does not prematurely hide the session+agents breakdown.
 const COST_EQ_TOLERANCE: f64 = 1e-6;
 const RECENT_TOOL_SCAN_LIMIT: usize = 24;
-const ACTIVE_TOOL_COMPLETED_ROW_TTL: Duration = Duration::from_secs(8);
-const ACTIVE_TOOL_STALE_RUNNING_ROW_TTL: Duration = Duration::from_secs(600);
 
 /// The explicit Agents view remains available for settled children. Auto mode
 /// only claims screen space while canonical child work is active.
@@ -204,19 +200,17 @@ struct SidebarToolRow {
 
 /// Canonical tool rows used by the Activity panel renderer.
 struct TaskPanelRowSets {
-    active: Vec<SidebarToolRow>,
     recent: Vec<SidebarToolRow>,
 }
 
 fn task_panel_row_sets(app: &App) -> TaskPanelRowSets {
     let explicit_tasks_focus = app.sidebar_focus == SidebarFocus::Tasks;
-    let active = active_tool_rows(app);
     let recent = if explicit_tasks_focus {
         recent_tool_rows(app, 4)
     } else {
         Vec::new()
     };
-    TaskPanelRowSets { active, recent }
+    TaskPanelRowSets { recent }
 }
 
 #[cfg(test)]
@@ -253,12 +247,6 @@ fn task_panel_rows(
         )));
     }
 
-    let active_rows = &row_sets.active;
-    if explicit_tasks_focus && !active_rows.is_empty() && lines.len() < max_rows {
-        push_sidebar_label_theme(&mut lines, "Live tools", theme);
-        push_tool_rows(&mut lines, active_rows, content_width, max_rows, theme);
-    }
-
     if explicit_tasks_focus && lines.len() < max_rows {
         let recent_rows = &row_sets.recent;
         if !recent_rows.is_empty() {
@@ -280,9 +268,7 @@ fn task_panel_rows(
         )));
     }
 
-    if lines.is_empty()
-        || (lines.len() == 1 && app.runtime_turn_id.is_some() && active_rows.is_empty())
-    {
+    if lines.is_empty() || (lines.len() == 1 && app.runtime_turn_id.is_some()) {
         lines.push(Line::from(Span::styled(
             "No live tools",
             Style::default().fg(theme.text_muted),
@@ -297,84 +283,6 @@ fn push_sidebar_label_theme(lines: &mut Vec<Line<'static>>, label: &str, theme: 
         label.to_string(),
         Style::default().fg(theme.accent_primary).bold(),
     )));
-}
-
-fn active_tool_rows(app: &App) -> Vec<SidebarToolRow> {
-    let Some(active) = app.active_cell.as_ref() else {
-        return Vec::new();
-    };
-    let mut rows: Vec<SidebarToolRow> = Vec::new();
-    let mut stale_running: Vec<SidebarToolRow> = Vec::new();
-    for (entry_idx, cell) in active.entries().iter().enumerate() {
-        let Some(row) = sidebar_tool_row_from_cell(cell) else {
-            continue;
-        };
-        match active_tool_row_visibility(app, entry_idx, &row) {
-            ActiveToolRowVisibility::Visible => rows.push(row),
-            ActiveToolRowVisibility::StaleRunning => stale_running.push(row),
-            ActiveToolRowVisibility::Hidden => {}
-        }
-    }
-    if !stale_running.is_empty() {
-        rows.push(collapsed_stale_running_row(stale_running));
-    }
-    editorial_tool_rows(rows, usize::MAX, ToolRowOrder::OldestFirst)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ActiveToolRowVisibility {
-    Visible,
-    StaleRunning,
-    Hidden,
-}
-
-fn active_tool_row_visibility(
-    app: &App,
-    entry_idx: usize,
-    row: &SidebarToolRow,
-) -> ActiveToolRowVisibility {
-    if row.status == ToolStatus::Running {
-        return if row
-            .duration_ms
-            .is_some_and(|ms| ms >= duration_ms(ACTIVE_TOOL_STALE_RUNNING_ROW_TTL))
-        {
-            ActiveToolRowVisibility::StaleRunning
-        } else {
-            ActiveToolRowVisibility::Visible
-        };
-    }
-
-    let Some(completed_at) = app.active_tool_entry_completed_at.get(&entry_idx) else {
-        return ActiveToolRowVisibility::Hidden;
-    };
-    if completed_at.elapsed() <= ACTIVE_TOOL_COMPLETED_ROW_TTL {
-        ActiveToolRowVisibility::Visible
-    } else {
-        ActiveToolRowVisibility::Hidden
-    }
-}
-
-fn collapsed_stale_running_row(rows: Vec<SidebarToolRow>) -> SidebarToolRow {
-    let count = rows.len();
-    let oldest_ms = rows
-        .iter()
-        .filter_map(|row| row.duration_ms)
-        .max()
-        .unwrap_or_default();
-    let first_summary = rows
-        .iter()
-        .find_map(|row| (!row.summary.trim().is_empty()).then(|| row.summary.clone()))
-        .unwrap_or_else(|| "工具仍在运行".to_string());
-    SidebarToolRow {
-        name: if count == 1 {
-            "run".to_string()
-        } else {
-            format!("run x{count}")
-        },
-        status: ToolStatus::Running,
-        summary: format!("long-running · {first_summary}"),
-        duration_ms: (oldest_ms > 0).then_some(oldest_ms),
-    }
 }
 
 fn recent_tool_rows(app: &App, limit: usize) -> Vec<SidebarToolRow> {
@@ -750,10 +658,6 @@ fn format_duration_ms(ms: u64) -> String {
     } else {
         format!("{:.1}s", ms as f64 / 1000.0)
     }
-}
-
-fn duration_ms(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn render_sidebar_subagents(f: &mut Frame, area: Rect, app: &mut App) {
@@ -1357,21 +1261,18 @@ fn render_sidebar_section(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIVE_TOOL_COMPLETED_ROW_TTL, AutoSidebarPanel, AutoSidebarState, SidebarAgentRow,
-        SidebarFocus, SidebarSubagentSummary, SidebarToolRow, ToolRowOrder, auto_sidebar_panels,
-        context_panel_cost_line, editorial_tool_rows, normalize_activity_text, render_sidebar,
-        sidebar_agent_rows, sort_sidebar_agent_rows_as_tree, subagent_output_handle,
-        subagent_panel_lines, subagent_panel_rows, task_panel_lines, task_panel_row_sets,
-        task_panel_rows,
+        AutoSidebarPanel, AutoSidebarState, SidebarAgentRow, SidebarFocus, SidebarSubagentSummary,
+        SidebarToolRow, ToolRowOrder, auto_sidebar_panels, context_panel_cost_line,
+        editorial_tool_rows, normalize_activity_text, render_sidebar, sidebar_agent_rows,
+        sort_sidebar_agent_rows_as_tree, subagent_output_handle, subagent_panel_lines,
+        subagent_panel_rows, task_panel_lines, task_panel_row_sets, task_panel_rows,
     };
     use crate::config::Config;
     use crate::palette;
-    use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{App, TuiOptions};
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
     use ratatui::{Terminal, backend::TestBackend, text::Line};
     use std::path::PathBuf;
-    use std::time::{Duration, Instant};
 
     fn create_test_app() -> App {
         let options = TuiOptions {
@@ -1599,45 +1500,6 @@ mod tests {
     }
 
     #[test]
-    fn tasks_panel_renders_active_tool_rows_before_background_empty_state() {
-        let mut app = create_test_app();
-        app.sidebar_focus = SidebarFocus::Tasks;
-        let mut active = ActiveCell::new();
-        active.push_tool(
-            "tool-1",
-            HistoryCell::Tool(GenericToolCell {
-                name: "agent".to_string(),
-                status: ToolStatus::Running,
-                input_summary: Some("agent_id: agent_af58ba3a".to_string()),
-                output: None,
-                prompts: None,
-                output_summary: None,
-                is_diff: false,
-            }),
-        );
-        app.active_cell = Some(active);
-        app.runtime_turn_id = Some("turn_abcdef123456".to_string());
-        app.runtime_turn_status = Some("in_progress".to_string());
-
-        let text = lines_to_text(&task_panel_lines(&app, 64, 8));
-
-        assert!(text[0].contains("turn "));
-        assert!(text[0].contains("in_progress"));
-        assert!(
-            text.iter().any(|line| line == "Live tools"),
-            "live section missing: {text:?}"
-        );
-        assert!(
-            text.iter().any(|line| line.contains("[~] agent")),
-            "active agent row missing: {text:?}"
-        );
-        assert!(
-            !text.iter().any(|line| line.contains("No active tasks")),
-            "old empty state should not render during active tools: {text:?}"
-        );
-    }
-
-    #[test]
     fn tasks_panel_renders_recent_completed_tool_rows() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
@@ -1664,93 +1526,21 @@ mod tests {
     }
 
     #[test]
-    fn tasks_panel_expires_completed_active_tool_rows() {
-        let mut app = create_test_app();
-        app.sidebar_focus = SidebarFocus::Tasks;
-        let mut active = ActiveCell::new();
-        active.push_tool(
-            "tool-1",
-            HistoryCell::Tool(GenericToolCell {
-                name: "read_file".to_string(),
-                status: ToolStatus::Success,
-                input_summary: Some("src/main.rs".to_string()),
-                output: Some("done".to_string()),
-                prompts: None,
-                output_summary: Some("done".to_string()),
-                is_diff: false,
-            }),
-        );
-        app.active_cell = Some(active);
-        let expired_at = instant_older_than(ACTIVE_TOOL_COMPLETED_ROW_TTL + Duration::from_secs(1));
-        app.active_tool_entry_completed_at.insert(0, expired_at);
-
-        let text = lines_to_text(&task_panel_lines(&app, 64, 8));
-
-        assert!(
-            !text.iter().any(|line| line.contains("[✓] read_file")),
-            "expired completed active row should leave the sidebar: {text:?}"
-        );
-    }
-
-    fn instant_older_than(age: Duration) -> Instant {
-        if let Some(instant) = Instant::now().checked_sub(age) {
-            return instant;
-        }
-
-        let instant = Instant::now();
-        std::thread::sleep(age);
-        instant
-    }
-
-    #[test]
-    fn tasks_panel_lingers_fresh_completed_active_tool_rows() {
-        let mut app = create_test_app();
-        app.sidebar_focus = SidebarFocus::Tasks;
-        let mut active = ActiveCell::new();
-        active.push_tool(
-            "tool-1",
-            HistoryCell::Tool(GenericToolCell {
-                name: "read_file".to_string(),
-                status: ToolStatus::Success,
-                input_summary: Some("src/main.rs".to_string()),
-                output: Some("done".to_string()),
-                prompts: None,
-                output_summary: Some("done".to_string()),
-                is_diff: false,
-            }),
-        );
-        app.active_cell = Some(active);
-        app.active_tool_entry_completed_at.insert(0, Instant::now());
-
-        let text = lines_to_text(&task_panel_lines(&app, 64, 8));
-
-        assert!(
-            text.iter().any(|line| line.contains("[✓] read_file")),
-            "fresh completed active row should linger briefly: {text:?}"
-        );
-    }
-
-    #[test]
     fn task_panel_rows_keep_stable_turn_and_tool_detail() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
         app.runtime_turn_id = Some("turn_abcdef123456".to_string());
         app.runtime_turn_status = Some("in_progress".to_string());
         app.turn_counter = 3;
-        let mut active = ActiveCell::new();
-        active.push_tool(
-            "tool-1",
-            HistoryCell::Tool(GenericToolCell {
-                name: "exec_shell".to_string(),
-                status: ToolStatus::Running,
-                input_summary: Some("cargo test --workspace".to_string()),
-                output: None,
-                prompts: None,
-                output_summary: None,
-                is_diff: false,
-            }),
-        );
-        app.active_cell = Some(active);
+        app.add_message(HistoryCell::Tool(GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("cargo test --workspace".to_string()),
+            output: None,
+            prompts: None,
+            output_summary: None,
+            is_diff: false,
+        }));
 
         let row_sets = task_panel_row_sets(&app);
         let lines = task_panel_rows(&app, &row_sets, 80, 12);
@@ -2132,20 +1922,15 @@ mod tests {
     fn tasks_panel_uses_plain_names_for_shell_background_helpers() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
-        let mut active = ActiveCell::new();
-        active.push_tool(
-            "shell-wait",
-            HistoryCell::Tool(GenericToolCell {
-                name: "task_shell_wait".to_string(),
-                status: ToolStatus::Running,
-                input_summary: Some("task_id: shell_33a08c3c".to_string()),
-                output: None,
-                prompts: None,
-                output_summary: None,
-                is_diff: false,
-            }),
-        );
-        app.active_cell = Some(active);
+        app.add_message(HistoryCell::Tool(GenericToolCell {
+            name: "task_shell_wait".to_string(),
+            status: ToolStatus::Running,
+            input_summary: Some("task_id: shell_33a08c3c".to_string()),
+            output: None,
+            prompts: None,
+            output_summary: None,
+            is_diff: false,
+        }));
 
         let text = lines_to_text(&task_panel_lines(&app, 80, 6));
 
@@ -2163,22 +1948,17 @@ mod tests {
     fn tasks_panel_collapses_repeated_shell_waits_for_same_job() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
-        let mut active = ActiveCell::new();
-        for id in ["shell-wait-1", "shell-wait-2"] {
-            active.push_tool(
-                id,
-                HistoryCell::Tool(GenericToolCell {
-                    name: "task_shell_wait".to_string(),
-                    status: ToolStatus::Running,
-                    input_summary: Some("task_id: shell_33a08c3c".to_string()),
-                    output: None,
-                    prompts: None,
-                    output_summary: Some("Background task running (no new output).".to_string()),
-                    is_diff: false,
-                }),
-            );
+        for _ in 0..2 {
+            app.add_message(HistoryCell::Tool(GenericToolCell {
+                name: "task_shell_wait".to_string(),
+                status: ToolStatus::Running,
+                input_summary: Some("task_id: shell_33a08c3c".to_string()),
+                output: None,
+                prompts: None,
+                output_summary: Some("Background task running (no new output).".to_string()),
+                is_diff: false,
+            }));
         }
-        app.active_cell = Some(active);
 
         let text = lines_to_text(&task_panel_lines(&app, 100, 8));
 
@@ -2199,25 +1979,20 @@ mod tests {
     fn tasks_panel_collapses_repeated_shell_waits_without_task_marker() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
-        let mut active = ActiveCell::new();
-        for (id, summary) in [
-            ("shell-wait-1", "Background task running (no new output)."),
-            ("shell-wait-2", "Still running after 10s."),
+        for summary in [
+            "Background task running (no new output).",
+            "Still running after 10s.",
         ] {
-            active.push_tool(
-                id,
-                HistoryCell::Tool(GenericToolCell {
-                    name: "task_shell_wait".to_string(),
-                    status: ToolStatus::Running,
-                    input_summary: None,
-                    output: None,
-                    prompts: None,
-                    output_summary: Some(summary.to_string()),
-                    is_diff: false,
-                }),
-            );
+            app.add_message(HistoryCell::Tool(GenericToolCell {
+                name: "task_shell_wait".to_string(),
+                status: ToolStatus::Running,
+                input_summary: None,
+                output: None,
+                prompts: None,
+                output_summary: Some(summary.to_string()),
+                is_diff: false,
+            }));
         }
-        app.active_cell = Some(active);
 
         let text = lines_to_text(&task_panel_lines(&app, 100, 8));
 

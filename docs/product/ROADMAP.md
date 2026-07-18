@@ -971,6 +971,17 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除只由自身测试调用的 `footer_ui::one_line_summary`。真实 footer/sidebar/tool
   output 摘要、截断和 `strip_ansi_into` 路径均保留；footer 9/9、canonical Run 19/19、
   PTY 6/6 与 TUI all-target check 通过。
+- M4-C 已删除没有任何 production producer、只在 TUI 自测中直接构造的 `ActiveCell`。
+  canonical presenter 原本已经把 `ToolPrepared` 直接写入 `App.history`/`tool_cells`，再由
+  `ToolOutcomeCommitted` 原位更新同一 `GenericToolCell`；因此 active module、三个 App 字段、
+  virtual transcript/cache、footer/sidebar/phase 的 active 分支及其自测和本地化键现已物理删除，
+  tool-run 检测只读取 canonical history。terminal 不会凭终态补写工具结果，不能把缺少
+  `ToolOutcome` 的真实 `Running` 工具推断为 `Failed`；无真实等待来源时也不激活旧路径从未
+  展示的 stall 文案，两条红线均有回归测试。
+  child/Fleet、canonical `RuntimeEvent`/`RunStore`、cancel/control 与工具输出展示均未改变。
+  定向证据为 presenter 14/14、history 72/72、sidebar 42/42、footer 10/10、phase 22/22、
+  指定 widget 5/5、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check、fmt 和
+  diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

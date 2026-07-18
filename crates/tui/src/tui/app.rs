@@ -21,7 +21,6 @@ use crate::localization::{MessageId, tr};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
 use crate::settings::Settings;
-use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
 use crate::tui::child_agents::ChildAgents;
 use crate::tui::clipboard::ClipboardHandler;
@@ -1555,22 +1554,9 @@ pub struct App {
     /// Populated once at startup and refreshed on install/uninstall so
     /// the slash menu can show skills without filesystem I/O on every keystroke.
     pub cached_skills: Vec<(String, String)>,
-    /// Tool call cells by tool id (for cells already finalized in `history`).
-    /// While a tool call is in flight inside `active_cell`, it is tracked by
-    /// `active_tool_entries` instead and migrated here at flush time.
+    /// Canonical tool call cells by tool id. Prepared tools are written
+    /// directly to `history`; committed outcomes update the indexed cell.
     pub tool_cells: HashMap<String, usize>,
-    /// In-flight tool/exec group for the current turn. Mutated in place as
-    /// parallel tool calls start and complete; flushed into `history` on
-    /// `TurnComplete`.
-    pub active_cell: Option<ActiveCell>,
-    /// Revision counter for `active_cell`. Combined with `active_cell.revision`
-    /// when feeding the transcript cache so cached lines for the synthetic
-    /// active-cell row are invalidated on every mutation.
-    pub active_cell_revision: u64,
-    /// Completion timestamps for entries still living inside `active_cell`.
-    /// The transcript keeps completed entries until turn flush, but the
-    /// sidebar can use these timestamps to let settled live rows expire.
-    pub active_tool_entry_completed_at: HashMap<usize, Instant>,
     /// Tool calls that should be ignored by the UI
     pub ignored_tool_calls: HashSet<String>,
     /// Current streaming assistant cell
@@ -2254,9 +2240,6 @@ impl App {
             active_skill: None,
             cached_skills,
             tool_cells: HashMap::new(),
-            active_cell: None,
-            active_cell_revision: 0,
-            active_tool_entry_completed_at: HashMap::new(),
             ignored_tool_calls: HashSet::new(),
             streaming_message_index: None,
             suppress_stream_events_until_turn_complete: false,
@@ -3009,21 +2992,13 @@ impl App {
         if !self.tool_collapse_active() {
             return None;
         }
-        let active_entries = self
-            .active_cell
-            .as_ref()
-            .map_or(&[][..], crate::tui::active_cell::ActiveCell::entries);
-        if index >= self.history.len().saturating_add(active_entries.len()) {
+        if index >= self.history.len() {
             return None;
         }
-        crate::tui::history::detect_tool_runs_from_slices(
-            &self.history,
-            active_entries,
-            self.tool_collapse_threshold,
-        )
-        .into_iter()
-        .find(|run| index >= run.start && index < run.start.saturating_add(run.count))
-        .map(|run| run.start)
+        crate::tui::history::detect_tool_runs(&self.history, self.tool_collapse_threshold)
+            .into_iter()
+            .find(|run| index >= run.start && index < run.start.saturating_add(run.count))
+            .map(|run| run.start)
     }
 
     pub fn toggle_tool_run_expansion_at(&mut self, index: usize) -> bool {
@@ -3040,109 +3015,12 @@ impl App {
         true
     }
 
-    /// Bump the active-cell revision counter and request a redraw.
-    ///
-    /// Use this whenever an entry inside `active_cell` is mutated. The
-    /// transcript cache combines this counter with `history_version` to
-    /// produce a per-cell revision so the synthetic active-cell row can be
-    /// re-rendered without invalidating committed history cells.
-    pub fn bump_active_cell_revision(&mut self) {
-        self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-        if let Some(active) = self.active_cell.as_mut() {
-            active.bump_revision();
-        }
-        self.history_version = self.history_version.wrapping_add(1);
-        self.needs_redraw = true;
-    }
-
-    /// Total number of cells in the *virtual* transcript: `history.len()`
-    /// plus active cell entries (if any).
-    #[must_use]
-    #[allow(dead_code)] // Reserved for renderers that need a unified cell count.
-    pub fn virtual_cell_count(&self) -> usize {
-        self.history.len() + self.active_cell.as_ref().map_or(0, ActiveCell::entry_count)
-    }
-
-    /// The next cell index a freshly-pushed entry would occupy in the virtual
-    /// transcript. Used by `register_tool_cell`-style callsites that record
-    /// cell-index metadata before the active cell flushes to history.
-    #[must_use]
-    #[allow(dead_code)] // Reserved for the eventual merged push helper.
-    pub fn next_virtual_cell_index(&self) -> usize {
-        self.virtual_cell_count()
-    }
-
     #[must_use]
     pub fn original_cell_index_for_rendered(&self, rendered_index: usize) -> usize {
         self.collapsed_cell_map
             .get(rendered_index)
             .copied()
             .unwrap_or(rendered_index)
-    }
-
-    /// Mutable variant of [`Self::cell_at_virtual_index`]. Bumps the
-    /// appropriate revision counter (active-cell revision when targeting an
-    /// in-flight entry, history version otherwise).
-    pub fn cell_at_virtual_index_mut(&mut self, index: usize) -> Option<&mut HistoryCell> {
-        if index < self.history.len() {
-            // Bump only the targeted cell's revision; leave every other
-            // cell's cached render intact.
-            self.resync_history_revisions();
-            if let Some(rev) = self.history_revisions.get_mut(index) {
-                let new_rev = self.next_history_revision;
-                self.next_history_revision = self.next_history_revision.wrapping_add(1);
-                *rev = new_rev;
-            }
-            self.history_version = self.history_version.wrapping_add(1);
-            self.history.get_mut(index)
-        } else {
-            let entry_idx = index - self.history.len();
-            self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
-            self.history_version = self.history_version.wrapping_add(1);
-            self.active_cell
-                .as_mut()
-                .and_then(|active| active.entry_mut(entry_idx))
-        }
-    }
-
-    /// Drain the active cell into history. Idempotent — calling this when
-    /// there is no active cell is a no-op.
-    ///
-    /// Caller is responsible for first marking in-progress entries with the
-    /// terminal status they want (e.g. via
-    /// [`ActiveCell::mark_in_progress_as_interrupted`]).
-    pub fn flush_active_cell(&mut self) {
-        let Some(mut active) = self.active_cell.take() else {
-            return;
-        };
-        if active.is_empty() {
-            self.active_tool_entry_completed_at.clear();
-            self.bump_active_cell_revision();
-            return;
-        }
-
-        let drained = active.drain();
-        self.active_tool_entry_completed_at.clear();
-
-        for cell in drained {
-            let rev = self.fresh_history_revision();
-            self.history.push(cell);
-            self.history_revisions.push(rev);
-        }
-        self.history_version = self.history_version.wrapping_add(1);
-        self.needs_redraw = true;
-        if self.viewport.transcript_scroll.is_at_tail() && !self.user_scrolled_during_stream {
-            self.scroll_to_bottom();
-        }
-    }
-
-    /// Mark every still-running entry in the active cell as interrupted, then
-    /// flush. Convenience helper for cancellation paths.
-    pub fn finalize_active_cell_as_interrupted(&mut self) {
-        if let Some(active) = self.active_cell.as_mut() {
-            active.mark_in_progress_as_interrupted();
-        }
-        self.flush_active_cell();
     }
 
     pub fn push_status_toast(

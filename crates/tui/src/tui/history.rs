@@ -37,9 +37,7 @@ use tool_output::{render_tool_output_mode, wrap_text};
 use agent_activity::extract_agent_id;
 #[cfg(test)]
 use tool_run::ToolRunActivitySummary;
-#[cfg(test)]
-pub use tool_run::detect_tool_runs;
-pub use tool_run::{ToolRun, detect_tool_runs_from_slices, tool_run_summary};
+pub use tool_run::{ToolRun, detect_tool_runs, tool_run_summary};
 
 #[cfg(test)]
 use thinking::{REASONING_CURSOR, REASONING_OPENER, REASONING_RAIL};
