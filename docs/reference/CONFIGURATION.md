@@ -825,9 +825,6 @@ Common settings keys:
   `/cost`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
 - `default_mode` (`agent`, `plan`, or `operate`; legacy values are accepted for migration but are not live mode vocabulary)
-- `launch_screen` (`on`/`off`; default `off`): show the pre-session New/
-  Resume/Worktree menu. With it off, Codewhale enters a new session directly;
-  resume remains available in-session.
 - `sidebar_focus` (`pinned`, `auto`, `tasks`, `agents`, `context`, `hidden`; default
   `pinned`): selects the right sidebar focus. `pinned` keeps the right sidebar
   visible when the terminal is wide enough and composes Work, Tasks, Agents,

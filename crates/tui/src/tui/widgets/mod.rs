@@ -4295,7 +4295,7 @@ mod tests {
     }
 
     #[test]
-    fn underwater_launch_is_visibly_deep_and_preserves_text_cells() {
+    fn underwater_empty_state_is_visibly_deep_and_preserves_text_cells() {
         let mut app = create_test_app();
         app.workspace = PathBuf::from("/tmp/codewhale-test-workspace");
         app.model = "deepseek-v4-pro".to_string();
@@ -4330,7 +4330,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_launch_omits_fake_commands_and_ambient_clutter() {
+    fn compact_empty_state_omits_fake_commands_and_ambient_clutter() {
         let app = create_test_app();
         let rendered = build_empty_state_lines(&app, Rect::new(0, 0, 40, 12))
             .iter()
@@ -4343,7 +4343,7 @@ mod tests {
     }
 
     #[test]
-    fn launch_hierarchy_survives_responsive_gate_sizes() {
+    fn empty_state_hierarchy_survives_responsive_gate_sizes() {
         for (width, height) in [(40, 12), (60, 16), (80, 24), (100, 32), (140, 40)] {
             let mut app = create_test_app();
             let area = Rect::new(0, 0, width, height);
@@ -4420,13 +4420,6 @@ mod tests {
         let mut transcript = Buffer::empty(transcript_area);
         ChatWidget::new(&mut app, transcript_area).render(transcript_area, &mut transcript);
 
-        // Pre-session launch menu.
-        app.launch.visible = true;
-        let launch_area = Rect::new(0, 0, 100, 32);
-        let mut launch = Buffer::empty(launch_area);
-        crate::tui::underwater::render_launch_screen(launch_area, &mut launch, &app);
-        app.launch.visible = false;
-
         // Header owns the route facts and the block context meter.
         let header_area = Rect::new(0, 0, 100, 2);
         let mut header = Buffer::empty(header_area);
@@ -4441,7 +4434,6 @@ mod tests {
 
         for (surface, buf, rect) in [
             ("idle transcript", &transcript, transcript_area),
-            ("launch", &launch, launch_area),
             ("header", &header, header_area),
             ("footer", &footer, footer_area),
         ] {

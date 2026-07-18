@@ -72,14 +72,13 @@ fn spawn_minimal(
         ])
         .size(40, 140)
         .spawn()?;
-    enter_launch_session(&mut h)?;
+    wait_for_composer(&mut h)?;
     Ok((ws, h))
 }
 
-/// PTY scenarios exercise composer/runtime behavior. The default startup now
-/// enters a session directly; users who explicitly enable `launch_screen`
-/// retain the separate launch surface, covered by unit rendering tests.
-fn enter_launch_session(h: &mut Harness) -> anyhow::Result<()> {
+/// PTY scenarios exercise composer/runtime behavior after startup reaches the
+/// canonical composer directly.
+fn wait_for_composer(h: &mut Harness) -> anyhow::Result<()> {
     h.wait_for_text(COMPOSER_READY_TEXT, BOOT_TIMEOUT)?;
     Ok(())
 }
@@ -344,7 +343,7 @@ fn resize_and_mouse_wheel_preserve_composer_ownership() -> anyhow::Result<()> {
         ])
         .size(40, 140)
         .spawn()?;
-    enter_launch_session(&mut h)?;
+    wait_for_composer(&mut h)?;
 
     h.resize(24, 80)?;
     h.wait_for(
@@ -388,7 +387,7 @@ fn canonical_approval_survives_resize_and_denial_has_no_side_effect() -> anyhow:
         ])
         .size(32, 100)
         .spawn()?;
-    enter_launch_session(&mut h)?;
+    wait_for_composer(&mut h)?;
 
     h.send(keys::key::text(
         "Request the fixture apply_patch call; do not change its arguments.",

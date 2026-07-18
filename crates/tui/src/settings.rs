@@ -269,10 +269,6 @@ pub struct Settings {
     pub composer_vim_mode: String,
     /// Transcript spacing rhythm: compact, comfortable, spacious
     pub transcript_spacing: String,
-    /// Show the pre-session launch menu. When false, Codewhale enters a new
-    /// session directly; resume remains available in-session.
-    #[serde(default)]
-    pub launch_screen: bool,
     /// Default mode: "agent" or "plan". Legacy permission
     /// shorthands are accepted for migration but never advertised as modes.
     pub default_mode: String,
@@ -396,7 +392,6 @@ impl Default for Settings {
             composer_border: true,
             composer_vim_mode: "normal".to_string(),
             transcript_spacing: "comfortable".to_string(),
-            launch_screen: false,
             default_mode: "agent".to_string(),
             sidebar_width_percent: 28,
             sidebar_focus: "auto".to_string(),
@@ -764,9 +759,6 @@ impl Settings {
                 }
                 self.transcript_spacing = normalized.to_string();
             }
-            "launch_screen" | "launch" => {
-                self.launch_screen = parse_bool(value)?;
-            }
             "status_indicator" | "indicator" => {
                 let normalized = normalize_status_indicator(value);
                 if !["cw", "whale", "dots", "off"].contains(&normalized) {
@@ -971,7 +963,6 @@ impl Settings {
             self.workspace_follow_symlinks
         ));
         lines.push(format!("  default_mode:       {}", self.default_mode));
-        lines.push(format!("  launch_screen:      {}", self.launch_screen));
         lines.push(format!(
             "  sidebar_width:      {}%",
             self.sidebar_width_percent
@@ -1073,10 +1064,6 @@ impl Settings {
             (
                 "transcript_spacing",
                 "Transcript spacing: compact, comfortable, spacious",
-            ),
-            (
-                "launch_screen",
-                "Show the pre-session launch menu on startup: on/off",
             ),
             (
                 "status_indicator",
@@ -1562,10 +1549,6 @@ mod tests {
         );
         assert!(!settings.low_motion);
         assert_eq!(settings.transcript_spacing, "comfortable");
-        assert!(
-            !settings.launch_screen,
-            "returning users enter a session directly"
-        );
     }
 
     #[test]
@@ -1671,6 +1654,22 @@ mod tests {
             Settings::available_settings()
                 .into_iter()
                 .all(|(key, _)| key != "locale" && key != "language")
+        );
+    }
+
+    #[test]
+    fn removed_launch_menu_is_not_a_configurable_setting() {
+        let mut settings = Settings::default();
+        for key in ["launch_screen", "launch"] {
+            let err = settings
+                .set(key, "on")
+                .expect_err("removed launch menu settings must fail closed");
+            assert!(err.to_string().contains("unknown setting"));
+        }
+        assert!(
+            Settings::available_settings()
+                .into_iter()
+                .all(|(key, _)| key != "launch_screen")
         );
     }
 

@@ -489,10 +489,6 @@ pub async fn run_tui(config: &Config, options: TuiOptions) -> Result<()> {
     crate::startup_trace::mark("app_constructed");
     surface_prompt_override_notices(&mut app);
 
-    // The canonical foreground is one application service plus one Run API
-    // client. No retired execution manager, translation model, checkpoint
-    // writer, or runtime-thread store participates in this path.
-    app.launch.visible = false;
     let input = TerminalInputPump::spawn()?;
     if run_deepseek_onboarding_loop(&mut terminal, &mut app, config, &input).await? {
         return Ok(());
@@ -1496,16 +1492,6 @@ fn render(f: &mut Frame, app: &mut App) {
     // Show onboarding screen if needed
     if app.onboarding != OnboardingState::None {
         onboarding::render(f, size, app);
-        return;
-    }
-
-    if app.launch.visible {
-        crate::tui::underwater::render_launch_screen(size, f.buffer_mut(), app);
-        crate::tui::underwater::record_launch_row_areas(size, &mut app.launch);
-        if !app.view_stack.is_empty() {
-            let buf = f.buffer_mut();
-            app.view_stack.render(size, buf);
-        }
         return;
     }
 

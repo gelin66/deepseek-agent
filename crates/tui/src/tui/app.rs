@@ -1053,44 +1053,6 @@ pub enum InitialInput {
     Submit(String),
 }
 
-/// Pre-session launch menu state for the underwater shell.
-///
-/// This is deliberately separate from onboarding and from the post-launch
-/// empty session. It selects real session/worktree actions before the
-/// transcript and composer become active.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LaunchState {
-    pub visible: bool,
-    pub selected: usize,
-    pub worktree_input: Option<String>,
-    pub status: Option<String>,
-    pub workspace_session_count: usize,
-    pub worktree_available: bool,
-    /// Row hitboxes from the most recent launch render.
-    pub row_areas: Vec<Rect>,
-}
-
-impl LaunchState {
-    #[must_use]
-    pub fn new(visible: bool, workspace: &std::path::Path) -> Self {
-        let workspace_session_count = 0;
-        let worktree_available = std::process::Command::new("git")
-            .current_dir(workspace)
-            .args(["rev-parse", "--show-toplevel"])
-            .output()
-            .is_ok_and(|output| output.status.success());
-        Self {
-            visible,
-            selected: 0,
-            worktree_input: None,
-            status: None,
-            workspace_session_count,
-            worktree_available,
-            row_areas: Vec::new(),
-        }
-    }
-}
-
 // === Sub-state structs for App field organization (#377) ===
 
 /// Vim modal editing mode for the composer input area.
@@ -1609,11 +1571,6 @@ pub struct App {
     /// Typed appearance treatment; appearance is independent from motion
     /// settings, and every underwater treatment keeps ambient life.
     pub ocean_treatment: crate::tui::ocean::OceanTreatment,
-    /// Distinct pre-session menu. Once dismissed, the normal idle ocean owns
-    /// the empty session and this state stays hidden.
-    pub launch: LaunchState,
-    /// Mouse-selected launch action, consumed by the async UI loop.
-    pub pending_launch_action: Option<crate::tui::underwater::LaunchAction>,
     /// Whether the renderer should wrap each frame in DEC mode 2026
     /// synchronized output. Resolved from `Settings::synchronized_output`
     /// at construction; `auto`/`on` → `true`, `off` → `false`. The Ptyxis
@@ -2023,7 +1980,7 @@ impl App {
             start_in_agent_mode,
             skip_onboarding,
             yolo,
-            resume_session_id,
+            resume_session_id: _,
             initial_input,
         } = options;
 
@@ -2082,10 +2039,6 @@ impl App {
             false
         };
         settings.apply_env_overrides();
-        let launch_visible =
-            settings.launch_screen && resume_session_id.is_none() && initial_input.is_none();
-        let launch = LaunchState::new(launch_visible, &workspace);
-
         // If settings.toml exists on disk but couldn't be parsed (we fell back
         // to defaults), surface a warning in the TUI so the user knows their
         // file is broken instead of silently losing all settings.
@@ -2423,8 +2376,6 @@ impl App {
             ocean_receipt_settle_start: None,
             fancy_animations,
             ocean_treatment,
-            launch,
-            pending_launch_action: None,
             synchronized_output_enabled,
             status_indicator,
             show_thinking,

@@ -8,7 +8,6 @@
 
 use std::borrow::Cow;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -32,103 +31,6 @@ pub enum ShellTier {
     Compact,
     Normal,
     Wide,
-}
-
-const LAUNCH_ROWS: [(MessageId, &str); 5] = [
-    (MessageId::LaunchMenuNewSession, "Enter"),
-    (MessageId::LaunchMenuNewWorktree, "Ctrl+N"),
-    (MessageId::LaunchMenuResumeSession, "Ctrl+R"),
-    (MessageId::LaunchMenuChangelog, "Ctrl+L"),
-    (MessageId::LaunchMenuQuit, "Ctrl+Q"),
-];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LaunchAction {
-    None,
-    NewSession,
-    CreateWorktree(String),
-    Resume,
-    Changelog,
-    Quit,
-}
-
-/// Translate launch-menu input into one product action. Direct reliable keys
-/// and row navigation share this path, so the printed key column cannot drift
-/// away from the handler.
-pub fn handle_launch_key(launch: &mut crate::tui::app::LaunchState, key: KeyEvent) -> LaunchAction {
-    if let Some(input) = launch.worktree_input.as_mut() {
-        return match key.code {
-            KeyCode::Esc => {
-                launch.worktree_input = None;
-                launch.status = None;
-                LaunchAction::None
-            }
-            KeyCode::Enter => {
-                let name = input.trim().to_string();
-                launch.worktree_input = None;
-                LaunchAction::CreateWorktree(name)
-            }
-            KeyCode::Backspace => {
-                input.pop();
-                LaunchAction::None
-            }
-            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                launch.worktree_input = None;
-                launch.status = None;
-                LaunchAction::None
-            }
-            KeyCode::Char(ch)
-                if !key.modifiers.intersects(
-                    KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER,
-                ) =>
-            {
-                input.push(ch);
-                LaunchAction::None
-            }
-            _ => LaunchAction::None,
-        };
-    }
-
-    let direct = match key.code {
-        KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(1),
-        KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(2),
-        KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(3),
-        KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => Some(4),
-        _ => None,
-    };
-    if let Some(selected) = direct {
-        launch.selected = selected;
-    } else {
-        match key.code {
-            KeyCode::Up | KeyCode::Char('k') => {
-                launch.selected = launch.selected.saturating_sub(1);
-                return LaunchAction::None;
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                launch.selected = (launch.selected + 1).min(LAUNCH_ROWS.len() - 1);
-                return LaunchAction::None;
-            }
-            KeyCode::Enter => {}
-            _ => return LaunchAction::None,
-        }
-    }
-
-    match launch.selected {
-        0 => LaunchAction::NewSession,
-        1 if launch.worktree_available => {
-            launch.worktree_input = Some(String::new());
-            launch.status = Some(tr(MessageId::LaunchWorktreePrompt).into_owned());
-            LaunchAction::None
-        }
-        1 => {
-            launch.status = Some(tr(MessageId::LaunchWorktreeNeedsGit).into_owned());
-            LaunchAction::None
-        }
-        2 => LaunchAction::Resume,
-        3 => LaunchAction::Changelog,
-        4 => LaunchAction::Quit,
-        _ => LaunchAction::None,
-    }
 }
 
 impl ShellTier {
@@ -359,199 +261,6 @@ fn truncate_to_width(text: &str, width: usize) -> String {
     result
 }
 
-fn render_launch_line(area: Rect, buf: &mut Buffer, y: u16, spans: Vec<Span<'static>>) {
-    if y >= area.height {
-        return;
-    }
-    Paragraph::new(Line::from(spans)).render(
-        Rect {
-            x: area.x,
-            y: area.y.saturating_add(y),
-            width: area.width,
-            height: 1,
-        },
-        buf,
-    );
-}
-
-/// Render the distinct pre-session choice state. This screen contains no
-/// transcript, composer, dashboard, or post-launch whale: each row dispatches
-/// to real session/worktree machinery before the idle ocean is entered.
-pub fn render_launch_screen(area: Rect, buf: &mut Buffer, app: &App) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    Block::default()
-        .style(Style::default().bg(app.ui_theme.surface_bg))
-        .render(area, buf);
-    let width = usize::from(area.width);
-    let version = format!("v{}", env!("DEEPSEEK_BUILD_VERSION"));
-    let workspace_budget = width.saturating_sub(version.width() + 6);
-    let workspace = truncate_to_width(
-        &crate::utils::display_path(&app.workspace),
-        workspace_budget,
-    );
-    let mut header = vec![
-        Span::styled(
-            "cw",
-            Style::default()
-                .fg(app.ui_theme.accent_primary)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(workspace, Style::default().fg(app.ui_theme.text_muted)),
-    ];
-    let gap = width.saturating_sub(span_width(&header) + version.width());
-    header.push(Span::raw(" ".repeat(gap)));
-    header.push(Span::styled(
-        version,
-        Style::default().fg(app.ui_theme.text_hint),
-    ));
-    render_launch_line(area, buf, 0, header);
-    if area.height > 1 {
-        render_launch_line(
-            area,
-            buf,
-            1,
-            vec![Span::styled(
-                "─".repeat(width),
-                Style::default().fg(app.ui_theme.border),
-            )],
-        );
-    }
-
-    let rows_start = if area.height >= 16 { 4 } else { 3 };
-    for (index, (label_id, key)) in LAUNCH_ROWS.iter().enumerate() {
-        let y = rows_start + u16::try_from(index).unwrap_or(0);
-        if y >= area.height.saturating_sub(3) {
-            break;
-        }
-        let selected = app.launch.selected == index;
-        let mut label = tr(*label_id).into_owned();
-        if index == 1 && !app.launch.worktree_available {
-            label.push_str(&format!(" · {}", tr(MessageId::LaunchMenuUnavailable)));
-        }
-        if index == 2 {
-            label.push_str(&format!(
-                " · {}",
-                tr(MessageId::LaunchMenuSavedCount)
-                    .replace("{count}", &app.launch.workspace_session_count.to_string())
-            ));
-        }
-        let prefix = if selected { "  ▸ " } else { "    " };
-        let key_width = key.width();
-        let label_budget = width.saturating_sub(prefix.width() + key_width + 2);
-        let label = truncate_to_width(&label, label_budget);
-        let fill = width.saturating_sub(prefix.width() + label.width() + key_width);
-        let row_style = if selected {
-            Style::default()
-                .fg(app.ui_theme.accent_primary)
-                .add_modifier(Modifier::BOLD)
-        } else if index == 1 && !app.launch.worktree_available {
-            Style::default().fg(app.ui_theme.text_dim)
-        } else {
-            Style::default().fg(app.ui_theme.text_body)
-        };
-        render_launch_line(
-            area,
-            buf,
-            y,
-            vec![
-                Span::styled(prefix, row_style),
-                Span::styled(label, row_style),
-                Span::raw(" ".repeat(fill)),
-                Span::styled(*key, Style::default().fg(app.ui_theme.text_hint)),
-            ],
-        );
-    }
-
-    if area.height < 3 {
-        return;
-    }
-    let rule_y = area.height.saturating_sub(3);
-    render_launch_line(
-        area,
-        buf,
-        rule_y,
-        vec![Span::styled(
-            "─".repeat(width),
-            Style::default().fg(app.ui_theme.border),
-        )],
-    );
-    let prompt = if let Some(input) = app.launch.worktree_input.as_deref() {
-        format!(
-            "{}  {}{}",
-            tr(MessageId::LaunchWorktreeNameLabel),
-            input,
-            if app.low_motion { "_" } else { "▌" }
-        )
-    } else if let Some(status) = app.launch.status.as_deref() {
-        status.to_string()
-    } else if area.width < 60 {
-        format!(
-            "j/k:{} · Enter:{}",
-            tr(MessageId::LaunchHintMove),
-            tr(MessageId::LaunchHintOpen)
-        )
-    } else {
-        tr(MessageId::LaunchTipFlags).into_owned()
-    };
-    render_launch_line(
-        area,
-        buf,
-        area.height.saturating_sub(2),
-        vec![Span::styled(
-            truncate_to_width(&prompt, width),
-            Style::default().fg(if app.launch.status.is_some() {
-                app.ui_theme.text_muted
-            } else {
-                app.ui_theme.text_hint
-            }),
-        )],
-    );
-
-    let saved_sessions = if app.launch.workspace_session_count == 1 {
-        tr(MessageId::LaunchSavedSessionSingular).into_owned()
-    } else {
-        tr(MessageId::LaunchSavedSessionsPlural)
-            .replace("{count}", &app.launch.workspace_session_count.to_string())
-    };
-    let status = format!(
-        "{} · {} · {}",
-        app.model_display_label(),
-        mode_label(app.mode),
-        saved_sessions
-    );
-    render_launch_line(
-        area,
-        buf,
-        area.height.saturating_sub(1),
-        vec![Span::styled(
-            truncate_to_width(&status, width),
-            Style::default().fg(app.ui_theme.text_dim),
-        )],
-    );
-}
-
-/// Record the launch row rects immediately after the launch frame is painted.
-/// The coordinates mirror the renderer's responsive row placement exactly.
-pub fn record_launch_row_areas(area: Rect, launch: &mut crate::tui::app::LaunchState) {
-    launch.row_areas.clear();
-    let rows_start = if area.height >= 16 { 4 } else { 3 };
-    for index in 0..LAUNCH_ROWS.len() {
-        let y = rows_start + u16::try_from(index).unwrap_or(0);
-        if y >= area.height.saturating_sub(3) {
-            break;
-        }
-        launch.row_areas.push(Rect {
-            x: area.x,
-            y: area.y.saturating_add(y),
-            width: area.width,
-            height: 1,
-        });
-    }
-}
-
 fn compact_tokens(tokens: i64) -> String {
     if tokens >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)
@@ -704,7 +413,7 @@ pub fn render_footer(area: Rect, buf: &mut Buffer, app: &mut App) {
     crate::tui::phase_strip::render(area, buf, app);
 }
 
-/// Build the post-launch idle composition: one brand mark and one context line.
+/// Build the idle composition: one brand mark and one context line.
 /// Commands are discovered only through the canonical composer menu.
 pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
     if area.width == 0 || area.height == 0 {
@@ -769,10 +478,7 @@ pub fn empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        config::Config,
-        tui::app::{LaunchState, TuiOptions},
-    };
+    use crate::{config::Config, tui::app::TuiOptions};
     use std::{
         path::PathBuf,
         time::{Duration, Instant},
@@ -805,18 +511,6 @@ mod tests {
         )
     }
 
-    fn launch() -> LaunchState {
-        LaunchState {
-            visible: true,
-            selected: 0,
-            worktree_input: None,
-            status: None,
-            workspace_session_count: 2,
-            worktree_available: true,
-            row_areas: Vec::new(),
-        }
-    }
-
     #[test]
     fn empty_state_uses_workspace_without_fabricated_git_state() {
         let mut app = test_app();
@@ -834,19 +528,6 @@ mod tests {
             assert!(!text.contains("无 git"), "{text}");
             assert!(!text.to_ascii_lowercase().contains("branch"), "{text}");
         }
-    }
-
-    #[test]
-    fn launch_row_hitboxes_follow_responsive_render_rows() {
-        let mut launch = launch();
-        record_launch_row_areas(Rect::new(3, 2, 80, 24), &mut launch);
-        assert_eq!(launch.row_areas.len(), 5);
-        assert_eq!(launch.row_areas[0], Rect::new(3, 6, 80, 1));
-        assert_eq!(launch.row_areas[4], Rect::new(3, 10, 80, 1));
-
-        record_launch_row_areas(Rect::new(3, 2, 40, 10), &mut launch);
-        assert_eq!(launch.row_areas.len(), 4);
-        assert_eq!(launch.row_areas[0], Rect::new(3, 5, 40, 1));
     }
 
     fn footer_text(app: &mut App) -> String {
@@ -905,78 +586,6 @@ mod tests {
             held.contains("failed"),
             "errors must hold past the informational window: {held}"
         );
-    }
-
-    #[test]
-    fn launch_rows_and_direct_keys_share_actions() {
-        let mut state = launch();
-        assert_eq!(
-            handle_launch_key(
-                &mut state,
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            ),
-            LaunchAction::NewSession
-        );
-        assert_eq!(
-            handle_launch_key(
-                &mut state,
-                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
-            ),
-            LaunchAction::Resume
-        );
-        assert_eq!(state.selected, 2);
-
-        assert_eq!(
-            handle_launch_key(
-                &mut state,
-                KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
-            ),
-            LaunchAction::Changelog
-        );
-        assert_eq!(state.selected, 3);
-    }
-
-    #[test]
-    fn worktree_action_collects_a_name_before_creation() {
-        let mut state = launch();
-        assert_eq!(
-            handle_launch_key(
-                &mut state,
-                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            ),
-            LaunchAction::None
-        );
-        for ch in "repair-pty".chars() {
-            assert_eq!(
-                handle_launch_key(
-                    &mut state,
-                    KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
-                ),
-                LaunchAction::None
-            );
-        }
-        assert_eq!(
-            handle_launch_key(
-                &mut state,
-                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
-            ),
-            LaunchAction::CreateWorktree("repair-pty".to_string())
-        );
-    }
-
-    #[test]
-    fn unavailable_worktree_is_truthful_and_non_destructive() {
-        let mut state = launch();
-        state.worktree_available = false;
-        assert_eq!(
-            handle_launch_key(
-                &mut state,
-                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-            ),
-            LaunchAction::None
-        );
-        assert!(state.worktree_input.is_none());
-        assert_eq!(state.status.as_deref(), Some("新建工作树需要 Git 仓库。"));
     }
 
     #[test]
