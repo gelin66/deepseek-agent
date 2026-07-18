@@ -1,15 +1,9 @@
-//! Interactive skill installation and system-skill management.
+//! Bundled system-skill management.
 //!
 //! Discovery, parsing, and prompt rendering are owned by
-//! `codewhale-context`; this module retains only TUI mutation surfaces.
+//! `codewhale-context`; this module only installs first-party skills bundled
+//! into the local binary.
 
-pub mod install;
 mod system;
 
-#[allow(unused_imports)]
-pub use install::{
-    DEFAULT_MAX_SIZE_BYTES, DEFAULT_REGISTRY_URL, INSTALLED_FROM_MARKER, InstallOutcome,
-    InstallSource, InstalledSkill, RegistryDocument, RegistryEntry, RegistryFetchResult,
-    SkillSyncOutcome, SyncResult, UpdateResult, default_cache_skills_dir,
-};
 pub use system::install_system_skills;

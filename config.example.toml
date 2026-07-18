@@ -702,23 +702,11 @@ max_subagents = 10 # optional (1-20)
 # audit = true            # one line per call to ~/.codewhale/audit.log
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Skills (#140)
+# Skills
 # ─────────────────────────────────────────────────────────────────────────────────
-# Settings for the `/skill install <spec>` community-skill installer.
-#   * registry_url           — curated index.json that resolves bare names to
-#                              `github:owner/repo` specs. Override to point at
-#                              a private fork or internal mirror.
-#   * max_install_size_bytes — per-skill uncompressed size cap. Tarballs that
-#                              exceed this limit are rejected during validation.
-#                              Default: 5 MiB.
-#
-# `/skill install` is gated by `[network]`. Make sure `github.com` and
-# `raw.githubusercontent.com` are reachable (default `prompt` is fine — you'll
-# be asked once and can persist) before running it.
-#
+# Restrict local skill discovery to CodeWhale-owned roots. The default also
+# discovers compatible local skill directories from other tools.
 # [skills]
-# registry_url = "https://raw.githubusercontent.com/Hmbown/deepseek-skills/main/index.json"
-# max_install_size_bytes = 5_242_880
 # scan_codewhale_only = false # true: ignore Claude/OpenCode/Cursor/agentskills.io skill dirs
 
 # ─────────────────────────────────────────────────────────────────────────────────

@@ -747,8 +747,17 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   helper、`[update]` typed schema、默认模板与假文档。全仓调用图中
   `spawn_startup_version_check` 只有定义，没有 spawn、join、toast 或 renderer 消费者，因此
   删除没有运行时行为损失；旧 `[update]` 表不再作为受支持配置。Doctor 的显式 release
-  诊断、`crates/release`、平台 TLS builder、MCP/OAuth/Fleet alerts 与 skills installer 均有
-  独立生产调用方并保持不变，本切片没有把 updater 名称相似性误判为可整 crate 删除。
+  诊断与 `crates/release` 平台 TLS builder 及其 MCP/OAuth/Fleet alerts 消费者保持；
+  系统 skills 自动安装也有独立生产调用方并保持不变。本切片没有把 updater 名称
+  相似性误判为可整 crate 删除。
+- M4-C 已物理删除没有生产命令或 Runtime 消费者的 community skill installer、直接把该
+  源文件编入测试的伪 `skill_cli` 验收，以及只服务它的 registry URL/安装大小配置和
+  `tar`/`flate2` 直接依赖。TUI 与 `codewhale-config` 都不再把这两个旧键建模为受支持
+  schema；`codewhale-config` 只将 TUI 的表作为通用 extra 往返，当前 `[skills]` 唯一支持的语义是
+  `scan_codewhale_only` 本地 discovery 范围。交互启动仍调用
+  `install_system_skills`，其 marker/version、`scan_codewhale_only` 和 canonical prompt
+  discovery 均保留。自动 bundle 中只宣称不存在的 `/skill install/update/trust/uninstall`
+  的 `skill-installer` 已从源码 catalog 移除；程序不会主动删除用户磁盘上已有的历史目录。
 - M4-C 已删除未注册、零执行调用方的旧 TUI `RequestUserInputTool`/parser 和永远为 `None`
   的 prompt shadow。保留的 UserInput modal 直接使用 canonical protocol 类型，并继续通过
   `AgentRuntime` interaction 与 `RunStore` 提交或取消，不再经过第二套 TUI ToolSpec。

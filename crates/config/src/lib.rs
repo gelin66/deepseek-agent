@@ -467,11 +467,6 @@ pub struct ConfigToml {
     /// to a permissive default that mirrors pre-v0.7.0 behavior.
     #[serde(default)]
     pub network: Option<NetworkPolicyToml>,
-    /// Community skill installer settings (#140). Mirrors
-    /// [`SkillsToml`] from the TUI side; the dispatcher consults
-    /// `registry_url` when running `deepseek skill install`.
-    #[serde(default)]
-    pub skills: Option<SkillsToml>,
     /// Per-model harness profiles (#2693). Runtime wiring lands in follow-up
     /// v0.9 slices; this is the durable config data model.
     #[serde(default)]
@@ -867,20 +862,6 @@ mod provider_chain_tests {
         };
         assert_eq!(chain.current(), ProviderKind::default());
     }
-}
-
-/// On-disk schema for the `[skills]` table (#140). See `config.example.toml`
-/// for documentation.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct SkillsToml {
-    /// Curated registry index URL. When unset, the TUI falls back to the
-    /// bundled default (community-curated GitHub raw).
-    #[serde(default)]
-    pub registry_url: Option<String>,
-    /// Per-skill maximum *uncompressed* size in bytes. When unset, the TUI
-    /// uses 5 MiB.
-    #[serde(default)]
-    pub max_install_size_bytes: Option<u64>,
 }
 
 /// On-disk schema for the `[tools]` table (#2076).
@@ -1465,7 +1446,7 @@ impl ConfigToml {
     ///
     /// Repo-local config is untrusted input. This helper intentionally ignores
     /// credentials, endpoints, provider selection, auth/session values, telemetry,
-    /// network policy, skill registry, and unknown extras.
+    /// network policy and unknown extras.
     /// Approval and sandbox values may only tighten the existing user/global
     /// posture.
     pub fn merge_project_overrides(&mut self, project: ConfigToml) {

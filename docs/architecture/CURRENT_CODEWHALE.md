@@ -380,8 +380,8 @@ M4-C foreground 切换后还已物理删除：
 - 无调用方的 TUI OpenAI/Anthropic message/tool DTO 与 MCP `to_api_tools` 广告器；它们未进入
   canonical `AgentRuntime`，删除不会改变 MCP 配置、transport、OAuth、发现或 CLI 管理。
   当前 model-visible 工具仍只由固定目录和 Runtime 条件内建工具产生。
-- 顶层 `codewhale update` 与 CLI 自更新实现；TUI 启动时版本检查、TLS 和 skills installer
-  仍使用的 `crates/release` 保留，不属于本次删除。
+- 顶层 `codewhale update` 与 CLI 自更新实现；仍有真实 TLS、MCP/OAuth、Fleet 和显式
+  Doctor 消费者的 `crates/release` 保留，不属于本次删除。
 - TUI 私有生命周期 shell-hook owner、`App.hooks`、`[hooks]` 配置和虚假参考文档已物理删除。
   切换后 `mode_change` shell hook 不再执行，受信任工作区中的 `.codewhale/hooks.toml`
   也不再读取；其余生命周期事件原本就没有 canonical production 派发。
@@ -454,12 +454,20 @@ M4-C foreground 切换后还已物理删除：
   bundled-name helper 同步删除。Setup `--force`、SQLite RunStore/`agent_run_snapshots`、crash
   replay、进程内 busy-message queue、Fleet ledger/checkpoint 和 constitution checkpoint 均不经
   该路径。
+- 没有生产命令、canonical Runtime 调用方或模型可见入口的 community skill installer。
+  `crates/tui/tests/skill_cli.rs` 只是用 `#[path]` 重新编译该源文件，不是 CLI 验收；现已连同
+  registry URL/安装大小 schema、伪配置说明和 `tar`/`flate2` 直接依赖物理删除。TUI
+  和 `codewhale-config` 都不再将两个旧键建模为受支持 schema；config crate 只保持 TUI
+  `[skills]` 表的通用 extra 往返，其中当前唯一有产品语义的键是 `scan_codewhale_only`。系统
+  `install_system_skills`、版本 marker、local skill discovery 与 prompt
+  注入继续工作；仅宣称不存在 `/skill install/update/trust/uninstall` 的 bundled
+  `skill-installer` 不再进入新安装，既有用户目录不会被程序主动删除。
 - TUI startup version checker 及 `[update]` schema。`spawn_startup_version_check` 在全仓只有
   定义，既没有启动调用，也没有 task join、toast 或 renderer 消费者；其余 release JSON、
   asset completeness 和自制 semver helper 只由这条死链及自身测试引用。删除因此没有运行时
   行为损失，旧 `[update]` 表不再由 typed config 消费。Doctor 仍显式执行 release 诊断；
-  `crates/release` 的平台 HTTP/TLS builder 继续服务 MCP/OAuth/Fleet alerts、配置网络调用与
-  skills installer，均未随幽灵启动检查删除。
+  `crates/release` 的平台 HTTP/TLS builder 继续服务 MCP/OAuth/Fleet alerts 与配置网络调用，
+  均未随幽灵启动检查删除。
 - pre-session Launch menu 的 `LaunchState`、action/handler、renderer/hitbox、`launch_screen`
   设置和专属本地化。生产启动曾构造该状态并同步执行 `git rev-parse`，随后在第一帧前无条件
   将其隐藏；没有 launch action 进入事件循环、Run command、Lane 或 Fleet。删除因此只移除

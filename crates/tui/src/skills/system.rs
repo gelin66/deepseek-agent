@@ -9,7 +9,6 @@ const SKILL_CREATOR_BODY: &str = include_str!("../../assets/skills/skill-creator
 const DELEGATE_BODY: &str = include_str!("../../assets/skills/delegate/SKILL.md");
 const V4_BEST_PRACTICES_BODY: &str = include_str!("../../assets/skills/v4-best-practices/SKILL.md");
 const PLUGIN_CREATOR_BODY: &str = include_str!("../../assets/skills/plugin-creator/SKILL.md");
-const SKILL_INSTALLER_BODY: &str = include_str!("../../assets/skills/skill-installer/SKILL.md");
 const MCP_BUILDER_BODY: &str = include_str!("../../assets/skills/mcp-builder/SKILL.md");
 const FLEET_MANAGER_BODY: &str = include_str!("../../assets/skills/fleet-manager/SKILL.md");
 const DOCUMENTS_BODY: &str = include_str!("../../assets/skills/documents/SKILL.md");
@@ -43,11 +42,6 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
     BundledSkill {
         name: "plugin-creator",
         body: PLUGIN_CREATOR_BODY,
-        introduced_in: 3,
-    },
-    BundledSkill {
-        name: "skill-installer",
-        body: SKILL_INSTALLER_BODY,
         introduced_in: 3,
     },
     BundledSkill {
@@ -183,6 +177,10 @@ mod tests {
                 skill.name
             );
         }
+        assert!(
+            !skill_file(&tmp, "skill-installer").exists(),
+            "retired skill-installer must not be installed"
+        );
         assert!(marker_file(&tmp).exists(), "marker should be created");
 
         let ver = fs::read_to_string(marker_file(&tmp)).unwrap();

@@ -5253,6 +5253,37 @@ fn empty_fallback_providers_do_not_serialize() {
 }
 
 #[test]
+fn tui_skills_table_round_trips_as_unknown_extra() {
+    let raw = r#"
+[skills]
+scan_codewhale_only = true
+"#;
+    let config: ConfigToml = toml::from_str(raw).expect("skills table parses as an extra");
+    let skills = config
+        .extras
+        .get("skills")
+        .and_then(toml::Value::as_table)
+        .expect("skills table remains available to the TUI parser");
+    assert_eq!(
+        skills
+            .get("scan_codewhale_only")
+            .and_then(toml::Value::as_bool),
+        Some(true)
+    );
+
+    let serialized = toml::to_string_pretty(&config).expect("config serializes");
+    assert!(serialized.contains("[skills]"));
+    assert!(serialized.contains("scan_codewhale_only = true"));
+
+    let round_tripped: ConfigToml =
+        toml::from_str(&serialized).expect("serialized extras parse again");
+    assert_eq!(
+        round_tripped.extras.get("skills"),
+        config.extras.get("skills")
+    );
+}
+
+#[test]
 fn empty_provider_header_tables_do_not_survive_round_trip() {
     let polluted = r#"
 [http_headers]

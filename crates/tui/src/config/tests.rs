@@ -3602,7 +3602,7 @@ fn profile_without_context_preserves_base_project_pack_setting() {
 }
 
 #[test]
-fn profile_skills_config_merges_individual_fields() {
+fn profile_skills_config_merges_scan_scope() {
     let mut profiles = HashMap::new();
     profiles.insert(
         "strict".to_string(),
@@ -3617,9 +3617,7 @@ fn profile_skills_config_merges_individual_fields() {
     let config = ConfigFile {
         base: Config {
             skills: Some(SkillsConfig {
-                registry_url: Some("https://registry.example/skills.json".to_string()),
-                max_install_size_bytes: Some(1234),
-                ..Default::default()
+                scan_codewhale_only: Some(false),
             }),
             ..Default::default()
         },
@@ -3628,11 +3626,6 @@ fn profile_skills_config_merges_individual_fields() {
 
     let merged = apply_profile(config, Some("strict")).expect("profile");
     let skills = merged.skills.expect("merged skills config");
-    assert_eq!(
-        skills.registry_url.as_deref(),
-        Some("https://registry.example/skills.json")
-    );
-    assert_eq!(skills.max_install_size_bytes, Some(1234));
     assert_eq!(skills.scan_codewhale_only, Some(true));
 }
 
