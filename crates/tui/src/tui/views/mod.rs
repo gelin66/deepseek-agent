@@ -287,16 +287,8 @@ pub enum ViewEvent {
         content: String,
     },
     ApprovalDecision {
-        tool_id: String,
-        tool_name: String,
+        interaction_id: String,
         decision: ReviewDecision,
-        timed_out: bool,
-        /// Exact-argument fingerprint, used to scope *denials* (#1617).
-        approval_key: String,
-        /// Lossy / arity-aware fingerprint, used to scope *approvals*.
-        approval_grouping_key: String,
-        /// Ask-only permission rules to append when the decision approves.
-        persistent_ask_rules: Vec<codewhale_config::ToolAskRule>,
     },
     UserInputSubmitted {
         tool_id: String,
@@ -380,9 +372,6 @@ pub trait ModalView {
     fn occupied_region(&self, area: Rect) -> Rect {
         area
     }
-    fn tick(&mut self) -> ViewAction {
-        ViewAction::None
-    }
 }
 
 #[derive(Default)]
@@ -452,15 +441,6 @@ impl ViewStack {
             .views
             .last_mut()
             .map(|view| view.handle_mouse(mouse))
-            .unwrap_or(ViewAction::None);
-        self.apply_action(action)
-    }
-
-    pub fn tick(&mut self) -> Vec<ViewEvent> {
-        let action = self
-            .views
-            .last_mut()
-            .map(|view| view.tick())
             .unwrap_or(ViewAction::None);
         self.apply_action(action)
     }

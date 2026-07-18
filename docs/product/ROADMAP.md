@@ -780,6 +780,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   pause/resume terminal 及只由自身测试消费的 focus helper。onboarding 和 canonical loop 的
   Key/Paste/Mouse/Resize/Focus 事件不变；`run_events.try_recv -> CanonicalRunProjection ->
   presenter` 是另一条保留链，未被同名旧 input helper 误删。
+- M4-C 已把审批事件收缩为真实的 `interaction_id + decision`，继续经 canonical
+  `resolve_interaction`/`cancel` 写入并重放 RunStore。删除从未有 Runtime 消费者的 TUI
+  approval cache/grouping key、永远未设置的 timeout/tick 链，以及虚假的“批准并保存询问
+  规则”动作、预览和空 `tools` 模块；工具名、风险、参数、`y/n/Esc/v`、Pager 复制和 durable
+  interaction 语义均保留。模态框鼠标接线属于独立行为切片，不与本次真相清理混合。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

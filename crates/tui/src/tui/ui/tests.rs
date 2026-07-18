@@ -64,7 +64,6 @@ fn canonical_approval_can_inspect_and_copy_full_params_locally() {
         "read_file",
         "读取完整参数测试",
         &serde_json::json!({"path": "src/main.rs"}),
-        "tool:read_file",
     );
     app.view_stack.push(ApprovalView::new(request));
 

@@ -70,7 +70,6 @@ mod startup_trace;
 #[cfg(test)]
 mod test_support;
 mod tls;
-mod tools;
 mod tui;
 mod utils;
 mod working_set;

@@ -11,31 +11,27 @@
 //!
 //! - **Benign** (`RiskLevel::Benign`) — read-only ops, MCP discovery,
 //!   query-only network. A single `Enter` / `1` / `y` approves once;
-//!   `2` / `a` approves for the session.
+//!   `2` / `n` / `d` denies the call.
 //! - **Destructive** (`RiskLevel::Destructive`) — file writes, shell
 //!   commands that are not proven read-only, patches, MCP actions,
 //!   unclassified tools, and any "fetch arbitrary content" surface.
 //!   The takeover keeps the destructive badge and
 //!   impact summary visible, then lets `Enter` commit the highlighted
-//!   option or `y` / `a` / `d` commit directly.
+//!   option or `y` / `n` / `d` commit directly.
 //!
-//! The decision events emitted upstream are unchanged
-//! (`ViewEvent::ApprovalDecision`), so `ui.rs` and the engine handle
-//! both variants without modification. Auto-approve / YOLO bypasses
-//! happen *before* the view is constructed (see `tui/ui.rs`); this
-//! module always assumes the user is being asked.
+//! The view emits only the canonical interaction identity and the selected
+//! outcome. Auto-approve / YOLO bypasses happen *before* the view is
+//! constructed (see `tui/ui.rs`); this module always assumes the user is
+//! being asked.
 
 use crate::localization::{MessageId, tr};
 use crate::tui::views::{ModalKind, ModalView, ViewAction, ViewEvent};
 use crate::tui::widgets::{ApprovalWidget, Renderable};
-use codewhale_config::ToolAskRule;
 use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
 use serde_json::Value;
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::path::Path;
-use std::time::{Duration, Instant};
 
 pub mod policy;
 
@@ -130,17 +126,10 @@ pub struct ApprovalRequest {
     pub impacts: Vec<String>,
     /// Tool parameters (for display)
     pub params: Value,
-    /// Exact-argument fingerprint, used to scope *denials* (#1617).
-    pub approval_key: String,
-    /// Lossy / arity-aware fingerprint, used to scope *approvals* so an
-    /// "approve for session" covers later flag variants (v0.8.37).
-    pub approval_grouping_key: String,
     /// The model's explanation of intent before invoking write tools (#2381).
     /// Displayed in the approval view so users understand *why* the change
     /// is being made before reviewing *what* will change.
     pub intent_summary: Option<String>,
-    /// Ask-only persistent rules that can be saved with the approval.
-    pub persistent_ask_rules: Vec<ToolAskRule>,
 }
 
 /// Key approval details rendered prominently in the approval card.
@@ -152,25 +141,6 @@ pub struct ApprovalDetail {
     /// or a compact write-file preview. `value` remains the original command.
     pub shell_lines: Option<Vec<String>>,
 }
-
-/// Human-readable preview of ask-only rules the `S` approval shortcut would
-/// append. This is intentionally derived from `persistent_ask_rules` only; the
-/// approval UI must not re-parse tool inputs such as patches.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AskRuleSavePreview {
-    pub rule_count: usize,
-    pub entries: Vec<String>,
-    pub omitted: usize,
-}
-
-impl AskRuleSavePreview {
-    #[must_use]
-    pub fn summary(&self) -> String {
-        tr(MessageId::ApprovalAskRuleCount).replace("{count}", &self.rule_count.to_string())
-    }
-}
-
-const ASK_RULE_SAVE_PREVIEW_MAX_ENTRIES: usize = 4;
 
 impl ApprovalRequest {
     /// Mechanical repo-law asks are a distinct authority boundary, not an
@@ -189,22 +159,8 @@ impl ApprovalRequest {
     }
 
     #[cfg(test)]
-    pub fn new(
-        id: &str,
-        tool_name: &str,
-        description: &str,
-        params: &Value,
-        approval_key: &str,
-    ) -> Self {
-        Self::new_with_intent(
-            id,
-            tool_name,
-            description,
-            params,
-            approval_key,
-            None,
-            Path::new("/workspace"),
-        )
+    pub fn new(id: &str, tool_name: &str, description: &str, params: &Value) -> Self {
+        Self::new_with_intent(id, tool_name, description, params, None)
     }
 
     pub fn new_with_intent(
@@ -212,14 +168,10 @@ impl ApprovalRequest {
         tool_name: &str,
         description: &str,
         params: &Value,
-        approval_key: &str,
         intent_summary: Option<&str>,
-        workspace: &Path,
     ) -> Self {
         let category = get_tool_category(tool_name);
         let risk = classify_risk(tool_name, category, params);
-        let approval_grouping_key =
-            crate::tools::approval_cache::build_approval_grouping_key(tool_name, params).0;
 
         Self {
             id: id.to_string(),
@@ -229,8 +181,6 @@ impl ApprovalRequest {
             risk,
             impacts: build_impact_summary(tool_name, category, params),
             params: params.clone(),
-            approval_key: approval_key.to_string(),
-            approval_grouping_key,
             intent_summary: intent_summary.and_then(|summary| {
                 let summary = summary.trim();
                 if summary.is_empty() {
@@ -239,7 +189,6 @@ impl ApprovalRequest {
                     Some(summary.to_string())
                 }
             }),
-            persistent_ask_rules: build_persistent_ask_rules(tool_name, params, workspace),
         }
     }
 
@@ -255,31 +204,6 @@ impl ApprovalRequest {
 
     pub fn impacts(&self) -> Vec<String> {
         build_localized_impact_summary(&self.tool_name, self.category, &self.params)
-    }
-
-    #[must_use]
-    pub fn can_save_ask_rule(&self) -> bool {
-        !self.persistent_ask_rules.is_empty()
-    }
-
-    #[must_use]
-    pub fn ask_rule_save_preview(&self) -> Option<AskRuleSavePreview> {
-        build_ask_rule_save_preview(
-            &self.persistent_ask_rules,
-            ASK_RULE_SAVE_PREVIEW_MAX_ENTRIES,
-        )
-    }
-
-    #[must_use]
-    #[cfg(test)]
-    pub fn ask_rule_preview(&self) -> Option<String> {
-        if self.persistent_ask_rules.is_empty() {
-            return None;
-        }
-        let permissions = codewhale_config::PermissionsToml {
-            rules: self.persistent_ask_rules.clone(),
-        };
-        toml::to_string_pretty(&permissions).ok()
     }
 
     /// Extract the most important params for the approval card.
@@ -300,137 +224,6 @@ impl ApprovalRequest {
             })
             .collect()
     }
-}
-
-#[must_use]
-fn build_ask_rule_save_preview(
-    rules: &[ToolAskRule],
-    max_entries: usize,
-) -> Option<AskRuleSavePreview> {
-    if rules.is_empty() {
-        return None;
-    }
-
-    let entries = rules
-        .iter()
-        .take(max_entries)
-        .map(format_ask_rule_save_entry)
-        .collect();
-    Some(AskRuleSavePreview {
-        rule_count: rules.len(),
-        entries,
-        omitted: rules.len().saturating_sub(max_entries),
-    })
-}
-
-#[must_use]
-fn format_ask_rule_save_entry(rule: &ToolAskRule) -> String {
-    let mut parts = vec![format!(
-        "tool={}",
-        sanitize_ask_rule_preview_value(&rule.tool)
-    )];
-    if let Some(command) = &rule.command {
-        parts.push(format!(
-            "command={}",
-            sanitize_ask_rule_preview_value(command)
-        ));
-    }
-    if let Some(path) = &rule.path {
-        parts.push(format!("path={}", sanitize_ask_rule_preview_value(path)));
-    }
-    parts.join(" ")
-}
-
-#[must_use]
-fn sanitize_ask_rule_preview_value(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('\r', "\\r")
-        .replace('\n', "\\n")
-        .replace('\t', "\\t")
-}
-
-#[must_use]
-fn build_persistent_ask_rules(
-    tool_name: &str,
-    params: &Value,
-    workspace: &Path,
-) -> Vec<ToolAskRule> {
-    match tool_name {
-        "exec_shell" => build_exec_shell_ask_rules(params),
-        // File writes save an exact, workspace-relative path so a later
-        // edit/write of the same file is matched. read_file stays out: this
-        // boundary is about persisting *write* approvals only.
-        "write_file" | "edit_file" => build_file_write_ask_rules(tool_name, params, workspace),
-        "apply_patch" => build_apply_patch_ask_rules(params, workspace),
-        _ => Vec::new(),
-    }
-}
-
-#[must_use]
-fn build_exec_shell_ask_rules(params: &Value) -> Vec<ToolAskRule> {
-    let Some(command) = params
-        .get("command")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|command| !command.is_empty())
-    else {
-        return Vec::new();
-    };
-    vec![ToolAskRule::exec_shell(command)]
-}
-
-#[must_use]
-fn build_file_write_ask_rules(
-    tool_name: &str,
-    params: &Value,
-    workspace: &Path,
-) -> Vec<ToolAskRule> {
-    let Some(path) = params
-        .get("path")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-    else {
-        return Vec::new();
-    };
-    // Reuse the canonical matcher normalization so the saved rule equals what
-    // runtime matching compares against. `None` (and the degenerate
-    // workspace-root case) means the path is empty, traversing, drive-relative,
-    // or outside the workspace, so we save nothing and the `S` shortcut and
-    // preview stay disabled.
-    let workspace = workspace.to_string_lossy();
-    let Some(relative) =
-        codewhale_execpolicy::normalize_workspace_relative_path(path, workspace.as_ref())
-            .filter(|relative| !relative.is_empty())
-    else {
-        return Vec::new();
-    };
-    vec![ToolAskRule::file_path(tool_name, relative)]
-}
-
-#[must_use]
-fn build_apply_patch_ask_rules(params: &Value, workspace: &Path) -> Vec<ToolAskRule> {
-    let Ok(preflight) = codewhale_tools::preflight_apply_patch(params) else {
-        return Vec::new();
-    };
-    let workspace = workspace.to_string_lossy();
-    let mut rules = Vec::new();
-
-    for path in preflight.touched_files {
-        let Some(relative) =
-            codewhale_execpolicy::normalize_workspace_relative_path(&path, workspace.as_ref())
-                .filter(|relative| !relative.is_empty())
-        else {
-            return Vec::new();
-        };
-        let rule = ToolAskRule::file_path("apply_patch", relative);
-        if !rules.contains(&rule) {
-            rules.push(rule);
-        }
-    }
-
-    rules
 }
 
 fn param_preview(params: &Value, keys: &[&str], max_len: usize) -> Option<String> {
@@ -1175,8 +968,6 @@ pub struct ApprovalView {
     request: ApprovalRequest,
     selected: usize,
     row_hitboxes: RefCell<Vec<Rect>>,
-    timeout: Option<Duration>,
-    requested_at: Instant,
     /// Whether the approval card is collapsed to a single-line banner.
     pub(crate) collapsed: bool,
 }
@@ -1187,8 +978,6 @@ impl ApprovalView {
             request,
             selected: 0,
             row_hitboxes: RefCell::new(Vec::new()),
-            timeout: None,
-            requested_at: Instant::now(),
             collapsed: false,
         }
     }
@@ -1232,27 +1021,13 @@ impl ApprovalView {
     /// Commit the given option and close the approval modal.
     fn commit_option(&mut self, option: ApprovalOption) -> ViewAction {
         self.selected = option.index_for(&self.request.tool_name);
-        self.emit_decision(option.decision(), false)
+        self.emit_decision(option.decision())
     }
 
-    fn emit_decision(&self, decision: ReviewDecision, timed_out: bool) -> ViewAction {
-        self.emit_decision_with_rules(decision, timed_out, Vec::new())
-    }
-
-    fn emit_decision_with_rules(
-        &self,
-        decision: ReviewDecision,
-        timed_out: bool,
-        persistent_ask_rules: Vec<ToolAskRule>,
-    ) -> ViewAction {
+    fn emit_decision(&self, decision: ReviewDecision) -> ViewAction {
         ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-            tool_id: self.request.id.clone(),
-            tool_name: self.request.tool_name.clone(),
+            interaction_id: self.request.id.clone(),
             decision,
-            timed_out,
-            approval_key: self.request.approval_key.clone(),
-            approval_grouping_key: self.request.approval_grouping_key.clone(),
-            persistent_ask_rules,
         })
     }
 
@@ -1284,13 +1059,6 @@ impl ApprovalView {
             content,
         })
     }
-
-    fn is_timed_out(&self) -> bool {
-        match self.timeout {
-            Some(timeout) => self.requested_at.elapsed() >= timeout,
-            None => false,
-        }
-    }
 }
 
 impl ModalView for ApprovalView {
@@ -1319,17 +1087,11 @@ impl ModalView for ApprovalView {
                 self.commit_option(ApprovalOption::ApproveOnce)
             }
             KeyCode::Char('2') => self.commit_option(ApprovalOption::Deny),
-            KeyCode::Char('s') | KeyCode::Char('S') if self.request.can_save_ask_rule() => self
-                .emit_decision_with_rules(
-                    ReviewDecision::Approved,
-                    false,
-                    self.request.persistent_ask_rules.clone(),
-                ),
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Char('d') | KeyCode::Char('D') => {
                 self.commit_option(ApprovalOption::Deny)
             }
             KeyCode::Char('v') | KeyCode::Char('V') => self.emit_params_pager(),
-            KeyCode::Esc => self.emit_decision(ReviewDecision::Abort, false),
+            KeyCode::Esc => self.emit_decision(ReviewDecision::Abort),
             _ => ViewAction::None,
         }
     }
@@ -1370,13 +1132,6 @@ impl ModalView for ApprovalView {
         // a band at the bottom of the frame so the backdrop dims that band and
         // the transcript above stays visible. Must match what `render` paints.
         ApprovalWidget::new(&self.request, self).inline_region(area)
-    }
-
-    fn tick(&mut self) -> ViewAction {
-        if self.is_timed_out() {
-            return self.emit_decision(ReviewDecision::Denied, true);
-        }
-        ViewAction::None
     }
 }
 
@@ -1442,7 +1197,6 @@ mod tests {
             "read_file",
             "Read a file from disk",
             &json!({"path": "src/main.rs"}),
-            "tool:read_file",
         )
     }
 
@@ -1452,7 +1206,6 @@ mod tests {
             "write_file",
             "Write a file to disk",
             &json!({"path": "src/main.rs", "content": "test"}),
-            "tool:write_file",
         )
     }
 
@@ -1462,7 +1215,6 @@ mod tests {
             "exec_shell",
             "Run a shell command",
             &json!({"command": "rm -rf ~/"}),
-            "tool:exec_shell",
         )
     }
 
@@ -1472,7 +1224,6 @@ mod tests {
             "exec_shell",
             "Run a shell command",
             &json!({"command": "cargo test --workspace"}),
-            "tool:exec_shell",
         )
     }
 
@@ -1610,13 +1361,8 @@ mod tests {
     #[test]
     fn test_approval_request_new() {
         let params = json!({"path": "src/main.rs", "content": "test"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "write_file",
-            "Write a file to disk",
-            &params,
-            "test_key",
-        );
+        let request =
+            ApprovalRequest::new("test-id", "write_file", "Write a file to disk", &params);
 
         assert_eq!(request.id, "test-id");
         assert_eq!(request.tool_name, "write_file");
@@ -1629,13 +1375,8 @@ mod tests {
     fn test_approval_request_params_display_truncates() {
         let long_content = "x".repeat(300);
         let params = json!({"path": "src/main.rs", "content": long_content});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "write_file",
-            "Write a file to disk",
-            &params,
-            "test_key",
-        );
+        let request =
+            ApprovalRequest::new("test-id", "write_file", "Write a file to disk", &params);
 
         let display = request.params_display();
         assert!(display.len() < 250);
@@ -1645,13 +1386,8 @@ mod tests {
     #[test]
     fn test_approval_request_params_display_short() {
         let params = json!({"path": "src/main.rs"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "read_file",
-            "Read a file from disk",
-            &params,
-            "test_key",
-        );
+        let request =
+            ApprovalRequest::new("test-id", "read_file", "Read a file from disk", &params);
 
         let display = request.params_display();
         assert!(display.contains("src/main.rs"));
@@ -1660,13 +1396,7 @@ mod tests {
     #[test]
     fn test_approval_request_derives_impact_summary() {
         let params = json!({"cmd": "cargo test", "workdir": "/tmp/project"});
-        let request = ApprovalRequest::new(
-            "test-id",
-            "exec_shell",
-            "Run a shell command",
-            &params,
-            "test_key",
-        );
+        let request = ApprovalRequest::new("test-id", "exec_shell", "Run a shell command", &params);
 
         assert_eq!(request.category, ToolCategory::Shell);
         assert!(
@@ -1697,7 +1427,6 @@ mod tests {
             "mcp_my_db_execute_sql",
             "Call an MCP tool",
             &json!({}),
-            "tool:mcp_my_db_execute_sql",
         );
 
         assert!(
@@ -1725,7 +1454,6 @@ mod tests {
             "exec_shell",
             "Run a shell command",
             &json!({"command": command, "cwd": "/tmp/project"}),
-            "test_key",
         );
 
         let details = request.prominent_detail_items();
@@ -1750,7 +1478,6 @@ mod tests {
             "write_file",
             "Write a file to disk",
             &json!({"path": "src/main.rs", "content": "fn main() {}"}),
-            "test_key",
         );
 
         let details = request.prominent_detail_items();
@@ -1774,7 +1501,6 @@ mod tests {
                 "search": "old_call();",
                 "replace": "new_call();"
             }),
-            "tool:edit_file",
         );
 
         let details = request.prominent_detail_items();
@@ -1802,7 +1528,6 @@ mod tests {
             "apply_patch",
             "Apply a patch",
             &json!({"patch": patch}),
-            "tool:apply_patch",
         );
 
         let details = request.prominent_detail_items();
@@ -1839,7 +1564,6 @@ mod tests {
                     }
                 ]
             }),
-            "tool:apply_patch",
         );
 
         let details = request.prominent_detail_items();
@@ -1878,7 +1602,6 @@ mod tests {
                     }
                 ]
             }),
-            "tool:apply_patch",
         );
 
         let details = request.prominent_detail_items();
@@ -1956,7 +1679,6 @@ mod tests {
             "write_file",
             "Write a file",
             &json!({"path": "src/lib.rs", "content": "proposed content\nreplacement content"}),
-            "tool:write_file",
         );
         let write_preview = write
             .prominent_detail_items()
@@ -1985,7 +1707,6 @@ mod tests {
                 "search": "with this",
                 "replace": "replace this"
             }),
-            "tool:edit_file",
         );
         let edit_preview = edit
             .prominent_detail_items()
@@ -2003,7 +1724,6 @@ mod tests {
             "write_file",
             "Write an empty file",
             &json!({"path": "src/empty.rs", "content": ""}),
-            "tool:write_file",
         );
         let empty_preview = empty
             .prominent_detail_items()
@@ -2039,300 +1759,7 @@ mod tests {
     fn test_approval_view_initial_state() {
         let view = ApprovalView::new(benign_request());
         assert_eq!(view.selected, 0);
-        assert!(view.timeout.is_none());
         assert_eq!(view.risk(), RiskLevel::Benign);
-    }
-
-    #[test]
-    fn exec_shell_request_builds_ask_rule_preview() {
-        let request = shell_request();
-
-        assert_eq!(
-            request.persistent_ask_rules,
-            vec![ToolAskRule::exec_shell("cargo test --workspace")]
-        );
-        let preview = request.ask_rule_preview().expect("preview");
-        assert!(preview.contains("[[rules]]"));
-        assert!(preview.contains("tool = \"exec_shell\""));
-        assert!(preview.contains("command = \"cargo test --workspace\""));
-    }
-
-    #[test]
-    fn ask_rule_save_preview_formats_shell_rule() {
-        let request = shell_request();
-
-        let preview = request.ask_rule_save_preview().expect("save preview");
-        assert_eq!(preview.rule_count, 1);
-        assert_eq!(preview.summary(), "1 条询问规则");
-        assert_eq!(
-            preview.entries,
-            vec!["tool=exec_shell command=cargo test --workspace"]
-        );
-        assert_eq!(preview.omitted, 0);
-    }
-
-    #[test]
-    fn file_ask_rule_saved_for_write_file_approval() {
-        // A write_file approval offers an exact, workspace-relative file rule
-        // plus a preview so `S` can persist it.
-        let request = destructive_request();
-
-        assert_eq!(
-            request.persistent_ask_rules,
-            vec![ToolAskRule::file_path("write_file", "src/main.rs")]
-        );
-        assert!(request.can_save_ask_rule());
-        let preview = request.ask_rule_preview().expect("preview");
-        assert!(preview.contains("[[rules]]"));
-        assert!(preview.contains("tool = \"write_file\""));
-        assert!(preview.contains("path = \"src/main.rs\""));
-    }
-
-    #[test]
-    fn ask_rule_save_preview_formats_write_and_edit_file_paths() {
-        let write = destructive_request();
-        let edit = ApprovalRequest::new(
-            "test-id",
-            "edit_file",
-            "Edit a file on disk",
-            &json!({"path": "/workspace/src/lib.rs"}),
-            "tool:edit_file",
-        );
-
-        assert_eq!(
-            write
-                .ask_rule_save_preview()
-                .expect("write save preview")
-                .entries,
-            vec!["tool=write_file path=src/main.rs"]
-        );
-        assert_eq!(
-            edit.ask_rule_save_preview()
-                .expect("edit save preview")
-                .entries,
-            vec!["tool=edit_file path=src/lib.rs"]
-        );
-    }
-
-    #[test]
-    fn file_ask_rule_normalizes_absolute_edit_file_path_to_workspace_relative() {
-        // An absolute in-workspace path is stored in the workspace-relative
-        // form, matching how runtime ask-rule matching normalizes paths.
-        let request = ApprovalRequest::new(
-            "test-id",
-            "edit_file",
-            "Edit a file on disk",
-            &json!({"path": "/workspace/src/lib.rs"}),
-            "tool:edit_file",
-        );
-
-        assert_eq!(
-            request.persistent_ask_rules,
-            vec![ToolAskRule::file_path("edit_file", "src/lib.rs")]
-        );
-    }
-
-    #[test]
-    fn read_file_request_has_no_file_ask_rule() {
-        // The save boundary is write approvals only; read_file never offers a
-        // persistent rule.
-        let request = benign_request();
-
-        assert!(request.persistent_ask_rules.is_empty());
-        assert!(!request.can_save_ask_rule());
-        assert_eq!(request.ask_rule_preview(), None);
-        assert_eq!(request.ask_rule_save_preview(), None);
-    }
-
-    #[test]
-    fn file_ask_rule_skipped_for_unsafe_empty_or_external_paths() {
-        // Traversal, empty, and outside-workspace paths must not become rules,
-        // so the preview and `S` shortcut stay disabled.
-        for path in ["../escape.rs", "/etc/passwd", "   ", ""] {
-            let request = ApprovalRequest::new(
-                "test-id",
-                "write_file",
-                "Write a file to disk",
-                &json!({"path": path}),
-                "tool:write_file",
-            );
-            assert!(
-                request.persistent_ask_rules.is_empty(),
-                "path {path:?} must not produce a rule"
-            );
-            assert!(!request.can_save_ask_rule());
-            assert_eq!(request.ask_rule_preview(), None);
-            assert_eq!(request.ask_rule_save_preview(), None);
-        }
-    }
-
-    #[test]
-    fn apply_patch_ask_rules_saved_for_multi_file_patch() {
-        let patch = r"diff --git a/src/a.rs b/src/a.rs
---- a/src/a.rs
-+++ b/src/a.rs
-@@ -1,1 +1,1 @@
--old
-+new
-diff --git a/src/b.rs b/src/b.rs
---- a/src/b.rs
-+++ b/src/b.rs
-@@ -1,1 +1,1 @@
--old
-+new
-";
-
-        let request = ApprovalRequest::new(
-            "test-id",
-            "apply_patch",
-            "Apply a patch",
-            &json!({"patch": patch}),
-            "tool:apply_patch",
-        );
-
-        assert_eq!(
-            request.persistent_ask_rules,
-            vec![
-                ToolAskRule::file_path("apply_patch", "src/a.rs"),
-                ToolAskRule::file_path("apply_patch", "src/b.rs"),
-            ]
-        );
-        assert!(request.can_save_ask_rule());
-        let preview = request.ask_rule_save_preview().expect("save preview");
-        assert_eq!(preview.summary(), "2 条询问规则");
-        assert_eq!(
-            preview.entries,
-            vec![
-                "tool=apply_patch path=src/a.rs",
-                "tool=apply_patch path=src/b.rs"
-            ]
-        );
-    }
-
-    #[test]
-    fn apply_patch_ask_rules_dedupe_targets_after_normalization() {
-        let request = ApprovalRequest::new(
-            "test-id",
-            "apply_patch",
-            "Apply a patch",
-            &json!({
-                "changes": [
-                    { "path": "src/a.rs", "content": "one" },
-                    { "path": "/workspace/src/a.rs", "content": "two" }
-                ]
-            }),
-            "tool:apply_patch",
-        );
-
-        assert_eq!(
-            request.persistent_ask_rules,
-            vec![ToolAskRule::file_path("apply_patch", "src/a.rs")]
-        );
-    }
-
-    #[test]
-    fn apply_patch_ask_rule_handles_timestamp_headers() {
-        let patch = "diff --git a/src/lib.rs b/src/lib.rs\n\
---- a/src/lib.rs\t2026-06-26 10:00:00 +0000\n\
-+++ b/src/lib.rs\t2026-06-26 10:01:00 +0000\n\
-@@ -1,1 +1,1 @@\n\
--old\n\
-+new\n";
-
-        let request = ApprovalRequest::new(
-            "test-id",
-            "apply_patch",
-            "Apply a patch",
-            &json!({"patch": patch}),
-            "tool:apply_patch",
-        );
-
-        assert_eq!(
-            request.persistent_ask_rules,
-            vec![ToolAskRule::file_path("apply_patch", "src/lib.rs")]
-        );
-    }
-
-    #[test]
-    fn apply_patch_ask_rule_ignores_forged_headers_inside_hunk() {
-        let patch = r"--- a/src/lib.rs
-+++ b/src/lib.rs
-@@ -1,3 +1,3 @@
- line1
---- a/forged.rs
-+++ b/forged.rs
- line3
-";
-
-        let request = ApprovalRequest::new(
-            "test-id",
-            "apply_patch",
-            "Apply a patch",
-            &json!({"path": "src/lib.rs", "patch": patch}),
-            "tool:apply_patch",
-        );
-
-        assert_eq!(
-            request.persistent_ask_rules,
-            vec![ToolAskRule::file_path("apply_patch", "src/lib.rs")]
-        );
-    }
-
-    #[test]
-    fn apply_patch_ask_rule_skipped_when_any_target_traverses_workspace() {
-        let request = ApprovalRequest::new(
-            "test-id",
-            "apply_patch",
-            "Apply a patch",
-            &json!({
-                "changes": [
-                    { "path": "src/a.rs", "content": "safe" },
-                    { "path": "../escape.rs", "content": "unsafe" }
-                ]
-            }),
-            "tool:apply_patch",
-        );
-
-        assert!(request.persistent_ask_rules.is_empty());
-        assert!(!request.can_save_ask_rule());
-        assert_eq!(request.ask_rule_save_preview(), None);
-    }
-
-    #[test]
-    fn apply_patch_ask_rule_skipped_on_preflight_failure() {
-        let request = ApprovalRequest::new(
-            "test-id",
-            "apply_patch",
-            "Apply a patch",
-            &json!({"patch": "@@ -1 +1 @@\n-old\n+new\n"}),
-            "tool:apply_patch",
-        );
-
-        assert!(request.persistent_ask_rules.is_empty());
-        assert_eq!(request.ask_rule_preview(), None);
-        assert_eq!(request.ask_rule_save_preview(), None);
-    }
-
-    #[test]
-    fn ask_rule_save_preview_truncates_rule_list() {
-        let rules = vec![
-            ToolAskRule::file_path("apply_patch", "src/a.rs"),
-            ToolAskRule::file_path("apply_patch", "src/b.rs"),
-            ToolAskRule::file_path("apply_patch", "src/c.rs"),
-            ToolAskRule::file_path("apply_patch", "src/d.rs"),
-        ];
-
-        let preview = build_ask_rule_save_preview(&rules, 2).expect("save preview");
-        assert_eq!(preview.rule_count, 4);
-        assert_eq!(preview.summary(), "4 条询问规则");
-        assert_eq!(
-            preview.entries,
-            vec![
-                "tool=apply_patch path=src/a.rs",
-                "tool=apply_patch path=src/b.rs"
-            ]
-        );
-        assert_eq!(preview.omitted, 2);
     }
 
     #[test]
@@ -2386,66 +1813,13 @@ diff --git a/src/b.rs b/src/b.rs
                 matches!(
                     action,
                     ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-                        decision: ReviewDecision::Approved,
-                        ..
-                    })
+                        interaction_id,
+                        decision: ReviewDecision::Approved
+                    }) if interaction_id == "test-id"
                 ),
                 "expected Approved for {code:?}"
             );
         }
-    }
-
-    #[test]
-    fn save_ask_rule_shortcut_approves_once_with_rule() {
-        let mut view = ApprovalView::new(shell_request());
-
-        let action = view.handle_key(create_key_event(KeyCode::Char('s')));
-        let ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-            decision,
-            persistent_ask_rules,
-            ..
-        }) = action
-        else {
-            panic!("expected approval decision");
-        };
-
-        assert_eq!(decision, ReviewDecision::Approved);
-        assert_eq!(
-            persistent_ask_rules,
-            vec![ToolAskRule::exec_shell("cargo test --workspace")]
-        );
-    }
-
-    #[test]
-    fn save_file_ask_rule_shortcut_emits_file_rule() {
-        // `S` on a write_file approval approves once and carries the exact
-        // workspace-relative file rule for persistence.
-        let mut view = ApprovalView::new(destructive_request());
-
-        let action = view.handle_key(create_key_event(KeyCode::Char('S')));
-        let ViewAction::EmitAndClose(ViewEvent::ApprovalDecision {
-            decision,
-            persistent_ask_rules,
-            ..
-        }) = action
-        else {
-            panic!("expected approval decision");
-        };
-
-        assert_eq!(decision, ReviewDecision::Approved);
-        assert_eq!(
-            persistent_ask_rules,
-            vec![ToolAskRule::file_path("write_file", "src/main.rs")]
-        );
-    }
-
-    #[test]
-    fn save_ask_rule_shortcut_is_ignored_without_rule() {
-        let mut view = ApprovalView::new(benign_request());
-
-        let action = view.handle_key(create_key_event(KeyCode::Char('s')));
-
-        assert!(matches!(action, ViewAction::None));
     }
 
     #[test]
@@ -2794,7 +2168,6 @@ diff --git a/src/b.rs b/src/b.rs
             "exec_shell",
             "Run a shell command",
             &json!({"command": "git push origin main"}),
-            "tool:exec_shell",
         );
         assert_eq!(publish.stakes(), ApprovalStakes::Critical);
     }
@@ -2808,7 +2181,6 @@ diff --git a/src/b.rs b/src/b.rs
             "agent",
             "Start a sub-agent",
             &json!({"action": "start", "type": "explore", "prompt": "map the workspace"}),
-            "tool:agent",
         );
         assert_eq!(request.category, ToolCategory::Agent);
         assert_eq!(request.stakes(), ApprovalStakes::Elevated);
@@ -2837,7 +2209,6 @@ diff --git a/src/b.rs b/src/b.rs
                 "agent",
                 "Inspect a sub-agent",
                 &json!({"action": action, "agent_id": "agent_1"}),
-                "tool:agent",
             );
             assert_eq!(request.risk, RiskLevel::Benign, "{action}");
             assert_eq!(request.stakes(), ApprovalStakes::Routine, "{action}");

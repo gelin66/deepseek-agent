@@ -865,11 +865,6 @@ async fn run_canonical_event_loop(
 
         let now = Instant::now();
         app.flush_paste_burst_if_enabled(now);
-        let view_events = app.view_stack.tick();
-        if !view_events.is_empty() {
-            handle_canonical_view_events(app, run_client, view_events, &mut exit_after_terminal)
-                .await?;
-        }
 
         let snapshot = run_client.snapshot().await;
         if exit_after_terminal && snapshot.current_active_root.is_none() && !app.is_loading {
@@ -1163,12 +1158,13 @@ async fn handle_canonical_view_events(
         };
         match event {
             ViewEvent::ApprovalDecision {
-                tool_id, decision, ..
+                interaction_id,
+                decision,
             } => match decision {
                 ReviewDecision::Approved => {
                     run_client
                         .resolve_interaction(
-                            codewhale_protocol::agent_runtime::InteractionId::from(tool_id),
+                            codewhale_protocol::agent_runtime::InteractionId::from(interaction_id),
                             UserInteractionResponse::Approved,
                         )
                         .await?;
@@ -1176,7 +1172,7 @@ async fn handle_canonical_view_events(
                 ReviewDecision::Denied => {
                     run_client
                         .resolve_interaction(
-                            codewhale_protocol::agent_runtime::InteractionId::from(tool_id),
+                            codewhale_protocol::agent_runtime::InteractionId::from(interaction_id),
                             UserInteractionResponse::Denied { reason: None },
                         )
                         .await?;
@@ -1256,9 +1252,7 @@ fn apply_presenter_action(
                         &request.tool_name,
                         &prompt.description,
                         &arguments,
-                        &interaction_id.0,
                         Some(&prompt.title),
-                        &app.workspace,
                     );
                     approval.risk = match prompt.risk {
                         ApprovalRisk::Routine => super::approval::RiskLevel::Benign,

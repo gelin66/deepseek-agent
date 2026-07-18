@@ -409,6 +409,10 @@ M4-C foreground 切换后还已物理删除：
   UserInput modal 直接消费 protocol request/response，提交仍落入 canonical RunStore。
 - 旧 `composer_ui` 键盘处理器岛；唯一真实使用的 slash-menu 选择已迁回 canonical 事件
   owner `ui.rs`，其余 escape/history/word-motion/newline helpers 没有生产调用方。
+- TUI 私有 approval cache、exact/grouping key、永远未设置的 timeout/tick，以及没有
+  canonical Runtime 消费者的“批准并保存询问规则”事件载荷和界面。当前审批事件只携带
+  `interaction_id + decision`，由 `TuiRunClient` 调用 canonical `resolve_interaction` 或
+  `cancel`；工具、风险、参数与 durable replay 仍由原真实链路承担。
 - `key_shortcuts` 中零调用的 copy/paste/control-like/Ctrl-H predicates；保留首启输入所需
   的 `is_text_input_key`，真实 paste/copy 仍由 terminal event 与 Pager local event 承担。
 - 零生产消费者的通用 `[vision_model]`/`image_analyze` 配置与 feature；正式模型面仍只有

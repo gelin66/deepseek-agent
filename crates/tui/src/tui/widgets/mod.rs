@@ -1939,12 +1939,6 @@ impl<'a> ApprovalWidget<'a> {
             ]));
         }
 
-        // Preview of the persistent ask-rule the `[s]` shortcut would save
-        // (#3766). Informational, so it lives in the (scrollable) body.
-        if let Some(preview) = self.request.ask_rule_save_preview() {
-            push_ask_rule_save_preview(&mut body, &preview, palette_colors.shortcut, area.width);
-        }
-
         let controls = build_approval_controls(
             self.request,
             self.view,
@@ -2236,11 +2230,6 @@ fn build_approval_controls(
     controls.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(footer_controls(), Style::default().fg(palette::TEXT_MUTED)),
-        if request.can_save_ask_rule() {
-            Span::styled(save_ask_rule_hint(), Style::default().fg(shortcut))
-        } else {
-            Span::raw("")
-        },
     ]));
     // Trailing blank: bottom padding plus a row of headroom so word-wrap of the
     // hint line can never push a control row out of the reserved region.
@@ -2389,40 +2378,6 @@ fn push_params_detail_line(
     ]));
 }
 
-fn push_ask_rule_save_preview(
-    lines: &mut Vec<Line<'static>>,
-    preview: &crate::tui::approval::AskRuleSavePreview,
-    shortcut: Color,
-    card_width: u16,
-) {
-    lines.push(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(
-            tr(MessageId::ApprovalSaveRulesLabel),
-            Style::default().fg(shortcut).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(preview.summary(), Style::default().fg(palette::TEXT_BODY)),
-    ]));
-
-    let entry_width = card_width.saturating_sub(10) as usize;
-    let entries = preview.entries.join("; ");
-    let truncated = crate::utils::truncate_with_ellipsis(&entries, entry_width.max(20), "...");
-    lines.push(Line::from(vec![
-        Span::raw("    "),
-        Span::styled(truncated, Style::default().fg(palette::TEXT_SECONDARY)),
-    ]));
-    if preview.omitted > 0 {
-        lines.push(Line::from(vec![
-            Span::raw("    "),
-            Span::styled(
-                tr(MessageId::ApprovalMoreAskRules)
-                    .replace("{count}", &preview.omitted.to_string()),
-                Style::default().fg(palette::TEXT_HINT),
-            ),
-        ]));
-    }
-}
-
 fn push_shell_command_lines(
     lines: &mut Vec<Line<'static>>,
     label: &str,
@@ -2505,10 +2460,6 @@ fn destructive_approval_semantics() -> [(&'static str, &'static str); 2] {
 
 fn footer_controls() -> Cow<'static, str> {
     tr(MessageId::ApprovalControlsHint)
-}
-
-fn save_ask_rule_hint() -> &'static str {
-    "  s 批准并保存询问规则"
 }
 
 #[derive(Clone)]
@@ -4988,7 +4939,6 @@ mod tests {
             "exec_shell",
             "Run git commit",
             &serde_json::json!({ "command": "git commit -m fix" }),
-            "exec_shell:git commit",
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
@@ -5018,7 +4968,6 @@ mod tests {
             "edit_file",
             "Repo law holds this write: \"manifest review\" protects Cargo.toml (matched Cargo.toml, .codewhale/constitution.json)",
             &serde_json::json!({ "path": "Cargo.toml", "old": "a", "new": "b" }),
-            "edit_file:Cargo.toml",
         );
         assert!(request.is_repo_law_prompt());
         let view = crate::tui::approval::ApprovalView::new(request.clone());
@@ -5058,7 +5007,6 @@ mod tests {
             "exec_shell",
             "Run git commit",
             &serde_json::json!({ "command": "git commit -m fix" }),
-            "exec_shell:git commit",
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
@@ -5095,7 +5043,6 @@ mod tests {
             "exec_shell",
             "Run git commit",
             &serde_json::json!({ "command": "git commit -m fix" }),
-            "exec_shell:git commit",
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
@@ -5129,11 +5076,9 @@ mod tests {
             &serde_json::json!({
                 "command": "rm -rf ./build && find . -name '*.tmp' -delete && cargo clean && echo done",
             }),
-            "exec_shell:cleanup",
             Some(
                 "Clearing stale build artifacts and temp files before a fresh run so the next build is reproducible.",
             ),
-            std::path::Path::new("/tmp/project"),
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
@@ -5177,7 +5122,6 @@ mod tests {
             "exec_shell",
             "Run git commit",
             &serde_json::json!({ "command": "git commit -m fix" }),
-            "exec_shell:git commit",
         );
 
         let full = render_approval_request(&request, Rect::new(0, 0, 100, 30));
@@ -5207,7 +5151,6 @@ mod tests {
                 "command": "printf '%s\\n' 'alpha' 'beta' > src/generated.txt",
                 "cwd": "/tmp/project",
             }),
-            "exec_shell:printf",
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
@@ -5229,178 +5172,6 @@ mod tests {
     }
 
     #[test]
-    fn approval_card_renders_shell_ask_rule_save_preview() {
-        let request = crate::tui::approval::ApprovalRequest::new(
-            "approval-1",
-            "exec_shell",
-            "Run shell command",
-            &serde_json::json!({ "command": "cargo test --workspace" }),
-            "exec_shell:cargo-test",
-        );
-
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
-
-        assert!(rendered.contains("s 批准并保存询问规则"), "{rendered}");
-        assert!(rendered.contains("保存："), "{rendered}");
-        assert!(rendered.contains("1 条询问规则"), "{rendered}");
-        assert!(
-            rendered.contains("tool=exec_shell command=cargo test --workspace"),
-            "{rendered}"
-        );
-    }
-
-    #[test]
-    fn approval_card_renders_file_ask_rule_save_previews() {
-        let cases = [
-            (
-                "write_file",
-                serde_json::json!({
-                    "path": "src/main.rs",
-                    "content": "fn main() {}\n",
-                }),
-                "tool=write_file path=src/main.rs",
-            ),
-            (
-                "edit_file",
-                serde_json::json!({
-                    "path": "/workspace/src/lib.rs",
-                    "old_string": "old",
-                    "new_string": "new",
-                }),
-                "tool=edit_file path=src/lib.rs",
-            ),
-        ];
-
-        for (tool_name, params, expected_rule) in cases {
-            let request = crate::tui::approval::ApprovalRequest::new(
-                "approval-1",
-                tool_name,
-                "Modify a file",
-                &params,
-                &format!("{tool_name}:src"),
-            );
-
-            let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
-
-            assert!(rendered.contains("保存："), "{tool_name}:\n{rendered}");
-            assert!(
-                rendered.contains("1 条询问规则"),
-                "{tool_name}:\n{rendered}"
-            );
-            assert!(
-                rendered.contains(expected_rule),
-                "{tool_name} should preview {expected_rule}:\n{rendered}"
-            );
-        }
-    }
-
-    #[test]
-    fn approval_card_renders_apply_patch_multi_rule_save_preview() {
-        let patch = "diff --git a/src/a.rs b/src/a.rs\n\
---- a/src/a.rs\n\
-+++ b/src/a.rs\n\
-@@ -1,1 +1,1 @@\n\
--old\n\
-+new\n\
-diff --git a/src/b.rs b/src/b.rs\n\
---- a/src/b.rs\n\
-+++ b/src/b.rs\n\
-@@ -1,1 +1,1 @@\n\
--old\n\
-+new\n";
-        let request = crate::tui::approval::ApprovalRequest::new(
-            "approval-1",
-            "apply_patch",
-            "Apply a patch",
-            &serde_json::json!({ "patch": patch }),
-            "apply_patch:multi",
-        );
-
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
-
-        assert!(rendered.contains("保存："), "{rendered}");
-        assert!(rendered.contains("2 条询问规则"), "{rendered}");
-        assert!(
-            rendered.contains("tool=apply_patch path=src/a.rs"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("tool=apply_patch path=src/b.rs"),
-            "{rendered}"
-        );
-    }
-
-    #[test]
-    fn approval_card_truncates_apply_patch_ask_rule_save_preview() {
-        let request = crate::tui::approval::ApprovalRequest::new(
-            "approval-1",
-            "apply_patch",
-            "Apply a patch",
-            &serde_json::json!({
-                "changes": [
-                    { "path": "src/a.rs", "content": "a" },
-                    { "path": "src/b.rs", "content": "b" },
-                    { "path": "src/c.rs", "content": "c" },
-                    { "path": "src/d.rs", "content": "d" },
-                    { "path": "src/e.rs", "content": "e" }
-                ]
-            }),
-            "apply_patch:many",
-        );
-
-        let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
-
-        assert!(rendered.contains("5 条询问规则"), "{rendered}");
-        assert!(
-            rendered.contains("tool=apply_patch path=src/a.rs"),
-            "{rendered}"
-        );
-        assert!(rendered.contains("… 另有 1 条"), "{rendered}");
-        assert!(
-            !rendered.contains("tool=apply_patch path=src/e.rs"),
-            "truncated rule should not render directly:\n{rendered}"
-        );
-    }
-
-    #[test]
-    fn approval_card_omits_ask_rule_save_preview_when_rule_is_unavailable() {
-        let unsafe_path = crate::tui::approval::ApprovalRequest::new(
-            "approval-1",
-            "write_file",
-            "Write a file",
-            &serde_json::json!({
-                "path": "../escape.rs",
-                "content": "unsafe\n",
-            }),
-            "write_file:escape",
-        );
-        let preflight_failed = crate::tui::approval::ApprovalRequest::new(
-            "approval-2",
-            "apply_patch",
-            "Apply a patch",
-            &serde_json::json!({ "patch": "@@ -1 +1 @@\n-old\n+new\n" }),
-            "apply_patch:invalid",
-        );
-
-        for request in [unsafe_path, preflight_failed] {
-            let rendered = render_approval_request(&request, Rect::new(0, 0, 120, 40));
-
-            assert!(
-                !rendered.contains("s 批准并保存询问规则"),
-                "S shortcut should stay hidden:\n{rendered}"
-            );
-            assert!(
-                !rendered.contains("保存："),
-                "save preview should stay hidden:\n{rendered}"
-            );
-            assert!(
-                !rendered.contains("询问规则"),
-                "ask-rule details should stay hidden:\n{rendered}"
-            );
-        }
-    }
-
-    #[test]
     fn approval_file_write_modal_renders_proposed_change_preview() {
         let request = crate::tui::approval::ApprovalRequest::new(
             "approval-1",
@@ -5410,7 +5181,6 @@ diff --git a/src/b.rs b/src/b.rs\n\
                 "path": "src/main.rs",
                 "content": "fn main() {\n    println!(\"visible before approval\");\n}\n",
             }),
-            "write_file:src/main.rs",
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
@@ -5437,7 +5207,6 @@ diff --git a/src/b.rs b/src/b.rs\n\
             &serde_json::json!({
                 "patch": "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
             }),
-            "apply_patch:src/lib.rs",
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
@@ -5464,9 +5233,7 @@ diff --git a/src/b.rs b/src/b.rs\n\
                 "command": "cargo build || echo fallback",
                 "cwd": "/tmp/project",
             }),
-            "exec_shell:cargo",
             Some("Need to verify the fallback build path before editing files."),
-            std::path::Path::new("/tmp/project"),
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
@@ -5493,9 +5260,7 @@ diff --git a/src/b.rs b/src/b.rs\n\
                 "command": "cd /Volumes/VIXinSSD/codewhale; cargo clippy -p codewhale-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/codewhale-clippy.log",
                 "cwd": "/Volumes/VIXinSSD/codewhale",
             }),
-            "exec_shell:cargo-clippy",
             Some("Confirmed - passes in isolation, so this is the documentation gate."),
-            std::path::Path::new("/Volumes/VIXinSSD/codewhale"),
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
         let widget = ApprovalWidget::new(&request, &view);
