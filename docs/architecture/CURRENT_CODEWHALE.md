@@ -354,6 +354,8 @@ M4-C foreground 切换后还已物理删除：
 - 零生产调用方的 TUI `arg_repair` 启发式修补器；正式路径由 DeepSeek transport 精确拼接
   SSE 参数，`ToolArguments` 同时保留 raw/parsed，Runtime 对畸形 JSON 产生 typed retry
   outcome 而不篡改原始调用。
+- 只有自身测试的旧 `/models` 英文消息 formatter；TUI canonical 命令面没有模型列表或
+  picker，运行模型仍由 DeepSeek 配置进入 canonical Run 请求。
 
 ## 6. 当前验证事实
 

@@ -677,6 +677,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除没有生产调用方的旧 TUI `arg_repair`。DeepSeek SSE 仍按增量精确重组参数，
   canonical `ToolArguments` 保留原始字节并严格解析；畸形 JSON 作为可重试的 typed tool
   outcome 返回模型，不再由未接线的启发式代码静默改写模型参数。
+- M4-C 已删除只有自身测试的旧 `/models` 英文消息 formatter；canonical 命令面不暴露
+  `/models` 或模型 picker，正式运行的模型选择仍由 DeepSeek 配置进入 `StartRunCommand`。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

@@ -25,7 +25,6 @@ pub mod diff_render;
 pub mod file_frecency;
 pub mod file_mention;
 pub mod footer_ui;
-pub mod format_helpers;
 pub mod history;
 pub mod key_shortcuts;
 pub mod markdown_render;
