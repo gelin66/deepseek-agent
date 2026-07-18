@@ -106,8 +106,7 @@ const TOOL_HANG_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(600);
 /// terminal renderer while avoiding the five-frame-per-second "jump" seen
 /// whenever live status motion and ocean motion overlap.
 pub(crate) const UI_UNDERWATER_ANIMATION_MS: u64 = 80;
-// At an 80-column terminal the file tree owns 20 columns, leaving a 60-column
-// chat host. Keep a compact 20-column sidebar plus a 40-column transcript.
+// Keep a compact 20-column sidebar plus a 40-column transcript.
 pub(crate) const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 60;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 const TURN_META_PREFIX: &str = "<turn_meta>";
@@ -1853,8 +1852,8 @@ fn render(f: &mut Frame, app: &mut App) {
         crate::tui::underwater::render_header(header_area, f.buffer_mut(), app);
     }
 
-    // Render the transcript and optional file-tree sidecar. The underwater
-    // default deliberately has no legacy right sidebar: Tasks and To-do own
+    // Render the transcript. The underwater default deliberately has no
+    // legacy right sidebar: Tasks and To-do own
     // the strip above, Fleet owns `/fleet`, and dense context owns its
     // inspector. Keeping the sidebar here was the architectural reason the
     // rejected build still read as the old TUI under a gradient.
@@ -1862,34 +1861,13 @@ fn render(f: &mut Frame, app: &mut App) {
     {
         // Defensive backstop (#400): fill the entire body area with ink
         // background before any sub-widgets render, so cells that end up
-        // uncovered by layout splits (e.g. after file-tree toggle or
-        // resize) don't retain stale content from a previous frame.
+        // uncovered by layout splits after a resize don't retain stale content
+        // from a previous frame.
         Block::default()
             .style(Style::default().bg(app.ui_theme.surface_bg))
             .render(work_chat_area, f.buffer_mut());
 
-        // When the file-tree pane is visible and the terminal is wide
-        // enough, reserve the left ~25% for the file tree.
-        let mut chat_area =
-            if app.file_tree.is_some() && work_chat_area.width >= SIDEBAR_VISIBLE_MIN_WIDTH {
-                app.file_tree_visible = true;
-                let split = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-                    .split(work_chat_area);
-                let tree_area = split[0];
-                let remaining = split[1];
-
-                // Render the file-tree pane.
-                if let Some(ref mut state) = app.file_tree {
-                    super::file_tree::render_file_tree(f, tree_area, state, app.ui_theme.mode);
-                }
-
-                remaining
-            } else {
-                app.file_tree_visible = false;
-                work_chat_area
-            };
+        let mut chat_area = work_chat_area;
         app.last_sidebar_host_width = Some(chat_area.width);
         let sidebar_area = if classic_shell
             && !crate::tui::sidebar::sidebar_auto_idle(app)

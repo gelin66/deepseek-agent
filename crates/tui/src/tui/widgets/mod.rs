@@ -623,9 +623,8 @@ fn active_entry_revision(active_rev: u64, salt: u64) -> u64 {
 impl Renderable for ChatWidget {
     fn render(&self, _area: Rect, buf: &mut Buffer) {
         // Use the passed render area, not self.content_area — those can
-        // drift when layout changes (e.g. file-tree pane toggle), and
-        // using the stale self.content_area is the root cause of text
-        // bleed-through (#400). In debug builds, assert the two match to
+        // drift when layout changes, and using stale self.content_area is the
+        // root cause of text bleed-through (#400). In debug builds, assert the two match to
         // catch future drift early.
         debug_assert_eq!(
             _area, self.content_area,

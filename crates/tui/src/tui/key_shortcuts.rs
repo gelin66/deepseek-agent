@@ -35,27 +35,6 @@ pub(super) fn is_copy_shortcut(key: &KeyEvent) -> bool {
     key.modifiers.contains(KeyModifiers::CONTROL) && key.modifiers.contains(KeyModifiers::SHIFT)
 }
 
-/// Toggle the file-tree pane: `Ctrl+Shift+E` on Linux/Windows or
-/// `Cmd+Shift+E` on macOS.
-pub(super) fn is_file_tree_toggle_shortcut(key: &KeyEvent) -> bool {
-    let is_shifted_e = matches!(key.code, KeyCode::Char('E'))
-        || (matches!(key.code, KeyCode::Char('e')) && key.modifiers.contains(KeyModifiers::SHIFT));
-    if !is_shifted_e {
-        return false;
-    }
-
-    let has_forbidden_modifier =
-        key.modifiers.contains(KeyModifiers::ALT) || key.modifiers.contains(KeyModifiers::SUPER);
-    let ctrl_shift_e = key.modifiers.contains(KeyModifiers::CONTROL) && !has_forbidden_modifier;
-
-    let cmd_shift_e = key.modifiers.contains(KeyModifiers::SUPER)
-        && key.modifiers.contains(KeyModifiers::SHIFT)
-        && !key.modifiers.contains(KeyModifiers::CONTROL)
-        && !key.modifiers.contains(KeyModifiers::ALT);
-
-    ctrl_shift_e || cmd_shift_e
-}
-
 /// Paste-from-clipboard: `Cmd+V` (macOS), `Ctrl+V` (Linux/Windows), or
 /// the legacy raw `\u{16}` ETX byte some terminals emit.
 pub(super) fn is_paste_shortcut(key: &KeyEvent) -> bool {

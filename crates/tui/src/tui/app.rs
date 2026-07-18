@@ -1706,11 +1706,6 @@ pub struct App {
     pub expanded_tool_runs: HashSet<usize>,
     /// Current dense tool-run collapse behavior.
     pub tool_collapse_mode: ToolCollapseMode,
-    /// File-tree pane state. `None` when hidden; `Some` when visible.
-    pub file_tree: Option<crate::tui::file_tree::FileTreeState>,
-    /// Whether the file-tree pane was actually rendered in the last frame.
-    /// Set false when the terminal is too narrow to show the tree.
-    pub file_tree_visible: bool,
     pub max_input_history: usize,
     pub allow_shell: bool,
     pub verbosity: Option<String>,
@@ -2561,8 +2556,6 @@ impl App {
             tool_collapse_threshold: 3,
             expanded_tool_runs: HashSet::new(),
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
-            file_tree: None,
-            file_tree_visible: false,
             max_input_history,
             allow_shell,
             verbosity: config.verbosity.clone(),

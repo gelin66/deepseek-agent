@@ -18,7 +18,6 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `Ctrl-T`             | Cycle reasoning effort for the active provider. DeepSeek-style providers cycle off → high → max → off; OpenAI Codex cycles low → medium → high → xhigh → low. |
 | `Ctrl-R`             | Open the resume-session picker                                 |
 | `Ctrl-L`             | Refresh / clear the screen                                     |
-| `Ctrl-Shift-E` / `Cmd-Shift-E` | Toggle the file-tree sidebar                          |
 | `Alt-G`              | Scroll transcript to top when the composer is empty             |
 | `Alt-!` / `Alt-@` / `Alt-#` / `Alt-$` / `Alt-0` | Focus Pinned / Tasks / Agents / Context / Auto sidebar |
 | `Ctrl-Alt-0`         | Hide/show the pinned sidebar                                    |

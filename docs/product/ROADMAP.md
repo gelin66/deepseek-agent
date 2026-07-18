@@ -655,6 +655,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除只有自测构造、没有按键或命令入口的旧实时对话覆盖层及其私有缓存，并同步
   移除失效的 `Ctrl+Shift+T` 声明。主 transcript、canonical Run 流式投影和
   `TranscriptViewCache` 继续作为唯一实时对话展示路径。
+- M4-C 已删除始终为 `None`、没有生产打开或按键调用方的旧 File Tree pane、私有后台扫描
+  和失效的 `Ctrl+Shift+E` 声明。真实 `@mention`、frecency、模糊路径解析和 composer
+  菜单保留，文件引用的 canonical context 接线继续作为独立能力缺口处理。
 - 该删除切片的 focused gate 已通过：Runtime conformance 53/53、DeepSeek 35/35、
   app 37 passed/1 ignored、app-server 23/23、exec production loopback 24/24、
   canonical TUI Run 20/20、PTY 5/5；State `run_store`、CLI canonical runs 与 TUI unit

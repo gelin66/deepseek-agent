@@ -338,6 +338,8 @@ M4-C foreground 切换后还已物理删除：
   `read_file` 仍通过 `crates/tools` 的 macOS Vision/Tesseract 后端提供本地图片 OCR。
 - 只有自测构造、没有生产打开入口的实时对话 overlay、其专用缓存和失效快捷键；主
   transcript 仍由 `CanonicalRunProjection`/presenter 与 `TranscriptViewCache` 实时驱动。
+- App 状态始终为 `None`、没有生产 toggle/key handler 的 File Tree pane 及其后台目录扫描；
+  `file_mention` 与 frecency 继续保留为 composer 文件引用能力，不与旧 pane 混为一体。
 
 ## 6. 当前验证事实
 

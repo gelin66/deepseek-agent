@@ -478,7 +478,7 @@ mod tests {
     }
 
     // --- New #3488 fixtures: CJK/wide-glyph truncation on selector-style rows.
-    // truncate_line_to_width is the production helper behind sidebar (file_tree),
+    // truncate_line_to_width is the production helper behind sidebar,
     // statusline (footer_ui) and picker row rendering, so
     // these exercise the same truncation path those surfaces use.
 
