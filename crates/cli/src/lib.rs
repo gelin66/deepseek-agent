@@ -201,8 +201,6 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Commands {
-    /// Run interactive/non-interactive flows via the TUI binary.
-    Run(RunArgs),
     /// Run CodeWhale diagnostics.
     Doctor(TuiPassthroughArgs),
     /// List live provider API models via the TUI binary.
@@ -370,12 +368,6 @@ struct MetricsArgs {
     /// Restrict to events newer than this duration (e.g. 7d, 24h, 30m, now-2h).
     #[arg(long, value_name = "DURATION")]
     since: Option<String>,
-}
-
-#[derive(Debug, Args)]
-struct RunArgs {
-    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    args: Vec<String>,
 }
 
 #[derive(Debug, Args)]
@@ -1421,6 +1413,9 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
             Some("fork") => bail!(
                 "命令 `codewhale fork` 已删除；不再支持旧 TUI 会话分叉，请使用 `codewhale resume <RUN_ID>` 继续 canonical Agent 运行"
             ),
+            Some("run") => bail!(
+                "命令 `codewhale run` 已删除；请直接运行 `codewhale` 启动交互界面，或使用 `codewhale exec <PROMPT>` 执行非交互任务"
+            ),
             Some("mcp-server") => bail!(
                 "命令 `codewhale mcp-server` 已删除；如需本地 Agent 接口，请使用 canonical `codewhale app-server --stdio`"
             ),
@@ -1452,6 +1447,16 @@ fn run() -> Result<()> {
         return run_lane_log_proxy_command(args);
     }
 
+    let command = match command {
+        Some(Commands::Completion { shell }) => {
+            let mut cmd = Cli::command();
+            generate(shell, &mut cmd, "codewhale", &mut io::stdout());
+            return Ok(());
+        }
+        Some(Commands::Runs(args)) => return run_runs_command(&cli, args),
+        command => command,
+    };
+
     let mut store = ConfigStore::load(cli.config.clone())?;
     let runtime_overrides = CliRuntimeOverrides {
         provider: cli.provider.map(Into::into),
@@ -1468,10 +1473,6 @@ fn run() -> Result<()> {
         verbosity: cli.verbosity.clone(),
     };
     match command {
-        Some(Commands::Run(args)) => {
-            let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
-            delegate_to_tui(&cli, &resolved_runtime, args.args)
-        }
         Some(Commands::Doctor(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("doctor", args))
@@ -1484,7 +1485,9 @@ fn run() -> Result<()> {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("speech", args))
         }
-        Some(Commands::Runs(args)) => run_runs_command(&cli, args),
+        Some(Commands::Runs(_)) => {
+            unreachable!("canonical runs command dispatched before ConfigStore")
+        }
         Some(Commands::Resume(args)) => {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             delegate_to_tui(&cli, &resolved_runtime, tui_args("resume", args))
@@ -1568,10 +1571,8 @@ fn run() -> Result<()> {
             let resolved_runtime = resolve_runtime_for_dispatch(&mut store, &runtime_overrides);
             run_app_server_command(&resolved_runtime, args)
         }
-        Some(Commands::Completion { shell }) => {
-            let mut cmd = Cli::command();
-            generate(shell, &mut cmd, "codewhale", &mut io::stdout());
-            Ok(())
+        Some(Commands::Completion { .. }) => {
+            unreachable!("completion command dispatched before ConfigStore")
         }
         Some(Commands::Metrics(args)) => run_metrics_command(args),
         Some(Commands::Update(args)) => {
@@ -5306,7 +5307,6 @@ mod tests {
         let rendered = help_for(&["deepseek", "--help"]);
 
         for token in [
-            "run",
             "doctor",
             "models",
             "runs",
@@ -5344,7 +5344,7 @@ mod tests {
                 "expected help to contain token: {token}"
             );
         }
-        for retired in ["sessions", "fork", "mcp-server"] {
+        for retired in ["sessions", "fork", "run", "mcp-server"] {
             assert!(
                 !rendered.lines().any(|line| {
                     line.strip_prefix("  ")
@@ -5370,6 +5370,14 @@ mod tests {
         let explicit_mcp_prompt = parse_ok(&["codewhale", "--prompt", "mcp-server"]);
         reject_retired_command(&explicit_mcp_prompt)
             .expect("an explicit prompt must not be mistaken for a retired MCP command");
+
+        let explicit_run_prompt = parse_ok(&["codewhale", "--prompt", "run this task"]);
+        reject_retired_command(&explicit_run_prompt)
+            .expect("an explicit prompt must not be mistaken for the retired run command");
+        assert_eq!(
+            root_tui_passthrough(&explicit_run_prompt).expect("explicit run prompt"),
+            vec!["--prompt", "run this task"]
+        );
 
         let add_self = parse_ok(&["codewhale", "mcp", "add-self"]);
         let error = reject_retired_command(&add_self).expect_err("mcp add-self must fail closed");
