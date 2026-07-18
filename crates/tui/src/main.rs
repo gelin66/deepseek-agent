@@ -85,7 +85,6 @@ mod tls;
 mod tools;
 mod tui;
 mod utils;
-mod vision;
 mod working_set;
 mod workspace_discovery;
 mod workspace_trust;
