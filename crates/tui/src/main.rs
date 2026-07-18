@@ -62,7 +62,6 @@ mod provider_lake;
 mod provider_readiness;
 mod regex_cache;
 mod resource_telemetry;
-mod retry_status;
 mod route_billing;
 mod route_budget;
 mod route_runtime;

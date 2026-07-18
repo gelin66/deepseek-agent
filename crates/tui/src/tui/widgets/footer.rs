@@ -18,7 +18,7 @@
 //! | mode | `mode_label` | `/mode` picker |
 //! | permission | `permission` | Shift+Tab cycle, `/config` |
 //! | cost/rate | `cost`, `balance`, `cache` | canonical usage projection and `/cost` |
-//! | anomalies | `retry`, MCP chip | retry banner, MCP manager |
+//! | anomalies | MCP chip | MCP manager |
 //!
 //! Dense proof (tool receipts, full workflow history, raw config keys) stays
 //! in inspect/audit surfaces — not duplicated as permanent footer chips.
@@ -83,12 +83,6 @@ pub struct FooterProps {
     /// it's been "working." Empty until cumulative turn time crosses
     /// 60s. Populated by [`footer_worked_chip`]. (#448)
     pub worked: Vec<Span<'static>>,
-    /// Snapshot of the global retry-status surface (#499). Sampled once
-    /// at props-build time and rendered as a foreground banner on the
-    /// left of the footer when active. Captured here (rather than read
-    /// from `retry_status` at render time) so tests can pin a
-    /// deterministic state without racing the parallel runner.
-    pub retry: crate::retry_status::RetryState,
     /// Session-cost chip spans (empty when below the display threshold).
     /// Rendered in the left cluster (after the model name) — cost is steady
     /// info, not a transient signal, so it lives with mode and model.
@@ -317,7 +311,6 @@ impl FooterProps {
             balance,
             toast,
             working_strip_frame: None,
-            retry: crate::retry_status::snapshot(),
         }
     }
 }
@@ -635,13 +628,7 @@ impl FooterWidget {
     }
 
     fn left_spans(&self, max_width: usize) -> Vec<Span<'static>> {
-        if let Some(banner) = retry_banner_spans(max_width, &self.props) {
-            // Retry banner takes precedence over toast and the regular
-            // status line so the user sees it loud and clear (#499).
-            // The banner clears automatically on success or on the next
-            // `TurnStarted` (engine emits the clear).
-            banner
-        } else if let Some(toast) = self.props.toast.as_ref() {
+        if let Some(toast) = self.props.toast.as_ref() {
             Self::toast_spans(toast, max_width)
         } else {
             self.status_line_spans(max_width)
@@ -651,30 +638,6 @@ impl FooterWidget {
 
 fn spans_text(spans: &[Span<'_>]) -> String {
     spans.iter().map(|s| s.content.as_ref()).collect::<String>()
-}
-
-/// Render the retry banner (#499) when the props' captured snapshot
-/// reports an active retry or a final failure. Returns `None` when idle
-/// so callers fall back to the regular status line / toast.
-fn retry_banner_spans(max_width: usize, props: &FooterProps) -> Option<Vec<Span<'static>>> {
-    let (label, color) = match &props.retry {
-        crate::retry_status::RetryState::Active(banner) => {
-            let secs = props.retry.seconds_remaining().unwrap_or(0);
-            // Round to 1s — we redraw each frame anyway so the
-            // countdown ticks visually without us having to schedule
-            // anything extra.
-            (
-                format!("⟳ retry {} in {secs}s — {}", banner.attempt, banner.reason),
-                crate::palette::STATUS_WARNING,
-            )
-        }
-        crate::retry_status::RetryState::Failed { reason, .. } => {
-            (format!("× failed: {reason}"), crate::palette::STATUS_ERROR)
-        }
-        crate::retry_status::RetryState::Idle => return None,
-    };
-    let truncated = truncate_to_width(&label, max_width);
-    Some(vec![Span::styled(truncated, Style::default().fg(color))])
 }
 
 impl Renderable for FooterWidget {
@@ -858,10 +821,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
         );
-        // `from_app` reads the process-wide retry-status surface; pin
-        // `Idle` so footer tests don't pick up state set by retry-banner
-        // tests running in parallel.
-        props.retry = crate::retry_status::RetryState::Idle;
         props.mode_label = "";
         props
     }
@@ -1125,56 +1084,6 @@ mod tests {
         let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
         assert_eq!(text, "MCP 0/3");
         assert_eq!(spans[0].style.fg, Some(palette::STATUS_ERROR));
-    }
-
-    #[test]
-    fn render_shows_retry_banner_when_active() {
-        // Since `FooterProps::retry` is now a captured snapshot rather
-        // than a global read at render time, we can pin the state on
-        // the props directly without touching the global surface.
-        let app = make_app();
-        let mut props = idle_props_for(&app);
-        props.retry = crate::retry_status::RetryState::Active(crate::retry_status::RetryBanner {
-            attempt: 2,
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(7),
-            reason: "rate limited".to_string(),
-        });
-        let widget = FooterWidget::new(props);
-        let area = ratatui::layout::Rect::new(0, 0, 80, 1);
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        widget.render(area, &mut buf);
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(
-            rendered.contains("retry 2"),
-            "expected retry banner in render: {rendered:?}",
-        );
-        assert!(
-            rendered.contains("rate limited"),
-            "expected reason in render: {rendered:?}",
-        );
-    }
-
-    #[test]
-    fn render_shows_failure_row_when_failed() {
-        let app = make_app();
-        let mut props = idle_props_for(&app);
-        props.retry = crate::retry_status::RetryState::Failed {
-            reason: "upstream 500".to_string(),
-            since: std::time::Instant::now(),
-        };
-        let widget = FooterWidget::new(props);
-        let area = ratatui::layout::Rect::new(0, 0, 80, 1);
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        widget.render(area, &mut buf);
-        let rendered: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
-        assert!(
-            rendered.contains("failed"),
-            "expected failure row: {rendered:?}",
-        );
-        assert!(
-            rendered.contains("upstream 500"),
-            "expected reason: {rendered:?}",
-        );
     }
 
     #[test]
