@@ -9,7 +9,7 @@ use crate::tui::app::App;
 use crate::tui::history::{HistoryCell, ToolCell, ToolStatus};
 use crate::tui::sidebar::{agents_sidebar_surface_visible, running_agent_count};
 use crate::tui::ui::{context_usage_snapshot, status_color};
-use crate::tui::ui_text::{concise_shell_command_label, truncate_line_to_width};
+use crate::tui::ui_text::truncate_line_to_width;
 use crate::tui::widgets::tool_card::tool_activity_label_for_name;
 use crate::tui::widgets::{FooterProps, FooterToast, FooterWidget, Renderable};
 use crate::tui::workspace_context;
@@ -140,19 +140,11 @@ pub(crate) fn stall_reason(app: &App) -> Option<String> {
         return Some("sub-agents working".to_string());
     }
     let active = app.active_cell.as_ref()?;
-    if active.entries().iter().any(|cell| match cell {
-        crate::tui::history::HistoryCell::Tool(tool) => match tool {
-            crate::tui::history::ToolCell::Exec(exec) => {
-                exec.status == crate::tui::history::ToolStatus::Running
-            }
-            crate::tui::history::ToolCell::Exploring(explore) => explore
-                .entries
-                .iter()
-                .any(|e| e.status == crate::tui::history::ToolStatus::Running),
-            _ => false,
-        },
-        _ => false,
-    }) {
+    if active
+        .entries()
+        .iter()
+        .any(|cell| matches!(cell, HistoryCell::Tool(tool) if tool.is_running()))
+    {
         return Some("tools executing".to_string());
     }
     if app.runtime_turn_status.as_deref() == Some("in_progress") {
@@ -455,11 +447,6 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
         return;
     };
     match tool {
-        ToolCell::Exec(exec) => snapshot.record(
-            concise_shell_command_label(&exec.command, 80),
-            exec.status,
-            exec.started_at,
-        ),
         ToolCell::Exploring(explore) => {
             for entry in &explore.entries {
                 snapshot.record(
@@ -572,15 +559,9 @@ pub(crate) fn render_footer_from(
     props.model.clear();
     props.mode_label = "";
 
-    // Foreground shell chip, independent of user-configured status items.
-    let shell_chip = footer_shell_spans(app);
-
     // Right-cluster extension chips: append in `items` order so user
     // ordering is preserved across the new variants.
     let mut extra: Vec<Span<'static>> = Vec::new();
-    if !shell_chip.is_empty() {
-        extra.extend(shell_chip);
-    }
     for item in items {
         let chip = match *item {
             S::Cache => cache_chip.clone(),
@@ -634,29 +615,6 @@ pub(crate) fn footer_git_branch_spans(app: &App) -> Vec<Span<'static>> {
         label,
         Style::default().fg(app.ui_theme.text_muted),
     )]
-}
-
-fn footer_shell_spans(app: &App) -> Vec<Span<'static>> {
-    active_foreground_shell_label(app)
-        .map(crate::tui::widgets::footer_shell_label_chip)
-        .unwrap_or_default()
-}
-
-fn active_foreground_shell_label(app: &App) -> Option<String> {
-    let active = app.active_cell.as_ref()?;
-    active.entries().iter().find_map(|cell| {
-        let HistoryCell::Tool(ToolCell::Exec(exec)) = cell else {
-            return None;
-        };
-        if exec.status == ToolStatus::Running && exec.interaction.is_none() {
-            Some(format!(
-                "shell fg: {}",
-                concise_shell_command_label(&exec.command, 48)
-            ))
-        } else {
-            None
-        }
-    })
 }
 
 /// Spans for the "context %" footer chip. Mirrors the header colour ramp so
@@ -776,19 +734,11 @@ pub(crate) fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'s
     let replay_spans = footer_reasoning_replay_spans(app);
     let cache_spans = footer_cache_spans(app);
     let cost_spans = footer_cost_spans(app);
-    let shell_spans = footer_shell_spans(app);
-
-    let parts: Vec<&Vec<Span<'static>>> = [
-        &agents_spans,
-        &replay_spans,
-        &cache_spans,
-        &cost_spans,
-        &shell_spans,
-    ]
-    .iter()
-    .filter(|spans| !spans.is_empty())
-    .copied()
-    .collect();
+    let parts: Vec<&Vec<Span<'static>>> = [&agents_spans, &replay_spans, &cache_spans, &cost_spans]
+        .iter()
+        .filter(|spans| !spans.is_empty())
+        .copied()
+        .collect();
 
     // Try to fit as many parts as possible, dropping from the end.
     for end in (0..=parts.len()).rev() {

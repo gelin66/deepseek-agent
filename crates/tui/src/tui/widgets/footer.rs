@@ -166,17 +166,6 @@ pub fn footer_working_label(frame: u64) -> String {
     out
 }
 
-#[must_use]
-pub fn footer_shell_label_chip(label: String) -> Vec<Span<'static>> {
-    if label.trim().is_empty() {
-        return Vec::new();
-    }
-    vec![Span::styled(
-        format!("\u{23F3} {label}"),
-        Style::default().fg(palette::STATUS_WARNING),
-    )]
-}
-
 /// Build a "N agents" chip span list when there are sub-agents in flight.
 /// Empty list when N == 0 hides the chip entirely. Singular for N == 1
 /// reads naturally; plural otherwise. The pluralization template lives in

@@ -239,10 +239,10 @@ impl ShellPhase {
     }
 }
 
-/// True when the live active cell is running a verification-shaped tool:
-/// the verifier tool itself or an exec whose program is a known test/check
-/// runner. Conservative by design — misclassifying real work as `verifying`
-/// would lie; plain `working` never does.
+/// True when the live active cell is running one of the canonical
+/// deterministic verification tools. Shell command text is deliberately not
+/// inspected: `exec_shell` remains ordinary work even when its command happens
+/// to contain a test runner.
 fn verification_run_active(app: &App) -> bool {
     use crate::tui::history::{HistoryCell, ToolCell, ToolStatus};
     let Some(active) = app.active_cell.as_ref() else {
@@ -252,34 +252,13 @@ fn verification_run_active(app: &App) -> bool {
         let HistoryCell::Tool(tool) = cell else {
             return false;
         };
-        match tool {
-            ToolCell::Exec(exec) if exec.status == ToolStatus::Running => {
-                exec_is_verification(&exec.command)
-            }
-            ToolCell::Generic(generic) if generic.status == ToolStatus::Running => {
-                let name = generic.name.to_ascii_lowercase();
-                name.contains("verif") || name == "read_lints"
-            }
-            _ => false,
-        }
+        matches!(
+            tool,
+            ToolCell::Generic(generic)
+                if generic.status == ToolStatus::Running
+                    && matches!(generic.name.as_str(), "run_tests" | "run_verifiers")
+        )
     })
-}
-
-fn exec_is_verification(command: &str) -> bool {
-    let trimmed = command.trim_start();
-    let mut tokens = trimmed.split_whitespace();
-    let first = tokens.next().unwrap_or("");
-    let second = tokens.next().unwrap_or("");
-    match first {
-        "cargo" => matches!(second, "test" | "check" | "clippy" | "nextest"),
-        "go" => matches!(second, "test" | "vet"),
-        "npm" | "pnpm" | "yarn" | "bun" => matches!(second, "test" | "lint" | "check"),
-        "make" => matches!(second, "test" | "check" | "lint"),
-        "python" | "python3" => trimmed.contains("-m pytest") || trimmed.contains("-m unittest"),
-        "pytest" | "jest" | "vitest" | "tsc" | "eslint" | "ruff" | "mypy" | "clippy-driver"
-        | "golangci-lint" | "shellcheck" => true,
-        _ => false,
-    }
 }
 
 fn completion_elapsed_ms(app: &App) -> Option<u128> {
@@ -1018,22 +997,17 @@ mod tests {
     #[test]
     fn verifying_phase_meters_a_tick_for_test_runs_only() {
         use crate::tui::active_cell::ActiveCell;
-        use crate::tui::history::{ExecCell, ExecSource, HistoryCell, ToolCell, ToolStatus};
+        use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
 
-        let running_exec = |command: &str| {
-            HistoryCell::Tool(ToolCell::Exec(ExecCell {
-                command: command.to_string(),
+        let running_tool = |name: &str, input_summary: Option<&str>| {
+            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                name: name.to_string(),
                 status: ToolStatus::Running,
+                input_summary: input_summary.map(str::to_string),
                 output: None,
-                live_output: None,
-                shell_task_id: None,
-                owner_agent_id: None,
-                owner_agent_name: None,
-                started_at: None,
-                duration_ms: None,
-                source: ExecSource::Assistant,
-                interaction: None,
+                prompts: None,
                 output_summary: None,
+                is_diff: false,
             }))
         };
 
@@ -1043,7 +1017,7 @@ mod tests {
 
         // A live test run reads as `verifying` with the metered tick.
         let mut active = ActiveCell::new();
-        active.push_tool("exec-1", running_exec("cargo test -p codewhale-tui"));
+        active.push_tool("verify-1", running_tool("run_tests", None));
         app.active_cell = Some(active);
         assert_eq!(ShellPhase::from_app(&app), ShellPhase::Verifying);
         app.low_motion = true;
@@ -1052,9 +1026,19 @@ mod tests {
         assert_eq!(label, "校验中");
         app.low_motion = false;
 
-        // An ordinary build stays `working` — checking must not lie.
+        // Both canonical deterministic verification tools select the phase.
         let mut active = ActiveCell::new();
-        active.push_tool("exec-2", running_exec("cargo build --release"));
+        active.push_tool("verify-2", running_tool("run_verifiers", None));
+        app.active_cell = Some(active);
+        assert_eq!(ShellPhase::from_app(&app), ShellPhase::Verifying);
+
+        // Shell text is not a verification contract. Even an explicit test
+        // command remains ordinary work when projected as `exec_shell`.
+        let mut active = ActiveCell::new();
+        active.push_tool(
+            "shell-1",
+            running_tool("exec_shell", Some("cargo test -p codewhale-tui --locked")),
+        );
         app.active_cell = Some(active);
         assert_eq!(ShellPhase::from_app(&app), ShellPhase::Working);
 

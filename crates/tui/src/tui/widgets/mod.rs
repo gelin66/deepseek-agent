@@ -14,8 +14,7 @@ mod renderable;
 pub mod tool_card;
 
 pub use footer::{
-    FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_shell_label_chip,
-    footer_working_label,
+    FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_working_label,
 };
 pub use header::{HeaderData, HeaderWidget, header_status_indicator_frame};
 pub use renderable::Renderable;
@@ -3215,9 +3214,7 @@ mod tests {
     use crate::palette;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{App, ComposerDensity, ToolCollapseMode, TuiOptions};
-    use crate::tui::history::{
-        ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus,
-    };
+    use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus};
     use crate::tui::scrolling::{TranscriptLineMeta, TranscriptScroll};
     use ratatui::{
         buffer::Buffer,
@@ -3282,7 +3279,7 @@ mod tests {
         app.active_cell_revision = 0;
 
         let mut active = ActiveCell::new();
-        active.push_tool("user_shell_1", running_user_shell_cell());
+        active.push_tool("user_shell_1", running_exec_shell_cell());
         app.active_cell = Some(active);
 
         let area = Rect::new(0, 0, 100, 20);
@@ -3292,10 +3289,11 @@ mod tests {
         assert!(running.contains("run running"), "{running}");
 
         app.finalize_active_cell_as_interrupted();
-        let HistoryCell::Tool(ToolCell::Exec(exec)) = &app.history[0] else {
-            panic!("expected settled exec history cell")
+        let HistoryCell::Tool(ToolCell::Generic(tool)) = &app.history[0] else {
+            panic!("expected settled canonical generic tool history cell")
         };
-        assert_eq!(exec.status, ToolStatus::Failed);
+        assert_eq!(tool.name, "exec_shell");
+        assert_eq!(tool.status, ToolStatus::Failed);
 
         let mut settled_buf = Buffer::empty(area);
         ChatWidget::new(&mut app, area).render(area, &mut settled_buf);
@@ -3343,20 +3341,15 @@ mod tests {
         }))
     }
 
-    fn running_user_shell_cell() -> HistoryCell {
-        HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: "sleep 30".to_string(),
+    fn running_exec_shell_cell() -> HistoryCell {
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "exec_shell".to_string(),
             status: ToolStatus::Running,
+            input_summary: Some("command: sleep 30".to_string()),
             output: None,
-            live_output: None,
-            shell_task_id: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-            started_at: None,
-            duration_ms: None,
-            source: ExecSource::User,
-            interaction: None,
+            prompts: None,
             output_summary: None,
+            is_diff: false,
         }))
     }
 
@@ -3507,7 +3500,7 @@ mod tests {
         app.next_history_revision = ACTIVE_REVISION_DOMAIN | 1;
         app.active_cell_revision = 0;
         let mut active = ActiveCell::new();
-        active.push_tool("user_shell_slow_path", running_user_shell_cell());
+        active.push_tool("user_shell_slow_path", running_exec_shell_cell());
         app.active_cell = Some(active);
 
         let area = Rect::new(0, 0, 100, 20);

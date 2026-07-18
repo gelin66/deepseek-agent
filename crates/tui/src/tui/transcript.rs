@@ -652,7 +652,7 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
 mod tests {
     use super::*;
     use crate::palette;
-    use crate::tui::history::{ExecCell, ExecSource, HistoryCell, ToolCell, ToolStatus};
+    use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
 
     fn plain_lines(cache: &TranscriptViewCache) -> Vec<String> {
         cache
@@ -680,20 +680,15 @@ mod tests {
         }
     }
 
-    fn exec_tool_cell(command: &str) -> HistoryCell {
-        HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: command.to_string(),
+    fn generic_tool_cell(command: &str) -> HistoryCell {
+        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            name: "exec_shell".to_string(),
             status: ToolStatus::Running,
+            input_summary: Some(format!("command: {command}")),
             output: None,
-            live_output: None,
-            shell_task_id: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-            started_at: None,
-            duration_ms: None,
-            source: ExecSource::Assistant,
-            interaction: None,
+            prompts: None,
             output_summary: None,
+            is_diff: false,
         }))
     }
 
@@ -1008,12 +1003,12 @@ mod tests {
 
     #[test]
     fn adjacent_tool_cells_render_as_one_railed_group() {
-        // Live foreground exec cells collapse to a single header line (copy
+        // Live canonical shell tools collapse to a single header line (copy
         // dedupe #17), so a third cell is needed for a rail-continuation row.
         let cells = vec![
-            exec_tool_cell("cargo test"),
-            exec_tool_cell("cargo clippy"),
-            exec_tool_cell("cargo fmt"),
+            generic_tool_cell("cargo test"),
+            generic_tool_cell("cargo clippy"),
+            generic_tool_cell("cargo fmt"),
         ];
         let revisions = vec![1u64, 1, 1];
         let mut cache = TranscriptViewCache::new();
@@ -1045,7 +1040,7 @@ mod tests {
 
     #[test]
     fn tool_rails_preserve_rendered_width_budget() {
-        let cells = vec![exec_tool_cell(
+        let cells = vec![generic_tool_cell(
             "printf 'this is a command with enough text to wrap in narrow terminals'",
         )];
         let revisions = vec![1u64];
@@ -1086,11 +1081,11 @@ mod tests {
                 &format!("response {i} with multi-line\ntext content spanning\nseveral lines"),
                 false,
             ));
-            cells.push(exec_tool_cell(
+            cells.push(generic_tool_cell(
                 "cargo test --package my_crate -- --nocapture 2>&1 | head -40",
             ));
             // Insert a second tool so adjacent tool cells merge into a railed group.
-            cells.push(exec_tool_cell(&format!("git diff --stat HEAD~{i}")));
+            cells.push(generic_tool_cell(&format!("git diff --stat HEAD~{i}")));
         }
         let revisions: Vec<u64> = (0..cells.len()).map(|i| i as u64 + 1).collect();
 
@@ -1133,7 +1128,7 @@ mod tests {
         let cells = vec![
             user_cell("hello"),
             assistant_cell("some **markdown** body", false),
-            exec_tool_cell("cargo test"),
+            generic_tool_cell("cargo test"),
             user_cell("again"),
         ];
         let revisions = vec![1u64, 2, 3, 4];

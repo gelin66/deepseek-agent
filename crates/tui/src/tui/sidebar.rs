@@ -24,7 +24,7 @@ use super::app::{
     App, SidebarFocus, SidebarHoverRow, SidebarHoverSection, SidebarHoverState, SidebarRowAction,
 };
 use super::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
-use super::ui_text::{concise_shell_command_label, truncate_line_to_width};
+use super::ui_text::truncate_line_to_width;
 
 /// Tolerance for floating-point cost comparison in the sidebar breakdown.
 /// Must be large enough that accumulated f64 error across hundreds of turns
@@ -503,31 +503,6 @@ fn sidebar_tool_row_from_cell(cell: &HistoryCell) -> Option<SidebarToolRow> {
         return None;
     };
     match tool {
-        ToolCell::Exec(exec) => Some(SidebarToolRow {
-            name: concise_shell_command_label(&exec.command, 48),
-            status: shell_status_for_sidebar(
-                &exec.command,
-                exec.status,
-                exec.output_summary.as_deref(),
-                exec.output.as_deref(),
-            ),
-            summary: shell_summary_for_sidebar(
-                &exec.command,
-                exec.status,
-                exec.output_summary.as_deref(),
-                exec.output.as_deref().or(exec.live_output.as_deref()),
-            ),
-            duration_ms: exec.duration_ms.or_else(|| {
-                (exec.status == ToolStatus::Running).then(|| {
-                    u64::try_from(
-                        exec.started_at
-                            .map(|started| started.elapsed().as_millis())
-                            .unwrap_or_default(),
-                    )
-                    .unwrap_or(u64::MAX)
-                })
-            }),
-        }),
         ToolCell::Exploring(explore) => {
             let running = explore
                 .entries
@@ -594,70 +569,6 @@ fn sidebar_tool_row_from_cell(cell: &HistoryCell) -> Option<SidebarToolRow> {
             duration_ms: None,
         }),
     }
-}
-
-fn shell_status_for_sidebar(
-    command: &str,
-    status: ToolStatus,
-    output_summary: Option<&str>,
-    output: Option<&str>,
-) -> ToolStatus {
-    if status == ToolStatus::Failed && looks_like_pending_ci(command, output_summary, output) {
-        ToolStatus::Running
-    } else {
-        status
-    }
-}
-
-fn shell_summary_for_sidebar(
-    command: &str,
-    status: ToolStatus,
-    output_summary: Option<&str>,
-    output: Option<&str>,
-) -> String {
-    if status == ToolStatus::Failed && looks_like_pending_ci(command, output_summary, output) {
-        return "等待 CI".to_string();
-    }
-
-    let summary = compact_join([
-        output_summary.unwrap_or_default().to_string(),
-        output
-            .map(first_nonempty_line)
-            .unwrap_or_default()
-            .to_string(),
-    ]);
-    if status == ToolStatus::Failed {
-        failure_summary_with_hint(&summary)
-    } else {
-        summary
-    }
-}
-
-fn looks_like_pending_ci(
-    command: &str,
-    output_summary: Option<&str>,
-    output: Option<&str>,
-) -> bool {
-    let command_label = concise_shell_command_label(command, 80).to_ascii_lowercase();
-    if !command_label.starts_with("gh pr checks") && !command_label.starts_with("gh run watch") {
-        return false;
-    }
-
-    let text = compact_join([
-        output_summary.unwrap_or_default().to_string(),
-        output.unwrap_or_default().to_string(),
-    ])
-    .to_ascii_lowercase();
-    if text.is_empty() {
-        return false;
-    }
-    let pending = ["pending", "queued", "in_progress", "in progress", "waiting"]
-        .iter()
-        .any(|needle| text.contains(needle));
-    let hard_failure = ["failed", "failure", "error", "cancelled", "canceled"]
-        .iter()
-        .any(|needle| text.contains(needle));
-    pending && !hard_failure
 }
 
 fn failure_summary_with_hint(summary: &str) -> String {
@@ -960,13 +871,6 @@ fn compact_join(parts: impl IntoIterator<Item = String>) -> String {
         }
     }
     out.join(" · ")
-}
-
-fn first_nonempty_line(text: &str) -> &str {
-    text.lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("")
 }
 
 fn tool_status_marker(
@@ -1830,22 +1734,20 @@ fn sidebar_hover_rows(
 #[cfg(test)]
 mod tests {
     use super::{
-        ACTIVE_TOOL_COMPLETED_ROW_TTL, ACTIVE_TOOL_STALE_RUNNING_ROW_TTL, AutoSidebarPanel,
-        AutoSidebarState, SidebarAgentRow, SidebarFocus, SidebarHoverRow, SidebarHoverSection,
-        SidebarHoverState, SidebarSubagentSummary, SidebarToolRow, ToolRowOrder,
-        agent_row_hover_text, auto_sidebar_panels, context_panel_cost_line, editorial_tool_rows,
-        normalize_activity_text, render_sidebar, sidebar_agent_rows, sidebar_hover_rows,
-        sort_sidebar_agent_rows_as_tree, subagent_output_handle, subagent_panel_hover_texts,
-        subagent_panel_lines, subagent_panel_rows, task_panel_hover_texts, task_panel_lines,
-        task_panel_row_sets, task_panel_rows,
+        ACTIVE_TOOL_COMPLETED_ROW_TTL, AutoSidebarPanel, AutoSidebarState, SidebarAgentRow,
+        SidebarFocus, SidebarHoverRow, SidebarHoverSection, SidebarHoverState,
+        SidebarSubagentSummary, SidebarToolRow, ToolRowOrder, agent_row_hover_text,
+        auto_sidebar_panels, context_panel_cost_line, editorial_tool_rows, normalize_activity_text,
+        render_sidebar, sidebar_agent_rows, sidebar_hover_rows, sort_sidebar_agent_rows_as_tree,
+        subagent_output_handle, subagent_panel_hover_texts, subagent_panel_lines,
+        subagent_panel_rows, task_panel_hover_texts, task_panel_lines, task_panel_row_sets,
+        task_panel_rows,
     };
     use crate::config::Config;
     use crate::palette;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{App, SidebarRowAction, TuiOptions};
-    use crate::tui::history::{
-        ExecCell, ExecSource, GenericToolCell, HistoryCell, ToolCell, ToolStatus,
-    };
+    use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
     use ratatui::{Terminal, backend::TestBackend, text::Line};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -2253,44 +2155,6 @@ mod tests {
             hover[0].contains("turn_abcdef123456"),
             "hover carries the full turn id: {:?}",
             hover[0]
-        );
-    }
-
-    #[test]
-    fn tasks_panel_collapses_stale_running_tool_rows() {
-        let mut app = create_test_app();
-        app.sidebar_focus = SidebarFocus::Tasks;
-        let mut active = ActiveCell::new();
-        for (idx, command) in ["long one", "long two"].into_iter().enumerate() {
-            active.push_tool(
-                format!("shell-{idx}"),
-                HistoryCell::Tool(ToolCell::Exec(ExecCell {
-                    command: command.to_string(),
-                    status: ToolStatus::Running,
-                    output: None,
-                    live_output: None,
-                    shell_task_id: None,
-                    owner_agent_id: None,
-                    owner_agent_name: None,
-                    started_at: None,
-                    duration_ms: Some(ACTIVE_TOOL_STALE_RUNNING_ROW_TTL.as_millis() as u64 + 1),
-                    source: ExecSource::Assistant,
-                    interaction: None,
-                    output_summary: None,
-                })),
-            );
-        }
-        app.active_cell = Some(active);
-
-        let text = lines_to_text(&task_panel_lines(&app, 80, 8));
-
-        assert!(
-            text.iter().any(|line| line.contains("[~] run x2")),
-            "stale running rows should collapse into one sidebar row: {text:?}"
-        );
-        assert!(
-            !text.iter().any(|line| line.contains("long two")),
-            "second stale command should not take another row: {text:?}"
         );
     }
 
@@ -2784,107 +2648,33 @@ mod tests {
     }
 
     #[test]
-    fn tasks_panel_collapses_repeated_pending_ci_polls() {
-        let mut app = create_test_app();
-        app.sidebar_focus = SidebarFocus::Tasks;
-        for _ in 0..3 {
-            app.history.push(HistoryCell::Tool(ToolCell::Exec(ExecCell {
-                command: "cd /tmp/repo && sleep 15 && gh pr checks 1616 --repo Hmbown/CodeWhale"
-                    .to_string(),
-                status: ToolStatus::Failed,
-                output: Some("Lint pending\nTest pending".to_string()),
-                live_output: None,
-                shell_task_id: None,
-                owner_agent_id: None,
-                owner_agent_name: None,
-                started_at: None,
-                duration_ms: Some(15_000),
-                source: ExecSource::Assistant,
-                interaction: None,
-                output_summary: Some("2 checks pending".to_string()),
-            })));
-        }
-
-        let text = lines_to_text(&task_panel_lines(&app, 80, 12));
-
-        assert!(
-            text.iter().any(|line| line.contains("[~] 等待 CI")),
-            "pending CI should not render as a hard failure: {text:?}"
-        );
-        assert!(
-            text.iter().any(|line| line.contains("gh pr checks 1616")),
-            "concise command label should remain visible: {text:?}"
-        );
-        assert!(
-            text.iter().any(|line| line.contains("已合并 3 次轮询")),
-            "repeated polling should collapse into one row: {text:?}"
-        );
-        assert!(
-            !text.iter().any(|line| line.contains("[!] gh pr checks")),
-            "pending CI should not look like a real failure: {text:?}"
-        );
-    }
-
-    #[test]
     fn tasks_panel_failed_shell_rows_keep_the_real_failure_summary() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
-        app.history.push(HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: "cargo test -p codewhale-tui".to_string(),
-            status: ToolStatus::Failed,
-            output: Some("test failed".to_string()),
-            live_output: None,
-            shell_task_id: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-            started_at: None,
-            duration_ms: Some(1_250),
-            source: ExecSource::Assistant,
-            interaction: None,
-            output_summary: Some("test failed".to_string()),
-        })));
+        app.history
+            .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                name: "exec_shell".to_string(),
+                status: ToolStatus::Failed,
+                input_summary: Some("command: cargo test -p codewhale-tui".to_string()),
+                output: Some("test failed".to_string()),
+                prompts: None,
+                output_summary: Some("test failed".to_string()),
+                is_diff: false,
+            })));
 
         let text = lines_to_text(&task_panel_lines(&app, 80, 8));
 
         assert!(
-            text.iter().any(|line| line.contains("[!] cargo test")),
-            "failed shell command should keep its concise label: {text:?}"
+            text.iter().any(|line| line.contains("[!] exec_shell")),
+            "failed canonical shell tool should keep its status: {text:?}"
+        );
+        assert!(
+            text.iter().any(|line| line.contains("cargo test")),
+            "failed canonical shell tool should keep its command: {text:?}"
         );
         assert!(
             text.iter().any(|line| line.contains("test failed")),
             "failed row should keep the real failure summary: {text:?}"
-        );
-    }
-
-    #[test]
-    fn tasks_panel_keeps_duration_and_status_on_recent_shell_rows() {
-        let mut app = create_test_app();
-        app.sidebar_focus = SidebarFocus::Tasks;
-        app.history.push(HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: "cargo check".to_string(),
-            status: ToolStatus::Success,
-            output: Some("Finished".to_string()),
-            live_output: None,
-            shell_task_id: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-            started_at: None,
-            duration_ms: Some(1_250),
-            source: ExecSource::Assistant,
-            interaction: None,
-            output_summary: None,
-        })));
-
-        let text = lines_to_text(&task_panel_lines(&app, 80, 8));
-
-        assert!(
-            text.iter()
-                .any(|line| line.contains("[✓] cargo check 1.2s")),
-            "status marker and duration should stay in the row label: {text:?}"
-        );
-        assert!(
-            text.iter().any(|line| line.contains("cargo check")),
-            "current command summary should stay visible: {text:?}"
         );
     }
 

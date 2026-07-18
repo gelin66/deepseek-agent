@@ -342,6 +342,10 @@ M4-C foreground 切换后还已物理删除：
 - 只有测试构造、没有 canonical producer、RunStore 表或 RuntimeEvent writer 的
   `App.task_panel`/`TaskPanelEntry` 及其 background shell reader；WorkSurface 现在只显示
   canonical child Agent，Activity 继续显示 canonical `GenericToolCell`。
+- 没有 production 构造方的 TUI `ExecCell`/`ExecSource` 专用展示岛，以及只读取该旧类型的
+  foreground shell chip、CI 状态猜测、命令时长和 live-output 分支；canonical
+  `ToolPrepared`/`ToolOutcomeCommitted -> GenericToolCell` 投影仍完整承载 `exec_shell` 的
+  命令、状态、输出、失败可见性、transcript 与 Activity 展示。
 - 只服务已删除旧工具、没有生产 executor 或 registry 消费者的 TUI `ToolSpec`、
   `ToolContext`、`RuntimeToolServices` 与本地 `SandboxPolicy`；错误分类直接使用
   `codewhale_tools::ToolError`，固定目录、production context、sandbox 与 shell owner 不变。

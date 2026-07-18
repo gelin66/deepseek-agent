@@ -135,7 +135,8 @@ fn is_collapsible_tool_cell(cell: &HistoryCell) -> bool {
 
 pub(super) fn generic_tool_name_is_collapse_guard(name: &str) -> bool {
     let normalized = name.trim().to_ascii_lowercase();
-    normalized.contains("patch")
+    normalized == "exec_shell"
+        || normalized.contains("patch")
         || normalized.contains("write")
         || normalized.contains("edit")
         || normalized.contains("delete")
@@ -151,7 +152,6 @@ fn tool_display_name(tool: &ToolCell) -> &str {
         ToolCell::Mcp(cell) => cell.tool.as_str(),
         ToolCell::WebSearch(_) => "web_search",
         ToolCell::Exploring(_) => "explore",
-        ToolCell::Exec(_) => "shell",
         ToolCell::PatchSummary(_) => "apply_patch",
         ToolCell::DiffPreview(_) => "diff",
     }

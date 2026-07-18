@@ -1,14 +1,12 @@
 use super::{
-    ASSISTANT_GLYPH, ExecCell, ExecSource, GenericToolCell, HistoryCell, REASONING_CURSOR,
-    REASONING_OPENER, REASONING_RAIL, TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS, ToolCell,
-    ToolStatus, TranscriptRenderOptions, USER_GLYPH, assistant_label_style_for, render_thinking,
-    running_status_label_with_elapsed,
+    ASSISTANT_GLYPH, GenericToolCell, HistoryCell, REASONING_CURSOR, REASONING_OPENER,
+    REASONING_RAIL, ToolCell, ToolStatus, TranscriptRenderOptions, USER_GLYPH,
+    assistant_label_style_for, render_thinking, running_status_label_with_elapsed,
 };
 use crate::deepseek_theme::Theme;
 use crate::palette;
 use crate::tui::ui_text::{line_to_plain, slice_text, text_display_width};
 use ratatui::style::Modifier;
-use std::time::{Duration, Instant};
 
 // ---- elapsed-seconds badge for long-running tools ----
 //
@@ -534,54 +532,6 @@ fn render_thinking_streaming_keeps_the_full_visible_record() {
     );
 }
 
-#[test]
-fn tool_lines_with_options_respects_low_motion_in_default_path() {
-    // Use a 2× cycle offset so the animated frame lands on index 2,
-    // which is maximally far from index 0. This avoids flaky failures on
-    // platforms with coarse timer resolution (Windows ≈ 15.6 ms) and
-    // gives several frame intervals of headroom before the index could
-    // wrap back to 0.
-    let started_at = Some(
-        Instant::now()
-            - Duration::from_millis(
-                crate::tui::spinner::LIVE_MARKER_DELAY_MS + TOOL_STATUS_SYMBOL_MS * 2,
-            ),
-    );
-    let cell = HistoryCell::Tool(ToolCell::Exec(ExecCell {
-        command: "echo hi".to_string(),
-        status: ToolStatus::Running,
-        output: None,
-        live_output: None,
-        shell_task_id: None,
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at,
-        duration_ms: None,
-        source: ExecSource::Assistant,
-        interaction: None,
-        output_summary: None,
-    }));
-
-    let animated = cell.lines_with_options(80, TranscriptRenderOptions::default());
-    let low_motion = cell.lines_with_options(
-        80,
-        TranscriptRenderOptions {
-            low_motion: true,
-            ..TranscriptRenderOptions::default()
-        },
-    );
-
-    // Index 0 is card-rail glyph (╭); the animated symbol is at index 1.
-    let animated_symbol = animated[0].spans[1].content.trim();
-    let low_motion_symbol = low_motion[0].spans[1].content.trim();
-
-    // Reduced motion freezes at a filled, legible bubble rather than an
-    // invisible blank braille cell.
-    assert_eq!(low_motion_symbol, "⣤");
-    // The animated path should be on a different frame (index 2).
-    assert_ne!(animated_symbol, TOOL_RUNNING_SYMBOLS[0]);
-}
-
 // === Speaker glyph tests (v0.6.6 UI redesign) ===
 //
 // The literal "Assistant" / "You" labels are replaced by the calmer
@@ -698,19 +648,14 @@ fn assistant_cell_renders_with_bullet_glyph_not_literal_label() {
 
 #[test]
 fn copy_metadata_strips_tool_receipt_chrome_but_keeps_text() {
-    let cell = HistoryCell::Tool(ToolCell::Exec(ExecCell {
-        command: "printf 'receipt'".to_string(),
+    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "exec_shell".to_string(),
         status: ToolStatus::Success,
+        input_summary: Some("command: printf 'receipt'".to_string()),
         output: Some("receipt".to_string()),
-        live_output: None,
-        shell_task_id: None,
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: None,
-        source: ExecSource::Assistant,
-        interaction: None,
+        prompts: None,
         output_summary: None,
+        is_diff: false,
     }));
     let rendered = cell.lines_with_copy_metadata(80, TranscriptRenderOptions::default());
     let header = rendered.first().expect("tool receipt header");
@@ -1018,22 +963,18 @@ fn assistant_glyph_pulses_when_streaming_and_motion_allowed() {
 // === Tool-card verb-glyph tests (v0.6.6 UI redesign) ===
 
 #[test]
-fn exec_cell_header_uses_run_verb_glyph_and_label() {
-    let cell = ExecCell {
-        command: "ls".to_string(),
-        status: ToolStatus::Success,
-        output: Some("a\nb\n".to_string()),
-        live_output: None,
-        shell_task_id: None,
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: Some(10),
-        source: ExecSource::Assistant,
-        interaction: None,
+fn generic_exec_shell_header_uses_run_family_and_command_summary() {
+    let cell = GenericToolCell {
+        name: "exec_shell".to_string(),
+        status: ToolStatus::Running,
+        input_summary: Some("command: cargo test --workspace --all-features".to_string()),
+        output: None,
+        prompts: None,
         output_summary: None,
+        is_diff: false,
     };
-    let header = &cell.lines_with_motion(80, true)[0];
+
+    let header = &cell.lines_with_mode(80, true, super::RenderMode::Live)[0];
     let visible: String = header
         .spans
         .iter()
@@ -1043,60 +984,20 @@ fn exec_cell_header_uses_run_verb_glyph_and_label() {
         visible.contains('\u{25B6}'),
         "Run glyph `▶` present: {visible:?}"
     );
-    assert!(visible.contains(" run "), "verb label `run`: {visible:?}");
-    // Old literal title must be gone.
-    assert!(
-        !visible.contains("Shell"),
-        "old `Shell` literal is gone: {visible:?}"
-    );
-}
-
-#[test]
-fn exec_cell_header_includes_compact_command_summary() {
-    let cell = ExecCell {
-        command: "cargo test --workspace --all-features".to_string(),
-        status: ToolStatus::Running,
-        output: None,
-        live_output: None,
-        shell_task_id: None,
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: None,
-        source: ExecSource::Assistant,
-        interaction: None,
-        output_summary: None,
-    };
-
-    let header = &cell.lines_with_motion(80, true)[0];
-    let visible: String = header
-        .spans
-        .iter()
-        .map(|s| s.content.as_ref())
-        .collect::<String>();
     assert!(visible.contains("run running"));
     assert!(
         visible.contains("cargo test"),
         "running shell header must identify the command being executed: {visible:?}"
     );
+    assert!(
+        !visible.contains("Shell"),
+        "old `Shell` literal is gone: {visible:?}"
+    );
     assert!(!visible.contains("Ctrl+B"));
     assert!(!visible.contains("/jobs"));
 
-    let transcript_visible: String = HistoryCell::Tool(ToolCell::Exec(ExecCell {
-        command: "cargo test --workspace --all-features".to_string(),
-        status: ToolStatus::Running,
-        output: None,
-        live_output: None,
-        shell_task_id: None,
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: None,
-        source: ExecSource::Assistant,
-        interaction: None,
-        output_summary: None,
-    }))
-    .transcript_lines(80)[0]
+    let transcript_visible: String = HistoryCell::Tool(ToolCell::Generic(cell))
+        .transcript_lines(80)[0]
         .spans
         .iter()
         .map(|s| s.content.as_ref())
@@ -1275,24 +1176,19 @@ fn render_thinking_streaming_omits_cursor_when_low_motion() {
 // (or accidental drift) is caught here instead of at runtime.
 
 #[test]
-fn exec_cell_failed_status_renders_with_dark_theme_tokens() {
+fn generic_exec_shell_failed_status_renders_with_dark_theme_tokens() {
     let theme = Theme::dark();
-    let cell = ExecCell {
-        command: "false".to_string(),
+    let cell = GenericToolCell {
+        name: "exec_shell".to_string(),
         status: ToolStatus::Failed,
+        input_summary: Some("command: false".to_string()),
         output: Some("boom".to_string()),
-        live_output: None,
-        shell_task_id: None,
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: Some(42),
-        source: ExecSource::Assistant,
-        interaction: None,
+        prompts: None,
         output_summary: None,
+        is_diff: false,
     };
 
-    let lines = cell.lines_with_motion(80, true);
+    let lines = cell.lines_with_mode(80, true, super::RenderMode::Live);
 
     let header = &lines[0];
     let symbol_span = &header.spans[1];
@@ -1303,9 +1199,9 @@ fn exec_cell_failed_status_renders_with_dark_theme_tokens() {
     assert_eq!(
         symbol_span.style.fg,
         Some(theme.tool_failed_accent),
-        "failed exec header symbol should use the dark theme failed accent"
+        "failed exec_shell header symbol should use the dark theme failed accent"
     );
-    // ExecCell is family Run → glyph `▶ ` and verb `run`.
+    // exec_shell is family Run → glyph `▶ ` and verb `run`.
     assert!(
         glyph_span.content.starts_with('\u{25B6}'),
         "Run family glyph: {:?}",
@@ -1314,7 +1210,7 @@ fn exec_cell_failed_status_renders_with_dark_theme_tokens() {
     assert_eq!(
         title_span.content.as_ref(),
         "run",
-        "ExecCell routes to Run family → 'run' verb",
+        "exec_shell routes to Run family → 'run' verb",
     );
     assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
     assert!(title_span.style.add_modifier.contains(Modifier::BOLD));
@@ -1338,71 +1234,6 @@ fn line_text(line: &ratatui::text::Line<'static>) -> String {
 
 fn lines_text(lines: &[ratatui::text::Line<'static>]) -> String {
     lines.iter().map(line_text).collect::<Vec<_>>().join("\n")
-}
-
-#[test]
-fn exec_cell_renders_live_shell_output_before_final_output() {
-    let cell = ExecCell {
-        command: "cargo test".to_string(),
-        status: ToolStatus::Running,
-        output: None,
-        live_output: Some("running line 1\nrunning line 2".to_string()),
-        shell_task_id: Some("shell_live".to_string()),
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: None,
-        source: ExecSource::Assistant,
-        interaction: None,
-        output_summary: None,
-    };
-
-    let live_text = lines_text(&cell.lines_with_motion(80, true));
-    assert!(
-        live_text.contains("cargo test"),
-        "running shell card must identify its command: {live_text}"
-    );
-    assert!(
-        live_text.contains("running line 1") && live_text.contains("running line 2"),
-        "running shell card must expose the live output owned by the canonical call: {live_text}"
-    );
-    assert!(!live_text.contains("Ctrl+B"));
-    assert!(!live_text.contains("/jobs"));
-
-    let transcript_text = lines_text(&HistoryCell::Tool(ToolCell::Exec(cell)).transcript_lines(80));
-    assert!(
-        transcript_text.contains("cargo test"),
-        "transcript must identify its running shell command: {transcript_text}"
-    );
-    assert!(
-        transcript_text.contains("running line 1") && transcript_text.contains("running line 2"),
-        "transcript must preserve the canonical live output: {transcript_text}"
-    );
-    assert!(!transcript_text.contains("Ctrl+B"));
-    assert!(!transcript_text.contains("/jobs"));
-}
-
-#[test]
-fn exec_cell_prefers_final_output_over_live_shell_tail() {
-    let cell = ExecCell {
-        command: "cargo test".to_string(),
-        status: ToolStatus::Success,
-        output: Some("final output".to_string()),
-        live_output: Some("stale live tail".to_string()),
-        shell_task_id: Some("shell_live".to_string()),
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: None,
-        source: ExecSource::Assistant,
-        interaction: None,
-        output_summary: None,
-    };
-
-    let text = lines_text(&cell.lines_with_motion(80, true));
-
-    assert!(text.contains("cargo test"));
-    assert!(!text.contains("stale live tail"));
 }
 
 #[test]
@@ -1526,117 +1357,6 @@ fn completed_reasoning_preserves_model_text_without_a_shadow_expanded_copy() {
         lines_text(&cell.transcript_lines(80)).contains("refresh_catalog_cache"),
         "transcript must keep the full identifier"
     );
-}
-
-#[test]
-fn tool_exec_live_caps_failed_output_transcript_does_not() {
-    // A *failed* exec keeps its output in live mode, capped to head+tail
-    // with an omission marker. Transcript mode emits it uncapped.
-    let total_output_lines = 30usize;
-    let output = (0..total_output_lines)
-        .map(|i| format!("output line {i:02}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    let cell = HistoryCell::Tool(ToolCell::Exec(ExecCell {
-        command: "noisy_script.sh".to_string(),
-        status: ToolStatus::Failed,
-        output: Some(output),
-        live_output: None,
-        shell_task_id: None,
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: Some(120),
-        source: ExecSource::Assistant,
-        interaction: None,
-        output_summary: None,
-    }));
-
-    let live = cell.lines_with_options(
-        80,
-        TranscriptRenderOptions {
-            low_motion: true,
-            ..TranscriptRenderOptions::default()
-        },
-    );
-    let transcript = cell.transcript_lines(80);
-
-    let live_text = lines_text(&live);
-    let transcript_text = lines_text(&transcript);
-
-    assert!(
-        live.len() < transcript.len(),
-        "live exec output must be shorter than transcript exec output (live={}, transcript={})",
-        live.len(),
-        transcript.len()
-    );
-    assert!(
-        live_text.contains("已省略"),
-        "live failed-exec output must surface the omission marker: {live_text}"
-    );
-    assert!(
-        !transcript_text.contains("已省略"),
-        "transcript exec output must not include the omission marker"
-    );
-    assert!(transcript_text.contains("output line 00"));
-    // The middle should only appear in the transcript, since the live
-    // view truncates the head/tail around the cap.
-    assert!(
-        transcript_text.contains("output line 15"),
-        "transcript must include the middle of the exec output"
-    );
-    // Last line should appear in both because the live view shows
-    // head + tail around an omission marker.
-    let last = format!("output line {:02}", total_output_lines - 1);
-    assert!(transcript_text.contains(&last));
-}
-
-#[test]
-fn tool_exec_live_collapses_successful_command() {
-    // A *successful* exec is rarely interesting — live mode collapses it to
-    // the single header line (no command body, no output). Transcript mode
-    // still records everything for the pager/clipboard.
-    let output = (0..30usize)
-        .map(|i| format!("output line {i:02}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let cell = HistoryCell::Tool(ToolCell::Exec(ExecCell {
-        command: "noisy_script.sh".to_string(),
-        status: ToolStatus::Success,
-        output: Some(output),
-        live_output: None,
-        shell_task_id: None,
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: Some(120),
-        source: ExecSource::Assistant,
-        interaction: None,
-        output_summary: None,
-    }));
-
-    let live_text = lines_text(&cell.lines_with_options(
-        80,
-        TranscriptRenderOptions {
-            low_motion: true,
-            ..TranscriptRenderOptions::default()
-        },
-    ));
-    let transcript_text = lines_text(&cell.transcript_lines(80));
-
-    // Live: header only — no output body, no omission marker.
-    assert!(
-        !live_text.contains("output line 00"),
-        "successful exec must not render its output body in live mode: {live_text}"
-    );
-    assert!(
-        !live_text.contains("已省略"),
-        "collapsed exec must not show an omission marker: {live_text}"
-    );
-    // Transcript still has the full output.
-    assert!(transcript_text.contains("output line 00"));
-    assert!(transcript_text.contains("output line 29"));
 }
 
 #[test]
@@ -2114,19 +1834,14 @@ fn running_generic_tool(name: &str) -> HistoryCell {
 }
 
 fn shell_tool(command: &str) -> HistoryCell {
-    HistoryCell::Tool(ToolCell::Exec(ExecCell {
-        command: command.to_string(),
+    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        name: "exec_shell".to_string(),
         status: ToolStatus::Success,
+        input_summary: Some(format!("command: {command}")),
         output: Some("ok".to_string()),
-        live_output: None,
-        shell_task_id: None,
-        owner_agent_id: None,
-        owner_agent_name: None,
-        started_at: None,
-        duration_ms: None,
-        source: ExecSource::Assistant,
-        interaction: None,
+        prompts: None,
         output_summary: None,
+        is_diff: false,
     }))
 }
 

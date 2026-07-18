@@ -22,15 +22,6 @@ pub(super) fn render_tool_output_mode(
     render_preserved_output_mode(output, width, line_limit, mode, "result")
 }
 
-pub(super) fn render_exec_output_mode(
-    output: &str,
-    width: u16,
-    line_limit: usize,
-    mode: RenderMode,
-) -> Vec<Line<'static>> {
-    render_preserved_output_mode(output, width, line_limit, mode, "output")
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputRow {
     pub text: String,

@@ -628,6 +628,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   reader。top/left/right 布局、状态排序、`AppMode::Plan` 权限语义与 canonical child 投影
   保留；Activity 继续读取 canonical `GenericToolCell`。M5 的 TaskContract/EvidenceReceipt
   必须由唯一 canonical owner 实现，不能恢复私有 Store。
+- M4-C 已删除从未被 production presenter 构造的 TUI `ExecCell`/`ExecSource` 专用展示岛，
+  同步删除只服务旧类型的 foreground shell chip、pending-CI 猜测、命令时长与 live-output
+  分支。真实 `exec_shell` 仍从 canonical `ToolPrepared`/`ToolOutcomeCommitted` 投影为
+  `GenericToolCell`，保留命令摘要、状态、失败输出、Activity、transcript、折叠保护和中断
+  收敛，不增加兼容 adapter。
 - M4-C 已删除只服务退役 TUI 工具、没有 production executor 或 registry 消费者的旧
   `ToolSpec`/`ToolContext`/`RuntimeToolServices` abstraction island。TUI error taxonomy 直接
   消费 `codewhale_tools::ToolError`；固定 11 工具、`ProductionToolContext`、canonical

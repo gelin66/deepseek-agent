@@ -27,15 +27,13 @@ use constants::{
     TOOL_FAILED_SYMBOL, TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TRANSCRIPT_RAIL,
     USER_GLYPH,
 };
-#[cfg(test)]
-use constants::{TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS};
 use message::{
     RenderedTranscriptLine, assistant_label_style_for, hard_break_copy_lines, message_body_style,
     render_message, render_message_with_copy_metadata, render_plain_message, render_user_message,
     system_body_style, system_label_style, user_body_style, user_label_style,
 };
 use thinking::{render_hidden_thinking_activity, render_thinking};
-use tool_output::{render_exec_output_mode, render_tool_output_mode, wrap_plain_line, wrap_text};
+use tool_output::{render_tool_output_mode, wrap_plain_line, wrap_text};
 
 #[cfg(test)]
 use agent_activity::extract_agent_id;
@@ -349,7 +347,6 @@ impl HistoryCell {
 /// Variants describing a tool result cell.
 #[derive(Debug, Clone)]
 pub enum ToolCell {
-    Exec(ExecCell),
     Exploring(ExploringCell),
     PatchSummary(PatchSummaryCell),
     DiffPreview(DiffPreviewCell),
@@ -362,7 +359,6 @@ impl ToolCell {
     /// Status for cells that have a concrete lifecycle state.
     pub fn status(&self) -> Option<ToolStatus> {
         match self {
-            ToolCell::Exec(cell) => Some(cell.status),
             ToolCell::Exploring(cell) => {
                 let has_running = cell
                     .entries
@@ -408,10 +404,7 @@ impl ToolCell {
     pub fn is_collapsible_guard(&self) -> bool {
         self.is_running()
             || self.is_failed()
-            || matches!(
-                self,
-                ToolCell::Exec(_) | ToolCell::PatchSummary(_) | ToolCell::DiffPreview(_)
-            )
+            || matches!(self, ToolCell::PatchSummary(_) | ToolCell::DiffPreview(_))
             || matches!(self, ToolCell::Generic(cell) if tool_run::generic_tool_name_is_collapse_guard(&cell.name) || cell.is_diff)
     }
 
@@ -432,7 +425,6 @@ impl ToolCell {
 
     fn render(&self, width: u16, low_motion: bool, mode: RenderMode) -> Vec<Line<'static>> {
         match self {
-            ToolCell::Exec(cell) => cell.render(width, low_motion, mode),
             ToolCell::Exploring(cell) => cell.lines_with_motion(width, low_motion),
             ToolCell::PatchSummary(cell) => cell.render(width, low_motion, mode),
             ToolCell::DiffPreview(cell) => cell.lines_with_motion(width, low_motion),
@@ -450,147 +442,6 @@ pub enum ToolStatus {
     Success,
     Hydrated,
     Failed,
-}
-
-/// Shell command execution rendering data.
-#[derive(Debug, Clone)]
-pub struct ExecCell {
-    pub command: String,
-    pub status: ToolStatus,
-    pub output: Option<String>,
-    pub live_output: Option<String>,
-    pub shell_task_id: Option<String>,
-    pub owner_agent_id: Option<String>,
-    pub owner_agent_name: Option<String>,
-    pub started_at: Option<Instant>,
-    pub duration_ms: Option<u64>,
-    pub source: ExecSource,
-    pub interaction: Option<String>,
-    /// Cached output summary — avoids re-parsing JSON every frame.
-    pub output_summary: Option<String>,
-}
-
-impl ExecCell {
-    /// Render the execution cell into lines (live view, capped output).
-    #[cfg(test)]
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
-        self.render(width, low_motion, RenderMode::Live)
-    }
-
-    pub(super) fn render(
-        &self,
-        width: u16,
-        low_motion: bool,
-        mode: RenderMode,
-    ) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        let command_summary = command_header_summary(&self.command);
-        let header_summary = self
-            .interaction
-            .as_deref()
-            .or(Some(command_summary.as_str()));
-        lines.push(render_tool_header_with_summary(
-            "Shell",
-            header_summary,
-            tool_status_label(self.status),
-            self.status,
-            self.started_at,
-            low_motion,
-        ));
-
-        // A successful shell call is rarely worth its full body — collapse it
-        // to the single header line in live mode. The bottom shell strip owns
-        // live/background detail, failures stay fully verbose so errors remain
-        // visible, and Transcript mode keeps everything for the pager/clipboard.
-        if mode == RenderMode::Live && self.status == ToolStatus::Success {
-            if let Some(duration_ms) = self.duration_ms
-                && duration_ms >= 1000
-            {
-                let seconds = f64::from(u32::try_from(duration_ms).unwrap_or(u32::MAX)) / 1000.0;
-                lines.extend(render_compact_kv(
-                    "time",
-                    &format!("{seconds:.2}s"),
-                    Style::default().fg(palette::TEXT_DIM),
-                    width,
-                ));
-            }
-            return wrap_card_rail(lines);
-        }
-
-        if self.status == ToolStatus::Success && self.source == ExecSource::User {
-            lines.extend(render_compact_kv(
-                "source",
-                "started by you",
-                Style::default().fg(palette::TEXT_MUTED),
-                width,
-            ));
-        }
-
-        if let Some(owner) = self
-            .owner_agent_name
-            .as_deref()
-            .or(self.owner_agent_id.as_deref())
-        {
-            lines.extend(render_compact_kv(
-                "owner",
-                owner,
-                Style::default().fg(palette::TEXT_MUTED),
-                width,
-            ));
-        }
-
-        if let Some(interaction) = self.interaction.as_ref() {
-            lines.extend(wrap_plain_line(
-                &format!("  {interaction}"),
-                Style::default().fg(palette::TEXT_MUTED),
-                width,
-            ));
-        } else {
-            lines.extend(render_command_mode(&self.command, width, mode));
-        }
-
-        if self.interaction.is_none() {
-            if let Some(output) = self.output.as_ref().or(self.live_output.as_ref()) {
-                lines.extend(render_exec_output_mode(
-                    output,
-                    width,
-                    TOOL_OUTPUT_LINE_LIMIT,
-                    mode,
-                ));
-            } else if self.status != ToolStatus::Running && mode == RenderMode::Transcript {
-                // #3031: Suppress "(no output)" in compact/Live mode;
-                // the success header is enough signal. Transcript still
-                // records it for exports/clipboard/pager.
-                lines.push(Line::from(Span::styled(
-                    "  (no output)",
-                    Style::default().fg(palette::TEXT_MUTED).italic(),
-                )));
-            }
-        }
-
-        if let Some(duration_ms) = self.duration_ms {
-            // #3031: Suppress sub-second timing in compact mode.
-            // Transcript mode always shows exact timing.
-            if mode == RenderMode::Transcript || duration_ms >= 1000 {
-                let seconds = f64::from(u32::try_from(duration_ms).unwrap_or(u32::MAX)) / 1000.0;
-                lines.extend(render_compact_kv(
-                    "time",
-                    &format!("{seconds:.2}s"),
-                    Style::default().fg(palette::TEXT_DIM),
-                    width,
-                ));
-            }
-        }
-
-        wrap_card_rail(lines)
-    }
-}
-
-/// Source of a shell command execution.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExecSource {
-    User,
-    Assistant,
 }
 
 /// Aggregate cell for tool exploration runs.
@@ -1080,43 +931,6 @@ impl GenericToolCell {
         }
         wrap_card_rail(lines)
     }
-}
-
-fn render_command_mode(command: &str, width: u16, mode: RenderMode) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    let cap = match mode {
-        RenderMode::Live => TOOL_COMMAND_LINE_LIMIT,
-        RenderMode::Transcript => usize::MAX,
-    };
-    for (count, chunk) in wrap_text(command, width.saturating_sub(4).max(1) as usize)
-        .into_iter()
-        .enumerate()
-    {
-        if count >= cap {
-            lines.push(summary_notice_line(
-                "命令已截断",
-                Style::default().fg(palette::TEXT_MUTED),
-            ));
-            break;
-        }
-        lines.extend(render_card_detail_line(
-            if count == 0 { Some("command") } else { None },
-            chunk.as_str(),
-            tool_value_style(),
-            width,
-        ));
-    }
-    lines
-}
-
-fn command_header_summary(command: &str) -> String {
-    command
-        .lines()
-        .next()
-        .unwrap_or(command)
-        .trim_start_matches("$ ")
-        .trim()
-        .to_string()
 }
 
 fn exploring_header_summary(entries: &[ExploringEntry]) -> Option<String> {

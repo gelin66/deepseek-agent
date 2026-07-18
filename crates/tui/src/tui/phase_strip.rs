@@ -247,7 +247,7 @@ mod tests {
         config::Config,
         tui::active_cell::ActiveCell,
         tui::app::TuiOptions,
-        tui::history::{ExecCell, ExecSource, ToolCell, ToolStatus},
+        tui::history::{GenericToolCell, ToolCell, ToolStatus},
     };
     use ratatui::{Terminal, backend::TestBackend};
     use std::{
@@ -342,22 +342,15 @@ mod tests {
         app.turn_started_at = Some(Instant::now() - Duration::from_secs(12));
         let mut active = ActiveCell::new();
         active.push_tool(
-            "exec-1",
-            HistoryCell::Tool(ToolCell::Exec(ExecCell {
-                // A build, not a test run — `cargo test` would truthfully
-                // classify as the `verifying` phase (ShellPhase::Verifying).
-                command: "cargo build -p tui".to_string(),
+            "shell-1",
+            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                name: "exec_shell".to_string(),
                 status: ToolStatus::Running,
+                input_summary: Some("command: cargo build -p tui".to_string()),
                 output: None,
-                live_output: None,
-                shell_task_id: None,
-                owner_agent_id: None,
-                owner_agent_name: None,
-                started_at: app.turn_started_at,
-                duration_ms: None,
-                source: ExecSource::Assistant,
-                interaction: None,
+                prompts: None,
                 output_summary: None,
+                is_diff: false,
             })),
         );
         app.active_cell = Some(active);

@@ -47,7 +47,7 @@ use crate::tui::history::{ExploringCell, ExploringEntry, HistoryCell, ToolCell, 
 /// composed of one or more entries (each rendered as its own
 /// [`HistoryCell`]). The reason we keep them as separate entries — rather
 /// than fusing into a single conceptual block — is that they may have
-/// different shapes (an `ExecCell`, an `ExploringCell` aggregate, an MCP
+/// different shapes (a `GenericToolCell`, an `ExploringCell` aggregate, an MCP
 /// tool result, …) and the existing renderers already know how to draw each
 /// shape correctly. Coalescing into a single render path would duplicate
 /// logic we already have.
@@ -254,9 +254,6 @@ fn mark_running_as_interrupted(cell: &mut HistoryCell) {
         return;
     };
     match tool_cell {
-        ToolCell::Exec(exec) if exec.status == ToolStatus::Running => {
-            exec.status = ToolStatus::Failed;
-        }
         ToolCell::Exploring(explore) => {
             for entry in &mut explore.entries {
                 if entry.status == ToolStatus::Running {
@@ -283,27 +280,7 @@ fn mark_running_as_interrupted(cell: &mut HistoryCell) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::history::{
-        ExecCell, ExecSource, ExploringCell, ExploringEntry, GenericToolCell,
-    };
-    use std::time::Instant;
-
-    fn exec_cell(command: &str) -> HistoryCell {
-        HistoryCell::Tool(ToolCell::Exec(ExecCell {
-            command: command.to_string(),
-            status: ToolStatus::Running,
-            output: None,
-            live_output: None,
-            shell_task_id: None,
-            owner_agent_id: None,
-            owner_agent_name: None,
-            started_at: Some(Instant::now()),
-            duration_ms: None,
-            source: ExecSource::Assistant,
-            interaction: None,
-            output_summary: None,
-        }))
-    }
+    use crate::tui::history::{ExploringCell, ExploringEntry, GenericToolCell};
 
     fn exploring_cell_with(label: &str) -> HistoryCell {
         HistoryCell::Tool(ToolCell::Exploring(ExploringCell {
@@ -330,7 +307,7 @@ mod tests {
     fn push_tool_records_entry_and_revision_advances() {
         let mut cell = ActiveCell::new();
         let r0 = cell.revision();
-        let idx = cell.push_tool("t1", exec_cell("ls"));
+        let idx = cell.push_tool("t1", generic_cell("exec_shell"));
         assert_eq!(idx, 0);
         assert_eq!(cell.entry_count(), 1);
         assert!(cell.revision() != r0);
@@ -356,7 +333,7 @@ mod tests {
     #[test]
     fn drain_resets_state_and_returns_in_order() {
         let mut cell = ActiveCell::new();
-        cell.push_tool("a", exec_cell("ls"));
+        cell.push_tool("a", generic_cell("exec_shell"));
         cell.push_tool("b", generic_cell("foo"));
         let drained = cell.drain();
         assert_eq!(drained.len(), 2);
@@ -367,11 +344,11 @@ mod tests {
     #[test]
     fn interrupt_marks_running_entries_failed() {
         let mut cell = ActiveCell::new();
-        cell.push_tool("a", exec_cell("ls"));
+        cell.push_tool("a", generic_cell("exec_shell"));
         cell.mark_in_progress_as_interrupted();
-        let HistoryCell::Tool(ToolCell::Exec(exec)) = &cell.entries()[0] else {
-            panic!("expected exec")
+        let HistoryCell::Tool(ToolCell::Generic(tool)) = &cell.entries()[0] else {
+            panic!("expected canonical generic tool")
         };
-        assert_eq!(exec.status, ToolStatus::Failed);
+        assert_eq!(tool.status, ToolStatus::Failed);
     }
 }
