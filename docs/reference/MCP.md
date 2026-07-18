@@ -8,12 +8,9 @@ Browsing note:
 - `web.run` is the canonical built-in browsing tool.
 - `web_search` remains available as a compatibility alias for older prompts and integrations.
 
-Server mode note:
-- `codewhale-tui serve --mcp` runs the MCP stdio server.
-- The `codewhale` dispatcher exposes `codewhale mcp-server` as an equivalent stdio
-  entrypoint used by the split CLI.
-- The canonical local Agent API is the separate `codewhale app-server`
-  HTTP/SSE or stdio Run API. It is not an MCP transport.
+CodeWhale only consumes external MCP tool servers; it no longer exposes itself
+as an MCP server. The canonical local Agent API is `codewhale app-server` over
+HTTP/SSE or stdio. ACP remains a separate editor-agent protocol.
 
 ## Setup wizard vs manual MCP setup (#3407)
 
@@ -272,81 +269,6 @@ The CLI also exposes helper tools when MCP is enabled:
 ```
 
 You can also use `mcpServers` instead of `servers` for compatibility with other clients.
-
-## Running DeepSeek as an MCP Server
-
-You can register your local DeepSeek binary as an MCP server so other DeepSeek sessions (or any MCP client) can call its tools.
-
-### Quick Setup
-
-```bash
-codewhale-tui mcp add-self
-```
-
-This resolves the current binary path, generates a config entry that runs `codewhale-tui serve --mcp`, and writes it to your MCP config file. The default server name is `codewhale`.
-
-Options:
-
-- `--name <NAME>` — custom server name (default: `codewhale`)
-- `--workspace <PATH>` — workspace directory for the server
-
-### Manual Config
-
-Equivalent manual entry in `~/.codewhale/mcp.json`:
-
-```json
-{
-  "servers": {
-    "codewhale": {
-      "command": "/path/to/codewhale",
-      "args": ["serve", "--mcp"],
-      "env": {}
-    }
-  }
-}
-```
-
-The `codewhale-tui` binary supports `serve --mcp` directly. The `codewhale`
-dispatcher offers the equivalent `codewhale mcp-server` stdio entrypoint. Use
-whichever is on your `PATH` (run `which codewhale` or `which codewhale-tui` to
-find the full path). The `mcp add-self` command automatically resolves the
-correct binary.
-
-### Prerequisites
-
-- The binary referenced in `command` must exist and be executable.
-- The MCP server runs as a child process via stdio — no network ports required.
-- Each MCP client session spawns its own server process.
-
-### Tool Naming
-
-Tools from a self-hosted DeepSeek server follow the standard naming convention:
-
-- `mcp_deepseek_<tool>` (if the server is named `codewhale`)
-
-For example, the `shell` tool becomes `mcp_deepseek_shell`.
-
-### MCP Server vs Run API vs ACP
-
-| | `codewhale-tui serve --mcp` | `codewhale app-server` | `codewhale-tui serve --acp` |
-|---|---|---|---|
-| **Protocol** | MCP stdio | canonical HTTP/SSE or newline stdio | ACP stdio |
-| **Use case** | Tool server for MCP clients | Start/control/replay Agent runs | Editor agent for Zed/custom ACP clients |
-| **Config** | `~/.codewhale/mcp.json` entry | Direct local connection | Editor `agent_servers` custom command |
-| **Lifecycle** | Spawned per client session | Local long-running process or stdio child | Spawned per editor agent session |
-
-Use `mcp add-self` when you want DeepSeek tools available to other MCP clients.
-Use `codewhale app-server` when a local application needs the canonical Run API.
-Use `serve --acp` when an editor wants to talk to DeepSeek as an ACP agent.
-
-### Verification
-
-After adding, test the connection:
-
-```bash
-codewhale-tui mcp validate
-codewhale-tui mcp tools codewhale
-```
 
 ## Server Fields
 

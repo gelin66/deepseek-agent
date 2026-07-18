@@ -874,7 +874,6 @@ dependencies = [
  "codewhale-config",
  "codewhale-execpolicy",
  "codewhale-lane",
- "codewhale-mcp",
  "codewhale-protocol",
  "codewhale-release",
  "codewhale-runtime",
@@ -982,15 +981,6 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "uuid",
-]
-
-[[package]]
-name = "codewhale-mcp"
-version = "0.8.68"
-dependencies = [
- "anyhow",
- "serde",
- "serde_json",
 ]
 
 [[package]]

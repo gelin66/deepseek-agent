@@ -58,7 +58,6 @@ mod localization;
 mod logging;
 mod lsp;
 mod mcp;
-mod mcp_server;
 mod memory;
 mod model_catalog;
 mod model_inventory;
@@ -288,7 +287,7 @@ enum Commands {
     Features(FeaturesCli),
     /// Run a command inside the sandbox
     Sandbox(SandboxArgs),
-    /// Run a local server (e.g. MCP)
+    /// Run the ACP stdio server
     Serve(ServeArgs),
     /// Resume a canonical Agent run by exact Run ID (use --last for newest)
     Resume {
@@ -1080,13 +1079,9 @@ struct ApplyArgs {
 }
 
 #[derive(Args, Debug, Clone)]
-#[group(required = true, multiple = false)]
 struct ServeArgs {
-    /// Start MCP server over stdio
-    #[arg(long)]
-    mcp: bool,
     /// Start ACP server over stdio for editor clients such as Zed
-    #[arg(long)]
+    #[arg(long, required = true)]
     acp: bool,
 }
 
@@ -1171,22 +1166,6 @@ enum McpCommand {
     },
     /// Validate MCP config and required servers
     Validate,
-    /// Register this CodeWhale binary as a local MCP stdio server.
-    ///
-    /// This adds a config entry that runs `codewhale serve --mcp` (stdio protocol).
-    /// For the canonical HTTP/SSE Run API, use `codewhale app-server` instead.
-    #[command(
-        name = "add-self",
-        long_about = "Register this CodeWhale binary as a local MCP stdio server.\n\nAdds a config entry to ~/.codewhale/mcp.json that launches `codewhale serve --mcp`\nvia the stdio transport. Other CodeWhale sessions (or any MCP client) can then\ndiscover and call tools exposed by this server.\n\nUse `codewhale app-server` instead if you need the canonical HTTP/SSE Run API."
-    )]
-    AddSelf {
-        /// Server name in mcp.json (default: "codewhale")
-        #[arg(long, default_value = "codewhale")]
-        name: String,
-        /// Workspace directory for the MCP server
-        #[arg(long)]
-        workspace: Option<String>,
-    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1547,13 +1526,10 @@ async fn run_async_main() -> Result<()> {
                 let workspace = cli.workspace.clone().unwrap_or_else(|| {
                     std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
                 });
-                if args.mcp {
-                    tokio::task::block_in_place(|| mcp_server::run_mcp_server(workspace))
-                } else {
-                    let config = load_config_from_cli(&cli)?;
-                    let model = config.default_model();
-                    acp_server::run_acp_server(config, model, workspace).await
-                }
+                debug_assert!(args.acp);
+                let config = load_config_from_cli(&cli)?;
+                let model = config.default_model();
+                acp_server::run_acp_server(config, model, workspace).await
             }
             Commands::Resume { session_id, last } => {
                 let config = load_config_from_cli(&cli)?;
@@ -6169,64 +6145,6 @@ async fn run_mcp_command(config: &Config, workspace: &Path, command: McpCommand)
             }
             bail!("one or more MCP servers failed validation");
         }
-        McpCommand::AddSelf { name, workspace } => {
-            let exe_path = std::env::current_exe()
-                .map_err(|e| anyhow!("Cannot resolve current binary path: {e}"))?;
-            let exe_str = exe_path.to_string_lossy().to_string();
-
-            let mut args = vec!["serve".to_string(), "--mcp".to_string()];
-            if let Some(ref ws) = workspace {
-                args.push("--workspace".to_string());
-                args.push(ws.clone());
-            }
-
-            let mut cfg = load_mcp_config(&config_path)?;
-            if cfg.servers.contains_key(&name) {
-                bail!(
-                    "MCP server '{name}' already exists in {}. Use `codewhale mcp remove {name}` first, or choose a different --name.",
-                    config_path.display()
-                );
-            }
-            cfg.servers.insert(
-                name.clone(),
-                McpServerConfig {
-                    command: Some(exe_str.clone()),
-                    args,
-                    env: std::collections::HashMap::new(),
-                    cwd: None,
-                    url: None,
-                    transport: None,
-                    connect_timeout: None,
-                    execute_timeout: None,
-                    read_timeout: None,
-                    disabled: false,
-                    enabled: true,
-                    required: false,
-                    enabled_tools: Vec::new(),
-                    disabled_tools: Vec::new(),
-                    headers: std::collections::HashMap::new(),
-                    env_headers: std::collections::HashMap::new(),
-                    bearer_token_env_var: None,
-                    scopes: Vec::new(),
-                    oauth: None,
-                    oauth_resource: None,
-                },
-            );
-            save_mcp_config(&config_path, &cfg)?;
-            println!(
-                "Registered DeepSeek as MCP server '{name}' in {}",
-                config_path.display()
-            );
-            println!("  command: {exe_str}");
-            println!(
-                "  args:    serve --mcp{}",
-                workspace.map_or(String::new(), |ws| format!(" --workspace {ws}"))
-            );
-            println!();
-            println!("Tip: Use `codewhale mcp validate` to test the connection.");
-            println!("     Use `codewhale app-server` for the canonical HTTP/SSE Run API instead.");
-            Ok(())
-        }
     }
 }
 
@@ -6308,31 +6226,15 @@ fn doctor_check_mcp_server(server: &McpServerConfig) -> McpServerDoctorStatus {
         }
     }
 
-    // Detect self-hosted DeepSeek server entries.
-    let is_self_hosted = server
-        .args
-        .windows(2)
-        .any(|w| w[0] == "serve" && w[1] == "--mcp");
-
     let args_str = server.args.join(" ");
-    if is_self_hosted {
-        if is_absolute {
-            McpServerDoctorStatus::Ok(format!("self-hosted MCP server ({cmd} {args_str})"))
+    McpServerDoctorStatus::Ok(format!(
+        "stdio server ({cmd}{})",
+        if args_str.is_empty() {
+            String::new()
         } else {
-            McpServerDoctorStatus::Warning(format!(
-                "self-hosted MCP server uses relative command \"{cmd}\" — consider using an absolute path"
-            ))
+            format!(" {args_str}")
         }
-    } else {
-        McpServerDoctorStatus::Ok(format!(
-            "stdio server ({cmd}{})",
-            if args_str.is_empty() {
-                String::new()
-            } else {
-                format!(" {args_str}")
-            }
-        ))
-    }
+    ))
 }
 
 fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
@@ -8817,6 +8719,25 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn removed_mcp_server_commands_fail_during_argument_parsing() {
+        for args in [
+            ["codewhale-tui", "serve", "--mcp"].as_slice(),
+            ["codewhale-tui", "mcp", "add-self"].as_slice(),
+        ] {
+            let error =
+                Cli::try_parse_from(args).expect_err("removed MCP server command must fail closed");
+            assert!(
+                matches!(
+                    error.kind(),
+                    clap::error::ErrorKind::UnknownArgument
+                        | clap::error::ErrorKind::InvalidSubcommand
+                ),
+                "unexpected parser outcome for {args:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
     fn workflow_tool_internal_subcommand_parses_exact_json() {
         let cli = parse_cli(&[
             "codewhale-tui",
@@ -10583,24 +10504,6 @@ mod doctor_mcp_tests {
         }
     }
 
-    #[test]
-    fn test_self_hosted_absolute_is_ok() {
-        let server = make_server(Some("/usr/local/bin/codewhale"), &["serve", "--mcp"], None);
-        match doctor_check_mcp_server(&server) {
-            McpServerDoctorStatus::Ok(detail) | McpServerDoctorStatus::Error(detail) => {
-                // On systems where the path doesn't exist, this will be Error.
-                // On systems where it does, it'll be Ok. Either is valid for the test.
-                assert!(
-                    detail.contains("self-hosted") || detail.contains("not found"),
-                    "unexpected detail: {detail}"
-                );
-            }
-            McpServerDoctorStatus::Warning(detail) => {
-                panic!("Absolute path should not warn: {detail}")
-            }
-        }
-    }
-
     #[cfg(test)]
     mod mcp_auth_guidance_tests {
         #[test]
@@ -10610,17 +10513,6 @@ mod doctor_mcp_tests {
                 hint,
                 "MCP server 'nordic-mcp' requires OAuth authentication. Run `codewhale mcp login nordic-mcp` to authenticate."
             );
-        }
-    }
-
-    #[test]
-    fn test_self_hosted_relative_is_warning() {
-        let server = make_server(Some("codewhale"), &["serve", "--mcp"], None);
-        match doctor_check_mcp_server(&server) {
-            McpServerDoctorStatus::Warning(detail) => {
-                assert!(detail.contains("relative"));
-            }
-            other => panic!("Expected Warning for relative path, got {other:?}"),
         }
     }
 

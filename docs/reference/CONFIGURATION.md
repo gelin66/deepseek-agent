@@ -525,7 +525,7 @@ To only scaffold MCP, run `codewhale-tui mcp init`.
 Note: setup, doctor, mcp, features, sessions, resume/fork, exec, review, and eval
 are subcommands of the `codewhale-tui` binary. The `codewhale` dispatcher exposes a
 distinct set of commands (`auth`, `config`, `model`, `thread`, `sandbox`,
-`app-server`, `mcp-server`, `completion`) and forwards plain prompts to
+`app-server`, `completion`) and forwards plain prompts to
 `codewhale-tui`.
 
 ### Startup Update Checks

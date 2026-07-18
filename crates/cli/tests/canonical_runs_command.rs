@@ -274,6 +274,13 @@ fn retired_commands_fail_before_config_tui_store_or_model_startup() {
         (vec!["sessions", "--json"], "sessions"),
         (vec!["fork", "legacy-session-id"], "fork"),
         (vec!["fork", "--last"], "fork"),
+        (vec!["mcp-server"], "mcp-server"),
+        (vec!["mcp-server", "--legacy"], "mcp-server"),
+        (vec!["mcp", "add-self"], "mcp add-self"),
+        (
+            vec!["mcp", "add-self", "--name", "legacy-self"],
+            "mcp add-self",
+        ),
     ] {
         let output = Command::new(codewhale_binary())
             .current_dir(workspace.path())
@@ -312,4 +319,36 @@ fn retired_commands_fail_before_config_tui_store_or_model_startup() {
             "retired command opened the canonical RunStore: {args:?}"
         );
     }
+
+    // `serve` remains as an ACP-only command, so Clap rejects the removed MCP
+    // flag before `run()` can open ConfigStore or delegate to the TUI.
+    let output = Command::new(codewhale_binary())
+        .current_dir(workspace.path())
+        .env("CODEWHALE_HOME", home.path())
+        .env("DEEPSEEK_TUI_BIN", &fake_tui)
+        .env("CODEWHALE_TUI_MARKER", &marker)
+        .env_remove("DEEPSEEK_API_KEY")
+        .env_remove("CODEWHALE_CLI_API_KEY")
+        .args(["serve", "--mcp"])
+        .output()
+        .expect("run removed serve --mcp command");
+    assert!(
+        !output.status.success(),
+        "serve --mcp unexpectedly succeeded"
+    );
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8(output.stderr).expect("UTF-8 rejection");
+    assert!(
+        stderr.contains("unexpected argument '--mcp'"),
+        "serve --mcp was not rejected by argument parsing: {stderr}"
+    );
+    assert!(
+        !stderr.contains("failed to parse config"),
+        "serve --mcp reached ConfigStore: {stderr}"
+    );
+    assert!(!marker.exists(), "serve --mcp started the TUI");
+    assert!(
+        !home.path().join("state.db").exists(),
+        "serve --mcp opened the canonical RunStore"
+    );
 }

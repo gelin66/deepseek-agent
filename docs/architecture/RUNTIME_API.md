@@ -69,9 +69,11 @@ HTTP 参数互斥。
 - legacy thread/job/session routes；
 - raw `/v1/chat/completions` proxy；
 - `/prompt` fake loop 和 `/tool` direct invoke；
+- `codewhale serve --mcp`、`codewhale mcp-server` 和 `codewhale-tui mcp add-self`；
 - JSON-RPC app-server control surface。
 
-MCP 与 ACP 是不同协议，仍由 `codewhale serve --mcp` 和
+CodeWhale 仍可作为 MCP client 消费外部工具服务，但不再提供自托管 MCP server。
+本地 Agent 控制面只使用 canonical app-server；ACP 继续由
 `codewhale serve --acp` 独立提供，不是 Run API alias。
 
 ## 2. HTTP surface

@@ -24,7 +24,6 @@ use codewhale_config::{
     RuntimeApiKeySource, load_prompt_preferences,
 };
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
-use codewhale_mcp::{McpServerDefinition, run_stdio_server};
 use codewhale_protocol::agent_runtime::RunPurpose;
 use codewhale_protocol::run_api::{
     DEFAULT_RUN_LIST_LIMIT, MAX_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION, RootRunSummary, RunCommand,
@@ -283,10 +282,9 @@ Runtime, not Fleet.
     Mcp(TuiPassthroughArgs),
     /// Inspect TUI feature flags.
     Features(TuiPassthroughArgs),
-    /// Run the existing MCP or ACP stdio server.
+    /// Run the existing ACP stdio server.
     #[command(after_help = "\
 Modes:
-  codewhale serve --mcp     Start MCP over stdio
   codewhale serve --acp     Start ACP over stdio for editor clients
 
 The canonical local HTTP/SSE Run API is `codewhale app-server`.")]
@@ -299,8 +297,6 @@ The canonical local HTTP/SSE Run API is `codewhale app-server`.")]
     Logout,
     /// Manage authentication credentials and provider mode.
     Auth(AuthArgs),
-    /// Run MCP server mode over stdio.
-    McpServer,
     /// Read/write/list config values.
     Config(ConfigArgs),
     /// Resolve or list available models across providers.
@@ -403,13 +399,9 @@ struct TuiPassthroughArgs {
 }
 
 #[derive(Debug, Args, Clone)]
-#[group(required = true, multiple = false)]
 struct ServeArgs {
-    /// Start the existing MCP server over stdio.
-    #[arg(long)]
-    mcp: bool,
     /// Start the existing ACP server over stdio.
-    #[arg(long)]
+    #[arg(long, required = true)]
     acp: bool,
 }
 
@@ -1385,8 +1377,6 @@ struct AppServerArgs {
     max_body_bytes: Option<usize>,
 }
 
-const MCP_SERVER_DEFINITIONS_KEY: &str = "mcp.server_definitions";
-
 fn install_rustls_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
@@ -1422,19 +1412,29 @@ fn split_lane_log_proxy_command(
     }
 }
 
-fn reject_retired_top_level_command(cli: &Cli) -> Result<()> {
-    if cli.command.is_some() || cli.prompt_flag.is_some() {
-        return Ok(());
+fn reject_retired_command(cli: &Cli) -> Result<()> {
+    if cli.prompt_flag.is_none() && cli.command.is_none() {
+        match cli.prompt.first().map(String::as_str) {
+            Some("sessions") => bail!(
+                "命令 `codewhale sessions` 已删除；请使用 `codewhale runs` 查看当前工作区的 canonical Agent 运行"
+            ),
+            Some("fork") => bail!(
+                "命令 `codewhale fork` 已删除；不再支持旧 TUI 会话分叉，请使用 `codewhale resume <RUN_ID>` 继续 canonical Agent 运行"
+            ),
+            Some("mcp-server") => bail!(
+                "命令 `codewhale mcp-server` 已删除；如需本地 Agent 接口，请使用 canonical `codewhale app-server --stdio`"
+            ),
+            _ => {}
+        }
     }
-    match cli.prompt.first().map(String::as_str) {
-        Some("sessions") => bail!(
-            "命令 `codewhale sessions` 已删除；请使用 `codewhale runs` 查看当前工作区的 canonical Agent 运行"
-        ),
-        Some("fork") => bail!(
-            "命令 `codewhale fork` 已删除；不再支持旧 TUI 会话分叉，请使用 `codewhale resume <RUN_ID>` 继续 canonical Agent 运行"
-        ),
-        _ => Ok(()),
+
+    if let Some(Commands::Mcp(args)) = cli.command.as_ref()
+        && args.args.first().is_some_and(|arg| arg == "add-self")
+    {
+        bail!("命令 `codewhale mcp add-self` 已删除；CodeWhale 不再把自身注册为 MCP 服务端");
     }
+
+    Ok(())
 }
 
 fn run() -> Result<()> {
@@ -1442,7 +1442,7 @@ fn run() -> Result<()> {
     // Clap intentionally accepts free-form root prompts. Reject retired
     // top-level command spellings before config, TUI, Store, or model setup so
     // an old command can never become an accidental paid prompt.
-    reject_retired_top_level_command(&cli)?;
+    reject_retired_command(&cli)?;
 
     // The detached log proxy must not depend on user config parsing: its job
     // is to frame child output and publish a terminal receipt even when the
@@ -1558,7 +1558,6 @@ fn run() -> Result<()> {
             }
             command => run_auth_command(&mut store, command),
         },
-        Some(Commands::McpServer) => run_mcp_server_command(&mut store),
         Some(Commands::Config(args)) => run_config_command(&mut store, args.command),
         Some(Commands::Model(args)) => {
             run_model_command(&mut store, args.command, runtime_overrides.provider)
@@ -1674,10 +1673,8 @@ fn tui_args(command: &str, args: TuiPassthroughArgs) -> Vec<String> {
 }
 
 fn serve_tui_args(args: ServeArgs) -> Vec<String> {
-    vec![
-        "serve".to_owned(),
-        if args.mcp { "--mcp" } else { "--acp" }.to_owned(),
-    ]
+    debug_assert!(args.acp);
+    vec!["serve".to_owned(), "--acp".to_owned()]
 }
 
 fn reject_exec_global_flags(args: &[String]) -> Result<()> {
@@ -2687,52 +2684,6 @@ fn app_server_token_from_env() -> Option<String> {
     std::env::var("CODEWHALE_APP_SERVER_TOKEN").ok()
 }
 
-fn run_mcp_server_command(store: &mut ConfigStore) -> Result<()> {
-    let persisted = load_mcp_server_definitions(store);
-    let updated = run_stdio_server(persisted)?;
-    persist_mcp_server_definitions(store, &updated)
-}
-
-fn load_mcp_server_definitions(store: &ConfigStore) -> Vec<McpServerDefinition> {
-    let Some(raw) = store.config.get_value(MCP_SERVER_DEFINITIONS_KEY) else {
-        return Vec::new();
-    };
-
-    match parse_mcp_server_definitions(&raw) {
-        Ok(definitions) => definitions,
-        Err(err) => {
-            eprintln!(
-                "warning: failed to parse persisted MCP server definitions ({MCP_SERVER_DEFINITIONS_KEY}): {err}"
-            );
-            Vec::new()
-        }
-    }
-}
-
-fn parse_mcp_server_definitions(raw: &str) -> Result<Vec<McpServerDefinition>> {
-    if let Ok(parsed) = serde_json::from_str::<Vec<McpServerDefinition>>(raw) {
-        return Ok(parsed);
-    }
-
-    let unwrapped: String = serde_json::from_str(raw)
-        .with_context(|| format!("invalid JSON payload at key {MCP_SERVER_DEFINITIONS_KEY}"))?;
-    serde_json::from_str::<Vec<McpServerDefinition>>(&unwrapped).with_context(|| {
-        format!("invalid MCP server definition list in key {MCP_SERVER_DEFINITIONS_KEY}")
-    })
-}
-
-fn persist_mcp_server_definitions(
-    store: &mut ConfigStore,
-    definitions: &[McpServerDefinition],
-) -> Result<()> {
-    let encoded =
-        serde_json::to_string(definitions).context("failed to encode MCP server definitions")?;
-    store
-        .config
-        .set_value(MCP_SERVER_DEFINITIONS_KEY, &encoded)?;
-    store.save()
-}
-
 fn delegate_to_tui(
     cli: &Cli,
     resolved_runtime: &ResolvedRuntimeOptions,
@@ -3537,10 +3488,10 @@ mod tests {
     }
 
     #[test]
-    fn serve_help_only_documents_mcp_and_acp() {
+    fn serve_help_only_documents_acp() {
         let help = help_for(&["codewhale", "serve", "--help"]);
-        assert!(help.contains("--mcp"));
         assert!(help.contains("--acp"));
+        assert!(!help.contains("--mcp"));
         assert!(!help.contains("--http"));
         assert!(!help.contains("--mobile"));
     }
@@ -5364,7 +5315,6 @@ mod tests {
             "login",
             "logout",
             "auth",
-            "mcp-server",
             "config",
             "model",
             "thread",
@@ -5394,7 +5344,7 @@ mod tests {
                 "expected help to contain token: {token}"
             );
         }
-        for retired in ["sessions", "fork"] {
+        for retired in ["sessions", "fork", "mcp-server"] {
             assert!(
                 !rendered.lines().any(|line| {
                     line.strip_prefix("  ")
@@ -5408,14 +5358,26 @@ mod tests {
                 parsed.command.is_none() && parsed.prompt == [retired],
                 "retired top-level command must not remain as a dispatcher alias: {retired}"
             );
-            let error = reject_retired_top_level_command(&parsed)
+            let error = reject_retired_command(&parsed)
                 .expect_err("retired command spelling must fail closed");
             assert!(error.to_string().contains("命令 `codewhale"));
         }
 
         let explicit_prompt = parse_ok(&["codewhale", "--prompt", "sessions"]);
-        reject_retired_top_level_command(&explicit_prompt)
+        reject_retired_command(&explicit_prompt)
             .expect("an explicit prompt must not be mistaken for a retired command");
+
+        let explicit_mcp_prompt = parse_ok(&["codewhale", "--prompt", "mcp-server"]);
+        reject_retired_command(&explicit_mcp_prompt)
+            .expect("an explicit prompt must not be mistaken for a retired MCP command");
+
+        let add_self = parse_ok(&["codewhale", "mcp", "add-self"]);
+        let error = reject_retired_command(&add_self).expect_err("mcp add-self must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("命令 `codewhale mcp add-self` 已删除")
+        );
     }
 
     #[test]
