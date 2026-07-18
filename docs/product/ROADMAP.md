@@ -941,6 +941,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   protocol/runtime/state/app 的 `RunReplay`、resume、SQLite `RunStore` 重建或 durable
   hydrate 语义。定向 history 72/72、theme 5/5、sidebar 45/45、presenter 13/13、canonical
   Run 19/19、PTY 6/6 和 TUI all-target check 均通过。
+- M4-C 已删除 `tool_output` 内零外部消费者、也没有专属测试的
+  `McpOutputSummary`/`summarize_mcp_output`/`output_is_image` 内部闭环。canonical presenter
+  继续通过 `summarize_tool_output` 更新 `GenericToolCell`，共享 `truncate_text` 和真实工具
+  输出渲染保持不变；MCP config/connect/tools/OAuth 及 stdio/HTTP/SSE transport 不经过该
+  TUI helper，均未改变。定向 history 72/72、tool-output renderer 1/1、presenter 13/13、
+  canonical Run 19/19、PTY 6/6 和 TUI all-target check 均通过。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

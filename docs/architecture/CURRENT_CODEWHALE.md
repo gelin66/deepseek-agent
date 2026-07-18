@@ -495,6 +495,12 @@ M4-C foreground 切换后还已物理删除：
   canonical `RunReplay`、resume、SQLite `RunStore` 重建和 durable hydrate 语义位于
   protocol/runtime/state/app，均未改变。当前定向证据为 history 72/72、theme 5/5、sidebar
   45/45、presenter 13/13、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check。
+- `McpOutputSummary`、`summarize_mcp_output` 与 `output_is_image` 只在
+  `history/tool_output.rs` 内部互相调用，没有外部 consumer 或专属测试，现已整体删除。
+  `summarize_tool_output`、`truncate_text`、canonical `GenericToolCell` 与其真实 presenter
+  producer 均保留。MCP config/connect/tools/OAuth 以及 stdio/HTTP/SSE transport 位于独立
+  生产路径，不依赖上述 TUI helper，也未改变。当前定向证据为 history 72/72、tool-output
+  renderer 1/1、presenter 13/13、canonical Run 19/19、PTY 6/6，并通过 TUI all-target check。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与
