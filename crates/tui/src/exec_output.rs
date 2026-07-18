@@ -8,6 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::core::termination::RunTerminationReason;
+use crate::localization::{MessageId, tr};
 
 /// Machine-facing status paired with a typed runtime termination reason.
 ///
@@ -83,7 +84,11 @@ pub(crate) struct OutputWriteError {
 
 impl fmt::Display for OutputWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} write failed: {}", self.stream, self.message)
+        f.write_str(
+            &tr(MessageId::ExecOutputWriteFailed)
+                .replace("{stream}", &format!("{:?}", self.stream))
+                .replace("{message}", &self.message),
+        )
     }
 }
 
@@ -99,9 +104,9 @@ pub(crate) enum ExecOutputError {
 impl fmt::Display for ExecOutputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::QueueClosed => f.write_str("output writer queue is closed"),
+            Self::QueueClosed => f.write_str(&tr(MessageId::ExecOutputQueueClosed)),
             Self::AcknowledgementDropped => {
-                f.write_str("output writer stopped before acknowledging the write")
+                f.write_str(&tr(MessageId::ExecOutputAcknowledgementDropped))
             }
             Self::Write(error) => error.fmt(f),
         }
@@ -389,6 +394,29 @@ mod tests {
                 serde_json::to_value(reason).expect("typed reason serializes")
             );
         }
+    }
+
+    #[test]
+    fn output_errors_localize_only_the_framework_and_preserve_raw_io_details() {
+        assert_eq!(
+            ExecOutputError::QueueClosed.to_string(),
+            "输出写入队列已关闭"
+        );
+        assert_eq!(
+            ExecOutputError::AcknowledgementDropped.to_string(),
+            "输出写入器在确认写入前已停止"
+        );
+
+        let raw_message = "raw IO error: closed {stream} / {message}";
+        let error = ExecOutputError::Write(OutputWriteError {
+            stream: OutputStream::Stderr,
+            kind: io::ErrorKind::BrokenPipe,
+            message: raw_message.to_owned(),
+        });
+        assert_eq!(
+            error.to_string(),
+            "Stderr 写入失败：raw IO error: closed {stream} / {message}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

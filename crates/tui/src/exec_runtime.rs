@@ -1449,38 +1449,35 @@ fn project_failure(
         ),
         RuntimeFailure::TurnBudgetExceeded { limit } => (
             RunTerminationReason::BudgetExhausted,
-            Some(format!("Agent turn 预算已用尽（上限：{limit}）")),
+            Some(tr(MessageId::ExecTurnBudgetExhausted).replace("{limit}", &limit.to_string())),
             "runtime_turn_budget_exhausted",
             "state",
             false,
         ),
         RuntimeFailure::ToolBudgetExceeded { limit } => (
             RunTerminationReason::BudgetExhausted,
-            Some(format!("工具调用预算已用尽（上限：{limit}）")),
+            Some(tr(MessageId::ExecToolBudgetExhausted).replace("{limit}", &limit.to_string())),
             "runtime_tool_budget_exhausted",
             "state",
             false,
         ),
         RuntimeFailure::DepthLimit { limit } => (
             RunTerminationReason::BudgetExhausted,
-            Some(format!("子 Agent 深度超过上限：{limit}")),
+            Some(tr(MessageId::ExecDepthLimitExceeded).replace("{limit}", &limit.to_string())),
             "runtime_depth_limit",
             "state",
             false,
         ),
         RuntimeFailure::Timeout { phase, .. } => (
             RunTerminationReason::Timeout,
-            Some(format!(
-                "Headless 执行超时（阶段：{}）",
-                timeout_phase(*phase)
-            )),
+            Some(tr(MessageId::ExecTimeout).replace("{phase}", timeout_phase(*phase))),
             "exec_watchdog_timeout",
             "timeout",
             false,
         ),
         RuntimeFailure::IncompleteModelStream => (
             RunTerminationReason::ModelError,
-            Some("DeepSeek stream 在完整终止帧前关闭".to_owned()),
+            Some(tr(MessageId::ExecIncompleteModelStream).into_owned()),
             "llm_stream_incomplete",
             "parse",
             false,
@@ -1515,9 +1512,11 @@ fn project_failure(
             hard_input_tokens,
         } => (
             RunTerminationReason::BudgetExhausted,
-            Some(format!(
-                "有效上下文预计为 {estimated_tokens} tokens，超过安全输入上限 {hard_input_tokens} tokens"
-            )),
+            Some(
+                tr(MessageId::ExecContextLimitExceeded)
+                    .replace("{estimated_tokens}", &estimated_tokens.to_string())
+                    .replace("{hard_input_tokens}", &hard_input_tokens.to_string()),
+            ),
             "context_limit_exceeded",
             "state",
             false,
@@ -1545,28 +1544,28 @@ fn project_failure(
         ),
         RuntimeFailure::EmptyModelOutput => (
             RunTerminationReason::Unresolved,
-            Some("DeepSeek 返回了空结果".to_owned()),
+            Some(tr(MessageId::ExecEmptyModelOutput).into_owned()),
             "llm_empty_output",
             "state",
             false,
         ),
         RuntimeFailure::OutputLimit => (
             RunTerminationReason::Unresolved,
-            Some("DeepSeek 输出达到长度上限".to_owned()),
+            Some(tr(MessageId::ExecOutputLimit).into_owned()),
             "llm_output_limit",
             "state",
             false,
         ),
         RuntimeFailure::ContentFiltered => (
             RunTerminationReason::ModelError,
-            Some("DeepSeek 输出被内容策略终止".to_owned()),
+            Some(tr(MessageId::ExecContentFiltered).into_owned()),
             "llm_content_filtered",
             "state",
             false,
         ),
         RuntimeFailure::InsufficientSystemResource => (
             RunTerminationReason::ModelError,
-            Some("DeepSeek 服务资源不足".to_owned()),
+            Some(tr(MessageId::ExecInsufficientSystemResource).into_owned()),
             "llm_insufficient_system_resource",
             "network",
             true,
@@ -1969,6 +1968,124 @@ mod tests {
             Some("DeepSeek API 物理请求预算已用尽（上限：10）")
         );
         assert_eq!(physical.2, "llm_api_request_budget_exhausted");
+    }
+
+    #[test]
+    fn exec_failure_projection_localizes_only_host_generated_summaries() {
+        let cases = [
+            (
+                RuntimeFailure::TurnBudgetExceeded { limit: 3 },
+                RunTerminationReason::BudgetExhausted,
+                "Agent 回合预算已用尽（上限：3）",
+                "runtime_turn_budget_exhausted",
+                "state",
+                false,
+            ),
+            (
+                RuntimeFailure::ToolBudgetExceeded { limit: 5 },
+                RunTerminationReason::BudgetExhausted,
+                "工具调用预算已用尽（上限：5）",
+                "runtime_tool_budget_exhausted",
+                "state",
+                false,
+            ),
+            (
+                RuntimeFailure::DepthLimit { limit: 2 },
+                RunTerminationReason::BudgetExhausted,
+                "子 Agent 深度超过上限：2",
+                "runtime_depth_limit",
+                "state",
+                false,
+            ),
+            (
+                RuntimeFailure::Timeout {
+                    phase: RuntimeTimeoutPhase::Tool,
+                    timeout_ms: 500,
+                },
+                RunTerminationReason::Timeout,
+                "无界面执行超时（阶段：tool）",
+                "exec_watchdog_timeout",
+                "timeout",
+                false,
+            ),
+            (
+                RuntimeFailure::IncompleteModelStream,
+                RunTerminationReason::ModelError,
+                "DeepSeek 流式响应在完整终止帧前关闭",
+                "llm_stream_incomplete",
+                "parse",
+                false,
+            ),
+            (
+                RuntimeFailure::ContextLimitExceeded {
+                    estimated_tokens: 65_001,
+                    hard_input_tokens: 64_000,
+                },
+                RunTerminationReason::BudgetExhausted,
+                "有效上下文预计为 65001 Token，超过安全输入上限 64000 Token",
+                "context_limit_exceeded",
+                "state",
+                false,
+            ),
+            (
+                RuntimeFailure::EmptyModelOutput,
+                RunTerminationReason::Unresolved,
+                "DeepSeek 返回了空结果",
+                "llm_empty_output",
+                "state",
+                false,
+            ),
+            (
+                RuntimeFailure::OutputLimit,
+                RunTerminationReason::Unresolved,
+                "DeepSeek 输出达到长度上限",
+                "llm_output_limit",
+                "state",
+                false,
+            ),
+            (
+                RuntimeFailure::ContentFiltered,
+                RunTerminationReason::ModelError,
+                "DeepSeek 输出被内容策略终止",
+                "llm_content_filtered",
+                "state",
+                false,
+            ),
+            (
+                RuntimeFailure::InsufficientSystemResource,
+                RunTerminationReason::ModelError,
+                "DeepSeek 服务资源不足",
+                "llm_insufficient_system_resource",
+                "network",
+                true,
+            ),
+        ];
+
+        for (failure, reason, message, code, category, recoverable) in cases {
+            let projected = project_failure(&failure);
+            assert_eq!(projected.0, reason, "{failure:?}");
+            assert_eq!(projected.1.as_deref(), Some(message), "{failure:?}");
+            assert_eq!(projected.2, code, "{failure:?}");
+            assert_eq!(projected.3, category, "{failure:?}");
+            assert_eq!(projected.4, recoverable, "{failure:?}");
+        }
+    }
+
+    #[test]
+    fn exec_failure_projection_preserves_raw_provider_errors() {
+        let raw_message = "upstream stream error: invalid {phase} / 原始错误";
+        let projected = project_failure(&RuntimeFailure::Model {
+            code: "provider_custom_code".to_owned(),
+            category: ModelErrorCategory::Transport,
+            message: raw_message.to_owned(),
+            retryable: true,
+        });
+
+        assert_eq!(projected.0, RunTerminationReason::ModelError);
+        assert_eq!(projected.1.as_deref(), Some(raw_message));
+        assert_eq!(projected.2, "deepseek_model_error");
+        assert_eq!(projected.3, "network");
+        assert!(projected.4);
     }
 
     #[test]
