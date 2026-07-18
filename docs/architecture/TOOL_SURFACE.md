@@ -43,41 +43,19 @@ is owned by `crates/tools`; prompt guidance is assembled by `crates/context`.
 
 ### Shell
 
-Shell tools appear in the model-visible tool catalog only when shell access is
-enabled for the active session or profile. Interactive TUI Agent sessions expose
-shell by default with approval prompts unless top-level `allow_shell = false`
-hides it. Headless, durable-task, and other noninteractive profiles keep the
-conservative omitted-field default and require `allow_shell = true`. YOLO
-enables shell access automatically. Plan mode keeps shell execution off.
+Shell access is represented by one model-visible operation. The application
+may omit it from a run through `ToolPolicy`; the TUI does not own a second
+shell catalog or process manager.
 
 | Tool | Niche |
 |---|---|
-| `exec_shell` | Run a shell command. Foreground runs are cancellable, but use them only for bounded commands; timeout kills the process and returns a background-rerun hint. |
-| `exec_shell_wait` | Poll a background task for incremental output. Canceling the turn stops waiting without killing the task. |
-| `exec_shell_interact` | Send stdin to a running background task and read incremental output. |
-| `exec_shell_cancel` | Cancel one running background shell task by id, or all running background shell tasks when explicitly requested. |
-| `task_shell_start` | Start a long-running command in the background and return immediately. Preferred over foreground shell for diagnostics, tests, searches, and servers that may run for minutes. |
-| `task_shell_wait` | Poll a background command. If `gate` is supplied after completion, record structured gate evidence on the active durable task. |
+| `exec_shell` | Synchronize one bounded command with the active tool call. Its schema is exactly `command`, optional `timeout_ms`, and optional `cwd`. Cancellation and timeout terminate the managed process tree and return a typed outcome. |
 
-`allow_shell = true` exposes shell tools; it does not disable built-in shell
-safety validation. Direct multiline `exec_shell` commands, including heredocs
-and embedded scripts such as multiline `python -c`, are blocked. Use one-line
-commands, write the script/content to a file first and execute it, or start
-long/manual flows with `task_shell_start` or background shell and poll them.
-
-When a foreground shell command times out, the process is not continued
-silently. The tool result tells the model to rerun long work with
-`task_shell_start` or `exec_shell` with `background = true`, then poll with
-`task_shell_wait` or `exec_shell_wait`.
-
-Interactive shell jobs are also visible through `/jobs`. The TUI job center is
-fed by the same shell manager as `exec_shell`/`task_shell_start`, and shows the
-command, cwd, elapsed time, status, output tail, process-local shell id, and
-linked durable task id when available. `/jobs show`, `/jobs poll`, `/jobs wait`,
-`/jobs stdin`, and `/jobs cancel` provide inspect, polling, stdin, and cancel
-controls for live jobs. Jobs are process-local; after restart, live process
-state is not reattached, and any remembered detached entries must be marked
-stale rather than presented as live processes.
+The fixed production catalog rejects old background, interactive, TTY and
+stdin parameters, and rejects retired aliases such as `exec_shell_wait` and
+`task_shell_start`. A running command and its current output remain visible in
+the canonical tool card. There is no `/jobs` slash command or TUI-local job
+center; `Ctrl+C` interrupts the active canonical run.
 
 Shell permission policy is evaluated by `crates/execpolicy`. Deny prefixes are
 checked before trusted prefixes and block matching commands regardless of layer.

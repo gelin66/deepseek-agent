@@ -24,7 +24,6 @@ use crate::pricing::{CostCurrency, CostEstimate};
 use crate::resource_telemetry::TokenThroughput;
 use crate::settings::Settings;
 use crate::tools::plan::{PlanState, SharedPlanState, new_shared_plan_state};
-use crate::tools::spec::RuntimeToolServices;
 use crate::tools::todo::{SharedTodoList, new_shared_todo_list};
 use crate::tui::active_cell::ActiveCell;
 use crate::tui::approval::ApprovalMode;
@@ -37,7 +36,6 @@ use crate::tui::selection::{SelectionAutoscroll, TranscriptSelection};
 use crate::tui::sidebar::SidebarWorkSummary;
 use crate::tui::transcript::TranscriptViewCache;
 use crate::tui::views::ViewStack;
-use codewhale_tools::shell::new_shared_shell_manager;
 
 // === Types ===
 
@@ -1427,9 +1425,7 @@ pub struct SidebarHoverRow {
     pub detail: Option<String>,
     /// Whether the compact row lost information.
     pub is_truncated: bool,
-    /// Slash command to execute when this row is clicked (#3028).
-    /// `shell_*` job ids route through `/jobs` (e.g. `/jobs cancel
-    /// shell_abc123`).
+    /// Canonical command or local inspection action for this row.
     pub click_action: Option<SidebarRowAction>,
     /// Optional narrower stop target for rows that show an inline `[x]`.
     pub stop_action: Option<SidebarRowAction>,
@@ -1817,7 +1813,6 @@ pub struct App {
     /// show the active checklist alongside the plan.
     pub todos: SharedTodoList,
     /// Durable runtime services exposed to model-visible task/automation tools.
-    pub runtime_services: RuntimeToolServices,
     /// Last MCP manager/discovery snapshot shown in the UI.
     pub mcp_snapshot: Option<crate::mcp::McpManagerSnapshot>,
     /// Number of MCP servers declared in the user's config at app boot.
@@ -1866,8 +1861,6 @@ pub struct App {
     pub exploring_entries: HashMap<String, (usize, usize)>,
     /// Tool calls that should be ignored by the UI
     pub ignored_tool_calls: HashSet<String>,
-    /// Last exec wait command shown (for duplicate suppression)
-    pub last_exec_wait_command: Option<String>,
     /// Current streaming assistant cell
     pub streaming_message_index: Option<usize>,
     /// True after a local cancel key has been handled and before the engine's
@@ -2454,8 +2447,6 @@ impl App {
             agent_approval_mode: configured_approval_mode,
         };
         let allow_shell = allow_shell || yolo_compat || matches!(initial_mode, AppMode::Yolo);
-        let shell_manager = new_shared_shell_manager(workspace.clone());
-
         // Initialize hooks executor from config, merged with project-local
         // `.codewhale/hooks.toml` (#3026).
         let hooks_config =
@@ -2655,10 +2646,6 @@ impl App {
             plan_state,
             plan_tool_used_in_turn: false,
             todos: new_shared_todo_list(),
-            runtime_services: RuntimeToolServices {
-                shell_manager: Some(shell_manager),
-                ..RuntimeToolServices::default()
-            },
             mcp_snapshot: None,
             // Read the MCP config once at boot to know how many servers
             // the user has declared. The footer chip uses this even when
@@ -2679,7 +2666,6 @@ impl App {
             exploring_cell: None,
             exploring_entries: HashMap::new(),
             ignored_tool_calls: HashSet::new(),
-            last_exec_wait_command: None,
             streaming_message_index: None,
             suppress_stream_events_until_turn_complete: false,
             pending_tool_uses: Vec::new(),

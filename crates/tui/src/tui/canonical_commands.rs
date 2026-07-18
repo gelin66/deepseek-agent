@@ -212,6 +212,11 @@ mod tests {
             CanonicalSlashParse::NotCommand
         );
         assert!(matches!(parse("/provider"), CanonicalSlashParse::Error(_)));
+        assert!(matches!(parse("/jobs"), CanonicalSlashParse::Error(_)));
+        assert!(matches!(
+            parse("/jobs show shell_x"),
+            CanonicalSlashParse::Error(_)
+        ));
         assert!(matches!(
             parse("/compact now"),
             CanonicalSlashParse::Error(_)

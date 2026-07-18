@@ -30,11 +30,10 @@ Checks:
 3. Confirm no local sandbox/permission deadlock in tool output
 
 Actions:
-1. If a foreground shell command is running, press `Ctrl+B` to move it to the background (the turn keeps running and the command becomes a background job under `/jobs`); use `Ctrl+C` instead if you want to cancel the turn.
-2. If the command was started in the background, ask the assistant to cancel it with `exec_shell_cancel` and the returned task id.
-3. Use `Esc` or `Ctrl+C` to interrupt the current turn when you want to stop the request itself.
-4. Retry prompt; if still failing, restart TUI.
-5. On restart, verify the previous queued/in-flight runtime turn is shown as interrupted rather than left in a running state.
+1. Inspect the running `exec_shell` card for the exact command and latest output.
+2. Press `Ctrl+C` to interrupt the active canonical run. A managed shell process is terminated with the run; it is not detached into a TUI-local job center.
+3. Retry the prompt; if it still fails, restart the TUI.
+4. On restart, verify the previous queued/in-flight runtime turn is shown as interrupted rather than left in a running state.
 
 ## Incident: Network Outage / Offline Behavior
 

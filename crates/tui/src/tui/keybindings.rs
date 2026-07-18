@@ -165,11 +165,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
-        chord: "Ctrl+B",
-        description_id: crate::localization::MessageId::KbShellControls,
-        section: KeybindingSection::Submission,
-    },
-    KeybindingEntry {
         chord: "Ctrl+D",
         description_id: crate::localization::MessageId::KbExitEmpty,
         section: KeybindingSection::Submission,
@@ -177,11 +172,6 @@ pub const KEYBINDINGS: &[KeybindingEntry] = &[
     KeybindingEntry {
         chord: "Ctrl+K",
         description_id: crate::localization::MessageId::KbCommandPalette,
-        section: KeybindingSection::Submission,
-    },
-    KeybindingEntry {
-        chord: "Ctrl+X (Activity sidebar)",
-        description_id: crate::localization::MessageId::KbCancelBackgroundShellJobs,
         section: KeybindingSection::Submission,
     },
     KeybindingEntry {
@@ -318,19 +308,6 @@ mod tests {
                 "wired transcript shortcut missing from help: {wired}"
             );
         }
-    }
-
-    #[test]
-    fn ctrl_x_activity_sidebar_cancel_all_is_documented() {
-        let ctrl_x_activity = KEYBINDINGS
-            .iter()
-            .find(|entry| entry.chord == "Ctrl+X (Activity sidebar)")
-            .expect("Ctrl+X Activity sidebar keybinding should be documented");
-
-        assert_eq!(
-            ctrl_x_activity.description_id,
-            crate::localization::MessageId::KbCancelBackgroundShellJobs
-        );
     }
 
     #[test]

@@ -35,9 +35,9 @@ use checklist::{
 #[cfg(test)]
 use checklist::{ChecklistChange, ChecklistItemSnapshot, ChecklistSnapshot};
 use constants::{
-    ASSISTANT_GLYPH, FOREGROUND_SHELL_WAIT_HINT, TOOL_CARD_SUMMARY_LINES, TOOL_COMMAND_LINE_LIMIT,
-    TOOL_DONE_SYMBOL, TOOL_FAILED_SYMBOL, TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT,
-    TRANSCRIPT_RAIL, USER_GLYPH,
+    ASSISTANT_GLYPH, TOOL_CARD_SUMMARY_LINES, TOOL_COMMAND_LINE_LIMIT, TOOL_DONE_SYMBOL,
+    TOOL_FAILED_SYMBOL, TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TRANSCRIPT_RAIL,
+    USER_GLYPH,
 };
 #[cfg(test)]
 use constants::{TOOL_RUNNING_SYMBOLS, TOOL_STATUS_SYMBOL_MS};
@@ -580,13 +580,6 @@ impl ExecCell {
         self.render(width, low_motion, RenderMode::Live)
     }
 
-    /// Foreground `exec_shell` blocking the turn — eligible for Ctrl+B detach.
-    fn is_foreground_shell_wait(&self) -> bool {
-        self.status == ToolStatus::Running
-            && self.source == ExecSource::Assistant
-            && self.interaction.is_none()
-    }
-
     pub(super) fn render(
         &self,
         width: u16,
@@ -595,14 +588,10 @@ impl ExecCell {
     ) -> Vec<Line<'static>> {
         let mut lines = Vec::new();
         let command_summary = command_header_summary(&self.command);
-        let compact_foreground_wait = self.is_foreground_shell_wait();
-        let header_summary = if compact_foreground_wait {
-            Some(FOREGROUND_SHELL_WAIT_HINT)
-        } else {
-            self.interaction
-                .as_deref()
-                .or(Some(command_summary.as_str()))
-        };
+        let header_summary = self
+            .interaction
+            .as_deref()
+            .or(Some(command_summary.as_str()));
         lines.push(render_tool_header_with_summary(
             "Shell",
             header_summary,
@@ -611,14 +600,6 @@ impl ExecCell {
             self.started_at,
             low_motion,
         ));
-
-        // Foreground shell waits block the turn but do not need a verbose
-        // transcript card — spinner + running badge + Ctrl+B hint only.
-        // Command, live output, and artifact paths belong in the Activity sidebar
-        // and `/jobs` detail surfaces.
-        if compact_foreground_wait {
-            return wrap_card_rail(lines);
-        }
 
         // A successful shell call is rarely worth its full body — collapse it
         // to the single header line in live mode. The bottom shell strip owns
@@ -678,12 +659,6 @@ impl ExecCell {
                     width,
                     TOOL_OUTPUT_LINE_LIMIT,
                     mode,
-                ));
-            } else if self.status == ToolStatus::Running && self.source == ExecSource::Assistant {
-                lines.extend(wrap_plain_line(
-                    "  Ctrl+B moves this shell wait to /jobs.",
-                    Style::default().fg(palette::TEXT_MUTED),
-                    width,
                 ));
             } else if self.status != ToolStatus::Running && mode == RenderMode::Transcript {
                 // #3031: Suppress "(no output)" in compact/Live mode;

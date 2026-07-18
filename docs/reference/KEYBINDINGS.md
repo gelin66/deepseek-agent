@@ -13,7 +13,6 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `F1` or `Ctrl-/`     | Toggle the help overlay                                       |
 | `Ctrl-K`             | Open the command palette (slash-command finder)                |
 | `Ctrl-C`             | Cancel current turn / dismiss modal / arm-then-confirm quit    |
-| `Ctrl-B`             | Move a supported foreground shell wait into `/jobs` so the turn can continue; use `/jobs` or `exec_shell_wait` to inspect it |
 | `Ctrl-D`             | Quit (only when the composer is empty)                         |
 | `Tab`                | Cycle TUI mode: Plan ↔ Act; choose Operate preview explicitly with `/mode`  |
 | `Shift-Tab`          | Cycle permission posture: Ask → Auto-Review → Full Access                    |

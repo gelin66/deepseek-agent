@@ -1409,13 +1409,11 @@ fn exec_cell_header_includes_compact_command_summary() {
         .collect::<String>();
     assert!(visible.contains("run running"));
     assert!(
-        visible.contains("Ctrl+B"),
-        "foreground wait header should expose Ctrl+B hint, not command: {visible:?}"
+        visible.contains("cargo test"),
+        "running shell header must identify the command being executed: {visible:?}"
     );
-    assert!(
-        !visible.contains("cargo test"),
-        "foreground wait live header must not repeat command target: {visible:?}"
-    );
+    assert!(!visible.contains("Ctrl+B"));
+    assert!(!visible.contains("/jobs"));
 
     let transcript_visible: String = HistoryCell::Tool(ToolCell::Exec(ExecCell {
         command: "cargo test --workspace --all-features".to_string(),
@@ -1437,13 +1435,11 @@ fn exec_cell_header_includes_compact_command_summary() {
         .map(|s| s.content.as_ref())
         .collect::<String>();
     assert!(
-        transcript_visible.contains("Ctrl+B"),
-        "transcript compact wait should expose Ctrl+B hint: {transcript_visible:?}"
+        transcript_visible.contains("cargo test"),
+        "transcript must preserve the running command: {transcript_visible:?}"
     );
-    assert!(
-        !transcript_visible.contains("cargo test --workspace --all-features"),
-        "transcript compact wait must not repeat command target: {transcript_visible:?}"
-    );
+    assert!(!transcript_visible.contains("Ctrl+B"));
+    assert!(!transcript_visible.contains("/jobs"));
 }
 
 #[test]
@@ -1838,24 +1834,27 @@ fn exec_cell_renders_live_shell_output_before_final_output() {
 
     let live_text = lines_text(&cell.lines_with_motion(80, true));
     assert!(
-        !live_text.contains("running line 1"),
-        "foreground shell live output belongs in sidebar/jobs, not main transcript: {live_text}"
+        live_text.contains("cargo test"),
+        "running shell card must identify its command: {live_text}"
     );
     assert!(
-        live_text.contains("Ctrl+B"),
-        "compact foreground wait must keep Ctrl+B hint: {live_text}"
+        live_text.contains("running line 1") && live_text.contains("running line 2"),
+        "running shell card must expose the live output owned by the canonical call: {live_text}"
     );
-    assert!(!live_text.contains("command:"));
-    assert!(!live_text.contains("Ctrl+B backgrounds this command"));
-    assert!(!live_text.contains("Ctrl+B moves this shell wait to /jobs"));
+    assert!(!live_text.contains("Ctrl+B"));
+    assert!(!live_text.contains("/jobs"));
 
     let transcript_text = lines_text(&HistoryCell::Tool(ToolCell::Exec(cell)).transcript_lines(80));
     assert!(
-        !transcript_text.contains("running line 1"),
-        "foreground shell live output belongs in sidebar/jobs, not transcript: {transcript_text}"
+        transcript_text.contains("cargo test"),
+        "transcript must identify its running shell command: {transcript_text}"
     );
-    assert!(!transcript_text.contains("command:"));
-    assert!(transcript_text.contains("Ctrl+B"));
+    assert!(
+        transcript_text.contains("running line 1") && transcript_text.contains("running line 2"),
+        "transcript must preserve the canonical live output: {transcript_text}"
+    );
+    assert!(!transcript_text.contains("Ctrl+B"));
+    assert!(!transcript_text.contains("/jobs"));
 }
 
 #[test]

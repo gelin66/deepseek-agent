@@ -53,7 +53,6 @@ pub mod run_projection;
 pub mod scrolling;
 pub mod selection;
 pub mod settings_picker;
-mod shell_job_routing;
 pub mod sidebar;
 pub mod slash_menu;
 pub mod spinner;

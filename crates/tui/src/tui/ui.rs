@@ -59,8 +59,6 @@ use crate::tui::pager::PagerView;
 use crate::tui::run_client::{TuiRunClient, TuiRunClientError};
 use crate::tui::run_presenter::{PresenterAction, present_effect};
 use crate::tui::run_projection::CanonicalRunProjection;
-use crate::tui::scrolling::TranscriptScroll;
-use crate::tui::ui_text::history_cell_to_text;
 use crate::tui::user_input::UserInputView;
 
 use super::app::{
@@ -69,7 +67,7 @@ use super::app::{
 use super::approval::{ApprovalMode, ApprovalRequest, ApprovalView, ReviewDecision};
 use super::canonical_commands::{self, CanonicalSlashCommand, CanonicalSlashParse};
 use super::composer_ui::{select_next_slash_menu_entry, select_previous_slash_menu_entry};
-use super::history::{HistoryCell, ToolCell, ToolStatus};
+use super::history::HistoryCell;
 use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
@@ -2511,90 +2509,6 @@ fn render_toast_stack_overlay(
     }
 }
 
-pub(crate) fn request_foreground_shell_background(app: &mut App) {
-    if !app.is_loading {
-        app.status_message = Some("No foreground shell wait to move to /jobs".to_string());
-        return;
-    }
-    if !active_foreground_shell_running(app) {
-        // #3032 AC3: name the reason backgrounding is unavailable —
-        // interactive execs and non-shell blocking tools are visibly running
-        // but cannot be detached, and a generic shrug reads like a bug.
-        let reason = if terminal_pause_has_live_owner(app) {
-            "the running command is interactive"
-        } else if app
-            .active_cell
-            .as_ref()
-            .is_some_and(|active| !active.is_empty())
-        {
-            "the running tool is not a foreground shell command"
-        } else {
-            "no foreground shell command is running"
-        };
-        app.status_message = Some(format!(
-            "Cannot move to /jobs: {reason}. Press Ctrl+C to cancel the turn, or wait for completion."
-        ));
-        return;
-    }
-
-    let Some(shell_manager) = app.runtime_services.shell_manager.clone() else {
-        app.status_message = Some("No shell session is active.".to_string());
-        return;
-    };
-
-    match shell_manager.lock() {
-        Ok(mut manager) => {
-            manager.request_foreground_background();
-            app.status_message = Some("Moving current shell command to /jobs...".to_string());
-        }
-        Err(_) => {
-            app.status_message = Some(
-                "Shell tracking hit an internal error — restart CodeWhale to recover.".to_string(),
-            );
-        }
-    }
-}
-
-pub(crate) fn prefill_jobs_cancel_all_if_tasks_sidebar(app: &mut App) -> bool {
-    if !app.view_stack.is_empty()
-        || app.sidebar_focus != SidebarFocus::Tasks
-        || !app
-            .task_panel
-            .iter()
-            .any(|task| task.id.starts_with("shell_") && task.status == "running")
-    {
-        return false;
-    }
-
-    app.input = "/jobs cancel-all".to_string();
-    app.cursor_position = app.input.len();
-    app.status_message = Some("Press Enter to cancel all running commands".to_string());
-    true
-}
-
-pub(crate) fn active_foreground_shell_running(app: &App) -> bool {
-    app.active_cell.as_ref().is_some_and(|active| {
-        active.entries().iter().any(|cell| {
-            matches!(
-                cell,
-                HistoryCell::Tool(ToolCell::Exec(exec))
-                    if exec.status == ToolStatus::Running && exec.interaction.is_none()
-            )
-        })
-    })
-}
-
-pub(crate) fn terminal_pause_has_live_owner(app: &App) -> bool {
-    app.active_cell.as_ref().is_some_and(|active| {
-        active.entries().iter().any(|cell| {
-            matches!(
-                cell,
-                HistoryCell::Tool(ToolCell::Exec(exec)) if exec.status == ToolStatus::Running
-            )
-        })
-    })
-}
-
 #[allow(dead_code)]
 fn transcript_scroll_percent(top: usize, visible: usize, total: usize) -> Option<u16> {
     if total <= visible {
@@ -2609,59 +2523,6 @@ fn transcript_scroll_percent(top: usize, visible: usize, total: usize) -> Option
     let clamped_top = top.min(max_top);
     let percent = ((clamped_top as f64 / max_top as f64) * 100.0).round() as u16;
     Some(percent.min(100))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SearchDirection {
-    Forward,
-    Backward,
-}
-
-fn jump_to_adjacent_tool_cell(app: &mut App, direction: SearchDirection) -> bool {
-    let line_meta = app.viewport.transcript_cache.line_meta();
-    if line_meta.is_empty() {
-        return false;
-    }
-
-    let top = app
-        .viewport
-        .last_transcript_top
-        .min(line_meta.len().saturating_sub(1));
-    let current_cell = line_meta
-        .get(top)
-        .and_then(crate::tui::scrolling::TranscriptLineMeta::cell_line)
-        .map(|(cell_index, _)| app.original_cell_index_for_rendered(cell_index));
-
-    let mut scan_indices = Vec::new();
-    match direction {
-        SearchDirection::Forward => {
-            scan_indices.extend((top.saturating_add(1))..line_meta.len());
-        }
-        SearchDirection::Backward => {
-            scan_indices.extend((0..top).rev());
-        }
-    }
-
-    for idx in scan_indices {
-        let Some((cell_index, _)) = line_meta[idx].cell_line() else {
-            continue;
-        };
-        let cell_index = app.original_cell_index_for_rendered(cell_index);
-        if current_cell.is_some_and(|current| current == cell_index) {
-            continue;
-        }
-        if !matches!(app.history.get(cell_index), Some(HistoryCell::Tool(_))) {
-            continue;
-        }
-        if let Some(anchor) = TranscriptScroll::anchor_for(line_meta, idx) {
-            app.viewport.transcript_scroll = anchor;
-            app.viewport.pending_scroll_delta = 0;
-            app.needs_redraw = true;
-            return true;
-        }
-    }
-
-    false
 }
 
 pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
@@ -2681,21 +2542,6 @@ pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {
     let used_f64 = used as f64;
     let percent = ((used_f64 / max_f64) * 100.0).clamp(0.0, 100.0);
     Some((used, max, percent))
-}
-
-fn open_pager_for_last_message(app: &mut App) -> bool {
-    let Some(cell) = app.history.last() else {
-        return false;
-    };
-    let width = app
-        .viewport
-        .last_transcript_area
-        .map(|area| area.width)
-        .unwrap_or(80);
-    let text = history_cell_to_text(cell, width);
-    let pager = PagerView::from_text("Message", &text, width.saturating_sub(2));
-    app.view_stack.push(pager);
-    true
 }
 
 // Keyboard-shortcut predicates moved to `tui/key_shortcuts.rs`.

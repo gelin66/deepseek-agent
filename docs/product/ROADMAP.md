@@ -606,6 +606,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   shell 路由、composer 外部编辑器、假 Ctrl+O/Alt+V/Alt+L 文案以及只读不写的推理折叠/
   详情高亮状态。显式开启推理时只显示 canonical 完整内容；canonical 审批的 `v` 参数查看
   和分页复制通过本地 View event 接入通用 `PagerView`，不创建 RuntimeEvent 或第二份状态。
+- M4-C 已删除没有 canonical 命令、按键处理或 Run 事件的 TUI `/jobs` 作业中心、假
+  Ctrl+B/Ctrl+X 控制、sidebar 点击动作和 TUI 私有 shell manager。固定 production catalog
+  只公开同步有界 `exec_shell(command, timeout_ms?, cwd?)`；运行中的命令和输出由 canonical
+  工具卡如实显示，取消、超时和进程树清理仍由 `ProductionToolExecutor` 的受管进程实现。
 - M4-C 已删除只有自测、没有 production delta 写入方的旧 TUI `StreamingState` 与
   `streaming_thinking` collector，以及只初始化或 reset 的影子 reasoning 字段。canonical
   reasoning/assistant 增量继续由 `run_presenter` 直接从 `RuntimeEvent` 投影到 transcript；

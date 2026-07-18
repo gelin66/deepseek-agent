@@ -293,6 +293,9 @@ M4-C foreground 切换后还已物理删除：
 - 无生产按键入口的 Activity Detail/Turn Inspector、shell details 路由、composer 外部编辑器、
   假快捷键提示和只读不写的推理折叠/详情高亮状态；canonical 审批参数仍可由 `v` 打开本地
   通用分页器并复制，审批状态继续只由 canonical interaction/RunStore 管理。
+- 没有 canonical 命令、按键处理或 Run 事件的 `/jobs` 作业中心、Ctrl+B/Ctrl+X 假控制、
+  sidebar 点击动作和 TUI 私有 shell manager；同步 `exec_shell` 的命令/输出直接投影到
+  canonical 工具卡，生产 executor 的取消、超时和进程树清理保留。
 - 只有自测而无 production delta 写入方的旧 TUI `StreamingState`/`streaming_thinking`
   collector 及其影子 reasoning buffer；canonical reasoning/assistant 流继续由
   `run_presenter` 从 durable `RuntimeEvent` 直接投影，完成态不再被旧 duration 字段误投影为

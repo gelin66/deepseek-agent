@@ -37,8 +37,6 @@ const COST_EQ_TOLERANCE: f64 = 1e-6;
 const RECENT_TOOL_SCAN_LIMIT: usize = 24;
 const ACTIVE_TOOL_COMPLETED_ROW_TTL: Duration = Duration::from_secs(8);
 const ACTIVE_TOOL_STALE_RUNNING_ROW_TTL: Duration = Duration::from_secs(600);
-const TASK_STOP_TARGET_LABEL: &str = "[x]";
-const TASK_STOP_TARGET_SUFFIX: &str = " [x]";
 
 /// The explicit Agents view remains available for settled children. Auto mode
 /// only claims screen space while canonical child work is active.
@@ -868,40 +866,6 @@ fn render_sidebar_work_compact(f: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// Click actions for one shell job row pair (#3028).
-fn background_task_click_actions(task: &TaskPanelEntry) -> (Option<String>, Option<String>) {
-    if !task.id.starts_with("shell_") {
-        return (None, None);
-    }
-    let show = format!("/jobs show {}", task.id);
-    let detail = if matches!(task.status.as_str(), "running" | "queued") {
-        format!("/jobs cancel {}", task.id)
-    } else {
-        show.clone()
-    };
-    (Some(show), Some(detail))
-}
-
-fn background_task_has_stop_target(task: &TaskPanelEntry) -> bool {
-    task.id.starts_with("shell_") && matches!(task.status.as_str(), "running" | "queued")
-}
-
-fn command_row_action(command: String) -> SidebarRowAction {
-    SidebarRowAction::Command(command)
-}
-
-fn label_with_stop_target(label: &str, content_width: usize) -> String {
-    if content_width == 0 {
-        return String::new();
-    }
-    let suffix_width = unicode_width::UnicodeWidthStr::width(TASK_STOP_TARGET_SUFFIX);
-    if content_width <= suffix_width {
-        return truncate_line_to_width(TASK_STOP_TARGET_LABEL, content_width);
-    }
-    let base = truncate_line_to_width(label, content_width.saturating_sub(suffix_width));
-    format!("{base}{TASK_STOP_TARGET_SUFFIX}")
-}
-
 fn render_sidebar_tasks(f: &mut Frame, area: Rect, app: &mut App) {
     if area.height < 3 {
         return;
@@ -1050,14 +1014,9 @@ fn task_panel_rows(
             let label = background_task_spinner_prefix(task, app.low_motion)
                 .map(|prefix| format!("{prefix} {label}"))
                 .unwrap_or(label);
-            let (show_action, detail_action) = background_task_click_actions(task);
-            let label = if background_task_has_stop_target(task) {
-                label_with_stop_target(&label, content_width.max(1))
-            } else {
-                truncate_line_to_width(&label, content_width.max(1))
-            };
+            let label = truncate_line_to_width(&label, content_width.max(1));
             lines.push(Line::from(Span::styled(label, Style::default().fg(color))));
-            actions.push(show_action.map(command_row_action));
+            actions.push(None);
             lines.push(Line::from(Span::styled(
                 format!(
                     "  {}",
@@ -1065,41 +1024,7 @@ fn task_panel_rows(
                 ),
                 Style::default().fg(theme.text_dim),
             )));
-            actions.push(detail_action.map(command_row_action));
-        }
-
-        if lines.len() < max_rows {
-            let stale_running_shells = background_rows
-                .iter()
-                .filter(|task| {
-                    task.id.starts_with("shell_") && task.status == "running" && task.stale
-                })
-                .collect::<Vec<_>>();
-            let any_running_shell = background_rows
-                .iter()
-                .any(|task| task.id.starts_with("shell_") && task.status == "running");
-            let hint_action = if stale_running_shells.len() == 1 {
-                Some((
-                    "Ctrl+X -> cancel stale job".to_string(),
-                    format!("/jobs cancel {}", stale_running_shells[0].id),
-                ))
-            } else if any_running_shell {
-                Some((
-                    "Ctrl+X -> /jobs cancel-all".to_string(),
-                    "/jobs cancel-all".to_string(),
-                ))
-            } else {
-                None
-            };
-            if let Some((hint, action)) = hint_action {
-                lines.push(Line::from(Span::styled(
-                    truncate_line_to_width(&hint, content_width.max(1)),
-                    Style::default()
-                        .fg(theme.text_muted)
-                        .add_modifier(ratatui::style::Modifier::ITALIC),
-                )));
-                actions.push(Some(command_row_action(action)));
-            }
+            actions.push(None);
         }
     }
 
@@ -1188,23 +1113,6 @@ fn task_panel_hover_texts(app: &App, row_sets: &TaskPanelRowSets, max_rows: usiz
                 break;
             }
             texts.push(format!("  {detail}"));
-        }
-
-        if texts.len() < max_rows {
-            let stale_running_shells = background_rows
-                .iter()
-                .filter(|task| {
-                    task.id.starts_with("shell_") && task.status == "running" && task.stale
-                })
-                .count();
-            let any_running_shell = background_rows
-                .iter()
-                .any(|task| task.id.starts_with("shell_") && task.status == "running");
-            if stale_running_shells == 1 {
-                texts.push("Ctrl+X -> cancel stale job".to_string());
-            } else if any_running_shell {
-                texts.push("Ctrl+X -> /jobs cancel-all".to_string());
-            }
         }
     }
 
@@ -2827,25 +2735,6 @@ fn sidebar_hover_rows(
             let display_width = unicode_width::UnicodeWidthStr::width(display_text.as_str());
             let full_width = unicode_width::UnicodeWidthStr::width(full_text.as_str());
             let click_action = row_actions.get(idx).and_then(|a| a.clone());
-            let stop_action = display_text
-                .ends_with(TASK_STOP_TARGET_LABEL)
-                .then(|| row_actions.get(idx + 1).and_then(|a| a.clone()))
-                .flatten()
-                .filter(SidebarRowAction::is_cancel_action);
-            let stop_target_width = unicode_width::UnicodeWidthStr::width(TASK_STOP_TARGET_LABEL);
-            let (stop_zone_start_col, stop_zone_end_col) =
-                if stop_action.is_some() && display_width >= stop_target_width {
-                    let visible_width = display_width.min(content_area.width as usize);
-                    let start = content_area.x.saturating_add(
-                        visible_width
-                            .saturating_sub(stop_target_width)
-                            .min(u16::MAX as usize) as u16,
-                    );
-                    let end = start.saturating_add(stop_target_width as u16);
-                    (Some(start), Some(end))
-                } else {
-                    (None, None)
-                };
             SidebarHoverRow {
                 row_y,
                 display_text: display_text.clone(),
@@ -2855,9 +2744,9 @@ fn sidebar_hover_rows(
                     || full_width > content_area.width as usize
                     || display_text != full_text,
                 click_action,
-                stop_action,
-                stop_zone_start_col,
-                stop_zone_end_col,
+                stop_action: None,
+                stop_zone_start_col: None,
+                stop_zone_end_col: None,
             }
         })
         .collect()
@@ -2891,10 +2780,6 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, text::Line};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
-
-    fn action_command(action: &Option<SidebarRowAction>) -> Option<&str> {
-        action.as_ref().and_then(SidebarRowAction::as_command)
-    }
 
     fn create_test_app() -> App {
         let options = TuiOptions {
@@ -4177,7 +4062,7 @@ mod tests {
     }
 
     #[test]
-    fn task_panel_actions_make_single_background_job_clickable() {
+    fn background_shell_rows_are_read_only_status_projection() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
         app.task_panel.push(TaskPanelEntry {
@@ -4200,24 +4085,15 @@ mod tests {
             .iter()
             .position(|line| line.contains("cargo build"))
             .expect("background job label row");
-        assert!(
-            text[label_idx].ends_with("[x]"),
-            "running job label row exposes a compact stop target: {text:?}"
-        );
-        assert_eq!(
-            action_command(&actions[label_idx]),
-            Some("/jobs show shell_only"),
-            "single-job label row must be clickable: {actions:?}"
-        );
-        assert_eq!(
-            action_command(&actions[label_idx + 1]),
-            Some("/jobs cancel shell_only"),
-            "single-job detail row must cancel that job: {actions:?}"
-        );
+        assert!(!text[label_idx].ends_with("[x]"));
+        assert!(actions[label_idx].is_none());
+        assert!(actions[label_idx + 1].is_none());
+        assert!(!text.iter().any(|line| line.contains("/jobs")));
+        assert!(!text.iter().any(|line| line.contains("Ctrl+X")));
     }
 
     #[test]
-    fn stale_background_job_row_shows_no_output_warning_and_cancel_hint() {
+    fn stale_background_job_row_shows_no_output_without_fake_controls() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
         app.task_panel.push(TaskPanelEntry {
@@ -4240,27 +4116,17 @@ mod tests {
                 .any(|line| line.contains("stale") && line.contains("no output")),
             "stale shell job should call out no-output state: {text:?}"
         );
-        let hint_idx = text
-            .iter()
-            .position(|line| line.contains("cancel stale job"))
-            .expect("stale cancel hint");
-        assert_eq!(
-            action_command(&actions[hint_idx]),
-            Some("/jobs cancel shell_stale")
-        );
         let detail_idx = text
             .iter()
             .position(|line| line.contains("shell_stale"))
             .expect("stale job detail row");
-        assert_eq!(
-            action_command(&actions[detail_idx]),
-            Some("/jobs cancel shell_stale"),
-            "stale job detail row should still cancel the specific job"
-        );
+        assert!(actions[detail_idx].is_none());
+        assert!(!text.iter().any(|line| line.contains("cancel stale job")));
+        assert!(!text.iter().any(|line| line.contains("/jobs")));
     }
 
     #[test]
-    fn task_panel_actions_route_shell_job_to_its_own_id() {
+    fn task_panel_does_not_claim_a_shell_job_control_plane() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
         app.task_panel.push(TaskPanelEntry {
@@ -4288,31 +4154,15 @@ mod tests {
             .iter()
             .position(|line| line.contains("cargo test --workspace"))
             .expect("shell job label row");
-        assert_eq!(
-            action_command(&actions[shell_idx]),
-            Some("/jobs show shell_aaa"),
-            "shell jobs route through /jobs: {actions:?}"
-        );
-        assert_eq!(
-            action_command(&actions[shell_idx + 1]),
-            Some("/jobs cancel shell_aaa"),
-            "shell job detail row cancels the SAME job: {actions:?}"
-        );
-
-        assert!(
-            text[shell_idx].ends_with("[x]"),
-            "running shell jobs show inline stop affordances: {text:?}"
-        );
-
-        let hint_idx = text
-            .iter()
-            .position(|line| line.contains("Ctrl+X"))
-            .expect("cancel-all hint row");
-        assert_eq!(action_command(&actions[hint_idx]), Some("/jobs cancel-all"));
+        assert!(actions[shell_idx].is_none());
+        assert!(actions[shell_idx + 1].is_none());
+        assert!(!text[shell_idx].ends_with("[x]"));
+        assert!(!text.iter().any(|line| line.contains("Ctrl+X")));
+        assert!(!text.iter().any(|line| line.contains("/jobs")));
     }
 
     #[test]
-    fn task_panel_finished_job_detail_row_shows_instead_of_cancels() {
+    fn task_panel_finished_job_rows_remain_read_only() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
         app.task_panel.push(TaskPanelEntry {
@@ -4334,15 +4184,8 @@ mod tests {
             .iter()
             .position(|line| line.contains("cargo fmt"))
             .expect("completed job label row");
-        assert_eq!(
-            action_command(&actions[label_idx]),
-            Some("/jobs show shell_done")
-        );
-        assert_eq!(
-            action_command(&actions[label_idx + 1]),
-            Some("/jobs show shell_done"),
-            "finished jobs must not expose a cancel click target: {actions:?}"
-        );
+        assert!(actions[label_idx].is_none());
+        assert!(actions[label_idx + 1].is_none());
     }
 
     #[test]
@@ -4401,10 +4244,8 @@ mod tests {
             .iter()
             .position(|line| line.contains("investigate flaky test"))
             .expect("background job label row");
-        assert_eq!(
-            action_command(&actions[task_idx]),
-            Some("/jobs show shell_q")
-        );
+        assert!(actions[task_idx].is_none());
+        assert!(actions[task_idx + 1].is_none());
     }
 
     #[test]
@@ -5310,37 +5151,19 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_hover_rows_assign_stop_zone_to_running_task_labels() {
+    fn sidebar_hover_rows_do_not_invent_a_stop_zone_from_text() {
         use ratatui::layout::Rect;
 
         let display = vec!["cargo test [x]".to_string(), "  running 1.00s".to_string()];
         let full = display.clone();
-        let actions = vec![
-            Some(SidebarRowAction::Command("/jobs show shell_x".to_string())),
-            Some(SidebarRowAction::Command(
-                "/jobs cancel shell_x".to_string(),
-            )),
-        ];
+        let actions = vec![None, None];
 
         let rows = sidebar_hover_rows(Rect::new(60, 5, 20, 4), &display, &full, &actions);
 
-        assert_eq!(
-            rows[0]
-                .click_action
-                .as_ref()
-                .and_then(SidebarRowAction::as_command),
-            Some("/jobs show shell_x")
-        );
-        assert_eq!(
-            rows[0]
-                .stop_action
-                .as_ref()
-                .and_then(SidebarRowAction::as_command),
-            Some("/jobs cancel shell_x")
-        );
-        assert_eq!(rows[0].stop_zone_start_col, Some(71));
-        assert_eq!(rows[0].stop_zone_end_col, Some(74));
-        assert!(rows[1].stop_action.is_none());
+        assert!(rows.iter().all(|row| row.click_action.is_none()));
+        assert!(rows.iter().all(|row| row.stop_action.is_none()));
+        assert!(rows.iter().all(|row| row.stop_zone_start_col.is_none()));
+        assert!(rows.iter().all(|row| row.stop_zone_end_col.is_none()));
     }
 
     #[test]
