@@ -11,7 +11,7 @@ pub mod workroom;
 
 /// Common trait for lifecycle status enums across the protocol layer.
 ///
-/// Every status enum — thread, goal, fleet run, worker, and job status —
+/// Every status enum — thread, fleet run, worker, and job status —
 /// implements this trait so generic code can ask three universal questions
 /// without matching on every variant.
 pub trait Status {
@@ -85,44 +85,6 @@ pub struct Thread {
     pub source: SessionSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ThreadGoalStatus {
-    Active,
-    Paused,
-    Blocked,
-    UsageLimited,
-    BudgetLimited,
-    Complete,
-}
-
-impl Status for ThreadGoalStatus {
-    fn is_terminal(&self) -> bool {
-        matches!(self, Self::Complete)
-    }
-    fn is_active(&self) -> bool {
-        matches!(self, Self::Active)
-    }
-    fn is_paused(&self) -> bool {
-        matches!(self, Self::Paused)
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ThreadGoal {
-    pub thread_id: String,
-    pub goal_id: String,
-    pub objective: String,
-    pub status: ThreadGoalStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<i64>,
-    pub tokens_used: i64,
-    pub time_used_seconds: i64,
-    pub continuation_count: i64,
-    pub created_at: i64,
-    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,35 +173,6 @@ pub struct ThreadSetNameParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadGoalSetParams {
-    pub thread_id: String,
-    pub objective: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub token_budget: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadGoalGetParams {
-    pub thread_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadGoalClearParams {
-    pub thread_id: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadGoalProgressParams {
-    pub thread_id: String,
-    #[serde(default)]
-    pub token_delta: i64,
-    #[serde(default)]
-    pub time_delta_seconds: i64,
-    #[serde(default)]
-    pub record_continuation: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ThreadRequest {
     Create {
@@ -252,10 +185,6 @@ pub enum ThreadRequest {
     List(ThreadListParams),
     Read(ThreadReadParams),
     SetName(ThreadSetNameParams),
-    GoalSet(ThreadGoalSetParams),
-    GoalGet(ThreadGoalGetParams),
-    GoalClear(ThreadGoalClearParams),
-    GoalRecordProgress(ThreadGoalProgressParams),
     Archive {
         thread_id: String,
     },
@@ -281,9 +210,6 @@ pub struct ThreadResponse {
     /// List of threads, populated by `List` requests.
     #[serde(default)]
     pub threads: Vec<Thread>,
-    /// Thread goal returned by goal get/set requests.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub goal: Option<ThreadGoal>,
     /// The model used for the thread, if applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -760,10 +686,6 @@ pub enum EventFrame {
     TurnComplete { turn_id: String },
     /// A turn was aborted before completion.
     TurnAborted { turn_id: String, reason: String },
-    /// A thread goal was set or updated.
-    ThreadGoalUpdated { goal: ThreadGoal },
-    /// A thread goal was cleared.
-    ThreadGoalCleared { thread_id: String },
     /// An error occurred during processing.
     Error {
         response_id: String,
