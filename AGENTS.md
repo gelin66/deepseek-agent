@@ -46,21 +46,26 @@ Changing one of these constraints requires evidence and a new ADR.
 ## Current repository truth
 
 - Imported CodeWhale baseline: `352e86a611fdf3cd8bd27c36d24d482c06a71117`.
-- `codewhale exec` and `codewhale app-server` now share
-  `crates/app::AgentApplication`, `crates/runtime::AgentRuntime`, the fixed
-  `crates/tools` catalog, `crates/deepseek::DeepSeekModelPort`, and the SQLite
-  `RunStore` implemented in `crates/state`.
+- `codewhale exec`, `codewhale app-server`, and the retained interactive TUI
+  foreground now share `crates/app::AgentApplication`,
+  `crates/runtime::AgentRuntime`, the fixed `crates/tools` catalog,
+  `crates/deepseek::DeepSeekModelPort`, and the SQLite `RunStore` implemented
+  in `crates/state`.
 - app-server is only an HTTP/SSE/stdio projection of the canonical Run API. It
   has no `core`/`tui` dependency, private lifecycle store, model loop, tool
   implementation, or sibling TUI process.
 - `crates/core`, the fake prompt loop, raw model proxy, direct tool route, and
   the retired remote/mobile bridge chain have been deleted.
-- The interactive TUI has not migrated. Its live engine and private
-  session/task/runtime-thread state remain under `crates/tui` and are the M4-C
-  replacement target; do not route new callers through them.
-- Root and child runs inside `AgentRuntime` use the same execution
-  implementation. The unmigrated interactive TUI child-agent path still has
-  different execution semantics and is the M4-C replacement target.
+- The interactive TUI submits canonical Run commands through `TuiRunClient`
+  and projects root/child facts through `CanonicalRunProjection`. Its old
+  foreground Engine, private runtime-thread owners, `SessionManager`, child
+  display cache, and registry-driven slash-command system have been deleted.
+- M4-C is not closed: the hidden
+  `workflow-tool -> WorkflowTool -> SubAgentRuntime -> DeepSeekClient` path is
+  still a reachable second model loop and writes separate Workflow/SubAgent
+  JSON/JSONL state. Do not extend or route new callers through it.
+- Current State schema is v10 and RuntimeEvent is v6. State v10 persists and
+  rebuilds the exact tool catalog advertised by the latest model request.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split

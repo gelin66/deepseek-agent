@@ -9,43 +9,40 @@
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
-- 当前阶段：M4-C C1、C2 已冻结；C2 continuation/context projection 实现提交为
-  `4a3311ac`；当前 canonical RuntimeEvent 为 v6，交互 TUI caller 尚未迁移
+- 当前阶段：M4-C 收尾；交互 TUI foreground 与 root/child projection 已迁移，当前
+  canonical RuntimeEvent 为 v6、State schema 为 v10；隐藏 `workflow-tool` 第二模型循环
+  仍未删除
 
 ## 1. 当前结论
 
-生产 Headless 与本地 API 已经共用一条 Agent 执行链：
+Headless、本地 API 与交互 TUI foreground 已共用一条 Agent 执行链：
 
 ```text
-codewhale exec
-  -> TUI 内的 exec 参数/NDJSON 投影
-  -> crates/app::AgentApplication
-
-codewhale app-server
-  -> crates/app-server 的 HTTP/SSE/stdio framing
-  -> crates/app::AgentApplication
-
-AgentApplication
-  -> production composition
-  -> crates/runtime::AgentRuntime
-       -> crates/deepseek::DeepSeekModelPort
-       -> crates/tools::ProductionToolExecutor
-       -> crates/state::StateStore as SQLite RunStore
-       -> canonical StoredRuntimeEvent
+codewhale exec --------\
+app-server -------------+-> AgentApplication -> AgentRuntime
+interactive TUI --------/          |                |
+  TuiRunClient                     |                +-> DeepSeekModelPort
+  CanonicalRunProjection           |                +-> ProductionToolExecutor
+  run_presenter                    +----------------> SQLite RunStore
 ```
 
-这两条入口不再拥有各自的模型循环、工具目录、终态判断或持久状态。
+这三条入口不再拥有各自的模型循环、工具目录、终态判断或持久状态。交互 TUI 只提交
+canonical Run command，并从 durable event 投影 root/child 状态。
 
-交互 TUI 仍是明确的迁移例外：
+当前仍存的生产例外是隐藏 Workflow 路径：
 
 ```text
-interactive TUI / TaskManager
-  -> crates/tui legacy engine/session/task path
-  -> RuntimeThreadManager / RuntimeThreadStore
+workflow run
+  -> hidden workflow-tool
+  -> WorkflowTool
+  -> SubAgentRuntime
+  -> DeepSeekClient
+  -> workflow-runs.jsonl / subagents.v1.json
 ```
 
-该路径只服务交互 TUI，已不再服务 app-server。它是 M4-C 的替换和删除目标，不能作为
-新调用方继续扩展。
+它不经过 `AgentApplication`、canonical `AgentRuntime` 或 `RunStore`，仍构成第二模型循环
+和第二持久事实。M4-C 关闭前必须删除；有效 DAG/worktree 能力以后只能迁入唯一
+Orchestrator，不能继续扩展该路径。
 
 ## 2. 已统一的生产链
 
@@ -61,7 +58,7 @@ interactive TUI / TaskManager
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、compact、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
-- start/continue/compact 通过 State schema v9 的 durable creation reservation 先绑定
+- start/continue/compact 通过 State schema v10 的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
@@ -91,6 +88,12 @@ ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `exhausted_denied > 0` 时才持久化 `api_request_budget_exceeded`。`started == limit`
 不等于物理耗尽，Runtime 不为证明耗尽而故意发送额外请求。旧泛化
 `request_budget_exceeded` 不再接受。
+
+Runtime 还为每个 root/child 从共享逻辑预算预留一个可退还的最终请求许可。descendant 与
+child 必须先 join，随后各自以 `tools=[]` 发出最后请求；没有最终容量时不得先提交假的
+`ChildStarted`。自动 compaction 在尚未触及硬上下文限制时不能消耗最后许可，恢复则按该次
+请求实际 advertised tool catalog 拒绝未授权工具。该机制已有离线 conformance/Store replay
+证据，但尚未通过新的真实 multi A/B，不能宣称提升了产品成功率或效率。
 
 C2 把 continuation 与 recovery 分开：`resume` 继续同一个 run，`continue` 从一个终态
 root 创建新的 root，并用 `continued_from_run_id` 记录 lineage；source 不被改写。完整
@@ -134,14 +137,14 @@ Runtime 在允许的 depth/budget 内追加内建 `agent` control tool；它启�
 不增加固定 Host 工具数量，approval 也是工具执行前置协议，不是模型可见的新工具。
 
 所有 Host handler 返回 canonical `ToolOutcome`，明确区分 invocation、operation、retry、
-side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工具系统尚未迁移，
-不代表 Headless production catalog 会自动扩大。
+side effect、evidence、artifact 和 workspace revision。TUI 下仍编译的宽工具实现只服务
+隐藏旧路径或已无消费者，不代表 canonical production catalog 会自动扩大。
 
 ### State
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 canonical RunStore schema 为 v9；
+- 当前 canonical RunStore schema 为 v10；
 - 当前 canonical RuntimeEvent writer/reader 为 v6；
 - append-only canonical event；
 - reducer/snapshot/replay；
@@ -149,14 +152,16 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
   创建；
 - durable creation reservation：start/continue/compact 的同 ID 同 payload 重试只对应
   一个 reserved run ID，不同 payload 复用 ID 被拒绝；
+- 最近一次模型请求实际 advertised tool catalog 的持久化与 replay 重建；
 - execution lease 与 epoch；
 - pending model attempt 与 unknown billing；
 - pending interaction、steer、terminal control 与携带规范化 payload 的 command receipt；
 - terminal exactly-once；
 - no-key terminal replay。
 
-旧 thread/session/task tables 仍供未迁移交互路径使用。它们不是 app-server 的状态来源，
-也不能与 canonical run 双写。
+旧 thread/message/goal tables 仍被 legacy `thread` CLI 等外围路径消费，不再服务交互 TUI
+foreground。Workflow/SubAgent 还维护独立 JSON/JSONL。它们都不是 canonical Run 状态来源，
+不能与 `RunStore` 双写，并应随各自旧产品入口删除。
 
 ## 3. 当前入口
 
@@ -180,8 +185,7 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
 - 当前 Run API v4 在 v3 的 continuation、manual compact 和 root list 上增加 durable
-  creation-intent list/recover；RuntimeEvent writer 为 v5，
-  reader 接受 v4-v5；
+  creation-intent list/recover；当前 RuntimeEvent writer/reader 为 v6；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -189,17 +193,22 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 
 ### Interactive TUI
 
-交互 TUI 尚未切到 `AgentApplication`：
+交互 foreground 已切到 `AgentApplication`：
 
-- `crates/tui/src/core/engine/*` 仍有旧 turn loop；
-- `crates/tui/src/compaction.rs` 与旧 Engine compaction event 仍是另一条交互投影路径；
-- session、task 和 approval presentation 仍使用旧类型；
-- `TaskManager` 仍消费 `RuntimeThreadManager/RuntimeThreadStore`；
-- 交互 child-agent path 仍未通过与 canonical root/child 相同的 conformance suite；
-- generic Provider/config/UI 仍未执行 DeepSeek-only 最终清理。
+- `TuiRunClient` 提交 start/resume/continue/compact/steer/interrupt/cancel 和 interaction
+  command；
+- `CanonicalRunProjection` 与 presenter 只从 `RunStore` event 投影 root/child 进度、终态和
+  durable outcome；
+- 旧 foreground Engine、EventBroker、runtime-thread owner、`SessionManager`、child display
+  cache 和 registry-driven slash command system 已删除；
+- slash command 只剩统一的 `help/compact/cost/exit` canonical contract；
+- `crates/tui/src/compaction.rs` 与 `seam_manager.rs` 已不是 production compaction owner，
+  当前仍被编译的实现属于待物理删除的旧代码；真正的 compaction 位于
+  `crates/context + crates/runtime + crates/app`；
+- generic Provider/config/UI 与隐藏 workflow 路径仍未执行 DeepSeek-only 最终清理。
 
-因此当前不能宣称三个产品入口已经完全统一。M4-C 必须把交互输入变成 application command，
-把 UI 变成 RuntimeEvent projection，并删除旧 engine/runtime-thread 生产路径。
+因此可以宣称三个保留 foreground 入口已统一，但不能宣称所有生产可达模型循环都已统一：
+隐藏 workflow 路径仍绕过唯一 Runtime/RunStore。
 
 ## 4. Crate responsibility snapshot
 
@@ -210,11 +219,11 @@ side effect、evidence、artifact 和 workspace revision。交互 TUI 的宽工�
 | `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | FIM 调优与定期官方复核 |
 | `context` | production prompt/context 构建与最小 compaction projection | RepoGraph、evidence-aware compaction 与 A/B 在 M5 |
 | `tools` | 固定 production tool catalog 与执行 | 编辑/FIM 协议 A/B |
-| `state` | SQLite RunStore、lease、replay | 交互旧状态 M4-C 删除 |
+| `state` | SQLite RunStore、lease、replay | legacy thread tables 与非 canonical Workflow/SubAgent 状态删除 |
 | `app` | 唯一 production composition 与 Run command | 后续 orchestrator command |
 | `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
 | `cli` | 顶层命令与 production config 解析 | DeepSeek-only 配置/中文 M7-M8 |
-| `tui` | exec projection + 未迁移交互产品 | M4-C 主删除目标 |
+| `tui` | exec/interactive canonical projection + 隐藏 workflow/Provider 遗留 | 删除第二 loop、退役 context 实现和非 DeepSeek 产品面 |
 
 `crates/core` 已删除。它原有的 fake `handle_prompt` 从未是 production Agent 能力；app-server
 迁移后没有保留兼容 crate 或空壳。
@@ -235,6 +244,15 @@ M4-B 已物理删除：
 
 删除这些外围产品不会删除 `agent` 多智能体能力。它们是旧 chat/cloud 控制面，不是
 `AgentRuntime × N + Orchestrator` 的目标多 Agent 架构。
+
+M4-C foreground 切换后还已物理删除：
+
+- 旧 foreground Engine、EventBroker 和 runtime-thread state owner；
+- `SessionManager` 与旧 session/checkpoint helper；
+- TUI child worker cache、mailbox reducer、fanout card 和第二展示真相；
+- registry-driven slash command system（64 files，净删 25,516 行）；
+- CodeWhale 自托管 MCP server 的两套实现与 `crates/mcp`；外部 MCP client、ACP 与
+  canonical app-server 保留。
 
 ## 6. 当前验证事实
 
@@ -258,8 +276,8 @@ M4-C C1 实现提交为 `1d127b78`。conformance/Store replay 已证明 interact
 幂等响应和同 run 恢复状态机；外部监督进程 `SIGKILL` 测试已覆盖 `InteractionRequested`、
 `InteractionResolved`/before-tool-start、`SteerQueued`/before-applied、
 `ControlRequested`/tool-in-flight 与 `SteerApplied`/next-model-not-prepared 窗口。focused、
-all-target check、全仓 clippy 和 workspace tests 均通过。该冻结不代表 TUI 已切换，也不构成
-编码能力或效率提升证据。
+all-target check、全仓 clippy 和 workspace tests 均通过。该冻结本身不构成编码能力或
+效率提升证据。
 
 M4-C C2 已冻结为提交 `4a3311ac`：Run API v3、RuntimeEvent writer
 v5/read v4-v5；后续提交 `35fc3cc4` 的 durable run creation delivery 把当前 Run API
@@ -271,16 +289,23 @@ DeepSeek production sender canary 以 6/6 请求覆盖 Standard、Thinking/tool-
 Beta Strict 与 FIM，完整 usage、无 transport retry，费用为 `USD 0.0000969904`；该 canary
 不包含 compaction on/off 收益对照，且 `product_metric_eligible=false`。
 
-交互 TUI 仍使用旧 engine/session/task/runtime-thread 与旧 compaction 路径，因此不能把该
-候选记录为三个入口切换完成。当前证据只证明协议、lineage、持久恢复、accounting 与官方
-surface 兼容；尚无 compaction on/off 真实 A/B，不能声称 Token、成本或任务成功率改善。
+此后交互 TUI foreground 与 child projection 已完成 canonical 切换：canonical Run 20/20、
+canonical PTY 5/5、run presenter 13/13、canonical commands 5/5。最终请求许可机制通过
+Runtime conformance 51/51 与 State `run_store` 18/18；State schema 已升至 v10，
+RuntimeEvent 仍为 v6。严格 workspace clippy 当前仍被遗留 TUI 无消费者代码阻断，告警数量
+随构建目标不同；不得压制，应继续删除。
+
+当前证据证明三个 foreground 入口已统一，也证明协议、lineage、持久恢复、accounting 与
+官方 surface 兼容；但 hidden workflow 第二循环仍在，且尚无终局许可机制的真实 multi A/B
+或 compaction on/off A/B，不能声称 Token、成本或任务成功率改善。
 
 ## 7. 明确非结论
 
 当前源码不证明：
 
-- 交互 TUI 已统一；
-- 旧 TUI compaction/runtime-thread 路径已删除；
+- 所有生产可达模型循环已经统一；
+- hidden workflow 已改用 canonical Runtime/RunStore；
+- 退役 `tui/compaction`/`seam_manager` 源码已物理删除；
 - 当前 compaction 已证明节省 Token、降低成本或提高任务成功率；
 - Provider 清理或全面汉化已完成；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
@@ -288,6 +313,7 @@ surface 兼容；尚无 compaction on/off 真实 A/B，不能声称 Token、成�
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
   [收敛 canary](../../eval/summaries/prompt-convergence-canaries-2026-07-18.md)；
 - RepoGraph、EvidenceReceipt、writer-worktree Orchestrator 已完成；
+- 最终请求许可已经提高 multi verified success、降低 Token 或减少费用；
 - transport 迁移本身提升了真实编码成功率；
 - 单次 live canary 可以成为产品指标。
 

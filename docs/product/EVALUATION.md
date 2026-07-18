@@ -108,6 +108,11 @@ A/B 对照。
 - 文件范围冲突；
 - Agent 失败、超时、取消和恢复；
 - Integrator review/merge；
+- 每个 root/child 保留一个最终 artifact/integration 请求；
+- child/descendant 在父终局请求前完成 join；
+- 最终请求实际工具目录必须为空，恢复按该次请求实际 advertised catalog 判定；
+- 无最终请求容量时不得提交假的 child lifecycle；
+- 自动 compaction 在未达到硬上下文限制时不得消耗最后的最终请求许可；
 - 单 Agent 与多 Agent 净收益对照。
 
 ### G. 固定简体中文产品契约
@@ -265,6 +270,14 @@ A/B 已完成，但 **没有通过保留门槛**：
 [中文生产提示词收敛 canary](../../eval/summaries/prompt-convergence-canaries-2026-07-18.md)。
 该结果把下一问题收窄为 Runtime 的 child 最终产物保障；不得再靠增加提示词限制或提高总请求
 预算掩盖。
+
+提交 `8ab0e145` 已实现 Runtime 机制修复：每个 root/child 预留可退还的最终请求许可，
+descendant/child 先 join，最后请求固定 `tools=[]`；无容量时不产生 child lifecycle，
+prepared/replay 使用该请求实际 advertised catalog，自动 compaction 在硬限制内不能偷取
+最后许可。State schema v10 持久化该目录身份，RuntimeEvent 保持 v6。该机制已通过离线
+conformance 与 Store replay，v3 提示词仍保持拒绝；必须用当前生产提示重新运行同任务
+multi A/B，逐 actor 记录请求、verified success、Token、时间和费用。在此之前，这只是机制
+正确性证据，不是产品能力提升结论。
 
 ### 5.2 TaskContract、终态与证据边界
 
