@@ -1,7 +1,7 @@
 use super::{
     ASSISTANT_GLYPH, GenericToolCell, HistoryCell, REASONING_CURSOR, REASONING_OPENER,
-    REASONING_RAIL, ToolCell, ToolStatus, TranscriptRenderOptions, USER_GLYPH,
-    assistant_label_style_for, render_thinking, running_status_label_with_elapsed,
+    REASONING_RAIL, ToolStatus, TranscriptRenderOptions, USER_GLYPH, assistant_label_style_for,
+    render_thinking, running_status_label_with_elapsed,
 };
 use crate::deepseek_theme::Theme;
 use crate::palette;
@@ -648,7 +648,7 @@ fn assistant_cell_renders_with_bullet_glyph_not_literal_label() {
 
 #[test]
 fn copy_metadata_strips_tool_receipt_chrome_but_keeps_text() {
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "exec_shell".to_string(),
         status: ToolStatus::Success,
         input_summary: Some("command: printf 'receipt'".to_string()),
@@ -656,7 +656,7 @@ fn copy_metadata_strips_tool_receipt_chrome_but_keeps_text() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
     let rendered = cell.lines_with_copy_metadata(80, TranscriptRenderOptions::default());
     let header = rendered.first().expect("tool receipt header");
     assert!(
@@ -996,8 +996,7 @@ fn generic_exec_shell_header_uses_run_family_and_command_summary() {
     assert!(!visible.contains("Ctrl+B"));
     assert!(!visible.contains("/jobs"));
 
-    let transcript_visible: String = HistoryCell::Tool(ToolCell::Generic(cell))
-        .transcript_lines(80)[0]
+    let transcript_visible: String = HistoryCell::Tool(cell).transcript_lines(80)[0]
         .spans
         .iter()
         .map(|s| s.content.as_ref())
@@ -1042,15 +1041,15 @@ fn generic_tool_cell_picks_family_from_tool_name() {
 }
 
 #[test]
-fn exploring_card_search_reads_as_find_not_read() {
-    // #4145: a completed grep grouped under the exploration card must not
-    // render `read done · Searching …`; the header verb has to agree with the
-    // `Searching for …` label.
-    let cell = super::ExploringCell {
-        entries: vec![super::ExploringEntry {
-            label: "Searching for `TranscriptScroll`".to_string(),
-            status: ToolStatus::Success,
-        }],
+fn generic_search_tool_uses_find_verb() {
+    let cell = GenericToolCell {
+        name: "file_search".to_string(),
+        status: ToolStatus::Success,
+        input_summary: Some("query: TranscriptScroll".to_string()),
+        output: Some("crates/tui/src/tui.rs".to_string()),
+        prompts: None,
+        output_summary: None,
+        is_diff: false,
     };
     let header: String = cell.lines_with_motion(80, true)[0]
         .spans
@@ -1066,19 +1065,21 @@ fn exploring_card_search_reads_as_find_not_read() {
         "search card must not pair `read done` with a search label: {header:?}"
     );
     assert!(
-        header.contains("Searching for `TranscriptScroll`"),
-        "search label should remain intact: {header:?}"
+        header.contains("TranscriptScroll"),
+        "search query should remain visible: {header:?}"
     );
 }
 
 #[test]
-fn exploring_card_read_keeps_read_verb() {
-    // The fix only re-verbs search-only cards — a plain read stays `read`.
-    let cell = super::ExploringCell {
-        entries: vec![super::ExploringEntry {
-            label: "Reading src/foo.rs".to_string(),
-            status: ToolStatus::Success,
-        }],
+fn generic_read_tool_keeps_read_verb() {
+    let cell = GenericToolCell {
+        name: "read_file".to_string(),
+        status: ToolStatus::Success,
+        input_summary: Some("path: src/foo.rs".to_string()),
+        output: Some("fn main() {}".to_string()),
+        prompts: None,
+        output_summary: None,
+        is_diff: false,
     };
     let header: String = cell.lines_with_motion(80, true)[0]
         .spans
@@ -1089,6 +1090,7 @@ fn exploring_card_read_keeps_read_verb() {
         header.contains("read done"),
         "read card header should read `read done`: {header:?}"
     );
+    assert!(header.contains("src/foo.rs"), "{header:?}");
 }
 
 // === Reasoning treatment tests (v0.6.6 UI redesign) ===
@@ -1364,7 +1366,7 @@ fn generic_tool_cell_renders_prompts_as_indexed_rows() {
     // When prompts are populated by a fan-out tool, each child shows on
     // its own row instead of the inline `args:` summary so the user can
     // read what each child was asked.
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "read_file".to_string(),
         status: ToolStatus::Running,
         input_summary: Some("prompts: <3 items>".to_string()),
@@ -1376,7 +1378,7 @@ fn generic_tool_cell_renders_prompts_as_indexed_rows() {
         ]),
         output_summary: None,
         is_diff: false,
-    }));
+    });
     let text = lines_text(&cell.lines(80));
 
     assert!(text.contains("[0] Summarize the README"));
@@ -1394,7 +1396,7 @@ fn generic_tool_cell_renders_prompts_as_indexed_rows() {
 fn generic_tool_cell_falls_back_to_args_when_prompts_none() {
     // Non-fan-out tools keep the existing `args:` summary so behavior
     // doesn't drift for everything else.
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "file_search".to_string(),
         status: ToolStatus::Running,
         input_summary: Some("query: foo".to_string()),
@@ -1402,14 +1404,14 @@ fn generic_tool_cell_falls_back_to_args_when_prompts_none() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
     let text = lines_text(&cell.lines(80));
     assert!(text.contains("query: foo"));
 }
 
 #[test]
 fn known_generic_tool_hides_raw_name_in_live_mode() {
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "run_verifiers".to_string(),
         status: ToolStatus::Running,
         input_summary: Some("profile: auto, level: quick".to_string()),
@@ -1417,7 +1419,7 @@ fn known_generic_tool_hides_raw_name_in_live_mode() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
 
     let text = lines_text(&cell.lines(80));
     assert!(text.contains("verify running"), "{text}");
@@ -1433,7 +1435,7 @@ fn known_generic_tool_hides_raw_name_in_live_mode() {
 
 #[test]
 fn known_generic_tool_keeps_raw_name_in_transcript_mode() {
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "run_verifiers".to_string(),
         status: ToolStatus::Running,
         input_summary: Some("profile: auto, level: quick".to_string()),
@@ -1441,7 +1443,7 @@ fn known_generic_tool_keeps_raw_name_in_transcript_mode() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
 
     let text = lines_text(&cell.transcript_lines(80));
     assert!(text.contains("verify running"), "{text}");
@@ -1453,7 +1455,7 @@ fn known_generic_tool_keeps_raw_name_in_transcript_mode() {
 
 #[test]
 fn unknown_generic_tool_keeps_raw_name_in_live_mode() {
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "future_private_tool".to_string(),
         status: ToolStatus::Running,
         input_summary: Some("query: foo".to_string()),
@@ -1461,7 +1463,7 @@ fn unknown_generic_tool_keeps_raw_name_in_live_mode() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
 
     let text = lines_text(&cell.lines(80));
     // Unknown/Generic tools collapse to a single header line in live mode.
@@ -1482,7 +1484,7 @@ fn generic_tool_cell_preserves_multi_line_output_in_transcript() {
                      crates/config/src/lib.rs  | 27 ++++\n\
                      crates/tui/src/mcp.rs     | 384 +++++";
 
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "read_file".to_string(),
         status: ToolStatus::Success,
         input_summary: Some("command: git diff --stat".to_string()),
@@ -1490,7 +1492,7 @@ fn generic_tool_cell_preserves_multi_line_output_in_transcript() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
 
     let transcript_text = lines_text(&cell.transcript_lines(80));
 
@@ -1533,7 +1535,7 @@ fn generic_tool_cell_expands_failed_multi_line_output_in_live() {
         .collect::<Vec<_>>()
         .join("\n");
 
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "read_file".to_string(),
         status: ToolStatus::Failed,
         input_summary: Some("command: ls".to_string()),
@@ -1541,7 +1543,7 @@ fn generic_tool_cell_expands_failed_multi_line_output_in_live() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
 
     let live = cell.lines_with_options(80, TranscriptRenderOptions::default());
     let transcript = cell.transcript_lines(80);
@@ -1563,7 +1565,7 @@ fn generic_tool_failed_output_live_renders_card_rail() {
         .map(|i| format!("line {i:02}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "read_file".to_string(),
         status: ToolStatus::Failed,
         input_summary: Some("command: noisy".to_string()),
@@ -1571,7 +1573,7 @@ fn generic_tool_failed_output_live_renders_card_rail() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
 
     let live_text = lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
 
@@ -1591,7 +1593,7 @@ fn hidden_tool_details_keeps_failed_generic_output_expanded() {
         .map(|i| format!("row {i:02}: payload"))
         .collect::<Vec<_>>()
         .join("\n");
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "read_file".to_string(),
         status: ToolStatus::Failed,
         input_summary: Some("command: noisy".to_string()),
@@ -1599,7 +1601,7 @@ fn hidden_tool_details_keeps_failed_generic_output_expanded() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
 
     let live_text = lines_text(&cell.lines_with_options(
         80,
@@ -1622,7 +1624,7 @@ fn calm_mode_keeps_failed_generic_output_expanded() {
         .map(|i| format!("row {i:02}: payload"))
         .collect::<Vec<_>>()
         .join("\n");
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "read_file".to_string(),
         status: ToolStatus::Failed,
         input_summary: Some("command: noisy".to_string()),
@@ -1630,7 +1632,7 @@ fn calm_mode_keeps_failed_generic_output_expanded() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
 
     let live_text = lines_text(&cell.lines_with_options(
         80,
@@ -1653,7 +1655,7 @@ fn generic_tool_success_live_collapses_output_transcript_keeps_it() {
         .map(|i| format!("row {i:02}: payload"))
         .collect::<Vec<_>>()
         .join("\n");
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "read_file".to_string(),
         status: ToolStatus::Success,
         input_summary: Some("path: crates/tui/src/main.rs".to_string()),
@@ -1661,7 +1663,7 @@ fn generic_tool_success_live_collapses_output_transcript_keeps_it() {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }));
+    });
 
     let live_text = lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
     let transcript_text = lines_text(&cell.transcript_lines(80));
@@ -1692,7 +1694,7 @@ fn tool_output_live_preserves_error_card_rail() {
         "final line",
     ]
     .join("\n");
-    let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    let cell = HistoryCell::Tool(GenericToolCell {
         name: "read_file".to_string(),
         status: ToolStatus::Failed,
         input_summary: Some("command: tool".to_string()),
@@ -1700,7 +1702,7 @@ fn tool_output_live_preserves_error_card_rail() {
         prompts: None,
         output_summary: Some("Error: failed to read config".to_string()),
         is_diff: false,
-    }));
+    });
 
     let live_text = lines_text(&cell.lines_with_options(80, TranscriptRenderOptions::default()));
 
@@ -1798,7 +1800,7 @@ fn info_severity_cell_renders_in_dim() {
 }
 
 fn success_generic_tool(name: &str) -> HistoryCell {
-    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    HistoryCell::Tool(GenericToolCell {
         name: name.to_string(),
         status: ToolStatus::Success,
         input_summary: Some(format!("args for {name}")),
@@ -1806,11 +1808,11 @@ fn success_generic_tool(name: &str) -> HistoryCell {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }))
+    })
 }
 
 fn failed_generic_tool(name: &str) -> HistoryCell {
-    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    HistoryCell::Tool(GenericToolCell {
         name: name.to_string(),
         status: ToolStatus::Failed,
         input_summary: None,
@@ -1818,11 +1820,11 @@ fn failed_generic_tool(name: &str) -> HistoryCell {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }))
+    })
 }
 
 fn running_generic_tool(name: &str) -> HistoryCell {
-    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    HistoryCell::Tool(GenericToolCell {
         name: name.to_string(),
         status: ToolStatus::Running,
         input_summary: None,
@@ -1830,11 +1832,11 @@ fn running_generic_tool(name: &str) -> HistoryCell {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }))
+    })
 }
 
 fn shell_tool(command: &str) -> HistoryCell {
-    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    HistoryCell::Tool(GenericToolCell {
         name: "exec_shell".to_string(),
         status: ToolStatus::Success,
         input_summary: Some(format!("command: {command}")),
@@ -1842,7 +1844,7 @@ fn shell_tool(command: &str) -> HistoryCell {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }))
+    })
 }
 
 #[test]

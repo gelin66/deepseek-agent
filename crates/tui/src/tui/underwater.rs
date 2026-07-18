@@ -244,7 +244,7 @@ impl ShellPhase {
 /// inspected: `exec_shell` remains ordinary work even when its command happens
 /// to contain a test runner.
 fn verification_run_active(app: &App) -> bool {
-    use crate::tui::history::{HistoryCell, ToolCell, ToolStatus};
+    use crate::tui::history::{HistoryCell, ToolStatus};
     let Some(active) = app.active_cell.as_ref() else {
         return false;
     };
@@ -252,12 +252,8 @@ fn verification_run_active(app: &App) -> bool {
         let HistoryCell::Tool(tool) = cell else {
             return false;
         };
-        matches!(
-            tool,
-            ToolCell::Generic(generic)
-                if generic.status == ToolStatus::Running
-                    && matches!(generic.name.as_str(), "run_tests" | "run_verifiers")
-        )
+        tool.status == ToolStatus::Running
+            && matches!(tool.name.as_str(), "run_tests" | "run_verifiers")
     })
 }
 
@@ -997,10 +993,10 @@ mod tests {
     #[test]
     fn verifying_phase_meters_a_tick_for_test_runs_only() {
         use crate::tui::active_cell::ActiveCell;
-        use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
+        use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
 
         let running_tool = |name: &str, input_summary: Option<&str>| {
-            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            HistoryCell::Tool(GenericToolCell {
                 name: name.to_string(),
                 status: ToolStatus::Running,
                 input_summary: input_summary.map(str::to_string),
@@ -1008,7 +1004,7 @@ mod tests {
                 prompts: None,
                 output_summary: None,
                 is_diff: false,
-            }))
+            })
         };
 
         let mut app = test_app();

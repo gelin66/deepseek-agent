@@ -1776,13 +1776,6 @@ pub struct App {
     /// The transcript keeps completed entries until turn flush, but the
     /// sidebar can use these timestamps to let settled live rows expire.
     pub active_tool_entry_completed_at: HashMap<usize, Instant>,
-    /// Active exploring cell entry index (within `active_cell.entries`).
-    /// `None` once the active cell flushes or no exploring entry exists.
-    pub exploring_cell: Option<usize>,
-    /// Mapping of exploring tool ids to `(entry index in active_cell, entry
-    /// within ExploringCell)`. Used to update individual exploring entries
-    /// when their tools complete.
-    pub exploring_entries: HashMap<String, (usize, usize)>,
     /// Tool calls that should be ignored by the UI
     pub ignored_tool_calls: HashSet<String>,
     /// Current streaming assistant cell
@@ -2543,8 +2536,6 @@ impl App {
             active_cell_revision: 0,
             active_tool_details: HashMap::new(),
             active_tool_entry_completed_at: HashMap::new(),
-            exploring_cell: None,
-            exploring_entries: HashMap::new(),
             ignored_tool_calls: HashSet::new(),
             streaming_message_index: None,
             suppress_stream_events_until_turn_complete: false,
@@ -3455,8 +3446,6 @@ impl App {
             return;
         };
         if active.is_empty() {
-            self.exploring_cell = None;
-            self.exploring_entries.clear();
             self.active_tool_details.clear();
             self.active_tool_entry_completed_at.clear();
             self.bump_active_cell_revision();
@@ -3473,9 +3462,6 @@ impl App {
                 .entry(self.tool_cells.get(&tool_id).copied().unwrap_or(base_index))
                 .or_insert(detail);
         }
-
-        self.exploring_cell = None;
-        self.exploring_entries.clear();
 
         for cell in drained {
             let rev = self.fresh_history_revision();

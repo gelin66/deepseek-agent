@@ -38,7 +38,7 @@
 //! expose `revision()` and `bump_revision()`; the renderer combines this with
 //! `App.history_version` when computing per-cell revisions for the cache.
 
-use crate::tui::history::{ExploringCell, ExploringEntry, HistoryCell, ToolCell, ToolStatus};
+use crate::tui::history::{HistoryCell, ToolStatus};
 
 /// In-flight active cell: a sequence of mutable [`HistoryCell`] entries.
 ///
@@ -46,22 +46,15 @@ use crate::tui::history::{ExploringCell, ExploringEntry, HistoryCell, ToolCell, 
 /// one logical block at the end of the transcript, but internally it is
 /// composed of one or more entries (each rendered as its own
 /// [`HistoryCell`]). The reason we keep them as separate entries — rather
-/// than fusing into a single conceptual block — is that they may have
-/// different shapes (a `GenericToolCell`, an `ExploringCell` aggregate, an MCP
-/// tool result, …) and the existing renderers already know how to draw each
-/// shape correctly. Coalescing into a single render path would duplicate
-/// logic we already have.
+/// than fusing into a single conceptual block — is that the existing history
+/// renderer already knows how to draw each canonical tool entry correctly.
+/// Coalescing into a second render path would duplicate that logic.
 #[derive(Debug, Clone, Default)]
 pub struct ActiveCell {
     entries: Vec<HistoryCell>,
     /// Tool ids currently associated with this active cell. The map values are
-    /// indices into [`Self::entries`]. Multiple tool ids can map to the same
-    /// entry (the existing `ExploringCell` aggregates several reads into a
-    /// single entry).
+    /// indices into [`Self::entries`].
     tool_to_entry: std::collections::HashMap<String, usize>,
-    /// Index of the current `ExploringCell` entry (when present), so additional
-    /// exploring tool starts append to it instead of creating new cells.
-    exploring_entry: Option<usize>,
     /// Bumped on every mutation. Used by the transcript cache to know that
     /// the active cell needs re-rendering even though its position in the
     /// virtual cell list is unchanged.
@@ -122,36 +115,13 @@ impl ActiveCell {
     /// Add a tool entry to the active cell.
     ///
     /// Returns the entry index (which the caller can record in
-    /// `tool_cells_in_active`). If the cell is an exploring tool start and
-    /// there is already an exploring entry in the active group, the entry is
-    /// appended to that aggregate instead of creating a new entry.
+    /// `tool_cells_in_active`).
     ///
     /// `tool_id` is registered for the new (or updated) entry so future
     /// completion lookups can find it.
     pub fn push_tool(&mut self, tool_id: impl Into<String>, cell: HistoryCell) -> usize {
         let tool_id = tool_id.into();
-        // If this is an exploring start and we already have an exploring
-        // entry, append to that entry rather than creating a new cell.
-        if let HistoryCell::Tool(ToolCell::Exploring(new_cell)) = &cell
-            && let Some(entry_idx) = self.exploring_entry
-            && let Some(HistoryCell::Tool(ToolCell::Exploring(existing))) =
-                self.entries.get_mut(entry_idx)
-        {
-            // The caller hands us a brand-new ExploringCell with one entry.
-            // Move that entry into the existing aggregate.
-            for explore_entry in &new_cell.entries {
-                let _ = existing.insert_entry(explore_entry.clone());
-            }
-            self.tool_to_entry.insert(tool_id, entry_idx);
-            self.bump_revision();
-            return entry_idx;
-        }
-
-        // Otherwise, push a new entry.
         let entry_idx = self.entries.len();
-        if matches!(cell, HistoryCell::Tool(ToolCell::Exploring(_))) {
-            self.exploring_entry = Some(entry_idx);
-        }
         self.entries.push(cell);
         self.tool_to_entry.insert(tool_id, entry_idx);
         self.bump_revision();
@@ -176,44 +146,6 @@ impl ActiveCell {
         self.tool_to_entry.get(tool_id).copied()
     }
 
-    /// Append an [`ExploringEntry`] to the existing exploring aggregate (if
-    /// any), binding the supplied tool id to it. Returns
-    /// `(entry_index, entry_within_exploring)` on success.
-    ///
-    /// Used when a second exploring tool starts during the same active group:
-    /// rather than allocating another ExploringCell entry in the active group
-    /// we extend the one that's already there.
-    pub fn append_to_exploring(
-        &mut self,
-        tool_id: impl Into<String>,
-        explore_entry: ExploringEntry,
-    ) -> Option<(usize, usize)> {
-        let entry_idx = self.exploring_entry?;
-        let HistoryCell::Tool(ToolCell::Exploring(cell)) = self.entries.get_mut(entry_idx)? else {
-            return None;
-        };
-        let inner_idx = cell.insert_entry(explore_entry);
-        self.tool_to_entry.insert(tool_id.into(), entry_idx);
-        self.bump_revision();
-        Some((entry_idx, inner_idx))
-    }
-
-    /// Ensure an [`ExploringCell`] exists in the active group; create it if
-    /// not. Returns its entry index.
-    pub fn ensure_exploring(&mut self) -> usize {
-        if let Some(idx) = self.exploring_entry {
-            return idx;
-        }
-        let idx = self.entries.len();
-        self.entries
-            .push(HistoryCell::Tool(ToolCell::Exploring(ExploringCell {
-                entries: Vec::new(),
-            })));
-        self.exploring_entry = Some(idx);
-        self.bump_revision();
-        idx
-    }
-
     /// Remove the tool-id binding for an entry without removing the entry
     /// itself (the entry remains in the active group, presumably with its
     /// status updated).
@@ -230,7 +162,6 @@ impl ActiveCell {
     pub fn drain(&mut self) -> Vec<HistoryCell> {
         let entries = std::mem::take(&mut self.entries);
         self.tool_to_entry.clear();
-        self.exploring_entry = None;
         self.bump_revision();
         entries
     }
@@ -250,49 +181,21 @@ impl ActiveCell {
 }
 
 fn mark_running_as_interrupted(cell: &mut HistoryCell) {
-    let HistoryCell::Tool(tool_cell) = cell else {
+    let HistoryCell::Tool(tool) = cell else {
         return;
     };
-    match tool_cell {
-        ToolCell::Exploring(explore) => {
-            for entry in &mut explore.entries {
-                if entry.status == ToolStatus::Running {
-                    entry.status = ToolStatus::Failed;
-                }
-            }
-        }
-        ToolCell::PatchSummary(patch) if patch.status == ToolStatus::Running => {
-            patch.status = ToolStatus::Failed;
-        }
-        ToolCell::Mcp(mcp) if mcp.status == ToolStatus::Running => {
-            mcp.status = ToolStatus::Failed;
-        }
-        ToolCell::WebSearch(search) if search.status == ToolStatus::Running => {
-            search.status = ToolStatus::Failed;
-        }
-        ToolCell::Generic(generic) if generic.status == ToolStatus::Running => {
-            generic.status = ToolStatus::Failed;
-        }
-        _ => {}
+    if tool.status == ToolStatus::Running {
+        tool.status = ToolStatus::Failed;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::history::{ExploringCell, ExploringEntry, GenericToolCell};
-
-    fn exploring_cell_with(label: &str) -> HistoryCell {
-        HistoryCell::Tool(ToolCell::Exploring(ExploringCell {
-            entries: vec![ExploringEntry {
-                label: label.to_string(),
-                status: ToolStatus::Running,
-            }],
-        }))
-    }
+    use crate::tui::history::GenericToolCell;
 
     fn generic_cell(name: &str) -> HistoryCell {
-        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        HistoryCell::Tool(GenericToolCell {
             name: name.to_string(),
             status: ToolStatus::Running,
             input_summary: None,
@@ -300,7 +203,7 @@ mod tests {
             prompts: None,
             output_summary: None,
             is_diff: false,
-        }))
+        })
     }
 
     #[test]
@@ -312,22 +215,6 @@ mod tests {
         assert_eq!(cell.entry_count(), 1);
         assert!(cell.revision() != r0);
         assert_eq!(cell.entry_index_for_tool("t1"), Some(0));
-    }
-
-    #[test]
-    fn parallel_exploring_starts_share_one_entry() {
-        let mut cell = ActiveCell::new();
-        let idx_a = cell.push_tool("a", exploring_cell_with("Read foo.rs"));
-        let idx_b = cell.push_tool("b", exploring_cell_with("Read bar.rs"));
-        assert_eq!(
-            idx_a, idx_b,
-            "both exploring starts should land in same entry"
-        );
-        assert_eq!(cell.entry_count(), 1);
-        let HistoryCell::Tool(ToolCell::Exploring(explore)) = &cell.entries()[0] else {
-            panic!("expected exploring cell")
-        };
-        assert_eq!(explore.entries.len(), 2);
     }
 
     #[test]
@@ -346,7 +233,7 @@ mod tests {
         let mut cell = ActiveCell::new();
         cell.push_tool("a", generic_cell("exec_shell"));
         cell.mark_in_progress_as_interrupted();
-        let HistoryCell::Tool(ToolCell::Generic(tool)) = &cell.entries()[0] else {
+        let HistoryCell::Tool(tool) = &cell.entries()[0] else {
             panic!("expected canonical generic tool")
         };
         assert_eq!(tool.status, ToolStatus::Failed);

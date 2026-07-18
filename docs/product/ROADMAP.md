@@ -633,6 +633,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   分支。真实 `exec_shell` 仍从 canonical `ToolPrepared`/`ToolOutcomeCommitted` 投影为
   `GenericToolCell`，保留命令摘要、状态、失败输出、Activity、transcript、折叠保护和中断
   收敛，不增加兼容 adapter。
+- M4-C 已继续删除无 canonical producer 的 `Exploring`/`PatchSummary`/`DiffPreview`/`Mcp`/
+  `WebSearch` 专用 TUI 工具卡与不可达聚合 helper，并把失去变体意义的 `ToolCell` 直接折叠为
+  `HistoryCell::Tool(GenericToolCell)`。固定 11 工具只保留一条状态、渲染、Activity、折叠和
+  transcript 路径；`git_diff`/`git_status` 的 edit/read 语义已补齐。真实 MCP transport、
+  discovery 和 CLI 不经过旧卡，未被删除。
 - M4-C 已删除只服务退役 TUI 工具、没有 production executor 或 registry 消费者的旧
   `ToolSpec`/`ToolContext`/`RuntimeToolServices` abstraction island。TUI error taxonomy 直接
   消费 `codewhale_tools::ToolError`；固定 11 工具、`ProductionToolContext`、canonical

@@ -1,6 +1,6 @@
 //! Tool-run grouping for transcript collapse.
 
-use super::{HistoryCell, ToolCell};
+use super::{GenericToolCell, HistoryCell};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolRun {
@@ -37,7 +37,7 @@ enum ToolRunActivity {
 }
 
 impl ToolRunActivitySummary {
-    fn record(&mut self, tool: &ToolCell) {
+    fn record(&mut self, tool: &GenericToolCell) {
         match classify_tool_run_activity(tool) {
             ToolRunActivity::File => self.files += 1,
             ToolRunActivity::Search => self.searches += 1,
@@ -95,7 +95,7 @@ pub fn detect_tool_runs_from_slices(
             if let Some(HistoryCell::Tool(tool)) =
                 cell_at_virtual_index(history, active_entries, index)
             {
-                let name = tool_display_name(tool);
+                let name = tool.name.as_str();
                 if !names.iter().any(|existing| existing == name) {
                     names.push(name.to_string());
                 }
@@ -133,7 +133,7 @@ fn is_collapsible_tool_cell(cell: &HistoryCell) -> bool {
     matches!(cell, HistoryCell::Tool(tool) if tool.is_success() && !tool.is_collapsible_guard())
 }
 
-pub(super) fn generic_tool_name_is_collapse_guard(name: &str) -> bool {
+pub(super) fn tool_name_is_collapse_guard(name: &str) -> bool {
     let normalized = name.trim().to_ascii_lowercase();
     normalized == "exec_shell"
         || normalized.contains("patch")
@@ -146,26 +146,14 @@ pub(super) fn generic_tool_name_is_collapse_guard(name: &str) -> bool {
         || normalized.contains("review")
 }
 
-fn tool_display_name(tool: &ToolCell) -> &str {
-    match tool {
-        ToolCell::Generic(cell) => cell.name.as_str(),
-        ToolCell::Mcp(cell) => cell.tool.as_str(),
-        ToolCell::WebSearch(_) => "web_search",
-        ToolCell::Exploring(_) => "explore",
-        ToolCell::PatchSummary(_) => "apply_patch",
-        ToolCell::DiffPreview(_) => "diff",
-    }
-}
-
-fn classify_tool_run_activity(tool: &ToolCell) -> ToolRunActivity {
-    let name = tool_display_name(tool);
-    classify_tool_name_activity(name)
+fn classify_tool_run_activity(tool: &GenericToolCell) -> ToolRunActivity {
+    classify_tool_name_activity(&tool.name)
 }
 
 fn classify_tool_name_activity(name: &str) -> ToolRunActivity {
     let normalized = name.trim().to_ascii_lowercase();
     match normalized.as_str() {
-        "read_file" | "list_dir" | "explore" | "git_log" | "git_show" | "git_blame" => {
+        "read_file" | "list_dir" | "git_status" | "git_log" | "git_show" | "git_blame" => {
             ToolRunActivity::File
         }
         "grep_files" | "file_search" | "web_search" | "fetch_url" => ToolRunActivity::Search,
@@ -181,7 +169,7 @@ fn classify_tool_name_activity(name: &str) -> ToolRunActivity {
         | "wait_for_dev_server"
         | "task_gate_run"
         | "validate_data" => ToolRunActivity::Command,
-        "edit_file" | "apply_patch" | "write_file" | "diff" => ToolRunActivity::Edit,
+        "edit_file" | "apply_patch" | "write_file" | "git_diff" | "diff" => ToolRunActivity::Edit,
         "agent" => ToolRunActivity::Delegate,
         _ if normalized.contains("search")
             || normalized.contains("grep")

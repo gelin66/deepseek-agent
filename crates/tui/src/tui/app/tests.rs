@@ -3,7 +3,7 @@ use crate::config::{ApiProvider, Config, ProviderConfig, ProvidersConfig};
 use crate::settings::Settings;
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tui::clipboard::PastedImage;
-use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
+use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
 use crate::tui::scrolling::TranscriptLineMeta;
 
 fn test_options(yolo: bool) -> TuiOptions {
@@ -2197,7 +2197,7 @@ fn tool_run_expansion_toggle_opens_and_closes_run() {
     app.tool_collapse_mode = ToolCollapseMode::Compact;
     app.tool_collapse_threshold = 3;
     for name in ["read_file", "list_dir", "web_search"] {
-        app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        app.add_message(HistoryCell::Tool(GenericToolCell {
             name: name.to_string(),
             status: ToolStatus::Success,
             input_summary: None,
@@ -2205,7 +2205,7 @@ fn tool_run_expansion_toggle_opens_and_closes_run() {
             prompts: None,
             output_summary: None,
             is_diff: false,
-        })));
+        }));
     }
 
     assert!(app.toggle_tool_run_expansion_at(0));
@@ -2227,7 +2227,7 @@ fn tool_run_expansion_toggle_handles_active_run() {
     let active_start = app.history.len();
     let active = app.active_cell.get_or_insert_with(ActiveCell::new);
     for name in ["read_file", "list_dir", "web_search"] {
-        active.push_untracked(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        active.push_untracked(HistoryCell::Tool(GenericToolCell {
             name: name.to_string(),
             status: ToolStatus::Success,
             input_summary: None,
@@ -2235,7 +2235,7 @@ fn tool_run_expansion_toggle_handles_active_run() {
             prompts: None,
             output_summary: None,
             is_diff: false,
-        })));
+        }));
     }
 
     assert!(app.toggle_tool_run_expansion_at(active_start));

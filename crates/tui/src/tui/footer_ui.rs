@@ -6,7 +6,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::localization::MessageId;
 use crate::palette;
 use crate::tui::app::App;
-use crate::tui::history::{HistoryCell, ToolCell, ToolStatus};
+use crate::tui::history::{HistoryCell, ToolStatus};
 use crate::tui::sidebar::{agents_sidebar_surface_visible, running_agent_count};
 use crate::tui::ui::{context_usage_snapshot, status_color};
 use crate::tui::ui_text::truncate_line_to_width;
@@ -143,7 +143,7 @@ pub(crate) fn stall_reason(app: &App) -> Option<String> {
     if active
         .entries()
         .iter()
-        .any(|cell| matches!(cell, HistoryCell::Tool(tool) if tool.is_running()))
+        .any(|cell| matches!(cell, HistoryCell::Tool(tool) if tool.status == ToolStatus::Running))
     {
         return Some("tools executing".to_string());
     }
@@ -446,40 +446,12 @@ fn collect_active_tool_status(cell: &HistoryCell, snapshot: &mut ActiveToolStatu
     let HistoryCell::Tool(tool) = cell else {
         return;
     };
-    match tool {
-        ToolCell::Exploring(explore) => {
-            for entry in &explore.entries {
-                snapshot.record(
-                    format!("read {}", one_line_summary(&entry.label, 80)),
-                    entry.status,
-                    None,
-                );
-            }
-        }
-        ToolCell::PatchSummary(patch) => {
-            snapshot.record(format!("patch {}", patch.path), patch.status, None);
-        }
-        ToolCell::DiffPreview(diff) => {
-            snapshot.record(format!("diff {}", diff.title), ToolStatus::Success, None);
-        }
-        ToolCell::Mcp(mcp) => snapshot.record(format!("tool {}", mcp.tool), mcp.status, None),
-        ToolCell::WebSearch(search) => {
-            snapshot.record(format!("search {}", search.query), search.status, None);
-        }
-        ToolCell::Generic(generic) => {
-            // Sub-agent dispatch represents itself through the DelegateCard
-            // + Agents sidebar. Counting it again here would duplicate the
-            // status.
-            if generic.name == "agent" {
-                return;
-            }
-            snapshot.record(
-                tool_activity_label_for_name(&generic.name),
-                generic.status,
-                None,
-            );
-        }
+    // Sub-agent dispatch represents itself through the DelegateCard + Agents
+    // sidebar. Counting it again here would duplicate the status.
+    if tool.name == "agent" {
+        return;
     }
+    snapshot.record(tool_activity_label_for_name(&tool.name), tool.status, None);
 }
 
 pub(crate) fn one_line_summary(text: &str, max_width: usize) -> String {

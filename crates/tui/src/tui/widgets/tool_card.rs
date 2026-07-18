@@ -10,10 +10,7 @@
 //!
 //! - [`ToolFamily`] — the canonical semantic families plus a `Generic`
 //!   fallback for anything we don't have a family for yet.
-//! - [`tool_family_for_title`] — maps the legacy `render_tool_header` title
-//!   string (`"Shell"`, `"Patch"`, `"Workspace"`, etc.) to a family. Lets
-//!   the existing call sites drop in family glyphs without re-architecting
-//!   each cell.
+//! - [`tool_family_for_name`] — maps public tool names to semantic families.
 //! - [`family_glyph`] / [`family_label`] — the verb glyph + label per
 //!   family. Glyphs are single graphemes; labels are short verbs.
 //! - [`CardRail`] / [`rail_glyph`] — the `╭ │ ╰` rail anchored to the
@@ -50,31 +47,15 @@ pub enum ToolFamily {
     Generic,
 }
 
-/// Map a legacy tool-header title string (the value passed to
-/// `render_tool_header`) to a family. Anything unrecognised falls back to
-/// [`ToolFamily::Generic`] so cards still render — they just lose the
-/// verb-glyph treatment until the family is added here.
-#[must_use]
-pub fn tool_family_for_title(title: &str) -> ToolFamily {
-    match title {
-        "Shell" => ToolFamily::Run,
-        "Patch" | "Diff" => ToolFamily::Patch,
-        "Workspace" | "Image" => ToolFamily::Read,
-        "Search" => ToolFamily::Find,
-        "Plan" | "Strategy" | "Review" => ToolFamily::Generic,
-        _ => ToolFamily::Generic,
-    }
-}
-
 /// Map an arbitrary tool name (as exposed to the model — e.g. `read_file`,
-/// `apply_patch`, `agent`) to a family. Used by `GenericToolCell`
-/// where the `tool_family_for_title` shortcut isn't enough because every
-/// generic cell shares the title `"Tool"`.
+/// `apply_patch`, `agent`) to a family.
 #[must_use]
 pub fn tool_family_for_name(name: &str) -> ToolFamily {
     match name {
-        "read_file" | "list_dir" | "git_log" | "git_show" | "git_blame" => ToolFamily::Read,
-        "edit_file" | "apply_patch" | "write_file" => ToolFamily::Patch,
+        "read_file" | "list_dir" | "git_status" | "git_log" | "git_show" | "git_blame" => {
+            ToolFamily::Read
+        }
+        "edit_file" | "apply_patch" | "git_diff" | "write_file" => ToolFamily::Patch,
         "exec_shell"
         | "exec_shell_wait"
         | "exec_shell_interact"
@@ -296,33 +277,34 @@ pub fn rail_glyph(rail: CardRail) -> &'static str {
 mod tests {
     use super::{
         CardRail, ToolFamily, family_glyph, family_label, rail_glyph, tool_activity_label_for_name,
-        tool_display_label_for_name, tool_family_for_name, tool_family_for_title,
-        tool_header_summary_for_name,
+        tool_display_label_for_name, tool_family_for_name, tool_header_summary_for_name,
     };
     use crate::localization::{MessageId, tr};
 
     #[test]
-    fn legacy_titles_route_to_expected_families() {
-        assert_eq!(tool_family_for_title("Shell"), ToolFamily::Run);
-        assert_eq!(tool_family_for_title("Patch"), ToolFamily::Patch);
-        assert_eq!(tool_family_for_title("Workspace"), ToolFamily::Read);
-        assert_eq!(tool_family_for_title("Search"), ToolFamily::Find);
-        assert_eq!(tool_family_for_title("Diff"), ToolFamily::Patch);
-        assert_eq!(tool_family_for_title("Plan"), ToolFamily::Generic);
-        assert_eq!(tool_family_for_title("Strategy"), ToolFamily::Generic);
-        assert_eq!(tool_family_for_title("unknown title"), ToolFamily::Generic);
-    }
+    fn fixed_tool_catalog_routes_to_semantic_families() {
+        let expected = [
+            ("apply_patch", ToolFamily::Patch),
+            ("edit_file", ToolFamily::Patch),
+            ("exec_shell", ToolFamily::Run),
+            ("file_search", ToolFamily::Find),
+            ("git_diff", ToolFamily::Patch),
+            ("git_status", ToolFamily::Read),
+            ("grep_files", ToolFamily::Find),
+            ("list_dir", ToolFamily::Read),
+            ("read_file", ToolFamily::Read),
+            ("run_tests", ToolFamily::Verify),
+            ("run_verifiers", ToolFamily::Verify),
+        ];
 
-    #[test]
-    fn tool_names_route_to_families_by_verb() {
-        assert_eq!(tool_family_for_name("read_file"), ToolFamily::Read);
-        assert_eq!(tool_family_for_name("apply_patch"), ToolFamily::Patch);
-        assert_eq!(tool_family_for_name("exec_shell"), ToolFamily::Run);
+        for (name, family) in expected {
+            assert_eq!(tool_family_for_name(name), family, "tool {name}");
+        }
+
+        // Preserve the broader vocabulary used by retained transcript data.
         assert_eq!(tool_family_for_name("task_shell_start"), ToolFamily::Run);
-        assert_eq!(tool_family_for_name("grep_files"), ToolFamily::Find);
         assert_eq!(tool_family_for_name("git_log"), ToolFamily::Read);
         assert_eq!(tool_family_for_name("agent"), ToolFamily::Delegate);
-        assert_eq!(tool_family_for_name("run_verifiers"), ToolFamily::Verify);
         assert_eq!(
             tool_family_for_name("wait_for_dev_server"),
             ToolFamily::Verify

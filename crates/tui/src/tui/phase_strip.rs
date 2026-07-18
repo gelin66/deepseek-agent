@@ -22,7 +22,7 @@ use unicode_width::UnicodeWidthStr;
 use crate::localization::MessageId;
 use crate::tui::{
     app::App,
-    history::{HistoryCell, ToolCell, ToolStatus},
+    history::{HistoryCell, ToolStatus},
     underwater::{ShellPhase, ShellTier, phase_marker},
 };
 
@@ -123,14 +123,7 @@ fn count_running_tools(cell: &HistoryCell) -> usize {
     let HistoryCell::Tool(tool) = cell else {
         return 0;
     };
-    match tool {
-        ToolCell::Exploring(explore) => explore
-            .entries
-            .iter()
-            .filter(|entry| matches!(entry.status, ToolStatus::Running))
-            .count(),
-        other => usize::from(other.status() == Some(ToolStatus::Running)),
-    }
+    usize::from(tool.status == ToolStatus::Running)
 }
 
 /// Paint the one-line phase band. Owns phase, optional working detail, cost,
@@ -247,7 +240,7 @@ mod tests {
         config::Config,
         tui::active_cell::ActiveCell,
         tui::app::TuiOptions,
-        tui::history::{GenericToolCell, ToolCell, ToolStatus},
+        tui::history::{GenericToolCell, ToolStatus},
     };
     use ratatui::{Terminal, backend::TestBackend};
     use std::{
@@ -343,7 +336,7 @@ mod tests {
         let mut active = ActiveCell::new();
         active.push_tool(
             "shell-1",
-            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            HistoryCell::Tool(GenericToolCell {
                 name: "exec_shell".to_string(),
                 status: ToolStatus::Running,
                 input_summary: Some("command: cargo build -p tui".to_string()),
@@ -351,7 +344,7 @@ mod tests {
                 prompts: None,
                 output_summary: None,
                 is_diff: false,
-            })),
+            }),
         );
         app.active_cell = Some(active);
 

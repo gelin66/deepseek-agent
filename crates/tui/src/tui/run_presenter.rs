@@ -16,8 +16,8 @@ use serde_json::Value;
 
 use super::app::{App, ToolDetailRecord};
 use super::history::{
-    GenericToolCell, HistoryCell, ToolCell, ToolStatus, output_looks_like_diff,
-    summarize_tool_args, summarize_tool_output,
+    GenericToolCell, HistoryCell, ToolStatus, output_looks_like_diff, summarize_tool_args,
+    summarize_tool_output,
 };
 use super::run_projection::{ProjectionEffect, ProjectionEffectKind, UserTranscriptSource};
 
@@ -285,8 +285,6 @@ fn reset_run_display(app: &mut App) {
     app.active_tool_entry_completed_at.clear();
     app.tool_cells.clear();
     app.tool_details_by_cell.clear();
-    app.exploring_cell = None;
-    app.exploring_entries.clear();
     app.ignored_tool_calls.clear();
     app.streaming_message_index = None;
     app.pending_tool_uses.clear();
@@ -453,7 +451,7 @@ fn tool_input(arguments: &ToolArguments) -> Value {
 fn present_tool_prepared(app: &mut App, id: &str, name: &str, arguments: &ToolArguments) {
     let input = tool_input(arguments);
     let index = app.history.len();
-    app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    app.add_message(HistoryCell::Tool(GenericToolCell {
         name: name.to_owned(),
         status: ToolStatus::Running,
         input_summary: summarize_tool_args(&input),
@@ -461,7 +459,7 @@ fn present_tool_prepared(app: &mut App, id: &str, name: &str, arguments: &ToolAr
         prompts: None,
         output_summary: None,
         is_diff: false,
-    })));
+    }));
     app.tool_cells.insert(id.to_owned(), index);
     app.tool_details_by_cell.insert(
         index,
@@ -485,7 +483,7 @@ fn present_tool_outcome(app: &mut App, id: &str, name: &str, outcome: &ToolOutco
     let is_diff = output.as_deref().is_some_and(output_looks_like_diff);
 
     if let Some(index) = app.tool_cells.remove(id) {
-        if let Some(HistoryCell::Tool(ToolCell::Generic(cell))) = app.history.get_mut(index) {
+        if let Some(HistoryCell::Tool(cell)) = app.history.get_mut(index) {
             cell.status = status;
             cell.output = output.clone();
             cell.output_summary = summary;
@@ -499,7 +497,7 @@ fn present_tool_outcome(app: &mut App, id: &str, name: &str, outcome: &ToolOutco
     }
 
     let index = app.history.len();
-    app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    app.add_message(HistoryCell::Tool(GenericToolCell {
         name: name.to_owned(),
         status,
         input_summary: None,
@@ -507,7 +505,7 @@ fn present_tool_outcome(app: &mut App, id: &str, name: &str, outcome: &ToolOutco
         prompts: None,
         output_summary: summary,
         is_diff,
-    })));
+    }));
     app.tool_details_by_cell.insert(
         index,
         ToolDetailRecord {
@@ -799,7 +797,7 @@ mod tests {
                     content, streaming, ..
                 } => Some(format!("thinking:{streaming}:{content}")),
                 HistoryCell::System { content } => Some(format!("system:{content}")),
-                HistoryCell::Tool(cell) => Some(format!("tool:{:?}", cell.status())),
+                HistoryCell::Tool(cell) => Some(format!("tool:{:?}", cell.status)),
                 HistoryCell::Error { .. } | HistoryCell::ArchivedContext { .. } => None,
             })
             .collect()
@@ -926,7 +924,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .find_map(|(index, cell)| match cell {
-                    HistoryCell::Tool(ToolCell::Generic(cell)) => Some((index, cell)),
+                    HistoryCell::Tool(cell) => Some((index, cell)),
                     _ => None,
                 })
                 .expect("one canonical tool cell");

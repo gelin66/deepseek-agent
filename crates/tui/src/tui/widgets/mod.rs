@@ -27,7 +27,7 @@ use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::{App, AppMode, ComposerDensity, VimMode};
 use crate::tui::approval::{ApprovalRequest, ApprovalView, RiskLevel, ToolCategory};
-use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus};
+use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
 use crate::tui::scrolling::TranscriptLineMeta;
 use crate::tui::ui_text::{char_display_width, text_display_width};
 use crate::tui::underwater::ShellPhase;
@@ -551,7 +551,7 @@ fn receipt_is_settling(receipt_order: usize, elapsed_ms: u128) -> bool {
 }
 
 fn tool_run_summary_cell(run: &ToolRun) -> HistoryCell {
-    HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+    HistoryCell::Tool(GenericToolCell {
         name: "activity_group".to_string(),
         status: ToolStatus::Success,
         input_summary: Some(crate::tui::history::tool_run_summary(run)),
@@ -559,7 +559,7 @@ fn tool_run_summary_cell(run: &ToolRun) -> HistoryCell {
         prompts: None,
         output_summary: None,
         is_diff: false,
-    }))
+    })
 }
 
 fn tool_run_summary_revision(
@@ -3214,7 +3214,7 @@ mod tests {
     use crate::palette;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{App, ComposerDensity, ToolCollapseMode, TuiOptions};
-    use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolRun, ToolStatus};
+    use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
     use crate::tui::scrolling::{TranscriptLineMeta, TranscriptScroll};
     use ratatui::{
         buffer::Buffer,
@@ -3289,7 +3289,7 @@ mod tests {
         assert!(running.contains("run running"), "{running}");
 
         app.finalize_active_cell_as_interrupted();
-        let HistoryCell::Tool(ToolCell::Generic(tool)) = &app.history[0] else {
+        let HistoryCell::Tool(tool) = &app.history[0] else {
             panic!("expected settled canonical generic tool history cell")
         };
         assert_eq!(tool.name, "exec_shell");
@@ -3330,7 +3330,7 @@ mod tests {
     }
 
     fn success_tool_cell(name: &str) -> HistoryCell {
-        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        HistoryCell::Tool(GenericToolCell {
             name: name.to_string(),
             status: ToolStatus::Success,
             input_summary: Some(format!("path: {name}.txt")),
@@ -3338,11 +3338,11 @@ mod tests {
             prompts: None,
             output_summary: None,
             is_diff: false,
-        }))
+        })
     }
 
     fn running_exec_shell_cell() -> HistoryCell {
-        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        HistoryCell::Tool(GenericToolCell {
             name: "exec_shell".to_string(),
             status: ToolStatus::Running,
             input_summary: Some("command: sleep 30".to_string()),
@@ -3350,7 +3350,7 @@ mod tests {
             prompts: None,
             output_summary: None,
             is_diff: false,
-        }))
+        })
     }
 
     fn add_dense_tool_run(app: &mut App) {
@@ -4631,7 +4631,7 @@ mod tests {
     /// long single-line tool results.
     #[test]
     fn long_tool_result_lines_fit_requested_width() {
-        let cell = HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        let cell = HistoryCell::Tool(GenericToolCell {
             name: "read_file".to_string(),
             status: ToolStatus::Success,
             input_summary: Some("path: large.log".to_string()),
@@ -4639,7 +4639,7 @@ mod tests {
             prompts: None,
             output_summary: None,
             is_diff: false,
-        }));
+        });
         for width in [40u16, 80, 111, 165] {
             let lines = cell.lines(width);
             for (idx, line) in lines.iter().enumerate() {
@@ -4684,7 +4684,7 @@ mod tests {
                 "{{\n  \"items\": [\n    {{ \"id\": 1, \"content\": \"{long_value}\", \"status\": \"pending\" }}\n  ]\n}}"
             );
             let output = format!("large file metadata\n{json_payload}");
-            app.add_message(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            app.add_message(HistoryCell::Tool(GenericToolCell {
                 name: "read_file".to_string(),
                 status: ToolStatus::Success,
                 input_summary: Some("path: large.json".to_string()),
@@ -4692,7 +4692,7 @@ mod tests {
                 prompts: None,
                 output_summary: None,
                 is_diff: false,
-            })));
+            }));
 
             let height: u16 = 30;
             let chat_area = Rect {

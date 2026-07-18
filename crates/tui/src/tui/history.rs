@@ -23,9 +23,8 @@ mod tool_run;
 
 use archived_context::render_archived_context;
 use constants::{
-    ASSISTANT_GLYPH, TOOL_CARD_SUMMARY_LINES, TOOL_COMMAND_LINE_LIMIT, TOOL_DONE_SYMBOL,
-    TOOL_FAILED_SYMBOL, TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TRANSCRIPT_RAIL,
-    USER_GLYPH,
+    ASSISTANT_GLYPH, TOOL_CARD_SUMMARY_LINES, TOOL_DONE_SYMBOL, TOOL_FAILED_SYMBOL,
+    TOOL_HEADER_SUMMARY_LIMIT, TOOL_OUTPUT_LINE_LIMIT, TRANSCRIPT_RAIL, USER_GLYPH,
 };
 use message::{
     RenderedTranscriptLine, assistant_label_style_for, hard_break_copy_lines, message_body_style,
@@ -103,7 +102,7 @@ pub enum HistoryCell {
         /// The summary text content.
         summary: String,
     },
-    Tool(ToolCell),
+    Tool(GenericToolCell),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,97 +343,6 @@ impl HistoryCell {
 
 // === Tool Cells ===
 
-/// Variants describing a tool result cell.
-#[derive(Debug, Clone)]
-pub enum ToolCell {
-    Exploring(ExploringCell),
-    PatchSummary(PatchSummaryCell),
-    DiffPreview(DiffPreviewCell),
-    Mcp(McpToolCell),
-    WebSearch(WebSearchCell),
-    Generic(GenericToolCell),
-}
-
-impl ToolCell {
-    /// Status for cells that have a concrete lifecycle state.
-    pub fn status(&self) -> Option<ToolStatus> {
-        match self {
-            ToolCell::Exploring(cell) => {
-                let has_running = cell
-                    .entries
-                    .iter()
-                    .any(|entry| entry.status == ToolStatus::Running);
-                let has_failed = cell
-                    .entries
-                    .iter()
-                    .any(|entry| entry.status == ToolStatus::Failed);
-                Some(if has_running {
-                    ToolStatus::Running
-                } else if has_failed {
-                    ToolStatus::Failed
-                } else {
-                    ToolStatus::Success
-                })
-            }
-            ToolCell::PatchSummary(cell) => Some(cell.status),
-            ToolCell::Mcp(cell) => Some(cell.status),
-            ToolCell::WebSearch(cell) => Some(cell.status),
-            ToolCell::Generic(cell) => Some(cell.status),
-            ToolCell::DiffPreview(_) => Some(ToolStatus::Success),
-        }
-    }
-
-    #[must_use]
-    pub fn is_success(&self) -> bool {
-        self.status() == Some(ToolStatus::Success)
-    }
-
-    #[must_use]
-    pub fn is_running(&self) -> bool {
-        self.status() == Some(ToolStatus::Running)
-    }
-
-    #[must_use]
-    pub fn is_failed(&self) -> bool {
-        self.status() == Some(ToolStatus::Failed)
-    }
-
-    /// Whether this cell should stay visible even inside a dense tool run.
-    #[must_use]
-    pub fn is_collapsible_guard(&self) -> bool {
-        self.is_running()
-            || self.is_failed()
-            || matches!(self, ToolCell::PatchSummary(_) | ToolCell::DiffPreview(_))
-            || matches!(self, ToolCell::Generic(cell) if tool_run::generic_tool_name_is_collapse_guard(&cell.name) || cell.is_diff)
-    }
-
-    /// Render the tool cell into lines.
-    pub fn lines(&self, width: u16) -> Vec<Line<'static>> {
-        self.lines_with_motion(width, false)
-    }
-
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
-        self.render(width, low_motion, RenderMode::Live)
-    }
-
-    /// Full-content rendering for transcript and clipboard output. Tool output that
-    /// would be capped in the live view is emitted in full here.
-    pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
-        self.render(width, /*low_motion*/ false, RenderMode::Transcript)
-    }
-
-    fn render(&self, width: u16, low_motion: bool, mode: RenderMode) -> Vec<Line<'static>> {
-        match self {
-            ToolCell::Exploring(cell) => cell.lines_with_motion(width, low_motion),
-            ToolCell::PatchSummary(cell) => cell.render(width, low_motion, mode),
-            ToolCell::DiffPreview(cell) => cell.lines_with_motion(width, low_motion),
-            ToolCell::Mcp(cell) => cell.render(width, low_motion, mode),
-            ToolCell::WebSearch(cell) => cell.lines_with_motion(width, low_motion),
-            ToolCell::Generic(cell) => cell.lines_with_mode(width, low_motion, mode),
-        }
-    }
-}
-
 /// Overall status for a tool execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
@@ -444,302 +352,7 @@ pub enum ToolStatus {
     Failed,
 }
 
-/// Aggregate cell for tool exploration runs.
-#[derive(Debug, Clone)]
-pub struct ExploringCell {
-    pub entries: Vec<ExploringEntry>,
-}
-
-impl ExploringCell {
-    /// Render the exploring cell into lines.
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        let all_done = self
-            .entries
-            .iter()
-            .all(|entry| entry.status != ToolStatus::Running);
-        let any_hydrated = self
-            .entries
-            .iter()
-            .any(|entry| entry.status == ToolStatus::Hydrated);
-        let status = if all_done {
-            if any_hydrated {
-                ToolStatus::Hydrated
-            } else {
-                ToolStatus::Success
-            }
-        } else {
-            ToolStatus::Running
-        };
-        let header_summary = exploring_header_summary(&self.entries);
-        let multi_entry = self.entries.len() > 1;
-        let header_state = if multi_entry {
-            ""
-        } else if all_done {
-            tool_status_label(status)
-        } else {
-            "running"
-        };
-        // Search-only exploration cards read with the `find` verb so a
-        // completed grep renders `find done · Searching for …` instead of the
-        // incoherent `read done · Searching …` (#4145). Read/list or mixed
-        // cards keep the neutral `read` verb the Workspace card has always used.
-        let family = exploring_card_family(&self.entries);
-        lines.push(render_tool_header_with_family_and_summary(
-            family,
-            header_summary.as_deref(),
-            header_state,
-            status,
-            None,
-            low_motion,
-        ));
-
-        // Dot-grid status strip — one glyph per entry, showing parallel
-        // fanout at a glance: ●=done ◐=running ✕=failed.
-        if self.entries.len() > 1 {
-            let (done, running, failed) =
-                self.entries
-                    .iter()
-                    .fold((0usize, 0usize, 0usize), |(d, r, f), e| match e.status {
-                        ToolStatus::Success | ToolStatus::Hydrated => (d + 1, r, f),
-                        ToolStatus::Running => (d, r + 1, f),
-                        ToolStatus::Failed => (d, r, f + 1),
-                    });
-            let dots: String = self
-                .entries
-                .iter()
-                .map(|e| match e.status {
-                    ToolStatus::Success | ToolStatus::Hydrated => "\u{25CF}",
-                    ToolStatus::Running => "\u{25D0}",
-                    ToolStatus::Failed => "\u{2715}",
-                })
-                .collect();
-            let counts = format!(
-                "{done} done, {running} running{}",
-                if failed > 0 {
-                    format!(", {failed} failed")
-                } else {
-                    String::new()
-                },
-            );
-            lines.push(Line::styled(
-                format!("  {dots}  {counts}"),
-                Style::default().fg(palette::WHALE_INFO),
-            ));
-        }
-
-        for entry in &self.entries {
-            if multi_entry {
-                lines.extend(render_card_detail_line(
-                    None,
-                    &entry.label,
-                    tool_value_style(),
-                    width,
-                ));
-            } else {
-                let prefix = match entry.status {
-                    ToolStatus::Running => "live",
-                    ToolStatus::Success => "done",
-                    ToolStatus::Hydrated => "loaded",
-                    ToolStatus::Failed => "issue",
-                };
-                lines.extend(render_compact_kv(
-                    prefix,
-                    &entry.label,
-                    tool_value_style(),
-                    width,
-                ));
-            }
-        }
-        lines
-    }
-
-    /// Insert a new entry and return its index.
-    #[must_use]
-    pub fn insert_entry(&mut self, entry: ExploringEntry) -> usize {
-        self.entries.push(entry);
-        self.entries.len().saturating_sub(1)
-    }
-}
-
-/// Single entry for exploring tool output.
-#[derive(Debug, Clone)]
-pub struct ExploringEntry {
-    pub label: String,
-    pub status: ToolStatus,
-}
-
-/// Cell for patch summaries emitted by the patch tool.
-#[derive(Debug, Clone)]
-pub struct PatchSummaryCell {
-    pub path: String,
-    pub summary: String,
-    pub status: ToolStatus,
-    pub error: Option<String>,
-}
-
-impl PatchSummaryCell {
-    pub(super) fn render(
-        &self,
-        width: u16,
-        low_motion: bool,
-        mode: RenderMode,
-    ) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        lines.push(render_tool_header_with_summary(
-            "Patch",
-            Some(&self.path),
-            tool_status_label(self.status),
-            self.status,
-            None,
-            low_motion,
-        ));
-        lines.extend(render_compact_kv(
-            "file",
-            &self.path,
-            tool_value_style(),
-            width,
-        ));
-        lines.extend(render_tool_output_mode(
-            &self.summary,
-            width,
-            TOOL_COMMAND_LINE_LIMIT,
-            mode,
-        ));
-        if let Some(error) = self.error.as_ref() {
-            lines.extend(render_tool_output_mode(
-                error,
-                width,
-                TOOL_COMMAND_LINE_LIMIT,
-                mode,
-            ));
-        }
-        lines
-    }
-}
-
-/// Cell for showing a diff preview before applying changes.
-#[derive(Debug, Clone)]
-pub struct DiffPreviewCell {
-    pub title: String,
-    pub diff: String,
-}
-
-impl DiffPreviewCell {
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        let diff_summary = diff_render::diff_summary_label(&self.diff);
-        lines.push(render_tool_header_with_summary(
-            "Diff",
-            diff_summary.as_deref(),
-            "done",
-            ToolStatus::Success,
-            None,
-            low_motion,
-        ));
-        lines.extend(render_compact_kv(
-            "title",
-            &self.title,
-            tool_value_style(),
-            width,
-        ));
-        lines.extend(diff_render::render_diff(&self.diff, width));
-        lines
-    }
-}
-
-/// Cell representing an MCP tool execution.
-#[derive(Debug, Clone)]
-pub struct McpToolCell {
-    pub tool: String,
-    pub status: ToolStatus,
-    pub content: Option<String>,
-    pub is_image: bool,
-}
-
-impl McpToolCell {
-    pub(super) fn render(
-        &self,
-        width: u16,
-        low_motion: bool,
-        mode: RenderMode,
-    ) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        lines.push(render_tool_header_with_summary(
-            "Tool",
-            Some(&self.tool),
-            tool_status_label(self.status),
-            self.status,
-            None,
-            low_motion,
-        ));
-        lines.extend(render_compact_kv(
-            "name",
-            &self.tool,
-            tool_value_style(),
-            width,
-        ));
-
-        if self.is_image {
-            lines.extend(render_compact_kv(
-                "result",
-                "image",
-                tool_value_style(),
-                width,
-            ));
-        }
-
-        if let Some(content) = self.content.as_ref() {
-            lines.extend(render_tool_output_mode(
-                content,
-                width,
-                TOOL_COMMAND_LINE_LIMIT,
-                mode,
-            ));
-        }
-        lines
-    }
-}
-
-/// Cell for web search tool output.
-#[derive(Debug, Clone)]
-pub struct WebSearchCell {
-    pub query: String,
-    pub status: ToolStatus,
-    pub summary: Option<String>,
-}
-
-impl WebSearchCell {
-    /// Render the web search cell into lines.
-    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
-        lines.push(render_tool_header_with_summary(
-            "Search",
-            Some(&self.query),
-            tool_status_label(self.status),
-            self.status,
-            None,
-            low_motion,
-        ));
-        lines.extend(render_compact_kv(
-            "query",
-            &self.query,
-            tool_value_style(),
-            width,
-        ));
-        if let Some(summary) = self.summary.as_ref() {
-            lines.extend(render_compact_kv(
-                "result",
-                summary,
-                tool_value_style(),
-                width,
-            ));
-        }
-        lines
-    }
-}
-
-/// Generic cell for tool output when no specialized rendering exists.
+/// Canonical TUI projection for every runtime tool invocation.
 #[derive(Debug, Clone)]
 pub struct GenericToolCell {
     pub name: String,
@@ -768,7 +381,40 @@ fn should_show_raw_tool_name(
 }
 
 impl GenericToolCell {
-    /// Render the generic tool cell into lines.
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.status == ToolStatus::Success
+    }
+
+    #[must_use]
+    pub fn is_running(&self) -> bool {
+        self.status == ToolStatus::Running
+    }
+
+    #[must_use]
+    pub fn is_failed(&self) -> bool {
+        self.status == ToolStatus::Failed
+    }
+
+    /// Whether this cell should stay visible inside a dense tool run.
+    #[must_use]
+    pub fn is_collapsible_guard(&self) -> bool {
+        self.is_running()
+            || self.is_failed()
+            || tool_run::tool_name_is_collapse_guard(&self.name)
+            || self.is_diff
+    }
+
+    pub fn lines_with_motion(&self, width: u16, low_motion: bool) -> Vec<Line<'static>> {
+        self.lines_with_mode(width, low_motion, RenderMode::Live)
+    }
+
+    /// Render the complete tool record for transcript and clipboard output.
+    pub fn transcript_lines(&self, width: u16) -> Vec<Line<'static>> {
+        self.lines_with_mode(width, false, RenderMode::Transcript)
+    }
+
+    /// Render the canonical tool cell into lines.
     ///
     /// `mode` controls multi-line output handling: `Live` caps at
     /// `TOOL_OUTPUT_LINE_LIMIT` rows with a "+N more" affordance;
@@ -792,7 +438,7 @@ impl GenericToolCell {
             if agent_activity::is_agent_inspection(self) {
                 return agent_activity::render_agent_compact(self, low_motion);
             }
-            // Spawn / start / run: suppress the generic tool card entirely.
+            // Spawn / start / run: suppress the tool card entirely.
             return Vec::new();
         }
 
@@ -905,8 +551,8 @@ impl GenericToolCell {
         if let Some(output) = self.output.as_ref() {
             if self.is_diff {
                 let diff_summary = diff_render::diff_summary_label(output);
-                lines.push(render_tool_header_with_summary(
-                    "Diff",
+                lines.push(render_tool_header_with_family_and_summary(
+                    crate::tui::widgets::tool_card::ToolFamily::Patch,
                     diff_summary.as_deref(),
                     tool_status_label(self.status),
                     self.status,
@@ -930,32 +576,6 @@ impl GenericToolCell {
             }
         }
         wrap_card_rail(lines)
-    }
-}
-
-fn exploring_header_summary(entries: &[ExploringEntry]) -> Option<String> {
-    match entries {
-        [] => None,
-        [entry] => Some(entry.label.clone()),
-        entries => Some(format!("{} items", entries.len())),
-    }
-}
-
-/// Choose the verb family for an exploring card's header. A card whose entries
-/// are all searches reads with the `find` verb so the completed action agrees
-/// with its `Searching for …` labels (#4145); every other exploration mix keeps
-/// the neutral `read` verb the Workspace card uses. The search signal is the
-/// stored exploring-entry label prefix.
-fn exploring_card_family(entries: &[ExploringEntry]) -> crate::tui::widgets::tool_card::ToolFamily {
-    use crate::tui::widgets::tool_card::ToolFamily;
-    let all_search = !entries.is_empty()
-        && entries
-            .iter()
-            .all(|entry| entry.label.starts_with("Searching"));
-    if all_search {
-        ToolFamily::Find
-    } else {
-        ToolFamily::Read
     }
 }
 
@@ -1160,44 +780,6 @@ fn error_body_style(severity: crate::error_taxonomy::ErrorSeverity) -> Style {
         crate::error_taxonomy::ErrorSeverity::Info => palette::TEXT_MUTED,
     };
     Style::default().fg(color)
-}
-
-fn render_tool_header(
-    title: &str,
-    state: &str,
-    status: ToolStatus,
-    started_at: Option<Instant>,
-    low_motion: bool,
-) -> Line<'static> {
-    let family = crate::tui::widgets::tool_card::tool_family_for_title(title);
-    render_tool_header_with_family(family, state, status, started_at, low_motion)
-}
-
-fn render_tool_header_with_summary(
-    title: &str,
-    summary: Option<&str>,
-    state: &str,
-    status: ToolStatus,
-    started_at: Option<Instant>,
-    low_motion: bool,
-) -> Line<'static> {
-    let family = crate::tui::widgets::tool_card::tool_family_for_title(title);
-    render_tool_header_with_family_and_summary(
-        family, summary, state, status, started_at, low_motion,
-    )
-}
-
-/// Render a tool-card header with an explicit verb family. Lets callers
-/// (e.g. `GenericToolCell`) bypass the legacy title→family mapping when
-/// they already know the actual tool name.
-fn render_tool_header_with_family(
-    family: crate::tui::widgets::tool_card::ToolFamily,
-    state: &str,
-    status: ToolStatus,
-    started_at: Option<Instant>,
-    low_motion: bool,
-) -> Line<'static> {
-    render_tool_header_with_family_and_summary(family, None, state, status, started_at, low_motion)
 }
 
 fn render_tool_header_with_family_and_summary(

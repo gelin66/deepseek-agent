@@ -652,7 +652,7 @@ fn truncate_spans_to_width(spans: Vec<Span<'static>>, max_width: usize) -> Vec<S
 mod tests {
     use super::*;
     use crate::palette;
-    use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
+    use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
 
     fn plain_lines(cache: &TranscriptViewCache) -> Vec<String> {
         cache
@@ -681,7 +681,7 @@ mod tests {
     }
 
     fn generic_tool_cell(command: &str) -> HistoryCell {
-        HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+        HistoryCell::Tool(GenericToolCell {
             name: "exec_shell".to_string(),
             status: ToolStatus::Running,
             input_summary: Some(format!("command: {command}")),
@@ -689,7 +689,7 @@ mod tests {
             prompts: None,
             output_summary: None,
             is_diff: false,
-        }))
+        })
     }
 
     #[test]

@@ -346,6 +346,10 @@ M4-C foreground 切换后还已物理删除：
   foreground shell chip、CI 状态猜测、命令时长和 live-output 分支；canonical
   `ToolPrepared`/`ToolOutcomeCommitted -> GenericToolCell` 投影仍完整承载 `exec_shell` 的
   命令、状态、输出、失败可见性、transcript 与 Activity 展示。
+- 同样没有 canonical producer 的 `Exploring`/`PatchSummary`/`DiffPreview`/`Mcp`/
+  `WebSearch` 五种 TUI 专用工具卡及其聚合、状态和 renderer；`ToolCell` 单变体兼容壳也已
+  折叠为直接的 `HistoryCell::Tool(GenericToolCell)`。固定 11 工具现在只走这一展示模型，
+  `git_diff`/`git_status` 也按真实名称获得 edit/read 语义；MCP transport 与 CLI 不依赖旧卡。
 - 只服务已删除旧工具、没有生产 executor 或 registry 消费者的 TUI `ToolSpec`、
   `ToolContext`、`RuntimeToolServices` 与本地 `SandboxPolicy`；错误分类直接使用
   `codewhale_tools::ToolError`，固定目录、production context、sandbox 与 shell owner 不变。

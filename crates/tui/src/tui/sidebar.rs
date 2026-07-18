@@ -23,7 +23,7 @@ use codewhale_protocol::agent_runtime::TerminalState;
 use super::app::{
     App, SidebarFocus, SidebarHoverRow, SidebarHoverSection, SidebarHoverState, SidebarRowAction,
 };
-use super::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus, summarize_tool_output};
+use super::history::{GenericToolCell, HistoryCell, ToolStatus, summarize_tool_output};
 use super::ui_text::truncate_line_to_width;
 
 /// Tolerance for floating-point cost comparison in the sidebar breakdown.
@@ -499,76 +499,15 @@ fn push_tool_rows(
 }
 
 fn sidebar_tool_row_from_cell(cell: &HistoryCell) -> Option<SidebarToolRow> {
-    let HistoryCell::Tool(tool) = cell else {
+    let HistoryCell::Tool(generic) = cell else {
         return None;
     };
-    match tool {
-        ToolCell::Exploring(explore) => {
-            let running = explore
-                .entries
-                .iter()
-                .filter(|entry| entry.status == ToolStatus::Running)
-                .count();
-            let status = if running > 0 {
-                ToolStatus::Running
-            } else if explore
-                .entries
-                .iter()
-                .any(|entry| entry.status == ToolStatus::Failed)
-            {
-                ToolStatus::Failed
-            } else {
-                ToolStatus::Success
-            };
-            let first = explore.entries.first().map(|entry| entry.label.as_str());
-            Some(SidebarToolRow {
-                name: "workspace".to_string(),
-                status,
-                summary: compact_join([
-                    format!("{} item(s), {running} running", explore.entries.len()),
-                    first.unwrap_or_default().to_string(),
-                ]),
-                duration_ms: None,
-            })
-        }
-        ToolCell::PatchSummary(patch) => Some(SidebarToolRow {
-            name: "patch".to_string(),
-            status: patch.status,
-            summary: compact_join([patch.path.clone(), patch.summary.clone()]),
-            duration_ms: None,
-        }),
-        ToolCell::DiffPreview(diff) => Some(SidebarToolRow {
-            name: "diff".to_string(),
-            status: ToolStatus::Success,
-            summary: diff.title.clone(),
-            duration_ms: None,
-        }),
-        ToolCell::Mcp(mcp) => Some(SidebarToolRow {
-            name: mcp.tool.clone(),
-            status: mcp.status,
-            summary: mcp
-                .content
-                .as_deref()
-                .map(summarize_tool_output)
-                .unwrap_or_default(),
-            duration_ms: None,
-        }),
-        ToolCell::WebSearch(search) => Some(SidebarToolRow {
-            name: "web_search".to_string(),
-            status: search.status,
-            summary: compact_join([
-                search.query.clone(),
-                search.summary.clone().unwrap_or_default(),
-            ]),
-            duration_ms: None,
-        }),
-        ToolCell::Generic(generic) => Some(SidebarToolRow {
-            name: friendly_generic_tool_name(&generic.name).to_string(),
-            status: generic.status,
-            summary: generic_tool_sidebar_summary(generic),
-            duration_ms: None,
-        }),
-    }
+    Some(SidebarToolRow {
+        name: friendly_generic_tool_name(&generic.name).to_string(),
+        status: generic.status,
+        summary: generic_tool_sidebar_summary(generic),
+        duration_ms: None,
+    })
 }
 
 fn failure_summary_with_hint(summary: &str) -> String {
@@ -1747,7 +1686,7 @@ mod tests {
     use crate::palette;
     use crate::tui::active_cell::ActiveCell;
     use crate::tui::app::{App, SidebarRowAction, TuiOptions};
-    use crate::tui::history::{GenericToolCell, HistoryCell, ToolCell, ToolStatus};
+    use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
     use ratatui::{Terminal, backend::TestBackend, text::Line};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
@@ -1984,7 +1923,7 @@ mod tests {
         let mut active = ActiveCell::new();
         active.push_tool(
             "tool-1",
-            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            HistoryCell::Tool(GenericToolCell {
                 name: "agent".to_string(),
                 status: ToolStatus::Running,
                 input_summary: Some("agent_id: agent_af58ba3a".to_string()),
@@ -1992,7 +1931,7 @@ mod tests {
                 prompts: None,
                 output_summary: None,
                 is_diff: false,
-            })),
+            }),
         );
         app.active_cell = Some(active);
         app.runtime_turn_id = Some("turn_abcdef123456".to_string());
@@ -2020,16 +1959,15 @@ mod tests {
     fn tasks_panel_renders_recent_completed_tool_rows() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
-        app.history
-            .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-                name: "read_file".to_string(),
-                status: ToolStatus::Success,
-                input_summary: Some("codewhale-tui/CHANGELOG.md".to_string()),
-                output: Some("done".to_string()),
-                prompts: None,
-                output_summary: Some("Reading CHANGELOG.md".to_string()),
-                is_diff: false,
-            })));
+        app.history.push(HistoryCell::Tool(GenericToolCell {
+            name: "read_file".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("codewhale-tui/CHANGELOG.md".to_string()),
+            output: Some("done".to_string()),
+            prompts: None,
+            output_summary: Some("Reading CHANGELOG.md".to_string()),
+            is_diff: false,
+        }));
 
         let text = lines_to_text(&task_panel_lines(&app, 64, 8));
 
@@ -2050,7 +1988,7 @@ mod tests {
         let mut active = ActiveCell::new();
         active.push_tool(
             "tool-1",
-            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            HistoryCell::Tool(GenericToolCell {
                 name: "read_file".to_string(),
                 status: ToolStatus::Success,
                 input_summary: Some("src/main.rs".to_string()),
@@ -2058,7 +1996,7 @@ mod tests {
                 prompts: None,
                 output_summary: Some("done".to_string()),
                 is_diff: false,
-            })),
+            }),
         );
         app.active_cell = Some(active);
         let expired_at = instant_older_than(ACTIVE_TOOL_COMPLETED_ROW_TTL + Duration::from_secs(1));
@@ -2089,7 +2027,7 @@ mod tests {
         let mut active = ActiveCell::new();
         active.push_tool(
             "tool-1",
-            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            HistoryCell::Tool(GenericToolCell {
                 name: "read_file".to_string(),
                 status: ToolStatus::Success,
                 input_summary: Some("src/main.rs".to_string()),
@@ -2097,7 +2035,7 @@ mod tests {
                 prompts: None,
                 output_summary: Some("done".to_string()),
                 is_diff: false,
-            })),
+            }),
         );
         app.active_cell = Some(active);
         app.active_tool_entry_completed_at.insert(0, Instant::now());
@@ -2120,7 +2058,7 @@ mod tests {
         let mut active = ActiveCell::new();
         active.push_tool(
             "tool-1",
-            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            HistoryCell::Tool(GenericToolCell {
                 name: "exec_shell".to_string(),
                 status: ToolStatus::Running,
                 input_summary: Some("cargo test --workspace".to_string()),
@@ -2128,7 +2066,7 @@ mod tests {
                 prompts: None,
                 output_summary: None,
                 is_diff: false,
-            })),
+            }),
         );
         app.active_cell = Some(active);
 
@@ -2189,7 +2127,7 @@ mod tests {
         let mut active = ActiveCell::new();
         active.push_tool(
             "shell-1",
-            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            HistoryCell::Tool(GenericToolCell {
                 name: "exec_shell".to_string(),
                 status: ToolStatus::Running,
                 input_summary: Some("sleep 600".to_string()),
@@ -2197,7 +2135,7 @@ mod tests {
                 prompts: None,
                 output_summary: None,
                 is_diff: false,
-            })),
+            }),
         );
         app.active_cell = Some(active);
 
@@ -2588,37 +2526,34 @@ mod tests {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
         for path in ["src/a.rs", "src/b.rs", "src/c.rs"] {
-            app.history
-                .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-                    name: "read_file".to_string(),
-                    status: ToolStatus::Success,
-                    input_summary: Some(path.to_string()),
-                    output: Some("ok".to_string()),
-                    prompts: None,
-                    output_summary: None,
-                    is_diff: false,
-                })));
-        }
-        app.history
-            .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-                name: "file_search".to_string(),
+            app.history.push(HistoryCell::Tool(GenericToolCell {
+                name: "read_file".to_string(),
                 status: ToolStatus::Success,
-                input_summary: Some("pattern: src/*.rs".to_string()),
-                output: Some("src/main.rs".to_string()),
+                input_summary: Some(path.to_string()),
+                output: Some("ok".to_string()),
                 prompts: None,
                 output_summary: None,
                 is_diff: false,
-            })));
-        app.history
-            .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-                name: "grep_files".to_string(),
-                status: ToolStatus::Failed,
-                input_summary: Some("pattern: canonical projection".to_string()),
-                output: Some("regex parse error".to_string()),
-                prompts: None,
-                output_summary: Some("regex parse error".to_string()),
-                is_diff: false,
-            })));
+            }));
+        }
+        app.history.push(HistoryCell::Tool(GenericToolCell {
+            name: "file_search".to_string(),
+            status: ToolStatus::Success,
+            input_summary: Some("pattern: src/*.rs".to_string()),
+            output: Some("src/main.rs".to_string()),
+            prompts: None,
+            output_summary: None,
+            is_diff: false,
+        }));
+        app.history.push(HistoryCell::Tool(GenericToolCell {
+            name: "grep_files".to_string(),
+            status: ToolStatus::Failed,
+            input_summary: Some("pattern: canonical projection".to_string()),
+            output: Some("regex parse error".to_string()),
+            prompts: None,
+            output_summary: Some("regex parse error".to_string()),
+            is_diff: false,
+        }));
 
         let text = lines_to_text(&task_panel_lines(&app, 80, 12));
         let failed_index = text
@@ -2651,16 +2586,15 @@ mod tests {
     fn tasks_panel_failed_shell_rows_keep_the_real_failure_summary() {
         let mut app = create_test_app();
         app.sidebar_focus = SidebarFocus::Tasks;
-        app.history
-            .push(HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
-                name: "exec_shell".to_string(),
-                status: ToolStatus::Failed,
-                input_summary: Some("command: cargo test -p codewhale-tui".to_string()),
-                output: Some("test failed".to_string()),
-                prompts: None,
-                output_summary: Some("test failed".to_string()),
-                is_diff: false,
-            })));
+        app.history.push(HistoryCell::Tool(GenericToolCell {
+            name: "exec_shell".to_string(),
+            status: ToolStatus::Failed,
+            input_summary: Some("command: cargo test -p codewhale-tui".to_string()),
+            output: Some("test failed".to_string()),
+            prompts: None,
+            output_summary: Some("test failed".to_string()),
+            is_diff: false,
+        }));
 
         let text = lines_to_text(&task_panel_lines(&app, 80, 8));
 
@@ -2685,7 +2619,7 @@ mod tests {
         let mut active = ActiveCell::new();
         active.push_tool(
             "shell-wait",
-            HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+            HistoryCell::Tool(GenericToolCell {
                 name: "task_shell_wait".to_string(),
                 status: ToolStatus::Running,
                 input_summary: Some("task_id: shell_33a08c3c".to_string()),
@@ -2693,7 +2627,7 @@ mod tests {
                 prompts: None,
                 output_summary: None,
                 is_diff: false,
-            })),
+            }),
         );
         app.active_cell = Some(active);
 
@@ -2717,7 +2651,7 @@ mod tests {
         for id in ["shell-wait-1", "shell-wait-2"] {
             active.push_tool(
                 id,
-                HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                HistoryCell::Tool(GenericToolCell {
                     name: "task_shell_wait".to_string(),
                     status: ToolStatus::Running,
                     input_summary: Some("task_id: shell_33a08c3c".to_string()),
@@ -2725,7 +2659,7 @@ mod tests {
                     prompts: None,
                     output_summary: Some("Background task running (no new output).".to_string()),
                     is_diff: false,
-                })),
+                }),
             );
         }
         app.active_cell = Some(active);
@@ -2756,7 +2690,7 @@ mod tests {
         ] {
             active.push_tool(
                 id,
-                HistoryCell::Tool(ToolCell::Generic(GenericToolCell {
+                HistoryCell::Tool(GenericToolCell {
                     name: "task_shell_wait".to_string(),
                     status: ToolStatus::Running,
                     input_summary: None,
@@ -2764,7 +2698,7 @@ mod tests {
                     prompts: None,
                     output_summary: Some(summary.to_string()),
                     is_diff: false,
-                })),
+                }),
             );
         }
         app.active_cell = Some(active);
