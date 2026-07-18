@@ -1030,6 +1030,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - TUI `core/runtime_contract` 中从未编译、没有生产消费者的 10 个 speculative shadow 文件已
   物理删除；仓库只保留 `crates/protocol` 的 canonical `RuntimeEventKind`。仍被 exec 输出、
   runtime 与 CLI presentation 消费的 typed `termination.rs` 继续通过真实 path import 编译。
+- TUI 已删除无调用者的独立 `resume`/Agent-root picker wrapper、只供其使用的过滤 helper，
+  `CanonicalRunProjection` 的零消费者 public cursor getter，以及没有 producer/handler 的
+  Fleet model-draft ViewEvent 和 delivery cell。`attach_or_resume`、`latest_root`、canonical
+  app 的 list/resume API、内部投影游标与真实 Fleet 执行链均保留。
 - 隐藏 workflow 的 Workflow/SubAgent JSON/JSONL 写入链、专属 adapter 和 UI 已随第二
   Runtime 物理删除；未把旧状态迁成 canonical 双写。
 - ACP 独立 session/stream/direct completion 已删除；不保留 editor 协议兼容桥。

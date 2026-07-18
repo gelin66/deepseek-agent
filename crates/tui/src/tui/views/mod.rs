@@ -297,34 +297,6 @@ pub enum ViewEvent {
     UserInputCancelled {
         tool_id: String,
     },
-    /// Emitted by the fleet setup Review step (`m`) to ask the configured
-    /// model to draft the agent profile the wizard describes. The host
-    /// performs the one-shot call, pushes the sanitized/bounded draft back
-    /// into the wizard, and opens the rendered-TOML preview; on failure it
-    /// reports why and the manual authoring flow stands. Nothing is
-    /// persisted by this event.
-    FleetProfileModelDraftRequested {
-        role: String,
-        /// Target model for the worker: a concrete model id, or "inherit".
-        model: String,
-        /// Canonical provider id for a concrete cross-provider route pick, or
-        /// `None` for `inherit` (#4093). Carried so the model-drafted profile
-        /// keeps the picked provider instead of collapsing to an ambiguous,
-        /// provider-scoped profile — the exact bug #4093 fixes.
-        provider: Option<String>,
-        /// Canonical reasoning tier selected by the wizard, or `None` for
-        /// inherit (#4137). Carried with the async draft for the same reason
-        /// as `provider`: the ratified profile must preserve the operator's
-        /// explicit choice, not whatever the model echoed.
-        reasoning_effort: Option<String>,
-    },
-    /// Emitted by the fleet setup Review step after the user previewed a
-    /// model-drafted profile and pressed the explicit ratify key. The host
-    /// renders TOML deterministically from the validated draft and persists
-    /// it atomically under `.codewhale/agents/`.
-    FleetProfileDraftCommitRequested {
-        draft: Box<crate::fleet::profile::FleetProfileDraft>,
-    },
     /// Emitted by the pager (`c` / `y`) to copy its body to the system
     /// clipboard. The host handler writes via `app.clipboard` and surfaces a
     /// status message — modal views cannot reach `app` directly. `label` is

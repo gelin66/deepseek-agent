@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use codewhale_app::AgentApplication;
 use codewhale_protocol::agent_runtime::{
-    InteractionId, RunId, RunPurpose, StoredRuntimeEvent, UserInteractionResponse,
+    InteractionId, RunId, StoredRuntimeEvent, UserInteractionResponse,
 };
 use codewhale_protocol::run_api::{
     CompactRunCommand, ContinueRunCommand, MAX_RUN_LIST_LIMIT, PendingCreationSummary,
@@ -166,13 +166,6 @@ fn compact_command(run_id: RunId, expected_workspace: Option<String>) -> RunComm
     })
 }
 
-fn agent_roots(runs: Vec<RootRunSummary>, limit: u32) -> Vec<RootRunSummary> {
-    runs.into_iter()
-        .filter(|run| run.purpose == RunPurpose::Agent)
-        .take(limit as usize)
-        .collect()
-}
-
 fn run_requires_resume(run: &RunView) -> bool {
     run.terminal.is_none()
 }
@@ -227,23 +220,6 @@ impl TuiRunClient {
         self.execute_launch("submit", command).await
     }
 
-    /// Resume execution of one durable non-terminal run.
-    pub async fn resume(
-        &self,
-        run_id: RunId,
-        expected_workspace: Option<String>,
-    ) -> Result<RunView, TuiRunClientError> {
-        self.begin_launch().await?;
-        self.execute_launch(
-            "resume",
-            RunCommand::Resume {
-                run_id,
-                expected_workspace,
-            },
-        )
-        .await
-    }
-
     /// Compact one terminal root into a new canonical compaction root.
     pub async fn compact(
         &self,
@@ -253,44 +229,6 @@ impl TuiRunClient {
         self.begin_launch().await?;
         self.execute_launch("compact", compact_command(run_id, expected_workspace))
             .await
-    }
-
-    /// Return only user-facing Agent roots for the workspace picker.
-    ///
-    /// The canonical Store also lists internal context-compaction roots. Those
-    /// remain valid continuation sources but are not independent sessions.
-    pub async fn list_roots(
-        &self,
-        workspace: String,
-        limit: u32,
-    ) -> Result<Vec<RootRunSummary>, TuiRunClientError> {
-        let operation = "list-roots";
-        // Fetch the widest valid canonical window before filtering. Otherwise
-        // a recent internal compaction root can hide the latest Agent root
-        // when a picker asks for `limit = 1`.
-        let canonical_limit = if (1..=MAX_RUN_LIST_LIMIT).contains(&limit) {
-            MAX_RUN_LIST_LIMIT
-        } else {
-            limit
-        };
-        let response = self
-            .application
-            .execute(self.envelope(
-                operation,
-                RunCommand::ListRoots {
-                    workspace,
-                    limit: canonical_limit,
-                },
-            ))
-            .await;
-        match response.result {
-            RunCommandResult::Runs { runs, .. } => Ok(agent_roots(runs, limit)),
-            RunCommandResult::Error { error } => Err(TuiRunClientError::Application(error)),
-            result => Err(TuiRunClientError::UnexpectedResult {
-                operation,
-                result: Box::new(result),
-            }),
-        }
     }
 
     /// Return the newest canonical root, including an internal compaction
@@ -694,19 +632,6 @@ mod tests {
         }
     }
 
-    fn root_summary(run_id: &str, purpose: RunPurpose, updated_at_unix_ms: u64) -> RootRunSummary {
-        RootRunSummary {
-            run_id: RunId::from(run_id),
-            purpose,
-            continued_from_run_id: None,
-            workspace: "/workspace/project".to_owned(),
-            last_sequence: 1,
-            terminal: true,
-            created_at_unix_ms: 1,
-            updated_at_unix_ms,
-        }
-    }
-
     fn terminal_event(run_id: &RunId, sequence: u64) -> StoredRuntimeEvent {
         StoredRuntimeEvent {
             schema_version: codewhale_protocol::agent_runtime::AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
@@ -915,26 +840,6 @@ mod tests {
         assert_eq!(
             command.expected_workspace.as_deref(),
             Some("/workspace/project")
-        );
-    }
-
-    #[test]
-    fn root_picker_filters_internal_compaction_roots() {
-        let roots = agent_roots(
-            vec![
-                root_summary("compact", RunPurpose::ContextCompaction, 4),
-                root_summary("agent-new", RunPurpose::Agent, 3),
-                root_summary("compact-old", RunPurpose::ContextCompaction, 2),
-                root_summary("agent-old", RunPurpose::Agent, 1),
-            ],
-            1,
-        );
-        assert_eq!(
-            roots
-                .iter()
-                .map(|run| run.run_id.clone())
-                .collect::<Vec<_>>(),
-            vec![RunId::from("agent-new")]
         );
     }
 

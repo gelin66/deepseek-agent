@@ -63,18 +63,6 @@ user-named OpenAI-compatible provider configured under `[providers.<name>]`
 such as `lm-studio`; the launch path preserves that id and fails closed if the
 provider is not configured.
 
-When a provider is configured, the review step also offers model-assisted
-drafting behind a ratify gate:
-
-- Press **`m`** to have your first configured model draft the profile. The
-  draft arrives sanitized and bounded — permissions stay at the **fleet floor**
-  (no shell, no trust, approval required) regardless of what the model
-  proposes.
-- **Drafting is not ratifying.** The exact rendered TOML preview renders
-  inline on the review step (not in a separate scrollable viewer), so nothing
-  is saved until you press **`g`** or **Enter** to ratify (or press `m` again
-  to redraft). Ratifying writes the profile to `.codewhale/agents/<role>`.
-
 ## Naming: Modes, Workflow, and Fleet
 
 These names describe different layers, not competing systems. Plan and Act are

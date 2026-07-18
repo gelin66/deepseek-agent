@@ -111,11 +111,6 @@ impl CanonicalRunProjection {
         }
         Ok(effects)
     }
-
-    #[must_use]
-    pub fn last_sequence(&self, run_id: &RunId) -> Option<u64> {
-        self.runs.get(run_id).map(|state| state.last_sequence)
-    }
 }
 
 #[derive(Debug, Default)]
@@ -488,7 +483,6 @@ mod tests {
         for event in events {
             assert!(projection.apply(event).expect("exact replay").is_empty());
         }
-        assert_eq!(projection.last_sequence(&run_id), Some(4));
     }
 
     #[test]
@@ -523,7 +517,10 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(projection.last_sequence(&run_id), Some(1));
+        let effects = projection
+            .apply(stored(&run_id, 2, "content-2", content()))
+            .expect("rejected conflicts must not consume the next valid sequence");
+        assert_eq!(effects.len(), 1);
     }
 
     #[test]
@@ -563,8 +560,6 @@ mod tests {
                 .unwrap_err(),
             ProjectionError::SteerFifoMismatch { .. }
         ));
-        assert_eq!(projection.last_sequence(&run_id), Some(3));
-
         for (sequence, command_id, content) in [(4, first, "先 A"), (5, second, "再 B")] {
             let effects = projection
                 .apply(stored(
