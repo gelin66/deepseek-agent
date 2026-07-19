@@ -236,13 +236,11 @@ fn reasoning_effort_display_label_uses_codex_xhigh() {
 }
 
 #[test]
-fn mode_and_thinking_are_locked_while_a_turn_is_running() {
-    // #2982: while a turn is in flight, user-initiated mode/thinking changes
-    // are refused with a concise message instead of shifting the surface the
-    // engine is acting on.
+fn mode_is_locked_while_a_turn_is_running() {
+    // While a turn is in flight, user-initiated mode changes are refused with
+    // a concise message instead of shifting the surface the engine is acting on.
     let mut app = App::new(test_options(false), &Config::default());
     app.mode = AppMode::Agent;
-    app.reasoning_effort = ReasoningEffort::Max;
     app.is_loading = true;
 
     app.cycle_mode();
@@ -256,13 +254,6 @@ fn mode_and_thinking_are_locked_while_a_turn_is_running() {
         app.status_message
     );
 
-    let before_effort = app.reasoning_effort;
-    app.cycle_effort();
-    assert_eq!(
-        app.reasoning_effort, before_effort,
-        "thinking must not change while busy"
-    );
-
     // Once the turn finishes, the same gesture works again.
     app.is_loading = false;
     app.cycle_mode();
@@ -270,7 +261,7 @@ fn mode_and_thinking_are_locked_while_a_turn_is_running() {
 }
 
 #[test]
-fn reasoning_effort_api_values_are_provider_aware_for_codex() {
+fn reasoning_effort_parsing_is_provider_aware_for_codex() {
     assert_eq!(
         ReasoningEffort::Off.normalize_for_provider(ApiProvider::OpenaiCodex),
         ReasoningEffort::Low
@@ -278,18 +269,6 @@ fn reasoning_effort_api_values_are_provider_aware_for_codex() {
     assert_eq!(
         ReasoningEffort::Auto.normalize_for_provider(ApiProvider::OpenaiCodex),
         ReasoningEffort::Medium
-    );
-    assert_eq!(
-        ReasoningEffort::Max.api_value_for_provider(ApiProvider::OpenaiCodex),
-        Some("xhigh")
-    );
-    assert_eq!(
-        ReasoningEffort::Off.api_value_for_provider(ApiProvider::OpenaiCodex),
-        Some("low")
-    );
-    assert_eq!(
-        ReasoningEffort::Max.api_value_for_provider(ApiProvider::Deepseek),
-        Some("max")
     );
     assert_eq!(
         ReasoningEffort::from_setting("ultracode"),
@@ -1723,34 +1702,6 @@ fn cycle_approval_posture_cycles_suggest_auto_bypass() {
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
     let persisted = std::fs::read_to_string(tmp.path().join("settings.toml")).expect("settings");
     assert!(persisted.contains("permission_posture = \"ask\""));
-}
-
-#[test]
-fn cycle_approval_posture_emits_rebinding_notice_once() {
-    let _env_lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let mut options = test_options(false);
-    options.start_in_agent_mode = true;
-    options.config_path = Some(config_path);
-    let mut app = App::new(options, &Config::default());
-
-    assert!(app.cycle_approval_posture());
-    let notices = app
-        .status_toasts
-        .iter()
-        .filter(|toast| toast.text.contains("moved to Ctrl+T"))
-        .count();
-    assert_eq!(notices, 1, "first cycle posts the rebinding notice");
-
-    assert!(app.cycle_approval_posture());
-    let notices = app
-        .status_toasts
-        .iter()
-        .filter(|toast| toast.text.contains("moved to Ctrl+T"))
-        .count();
-    assert_eq!(notices, 1, "notice is one-shot per session");
 }
 
 #[test]

@@ -571,6 +571,26 @@ fn canonical_start_command_projects_exact_model_or_auto() {
 }
 
 #[test]
+fn canonical_start_command_projects_every_reasoning_effort() {
+    let config = Config::default();
+    let mut app = create_test_app();
+    let cases = [
+        (ReasoningEffort::Off, RuntimeReasoningEffort::Off),
+        (ReasoningEffort::Low, RuntimeReasoningEffort::Low),
+        (ReasoningEffort::Medium, RuntimeReasoningEffort::Medium),
+        (ReasoningEffort::High, RuntimeReasoningEffort::High),
+        (ReasoningEffort::Auto, RuntimeReasoningEffort::Auto),
+        (ReasoningEffort::Max, RuntimeReasoningEffort::Max),
+    ];
+
+    for (local, runtime) in cases {
+        app.reasoning_effort = local;
+        let command = canonical_start_command(&app, &config, "检查项目".to_owned());
+        assert_eq!(command.reasoning_effort, runtime);
+    }
+}
+
+#[test]
 fn canonical_start_command_uses_configured_subagent_limits() {
     let mut app = create_test_app();
     app.max_subagents = 12;

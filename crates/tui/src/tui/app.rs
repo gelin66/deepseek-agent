@@ -158,10 +158,7 @@ pub enum AppMode {
 /// The config file accepts all five string values for forward-compat with
 /// providers that expose the full spectrum; DeepSeek currently collapses
 /// `Low`/`Medium` → `high`. OpenAI Codex normalizes inherited DeepSeek-only
-/// `Off` to `Low` and displays/sends `Max` as `xhigh` at the provider
-/// boundary. The default keyboard cycler walks the three DeepSeek-distinct
-/// tiers: `Off` → `High` → `Max` → `Off`; provider-aware callers should use
-/// [`ReasoningEffort::cycle_next_for_provider`].
+/// `Off` to `Low` and displays `Max` as `xhigh` at the provider boundary.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ReasoningEffort {
     Off,
@@ -194,19 +191,6 @@ impl ReasoningEffort {
         Self::from_setting(value).normalize_for_provider(provider)
     }
 
-    /// Canonical lowercase label used for config storage and UI hints.
-    #[must_use]
-    pub fn as_setting(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Auto => "auto",
-            Self::Max => "max",
-        }
-    }
-
     /// Short label for the header chip.
     #[must_use]
     pub fn short_label(self) -> &'static str {
@@ -232,14 +216,6 @@ impl ReasoningEffort {
         }
     }
 
-    /// Value forwarded to the engine/client. `None` means "provider default"
-    /// (for `Off` we still emit `"off"` so the client can inject
-    /// `thinking = {"type": "disabled"}`).
-    #[must_use]
-    pub fn api_value(self) -> Option<&'static str> {
-        Some(self.as_setting())
-    }
-
     #[must_use]
     pub fn normalize_for_provider(self, provider: ApiProvider) -> Self {
         if provider != ApiProvider::OpenaiCodex {
@@ -249,52 +225,6 @@ impl ReasoningEffort {
             Self::Off => Self::Low,
             Self::Auto => Self::Medium,
             other => other,
-        }
-    }
-
-    #[must_use]
-    pub fn api_value_for_provider(self, provider: ApiProvider) -> Option<&'static str> {
-        if provider != ApiProvider::OpenaiCodex {
-            return self.api_value();
-        }
-        Some(match self.normalize_for_provider(provider) {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Max => "xhigh",
-            Self::Off => "low",
-            Self::Auto => "medium",
-        })
-    }
-
-    #[must_use]
-    pub fn as_setting_for_provider(self, provider: ApiProvider) -> &'static str {
-        self.api_value_for_provider(provider)
-            .unwrap_or_else(|| self.as_setting())
-    }
-
-    /// Cycle through the three behaviorally distinct tiers.
-    #[must_use]
-    pub fn cycle_next(self) -> Self {
-        match self {
-            Self::Off => Self::High,
-            Self::Auto => Self::Off,
-            Self::Low | Self::Medium | Self::High => Self::Max,
-            Self::Max => Self::Off,
-        }
-    }
-
-    #[must_use]
-    pub fn cycle_next_for_provider(self, provider: ApiProvider) -> Self {
-        if provider != ApiProvider::OpenaiCodex {
-            return self.cycle_next();
-        }
-        match self.normalize_for_provider(provider) {
-            Self::Low => Self::Medium,
-            Self::Medium => Self::High,
-            Self::High => Self::Max,
-            Self::Max => Self::Low,
-            Self::Off | Self::Auto => Self::Low,
         }
     }
 }
@@ -1318,8 +1248,6 @@ pub struct App {
     pub yolo: bool,
     /// One-shot YOLO→Act+Bypass migration notice for this session (#0.8.68 M6).
     yolo_compat_notified: bool,
-    /// One-shot Shift+Tab/Ctrl+T rebinding notice for this session (#0.8.68 M3).
-    keybinding_migration_notified: bool,
     /// Durable Agent-era permission baseline that Plan/YOLO derive from and
     /// restore to (#3386). Refreshed from the live fields whenever the user
     /// leaves Agent mode; see [`base_policy_for_mode`] and `set_mode`.
@@ -1888,7 +1816,6 @@ impl App {
             api_key_cursor: 0,
             yolo: yolo_compat,
             yolo_compat_notified: false,
-            keybinding_migration_notified: false,
             mode_prefs,
             approval_policy_locked,
             approval_policy_requirements_managed,
@@ -2102,21 +2029,7 @@ impl App {
         );
     }
 
-    /// One-release migration notice for the Shift+Tab/Ctrl+T rebinding: users
-    /// pressing Shift+Tab expecting the old thinking cycle land here first.
-    fn notify_keybinding_migration_once(&mut self) {
-        if self.keybinding_migration_notified {
-            return;
-        }
-        self.keybinding_migration_notified = true;
-        self.push_status_toast(
-            "Shift+Tab now cycles permissions — reasoning effort moved to Ctrl+T".to_string(),
-            StatusToastLevel::Info,
-            Some(8_000),
-        );
-    }
-
-    /// Whether mode/thinking selection is locked because a turn is in flight.
+    /// Whether mode selection is locked because a turn is in flight.
     ///
     /// While `is_loading`, the model/permission surface the engine is acting on
     /// must not shift underneath it, so user-initiated mode and thinking changes
@@ -2152,18 +2065,6 @@ impl App {
         }
         let next = self.mode.previous();
         let _ = self.set_mode(next);
-    }
-
-    /// Cycle reasoning-effort through the active provider's distinct tiers.
-    pub fn cycle_effort(&mut self) {
-        if self.reject_setting_change_while_busy("Thinking") {
-            return;
-        }
-        self.reasoning_effort = self
-            .reasoning_effort
-            .cycle_next_for_provider(self.api_provider);
-        self.needs_redraw = true;
-        // Effort chip in the header is canonical — no duplicate toast.
     }
 
     /// Cycle the durable Agent permission posture: Ask → Auto-Review → Bypass.
@@ -2212,9 +2113,7 @@ impl App {
         }
         self.set_agent_approval_posture(next);
         self.needs_redraw = true;
-        // Footer permission chip is canonical — no status toast for the new
-        // value, only the one-shot rebinding notice.
-        self.notify_keybinding_migration_once();
+        // Footer permission chip is canonical — no duplicate status toast.
         true
     }
 
