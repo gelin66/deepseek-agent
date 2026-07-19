@@ -679,7 +679,6 @@ struct EnvGuard {
     deepseek_provider: Option<OsString>,
     deepseek_api_key: Option<OsString>,
     deepseek_base_url: Option<OsString>,
-    deepseek_http_headers: Option<OsString>,
     deepseek_model: Option<OsString>,
     deepseek_default_text_model: Option<OsString>,
     codewhale_provider: Option<OsString>,
@@ -783,7 +782,6 @@ impl EnvGuard {
         let deepseek_provider_prev = env::var_os("DEEPSEEK_PROVIDER");
         let api_key_prev = env::var_os("DEEPSEEK_API_KEY");
         let base_url_prev = env::var_os("DEEPSEEK_BASE_URL");
-        let http_headers_prev = env::var_os("DEEPSEEK_HTTP_HEADERS");
         let model_prev = env::var_os("DEEPSEEK_MODEL");
         let default_text_model_prev = env::var_os("DEEPSEEK_DEFAULT_TEXT_MODEL");
         let codewhale_provider_prev = env::var_os("CODEWHALE_PROVIDER");
@@ -882,7 +880,6 @@ impl EnvGuard {
             env::remove_var("DEEPSEEK_PROVIDER");
             env::remove_var("DEEPSEEK_API_KEY");
             env::remove_var("DEEPSEEK_BASE_URL");
-            env::remove_var("DEEPSEEK_HTTP_HEADERS");
             env::remove_var("DEEPSEEK_MODEL");
             env::remove_var("DEEPSEEK_DEFAULT_TEXT_MODEL");
             env::remove_var("CODEWHALE_PROVIDER");
@@ -981,7 +978,6 @@ impl EnvGuard {
             deepseek_provider: deepseek_provider_prev,
             deepseek_api_key: api_key_prev,
             deepseek_base_url: base_url_prev,
-            deepseek_http_headers: http_headers_prev,
             deepseek_model: model_prev,
             deepseek_default_text_model: default_text_model_prev,
             codewhale_provider: codewhale_provider_prev,
@@ -1092,7 +1088,6 @@ impl Drop for EnvGuard {
             Self::restore_var("DEEPSEEK_PROVIDER", self.deepseek_provider.take());
             Self::restore_var("DEEPSEEK_API_KEY", self.deepseek_api_key.take());
             Self::restore_var("DEEPSEEK_BASE_URL", self.deepseek_base_url.take());
-            Self::restore_var("DEEPSEEK_HTTP_HEADERS", self.deepseek_http_headers.take());
             Self::restore_var("DEEPSEEK_MODEL", self.deepseek_model.take());
             Self::restore_var(
                 "DEEPSEEK_DEFAULT_TEXT_MODEL",
@@ -2897,110 +2892,6 @@ fn deepseek_model_env_overrides_default_text_model() -> Result<()> {
     assert_eq!(
         config.default_text_model.as_deref(),
         Some("deepseek-v4-flash-20260423")
-    );
-    Ok(())
-}
-
-#[test]
-fn http_headers_load_from_root_config() -> Result<()> {
-    let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-http-headers-root-{}-{}",
-        std::process::id(),
-        nanos
-    ));
-    fs::create_dir_all(&temp_root)?;
-    let _guard = EnvGuard::new(&temp_root);
-
-    let config_path = temp_root.join(".deepseek").join("config.toml");
-    ensure_parent_dir(&config_path)?;
-    fs::write(
-        &config_path,
-        r#"
-api_key = "test-key"
-http_headers = { "X-Model-Provider-Id" = "tongyi" }
-"#,
-    )?;
-
-    let config = Config::load(None, None)?;
-    assert_eq!(
-        config
-            .http_headers()
-            .get("X-Model-Provider-Id")
-            .map(String::as_str),
-        Some("tongyi")
-    );
-    Ok(())
-}
-
-#[test]
-fn provider_http_headers_extend_and_override_root_config() {
-    let mut providers = ProvidersConfig::default();
-    providers.deepseek.http_headers = Some(HashMap::from([
-        ("X-Model-Provider-Id".to_string(), "tongyi".to_string()),
-        ("X-Shared".to_string(), "provider".to_string()),
-    ]));
-    let config = Config {
-        http_headers: Some(HashMap::from([
-            ("X-Root".to_string(), "root".to_string()),
-            ("X-Shared".to_string(), "root".to_string()),
-        ])),
-        providers: Some(providers),
-        ..Default::default()
-    };
-
-    let headers = config.http_headers();
-    assert_eq!(
-        headers.get("X-Model-Provider-Id").map(String::as_str),
-        Some("tongyi")
-    );
-    assert_eq!(headers.get("X-Root").map(String::as_str), Some("root"));
-    assert_eq!(
-        headers.get("X-Shared").map(String::as_str),
-        Some("provider")
-    );
-}
-
-#[test]
-fn http_headers_env_overrides_config() -> Result<()> {
-    let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = env::temp_dir().join(format!(
-        "codewhale-tui-http-headers-env-{}-{}",
-        std::process::id(),
-        nanos
-    ));
-    fs::create_dir_all(&temp_root)?;
-    let _guard = EnvGuard::new(&temp_root);
-
-    let config_path = temp_root.join(".deepseek").join("config.toml");
-    ensure_parent_dir(&config_path)?;
-    fs::write(
-        &config_path,
-        r#"
-api_key = "test-key"
-http_headers = { "X-Model-Provider-Id" = "from-file" }
-"#,
-    )?;
-    // Safety: test-only environment mutation guarded by a global mutex.
-    unsafe {
-        env::set_var("DEEPSEEK_HTTP_HEADERS", "X-Model-Provider-Id=from-env");
-    }
-
-    let config = Config::load(None, None)?;
-    assert_eq!(
-        config
-            .http_headers()
-            .get("X-Model-Provider-Id")
-            .map(String::as_str),
-        Some("from-env")
     );
     Ok(())
 }

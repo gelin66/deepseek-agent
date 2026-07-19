@@ -694,6 +694,9 @@ M4-C foreground 切换后还已物理删除：
 - 主题模块的公开 selectable inventory、setting facade 和 mode-label helper 只有测试调用，现已
   收缩为 `#[cfg(test)]` shipped-theme 清单；生产 `settings.toml -> ThemeId -> UiTheme ->
   ColorCompatBackend`、12 套 palette 与 Ocean 渲染链保持不变。
+- TUI 私有 Config 的 root/provider `http_headers`、env merge 和 accessor 从未接入模型 transport，
+  现已连同自证测试删除，避免继续暴露配置黑洞。canonical `crates/config` 仍残留 generic
+  header schema，留待 M7 收口；生产 DeepSeek transport 当前不消费任意 custom headers。
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
   没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。

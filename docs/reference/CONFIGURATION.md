@@ -432,15 +432,11 @@ gateway, launch with `DEEPSEEK_ALLOW_INSECURE_HTTP=1` only on a trusted network:
 DEEPSEEK_ALLOW_INSECURE_HTTP=1 codewhale
 ```
 
-Third-party OpenAI-compatible gateways that need extra request headers can set
-`http_headers = { "X-Model-Provider-Id" = "your-model-provider" }` at the top
-level or under a provider table such as `[providers.deepseek]`. When configured,
-codewhale sends those custom headers on model API requests. The equivalent
-environment override is `DEEPSEEK_HTTP_HEADERS`, using comma-separated
-`name=value` pairs such as
-`X-Model-Provider-Id=your-model-provider,X-Gateway-Route=dev`. `Authorization`
-and `Content-Type` are managed by the client and are not overridden by this
-setting.
+The production DeepSeek Agent runtime does not forward arbitrary custom model
+request headers. The residual generic config schema can still parse
+`http_headers` and `DEEPSEEK_HTTP_HEADERS`, but they are not a supported runtime
+capability and must not be relied on. MCP HTTP headers are a separate transport
+configuration and are unaffected.
 
 ### DeepSeek strict tool schemas
 
@@ -589,7 +585,7 @@ Remaining variables:
 
 - `DEEPSEEK_API_KEY`
 - `DEEPSEEK_ANTHROPIC_BASE_URL`
-- `DEEPSEEK_HTTP_HEADERS` (custom model request headers, comma-separated `name=value` pairs)
+- `DEEPSEEK_HTTP_HEADERS` (residual generic schema only; not forwarded by the production DeepSeek runtime)
 - `DEEPSEEK_DEFAULT_TEXT_MODEL` (extra legacy alias of `DEEPSEEK_MODEL`)
 - `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` (stream idle timeout in seconds; default `900`, clamped to `1..=3600`)
 - `DEEPSEEK_STREAM_OPEN_TIMEOUT_SECS` (connection setup + response-header wait in seconds; default `45`, clamped to `5..=300`; distinct from the per-chunk idle timeout)

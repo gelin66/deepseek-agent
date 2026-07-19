@@ -1243,9 +1243,6 @@ pub struct Config {
     pub api_key: Option<String>,
     #[serde(alias = "baseUrl")]
     pub base_url: Option<String>,
-    /// Optional extra HTTP headers sent to model API requests.
-    #[serde(alias = "httpHeaders")]
-    pub http_headers: Option<HashMap<String, String>>,
     #[serde(alias = "defaultTextModel")]
     pub default_text_model: Option<String>,
     #[serde(alias = "authMode")]
@@ -1393,8 +1390,6 @@ pub struct ProviderConfig {
     pub auth_mode: Option<String>,
     #[serde(alias = "insecureSkipTlsVerify")]
     pub insecure_skip_tls_verify: Option<bool>,
-    #[serde(alias = "httpHeaders")]
-    pub http_headers: Option<HashMap<String, String>>,
     #[serde(alias = "pathSuffix")]
     pub path_suffix: Option<String>,
     #[serde(alias = "reasoningStyle", alias = "reasoningStreamStyle")]
@@ -2177,19 +2172,6 @@ impl Config {
                 .filter(|window| *window > 0);
         }
         None
-    }
-
-    #[must_use]
-    pub fn http_headers(&self) -> HashMap<String, String> {
-        let mut headers = self.http_headers.clone().unwrap_or_default();
-        if let Some(provider_headers) = self
-            .provider_config()
-            .and_then(|provider| provider.http_headers.as_ref())
-        {
-            headers.extend(provider_headers.clone());
-        }
-        headers.retain(|name, value| !name.trim().is_empty() && !value.trim().is_empty());
-        headers
     }
 
     #[must_use]
@@ -3561,70 +3543,6 @@ fn apply_env_overrides(config: &mut Config) {
             .xai
             .base_url = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_HTTP_HEADERS")
-        && let Ok(headers) = parse_http_headers(&value)
-        && !headers.is_empty()
-    {
-        let mut root_headers = config.http_headers.clone().unwrap_or_default();
-        root_headers.extend(headers.clone());
-        config.http_headers = Some(root_headers);
-
-        let provider = config.api_provider();
-        // Capture the custom entry key (the selected provider name) before the
-        // mutable borrow of `providers` below (#1519).
-        let custom_key = (provider == ApiProvider::Custom).then(|| {
-            config
-                .provider
-                .clone()
-                .unwrap_or_else(|| "__custom__".to_string())
-        });
-        let providers = config
-            .providers
-            .get_or_insert_with(ProvidersConfig::default);
-        let entry = match provider {
-            ApiProvider::Deepseek => &mut providers.deepseek,
-            ApiProvider::DeepseekCN => &mut providers.deepseek_cn,
-            ApiProvider::DeepseekAnthropic => &mut providers.deepseek_anthropic,
-            ApiProvider::NvidiaNim => &mut providers.nvidia_nim,
-            ApiProvider::Openai => &mut providers.openai,
-            ApiProvider::Atlascloud => &mut providers.atlascloud,
-            ApiProvider::WanjieArk => &mut providers.wanjie_ark,
-            ApiProvider::Openrouter => &mut providers.openrouter,
-            ApiProvider::XiaomiMimo => &mut providers.xiaomi_mimo,
-            ApiProvider::Novita => &mut providers.novita,
-            ApiProvider::Fireworks => &mut providers.fireworks,
-            ApiProvider::Siliconflow => &mut providers.siliconflow,
-            ApiProvider::SiliconflowCn => &mut providers.siliconflow_cn,
-            ApiProvider::Arcee => &mut providers.arcee,
-            ApiProvider::Moonshot => &mut providers.moonshot,
-            ApiProvider::Sglang => &mut providers.sglang,
-            ApiProvider::Vllm => &mut providers.vllm,
-            ApiProvider::Ollama => &mut providers.ollama,
-            ApiProvider::Volcengine => &mut providers.volcengine,
-            ApiProvider::Huggingface => &mut providers.huggingface,
-            ApiProvider::Deepinfra => &mut providers.deepinfra,
-            ApiProvider::Together => &mut providers.together,
-            ApiProvider::Qianfan => &mut providers.qianfan,
-            ApiProvider::OpenaiCodex => &mut providers.openai_codex,
-            ApiProvider::Anthropic => &mut providers.anthropic,
-            ApiProvider::Openmodel => &mut providers.openmodel,
-            ApiProvider::Zai => &mut providers.zai,
-            ApiProvider::Stepfun => &mut providers.stepfun,
-            ApiProvider::Minimax => &mut providers.minimax,
-            ApiProvider::MinimaxAnthropic => &mut providers.minimax_anthropic,
-            ApiProvider::Sakana => &mut providers.sakana,
-            ApiProvider::LongCat => &mut providers.longcat,
-            ApiProvider::Meta => &mut providers.meta,
-            ApiProvider::Xai => &mut providers.xai,
-            ApiProvider::Custom => providers
-                .custom
-                .entry(custom_key.expect("custom key captured for custom provider"))
-                .or_default(),
-        };
-        let mut provider_headers = entry.http_headers.clone().unwrap_or_default();
-        provider_headers.extend(headers);
-        entry.http_headers = Some(provider_headers);
-    }
     if matches!(config.api_provider(), ApiProvider::Ollama)
         && let Ok(value) = std::env::var("OLLAMA_BASE_URL")
         && !value.trim().is_empty()
@@ -4367,29 +4285,6 @@ fn normalize_base_url(base: &str) -> String {
     trimmed.to_string()
 }
 
-fn parse_http_headers(raw: &str) -> Result<HashMap<String, String>> {
-    let mut headers = HashMap::new();
-    for pair in raw.trim().split(',') {
-        let pair = pair.trim();
-        if pair.is_empty() {
-            continue;
-        }
-        let Some((name, value)) = pair.split_once('=') else {
-            anyhow::bail!("invalid header pair '{pair}', expected name=value");
-        };
-        let name = name.trim();
-        let value = value.trim();
-        if name.is_empty() {
-            anyhow::bail!("header name cannot be empty");
-        }
-        if value.is_empty() {
-            continue;
-        }
-        headers.insert(name.to_string(), value.to_string());
-    }
-    Ok(headers)
-}
-
 fn apply_profile(config: ConfigFile, profile: Option<&str>) -> Result<Config> {
     if let Some(profile_name) = profile {
         let profiles = config.profiles.as_ref();
@@ -4420,7 +4315,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         provider: override_cfg.provider.or(base.provider),
         api_key: override_cfg.api_key.or(base.api_key),
         base_url: override_cfg.base_url.or(base.base_url),
-        http_headers: override_cfg.http_headers.or(base.http_headers),
         default_text_model: override_cfg.default_text_model.or(base.default_text_model),
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),
@@ -4533,7 +4427,6 @@ fn merge_provider_config(base: ProviderConfig, override_cfg: ProviderConfig) -> 
         insecure_skip_tls_verify: override_cfg
             .insecure_skip_tls_verify
             .or(base.insecure_skip_tls_verify),
-        http_headers: override_cfg.http_headers.or(base.http_headers),
         path_suffix: override_cfg.path_suffix.or(base.path_suffix),
         reasoning_stream_style: override_cfg
             .reasoning_stream_style
