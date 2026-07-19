@@ -947,6 +947,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   system_prompt_for_mode_with_context_skills_and_session -> explicit discovery mode`，项目指令、
   Skills、stable/volatile cache block、handoff 与 canonical DeepSeek prompt bytes 不变；本切片不实施
   M5 ContextBroker 或新 compaction runtime。
+- M4-C 已将 TUI execpolicy 收缩为两条真实链：`execpolicy check` 继续通过
+  Starlark parser 与 prefix rules 输出 JSON，`~/.deepseek/execpolicy.toml` 继续只解析为
+  `ProductionExecPolicySnapshot` 并在 canonical Shell host 执行。现已删除无消费重导出、
+  只有自证测试的 TUI TOML evaluator/matcher、heuristics fallback 和 `Evaluation`，并去掉
+  整模块 `allow(dead_code/unused_imports)`；新增真实 Starlark load/match/JSON 回归，不复活
+  sibling `permissions.toml` 或第二套 Agent 执行策略。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

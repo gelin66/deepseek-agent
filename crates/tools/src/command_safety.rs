@@ -315,9 +315,8 @@ pub fn classify_command(tokens: &[&str]) -> String {
 /// * `"cargo check"` → matches `cargo check --workspace`.
 /// * `"make"` → matches `make all`, `make clean` (arity 1).
 ///
-/// For allow rules that contain wildcards (`*`) or regex metacharacters, the
-/// caller should additionally invoke the pattern-matching path from
-/// `crate::execpolicy::matcher::pattern_matches`.
+/// The production exec-policy snapshot applies its own bounded wildcard
+/// matcher after this arity-aware prefix check.
 ///
 /// # Examples
 ///

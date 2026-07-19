@@ -70,17 +70,12 @@ pub enum RuleMatch {
         #[serde(skip_serializing_if = "Option::is_none")]
         justification: Option<String>,
     },
-    HeuristicsRuleMatch {
-        command: Vec<String>,
-        decision: Decision,
-    },
 }
 
 impl RuleMatch {
     pub fn decision(&self) -> Decision {
         match self {
             Self::PrefixRuleMatch { decision, .. } => *decision,
-            Self::HeuristicsRuleMatch { decision, .. } => *decision,
         }
     }
 }

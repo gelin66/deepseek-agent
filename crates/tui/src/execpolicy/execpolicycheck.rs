@@ -6,10 +6,13 @@ use anyhow::Result;
 use clap::Parser;
 use serde::Serialize;
 
-use super::Decision;
-use super::Policy;
-use super::PolicyParser;
-use super::RuleMatch;
+use super::decision::Decision;
+#[cfg(not(target_env = "ohos"))]
+use super::parser::PolicyParser;
+#[cfg(target_env = "ohos")]
+use super::parser_ohos::PolicyParser;
+use super::policy::Policy;
+use super::rule::RuleMatch;
 
 /// Arguments for evaluating a command against one or more execpolicy files.
 #[derive(Debug, Parser, Clone)]
@@ -36,7 +39,7 @@ impl ExecPolicyCheckCommand {
     /// Load the policies for this command, evaluate the command, and render JSON output.
     pub fn run(&self) -> Result<()> {
         let policy = load_policies(&self.rules)?;
-        let matched_rules = policy.matches_for_command(&self.command, None);
+        let matched_rules = policy.matches_for_command(&self.command);
 
         let json = format_matches_json(&matched_rules, self.pretty)?;
         println!("{json}");
@@ -80,4 +83,36 @@ struct ExecPolicyCheckOutput<'a> {
     matched_rules: &'a [RuleMatch],
     #[serde(skip_serializing_if = "Option::is_none")]
     decision: Option<Decision>,
+}
+
+#[cfg(all(test, not(target_env = "ohos")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn starlark_check_loads_matches_and_renders_the_cli_contract() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join("readonly.star");
+        fs::write(
+            &path,
+            r#"prefix_rule(
+    pattern = ["git", "status"],
+    decision = "allow",
+    match = [["git", "status"]],
+    not_match = [["git", "push"]],
+    justification = "只读检查",
+)"#,
+        )
+        .unwrap();
+
+        let policy = load_policies(&[path]).expect("Starlark policy loads");
+        let matched =
+            policy.matches_for_command(&["git".into(), "status".into(), "--short".into()]);
+        let rendered = format_matches_json(&matched, false).expect("CLI JSON renders");
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+
+        assert_eq!(value["decision"], "allow");
+        assert_eq!(value["matchedRules"].as_array().map(Vec::len), Some(1));
+        assert!(rendered.contains("只读检查"));
+    }
 }

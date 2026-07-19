@@ -24,6 +24,7 @@ pub enum Error {
     },
     #[error("expected example to not match rule `{rule}`: {example}")]
     ExampleDidMatch { rule: String, example: String },
+    #[cfg(target_env = "ohos")]
     #[error("{0}")]
     UnsupportedPlatform(String),
     #[error("starlark error: {0}")]

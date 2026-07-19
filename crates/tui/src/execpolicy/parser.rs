@@ -1,5 +1,4 @@
 use multimap::MultiMap;
-use shlex;
 use starlark::any::ProvidesStaticType;
 use starlark::environment::GlobalsBuilder;
 use starlark::environment::Module;
