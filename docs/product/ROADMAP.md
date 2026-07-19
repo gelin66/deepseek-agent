@@ -1011,9 +1011,17 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除没有任何生产 caller 的 `SidebarRenderState` 预判链、三项失效常量，以及只为该
   预判链提供数据的 sidebar host/area 影子字段。真实 classic sidebar 仍在每一帧直接通过
   `sidebar_width_for_chat_area` 应用 60 列可见门槛与用户宽度，`sidebar_auto_idle`、sidebar
-  renderer、handle 绘制、canonical child/Fleet 投影和 work-surface 分栏均未改变。本切片不把
-  没有 reader 的旧面积缓存冒充鼠标命中能力，也不顺手删除尚待独立审计的 resize 状态。
+  renderer、一列视觉分隔线、canonical child/Fleet 投影和 work-surface 分栏均未改变。本切片
+  不把没有 reader 的旧面积缓存冒充鼠标命中能力。
   定向 UI/sidebar 测试、PTY 7/7、TUI check、fmt 和 diff-check 通过。
+- M4-C 后续调用图确认 classic sidebar 从未存在鼠标按下、拖动、释放、分隔线命中或拖拽结果
+  持久化 route，因此已删除 `last_sidebar_handle_area`、`sidebar_resizing`、三项 resize anchor/
+  total 状态、`sidebar_width_dirty` 和零调用且并不持久化的 `Settings::update_sidebar_width`。
+  用户 `sidebar_width_percent` schema/校验/加载/保存、`SidebarFocus`、60 列门槛和真实 divider
+  均保留；M4 不新增一套拖拽功能。新增 Classic 整帧红线证明 59 列不占侧栏、60 列仍绘制
+  divider。定向 full-frame 1/1、sidebar 33/33、work-surface 5/5、chat/sidebar bleed 1/1、
+  presenter 14/14、footer 10/10、settings 58/58、PTY 7/7 通过，并通过 TUI all-target check、
+  fmt 和 diff-check。
 - M4-C 已删除零 production caller 的 `semantic_truncate_with_affixes`、只被它和一条自测调用的
   `semantic_truncate_between_affixes`，以及该自证测试。真实 modal title 仍使用
   `semantic_truncate`；footer/sidebar/work-surface/thinking 仍使用 `truncate_line_to_width`，

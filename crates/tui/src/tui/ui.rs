@@ -1570,7 +1570,6 @@ fn render(f: &mut Frame, app: &mut App) {
             && !crate::tui::sidebar::sidebar_auto_idle(app)
             && let Some(sidebar_width) = sidebar_width_for_chat_area(app, chat_area.width)
         {
-            app.sidebar_resize_total_width = chat_area.width;
             let split = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
@@ -1580,10 +1579,6 @@ fn render(f: &mut Frame, app: &mut App) {
         } else {
             None
         };
-        if sidebar_area.is_none() {
-            app.last_sidebar_handle_area = None;
-            app.sidebar_resizing = false;
-        }
 
         let chat_widget = ChatWidget::new(app, chat_area).with_ocean_viewport(size);
         shell_ocean = chat_widget.ocean_column();
@@ -1595,17 +1590,16 @@ fn render(f: &mut Frame, app: &mut App) {
         // default path.
         if let Some(sidebar_area) = sidebar_area {
             super::sidebar::render_sidebar(f, sidebar_area, app);
-            let handle_area = Rect {
+            let divider_area = Rect {
                 x: sidebar_area.x,
                 y: sidebar_area.y,
                 width: 1,
                 height: sidebar_area.height,
             };
-            app.last_sidebar_handle_area = Some(handle_area);
-            let handle =
-                ratatui::widgets::Paragraph::new("│\n".repeat(usize::from(handle_area.height)))
+            let divider =
+                ratatui::widgets::Paragraph::new("│\n".repeat(usize::from(divider_area.height)))
                     .style(Style::default().fg(palette::TEXT_MUTED));
-            f.render_widget(handle, handle_area);
+            f.render_widget(divider, divider_area);
         }
     }
 

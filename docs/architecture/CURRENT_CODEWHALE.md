@@ -553,9 +553,17 @@ M4-C foreground 切换后还已物理删除：
   `sidebar_host_width_hint` 和三项失效常量已经删除；只由 renderer 写入、没有鼠标或其他
   reader 的 App/Viewport sidebar host/area 缓存也随之删除。实际 classic sidebar 仍直接由
   `sidebar_width_for_chat_area`、60 列门槛、用户宽度和 `sidebar_auto_idle` 决定，sidebar
-  renderer、handle 绘制、canonical child/Fleet 投影与 work-surface 分栏不经过旧预判链。
-  尚未独立证明的 resize 状态未在本切片扩张删除。定向 UI/sidebar 测试、TUI check、fmt 与
+  renderer、一列视觉分隔线、canonical child/Fleet 投影与 work-surface 分栏不经过旧预判链。
+  定向 UI/sidebar 测试、TUI check、fmt 与
   diff-check 通过，PTY 7/7 通过。
+- classic sidebar 的所谓 resize 状态也已完成调用图审计并删除。原实现没有鼠标按下、拖动、
+  释放、divider 命中或拖拽结果保存消费者；`last_sidebar_handle_area`、`sidebar_resizing`、resize
+  anchor/total、`sidebar_width_dirty` 与零调用的 `Settings::update_sidebar_width` 都只是 renderer
+  producer 或默认值。真实 `sidebar_width_percent` schema/校验/加载/保存、`SidebarFocus`、
+  `sidebar_width_for_chat_area` 和一列 `│` divider 保留。新增 Classic 整帧测试锁定 59/60 列
+  边界。当前证据为 full-frame 1/1、sidebar 33/33、work-surface 5/5、chat/sidebar bleed 1/1、
+  presenter 14/14、footer 10/10、settings 58/58、PTY 7/7，并通过 TUI all-target check、fmt 和
+  diff-check。
 - `ui_text` 中没有 production caller 的 affix 截断入口及其只被内部调用的 helper、自证测试
   已删除。真实 modal title 继续使用 `semantic_truncate`，footer/sidebar/work-surface/thinking
   继续使用 `truncate_line_to_width`；`text_display_width` 对中文/CJK、组合字符、ZWJ、控制字符

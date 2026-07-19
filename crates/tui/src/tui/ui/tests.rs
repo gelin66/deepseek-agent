@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use super::*;
 use crate::tui::app::QueuedMessage;
+use ratatui::backend::TestBackend;
 
 use std::sync::{Arc, atomic::AtomicBool};
 
@@ -36,6 +37,55 @@ fn create_test_app() -> App {
     app.active_context_window_override = None;
     app.status_message = None;
     app
+}
+
+fn rendered_column(width: u16, height: u16, x: u16, app: &mut App) -> Vec<String> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("test terminal");
+    terminal
+        .draw(|frame| render(frame, app))
+        .expect("render full TUI frame");
+    (0..height)
+        .map(|y| {
+            terminal
+                .backend()
+                .buffer()
+                .cell((x, y))
+                .expect("cell inside test buffer")
+                .symbol()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn classic_sidebar_keeps_visual_divider_and_respects_59_60_width_boundary() {
+    let mut width_probe = create_test_app();
+    width_probe.sidebar_focus = SidebarFocus::Tasks;
+    assert_eq!(sidebar_width_for_chat_area(&width_probe, 59), None);
+    assert_eq!(sidebar_width_for_chat_area(&width_probe, 60), Some(20));
+
+    let mut narrow = create_test_app();
+    narrow.ocean_treatment = crate::tui::ocean::OceanTreatment::Classic;
+    narrow.sidebar_focus = SidebarFocus::Tasks;
+    let narrow_column = rendered_column(59, 20, 40, &mut narrow);
+    assert!(
+        narrow_column.iter().all(|symbol| symbol != "│"),
+        "59 columns must not reserve the classic sidebar divider: {narrow_column:?}"
+    );
+
+    let mut boundary = create_test_app();
+    boundary.ocean_treatment = crate::tui::ocean::OceanTreatment::Classic;
+    boundary.sidebar_focus = SidebarFocus::Tasks;
+    let divider_column = rendered_column(60, 20, 40, &mut boundary);
+    assert!(
+        divider_column
+            .iter()
+            .filter(|symbol| symbol.as_str() == "│")
+            .count()
+            >= 8,
+        "60 columns must retain the visible classic sidebar divider: {divider_column:?}"
+    );
 }
 
 #[test]
