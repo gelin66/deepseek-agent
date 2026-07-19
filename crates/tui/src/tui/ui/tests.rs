@@ -32,7 +32,6 @@ fn create_test_app() -> App {
     app.api_provider = ApiProvider::Deepseek;
     app.model = "deepseek-v4-pro".to_string();
     app.auto_model = false;
-    app.last_effective_model = None;
     app.active_route_limits = None;
     app.status_message = None;
     app

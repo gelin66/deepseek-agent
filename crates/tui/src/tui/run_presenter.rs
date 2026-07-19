@@ -8,13 +8,13 @@ use std::time::Instant;
 
 use codewhale_protocol::agent_runtime::{
     DurableControlAction, InteractionId, ModelAccounting, ModelAttemptFailure, ModelErrorCategory,
-    ModelOutput, ModelRetryDecision, ModelRetryStopReason, RunPurpose, RuntimeEventKind,
-    TerminalState, ToolArguments, ToolOutcome, TranscriptEntry, UserInteractionRequest,
-    UserInteractionResponse,
+    ModelOutput, ModelRetryDecision, ModelRetryStopReason,
+    ReasoningEffort as CanonicalReasoningEffort, RunPurpose, RuntimeEventKind, TerminalState,
+    ToolArguments, ToolOutcome, TranscriptEntry, UserInteractionRequest, UserInteractionResponse,
 };
 use serde_json::Value;
 
-use super::app::App;
+use super::app::{App, ReasoningEffort};
 use super::history::{
     GenericToolCell, HistoryCell, ToolStatus, output_looks_like_diff, summarize_tool_args,
     summarize_tool_output,
@@ -60,6 +60,17 @@ pub fn present_effect(app: &mut App, effect: ProjectionEffect) -> Option<Present
     }
 }
 
+fn present_reasoning_effort(effort: CanonicalReasoningEffort) -> ReasoningEffort {
+    match effort {
+        CanonicalReasoningEffort::Off => ReasoningEffort::Off,
+        CanonicalReasoningEffort::Auto => ReasoningEffort::Auto,
+        CanonicalReasoningEffort::Low => ReasoningEffort::Low,
+        CanonicalReasoningEffort::Medium => ReasoningEffort::Medium,
+        CanonicalReasoningEffort::High => ReasoningEffort::High,
+        CanonicalReasoningEffort::Max => ReasoningEffort::Max,
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn present_canonical_event(
     app: &mut App,
@@ -82,6 +93,7 @@ fn present_canonical_event(
                     reset_run_display(app);
                     rebuild_transcript(app, source_run_id, &request.transcript.entries);
                     app.model = request.model.clone();
+                    app.reasoning_effort = present_reasoning_effort(request.reasoning_effort);
                     app.is_compacting = true;
                     app.runtime_turn_status = Some("compacting".to_owned());
                     app.status_message = Some("正在压缩上下文…".to_owned());
@@ -91,6 +103,7 @@ fn present_canonical_event(
                     reset_run_display(app);
                     rebuild_transcript(app, source_run_id, &request.transcript.entries);
                     app.model = request.model.clone();
+                    app.reasoning_effort = present_reasoning_effort(request.reasoning_effort);
                     app.runtime_turn_status = Some("in_progress".to_owned());
                     app.status_message = Some("DeepSeek 正在处理…".to_owned());
                 }
@@ -768,6 +781,33 @@ mod tests {
                 HistoryCell::ArchivedContext { .. } => None,
             })
             .collect()
+    }
+
+    #[test]
+    fn root_run_created_is_the_single_source_for_resolved_auto_route_display() {
+        let run_id = RunId::from("auto-route");
+        let mut request = RunRequest::new("实现功能", "系统");
+        request.run_id = Some(run_id.clone());
+        request.model = "deepseek-v4-pro".to_owned();
+        request.reasoning_effort = CanonicalReasoningEffort::Max;
+        let event = stored(
+            &run_id,
+            1,
+            RuntimeEventKind::RunCreated {
+                request: Box::new(request),
+            },
+        );
+        let mut app = app();
+        app.auto_model = true;
+        app.model = "auto".to_owned();
+        app.reasoning_effort = crate::tui::app::ReasoningEffort::Auto;
+
+        apply_events(&mut app, vec![event]);
+
+        assert_eq!(app.model, "deepseek-v4-pro");
+        assert_eq!(app.effective_model_for_budget(), "deepseek-v4-pro");
+        assert_eq!(app.model_display_label(), "auto: deepseek-v4-pro");
+        assert_eq!(app.reasoning_effort_display_label(), "auto: max");
     }
 
     #[test]

@@ -239,8 +239,11 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
         .style(Style::default().bg(app.ui_theme.header_bg))
         .render(area, buf);
 
-    let (effective_provider, effective_model) = app.effective_route_display();
-    let route_label = format!("{} · {effective_model}", effective_provider.display_name());
+    let route_label = format!(
+        "{} · {}",
+        app.api_provider.display_name(),
+        app.model_display_label()
+    );
     let mut left = vec![
         Span::styled(
             "cw",

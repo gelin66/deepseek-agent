@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
 use ratatui::layout::Rect;
 use serde_json::Value;
 use thiserror::Error;
@@ -16,7 +15,6 @@ use crate::config::{
     ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
     save_api_key_for,
 };
-use crate::core::events::TurnRoute;
 use crate::localization::{MessageId, tr};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
@@ -66,17 +64,6 @@ fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> EffectiveMod
             approval_mode: ApprovalMode::Bypass,
         },
     }
-}
-
-/// Lifecycle identity retained until the matching `TurnComplete` arrives.
-///
-/// This survives local cancellation clearing the visible runtime status, so
-/// observer records still carry a stable id, start time, and effective route.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ActiveTurnMetadata {
-    pub turn_id: String,
-    pub created_at: DateTime<Utc>,
-    pub route: Option<TurnRoute>,
 }
 
 /// State machine for onboarding new users.
@@ -1309,17 +1296,6 @@ pub struct App {
     /// When true, the model is auto-selected based on request complexity
     /// rather than using a fixed model. The `/model auto` command sets this.
     pub auto_model: bool,
-    /// Last concrete model chosen while `auto_model` is active.
-    pub last_effective_model: Option<String>,
-    /// Provider that actually served the latest auto-routed turn.
-    pub last_effective_provider: Option<ApiProvider>,
-    /// Route selected for the next turn, retained for in-flight UI details
-    /// until the engine confirms the authoritative `TurnStarted` route.
-    pub pending_turn_route: Option<(ApiProvider, String, bool)>,
-    /// Authoritative lifecycle metadata attached to the most recent
-    /// `TurnStarted`. Kept separate from `pending_turn_route` so a preceding
-    /// compaction completion cannot consume the next model turn's route.
-    pub active_turn: Option<ActiveTurnMetadata>,
     /// Current API provider (mirrors `Config::api_provider`).
     /// Updated by `/provider` switches so the UI/commands can read the
     /// active backend without re-deriving it from the live config.
@@ -1329,8 +1305,6 @@ pub struct App {
     /// Current reasoning-effort tier for DeepSeek thinking mode.
     /// Cycled via Shift+Tab; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
-    /// Last concrete thinking tier chosen while `reasoning_effort` is auto.
-    pub last_effective_reasoning_effort: Option<ReasoningEffort>,
     pub workspace: PathBuf,
     pub config_path: Option<PathBuf>,
     pub config_profile: Option<String>,
@@ -2012,14 +1986,9 @@ impl App {
             last_status_message_seen: None,
             model,
             auto_model,
-            last_effective_model: None,
-            last_effective_provider: None,
-            pending_turn_route: None,
-            active_turn: None,
             api_provider: provider,
             active_route_limits,
             reasoning_effort,
-            last_effective_reasoning_effort: None,
             workspace,
             config_path,
             config_profile,
@@ -2372,7 +2341,6 @@ impl App {
         self.reasoning_effort = self
             .reasoning_effort
             .cycle_next_for_provider(self.api_provider);
-        self.last_effective_reasoning_effort = None;
         self.needs_redraw = true;
         // Effort chip in the header is canonical — no duplicate toast.
     }
@@ -4285,54 +4253,34 @@ impl App {
     }
 
     pub fn effective_model_for_budget(&self) -> &str {
-        if self.auto_model {
-            return self
-                .last_effective_model
-                .as_deref()
-                .filter(|model| *model != "auto")
-                .unwrap_or(DEFAULT_TEXT_MODEL);
+        if self.auto_model && self.model.eq_ignore_ascii_case("auto") {
+            return DEFAULT_TEXT_MODEL;
         }
         &self.model
     }
 
     pub fn model_display_label(&self) -> String {
         if self.auto_model {
-            if let Some(effective) = self.last_effective_model.as_deref()
-                && effective != "auto"
-            {
-                return format!("auto: {effective}");
+            if !self.model.eq_ignore_ascii_case("auto") {
+                return format!("auto: {}", self.model);
             }
             return "auto".to_string();
         }
         self.model.clone()
     }
 
-    /// Provider/model identity used by the in-flight or most recent request.
-    /// This is the display contract for auto routing and must match billing.
-    #[must_use]
-    pub fn effective_route_display(&self) -> (ApiProvider, String) {
-        if let Some((provider, model, _)) = self.pending_turn_route.as_ref() {
-            return (*provider, model.clone());
-        }
-        if self.auto_model
-            && let (Some(provider), Some(model)) = (
-                self.last_effective_provider,
-                self.last_effective_model.as_ref(),
-            )
-        {
-            return (provider, model.clone());
-        }
-        (self.api_provider, self.model_display_label())
-    }
-
     pub fn reasoning_effort_display_label(&self) -> String {
-        if self.auto_model || self.reasoning_effort == ReasoningEffort::Auto {
-            if let Some(effective) = self.last_effective_reasoning_effort {
+        if self.auto_model {
+            if self.reasoning_effort != ReasoningEffort::Auto {
                 return format!(
                     "auto: {}",
-                    effective.display_label_for_provider(self.api_provider)
+                    self.reasoning_effort
+                        .display_label_for_provider(self.api_provider)
                 );
             }
+            return "auto".to_string();
+        }
+        if self.reasoning_effort == ReasoningEffort::Auto {
             return "auto".to_string();
         }
         self.reasoning_effort

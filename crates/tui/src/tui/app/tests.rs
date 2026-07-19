@@ -252,8 +252,7 @@ fn reasoning_effort_display_label_uses_codex_xhigh() {
     assert_eq!(app.reasoning_effort_display_label(), "xhigh");
 
     app.reasoning_effort = ReasoningEffort::Auto;
-    app.last_effective_reasoning_effort = Some(ReasoningEffort::Max);
-    assert_eq!(app.reasoning_effort_display_label(), "auto: xhigh");
+    assert_eq!(app.reasoning_effort_display_label(), "auto");
 }
 
 #[test]
@@ -1490,25 +1489,6 @@ fn test_cycle_mode_transitions() {
     app.cycle_mode();
     // Mode should have changed
     assert_ne!(app.mode, initial_mode);
-}
-
-#[test]
-fn effective_route_display_tracks_inflight_and_last_auto_provider() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.auto_model = true;
-    app.pending_turn_route = Some((ApiProvider::Zai, "glm-5.2".to_string(), true));
-    assert_eq!(
-        app.effective_route_display(),
-        (ApiProvider::Zai, "glm-5.2".to_string())
-    );
-
-    app.pending_turn_route = None;
-    app.last_effective_provider = Some(ApiProvider::Xai);
-    app.last_effective_model = Some("grok-4.5".to_string());
-    assert_eq!(
-        app.effective_route_display(),
-        (ApiProvider::Xai, "grok-4.5".to_string())
-    );
 }
 
 #[test]

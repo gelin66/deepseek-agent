@@ -3,7 +3,6 @@
 #![deny(clippy::print_stdout)]
 #![deny(clippy::print_stderr)]
 
-pub mod events;
 #[path = "runtime_contract/termination.rs"]
 pub mod termination;
 // Typed exec termination remains here because exec output, runtime, and CLI
