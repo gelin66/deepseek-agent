@@ -1048,6 +1048,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   fanout、exec 父子/孙级汇合与 Fleet worker 均未进入该假 summary 路径。定向 sidebar 32/32、
   presenter 14/14、Run projection 6/6、六子 Agent fanout 1/1、两项 exec 汇合各 1/1、Fleet
   worker 1/1 通过，并通过 TUI all-target check、fmt 和 diff-check。
+- M4-C 已删除零调用的 `braille_spinner_frame_for_duration_ms` 薄包装。生产 running-tool 标记
+  继续由 `braille_spinner_frame(Instant)` 计算真实 elapsed，底层共享 cadence、400ms quick-event
+  门槛、low-motion 静止帧和 verify tick 均保留。spinner 3/3 通过，并通过 TUI check、fmt 和
+  diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

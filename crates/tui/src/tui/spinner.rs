@@ -44,14 +44,6 @@ pub(crate) fn braille_spinner_frame_for_elapsed_ms(
 }
 
 #[must_use]
-pub(crate) fn braille_spinner_frame_for_duration_ms(
-    duration_ms: u64,
-    low_motion: bool,
-) -> &'static str {
-    braille_spinner_frame_for_elapsed_ms(u128::from(duration_ms), low_motion)
-}
-
-#[must_use]
 pub(crate) fn braille_spinner_frame(started_at: Option<Instant>, low_motion: bool) -> &'static str {
     braille_spinner_frame_for_elapsed_ms(marker_elapsed_ms(started_at), low_motion)
 }

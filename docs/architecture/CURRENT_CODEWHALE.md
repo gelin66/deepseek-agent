@@ -588,6 +588,10 @@ M4-C foreground 切换后还已物理删除：
   release fanout、exec 汇合和 FleetExecutor 不依赖这组 sidebar 私有字段。当前证据为 sidebar
   32/32、presenter 14/14、Run projection 6/6、六子 Agent fanout 1/1、两项 exec 汇合各 1/1、
   Fleet worker 1/1，并通过 TUI all-target check、fmt 和 diff-check。
+- spinner 中零调用的 `braille_spinner_frame_for_duration_ms` 薄包装已删除。生产 tool marker
+  仍调用 `braille_spinner_frame(Instant)`，并复用 `braille_spinner_frame_for_elapsed_ms` 的 cadence、
+  quick-event 门槛与 low-motion 语义；verification tick 不受影响。当前 spinner 3/3、TUI check、
+  fmt 和 diff-check 通过。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与
