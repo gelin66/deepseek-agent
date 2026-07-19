@@ -12,9 +12,6 @@
 //! fails the session: an unreadable workspace profile dir degrades to the
 //! built-in + config layers with a log line.
 
-#![allow(dead_code)]
-
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -54,15 +51,6 @@ pub struct FleetRoster {
 }
 
 impl FleetRoster {
-    /// Roster containing only the built-in party. Used as the runtime default
-    /// before config/workspace layers are wired in.
-    #[must_use]
-    pub fn built_ins_only() -> Self {
-        Self {
-            members: Self::built_in_members(),
-        }
-    }
-
     /// Load and merge the full roster for a workspace.
     ///
     /// Config members come from `[fleet.profiles]` (id = map key). Workspace
@@ -211,35 +199,12 @@ impl FleetRoster {
         .collect()
     }
 
-    /// Look up a member by id (trimmed, case-insensitive).
-    #[must_use]
-    pub fn get(&self, id: &str) -> Option<&AgentProfile> {
-        let id = id.trim();
-        self.members
-            .iter()
-            .find(|member| member.id.trim().eq_ignore_ascii_case(id))
-    }
-
     /// All members in stable order: built-in canonical order first (an
     /// overridden built-in keeps its slot but shows its overriding origin),
     /// then extra config/workspace-only members alphabetically.
     #[must_use]
     pub fn members(&self) -> &[AgentProfile] {
         &self.members
-    }
-
-    /// Per-member explicit model pins, keyed by lowercased member id.
-    /// Feeds the sub-agent `role_models` lookup; explicit `[subagents]`
-    /// overrides are merged on top by the engine and win.
-    #[must_use]
-    pub fn model_overrides(&self) -> HashMap<String, String> {
-        self.members
-            .iter()
-            .filter_map(|member| {
-                let model = member.profile.model.as_deref()?.trim();
-                (!model.is_empty()).then(|| (member.id.to_lowercase(), model.to_string()))
-            })
-            .collect()
     }
 }
 
@@ -295,6 +260,14 @@ mod tests {
         let dir = workspace.join(super::super::profile::WORKSPACE_AGENT_PROFILE_DIR);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(filename), contents).unwrap();
+    }
+
+    fn member<'a>(roster: &'a FleetRoster, id: &str) -> &'a AgentProfile {
+        roster
+            .members()
+            .iter()
+            .find(|member| member.id.eq_ignore_ascii_case(id))
+            .unwrap_or_else(|| panic!("missing roster member {id}"))
     }
 
     #[test]
@@ -380,7 +353,7 @@ mod tests {
             ],
             "overridden built-in keeps its slot; extras follow alphabetically"
         );
-        let reviewer = roster.get("reviewer").unwrap();
+        let reviewer = member(&roster, "reviewer");
         assert_eq!(reviewer.origin, ProfileOrigin::Config);
         assert_eq!(reviewer.profile.model.as_deref(), Some("deepseek-v4-pro"));
         assert_eq!(reviewer.source, PathBuf::from("config.toml"));
@@ -401,7 +374,7 @@ mod tests {
 
         let roster = FleetRoster::load(&config, tmp.path());
 
-        let reviewer = roster.get("reviewer").unwrap();
+        let reviewer = member(&roster, "reviewer");
         assert_eq!(reviewer.origin, ProfileOrigin::Workspace);
         assert_eq!(reviewer.profile.model.as_deref(), Some("glm-5.2"));
         // Precedence must not duplicate the member.
@@ -434,7 +407,7 @@ mod tests {
 
         let roster = FleetRoster::load(&config, tmp.path());
 
-        assert!(roster.get("extra").is_some());
+        assert_eq!(member(&roster, "extra").id, "extra");
         assert_eq!(
             roster.members().len(),
             FleetRoster::built_in_members().len() + 1
@@ -457,44 +430,15 @@ mod tests {
 
         let roster = FleetRoster::load(&FleetConfigToml::default(), tmp.path());
 
-        let scout = roster.get("scout").expect("valid scout remains visible");
+        let scout = member(&roster, "scout");
         assert_eq!(scout.origin, ProfileOrigin::Workspace);
         assert_eq!(scout.profile.provider.as_deref(), Some("deepseek"));
         assert_eq!(scout.profile.model.as_deref(), Some("deepseek-v4-flash"));
         assert_eq!(
-            roster.get("reviewer").unwrap().origin,
+            member(&roster, "reviewer").origin,
             ProfileOrigin::BuiltIn,
             "invalid legacy override must fall back to the safe built-in"
         );
-    }
-
-    #[test]
-    fn model_overrides_use_lowercased_ids_and_only_explicit_models() {
-        let tmp = TempDir::new().unwrap();
-        let config = config_with_profiles(BTreeMap::from([
-            (
-                "Reviewer".to_string(),
-                config_profile("reviewer", Some("deepseek-v4-pro")),
-            ),
-            ("scout".to_string(), config_profile("scout", None)),
-        ]));
-
-        let roster = FleetRoster::load(&config, tmp.path());
-        let overrides = roster.model_overrides();
-
-        assert_eq!(
-            overrides,
-            HashMap::from([("reviewer".to_string(), "deepseek-v4-pro".to_string())]),
-            "only members with explicit models are pinned, keyed lowercased"
-        );
-    }
-
-    #[test]
-    fn get_is_trimmed_and_case_insensitive() {
-        let roster = FleetRoster::built_ins_only();
-        assert!(roster.get("  Reviewer ").is_some());
-        assert!(roster.get("SYNTHESIZER").is_some());
-        assert!(roster.get("nonexistent").is_none());
     }
 
     #[test]
