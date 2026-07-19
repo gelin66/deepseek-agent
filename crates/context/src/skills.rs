@@ -591,12 +591,6 @@ fn normalize_skill_name_for_lookup(name: &str) -> String {
 /// need to filter further. Returns an empty vec when nothing is
 /// installed (the system-prompt skills block is then suppressed).
 #[must_use]
-#[allow(dead_code)]
-pub fn skills_directories(workspace: &Path) -> Vec<PathBuf> {
-    skills_directories_for_mode(workspace, SkillDiscoveryMode::Compatible)
-}
-
-#[must_use]
 pub fn skills_directories_for_mode(workspace: &Path, mode: SkillDiscoveryMode) -> Vec<PathBuf> {
     let home = dirs::home_dir();
     skills_directories_with_home_and_mode(workspace, home.as_deref(), mode)
@@ -663,16 +657,11 @@ fn existing_skill_dirs(candidates: impl IntoIterator<Item = PathBuf>) -> Vec<Pat
 /// Walk every candidate skills directory for a workspace and merge
 /// the discovered skills into a single registry. Name conflicts are
 /// resolved with first-match-wins precedence per
-/// [`skills_directories`].
+/// [`skills_directories_for_mode`].
 ///
 /// Warnings from each scanned directory accumulate so the model
 /// (and the user via `/skill list`) can see why a skill didn't
 /// load.
-#[must_use]
-pub fn discover_in_workspace(workspace: &Path) -> SkillRegistry {
-    discover_in_workspace_with_mode(workspace, SkillDiscoveryMode::Compatible)
-}
-
 #[must_use]
 pub fn discover_in_workspace_with_mode(
     workspace: &Path,
@@ -686,12 +675,6 @@ pub fn discover_in_workspace_with_mode(
 /// custom configured directory is inserted before global defaults when it is
 /// outside that set so explicit configuration cannot be buried by large global
 /// libraries.
-#[must_use]
-#[allow(dead_code)]
-pub fn discover_for_workspace_and_dir(workspace: &Path, skills_dir: &Path) -> SkillRegistry {
-    discover_for_workspace_and_dir_with_mode(workspace, skills_dir, SkillDiscoveryMode::Compatible)
-}
-
 #[must_use]
 pub fn discover_for_workspace_and_dir_with_mode(
     workspace: &Path,
@@ -762,29 +745,10 @@ pub fn discover_from_directories(dirs: impl IntoIterator<Item = PathBuf>) -> Ski
     merged
 }
 
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn discover_for_workspace_and_dir_with_home_and_mode(
-    workspace: &Path,
-    skills_dir: &Path,
-    home_dir: Option<&Path>,
-    mode: SkillDiscoveryMode,
-) -> SkillRegistry {
-    let mut dirs = skills_directories_with_home_and_mode(workspace, home_dir, mode);
-    insert_configured_skills_dir(&mut dirs, workspace, skills_dir);
-    discover_from_directories(dirs)
-}
-
 /// Render the system-prompt skills block from every workspace
 /// candidate directory plus the global default (#432). Wraps
-/// [`discover_in_workspace`] for callers (e.g. `prompts.rs`) that
+/// [`discover_in_workspace_with_mode`] for callers (e.g. `prompts.rs`) that
 /// only have the workspace path to hand.
-#[must_use]
-pub fn render_available_skills_context_for_workspace(workspace: &Path) -> Option<String> {
-    let registry = discover_in_workspace(workspace);
-    render_skills_block(&registry)
-}
-
 #[must_use]
 pub fn render_available_skills_context_for_workspace_with_mode(
     workspace: &Path,
@@ -792,20 +756,6 @@ pub fn render_available_skills_context_for_workspace_with_mode(
 ) -> Option<String> {
     let registry = discover_in_workspace_with_mode(workspace, mode);
     render_skills_block(&registry)
-}
-
-/// Union variant: merge skills discovered in the `workspace` (cross-tool skill
-/// folders) and an explicitly-configured `skills_dir`.
-#[must_use]
-pub fn render_available_skills_context_for_workspace_and_dir(
-    workspace: &Path,
-    skills_dir: &Path,
-) -> Option<String> {
-    render_available_skills_context_for_workspace_and_dir_with_mode(
-        workspace,
-        skills_dir,
-        SkillDiscoveryMode::Compatible,
-    )
 }
 
 #[must_use]

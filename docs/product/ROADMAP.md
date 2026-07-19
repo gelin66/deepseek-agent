@@ -941,6 +941,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已按精确零引用证据删除 palette 中 6 个未消费的 RGB/语义常量及其
   `allow(dead_code)`；真实 `UiTheme`、命名主题解析、浅色/深色对比和
   `ColorCompatBackend` 完整保留，本切片不改变任何可见颜色。
+- M4-C 已删除 `crates/context` 中无任何 workspace caller 的 monorepo merge、默认
+  Compatible skill discovery/render 和旧 prompt composition facade，并把 flat prompt helper 收缩到
+  `cfg(test)`。生产仍只走 `ProductionComposition -> production_system_prompt ->
+  system_prompt_for_mode_with_context_skills_and_session -> explicit discovery mode`，项目指令、
+  Skills、stable/volatile cache block、handoff 与 canonical DeepSeek prompt bytes 不变；本切片不实施
+  M5 ContextBroker 或新 compaction runtime。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

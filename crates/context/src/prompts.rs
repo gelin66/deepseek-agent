@@ -4,7 +4,7 @@
 //! cache-stable prefix. Session facts are emitted as typed volatile blocks, and
 //! the execution posture is the final request-specific block.
 
-use crate::project_context::{ProjectContext, load_project_context_with_parents};
+use crate::project_context::load_project_context_with_parents;
 use codewhale_config::PromptPreferences;
 use codewhale_protocol::agent_runtime::{
     PromptCacheControl, SystemPrompt, SystemPromptBlock as SystemBlock,
@@ -565,23 +565,6 @@ fn apply_model_template(
     prompt.replace("{model_id}", model_id)
 }
 
-pub fn compose_prompt(personality: Personality) -> String {
-    compose_prompt_with_approval_model_and_shell(personality, "codewhale")
-}
-
-pub fn compose_prompt_with_approval_model_and_shell(
-    personality: Personality,
-    model_id: &str,
-) -> String {
-    let default_layers = compose_default_static_layers(personality, model_id);
-    apply_static_prompt_composer(
-        effective_static_prompt_composer(),
-        personality,
-        model_id,
-        &default_layers,
-    )
-}
-
 fn compose_default_static_layers(_personality: Personality, model_id: &str) -> String {
     // The base behavior contract and terminal-output law are cache-stable.
     // The fixed language reminder stays nearest the next user turn.
@@ -613,44 +596,6 @@ fn apply_static_prompt_composer(
 // by the tool catalog and execution layer rather than by mutating message[0].
 
 // ── Public API ────────────────────────────────────────────────────────
-
-/// Get the system prompt for a specific mode with project context.
-pub fn system_prompt_for_mode_with_context(
-    workspace: &Path,
-    working_set_summary: Option<&str>,
-) -> SystemPrompt {
-    system_prompt_for_mode_with_context_and_skills(workspace, working_set_summary, None, None, None)
-}
-
-/// Get the system prompt for a specific mode with project and skills context.
-///
-/// The first block is cache-stable. Environment, configured instructions,
-/// route facts, and handoff state follow as volatile blocks.
-pub fn system_prompt_for_mode_with_context_and_skills(
-    workspace: &Path,
-    working_set_summary: Option<&str>,
-    skills_dir: Option<&Path>,
-    instructions: Option<&[InstructionSource]>,
-    user_memory_block: Option<&str>,
-) -> SystemPrompt {
-    system_prompt_for_mode_with_context_skills_and_session(
-        workspace,
-        working_set_summary,
-        skills_dir,
-        instructions,
-        PromptSessionContext {
-            user_memory_block,
-            goal_objective: None,
-            project_context_pack_enabled: true,
-            model_id: "codewhale",
-            context_window_override: None,
-            show_thinking: true,
-            verbosity: None,
-            skills_scan_codewhale_only: false,
-            shell_binary: "sh",
-        },
-    )
-}
 
 pub fn system_prompt_for_mode_with_context_skills_and_session(
     workspace: &Path,
@@ -800,7 +745,8 @@ pub fn system_prompt_for_mode_with_context_skills_session_and_approval(
 
 /// Flatten a system prompt to joined text (tests + debug inspectors).
 #[must_use]
-pub fn system_prompt_flat_text(prompt: &SystemPrompt) -> String {
+#[cfg(test)]
+fn system_prompt_flat_text(prompt: &SystemPrompt) -> String {
     prompt
         .blocks
         .iter()
@@ -825,25 +771,6 @@ fn render_route_fragment(session_context: &PromptSessionContext<'_>) -> String {
             "off"
         },
     )
-}
-
-/// Assemble a cache-stable constitution prefix with a typed WorldState layer.
-///
-/// This is the Codex-parity assembly point: constitution stays byte-stable for
-/// prefix caching; volatile concerns live in `WorldState` fragments with
-/// markers, caps, and `render_diff` retain-unchanged behavior. Callers that
-/// still need a flat string can use [`WorldStateSnapshot::render_text`].
-pub fn system_prompt_with_world_state(
-    constitution: impl Into<String>,
-    world_state: crate::model_context::WorldState,
-) -> SystemPrompt {
-    let snapshot = crate::model_context::WorldStateSnapshot {
-        constitution: constitution.into(),
-        world_state,
-    };
-    SystemPrompt {
-        blocks: snapshot.to_system_blocks(),
-    }
 }
 
 /// Build a WorldState from the common volatile session facts.
@@ -877,16 +804,6 @@ pub fn world_state_from_session_facts(
         state = state.with_token_budget(body);
     }
     state
-}
-
-/// Build a system prompt with explicit project context
-pub fn build_system_prompt(base: &str, project_context: Option<&ProjectContext>) -> SystemPrompt {
-    let full_prompt =
-        match project_context.and_then(super::project_context::ProjectContext::as_system_block) {
-            Some(project_block) => format!("{}\n\n{}", base.trim(), project_block),
-            None => base.trim().to_string(),
-        };
-    SystemPrompt::from_text(full_prompt)
 }
 
 #[cfg(test)]
