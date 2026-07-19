@@ -1422,7 +1422,7 @@ async fn reload_if_config_changed_swaps_config_on_content_change() {
     assert!(reloaded, "content-changed config must trigger reload");
     let names = configured_server_names(&pool);
     assert!(
-        names.contains(&"new".to_string()),
+        names.iter().any(|name| name == "new"),
         "expected new server in pool after reload, got {names:?}"
     );
 }
