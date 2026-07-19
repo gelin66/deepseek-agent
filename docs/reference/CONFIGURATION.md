@@ -680,7 +680,7 @@ Remaining variables:
 - `DEEPSEEK_SANDBOX_MODE` (`read-only|workspace-write|danger-full-access|external-sandbox`)
 - `DEEPSEEK_MANAGED_CONFIG_PATH`
 - `DEEPSEEK_REQUIREMENTS_PATH`
-- `DEEPSEEK_MAX_SUBAGENTS` (clamped to `1..=20`)
+- `DEEPSEEK_MAX_SUBAGENTS` (clamped to `1..=128`)
 - `DEEPSEEK_TASKS_DIR` (runtime task queue/artifact storage, default
   `~/.codewhale/tasks`, with legacy `~/.deepseek/tasks` fallback when only the
   legacy directory exists)
@@ -926,23 +926,13 @@ If you are upgrading from older releases:
   directory/recursive rules.
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
-- `max_subagents` (int, optional): defaults to `20` and is clamped to `1..=20`.
+- `max_subagents` (int, optional): defaults to `64` and is clamped to `1..=128`.
 - `subagents.*` (optional): availability, concurrency, and depth controls for
   the canonical `agent` runtime. Supported keys are `enabled`,
-  `max_concurrent`, `max_admitted`, `launch_concurrency`, and `max_depth`.
-  The `[subagents] max_concurrent` value overrides
-  top-level `max_subagents` and is also clamped to `1..=20`. `[subagents]
-  max_admitted` (aliases: `max_total`, `admission_limit`) is the bounded total
-  of queued plus running sub-agents; it defaults to `200` so high-fanout turns
-  can queue and drain while runtime launch pressure remains bounded, and is
-  clamped to `max_concurrent..=200`. `[subagents]
-  launch_concurrency` sets how many direct children start at once before the
-  rest queue for a launch slot; it defaults to the resolved `max_subagents` cap
-  and is clamped to `1..=max_subagents` (the deprecated
-  `interactive_max_launch` key is accepted as an alias, with the new key
-  winning when both are set). `[subagents.providers.<provider>]` accepts the
-  same availability, fanout, and depth knobs (`enabled`, `max_concurrent`,
-  `max_admitted`, `launch_concurrency`, `max_depth`) and inherits the global
+  `max_concurrent`, and `max_depth`. The `[subagents] max_concurrent` value
+  overrides top-level `max_subagents` and is also clamped to `1..=128`.
+  `[subagents.providers.<provider>]` accepts the same availability, fanout,
+  and depth knobs (`enabled`, `max_concurrent`, `max_depth`) and inherits the global
   `[subagents]` value for any key you omit. Provider keys accept canonical
   names such as `deepseek`, `zai`, `openrouter`, `anthropic`, plus convenience
   aliases such as `glm` for Z.ai and `deepseek_api` for direct DeepSeek:
@@ -950,25 +940,17 @@ If you are upgrading from older releases:
   ```toml
   [subagents]
   max_concurrent = 20
-  launch_concurrency = 20
-  max_admitted = 200
   max_depth = 6
 
   [subagents.providers.deepseek]
   max_concurrent = 20
-  launch_concurrency = 20
-  max_admitted = 200
 
   [subagents.providers.glm]
   max_concurrent = 4
-  launch_concurrency = 3
-  max_admitted = 12
   max_depth = 2
 
   [subagents.providers.openrouter]
   max_concurrent = 5
-  launch_concurrency = 3
-  max_admitted = 20
   ```
 
 - `skills_dir` (string, optional): defaults to `~/.codewhale/skills` (each skill is

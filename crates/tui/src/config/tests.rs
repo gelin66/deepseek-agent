@@ -1241,132 +1241,17 @@ fn max_subagents_defaults_to_default_limit() {
 }
 
 #[test]
-fn launch_concurrency_defaults_and_clamps_to_max_subagents() {
-    // Unset launch_concurrency now defaults to the full resolved cap.
-    assert_eq!(
-        Config::default().launch_concurrency(),
-        Config::default().max_subagents()
-    );
-
-    let mut config = Config {
-        subagents: Some(SubagentsConfig {
-            launch_concurrency: Some(50),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(config.launch_concurrency(), 50);
-
-    config.subagents = Some(SubagentsConfig {
-        launch_concurrency: Some(DEFAULT_MAX_SUBAGENTS + 10),
-        ..SubagentsConfig::default()
-    });
-    assert_eq!(config.launch_concurrency(), config.max_subagents());
-
-    config.subagents = Some(SubagentsConfig {
-        launch_concurrency: Some(0),
-        ..SubagentsConfig::default()
-    });
-    assert_eq!(config.launch_concurrency(), 1);
-
-    config.subagents = Some(SubagentsConfig {
-        launch_concurrency: Some(2),
-        ..SubagentsConfig::default()
-    });
-    assert_eq!(config.launch_concurrency(), 2);
-}
-
-#[test]
-fn launch_concurrency_honors_deprecated_interactive_max_launch_alias() {
-    // The old TOML key `interactive_max_launch` still deserializes, via
-    // #[serde(rename)], into the hidden legacy field, and the resolver
-    // honors it when the new key is unset.
-    let cfg: SubagentsConfig =
-        toml::from_str("interactive_max_launch = 5").expect("parse legacy key");
-    assert_eq!(cfg.interactive_max_launch_legacy, Some(5));
-    assert_eq!(cfg.launch_concurrency, None);
-
-    let config = Config {
-        subagents: Some(cfg),
-        ..Config::default()
-    };
-    assert_eq!(config.launch_concurrency(), 5);
-}
-
-#[test]
-fn launch_concurrency_new_key_wins_over_deprecated_alias() {
-    // When both keys are present the new `launch_concurrency` wins
-    // deterministically, regardless of document order.
-    let cfg: SubagentsConfig = toml::from_str("launch_concurrency = 3\ninteractive_max_launch = 7")
-        .expect("parse both keys");
-    assert_eq!(cfg.launch_concurrency, Some(3));
-    assert_eq!(cfg.interactive_max_launch_legacy, Some(7));
-
-    let config = Config {
-        subagents: Some(cfg),
-        ..Config::default()
-    };
-    assert_eq!(config.launch_concurrency(), 3);
-}
-
-#[test]
-fn subagent_admission_limit_defaults_and_clamps() {
-    assert_eq!(
-        Config::default().max_admitted_subagents(),
-        MAX_SUBAGENT_ADMISSION
-    );
-
-    let configured = Config {
-        subagents: Some(SubagentsConfig {
-            max_concurrent: Some(4),
-            max_admitted: Some(80),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(configured.max_subagents(), 4);
-    assert_eq!(configured.max_admitted_subagents(), 80);
-
-    let low = Config {
-        subagents: Some(SubagentsConfig {
-            max_concurrent: Some(4),
-            max_admitted: Some(1),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(low.max_admitted_subagents(), 4);
-
-    let high = Config {
-        subagents: Some(SubagentsConfig {
-            max_admitted: Some(MAX_SUBAGENT_ADMISSION + 1),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(high.max_admitted_subagents(), MAX_SUBAGENT_ADMISSION);
-
-    let alias_cfg: SubagentsConfig =
-        toml::from_str("admission_limit = 80").expect("parse admission alias");
-    assert_eq!(alias_cfg.max_admitted, Some(80));
-}
-
-#[test]
-fn provider_subagent_profiles_override_global_limits_with_aliases() {
+fn provider_subagent_profiles_override_global_limits() {
     let config: Config = toml::from_str(
         r#"
 provider = "zai"
 
 [subagents]
 max_concurrent = 20
-launch_concurrency = 20
-max_admitted = 200
 max_depth = 6
 
 [subagents.providers.glm]
 max_concurrent = 4
-launch_concurrency = 3
-max_admitted = 12
 max_depth = 2
 "#,
     )
@@ -1375,11 +1260,6 @@ max_depth = 2
     assert_eq!(config.api_provider(), ApiProvider::Zai);
     assert_eq!(config.max_subagents(), 20);
     assert_eq!(config.max_subagents_for_provider(ApiProvider::Zai), 4);
-    assert_eq!(config.launch_concurrency_for_provider(ApiProvider::Zai), 3);
-    assert_eq!(
-        config.max_admitted_subagents_for_provider(ApiProvider::Zai),
-        12
-    );
     assert_eq!(
         config.subagent_max_spawn_depth_for_provider(ApiProvider::Zai),
         2
@@ -1447,13 +1327,10 @@ fn provider_subagent_profiles_inherit_and_clamp_against_provider_max() {
         r#"
 [subagents]
 max_concurrent = 12
-launch_concurrency = 8
 max_depth = 5
 
 [subagents.providers.deepseek_api]
 max_concurrent = 30
-launch_concurrency = 30
-max_admitted = 1
 
 [subagents.providers.anthropic]
 enabled = false
@@ -1462,14 +1339,6 @@ enabled = false
     .expect("parse inherited provider subagent profile");
 
     assert_eq!(config.max_subagents_for_provider(ApiProvider::Deepseek), 30);
-    assert_eq!(
-        config.launch_concurrency_for_provider(ApiProvider::Deepseek),
-        30
-    );
-    assert_eq!(
-        config.max_admitted_subagents_for_provider(ApiProvider::Deepseek),
-        30
-    );
     assert_eq!(
         config.subagent_max_spawn_depth_for_provider(ApiProvider::Deepseek),
         5

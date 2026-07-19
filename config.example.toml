@@ -281,7 +281,7 @@ sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-acc
 #   auto_allow = ["cargo check", "npm run"]
 #
 # auto_allow = []
-max_subagents = 10 # optional (1-20)
+max_subagents = 10 # optional (1-128; default 64)
 
 # Optional sub-agent tuning. max_concurrent overrides top-level max_subagents.
 # [subagents]

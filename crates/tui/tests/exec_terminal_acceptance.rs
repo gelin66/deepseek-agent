@@ -1343,7 +1343,7 @@ async fn multi_agent_exec_eager_joins_child_before_one_success_terminal() {
         &server.uri(),
         20,
         MULTI_AGENT_ROOT_PROMPT,
-        "[subagents]\nmax_concurrent = 1\nlaunch_concurrency = 1\nmax_admitted = 1\napi_timeout_secs = 10\n",
+        "[subagents]\nmax_concurrent = 1\n",
         None,
     );
     assert!(
@@ -1528,7 +1528,7 @@ async fn nested_agent_exec_integrates_delayed_grandchild_before_terminal() {
         &server.uri(),
         20,
         NESTED_ROOT_PROMPT,
-        "[subagents]\nmax_concurrent = 2\nlaunch_concurrency = 2\nmax_admitted = 2\nmax_depth = 3\napi_timeout_secs = 10\n",
+        "[subagents]\nmax_concurrent = 2\nmax_depth = 3\n",
         None,
     );
     assert!(

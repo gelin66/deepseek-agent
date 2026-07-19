@@ -10,10 +10,6 @@ pub const DEFAULT_MAX_SUBAGENTS: usize = 64;
 /// above the default so operators can opt into larger API-bound fanout without
 /// code changes while the full resource budget gate lands.
 pub const MAX_SUBAGENTS: usize = 128;
-/// Upper bound for queued + running sub-agent admissions. This is deliberately
-/// higher than the instantaneous concurrency cap so bounded fanout can
-/// opt into large bounded populations without unbounded queue growth.
-pub const MAX_SUBAGENT_ADMISSION: usize = 1024;
 /// Default per-SSE-chunk idle timeout, in seconds.
 pub const DEFAULT_STREAM_CHUNK_TIMEOUT_SECS: u64 = 900;
 /// Minimum accepted stream chunk timeout.

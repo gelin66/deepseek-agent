@@ -3707,8 +3707,6 @@ fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_
         )
     };
     let max_subagents = config.max_subagents_for_provider(provider);
-    let launch_concurrency = config.launch_concurrency_for_provider(provider);
-    let max_admitted = config.max_admitted_subagents_for_provider(provider);
     let roster = crate::fleet::roster::FleetRoster::load(&config.fleet_config(), workspace);
     let mut built_in_members = 0usize;
     let mut config_members = 0usize;
@@ -3723,7 +3721,7 @@ fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_
     let roster_members = roster.members().len();
     let custom_members = config_members + workspace_members;
     let roster_ready = roster_members > 0;
-    let runtime_ready = subagents_enabled && max_subagents > 0 && launch_concurrency > 0;
+    let runtime_ready = subagents_enabled;
 
     json!({
         "ready": has_credentials_or_local && runtime_ready && roster_ready,
@@ -3739,8 +3737,6 @@ fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_
             "enabled": subagents_enabled,
             "disabled_reason": disabled_reason,
             "max_subagents": max_subagents,
-            "launch_concurrency": launch_concurrency,
-            "max_admitted": max_admitted,
         },
         "roster": {
             "ready": roster_ready,
@@ -3753,9 +3749,7 @@ fn doctor_operate_fleet_report_json(config: &Config, workspace: &Path) -> serde_
             "readiness_rule": "built-in starter roster or custom roster",
         },
         "concurrency": {
-            "launch_concurrency": launch_concurrency,
             "max_subagents": max_subagents,
-            "max_admitted": max_admitted,
             "plan_limit_probed": false,
         },
     })

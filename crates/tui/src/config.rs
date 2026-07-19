@@ -1443,21 +1443,6 @@ pub struct SubagentsConfig {
     /// same default and ceiling so the limit cannot drift.
     #[serde(default)]
     pub max_depth: Option<u32>,
-    /// Number of direct (depth-1) sub-agents that may execute concurrently
-    /// before further launches queue for a launch slot (#3095). When unset,
-    /// defaults to the full resolved `max_subagents()` (no artificial
-    /// throttle); explicit values are clamped to [1, max_subagents].
-    #[serde(default)]
-    pub launch_concurrency: Option<usize>,
-    /// Maximum queued + running sub-agents admitted for one session. Defaults
-    /// to a large bounded queue while `launch_concurrency` keeps instantaneous
-    /// execution bounded.
-    #[serde(default, alias = "max_total", alias = "admission_limit")]
-    pub max_admitted: Option<usize>,
-    /// Deprecated pre-v0.8.61 alias for `launch_concurrency`. Honored only
-    /// when `launch_concurrency` is unset, so the new key always wins.
-    #[serde(default, rename = "interactive_max_launch")]
-    pub interactive_max_launch_legacy: Option<usize>,
     /// Per-provider overrides for sub-agent fanout knobs. Keys are
     /// provider names such as `deepseek`, `zai`, `openrouter`, or `anthropic`.
     #[serde(default)]
@@ -1476,10 +1461,6 @@ pub struct SubagentProviderConfig {
     pub max_concurrent: Option<usize>,
     #[serde(default)]
     pub max_depth: Option<u32>,
-    #[serde(default)]
-    pub launch_concurrency: Option<usize>,
-    #[serde(default, alias = "max_total", alias = "admission_limit")]
-    pub max_admitted: Option<usize>,
 }
 
 /// Resolved CLI configuration, including defaults and environment overrides.
@@ -3220,65 +3201,6 @@ impl Config {
             .and_then(|cfg| cfg.max_depth)
             .unwrap_or_else(|| self.subagent_max_spawn_depth())
             .min(codewhale_config::MAX_SPAWN_DEPTH_CEILING)
-    }
-
-    /// Number of direct (depth-1) sub-agents that may execute concurrently
-    /// before further launches queue for a launch slot (#3095). Reads
-    /// `[subagents] launch_concurrency` (or the deprecated
-    /// `interactive_max_launch` alias); when unset it defaults to the full
-    /// resolved `max_subagents()` (no artificial throttle), and any explicit
-    /// value is clamped to `[1, max_subagents]`.
-    #[must_use]
-    pub fn launch_concurrency(&self) -> usize {
-        let max = self.max_subagents();
-        self.subagents
-            .as_ref()
-            .and_then(|cfg| cfg.launch_concurrency.or(cfg.interactive_max_launch_legacy))
-            .unwrap_or(max)
-            .clamp(1, max)
-    }
-
-    /// Return the provider-specific direct launch throttle. Children above
-    /// this limit queue for a launch slot instead of starting immediately.
-    #[must_use]
-    pub fn launch_concurrency_for_provider(&self, provider: ApiProvider) -> usize {
-        let max = self.max_subagents_for_provider(provider);
-        self.subagent_provider_config(provider)
-            .and_then(|cfg| cfg.launch_concurrency)
-            .or_else(|| {
-                self.subagents
-                    .as_ref()
-                    .and_then(|cfg| cfg.launch_concurrency.or(cfg.interactive_max_launch_legacy))
-            })
-            .unwrap_or(max)
-            .clamp(1, max)
-    }
-
-    /// Maximum queued + running sub-agents admitted for the session.
-    ///
-    /// Defaults to [`MAX_SUBAGENT_ADMISSION`] so distinct `agent` calls can
-    /// queue and drain through `launch_concurrency` instead of being rejected
-    /// at the instantaneous concurrency cap. Explicit values are clamped to
-    /// `[max_subagents, MAX_SUBAGENT_ADMISSION]`.
-    #[must_use]
-    pub fn max_admitted_subagents(&self) -> usize {
-        let max_concurrent = self.max_subagents();
-        self.subagents
-            .as_ref()
-            .and_then(|cfg| cfg.max_admitted)
-            .unwrap_or(MAX_SUBAGENT_ADMISSION)
-            .clamp(max_concurrent, MAX_SUBAGENT_ADMISSION)
-    }
-
-    /// Return the provider-specific queued + running admission cap.
-    #[must_use]
-    pub fn max_admitted_subagents_for_provider(&self, provider: ApiProvider) -> usize {
-        let max_concurrent = self.max_subagents_for_provider(provider);
-        self.subagent_provider_config(provider)
-            .and_then(|cfg| cfg.max_admitted)
-            .or_else(|| self.subagents.as_ref().and_then(|cfg| cfg.max_admitted))
-            .unwrap_or(MAX_SUBAGENT_ADMISSION)
-            .clamp(max_concurrent, MAX_SUBAGENT_ADMISSION)
     }
 
     /// Resolved per-SSE-chunk idle timeout in seconds.
