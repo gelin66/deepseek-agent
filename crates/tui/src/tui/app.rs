@@ -10,11 +10,11 @@ use ratatui::layout::Rect;
 use serde_json::Value;
 use thiserror::Error;
 
-use codewhale_config::{ProviderChain, route::RouteLimits};
+use codewhale_config::route::RouteLimits;
 
 use crate::config::{
-    ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, has_api_key_for,
-    save_api_key, save_api_key_for,
+    ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
+    save_api_key_for,
 };
 use crate::core::events::TurnRoute;
 use crate::localization::{MessageId, tr};
@@ -1324,19 +1324,6 @@ pub struct App {
     /// Updated by `/provider` switches so the UI/commands can read the
     /// active backend without re-deriving it from the live config.
     pub api_provider: ApiProvider,
-    /// Primary provider plus configured fallback providers for this session.
-    pub provider_chain: Option<ProviderChain>,
-    /// Per-provider auth/local readiness snapshot for the fallback chain (#2574).
-    ///
-    /// Captured at startup alongside `provider_chain` (where the live `Config` is
-    /// in scope). `advance_fallback` consults it to skip chain entries that
-    /// cannot serve a turn — hosted providers missing a key — while local
-    /// providers (Ollama/vLLM/SGLang) are always ready. Stored as `(provider,
-    /// ready)` pairs; lookups fall back to "ready" for providers not present so
-    /// an unknown entry is tried rather than silently skipped.
-    provider_readiness: Vec<(ApiProvider, bool)>,
-    /// Human-readable description of the last provider fallback event.
-    pub last_fallback_reason: Option<String>,
     /// Resolved provider/model route limits for the active runtime route.
     pub active_route_limits: Option<RouteLimits>,
     /// Current reasoning-effort tier for DeepSeek thinking mode.
@@ -1817,29 +1804,6 @@ impl App {
         let provider = config.api_provider();
         let mut effective_auth_config = config.clone();
         effective_auth_config.provider = Some(provider.as_str().to_string());
-        let provider_chain = provider
-            .kind()
-            .map(|kind| ProviderChain::new(kind, &config.fallback_providers))
-            .filter(|chain| chain.providers().len() > 1);
-
-        // Snapshot per-provider readiness for the fallback chain (#2574). Uses
-        // the same `has_api_key_for` helper the provider picker uses, so hosted
-        // providers require a key and self-hosted ones (Ollama/vLLM/SGLang) are
-        // reported ready without one. Empty when there is no fallback chain.
-        let provider_readiness = provider_chain
-            .as_ref()
-            .map(|chain| {
-                chain
-                    .providers()
-                    .iter()
-                    .map(|kind| {
-                        let provider = ApiProvider::from_kind(*kind);
-                        (provider, has_api_key_for(config, provider))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
         // Authentication follows the already validated entry configuration.
         // Saved UI preferences cannot change the production model backend.
         let needs_api_key = !has_api_key(&effective_auth_config);
@@ -2053,9 +2017,6 @@ impl App {
             pending_turn_route: None,
             active_turn: None,
             api_provider: provider,
-            provider_chain,
-            provider_readiness,
-            last_fallback_reason: None,
             active_route_limits,
             reasoning_effort,
             last_effective_reasoning_effort: None,
@@ -4377,107 +4338,6 @@ impl App {
         self.reasoning_effort
             .display_label_for_provider(self.api_provider)
             .to_string()
-    }
-
-    pub fn fallback_chain_position(&self) -> Option<usize> {
-        self.provider_chain.as_ref().map(ProviderChain::position)
-    }
-
-    /// Whether a fallback chain entry can serve a turn right now (#2574).
-    ///
-    /// Mirrors the provider picker's eligibility: hosted providers need a key
-    /// (`has_api_key_for`, captured into `provider_readiness` at startup) while
-    /// self-hosted providers (Ollama/vLLM/SGLang) are always ready. Providers
-    /// absent from the snapshot default to ready so an unknown entry is tried
-    /// rather than silently skipped.
-    fn fallback_provider_is_ready(&self, provider: ApiProvider) -> bool {
-        self.provider_readiness
-            .iter()
-            .find_map(|(candidate, ready)| (*candidate == provider).then_some(*ready))
-            .unwrap_or(true)
-    }
-
-    /// Advance to the next *eligible* provider in the fallback chain (#2574).
-    ///
-    /// Walks the chain from the current position, skipping entries that are not
-    /// ready (hosted providers missing auth) and recording a clear note for each
-    /// skip. Local providers are always eligible. Returns the first ready
-    /// provider, or `None` (with an exhaustion reason) when every remaining entry
-    /// is unready or the end of the chain is reached. `ProviderChain::advance`
-    /// stays pure — the readiness filtering lives here at the App level.
-    ///
-    /// Note: auth-rejection (401) failures never reach this path; the caller
-    /// excludes them from fallback so a bad key does not silently rotate
-    /// providers (see `apply_engine_error_to_app`).
-    ///
-    /// Local/private policy (#2574): when the chain's primary provider is a
-    /// self-hosted / local runtime, cloud candidates are skipped with a clear
-    /// note so a local/private route never silently falls back out to a hosted
-    /// provider. Self-hosted siblings remain eligible. The policy is anchored
-    /// to the original primary; a cloud primary may still hop through a local
-    /// runtime and then back to another cloud fallback.
-    pub fn advance_fallback(&mut self, reason: impl Into<String>) -> Option<ApiProvider> {
-        let reason = reason.into();
-        self.provider_chain.as_ref()?;
-
-        let origin_is_local = self
-            .provider_chain
-            .as_ref()
-            .and_then(|chain| chain.providers().first().copied())
-            .map(ApiProvider::from_kind)
-            .is_some_and(ApiProvider::is_self_hosted);
-
-        let mut skip_notes: Vec<String> = Vec::new();
-        let mut chosen: Option<ApiProvider> = None;
-        while let Some(next_kind) = self
-            .provider_chain
-            .as_mut()
-            .and_then(ProviderChain::advance)
-        {
-            let candidate = ApiProvider::from_kind(next_kind);
-            if origin_is_local && !candidate.is_self_hosted() {
-                skip_notes.push(format!(
-                    "skipped {}: local/private policy (no local->cloud fallback)",
-                    candidate.as_str()
-                ));
-                continue;
-            }
-            if self.fallback_provider_is_ready(candidate) {
-                chosen = Some(candidate);
-                break;
-            }
-            skip_notes.push(format!("skipped {}: needs auth", candidate.as_str()));
-        }
-
-        let skipped = if skip_notes.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", skip_notes.join("; "))
-        };
-
-        let Some(next_provider) = chosen else {
-            let total = self
-                .provider_chain
-                .as_ref()
-                .map_or(0, |chain| chain.providers().len());
-            self.last_fallback_reason = Some(format!(
-                "Fallback chain exhausted after {total} provider(s): {reason}{skipped}"
-            ));
-            return None;
-        };
-
-        self.api_provider = next_provider;
-        self.last_fallback_reason = Some(format!(
-            "Fell back to {} after recoverable provider error: {reason}{skipped}",
-            next_provider.as_str()
-        ));
-        Some(next_provider)
-    }
-
-    pub fn is_fallback_active(&self) -> bool {
-        self.provider_chain
-            .as_ref()
-            .is_some_and(ProviderChain::is_fallback_active)
     }
 }
 
