@@ -2,8 +2,7 @@ use super::*;
 use crate::config::{ApiProvider, Config, ProviderConfig, ProvidersConfig};
 use crate::settings::Settings;
 use crate::test_support::{EnvVarGuard, lock_test_env};
-use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
-use crate::tui::scrolling::TranscriptLineMeta;
+use crate::tui::history::HistoryCell;
 
 fn test_options(yolo: bool) -> TuiOptions {
     TuiOptions {
@@ -1378,7 +1377,6 @@ fn submit_input_consolidates_oversized_input_into_paste_file() {
 fn app_starts_without_seeded_transcript_messages() {
     let app = App::new(test_options(false), &Config::default());
     assert!(app.history.is_empty());
-    assert_eq!(app.history_version, 0);
 }
 
 #[test]
@@ -2038,91 +2036,11 @@ fn configured_approval_policy_initializes_live_approval_mode() {
 }
 
 #[test]
-fn test_mark_history_updated() {
-    let mut app = App::new(test_options(false), &Config::default());
-    let initial_version = app.history_version;
-    app.mark_history_updated();
-    assert!(app.history_version > initial_version);
-}
-
-#[test]
-fn expanded_tool_runs_rebase_when_history_prefix_shifts() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.expanded_tool_runs = std::collections::HashSet::from([2usize, 6usize]);
-
-    app.shift_history_maps_down(3);
-
-    assert_eq!(app.expanded_tool_runs, std::collections::HashSet::from([3]));
-}
-
-#[test]
-fn tool_run_expansion_toggle_opens_and_closes_run() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.tool_collapse_mode = ToolCollapseMode::Compact;
-    app.tool_collapse_threshold = 3;
-    for name in ["read_file", "list_dir", "web_search"] {
-        app.add_message(HistoryCell::Tool(GenericToolCell {
-            name: name.to_string(),
-            status: ToolStatus::Success,
-            input_summary: None,
-            output: Some("ok".to_string()),
-            prompts: None,
-            output_summary: None,
-            is_diff: false,
-        }));
-    }
-
-    assert!(app.toggle_tool_run_expansion_at(0));
-    assert!(app.expanded_tool_runs.contains(&0));
-    assert!(app.toggle_tool_run_expansion_at(2));
-    assert!(!app.expanded_tool_runs.contains(&0));
-    assert!(!app.toggle_tool_run_expansion_at(99));
-}
-
-#[test]
 fn test_scroll_operations() {
     let mut app = App::new(test_options(false), &Config::default());
     // Just verify scroll methods can be called without panic
     app.scroll_up(5);
     app.scroll_down(3);
-}
-
-#[test]
-fn resize_preserves_scrolled_transcript_position() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.viewport.transcript_scroll = TranscriptScroll::at_line(42);
-    app.viewport.last_transcript_top = 42;
-    app.viewport.pending_scroll_delta = 5;
-
-    app.handle_resize(120, 40);
-
-    let meta = vec![TranscriptLineMeta::Spacer; 240];
-    let (_, top) = app.viewport.transcript_scroll.resolve_top(&meta, 200);
-    assert_eq!(top, 42);
-    assert_eq!(app.viewport.pending_scroll_delta, 0);
-}
-
-#[test]
-fn resize_keeps_tail_state_when_user_was_at_tail() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.viewport.transcript_scroll = TranscriptScroll::to_bottom();
-    app.viewport.last_transcript_top = 42;
-
-    app.handle_resize(120, 40);
-
-    assert!(app.viewport.transcript_scroll.is_at_tail());
-}
-
-#[test]
-fn resize_seeds_visible_height_for_paging_before_next_render() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.viewport.last_transcript_visible = 12;
-
-    app.handle_resize(120, 40);
-    assert_eq!(app.viewport.last_transcript_visible, 38);
-
-    app.handle_resize(120, 1);
-    assert_eq!(app.viewport.last_transcript_visible, 1);
 }
 
 #[test]

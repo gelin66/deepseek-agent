@@ -1114,7 +1114,6 @@ pub struct App {
     /// Session sub-state (cost, tokens, telemetry).
     pub session: SessionState,
     pub history: Vec<HistoryCell>,
-    pub history_version: u64,
     /// Per-cell revision counter, kept in lockstep with `history`.
     pub history_revisions: Vec<u64>,
     /// Monotonic counter used to issue fresh per-cell revisions.
@@ -1210,8 +1209,6 @@ pub struct App {
     pub context_panel: bool,
     /// Minimum number of consecutive safe tool cells needed for auto-collapse.
     pub tool_collapse_threshold: usize,
-    /// Tool runs the user explicitly expanded. Stores original history indices.
-    pub expanded_tool_runs: HashSet<usize>,
     /// Current dense tool-run collapse behavior.
     pub tool_collapse_mode: ToolCollapseMode,
     pub max_input_history: usize,
@@ -1656,7 +1653,6 @@ impl App {
             ),
             session: SessionState::default(),
             history: Vec::new(),
-            history_version: 0,
             history_revisions: Vec::new(),
             next_history_revision: 1,
             is_loading: false,
@@ -1697,7 +1693,6 @@ impl App {
             sidebar_focus,
             context_panel: settings.context_panel,
             tool_collapse_threshold: 3,
-            expanded_tool_runs: HashSet::new(),
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             max_input_history,
             allow_shell,
@@ -2088,7 +2083,6 @@ impl App {
         let rev = self.fresh_history_revision();
         self.history.push(msg);
         self.history_revisions.push(rev);
-        self.history_version = self.history_version.wrapping_add(1);
 
         // Bound history length: when the soft cap fires, fold the oldest
         // batch into a single ArchivedContext placeholder.
@@ -2265,7 +2259,6 @@ impl App {
         let rev = self.fresh_history_revision();
         self.history.insert(0, placeholder);
         self.history_revisions.insert(0, rev);
-        self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
     }
 
@@ -2288,24 +2281,7 @@ impl App {
             .into_iter()
             .filter_map(|idx| if idx >= n { Some(idx - n) } else { None })
             .collect();
-        self.expanded_tool_runs = std::mem::take(&mut self.expanded_tool_runs)
-            .into_iter()
-            .filter_map(|idx| if idx >= n { Some(idx - n) } else { None })
-            .collect();
         self.collapsed_cell_map.clear();
-    }
-
-    pub fn mark_history_updated(&mut self) {
-        self.history_version = self.history_version.wrapping_add(1);
-        // Resync per-cell revisions to history.len(). This is the
-        // "I-don't-know-which-cell-changed" path: if cells were appended in
-        // bulk (e.g. session resume, compaction), every new cell gets a
-        // fresh revision; if cells were removed, drop trailing revs. We
-        // intentionally do NOT bump revisions for indices that already had
-        // one — the cache will reuse those. Callers that mutate a specific
-        // cell's content must call `bump_history_cell(idx)` instead.
-        self.resync_history_revisions();
-        self.needs_redraw = true;
     }
 
     /// Issue a fresh, monotonically increasing revision counter for a new
@@ -2345,35 +2321,6 @@ impl App {
             self.next_history_revision = self.next_history_revision.wrapping_add(1);
             *rev = new_rev;
         }
-        self.history_version = self.history_version.wrapping_add(1);
-        self.needs_redraw = true;
-    }
-
-    /// Append a single history cell, allocating a fresh per-cell revision.
-    /// Equivalent to `add_message` but exposed as a generic alias so call
-    /// sites currently doing `app.history.push(...)` followed by
-    /// `app.mark_history_updated()` can collapse to one helper.
-    pub fn push_history_cell(&mut self, cell: HistoryCell) {
-        let rev = self.fresh_history_revision();
-        self.history.push(cell);
-        self.history_revisions.push(rev);
-        self.history_version = self.history_version.wrapping_add(1);
-        self.maybe_fold_history();
-        self.needs_redraw = true;
-    }
-
-    /// Append a batch of history cells, allocating fresh revisions.
-    pub fn extend_history<I>(&mut self, cells: I)
-    where
-        I: IntoIterator<Item = HistoryCell>,
-    {
-        for cell in cells {
-            let rev = self.fresh_history_revision();
-            self.history.push(cell);
-            self.history_revisions.push(rev);
-        }
-        self.maybe_fold_history();
-        self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
     }
 
@@ -2382,9 +2329,7 @@ impl App {
         self.history.clear();
         self.history_revisions.clear();
         self.collapsed_cells.clear();
-        self.expanded_tool_runs.clear();
         self.collapsed_cell_map.clear();
-        self.history_version = self.history_version.wrapping_add(1);
         self.needs_redraw = true;
     }
 
@@ -2393,9 +2338,6 @@ impl App {
         let cell = self.history.pop();
         if cell.is_some() {
             self.history_revisions.pop();
-            self.expanded_tool_runs
-                .retain(|idx| *idx < self.history.len());
-            self.history_version = self.history_version.wrapping_add(1);
             self.needs_redraw = true;
         }
         cell
@@ -2404,42 +2346,6 @@ impl App {
     #[must_use]
     pub fn tool_collapse_active(&self) -> bool {
         self.tool_collapse_threshold > 0 && self.tool_collapse_mode.is_active(self.calm_mode)
-    }
-
-    #[must_use]
-    pub fn tool_run_start_for_history_index(&self, index: usize) -> Option<usize> {
-        if !self.tool_collapse_active() {
-            return None;
-        }
-        if index >= self.history.len() {
-            return None;
-        }
-        crate::tui::history::detect_tool_runs(&self.history, self.tool_collapse_threshold)
-            .into_iter()
-            .find(|run| index >= run.start && index < run.start.saturating_add(run.count))
-            .map(|run| run.start)
-    }
-
-    pub fn toggle_tool_run_expansion_at(&mut self, index: usize) -> bool {
-        let Some(start) = self.tool_run_start_for_history_index(index) else {
-            return false;
-        };
-        if self.expanded_tool_runs.remove(&start) {
-            self.status_message = Some("Tool group collapsed".to_string());
-        } else {
-            self.expanded_tool_runs.insert(start);
-            self.status_message = Some("Tool group expanded".to_string());
-        }
-        self.mark_history_updated();
-        true
-    }
-
-    #[must_use]
-    pub fn original_cell_index_for_rendered(&self, rendered_index: usize) -> usize {
-        self.collapsed_cell_map
-            .get(rendered_index)
-            .copied()
-            .unwrap_or(rendered_index)
     }
 
     pub fn push_status_toast(
@@ -2641,30 +2547,6 @@ impl App {
             low_motion: self.low_motion,
             spacing: self.transcript_spacing,
         }
-    }
-
-    /// Handle terminal resize event.
-    pub fn handle_resize(&mut self, _width: u16, _height: u16) {
-        let preserved_scroll = (!self.viewport.transcript_scroll.is_at_tail())
-            .then_some(self.viewport.last_transcript_top);
-        self.viewport.transcript_cache = TranscriptViewCache::new();
-
-        if let Some(top) = preserved_scroll {
-            self.viewport.transcript_scroll = TranscriptScroll::at_line(top);
-        }
-
-        self.viewport.pending_scroll_delta = 0;
-
-        self.viewport.last_transcript_area = None;
-        self.viewport.last_transcript_top = 0;
-        // Seed visible height from the resize event so paging keys use a
-        // useful page size immediately, before the next render updates it.
-        self.viewport.last_transcript_visible = (_height as usize).saturating_sub(2).max(1);
-        self.viewport.last_transcript_total = 0;
-        self.viewport.last_transcript_padding_top = 0;
-        self.viewport.jump_to_latest_button_area = None;
-
-        self.mark_history_updated();
     }
 
     /// When the user starts editing a truncated oversized paste, restore the

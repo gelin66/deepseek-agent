@@ -172,10 +172,7 @@ impl ChatWidget {
         } else {
             Vec::new()
         };
-        let collapsed_run_starts: HashSet<usize> = tool_runs
-            .iter()
-            .filter_map(|run| (!app.expanded_tool_runs.contains(&run.start)).then_some(run.start))
-            .collect();
+        let collapsed_run_starts: HashSet<usize> = tool_runs.iter().map(|run| run.start).collect();
         let mut collapsed_tool_indices: HashSet<usize> = HashSet::new();
         for run in &tool_runs {
             if !collapsed_run_starts.contains(&run.start) {
@@ -2951,35 +2948,6 @@ mod tests {
     }
 
     #[test]
-    fn chat_widget_expands_dense_tool_runs_on_demand() {
-        let mut app = create_test_app();
-        app.tool_collapse_mode = ToolCollapseMode::Compact;
-        app.tool_collapse_threshold = 3;
-        add_dense_tool_run(&mut app);
-        app.expanded_tool_runs.insert(0);
-
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 80,
-            height: 12,
-        };
-        let mut buf = Buffer::empty(area);
-        let widget = ChatWidget::new(&mut app, area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-
-        assert_eq!(app.collapsed_cell_map, vec![0, 1, 2]);
-        assert!(rendered.contains("read_file.txt"), "{rendered}");
-        assert!(rendered.contains("list_dir.txt"), "{rendered}");
-        assert!(rendered.contains("web_search.txt"), "{rendered}");
-        assert!(
-            !rendered.contains("full output from list_dir"),
-            "{rendered}"
-        );
-    }
-
-    #[test]
     fn chat_widget_expanded_mode_leaves_dense_tool_runs_visible() {
         let mut app = create_test_app();
         app.tool_collapse_mode = ToolCollapseMode::Expanded;
@@ -4256,10 +4224,9 @@ mod tests {
             });
         }
 
-        // Drive the same shrink-then-grow cycle that maximize→windowed
-        // transitions produce on Windows.
+        // Drive the same shrink-then-grow frame sequence that
+        // maximize→windowed transitions produce on Windows.
         for (width, height) in [(140u16, 40u16), (90, 28), (60, 20), (140, 40)] {
-            app.handle_resize(width, height);
             let area = Rect {
                 x: 0,
                 y: 0,
@@ -4644,11 +4611,10 @@ mod tests {
         assert!(rendered.contains("[2 / d / n]"), "{rendered}");
     }
 
-    /// Regression for issue #65: after `App::handle_resize`, the chat widget
-    /// must produce a clean render at the new width — no stale wrapping,
-    /// no panic, no content exceeding the requested width. Cycling through
-    /// several widths (shrinks and grows) flushes any cached layout that
-    /// fails to invalidate on resize.
+    /// Regression for issue #65: the chat widget must produce a clean render
+    /// at each new width — no stale wrapping, no panic, no content exceeding
+    /// the requested width. Cycling through several widths flushes any cache
+    /// that fails to key layout by the current frame geometry.
     #[test]
     fn chat_widget_renders_cleanly_after_resize_cycle() {
         let mut app = create_test_app();
@@ -4662,8 +4628,6 @@ mod tests {
         let widths_to_cycle = [120u16, 80, 40, 60, 100, 30];
         let height: u16 = 20;
         for width in widths_to_cycle {
-            // Caller-side: simulate the resize handler invalidating caches.
-            app.handle_resize(width, height);
             let area = Rect {
                 x: 0,
                 y: 0,
