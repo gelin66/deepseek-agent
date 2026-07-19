@@ -5,8 +5,7 @@
 //! (working / waiting / approval / failed / done) render **above** the
 //! composer, while idle and typing keep a quiet phase line beneath it.
 //!
-//! Classic shell keeps the legacy footer-below-composer order; this module
-//! only decides Ocean placement and paints the one-line band.
+//! This module owns placement and paints the one-line band.
 
 use std::borrow::Cow;
 
@@ -86,9 +85,8 @@ fn truncate_to_width(text: &str, width: usize) -> String {
     result
 }
 
-/// Compact elapsed-time detail for the phase band.
-/// Kept quieter than the classic footer's verbose tool-status line so the
-/// transcript owns the ledger and the strip only names the live pulse.
+/// Compact elapsed-time detail for the phase band. The transcript owns the
+/// ledger; the strip only names the live pulse.
 fn working_detail(app: &App) -> Option<String> {
     app.turn_started_at
         .map(|started| started.elapsed().as_secs())

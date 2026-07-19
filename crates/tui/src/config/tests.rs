@@ -5779,32 +5779,6 @@ fn provider_capability_roundtrip_serialization() {
 }
 
 #[test]
-fn status_items_deser_ignores_unknown_variants() {
-    // Simulate an older build reading config written by a newer build that
-    // knows about a future status chip.
-    let toml_str = r#"
-        alternate_screen = "auto"
-        status_items = ["mode", "model", "unknown_future_item", "cost", "another_unknown", "status"]
-    "#;
-    let tui: TuiConfig = toml::from_str(toml_str).expect("should parse without error");
-    let items = tui.status_items.expect("status_items should be Some");
-    assert_eq!(items.len(), 3, "unknown items should be silently dropped");
-    assert_eq!(items[0], StatusItem::Model);
-    assert_eq!(items[1], StatusItem::Cost);
-    assert_eq!(items[2], StatusItem::Status);
-}
-
-#[test]
-fn status_items_deser_allows_missing_field() {
-    let toml_str = r#"
-        locale = "zh-Hans"
-        mouse_capture = false
-    "#;
-    let tui: TuiConfig = toml::from_str(toml_str).expect("missing status_items should parse");
-    assert_eq!(tui.status_items, None);
-}
-
-#[test]
 fn huggingface_provider_aliases_parse() {
     for alias in ["huggingface", "hugging-face", "hugging_face", "hf"] {
         assert_eq!(ApiProvider::parse(alias), Some(ApiProvider::Huggingface));

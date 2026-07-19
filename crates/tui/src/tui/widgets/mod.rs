@@ -1,13 +1,9 @@
-mod footer;
-mod header;
 mod renderable;
+mod status_indicator;
 pub mod tool_card;
 
-pub use footer::{
-    FooterProps, FooterToast, FooterWidget, footer_agents_chip, footer_working_label,
-};
-pub use header::{HeaderData, HeaderWidget, header_status_indicator_frame};
 pub use renderable::Renderable;
+pub use status_indicator::header_status_indicator_frame;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
@@ -73,10 +69,7 @@ impl ChatWidget {
             .is_ombre()
             .then(|| crate::tui::ocean::OceanRamp::for_theme(&app.ui_theme))
             .flatten();
-        let ambient_inks = app
-            .ocean_treatment
-            .supports_ambient_life()
-            .then(|| crate::tui::ocean::ambient_inks(&app.ui_theme));
+        let ambient_inks = Some(crate::tui::ocean::ambient_inks(&app.ui_theme));
         let ocean_elapsed_ms = app.ocean_started_at.elapsed().as_millis();
         let render_empty_state = should_render_empty_state(app);
         let phase = ShellPhase::from_app(app);
@@ -117,7 +110,6 @@ impl ChatWidget {
             app.viewport.last_transcript_top = 0;
             app.viewport.last_transcript_visible = visible_lines;
             app.viewport.last_transcript_total = 0;
-            app.viewport.last_transcript_padding_top = 0;
             app.viewport.jump_to_latest_button_area = None;
             return Self {
                 content_area,
@@ -292,34 +284,24 @@ impl ChatWidget {
         app.viewport.last_transcript_top = top;
         app.viewport.last_transcript_visible = visible_lines;
         app.viewport.last_transcript_total = total_lines;
-        app.viewport.last_transcript_padding_top = 0;
         let end = (top + visible_lines).min(total_lines);
-        let mut lines = if total_lines == 0 {
+        let lines = if total_lines == 0 {
             vec![Line::from("")]
         } else {
             app.viewport.transcript_cache.lines()[top..end].to_vec()
         };
-        let mut line_links = if total_lines == 0 {
+        let line_links = if total_lines == 0 {
             vec![Vec::new()]
         } else {
             app.viewport.transcript_cache.line_links()[top..end].to_vec()
         };
 
-        // The HTML contract is a top-first ledger. Bottom-padding the short
+        // The transcript is a top-first ledger. Bottom-padding a short
         // transcript made every newly wrapped stream line shift all prior
         // rows upward, producing repeated thousand-cell repaints and the
-        // visible "slab" motion recorded in live QA. Empty-state centering is
-        // handled separately; active work starts at the top and appends in
-        // place until scrolling is genuinely necessary. The old anchoring is
-        // retained only inside the explicitly selected classic treatment.
-        if app.ocean_treatment.is_classic() && app.viewport.transcript_scroll.is_at_tail() {
-            let padding_top = visible_lines.saturating_sub(lines.len());
-            app.viewport.last_transcript_padding_top = padding_top;
-            pad_lines_to_bottom(&mut lines, visible_lines);
-            line_links.splice(0..0, std::iter::repeat_n(Vec::new(), padding_top));
-        } else {
-            app.viewport.last_transcript_padding_top = 0;
-        }
+        // visible "slab" motion recorded in live QA. Empty-state centering
+        // is handled separately; active work starts at the top and appends in
+        // place until scrolling is genuinely necessary.
 
         let scrollbar = (total_lines > visible_lines && content_area.width > 1).then_some(
             TranscriptScrollbar {
@@ -981,28 +963,15 @@ impl Renderable for ComposerWidget<'_> {
                     Style::default().fg(palette::TEXT_MUTED),
                 )));
             }
-            // Top-right corner: transient turn receipts or the session title.
-            // Receipts are lifecycle chrome, not transcript content; they
-            // should appear briefly without displacing conversation rows.
-            if self.app.ocean_treatment.is_classic()
-                && let Some(chrome) = composer_top_right_chrome(self.app, area.width)
-            {
-                block = block.title_top(chrome.right_aligned());
-            }
             if let Some(hint_line) = hint_line {
                 block = block.title_bottom(hint_line);
             }
             block.render(area, buf);
         } else if area.height >= 2 {
-            let mut block = Block::default()
+            let block = Block::default()
                 .borders(Borders::TOP)
                 .border_style(Style::default().fg(self.app.ui_theme.border))
                 .style(background);
-            if self.app.ocean_treatment.is_classic()
-                && let Some(chrome) = composer_top_right_chrome(self.app, area.width)
-            {
-                block = block.title_top(chrome.right_aligned());
-            }
             block.render(area, buf);
         } else {
             Block::default().style(background).render(area, buf);
@@ -2017,64 +1986,6 @@ fn option_abort() -> Cow<'static, str> {
     tr(MessageId::ApprovalOptionAbortTurn)
 }
 
-pub(crate) fn pad_lines_to_bottom(lines: &mut Vec<Line<'static>>, height: usize) {
-    if lines.len() >= height {
-        return;
-    }
-    let padding = height.saturating_sub(lines.len());
-    if padding == 0 {
-        return;
-    }
-
-    let mut padded = Vec::with_capacity(height);
-    padded.extend(std::iter::repeat_n(Line::from(""), padding));
-    padded.append(lines);
-    *lines = padded;
-}
-
-fn truncate_display_width(text: &str, max_width: usize) -> String {
-    if max_width == 0 {
-        return String::new();
-    }
-    if UnicodeWidthStr::width(text) <= max_width {
-        return text.to_string();
-    }
-    if max_width <= 3 {
-        return text.chars().take(max_width).collect();
-    }
-
-    let mut out = String::new();
-    let mut width = 0usize;
-    let limit = max_width.saturating_sub(3);
-    for ch in text.chars() {
-        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if width + ch_width > limit {
-            break;
-        }
-        out.push(ch);
-        width += ch_width;
-    }
-    out.push_str("...");
-    out
-}
-
-fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>> {
-    let session_title = app.session_title.as_deref();
-    let session_title = session_title?;
-
-    // Leave room for the left title and both borders. On narrow panes, skip
-    // extra chrome rather than letting status text collide with "Composer".
-    let max_width = usize::from(area_width.saturating_sub(18));
-    if max_width < 4 {
-        return None;
-    }
-
-    Some(Line::from(Span::styled(
-        truncate_display_width(session_title, max_width),
-        Style::default().fg(palette::TEXT_MUTED),
-    )))
-}
-
 fn should_render_empty_state(app: &App) -> bool {
     app.history.is_empty() && !app.is_loading && !app.is_compacting && !app.attention_hold_active()
 }
@@ -2321,8 +2232,7 @@ mod tests {
         composer_content_geometry, composer_empty_hint_text, composer_height, composer_max_height,
         composer_min_input_rows, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
         fish_flee_offset, fish_heading, fish_mark, layout_input, layout_input_with_scroll,
-        pad_lines_to_bottom, placeholder_visual_lines, should_render_empty_state, wrap_input_lines,
-        wrap_text,
+        placeholder_visual_lines, should_render_empty_state, wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
     use crate::palette;
@@ -2330,7 +2240,7 @@ mod tests {
     use crate::tui::approval::ApprovalStakes;
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
     use crate::tui::scrolling::TranscriptScroll;
-    use ratatui::{buffer::Buffer, layout::Rect, style::Color, text::Line};
+    use ratatui::{buffer::Buffer, layout::Rect, style::Color};
     use std::{
         path::PathBuf,
         time::{Duration, Instant},
@@ -2499,33 +2409,6 @@ mod tests {
         assert_eq!(first_total, app.viewport.last_transcript_total);
         assert!(first.contains("Explored 2 files, 1 search"), "{first}");
         assert!(first.contains("trailing prompt"), "{first}");
-    }
-
-    #[test]
-    fn pad_lines_to_bottom_noop_when_already_filled() {
-        let mut lines = vec![Line::from("one"), Line::from("two")];
-        pad_lines_to_bottom(&mut lines, 2);
-        assert_eq!(lines, vec![Line::from("one"), Line::from("two")]);
-    }
-
-    #[test]
-    fn pad_lines_to_bottom_prepends_empty_lines() {
-        let mut lines = vec![Line::from("one"), Line::from("two")];
-        pad_lines_to_bottom(&mut lines, 5);
-
-        assert_eq!(lines.len(), 5);
-        assert_eq!(lines[0], Line::from(""));
-        assert_eq!(lines[1], Line::from(""));
-        assert_eq!(lines[2], Line::from(""));
-        assert_eq!(lines[3], Line::from("one"));
-        assert_eq!(lines[4], Line::from("two"));
-    }
-
-    #[test]
-    fn pad_lines_to_bottom_noop_when_height_is_zero() {
-        let mut lines = vec![Line::from("one")];
-        pad_lines_to_bottom(&mut lines, 0);
-        assert_eq!(lines, vec![Line::from("one")]);
     }
 
     // Cursor alignment tests
@@ -2869,30 +2752,6 @@ mod tests {
         assert_eq!(buf[(0, cursor_y)].symbol(), "❯");
         assert_eq!(buf[(2, cursor_y)].symbol(), "h");
         assert_eq!(cursor_x, 7, "cursor keeps the prompt gutter reserved");
-    }
-
-    #[test]
-    fn composer_border_renders_session_title() {
-        let mut app = create_test_app();
-        app.ocean_treatment = crate::tui::ocean::OceanTreatment::Classic;
-        app.composer_density = ComposerDensity::Comfortable;
-        app.session_title = Some("my-session".to_string());
-        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
-        let mention_menu_entries = Vec::<String>::new();
-        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 96,
-            height: 5,
-        };
-        let mut buf = Buffer::empty(area);
-
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-
-        assert!(!rendered.contains("Composer"));
-        assert!(rendered.contains("my-session"));
     }
 
     #[test]
@@ -3433,13 +3292,13 @@ mod tests {
     }
 
     /// Regression: a long single-line tool result must not write any cells
-    /// outside the chat content area (issue #36 — sidebar gutter bleed).
+    /// outside the chat content area (issue #36).
     ///
     /// We render `ChatWidget` into a buffer that is wider than the chat area
-    /// (simulating the sidebar split) and assert every cell to the right of
-    /// `chat_area` is still the default empty cell.
+    /// and assert every cell to the right of `chat_area` is still the default
+    /// empty cell.
     #[test]
-    fn chat_widget_does_not_bleed_into_sidebar_for_long_tool_result() {
+    fn chat_widget_does_not_bleed_outside_area_for_long_tool_result() {
         // Reproduce a large structured tool result with long string values.
         // Run at several widths since the leak in the issue was observed at
         // about 165 columns.

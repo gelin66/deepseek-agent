@@ -7853,7 +7853,6 @@ mod terminal_mode_tests {
                 mouse_capture: None,
                 terminal_probe_timeout_ms: None,
                 stream_chunk_timeout_secs: None,
-                status_items: None,
                 osc8_links: None,
             }),
             ..Config::default()
@@ -7945,7 +7944,6 @@ mod terminal_mode_tests {
                 mouse_capture: Some(false),
                 terminal_probe_timeout_ms: None,
                 stream_chunk_timeout_secs: None,
-                status_items: None,
                 osc8_links: None,
             }),
             ..Config::default()
@@ -7975,7 +7973,6 @@ mod terminal_mode_tests {
                 mouse_capture: Some(true),
                 terminal_probe_timeout_ms: None,
                 stream_chunk_timeout_secs: None,
-                status_items: None,
                 osc8_links: None,
             }),
             ..Config::default()
@@ -8059,7 +8056,6 @@ mod terminal_mode_tests {
                 mouse_capture: Some(true),
                 terminal_probe_timeout_ms: None,
                 stream_chunk_timeout_secs: None,
-                status_items: None,
                 osc8_links: None,
             }),
             ..Config::default()

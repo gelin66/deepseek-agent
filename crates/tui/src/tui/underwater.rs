@@ -3,8 +3,8 @@
 //! This module owns phase, responsive density, the empty-state composition,
 //! and the compact header/footer fact budget. Product data still belongs to
 //! [`App`]; this is only its terminal projection. Keeping these decisions in
-//! one place prevents the default UI from drifting back into a header +
-//! sidebar + dashboard + footer composition with four owners for one fact.
+//! one place prevents the default UI from duplicating the same fact across
+//! several independent surfaces.
 
 use std::borrow::Cow;
 
@@ -214,8 +214,7 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
         Span::styled(route_label, Style::default().fg(app.ui_theme.text_muted)),
     ];
     if tier != ShellTier::Compact {
-        // The Underwater shell owns its header rather than delegating to the
-        // classic renderer, so render the selected status mark here too.
+        // The shell header owns the selected status mark.
         // "cw" is already the leading brand mark; the other choices deserve
         // their visible indicator beside it.
         if let Some(indicator) = crate::tui::widgets::header_status_indicator_frame(
@@ -311,9 +310,8 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
 
 /// Render the fixed one-line phase band.
 ///
-/// Ocean placement (above vs below the composer) is owned by
-/// [`crate::tui::phase_strip`]; this entry point only paints the band so
-/// classic callers and tests keep a stable name.
+/// Placement (above vs below the composer) is owned by
+/// [`crate::tui::phase_strip`]; this entry point paints the canonical band.
 pub fn render_footer(area: Rect, buf: &mut Buffer, app: &mut App) {
     crate::tui::phase_strip::render(area, buf, app);
 }

@@ -175,17 +175,6 @@ impl ReasoningEffort {
     }
 }
 
-/// Sidebar content focus mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SidebarFocus {
-    Auto,
-    Pinned,
-    Tasks,
-    Agents,
-    Context,
-    Hidden,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ComposerDensity {
     Compact,
@@ -218,21 +207,6 @@ impl TranscriptSpacing {
             "compact" | "tight" => Self::Compact,
             "spacious" | "loose" => Self::Spacious,
             _ => Self::Comfortable,
-        }
-    }
-}
-
-impl SidebarFocus {
-    #[must_use]
-    pub fn from_setting(value: &str) -> Self {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "pinned" | "visible" | "show" | "on" => Self::Pinned,
-            // Persist/compat key remains "tasks"; user-facing panel is Activity (#4147/#4135).
-            "tasks" | "activity" | "live" | "running" => Self::Tasks,
-            "agents" | "subagents" | "sub-agents" => Self::Agents,
-            "context" | "session" => Self::Context,
-            "hidden" | "hide" | "closed" | "off" | "none" => Self::Hidden,
-            _ => Self::Auto,
         }
     }
 }
@@ -814,7 +788,6 @@ pub struct ViewportState {
     pub last_transcript_top: usize,
     pub last_transcript_visible: usize,
     pub last_transcript_total: usize,
-    pub last_transcript_padding_top: usize,
     pub jump_to_latest_button_area: Option<Rect>,
 }
 
@@ -828,7 +801,6 @@ impl Default for ViewportState {
             last_transcript_top: 0,
             last_transcript_visible: 0,
             last_transcript_total: 0,
-            last_transcript_padding_top: 0,
             jump_to_latest_button_area: None,
         }
     }
@@ -881,8 +853,8 @@ pub struct App {
     pub composer: ComposerState,
     /// Viewport sub-state (scroll, cache, selection).
     pub viewport: ViewportState,
-    /// Ocean work-surface state. Kept separate from transcript/sidebar state
-    /// so the replacement shell can be removed or promoted as one unit.
+    /// Canonical root/child work-surface projection, kept separate from the
+    /// transcript so each fact has one presentation owner.
     pub work_surface: crate::tui::work_surface::WorkSurfaceState,
     /// Session sub-state (cost, tokens, telemetry).
     pub session: SessionState,
@@ -964,10 +936,6 @@ pub struct App {
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
     pub transcript_spacing: TranscriptSpacing,
-    pub sidebar_width_percent: u16,
-    pub sidebar_focus: SidebarFocus,
-    /// Whether the session-context panel is enabled (#504).
-    pub context_panel: bool,
     /// Minimum number of consecutive safe tool cells needed for auto-collapse.
     pub tool_collapse_threshold: usize,
     /// Current dense tool-run collapse behavior.
@@ -999,9 +967,6 @@ pub struct App {
     pub view_stack: ViewStack,
     /// Trust mode - allow access outside workspace
     pub trust_mode: bool,
-    /// Ordered footer items loaded from `tui.status_items` at startup. The
-    /// renderer iterates this slice; no item is hardcoded in the footer path.
-    pub status_items: Vec<crate::config::StatusItem>,
     /// Number of MCP servers declared in the user's config at app boot.
     /// Used by passive UI projections; `0` hides the MCP status.
     pub mcp_configured_count: usize,
@@ -1052,9 +1017,6 @@ pub struct App {
     /// Used by `build_context_menu_entries` to convert line-meta indices
     /// back to original indices for the `HideCell` / `ShowCell` actions.
     pub collapsed_cell_map: Vec<usize>,
-
-    /// Optional title shown in the composer border.
-    pub session_title: Option<String>,
 }
 
 // === Deref to ComposerState for backward compat ===
@@ -1142,8 +1104,6 @@ impl App {
         let composer_density = ComposerDensity::from_setting(&settings.composer_density);
         let composer_border = settings.composer_border;
         let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
-        let sidebar_width_percent = settings.sidebar_width_percent;
-        let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
         // Resolve the named theme from settings; unknown values were already
         // normalised to "system" in Settings::load. The background_color
         // setting still overlays on top.
@@ -1292,9 +1252,6 @@ impl App {
             composer_density,
             composer_border,
             transcript_spacing,
-            sidebar_width_percent,
-            sidebar_focus,
-            context_panel: settings.context_panel,
             tool_collapse_threshold: 3,
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             allow_shell,
@@ -1318,11 +1275,6 @@ impl App {
             },
             view_stack: ViewStack::new(),
             trust_mode: yolo,
-            status_items: config
-                .tui
-                .as_ref()
-                .and_then(|tui| tui.status_items.clone())
-                .unwrap_or_else(crate::config::StatusItem::default_footer),
             // Read the MCP config once at boot to know how many servers the
             // user declared. Errors fall through to zero so a missing or
             // malformed config simply hides the passive UI projections.
@@ -1346,7 +1298,6 @@ impl App {
             mention_walk_depth: settings.mention_walk_depth,
             mention_menu_behavior: settings.mention_menu_behavior.clone(),
             workspace_follow_symlinks: settings.workspace_follow_symlinks,
-            session_title: None,
         }
     }
 

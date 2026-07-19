@@ -197,10 +197,9 @@ mod tests {
         assert_eq!(semantic_truncate("hello", 1), "…");
     }
 
-    // --- New #3488 fixtures: CJK/wide-glyph truncation on selector-style rows.
-    // truncate_line_to_width is the production helper behind sidebar,
-    // statusline (footer_ui) and picker row rendering, so
-    // these exercise the same truncation path those surfaces use.
+    // CJK/wide-glyph truncation fixtures for selector-style rows.
+    // `truncate_line_to_width` is shared by the canonical work surface and
+    // picker rows, so these protect both projections.
 
     #[test]
     fn truncate_line_to_width_full_width_cjk_lands_on_glyph_boundary() {
@@ -221,9 +220,10 @@ mod tests {
 
     #[test]
     fn truncate_line_to_width_mixed_ascii_cjk_row_keeps_ellipsis_within_budget() {
-        // A sidebar/selector row mixing an ASCII label with a CJK title, wider
-        // than the column budget, must truncate with a trailing ellipsis that
-        // still fits by display width and must not split a wide glyph.
+        // A compact selector row mixing an ASCII label with a CJK title,
+        // wider than the column budget, must truncate with a trailing
+        // ellipsis that still fits by display width and must not split a wide
+        // glyph.
         let row = "Task: 数据库迁移任务 done"; // ASCII label + 7 Han glyphs
         let budget = 12;
         let out = truncate_line_to_width(row, budget);

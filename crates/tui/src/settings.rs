@@ -62,16 +62,6 @@ pub struct Settings {
     pub composer_border: bool,
     /// Transcript spacing rhythm: compact, comfortable, spacious
     pub transcript_spacing: String,
-    /// Sidebar width as percentage of terminal width
-    pub sidebar_width_percent: u16,
-    /// Sidebar focus mode: pinned, auto, tasks, agents, context, hidden
-    pub sidebar_focus: String,
-    /// Migration marker for users who explicitly opt into idle auto-collapse.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub sidebar_auto_collapse_opt_in: bool,
-    /// Enable the session-context panel (#504). Shows working set, tokens,
-    /// cost, MCP status, cycle count, and memory info.
-    pub context_panel: bool,
     /// Cost display currency: usd or cny.
     pub cost_currency: String,
     /// Default provider override (e.g. "deepseek", "openai").
@@ -160,10 +150,6 @@ impl Default for Settings {
             composer_density: "comfortable".to_string(),
             composer_border: true,
             transcript_spacing: "comfortable".to_string(),
-            sidebar_width_percent: 28,
-            sidebar_focus: "auto".to_string(),
-            sidebar_auto_collapse_opt_in: true,
-            context_panel: false,
             cost_currency: "usd".to_string(),
             default_provider: None,
             default_model: None,
@@ -230,15 +216,6 @@ impl Settings {
                     normalize_transcript_spacing(&s.transcript_spacing).to_string();
                 s.tool_collapse_mode =
                     normalize_tool_collapse_mode(&s.tool_collapse_mode).to_string();
-                s.sidebar_focus = normalize_sidebar_focus(&s.sidebar_focus).to_string();
-                if s.sidebar_focus == "auto" && !s.sidebar_auto_collapse_opt_in {
-                    // v0.8.62 wrote the surprising auto-collapse default into many
-                    // full settings files. Treat unmarked saved "auto" as that
-                    // legacy default so upgraded users get the sidebar back, while
-                    // A persisted opt-in marker preserves an explicit `auto`
-                    // choice from this release onward (#3328).
-                    s.sidebar_focus = "pinned".to_string();
-                }
                 s.status_indicator = normalize_status_indicator(&s.status_indicator).to_string();
                 s.ocean_treatment = normalize_ocean_treatment(&s.ocean_treatment).to_string();
                 s.work_surface_placement =
@@ -626,21 +603,6 @@ fn normalize_background_color_setting(value: &str) -> Result<Option<String>> {
     })
 }
 
-fn normalize_sidebar_focus(value: &str) -> &str {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "pinned" | "visible" | "show" | "on" => "pinned",
-        "tasks" | "activity" | "live" | "running" => "tasks",
-        "agents" | "subagents" | "sub-agents" => "agents",
-        "context" | "session" => "context",
-        "hidden" | "hide" | "closed" | "off" | "none" => "hidden",
-        _ => "auto",
-    }
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
 /// Resolve an environment variable as a boolean. Recognises the
 /// common truthy spellings (`1`, `true`, `yes`, `on`) case-
 /// insensitively. Used by [`Settings::apply_env_overrides`] for
@@ -693,13 +655,6 @@ mod tests {
         );
         assert!(!settings.low_motion);
         assert_eq!(settings.transcript_spacing, "comfortable");
-    }
-
-    #[test]
-    fn default_settings_keep_the_water_field_open_until_inspection_is_needed() {
-        let settings = Settings::default();
-        assert_eq!(settings.sidebar_focus, "auto");
-        assert!(settings.sidebar_auto_collapse_opt_in);
     }
 
     /// Tests that mutate process-global `NO_ANIMATIONS` serialise
@@ -1346,7 +1301,7 @@ mod tests {
         std::fs::create_dir_all(&legacy_dir).expect("legacy dir");
         std::fs::write(
             legacy_dir.join("settings.toml"),
-            "theme = \"dracula\"\ncomposer_density = \"spacious\"\nsidebar_width_percent = 42\n",
+            "theme = \"dracula\"\ncomposer_density = \"spacious\"\n",
         )
         .expect("legacy settings");
         let _config_override = EnvVarRestore::remove("DEEPSEEK_CONFIG_PATH");
@@ -1363,48 +1318,10 @@ mod tests {
             loaded.composer_density, "comfortable",
             "explicit CODEWHALE_HOME must not inherit ambient legacy settings"
         );
-        assert_eq!(
-            loaded.sidebar_width_percent, 28,
-            "explicit CODEWHALE_HOME must not inherit ambient legacy settings"
-        );
         assert!(
             !explicit_home.join("settings.toml").exists(),
             "ambient legacy settings must not be migrated into explicit CODEWHALE_HOME"
         );
-    }
-
-    #[test]
-    fn settings_load_migrates_legacy_saved_auto_sidebar_focus_to_pinned() {
-        let _g = config_path_test_guard();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let settings_path = tmp.path().join("settings.toml");
-        std::fs::write(&settings_path, "sidebar_focus = \"auto\"\n").expect("settings");
-        let _config_override =
-            EnvVarRestore::set("DEEPSEEK_CONFIG_PATH", tmp.path().join("config.toml"));
-
-        let loaded = Settings::load().expect("load settings");
-
-        assert_eq!(loaded.sidebar_focus, "pinned");
-        assert!(!loaded.sidebar_auto_collapse_opt_in);
-    }
-
-    #[test]
-    fn settings_load_preserves_explicit_auto_sidebar_opt_in() {
-        let _g = config_path_test_guard();
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let settings_path = tmp.path().join("settings.toml");
-        std::fs::write(
-            &settings_path,
-            "sidebar_focus = \"auto\"\nsidebar_auto_collapse_opt_in = true\n",
-        )
-        .expect("settings");
-        let _config_override =
-            EnvVarRestore::set("DEEPSEEK_CONFIG_PATH", tmp.path().join("config.toml"));
-
-        let loaded = Settings::load().expect("load settings");
-
-        assert_eq!(loaded.sidebar_focus, "auto");
-        assert!(loaded.sidebar_auto_collapse_opt_in);
     }
 
     #[test]

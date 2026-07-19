@@ -346,15 +346,6 @@ fn cny_display_keeps_cny_when_costs_have_cny_rates() {
 }
 
 #[test]
-fn subscription_route_hides_stale_session_dollars_in_footer() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.session.total_cost_usd = 12.34;
-    app.billing_presentation =
-        crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
-    assert!(crate::tui::footer_ui::footer_cost_spans(&app).is_empty());
-}
-
-#[test]
 fn cny_cache_savings_falls_back_to_usd_for_usd_only_models() {
     let mut app = App::new(test_options(false), &Config::default());
     app.cost_currency = CostCurrency::Cny;
@@ -365,20 +356,6 @@ fn cny_cache_savings_falls_back_to_usd_for_usd_only_models() {
     // 1M cache-hit tokens save (input 0.95 - cache-read 0.16) = $0.79.
     let savings = app.last_turn_cache_savings().expect("kimi-k2.6 is priced");
     assert!((savings - 0.79).abs() < 1e-9, "got {savings}");
-}
-
-#[test]
-fn sidebar_focus_accepts_current_values() {
-    assert_eq!(SidebarFocus::from_setting("auto"), SidebarFocus::Auto);
-    assert_eq!(SidebarFocus::from_setting("pinned"), SidebarFocus::Pinned);
-    assert_eq!(SidebarFocus::from_setting("tasks"), SidebarFocus::Tasks);
-    assert_eq!(SidebarFocus::from_setting("activity"), SidebarFocus::Tasks);
-    assert_eq!(SidebarFocus::from_setting("live"), SidebarFocus::Tasks);
-    assert_eq!(SidebarFocus::from_setting("running"), SidebarFocus::Tasks);
-    assert_eq!(SidebarFocus::from_setting("agents"), SidebarFocus::Agents);
-    assert_eq!(SidebarFocus::from_setting("context"), SidebarFocus::Context);
-    assert_eq!(SidebarFocus::from_setting("hidden"), SidebarFocus::Hidden);
-    assert_eq!(SidebarFocus::from_setting("off"), SidebarFocus::Hidden);
 }
 
 #[test]

@@ -708,8 +708,8 @@ Common settings keys:
   Disable only for a terminal that mishandles bracketed-paste mode.
 - `work_surface_placement` (`top`, `left`, or `right`; default `top`): places
   Ocean's Tasks / To-do / Workers surface above the transcript or in a side
-  rail. Side choices fall back to the top layout on narrow terminals and in
-  Classic without changing the saved Ocean preference. Set it in
+  rail. Side choices fall back to the top layout on narrow terminals without
+  changing the saved preference. Set it in
   `~/.codewhale/settings.toml` and restart the TUI.
 - `mention_menu_limit` (integer, default `128`): maximum number of
   `@`-mention popup candidates retained before the composer renders the
@@ -729,16 +729,6 @@ Common settings keys:
 - `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
   `/cost`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
-- `sidebar_focus` (`pinned`, `auto`, `tasks`, `agents`, `context`, `hidden`; default
-  `auto`): selects the right sidebar focus. `pinned` keeps the right sidebar
-  visible when the terminal is wide enough and composes Work, Tasks, Agents,
-  and optional Context as they have live content. `auto` uses the same composed
-  panels but collapses while idle. Persisting `sidebar_focus = "auto"` together
-  with `sidebar_auto_collapse_opt_in = true` records an explicit opt-in; an old
-  settings file containing unmarked `auto` migrates to `pinned`.
-  `hidden` disables the right sidebar entirely so raw terminal selection cannot
-  cross from the transcript into sidebar borders. Legacy `plan` and `todos`
-  values, plus the old `work` name, are accepted and normalized to `pinned`.
 - `default_model` (model name override)
 
 The composer has one direct-editing path. `composer_vim_mode`, `vim_mode`, and

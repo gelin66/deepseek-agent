@@ -997,27 +997,6 @@ pub struct RetryConfig {
     pub exponential_base: Option<f64>,
 }
 
-/// Deserialize `status_items` tolerantly: skip keys unknown to this build
-/// instead of erroring with "unknown variant". This lets a newer build write
-/// a future item while an older build still parses the config successfully.
-fn deser_status_items<'de, D>(deserializer: D) -> Result<Option<Vec<StatusItem>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let raw: Option<Vec<String>> = Option::deserialize(deserializer)?;
-    Ok(raw.map(|strings| {
-        strings
-            .into_iter()
-            .filter_map(|s| {
-                StatusItem::from_key(&s).or_else(|| {
-                    tracing::warn!("ignoring unknown status item {s:?} in config");
-                    None
-                })
-            })
-            .collect()
-    }))
-}
-
 /// UI configuration loaded from config files.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct TuiConfig {
@@ -1029,14 +1008,6 @@ pub struct TuiConfig {
     /// Per-SSE-chunk idle timeout in seconds. Defaults to 900 seconds when
     /// omitted. `0` maps to the default; values clamp to `1..=3600`.
     pub stream_chunk_timeout_secs: Option<u64>,
-    /// Ordered list of footer items the user wants visible. `None` (the field
-    /// missing from `config.toml`) means "use the built-in default order"; an
-    /// empty `Some(vec![])` means "show nothing in the footer".
-    ///
-    /// Edited interactively via `/statusline`; persisted to `tui.status_items`
-    /// in `~/.deepseek/config.toml`.
-    #[serde(default, deserialize_with = "deser_status_items")]
-    pub status_items: Option<Vec<StatusItem>>,
     /// Emit OSC 8 hyperlink escape sequences around URLs in the transcript so
     /// supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty,
     /// WezTerm, Alacritty, recent gnome-terminal/konsole) make them clickable
@@ -1068,102 +1039,6 @@ pub struct MemoryConfig {
 // unchanged (#3311).
 mod search;
 pub use search::*;
-
-/// One configurable footer item.
-///
-/// Order in the user's `Vec<StatusItem>` is preserved: items in the left
-/// cluster (`Model`, `Cost`, `Status`) render in the order given;
-/// right-cluster chips (`Agents`, `ReasoningReplay`, `Cache`,
-/// `ContextPercent`, `Workspace`, `LastToolElapsed`, `RateLimit`)
-/// likewise honour ordering inside their cluster. The split between left and right is deliberate — left holds steady
-/// identity (model/cost), right holds transient signals — so we route
-/// each variant to the correct side rather than letting users reorder across
-/// the spacer.
-///
-/// Variants without a current data source (`RateLimit`, `LastToolElapsed`)
-/// are intentionally exposed today so the picker is forward-compatible; they
-/// render empty until the supporting fields land. Empty spans don't take
-/// up footer width, so the user sees no visual artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum StatusItem {
-    /// Model identifier (e.g. `deepseek-v4-pro`).
-    Model,
-    /// Session cost in the configured display currency.
-    Cost,
-    /// Activity label: "idle" / "busy" / "draft" / "working".
-    Status,
-    /// Sub-agent count chip ("3 agents").
-    Agents,
-    /// Reasoning-replay token count ("rsn 12.3k").
-    ReasoningReplay,
-    /// Cache hit rate ("cache 73%").
-    Cache,
-    /// Context-window utilisation percent ("48%").
-    ContextPercent,
-    /// Current workspace path.
-    Workspace,
-    /// Elapsed time of the most recent tool call (placeholder until wired).
-    LastToolElapsed,
-    /// Remaining rate-limit budget (placeholder until wired).
-    RateLimit,
-    /// Session token usage: input / cache-hit / output.
-    Tokens,
-}
-
-impl StatusItem {
-    /// Default footer composition for the always-on status line. Used when
-    /// `tui.status_items` is missing from `config.toml` so upgraders see a
-    /// concise footer by default.
-    #[must_use]
-    pub fn default_footer() -> Vec<StatusItem> {
-        vec![
-            StatusItem::Model,
-            StatusItem::Cost,
-            StatusItem::Status,
-            StatusItem::Agents,
-            StatusItem::ReasoningReplay,
-            StatusItem::Cache,
-            StatusItem::Workspace,
-            StatusItem::Tokens,
-        ]
-    }
-
-    /// Parse a stable TOML name into a footer item. Unknown keys are skipped so
-    /// a newer config does not make an older binary fail to start.
-    #[must_use]
-    pub fn from_key(key: &str) -> Option<Self> {
-        match key {
-            "model" => Some(Self::Model),
-            "cost" => Some(Self::Cost),
-            "status" => Some(Self::Status),
-            "agents" => Some(Self::Agents),
-            "reasoning_replay" => Some(Self::ReasoningReplay),
-            "cache" => Some(Self::Cache),
-            "context_percent" => Some(Self::ContextPercent),
-            "workspace" => Some(Self::Workspace),
-            "last_tool_elapsed" => Some(Self::LastToolElapsed),
-            "rate_limit" => Some(Self::RateLimit),
-            "tokens" => Some(Self::Tokens),
-            _ => None,
-        }
-    }
-}
-
-#[cfg(test)]
-mod truthful_workspace_status_tests {
-    use super::StatusItem;
-
-    #[test]
-    fn workspace_is_canonical_and_git_branch_is_retired() {
-        assert_eq!(
-            StatusItem::from_key("workspace"),
-            Some(StatusItem::Workspace)
-        );
-        assert_eq!(StatusItem::from_key("git_branch"), None);
-        assert!(StatusItem::default_footer().contains(&StatusItem::Workspace));
-    }
-}
 
 /// Resolved retry policy with defaults applied.
 #[derive(Debug, Clone)]

@@ -1,7 +1,7 @@
 //! Shared animation frames for running-state UI chrome.
 //!
-//! Keep the braille spinner in one place so transcript tool cards, sidebars,
-//! and any future running-job surfaces advance with the same cadence.
+//! Keep the braille spinner in one place so transcript tool cards and any
+//! future running-job surfaces advance with the same cadence.
 //!
 //! Callers choose whether to animate through the existing `low_motion`
 //! product setting; this module owns only the shared frame table and elapsed

@@ -140,10 +140,10 @@ mod tests {
             let mut app = app();
             start_child(&mut app, "rail");
             app.work_surface.placement = placement;
-            assert_eq!(super::height(&mut app, 100, 24, false), 0);
+            assert_eq!(super::height(&mut app, 100, 24), 0);
 
             let area = ratatui::layout::Rect::new(0, 0, 100, 12);
-            let (chat, rail) = super::split_chat(&mut app, area, false);
+            let (chat, rail) = super::split_chat(&mut app, area);
             let rail = rail.expect("side rail");
             assert_eq!(chat.x, expected_chat_x);
             assert_eq!(chat.width, 70);
@@ -165,26 +165,20 @@ mod tests {
     }
 
     #[test]
-    fn classic_and_narrow_layouts_keep_the_existing_top_surface() {
+    fn narrow_layout_keeps_the_existing_top_surface() {
         let mut app = app();
         start_child(&mut app, "top");
         app.work_surface.placement = super::WorkSurfacePlacement::Right;
 
-        assert_eq!(super::height(&mut app, 100, 24, true), 8);
-        let area = ratatui::layout::Rect::new(0, 0, 100, 12);
-        let (chat, rail) = super::split_chat(&mut app, area, true);
-        assert_eq!(chat, area);
+        assert_eq!(super::height(&mut app, 60, 16), 5);
+        let narrow = ratatui::layout::Rect::new(0, 0, 60, 8);
+        let (chat, rail) = super::split_chat(&mut app, narrow);
+        assert_eq!(chat, narrow);
         assert!(rail.is_none());
         assert_eq!(
             app.work_surface.placement,
             super::WorkSurfacePlacement::Right,
-            "fallback must not overwrite the saved preference"
+            "responsive fallback must not overwrite the saved preference"
         );
-
-        assert_eq!(super::height(&mut app, 60, 16, false), 5);
-        let narrow = ratatui::layout::Rect::new(0, 0, 60, 8);
-        let (chat, rail) = super::split_chat(&mut app, narrow, false);
-        assert_eq!(chat, narrow);
-        assert!(rail.is_none());
     }
 }

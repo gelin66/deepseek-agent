@@ -23,10 +23,6 @@ pub enum OceanTreatment {
     Ombre,
     /// Plain theme surface with the same state grammar and ambient life.
     Flat,
-    /// Legacy full-chrome compatibility shell. Persisted settings normalize
-    /// unknown values to ombre, so this is reachable only through explicit
-    /// internal selection (tests and future compatibility wiring).
-    Classic,
 }
 
 impl OceanTreatment {
@@ -35,8 +31,6 @@ impl OceanTreatment {
         let value = value.trim();
         if value.eq_ignore_ascii_case("flat") {
             Self::Flat
-        } else if value.eq_ignore_ascii_case("classic") {
-            Self::Classic
         } else {
             Self::Ombre
         }
@@ -45,19 +39,6 @@ impl OceanTreatment {
     #[must_use]
     pub fn is_ombre(self) -> bool {
         self == Self::Ombre
-    }
-
-    #[must_use]
-    pub fn is_classic(self) -> bool {
-        self == Self::Classic
-    }
-
-    /// Every underwater treatment keeps idle ambient life; only the legacy
-    /// classic shell stays still. Flat means a plain surface, not a lifeless
-    /// ocean, and Terminal-owned backgrounds still carry foreground life.
-    #[must_use]
-    pub fn supports_ambient_life(self) -> bool {
-        !self.is_classic()
     }
 }
 
@@ -318,17 +299,9 @@ mod tests {
     fn treatment_parses_saved_values_and_defaults_to_ombre() {
         assert_eq!(OceanTreatment::parse("flat"), OceanTreatment::Flat);
         assert_eq!(OceanTreatment::parse(" FLAT "), OceanTreatment::Flat);
-        assert_eq!(OceanTreatment::parse("classic"), OceanTreatment::Classic);
         assert_eq!(OceanTreatment::parse("ombre"), OceanTreatment::Ombre);
         assert_eq!(OceanTreatment::parse("kelp"), OceanTreatment::Ombre);
         assert_eq!(OceanTreatment::parse(""), OceanTreatment::Ombre);
-    }
-
-    #[test]
-    fn every_underwater_treatment_keeps_ambient_life() {
-        assert!(OceanTreatment::Ombre.supports_ambient_life());
-        assert!(OceanTreatment::Flat.supports_ambient_life());
-        assert!(!OceanTreatment::Classic.supports_ambient_life());
     }
 
     #[test]

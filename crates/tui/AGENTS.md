@@ -20,7 +20,7 @@ The default shell is the underwater system (`src/tui/underwater.rs`,
   waiting/approval/done/failed from real app state. Never invent state in a
   renderer; never compare English strings to detect state (use the enums —
   the permission chip maps from `ApprovalMode` for exactly this reason).
-- **Treatment is typed.** `OceanTreatment` (ombre/flat/classic) parses once
+- **Treatment is typed.** `OceanTreatment` (ombre/flat) parses once
   from settings. Every underwater treatment keeps ambient life; appearance
   and motion (`low_motion`, `fancy_animations`) are independent axes.
 - **Footer notices go through the toast system** (`push_status_toast` /
@@ -80,7 +80,5 @@ Real-terminal QA gotchas (learned the hard way):
 
 - `run_verifiers_background_*` can flake under full-suite parallelism;
   rerun in isolation before blaming a change.
-- The `classic` treatment exists in code but persisted settings normalize
-  it away; do not expand it without a product decision.
 - See the do-not-delete module list in the repo-root `AGENTS.md` before
   trusting any dead-code audit.

@@ -33,8 +33,7 @@ use crossterm::{
 };
 use ratatui::{
     Frame, Terminal,
-    buffer::Buffer,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout},
     prelude::Widget,
     style::Style,
     widgets::Block,
@@ -49,7 +48,6 @@ use crate::palette;
 use crate::prompts;
 use crate::settings::Settings;
 use crate::tui::color_compat::ColorCompatBackend;
-use crate::tui::footer_ui::render_footer;
 use crate::tui::key_shortcuts;
 use crate::tui::onboarding;
 use crate::tui::pager::PagerView;
@@ -58,9 +56,7 @@ use crate::tui::run_presenter::{PresenterAction, present_effect};
 use crate::tui::run_projection::CanonicalRunProjection;
 use crate::tui::user_input::UserInputView;
 
-use super::app::{
-    App, OnboardingState, ReasoningEffort, SidebarFocus, StatusToastLevel, TuiOptions,
-};
+use super::app::{App, OnboardingState, ReasoningEffort, StatusToastLevel, TuiOptions};
 use super::approval::{ApprovalMode, ApprovalRequest, ApprovalView, ReviewDecision};
 use super::canonical_commands::{self, CanonicalSlashCommand, CanonicalSlashParse};
 use super::history::HistoryCell;
@@ -68,7 +64,7 @@ use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
 use super::views::{ModalKind, ViewEvent};
-use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
+use super::widgets::{ChatWidget, ComposerWidget, Renderable};
 
 // === Constants ===
 
@@ -87,24 +83,10 @@ const UI_ACTIVE_POLL_MS: u64 = 24;
 /// terminal renderer while avoiding the five-frame-per-second "jump" seen
 /// whenever live status motion and ocean motion overlap.
 pub(crate) const UI_UNDERWATER_ANIMATION_MS: u64 = 80;
-// Keep a compact 20-column sidebar plus a 40-column transcript.
-pub(crate) const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 60;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 fn app_auto_approve_enabled(app: &App) -> bool {
     app.approval_mode == ApprovalMode::AutoApprove
-}
-
-fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
-    if app.sidebar_focus == SidebarFocus::Hidden || chat_width < SIDEBAR_VISIBLE_MIN_WIDTH {
-        return None;
-    }
-
-    let preferred_sidebar =
-        (u32::from(chat_width) * u32::from(app.sidebar_width_percent.clamp(10, 50)) / 100) as u16;
-    let sidebar_width = preferred_sidebar.max(24).min(chat_width.saturating_sub(40));
-
-    (sidebar_width >= 20).then_some(sidebar_width)
 }
 
 type AppTerminal = Terminal<ColorCompatBackend<Stdout>>;
@@ -1341,39 +1323,8 @@ impl Drop for TerminalCleanupGuard {
     }
 }
 
-fn render_classic_header(area: Rect, buf: &mut Buffer, app: &App) {
-    let context_usage = context_usage_snapshot(app);
-    let context_window = context_usage.as_ref().map(|(_, max, _)| *max).or_else(|| {
-        Some(crate::route_budget::route_context_window_tokens(
-            app.api_provider,
-            app.effective_model_for_budget(),
-            app.active_route_limits,
-        ))
-    });
-    let prompt_tokens = context_usage
-        .as_ref()
-        .and_then(|(used, _, _)| u32::try_from(*used).ok());
-    let model = app.model_display_label();
-    let effort = app.reasoning_effort_display_label();
-    let started_at = (!app.low_motion).then_some(app.turn_started_at).flatten();
-    let data = HeaderData::new(&model, app.is_loading, app.ui_theme.header_bg)
-        .with_usage(
-            app.session.total_conversation_tokens,
-            context_window,
-            prompt_tokens,
-        )
-        .with_reasoning_effort(Some(&effort))
-        .with_provider(None)
-        .with_status_indicator(crate::tui::widgets::header_status_indicator_frame(
-            started_at,
-            &app.status_indicator,
-        ));
-    HeaderWidget::new(data).render(area, buf);
-}
-
 fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
-    let classic_shell = app.ocean_treatment.is_classic();
 
     // Clear entire area with the configured app background.
     let background = Block::default().style(Style::default().bg(app.ui_theme.surface_bg));
@@ -1385,11 +1336,7 @@ fn render(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    let header_height = if classic_shell || size.height < 16 {
-        1
-    } else {
-        2
-    };
+    let header_height = if size.height < 16 { 1 } else { 2 };
     let footer_height = crate::tui::phase_strip::height();
     let slash_menu_entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
     let mention_menu_limit = app.mention_menu_limit;
@@ -1398,8 +1345,7 @@ fn render(f: &mut Frame, app: &mut App) {
     if !mention_menu_entries.is_empty() && app.mention_menu_selected >= mention_menu_entries.len() {
         app.mention_menu_selected = mention_menu_entries.len().saturating_sub(1);
     }
-    let top_work_strip_height =
-        super::work_surface::height(app, size.width, size.height, classic_shell);
+    let top_work_strip_height = super::work_surface::height(app, size.width, size.height);
 
     // Defensive two-pass layout: pin the header to the absolute top row,
     // then split the remaining body area for chat / composer / footer. This
@@ -1431,11 +1377,10 @@ fn render(f: &mut Frame, app: &mut App) {
 
     // Ocean live phases put the phase strip above the composer so activity
     // stays attached to the transcript and the prompt is the final bottom
-    // object. Idle/typing keep a quiet phase under the prompt. Classic keeps
-    // the legacy composer-then-footer stack.
+    // object. Idle/typing keep a quiet phase under the prompt.
     let phase = crate::tui::underwater::ShellPhase::from_app(app);
-    let phase_above = !classic_shell
-        && crate::tui::phase_strip::PhaseStripPlacement::for_phase(phase).is_above_composer();
+    let phase_above =
+        crate::tui::phase_strip::PhaseStripPlacement::for_phase(phase).is_above_composer();
     let (composer_slot, footer_slot, tail_constraints) = if phase_above {
         (
             3,
@@ -1467,8 +1412,7 @@ fn render(f: &mut Frame, app: &mut App) {
         ])
         .split(body_area);
 
-    let (work_chat_area, side_work_area) =
-        super::work_surface::split_chat(app, body_chunks[1], classic_shell);
+    let (work_chat_area, side_work_area) = super::work_surface::split_chat(app, body_chunks[1]);
 
     if top_work_strip_height > 0 {
         super::work_surface::render(f, body_chunks[0], app);
@@ -1476,17 +1420,10 @@ fn render(f: &mut Frame, app: &mut App) {
         super::work_surface::render(f, work_area, app);
     }
 
-    if classic_shell {
-        render_classic_header(header_area, f.buffer_mut(), app);
-    } else {
-        crate::tui::underwater::render_header(header_area, f.buffer_mut(), app);
-    }
+    crate::tui::underwater::render_header(header_area, f.buffer_mut(), app);
 
-    // Render the transcript. The underwater default deliberately has no
-    // legacy right sidebar: Tasks and Agents own
-    // the strip above, Fleet owns `/fleet`, and dense context owns its
-    // inspector. Keeping the sidebar here was the architectural reason the
-    // rejected build still read as the old TUI under a gradient.
+    // Render the transcript. The canonical work surface owns task and worker
+    // facts, Fleet owns `/fleet`, and dense context owns its inspector.
     let shell_ocean;
     {
         // Defensive backstop (#400): fill the entire body area with ink
@@ -1497,42 +1434,10 @@ fn render(f: &mut Frame, app: &mut App) {
             .style(Style::default().bg(app.ui_theme.surface_bg))
             .render(work_chat_area, f.buffer_mut());
 
-        let mut chat_area = work_chat_area;
-        let sidebar_area = if classic_shell
-            && !crate::tui::sidebar::sidebar_auto_idle(app)
-            && let Some(sidebar_width) = sidebar_width_for_chat_area(app, chat_area.width)
-        {
-            let split = Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(1), Constraint::Length(sidebar_width)])
-                .split(chat_area);
-            chat_area = split[0];
-            Some(split[1])
-        } else {
-            None
-        };
-
-        let chat_widget = ChatWidget::new(app, chat_area).with_ocean_viewport(size);
+        let chat_widget = ChatWidget::new(app, work_chat_area).with_ocean_viewport(size);
         shell_ocean = chat_widget.ocean_column();
         let buf = f.buffer_mut();
-        chat_widget.render(chat_area, buf);
-
-        // The rejected shell remains available only as an explicitly selected
-        // compatibility treatment. It is never composed into the underwater
-        // default path.
-        if let Some(sidebar_area) = sidebar_area {
-            super::sidebar::render_sidebar(f, sidebar_area, app);
-            let divider_area = Rect {
-                x: sidebar_area.x,
-                y: sidebar_area.y,
-                width: 1,
-                height: sidebar_area.height,
-            };
-            let divider =
-                ratatui::widgets::Paragraph::new("│\n".repeat(usize::from(divider_area.height)))
-                    .style(Style::default().fg(palette::TEXT_MUTED));
-            f.render_widget(divider, divider_area);
-        }
+        chat_widget.render(work_chat_area, buf);
     }
 
     // Render composer
@@ -1551,11 +1456,7 @@ fn render(f: &mut Frame, app: &mut App) {
         f.set_cursor_position(cursor_pos);
     }
 
-    if classic_shell {
-        render_footer(f, body_chunks[footer_slot], app);
-    } else {
-        crate::tui::underwater::render_footer(body_chunks[footer_slot], f.buffer_mut(), app);
-    }
+    crate::tui::underwater::render_footer(body_chunks[footer_slot], f.buffer_mut(), app);
 
     // The underwater shell is one water column, not a stack of independently
     // shaded panels. Continue the transcript's absolute-row ramp through each
@@ -1584,19 +1485,6 @@ fn render(f: &mut Frame, app: &mut App) {
             app.ui_theme.footer_bg,
         );
     }
-    // Toast stack overlay (#439): when multiple status toasts are queued,
-    // surface the older ones as a 1-2 line strip above the footer so a
-    // burst of events isn't collapsed to a single visible message.
-    if classic_shell {
-        render_toast_stack_overlay(
-            f,
-            size,
-            body_chunks[composer_slot],
-            body_chunks[footer_slot],
-            app,
-        );
-    }
-
     if !app.view_stack.is_empty() {
         let buf = f.buffer_mut();
         app.view_stack.render(size, buf);
@@ -1867,64 +1755,6 @@ pub(crate) fn status_color(level: StatusToastLevel) -> ratatui::style::Color {
         StatusToastLevel::Success => palette::STATUS_SUCCESS,
         StatusToastLevel::Warning => palette::STATUS_WARNING,
         StatusToastLevel::Error => palette::STATUS_ERROR,
-    }
-}
-
-/// Maximum stacked toasts rendered above the footer (#439). The footer line
-/// itself stays the most-recent; this overlay surfaces up to two older
-/// queued toasts so a burst of status events isn't dropped silently.
-const TOAST_STACK_MAX_VISIBLE: usize = 3;
-
-/// Render up to `TOAST_STACK_MAX_VISIBLE - 1` *additional* toasts as an
-/// overlay just above the footer when multiple are active. The most recent
-/// toast continues to render in the footer line itself; this strip is for
-/// the older entries the user would otherwise miss when statuses arrive in
-/// bursts.
-fn render_toast_stack_overlay(
-    f: &mut Frame,
-    full_area: Rect,
-    composer_area: Rect,
-    footer_area: Rect,
-    app: &mut App,
-) {
-    let toasts = app.active_status_toasts(TOAST_STACK_MAX_VISIBLE);
-    if toasts.len() < 2 || footer_area.y == 0 {
-        return;
-    }
-    // Drop the most recent (rendered inline by the footer), keep the rest.
-    let extra = toasts.len() - 1;
-    let stack_height = extra.min(TOAST_STACK_MAX_VISIBLE - 1) as u16;
-    // Toast stack can only use space between composer and footer.
-    // Composer occupies rows [composer_area.y, composer_area.y + composer_area.height).
-    // Toast must start at or after row (composer_area.y + composer_area.height).
-    let composer_end = composer_area.y + composer_area.height;
-    let max_above = footer_area.y.saturating_sub(composer_end);
-    if stack_height == 0 || max_above == 0 {
-        return;
-    }
-    let height = stack_height.min(max_above);
-    let stack_area = Rect {
-        x: full_area.x,
-        y: footer_area.y.saturating_sub(height),
-        width: full_area.width,
-        height,
-    };
-    // Iterate oldest-first so the freshest *non-inline* toast is closest to
-    // the footer (visually nearest the most-recent message in the line below).
-    let visible = &toasts[..extra];
-    for (i, toast) in visible.iter().take(height as usize).enumerate() {
-        let row_y = stack_area.y + i as u16;
-        let row = Rect {
-            x: stack_area.x,
-            y: row_y,
-            width: stack_area.width,
-            height: 1,
-        };
-        let style = ratatui::style::Style::default()
-            .fg(status_color(toast.level))
-            .add_modifier(ratatui::style::Modifier::DIM);
-        let line = ratatui::text::Line::styled(format!(" {} ", toast.text), style);
-        f.render_widget(ratatui::widgets::Paragraph::new(line), row);
     }
 }
 
