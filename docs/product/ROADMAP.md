@@ -1235,6 +1235,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `protocol::workroom` 岛。它没有 Store、app-server route、TUI 或 Runtime consumer，且违反
   本地 DeepSeek coding agent 的固定产品边界；canonical Run/child/Fleet 协议均未使用该概念。
   protocol 48/48 通过，并通过 all-target strict Clippy、fmt 和 diff-check。
+- M4-C 已删除旧 Engine 留下且生产永远为 `false` 的 `turn_error_posted`、`is_purging`，
+  并移除失败 phase、footer working/label 和 empty-state 中对应恒假分支。失败状态继续只读
+  canonical `runtime_turn_status`；真实 compaction、loading 与 child/Fleet activity 保持不变。
+  underwater 7/7、footer 12/12、widgets 70/70、App 67/67 通过，并通过 TUI strict Clippy、
+  fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

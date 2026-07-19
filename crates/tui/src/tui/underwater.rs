@@ -78,9 +78,7 @@ impl ShellPhase {
         ) {
             return Self::Approval;
         }
-        if app.turn_error_posted
-            || matches!(app.runtime_turn_status.as_deref(), Some("failed" | "error"))
-        {
+        if matches!(app.runtime_turn_status.as_deref(), Some("failed" | "error")) {
             return Self::Failed;
         }
         if app.is_loading || matches!(app.runtime_turn_status.as_deref(), Some("in_progress")) {

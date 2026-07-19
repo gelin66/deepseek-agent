@@ -168,11 +168,7 @@ pub(crate) fn header_owns_live_pulse(app: &App) -> bool {
 
 pub(crate) fn footer_working_strip_active(app: &App) -> bool {
     let turn_in_progress = app.runtime_turn_status.as_deref() == Some("in_progress");
-    app.is_loading
-        || app.is_compacting
-        || app.is_purging
-        || running_agent_count(app) > 0
-        || turn_in_progress
+    app.is_loading || app.is_compacting || running_agent_count(app) > 0 || turn_in_progress
 }
 
 pub(crate) fn footer_working_label_frame(now_ms: u64, fancy_animations: bool) -> u64 {
@@ -624,9 +620,6 @@ pub(crate) fn footer_reasoning_replay_spans(app: &App) -> Vec<Span<'static>> {
 pub(crate) fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
     if app.is_compacting {
         return ("compacting \u{238B}", app.ui_theme.status_warning);
-    }
-    if app.is_purging {
-        return ("purging \u{238B}", app.ui_theme.status_warning);
     }
     if header_owns_live_pulse(app) {
         return ("ready", app.ui_theme.text_muted);

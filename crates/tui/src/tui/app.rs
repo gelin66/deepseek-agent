@@ -892,11 +892,6 @@ pub struct App {
     /// Monotonic counter used to issue fresh per-cell revisions.
     pub next_history_revision: u64,
     pub is_loading: bool,
-    /// Whether an `EngineEvent::Error` has already been posted for the
-    /// current turn. Suppresses the redundant "Turn failed:" status line
-    /// that `TurnComplete { error: .. }` would otherwise emit on top of
-    /// the in-transcript error cell.
-    pub turn_error_posted: bool,
     /// Legacy status text sink retained for compatibility with existing call sites.
     pub status_message: Option<String>,
     /// Recent status toasts (ephemeral, newest at back).
@@ -1049,8 +1044,6 @@ pub struct App {
     pub needs_redraw: bool,
     /// Whether context compaction is currently in progress.
     pub is_compacting: bool,
-    /// Whether context purge is currently in progress.
-    pub is_purging: bool,
     /// Set when the user scrolls up/down during a streaming turn so subsequent
     /// streamed chunks don't yank the view back to the live tail. Cleared
     /// when the user explicitly returns to bottom or the turn completes.
@@ -1278,7 +1271,6 @@ impl App {
             history_revisions: Vec::new(),
             next_history_revision: 1,
             is_loading: false,
-            turn_error_posted: false,
             // Surface parse warnings so the user knows their config file is
             // broken instead of silently losing all settings.
             status_message: settings_parse_warning,
@@ -1357,7 +1349,6 @@ impl App {
             turn_counter: 0,
             needs_redraw: true,
             is_compacting: false,
-            is_purging: false,
             user_scrolled_during_stream: false,
             last_send_at: None,
             auto_submit_initial_input,
