@@ -123,8 +123,6 @@
     "KbToggleHelpSlash": "切换帮助覆盖层",
     "HelpUsageLabel": "用法：",
     "HelpAliasesLabel": "别名：",
-    "SettingsTitle": "设置：",
-    "SettingsConfigFile": "配置文件：",
     "ClearConversation": "对话已清空",
     "ClearConversationBusy": "未清空任何内容（工作状态或运行时任务正忙；请等待后重试 /clear）",
     "ModelChanged": "模型已切换：{old} → {new}",

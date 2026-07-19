@@ -714,7 +714,7 @@ Common settings keys:
 - `mention_menu_limit` (integer, default `128`): maximum number of
   `@`-mention popup candidates retained before the composer renders the
   visible window. The visible rows still depend on terminal height.
-- `mention_walk_depth` (integer, default `6`): maximum workspace depth for
+- `mention_walk_depth` (integer, default `10`): maximum workspace depth for
   `@`-mention completion walks. Set to `0` for unlimited depth in deeply
   nested workspaces; keep the default in very large repos unless needed.
 - `mention_menu_behavior` (`fuzzy`, `browser`; default `fuzzy`): controls how
@@ -730,12 +730,12 @@ Common settings keys:
   `/cost`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
 - `sidebar_focus` (`pinned`, `auto`, `tasks`, `agents`, `context`, `hidden`; default
-  `pinned`): selects the right sidebar focus. `pinned` keeps the right sidebar
+  `auto`): selects the right sidebar focus. `pinned` keeps the right sidebar
   visible when the terminal is wide enough and composes Work, Tasks, Agents,
   and optional Context as they have live content. `auto` uses the same composed
-  panels but collapses while idle. Saving
-  `/sidebar auto --save` records an explicit auto-collapse opt-in so upgraded
-  settings files that only captured the old default can migrate back to `pinned`.
+  panels but collapses while idle. Persisting `sidebar_focus = "auto"` together
+  with `sidebar_auto_collapse_opt_in = true` records an explicit opt-in; an old
+  settings file containing unmarked `auto` migrates to `pinned`.
   `hidden` disables the right sidebar entirely so raw terminal selection cannot
   cross from the transcript into sidebar borders. Legacy `plan` and `todos`
   values, plus the old `work` name, are accepted and normalized to `pinned`.

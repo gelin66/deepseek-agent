@@ -18,7 +18,7 @@ visual motion and density for screen-reader and low-motion users.
 | `ocean_treatment` setting | `ombre` | Chooses the background appearance: `ombre` paints the state-reactive water column; `flat` uses the plain theme surface. Both keep the same state marks and idle ambient life; appearance is independent of motion settings. |
 | `status_indicator` setting | `cw` | Static typographic header mark. Set to `whale` or `dots` for the legacy animations, or `off` to hide it. |
 | `calm_mode` setting | `true` | Collapses tool-output details by default and trims status messages. Useful for screen readers that announce every redraw. |
-| `show_thinking` setting | `true` | Set to `false` to hide model `reasoning_content` blocks entirely. |
+| `show_thinking` setting | `false` | Set to `true` to show model `reasoning_content` blocks. |
 | `show_tool_details` setting | `false` | Set to `true` to expand tool calls inline; details remain available on demand either way. |
 
 ## Standard env-var surface
@@ -44,25 +44,23 @@ The override is applied once at startup. Changing the env var
 mid-session has no effect — settings are only re-read on the next
 launch.
 
-## Configuring via `/settings`
+## Configuring persisted settings
 
-The same toggles are reachable from the command palette:
+Edit `~/.codewhale/settings.toml` directly and restart the TUI. For example:
 
-* `/settings set low_motion on`
-* `/settings set fancy_animations off`
-* `/settings set calm_mode on`
-* `/settings set status_indicator off`
+```toml
+low_motion = true
+fancy_animations = false
+calm_mode = true
+status_indicator = "off"
+```
 
-Settings written this way persist to `~/.codewhale/settings.toml` on new
-installs, with legacy `~/.deepseek/settings.toml` and platform config-dir
-settings kept as compatibility fallbacks.
 The `NO_ANIMATIONS` env var still wins at startup if it's set, so
 unsetting the env var is the way to honor your saved choice.
 
-Tilix and Terminator sessions automatically start in low-motion mode because
-those VTE-based terminals have reported visible redraw flicker during active
-turns. You can still override the saved settings after launch if your terminal
-version renders cleanly.
+Termius and SSH sessions automatically start in low-motion mode because remote
+rendering can exhibit visible redraw flicker during active turns. This runtime
+override is reapplied on each launch.
 
 ## Notes for screen-reader users
 

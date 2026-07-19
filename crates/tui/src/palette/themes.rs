@@ -708,6 +708,7 @@ impl ThemeId {
 
     /// Canonical settings string (lowercase, dash-separated). Round-trips
     /// through `from_name`.
+    #[cfg(test)]
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {

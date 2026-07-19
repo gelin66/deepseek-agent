@@ -1214,6 +1214,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   继续由 `braille_spinner_frame(Instant)` 计算真实 elapsed，底层共享 cadence、400ms quick-event
   门槛、low-motion 静止帧和 verify tick 均保留。spinner 3/3 通过，并通过 TUI check、fmt 和
   diff-check。
+- M4-C 已删除没有 production command/consumer 的通用 `Settings::set`、`apply_preset`、
+  `display`、`available_settings`、calm preset 和它们的专用解析/本地化/自证测试。运行时仍直接
+  加载并归一化 `settings.toml`；M7 暂留的 Provider model 持久化改走私有 DeepSeek 默认模型
+  校验，不再依赖伪 `/set` 入口。无效 `/settings set`、`/sidebar auto --save` 文档已改成直接
+  编辑配置文件，并纠正当前默认值和环境覆盖事实。settings 26/26、catalog sync 1/1、App
+  67/67 通过，并通过 TUI strict Clippy、fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

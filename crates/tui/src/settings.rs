@@ -177,21 +177,6 @@ impl Default for Settings {
     }
 }
 
-/// The `calm` transcript preset (#3478): a coherent "beautiful/calm" bundle that
-/// favors a quiet, readable transcript over debug-dense output. Presentation
-/// only, and evidence-preserving — `show_thinking` is deliberately left untouched
-/// (thinking stays visible) and tool runs only have their inline detail
-/// collapsed, never hidden. Keyed by [`Settings::set`] names so preset fields
-/// share one validation path.
-pub const CALM_PRESET_FIELDS: &[(&str, &str)] = &[
-    ("calm_mode", "true"),
-    ("tool_collapse", "calm"),
-    ("transcript_spacing", "compact"),
-    ("low_motion", "true"),
-    ("fancy_animations", "false"),
-    ("show_tool_details", "false"),
-];
-
 fn normalize_ocean_treatment(value: &str) -> &'static str {
     if value.trim().eq_ignore_ascii_case("flat") {
         "flat"
@@ -205,16 +190,6 @@ fn normalize_work_surface_placement(value: &str) -> &'static str {
         "left" => "left",
         "right" => "right",
         _ => "top",
-    }
-}
-
-/// The `(key, value)` fields a named preset applies, or `None` for an unknown
-/// name. Single source of truth for [`Settings::apply_preset`].
-#[must_use]
-pub fn preset_fields(name: &str) -> Option<&'static [(&'static str, &'static str)]> {
-    match name.trim().to_ascii_lowercase().as_str() {
-        "calm" => Some(CALM_PRESET_FIELDS),
-        _ => None,
     }
 }
 
@@ -260,8 +235,8 @@ impl Settings {
                     // v0.8.62 wrote the surprising auto-collapse default into many
                     // full settings files. Treat unmarked saved "auto" as that
                     // legacy default so upgraded users get the sidebar back, while
-                    // `/sidebar auto --save` and `/set sidebar_focus auto` below
-                    // preserve an explicit opt-in from this release onward (#3328).
+                    // A persisted opt-in marker preserves an explicit `auto`
+                    // choice from this release onward (#3328).
                     s.sidebar_focus = "pinned".to_string();
                 }
                 s.status_indicator = normalize_status_indicator(&s.status_indicator).to_string();
@@ -346,8 +321,7 @@ impl Settings {
         //
         // Only flip `auto` to `off`; respect an explicit `"on"` so users
         // who upgrade Ptyxis or want to confirm the fix landed upstream
-        // can override the heuristic from the persisted settings.toml or
-        // `/set synchronized_output on`.
+        // can override the heuristic in persisted settings.toml.
         if self.synchronized_output.eq_ignore_ascii_case("auto") && detected_ptyxis_terminal() {
             self.synchronized_output = "off".to_string();
         }
@@ -380,405 +354,32 @@ impl Settings {
         Ok(())
     }
 
-    /// Set a single setting by key
-    pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
-        match key {
-            "calm_mode" | "calm" => {
-                self.calm_mode = parse_bool(value)?;
-            }
-            "tool_collapse" | "tool_collapse_mode" | "collapse" => {
-                let normalized = normalize_tool_collapse_mode(value);
-                if !matches!(normalized, "compact" | "expanded" | "calm") {
-                    return Err(anyhow::anyhow!(
-                        "Failed to update setting: invalid tool collapse mode '{value}'. Expected: compact, expanded, or calm."
-                    ));
-                }
-                self.tool_collapse_mode = normalized.to_string();
-            }
-            "low_motion" | "motion" => {
-                self.low_motion = parse_bool(value)?;
-            }
-            "fancy_animations" | "fancy" | "animations" => {
-                self.fancy_animations = parse_bool(value)?;
-            }
-            "ocean_treatment" | "treatment" | "background_treatment" => {
-                let normalized = value.trim().to_ascii_lowercase();
-                if !matches!(normalized.as_str(), "ombre" | "flat") {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid ocean treatment '{value}'. Expected: ombre or flat."
-                    );
-                }
-                self.ocean_treatment = normalized;
-            }
-            "work_surface_placement" | "work_surface" | "work_rail" => {
-                let normalized = value.trim().to_ascii_lowercase();
-                if !matches!(normalized.as_str(), "top" | "left" | "right") {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid work surface placement '{value}'. Expected: top, left, or right."
-                    );
-                }
-                self.work_surface_placement = normalized;
-            }
-            "bracketed_paste" | "paste" => {
-                self.bracketed_paste = parse_bool(value)?;
-            }
-            "mention_menu_limit" | "mention_limit" => {
-                self.mention_menu_limit = parse_usize_setting("mention_menu_limit", value)?;
-            }
-            "mention_walk_depth" | "mention_depth" | "completions_walk_depth" => {
-                self.mention_walk_depth = parse_usize_setting("mention_walk_depth", value)?;
-            }
-            "mention_menu_behavior" | "mention_behavior" | "mention_menu" => {
-                self.mention_menu_behavior = normalize_mention_menu_behavior(value)?;
-            }
-            "show_thinking" | "thinking" => {
-                self.show_thinking = parse_bool(value)?;
-            }
-            "show_tool_details" | "tool_details" => {
-                self.show_tool_details = parse_bool(value)?;
-            }
-            "theme" => {
-                let Some(id) = crate::palette::ThemeId::from_name(value) else {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark, solarized-light."
-                    );
-                };
-                self.theme = id.name().to_string();
-            }
-            "ui_theme" => {
-                let Some(id) = crate::palette::ThemeId::from_name(value) else {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid theme '{value}'. Expected: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark, solarized-light."
-                    );
-                };
-                self.theme = id.name().to_string();
-            }
-            "background_color" | "background" | "bg" => {
-                self.background_color = normalize_background_color_setting(value)?;
-            }
-            "composer_density" | "composer" => {
-                let normalized = normalize_composer_density(value);
-                if !["compact", "comfortable", "spacious"].contains(&normalized) {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid composer density '{value}'. Expected: compact, comfortable, spacious."
-                    );
-                }
-                self.composer_density = normalized.to_string();
-            }
-            "composer_border" | "border" => {
-                self.composer_border = parse_bool(value)?;
-            }
-            "transcript_spacing" | "spacing" => {
-                let normalized = normalize_transcript_spacing(value);
-                if !["compact", "comfortable", "spacious"].contains(&normalized) {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid transcript spacing '{value}'. Expected: compact, comfortable, spacious."
-                    );
-                }
-                self.transcript_spacing = normalized.to_string();
-            }
-            "status_indicator" | "indicator" => {
-                let normalized = normalize_status_indicator(value);
-                if !["cw", "whale", "dots", "off"].contains(&normalized) {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid status indicator '{value}'. Expected: cw, whale, dots, off."
-                    );
-                }
-                self.status_indicator = normalized.to_string();
-            }
-            "synchronized_output" | "sync_output" | "sync" => {
-                let normalized = normalize_synchronized_output(value);
-                if !["auto", "on", "off"].contains(&normalized) {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid synchronized_output '{value}'. Expected: auto, on, off."
-                    );
-                }
-                self.synchronized_output = normalized.to_string();
-            }
-            "prefer_external_pdftotext" | "external_pdftotext" | "pdftotext" => {
-                self.prefer_external_pdftotext = parse_bool(value)?;
-            }
-            "workspace_follow_symlinks" | "follow_symlinks" => {
-                self.workspace_follow_symlinks = parse_bool(value)?;
-            }
-            "sidebar_width" | "sidebar" => {
-                let width: u16 = value
-                    .parse()
-                    .map_err(|_| {
-                        anyhow::anyhow!(
-                            "Failed to update setting: invalid width '{value}'. Expected a number between 10-50."
-                        )
-                    })?;
-                if !(10..=50).contains(&width) {
-                    anyhow::bail!(
-                        "Failed to update setting: width must be between 10 and 50 percent."
-                    );
-                }
-                self.sidebar_width_percent = width;
-            }
-            "sidebar_focus" | "focus" => {
-                let normalized = match value.trim().to_ascii_lowercase().as_str() {
-                    "auto" => "auto",
-                    "pinned" | "visible" | "show" | "on" => "pinned",
-                    // Persist as "tasks"; user-facing panel label is Activity (#4147/#4135).
-                    "tasks" | "activity" | "live" | "running" => "tasks",
-                    "agents" | "subagents" | "sub-agents" => "agents",
-                    "context" | "session" => "context",
-                    "hidden" | "hide" | "closed" | "off" | "none" => "hidden",
-                    _ => {
-                        anyhow::bail!(
-                            "Failed to update setting: invalid sidebar focus '{value}'. Expected: pinned, auto, activity (tasks), agents, context, hidden."
-                        )
-                    }
-                };
-                self.sidebar_focus = normalized.to_string();
-                self.sidebar_auto_collapse_opt_in = normalized == "auto";
-            }
-            "context_panel" | "context" | "session_panel" => {
-                self.context_panel = parse_bool(value)?;
-            }
-            "cost_currency" | "currency" => {
-                let Some(currency) = crate::pricing::CostCurrency::from_setting(value) else {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid cost currency '{value}'. Expected: usd, cny, rmb, yuan."
-                    );
-                };
-                self.cost_currency = match currency {
-                    crate::pricing::CostCurrency::Usd => "usd",
-                    crate::pricing::CostCurrency::Cny => "cny",
-                }
-                .to_string();
-            }
-            "default_model" | "model" => {
-                let trimmed = value.trim();
-                if trimmed.is_empty()
-                    || matches!(
-                        trimmed.to_ascii_lowercase().as_str(),
-                        "none" | "default" | "(default)"
-                    )
-                {
-                    self.default_model = None;
-                    return Ok(());
-                }
-
-                let Some(model) = normalize_default_model(trimmed) else {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid model '{value}'. Expected: auto, a DeepSeek model ID (for example deepseek-v4-pro, deepseek-v4-flash), or none/default."
-                    );
-                };
-                self.default_model = Some(model);
-            }
-            "reasoning_effort" | "effort" => {
-                self.reasoning_effort = normalize_reasoning_effort_setting(value)?;
-            }
-            _ => {
-                anyhow::bail!("Failed to update setting: unknown setting '{key}'.");
-            }
-        }
-        Ok(())
-    }
-
-    /// Apply a named settings preset (#3478).
-    ///
-    /// Presets are the first bundled-settings mechanism: a single name applies a
-    /// coherent group of presentation knobs. `calm` is the "beautiful/calm
-    /// transcript" preset — it quiets motion and verbose tool output while
-    /// **keeping evidence reachable**: thinking stays visible and tool runs stay
-    /// expandable (only their inline detail is collapsed), so maintainer/release
-    /// work is never blind to failures. Presentation only — no model, provider,
-    /// routing, or safety setting is touched. Reuses [`Settings::set`] so each
-    /// field goes through the same validation as a single-key set.
-    ///
-    /// Returns the keys changed, or an error for an unknown preset.
-    pub fn apply_preset(&mut self, name: &str) -> Result<Vec<&'static str>> {
-        let Some(bundle) = preset_fields(name) else {
-            anyhow::bail!("Unknown preset '{}'. Available presets: calm", name.trim());
-        };
-        let mut changed = Vec::with_capacity(bundle.len());
-        for (key, value) in bundle {
-            self.set(key, value)?;
-            changed.push(*key);
-        }
-        Ok(changed)
-    }
-
-    /// Get all settings as a displayable string
-    pub fn display(&self) -> String {
-        use crate::localization::{MessageId, tr};
-        let mut lines = Vec::new();
-        lines.push(tr(MessageId::SettingsTitle).to_string());
-        lines.push("─────────────────────────────".to_string());
-        lines.push(format!("  calm_mode:          {}", self.calm_mode));
-        lines.push(format!("  tool_collapse:      {}", self.tool_collapse_mode));
-        lines.push(format!("  low_motion:         {}", self.low_motion));
-        lines.push(format!("  fancy_animations:   {}", self.fancy_animations));
-        lines.push(format!("  ocean_treatment:    {}", self.ocean_treatment));
-        lines.push(format!(
-            "  work_surface:       {}",
-            self.work_surface_placement
-        ));
-        lines.push(format!("  bracketed_paste:    {}", self.bracketed_paste));
-        lines.push(format!("  mention_menu_limit: {}", self.mention_menu_limit));
-        lines.push(format!("  mention_walk_depth: {}", self.mention_walk_depth));
-        lines.push(format!(
-            "  mention_behavior:   {}",
-            self.mention_menu_behavior
-        ));
-        lines.push(format!("  show_thinking:      {}", self.show_thinking));
-        lines.push(format!("  show_tool_details:  {}", self.show_tool_details));
-        lines.push(format!("  theme:              {}", self.theme));
-        lines.push(format!(
-            "  background_color:   {}",
-            self.background_color.as_deref().unwrap_or("(default)")
-        ));
-        lines.push(format!("  composer_density:   {}", self.composer_density));
-        lines.push(format!("  composer_border:    {}", self.composer_border));
-        lines.push(format!("  transcript_spacing: {}", self.transcript_spacing));
-        lines.push(format!("  status_indicator:   {}", self.status_indicator));
-        lines.push(format!(
-            "  synchronized_output: {}",
-            self.synchronized_output
-        ));
-        lines.push(format!(
-            "  prefer_external_pdftotext: {}",
-            self.prefer_external_pdftotext
-        ));
-        lines.push(format!(
-            "  workspace_follow_symlinks: {}",
-            self.workspace_follow_symlinks
-        ));
-        lines.push(format!(
-            "  sidebar_width:      {}%",
-            self.sidebar_width_percent
-        ));
-        lines.push(format!("  sidebar_focus:      {}", self.sidebar_focus));
-        lines.push(format!("  context_panel:      {}", self.context_panel));
-        lines.push(format!("  cost_currency:      {}", self.cost_currency));
-        lines.push(format!(
-            "  default_model:      {}",
-            self.default_model.as_deref().unwrap_or("(default)")
-        ));
-        lines.push(format!(
-            "  reasoning_effort:   {}",
-            self.reasoning_effort
-                .as_deref()
-                .unwrap_or("(config/default)")
-        ));
-        lines.push(String::new());
-        lines.push(format!(
-            "{} {}",
-            tr(MessageId::SettingsConfigFile),
-            Self::path().map_or_else(|_| "(unknown)".to_string(), |p| p.display().to_string())
-        ));
-        lines.join("\n")
-    }
-
-    /// Get available setting keys and their descriptions
-    #[allow(dead_code)]
-    pub fn available_settings() -> Vec<(&'static str, &'static str)> {
-        vec![
-            ("calm_mode", "Calmer UI defaults: on/off"),
-            (
-                "tool_collapse",
-                "Dense tool-run collapse mode: collapsed (alias compact), expanded, calm",
-            ),
-            (
-                "low_motion",
-                "Reduce decorative motion without changing model text delivery: on/off",
-            ),
-            ("fancy_animations", "Expressive live-state motion: on/off"),
-            (
-                "ocean_treatment",
-                "Transcript background treatment: ombre/flat (independent of motion)",
-            ),
-            (
-                "work_surface_placement",
-                "Ocean Tasks/Runs/Workers rail placement: top/left/right",
-            ),
-            (
-                "bracketed_paste",
-                "Terminal bracketed-paste mode: on/off (rare to disable)",
-            ),
-            (
-                "mention_menu_limit",
-                "Maximum @-mention popup candidates retained before rendering (default 128)",
-            ),
-            (
-                "mention_walk_depth",
-                "Maximum @-mention workspace walk depth; 0 means unlimited (default 6)",
-            ),
-            (
-                "mention_menu_behavior",
-                "@-mention completion behavior: fuzzy/browser (default fuzzy)",
-            ),
-            ("show_thinking", "Show model thinking: on/off"),
-            ("show_tool_details", "Show detailed tool output: on/off"),
-            (
-                "base_url",
-                "HTTP base URL for DeepSeek-compatible endpoints.",
-            ),
-            (
-                "theme",
-                "UI theme: system, dark, light, grayscale, catppuccin-mocha, tokyo-night, dracula, gruvbox-dark, solarized-light",
-            ),
-            (
-                "background_color",
-                "Main TUI background color: #RRGGBB or default",
-            ),
-            (
-                "composer_density",
-                "Composer density: compact, comfortable, spacious",
-            ),
-            (
-                "composer_border",
-                "Show a border around the composer input area: on/off",
-            ),
-            (
-                "transcript_spacing",
-                "Transcript spacing: compact, comfortable, spacious",
-            ),
-            (
-                "status_indicator",
-                "Header status indicator next to effort chip: cw, whale, dots, off",
-            ),
-            (
-                "synchronized_output",
-                "DEC 2026 synchronized output: auto, on, off (set off if your terminal flickers)",
-            ),
-            (
-                "prefer_external_pdftotext",
-                "Route PDF reads through Poppler's pdftotext instead of the bundled pure-Rust extractor: on/off (default off)",
-            ),
-            (
-                "workspace_follow_symlinks",
-                "Follow symbolic links during workspace file discovery walks: on/off (default off). Enable for symlink-based multi-project workspaces. Has built-in cycle detection but may increase latency on large symlinked trees.",
-            ),
-            ("sidebar_width", "Sidebar width percentage: 10-50"),
-            (
-                "sidebar_focus",
-                "Sidebar focus: auto, work, activity (tasks), agents, context, hidden",
-            ),
-            (
-                "context_panel",
-                "Show the session context sidebar panel: on/off",
-            ),
-            ("cost_currency", "Cost display currency: usd, cny"),
-            (
-                "default_model",
-                "Default model: auto or any DeepSeek model ID (e.g. deepseek-v4-pro)",
-            ),
-            (
-                "reasoning_effort",
-                "Default thinking effort: auto, off, low, medium, high, max, or default",
-            ),
-        ]
-    }
-
     /// Persist the model for a specific provider.
     pub fn set_model_for_provider(&mut self, provider: &str, model: &str) {
         self.provider_models
             .get_or_insert_with(std::collections::HashMap::new)
             .insert(provider.to_string(), model.to_string());
+    }
+
+    fn set_default_model(&mut self, value: &str) -> Result<()> {
+        let trimmed = value.trim();
+        if trimmed.is_empty()
+            || matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "none" | "default" | "(default)"
+            )
+        {
+            self.default_model = None;
+            return Ok(());
+        }
+
+        let Some(model) = normalize_default_model(trimmed) else {
+            anyhow::bail!(
+                "Failed to update setting: invalid model '{value}'. Expected: auto, a DeepSeek model ID (for example deepseek-v4-pro, deepseek-v4-flash), or none/default."
+            );
+        };
+        self.default_model = Some(model);
+        Ok(())
     }
 
     /// Persist a provider's model selection.
@@ -808,7 +409,7 @@ impl Settings {
         if persist_as_default {
             self.default_provider = Some(provider.as_str().to_string());
             if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
-                self.set("default_model", model)?;
+                self.set_default_model(model)?;
             }
         }
         Ok(())
@@ -892,37 +493,6 @@ fn normalize_reasoning_effort_setting(value: &str) -> Result<Option<String>> {
         }
     };
     Ok(Some(normalized.to_string()))
-}
-
-/// Parse a boolean value from various formats
-fn parse_bool(value: &str) -> Result<bool> {
-    match value.to_lowercase().as_str() {
-        "on" | "true" | "yes" | "1" | "enabled" => Ok(true),
-        "off" | "false" | "no" | "0" | "disabled" => Ok(false),
-        _ => {
-            anyhow::bail!("Failed to parse boolean '{value}': expected on/off, true/false, yes/no.")
-        }
-    }
-}
-
-fn parse_usize_setting(key: &str, value: &str) -> Result<usize> {
-    value.trim().parse::<usize>().map_err(|_| {
-        anyhow::anyhow!(
-            "Failed to update setting: invalid {key} '{value}'. Expected 0 or a positive integer."
-        )
-    })
-}
-
-fn normalize_mention_menu_behavior(value: &str) -> Result<String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "fuzzy" | "default" => Ok("fuzzy".to_string()),
-        "browser" | "browse" | "file-browser" | "file_browser" => Ok("browser".to_string()),
-        _ => {
-            anyhow::bail!(
-                "Failed to update setting: invalid mention_menu_behavior '{value}'. Expected: fuzzy, browser."
-            )
-        }
-    }
 }
 
 fn normalize_composer_density(value: &str) -> &str {
@@ -1089,42 +659,6 @@ fn env_truthy(name: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn ocean_treatment_is_appearance_not_motion() {
-        let mut settings = Settings::default();
-        assert_eq!(settings.ocean_treatment, "ombre");
-        assert!(!settings.low_motion);
-
-        settings.set("ocean_treatment", "flat").unwrap();
-        assert_eq!(settings.ocean_treatment, "flat");
-        assert!(!settings.low_motion, "appearance must not change motion");
-
-        let err = settings.set("ocean_treatment", "kelp").unwrap_err();
-        assert!(err.to_string().contains("ombre or flat"));
-    }
-
-    #[test]
-    fn work_surface_placement_persists_only_top_left_or_right() {
-        let mut settings = Settings::default();
-        assert_eq!(settings.work_surface_placement, "top");
-
-        for placement in ["left", "right", "top"] {
-            settings
-                .set("work_surface_placement", placement)
-                .expect("valid placement");
-            assert_eq!(settings.work_surface_placement, placement);
-            let body = toml::to_string(&settings).expect("serialize settings");
-            let restored: Settings = toml::from_str(&body).expect("restore settings");
-            assert_eq!(restored.work_surface_placement, placement);
-        }
-
-        let err = settings
-            .set("work_surface_placement", "bottom")
-            .expect_err("bottom is owned by composer/footer");
-        assert!(err.to_string().contains("top, left, or right"));
-        assert_eq!(settings.work_surface_placement, "top");
-    }
-
     /// Explicit animated baseline for env-force tests (#4095 flipped defaults to calm).
     fn animated_settings() -> Settings {
         Settings {
@@ -1138,32 +672,6 @@ mod tests {
     }
 
     #[test]
-    fn apply_preset_calm_sets_bundle_and_preserves_evidence() {
-        let mut settings = Settings::default();
-        // Density is calm by default; motion is an independent axis.
-        assert!(settings.calm_mode);
-        assert!(!settings.show_thinking);
-
-        let changed = settings.apply_preset("CALM").expect("calm preset applies");
-        assert_eq!(
-            changed,
-            CALM_PRESET_FIELDS
-                .iter()
-                .map(|(k, _)| *k)
-                .collect::<Vec<_>>()
-        );
-
-        assert!(settings.calm_mode);
-        assert_eq!(settings.tool_collapse_mode, "calm");
-        assert_eq!(settings.transcript_spacing, "compact");
-        assert!(settings.low_motion);
-        assert!(!settings.fancy_animations);
-        assert!(!settings.show_tool_details);
-        // Calm does not override the user's reasoning preference.
-        assert!(!settings.show_thinking);
-    }
-
-    #[test]
     fn default_settings_use_comfortable_transcript_spacing() {
         let settings = Settings::default();
         assert!(settings.calm_mode);
@@ -1174,15 +682,6 @@ mod tests {
         assert_eq!(settings.tool_collapse_mode, "compact");
         // Thinking is opt-in so the transcript stays focused on the chat.
         assert!(!settings.show_thinking);
-    }
-
-    #[test]
-    fn apply_preset_rejects_unknown_name() {
-        let mut settings = Settings::default();
-        let err = settings.apply_preset("turbo").expect_err("unknown preset");
-        assert!(err.to_string().contains("Unknown preset"));
-        assert!(preset_fields("calm").is_some());
-        assert!(preset_fields("turbo").is_none());
     }
 
     #[test]
@@ -1201,297 +700,6 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.sidebar_focus, "auto");
         assert!(settings.sidebar_auto_collapse_opt_in);
-    }
-
-    #[test]
-    fn sidebar_auto_opt_in_marker_is_serialized_only_when_enabled() {
-        let default_body = toml::to_string_pretty(&Settings::default()).expect("serialize");
-        assert!(default_body.contains("sidebar_auto_collapse_opt_in = true"));
-
-        let mut settings = Settings::default();
-        settings
-            .set("sidebar_focus", "auto")
-            .expect("enable auto collapse");
-
-        let auto_body = toml::to_string_pretty(&settings).expect("serialize");
-        assert!(auto_body.contains("sidebar_focus = \"auto\""));
-        assert!(auto_body.contains("sidebar_auto_collapse_opt_in = true"));
-    }
-
-    #[test]
-    fn reasoning_effort_setting_normalizes_and_clears() {
-        let mut settings = Settings::default();
-        settings
-            .set("reasoning_effort", "xhigh")
-            .expect("normalize xhigh");
-        assert_eq!(settings.reasoning_effort.as_deref(), Some("max"));
-        settings
-            .set("reasoning_effort", "ultracode")
-            .expect("normalize ultracode");
-        assert_eq!(settings.reasoning_effort.as_deref(), Some("max"));
-        settings
-            .set("reasoning_effort", "default")
-            .expect("clear effort");
-        assert!(settings.reasoning_effort.is_none());
-    }
-
-    #[test]
-    fn mention_completion_caps_are_configurable() {
-        let mut settings = Settings::default();
-        assert_eq!(settings.mention_menu_limit, 128);
-        assert_eq!(settings.mention_walk_depth, 10);
-        assert_eq!(settings.mention_menu_behavior, "fuzzy");
-
-        settings
-            .set("mention_menu_limit", "256")
-            .expect("set mention menu limit");
-        settings
-            .set("mention_walk_depth", "0")
-            .expect("allow unlimited walk depth");
-        settings
-            .set("mention_menu_behavior", "browser")
-            .expect("set mention menu behavior");
-
-        assert_eq!(settings.mention_menu_limit, 256);
-        assert_eq!(settings.mention_walk_depth, 0);
-        assert_eq!(settings.mention_menu_behavior, "browser");
-
-        let err = settings
-            .set("mention_walk_depth", "deep")
-            .expect_err("non-numeric depth should fail");
-        assert!(err.to_string().contains("invalid mention_walk_depth"));
-
-        let err = settings
-            .set("mention_menu_behavior", "random")
-            .expect_err("unknown mention behavior should fail");
-        assert!(err.to_string().contains("invalid mention_menu_behavior"));
-    }
-
-    #[test]
-    fn language_is_not_a_configurable_setting() {
-        let mut settings = Settings::default();
-        for key in ["locale", "language"] {
-            let err = settings
-                .set(key, "en")
-                .expect_err("single-language product must reject language settings");
-            assert!(err.to_string().contains("unknown setting"));
-        }
-        assert!(
-            Settings::available_settings()
-                .into_iter()
-                .all(|(key, _)| key != "locale" && key != "language")
-        );
-    }
-
-    #[test]
-    fn removed_launch_menu_is_not_a_configurable_setting() {
-        let mut settings = Settings::default();
-        for key in ["launch_screen", "launch"] {
-            let err = settings
-                .set(key, "on")
-                .expect_err("removed launch menu settings must fail closed");
-            assert!(err.to_string().contains("unknown setting"));
-        }
-        assert!(
-            Settings::available_settings()
-                .into_iter()
-                .all(|(key, _)| key != "launch_screen")
-        );
-    }
-
-    #[test]
-    fn removed_input_history_is_not_a_configurable_setting() {
-        let mut settings = Settings::default();
-        for key in ["max_history", "history"] {
-            let err = settings
-                .set(key, "100")
-                .expect_err("removed input history settings must fail closed");
-            assert!(err.to_string().contains("unknown setting"));
-        }
-        assert!(
-            Settings::available_settings()
-                .into_iter()
-                .all(|(key, _)| key != "max_history")
-        );
-    }
-
-    #[test]
-    fn theme_normalizes_supported_values_and_rejects_unknowns() {
-        let mut settings = Settings::default();
-        assert_eq!(settings.theme, "system");
-
-        settings.set("theme", "grayscale").expect("set grayscale");
-        assert_eq!(settings.theme, "grayscale");
-
-        settings.set("ui_theme", "black-white").expect("set alias");
-        assert_eq!(settings.theme, "grayscale");
-
-        settings.set("theme", "whale").expect("set dark alias");
-        assert_eq!(settings.theme, "dark");
-
-        settings
-            .set("theme", "tokyonight")
-            .expect("set community theme alias");
-        assert_eq!(settings.theme, "tokyo-night");
-
-        settings
-            .set("theme", "solarized")
-            .expect("set solarized alias");
-        assert_eq!(settings.theme, "solarized-light");
-
-        let err = settings
-            .set("theme", "nord")
-            .expect_err("unknown theme should fail");
-        assert!(err.to_string().contains("invalid theme"));
-    }
-
-    #[test]
-    fn background_color_normalizes_hex_and_accepts_default() {
-        let mut settings = Settings::default();
-        settings
-            .set("background_color", "#1A1b26")
-            .expect("set custom background");
-        assert_eq!(settings.background_color.as_deref(), Some("#1a1b26"));
-
-        settings
-            .set("background", "default")
-            .expect("reset custom background");
-        assert_eq!(settings.background_color, None);
-    }
-
-    #[test]
-    fn background_color_rejects_invalid_hex() {
-        let mut settings = Settings::default();
-        let err = settings
-            .set("background_color", "#123")
-            .expect_err("short hex should fail");
-        assert!(err.to_string().contains("invalid background_color"));
-    }
-
-    #[test]
-    fn cost_currency_normalizes_yuan_aliases_and_rejects_unknowns() {
-        let mut settings = Settings::default();
-        assert_eq!(settings.cost_currency, "usd");
-
-        settings.set("cost_currency", "yuan").expect("set yuan");
-        assert_eq!(settings.cost_currency, "cny");
-
-        settings.set("currency", "rmb").expect("set rmb");
-        assert_eq!(settings.cost_currency, "cny");
-
-        let err = settings
-            .set("cost_currency", "eur")
-            .expect_err("unsupported currency");
-        assert!(err.to_string().contains("invalid cost currency"));
-    }
-
-    #[test]
-    fn sidebar_focus_accepts_current_values() {
-        let mut settings = Settings::default();
-
-        settings.set("sidebar_focus", "pinned").expect("set pinned");
-        assert_eq!(settings.sidebar_focus, "pinned");
-
-        settings.set("focus", "context").expect("context focus");
-        assert_eq!(settings.sidebar_focus, "context");
-
-        settings.set("focus", "hidden").expect("hidden focus");
-        assert_eq!(settings.sidebar_focus, "hidden");
-
-        settings.set("focus", "off").expect("off alias");
-        assert_eq!(settings.sidebar_focus, "hidden");
-        assert!(!settings.sidebar_auto_collapse_opt_in);
-
-        settings.set("focus", "auto").expect("auto focus");
-        assert_eq!(settings.sidebar_focus, "auto");
-        assert!(settings.sidebar_auto_collapse_opt_in);
-
-        settings
-            .set("focus", "visible")
-            .expect("pinned alias clears auto marker");
-        assert_eq!(settings.sidebar_focus, "pinned");
-        assert!(!settings.sidebar_auto_collapse_opt_in);
-
-        // Activity is the user-facing panel name; config key remains "tasks" (#4135).
-        settings
-            .set("focus", "activity")
-            .expect("activity alias for Activity panel");
-        assert_eq!(settings.sidebar_focus, "tasks");
-        settings.set("focus", "live").expect("live alias");
-        assert_eq!(settings.sidebar_focus, "tasks");
-
-        let err = settings
-            .set("sidebar_focus", "classic")
-            .expect_err("classic is not a supported public focus");
-        assert!(err.to_string().contains("invalid sidebar focus"));
-        assert!(
-            err.to_string().contains("activity (tasks)"),
-            "error should teach the Activity alias: {err}"
-        );
-    }
-
-    #[test]
-    fn context_panel_is_configurable() {
-        let mut settings = Settings::default();
-        assert!(!settings.context_panel);
-
-        settings
-            .set("context_panel", "on")
-            .expect("enable context panel");
-        assert!(settings.context_panel);
-
-        settings
-            .set("session_panel", "off")
-            .expect("disable context panel via alias");
-        assert!(!settings.context_panel);
-    }
-
-    #[test]
-    fn tool_collapse_mode_is_configurable() {
-        let mut settings = Settings::default();
-        assert_eq!(settings.tool_collapse_mode, "compact");
-
-        settings
-            .set("tool_collapse", "expanded")
-            .expect("expanded mode");
-        assert_eq!(settings.tool_collapse_mode, "expanded");
-
-        settings.set("collapse", "calm-only").expect("calm alias");
-        assert_eq!(settings.tool_collapse_mode, "calm");
-
-        settings.set("collapse", "off").expect("off alias");
-        assert_eq!(settings.tool_collapse_mode, "expanded");
-
-        // Issue #3256 proposes `collapsed` as the default verbosity name;
-        // accept it (and the bare verb) as an alias of the canonical `compact`.
-        settings
-            .set("tool_collapse", "collapsed")
-            .expect("collapsed alias");
-        assert_eq!(settings.tool_collapse_mode, "compact");
-        settings.set("tool_collapse", "expanded").expect("reset");
-        settings
-            .set("tool_collapse", "collapse")
-            .expect("collapse alias");
-        assert_eq!(settings.tool_collapse_mode, "compact");
-
-        let err = settings
-            .set("tool_collapse", "mystery")
-            .expect_err("invalid collapse mode");
-        assert!(err.to_string().contains("invalid tool collapse mode"));
-    }
-
-    #[test]
-    fn display_uses_simplified_chinese_labels() {
-        let settings = Settings::default();
-        let display = settings.display();
-        assert!(
-            display.contains("设置"),
-            "chinese header missing:\n{display}"
-        );
-        assert!(
-            display.contains("配置文件"),
-            "chinese config label missing:\n{display}"
-        );
     }
 
     /// Tests that mutate process-global `NO_ANIMATIONS` serialise
@@ -1870,30 +1078,6 @@ mod tests {
     }
 
     #[test]
-    fn synchronized_output_set_command_accepts_aliases() {
-        let mut s = Settings::default();
-        for value in ["auto", "AUTO", "default"] {
-            s.set("synchronized_output", value).expect("valid");
-            assert_eq!(s.synchronized_output, "auto");
-        }
-        for value in ["on", "true", "yes", "1", "ENABLED"] {
-            s.set("sync_output", value).expect("valid");
-            assert_eq!(s.synchronized_output, "on");
-        }
-        for value in ["off", "false", "no", "0", "DISABLED"] {
-            s.set("sync", value).expect("valid");
-            assert_eq!(s.synchronized_output, "off");
-        }
-        let err = s
-            .set("synchronized_output", "maybe")
-            .expect_err("unknown value rejected");
-        assert!(
-            err.to_string().contains("synchronized_output"),
-            "error names the offending key: {err}"
-        );
-    }
-
-    #[test]
     fn ptyxis_term_program_flips_synchronized_output_off() {
         let _g = term_program_test_guard();
         let prev = std::env::var_os("TERM_PROGRAM");
@@ -2150,11 +1334,6 @@ mod tests {
         assert!(
             primary.exists(),
             "settings load should migrate to primary path"
-        );
-        let display = loaded.display();
-        assert!(
-            display.contains(&format!("配置文件： {}", primary.display())),
-            "settings display should surface the canonical codewhale path:\n{display}"
         );
     }
 
