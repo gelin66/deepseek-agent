@@ -378,23 +378,6 @@ fn search_provider_defaults_to_duckduckgo() {
 }
 
 #[test]
-fn tools_always_load_parses_and_trims_names() {
-    let parsed: ConfigFile = toml::from_str(
-        r#"
-        [tools]
-        always_load = ["git_show", " notify ", ""]
-        "#,
-    )
-    .expect("tools config");
-
-    let names = parsed.base.tools_always_load();
-
-    assert!(names.contains("git_show"));
-    assert!(names.contains("notify"));
-    assert!(!names.contains(""));
-}
-
-#[test]
 fn explicit_duckduckgo_search_provider_is_preserved() {
     let config: Config = toml::from_str(
         r#"
@@ -6862,7 +6845,7 @@ fn provider_capability_roundtrip_serialization() {
 fn status_items_deser_ignores_unknown_variants() {
     // Simulate a stable build reading config written by a dev build that
     // knows about items the stable build doesn't (e.g. "balance" or a
-    // future "cost_saving" chip).
+    // future status chip).
     let toml_str = r#"
         alternate_screen = "auto"
         status_items = ["mode", "model", "unknown_future_item", "cost", "another_unknown", "status"]

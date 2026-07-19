@@ -163,12 +163,6 @@ memory_path = "~/.codewhale/memory.md"
 # enabled = true            # turn the feature on (default: false)
 # Override the env-var equivalent: `DEEPSEEK_MEMORY=on`
 
-# Native tool catalog controls (#2076). By default only the core tool surface
-# is loaded into the model context; less common native tools are discoverable
-# through ToolSearch and loaded on first use.
-# [tools]
-# always_load = ["git_show", "notify"]
-
 # ─────────────────────────────────────────────────────────────────────────────────
 # Security
 # ─────────────────────────────────────────────────────────────────────────────────

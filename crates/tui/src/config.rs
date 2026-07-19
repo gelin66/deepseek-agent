@@ -1291,15 +1291,6 @@ pub struct MemoryConfig {
 mod search;
 pub use search::*;
 
-/// Model-visible tool catalog controls (`[tools]` table in config.toml).
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct ToolsConfig {
-    /// Native tool names to keep loaded even when they are outside the small
-    /// default core catalog. Unknown names are harmless and simply never match.
-    #[serde(default)]
-    pub always_load: Vec<String>,
-}
-
 /// One configurable footer item.
 ///
 /// Order in the user's `Vec<StatusItem>` is preserved: items in the left
@@ -1537,18 +1528,6 @@ pub struct SubagentProviderConfig {
     pub heartbeat_timeout_secs: Option<u64>,
 }
 
-/// `[auto]` table — knobs for the `--model auto` / `/model auto` router.
-///
-/// `cost_saving` (#1207): when `true`, the auto-mode router prefers
-/// `deepseek-v4-flash` for ambiguous requests, only escalating to
-/// `deepseek-v4-pro` when the task clearly benefits from deeper reasoning.
-/// Default is `false` (balanced — match the existing routing voice).
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct AutoConfig {
-    #[serde(default)]
-    pub cost_saving: Option<bool>,
-}
-
 /// Resolved CLI configuration, including defaults and environment overrides.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Config {
@@ -1567,10 +1546,6 @@ pub struct Config {
     /// DeepSeek reasoning-effort tier: `"off" | "low" | "medium" | "high" | "max"`.
     /// Defaults to `"max"` at runtime if unset.
     pub reasoning_effort: Option<String>,
-    /// Native tool catalog controls. This table controls built-in
-    /// tool loading policy.
-    #[serde(default)]
-    pub tools: Option<ToolsConfig>,
     pub skills_dir: Option<String>,
     pub mcp_config_path: Option<String>,
     pub mcp_oauth_callback_port: Option<u16>,
@@ -1658,11 +1633,6 @@ pub struct Config {
     /// path while keeping Moraine's pull/recall tools.
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
-
-    /// Tunables for `--model auto` (#1207). When absent, the auto router
-    /// keeps its existing balanced behaviour.
-    #[serde(default)]
-    pub auto: Option<AutoConfig>,
 
     /// Stable project context included in the production prompt.
     #[serde(default)]
@@ -2246,34 +2216,6 @@ impl Config {
     #[must_use]
     pub fn search_provider(&self) -> SearchProvider {
         self.search_provider_resolution().provider
-    }
-
-    /// Return `true` if the `[auto] cost_saving = true` opt-in is set
-    /// (#1207). When true, the auto-mode router biases toward
-    /// `deepseek-v4-flash` for ambiguous requests instead of escalating to
-    /// `deepseek-v4-pro`. Default: `false` (balanced behaviour).
-    #[must_use]
-    pub fn auto_cost_saving(&self) -> bool {
-        self.auto
-            .as_ref()
-            .and_then(|a| a.cost_saving)
-            .unwrap_or(false)
-    }
-
-    #[must_use]
-    pub fn tools_always_load(&self) -> std::collections::HashSet<String> {
-        self.tools
-            .as_ref()
-            .map(|tools| {
-                tools
-                    .always_load
-                    .iter()
-                    .map(|name| name.trim())
-                    .filter(|name| !name.is_empty())
-                    .map(ToOwned::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// Load configuration from disk and merge with environment overrides.
@@ -5087,7 +5029,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         default_text_model: override_cfg.default_text_model.or(base.default_text_model),
         auth_mode: override_cfg.auth_mode.or(base.auth_mode),
         reasoning_effort: override_cfg.reasoning_effort.or(base.reasoning_effort),
-        tools: override_cfg.tools.or(base.tools),
         skills_dir: override_cfg.skills_dir.or(base.skills_dir),
         mcp_config_path: override_cfg.mcp_config_path.or(base.mcp_config_path),
         mcp_oauth_callback_port: override_cfg
@@ -5129,7 +5070,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         skills: merge_skills_config(base.skills, override_cfg.skills),
         search: override_cfg.search.or(base.search),
         memory: override_cfg.memory.or(base.memory),
-        auto: override_cfg.auto.or(base.auto),
         context: ContextConfig {
             project_pack: override_cfg
                 .context
