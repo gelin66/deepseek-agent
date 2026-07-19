@@ -281,11 +281,6 @@ pub struct Settings {
     /// Default reasoning effort selected from the TUI model picker.
     /// `None` falls back to `config.toml` and then the runtime default.
     pub reasoning_effort: Option<String>,
-    /// Startup-only posture preference: ask, auto-review, or full-access.
-    /// An explicit/managed `config.toml` approval policy always takes
-    /// precedence, so this preference cannot loosen project requirements.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub permission_posture: Option<String>,
     /// Per-provider model overrides. Key is provider name (e.g. "openai"),
     /// value is the model id. Takes precedence over `default_model`.
     pub provider_models: Option<std::collections::HashMap<String, String>>,
@@ -373,7 +368,6 @@ impl Default for Settings {
             default_provider: None,
             default_model: None,
             reasoning_effort: None,
-            permission_posture: None,
             provider_models: None,
             status_indicator: "cw".to_string(),
             synchronized_output: "auto".to_string(),
@@ -484,10 +478,6 @@ impl Settings {
                     .reasoning_effort
                     .as_deref()
                     .and_then(|value| normalize_reasoning_effort_setting(value).ok().flatten());
-                s.permission_posture = s
-                    .permission_posture
-                    .as_deref()
-                    .and_then(normalize_permission_posture);
                 s
             }
             Err(e) => {
@@ -781,14 +771,6 @@ impl Settings {
             "reasoning_effort" | "effort" => {
                 self.reasoning_effort = normalize_reasoning_effort_setting(value)?;
             }
-            "permission_posture" | "permissions" => {
-                self.permission_posture = normalize_permission_posture(value);
-                if self.permission_posture.is_none() {
-                    anyhow::bail!(
-                        "Failed to update setting: invalid permission posture '{value}'. Expected: ask, auto-review, or full-access."
-                    );
-                }
-            }
             _ => {
                 anyhow::bail!("Failed to update setting: unknown setting '{key}'.");
             }
@@ -879,12 +861,6 @@ impl Settings {
         lines.push(format!(
             "  reasoning_effort:   {}",
             self.reasoning_effort
-                .as_deref()
-                .unwrap_or("(config/default)")
-        ));
-        lines.push(format!(
-            "  permission_posture: {}",
-            self.permission_posture
                 .as_deref()
                 .unwrap_or("(config/default)")
         ));
@@ -1088,15 +1064,6 @@ fn normalize_default_model(value: &str) -> Option<String> {
         Some("auto".to_string())
     } else {
         normalize_model_name(trimmed)
-    }
-}
-
-fn normalize_permission_posture(value: &str) -> Option<String> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "ask" | "suggest" | "on-request" | "untrusted" => Some("ask".to_string()),
-        "auto" | "auto-review" | "auto_review" => Some("auto-review".to_string()),
-        "full" | "full-access" | "full_access" | "bypass" => Some("full-access".to_string()),
-        _ => None,
     }
 }
 

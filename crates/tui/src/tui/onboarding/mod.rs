@@ -349,10 +349,8 @@ mod tests {
 
     #[test]
     fn visible_permission_labels_are_simplified_chinese() {
-        assert_eq!(tr(MessageId::ChipPermissionAsk), "询问");
-        assert_eq!(tr(MessageId::ChipPermissionAuto), "自动审查");
-        assert_eq!(tr(MessageId::ChipPermissionFullAccess), "完全访问");
-        assert_eq!(tr(MessageId::ChipPermissionNever), "从不询问");
+        assert_eq!(tr(MessageId::ChipPermissionAsk), "需要审批");
+        assert_eq!(tr(MessageId::ChipPermissionAutoApprove), "自动批准");
     }
 
     #[test]

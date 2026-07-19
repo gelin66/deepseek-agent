@@ -179,7 +179,7 @@ struct Cli {
     no_mouse_capture: bool,
     #[arg(long = "skip-onboarding")]
     skip_onboarding: bool,
-    /// Legacy compatibility alias for Act + Full Access.
+    /// Explicit startup override: enable Shell, automatic approval, and workspace-external trust.
     #[arg(long, hide = true)]
     yolo: bool,
     /// Continue the most recent interactive session for this workspace.

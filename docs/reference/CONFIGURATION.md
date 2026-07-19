@@ -107,67 +107,15 @@ Each repo can carry two distinct, complementary files:
 > CodeWhale Constitution shipped in the model prompt is a separate thing and is
 > unaffected.)
 
-### Enforced repo-law invariants
+### Repository invariants are prompt guidance
 
-By default a `protected_invariants` entry is advisory prose: it is rendered into
-the prompt as guidance the agent should honor, but nothing stops a write. An
-entry written as an **object with `paths`** is different — it compiles into a
-mechanical write hold that the engine's tool gate evaluates before the write
-runs. The law becomes mechanism, not just a request.
-
-An enforced entry has this shape:
-
-```json
-{
-  "schema_version": 1,
-  "protected_invariants": [
-    "Keep DeepSeek support first-class.",
-    {
-      "text": "The wire format is frozen; protocol changes need a human.",
-      "paths": ["crates/protocol/**"],
-      "action": "block"
-    },
-    {
-      "text": "Release notes need human review.",
-      "paths": ["CHANGELOG.md"],
-      "action": "ask"
-    }
-  ]
-}
-```
-
-- `text` — required. The reason surfaced on the hold. An empty `text` is skipped.
-- `paths` — workspace-relative globs (globset syntax, e.g. `crates/protocol/**`,
-  `**/secrets.toml`, `CHANGELOG.md`). An object with no usable `paths` stays
-  advisory-only despite the object shape.
-- `action` — optional, defaults to `ask`. `ask` **force-prompts** for approval;
-  `block` **denies the write outright**.
-
-Semantics:
-
-- **Tighten-only.** The schema has no allow/widen shape, so law can only *add*
-  holds — a crafted constitution can never grant authority or weaken a gate
-  above it.
-- **Not bypassable by mode.** Like the built-in safety floor, an `ask` hold
-  force-prompts in every mode, including Full Access; `block` always denies. Mode
-  cannot turn a hold off.
-- **Repo-local only.** Only the repo's `.codewhale/constitution.json`
-  participates. The user-global constitution stays advisory prose and never
-  reaches this mechanism.
-- **Fails safe.** A missing file, parse error, or invalid glob degrades to
-  fewer or zero rules — never a hold on unprotected paths and never a poisoned
-  gate. Across matches the strongest action wins, so `block` outranks `ask`.
-- **Leaves a receipt.** Every hold emits a `tool.repo_law_decision` tool-audit
-  event naming the invariant, the matched path, and the source file; the
-  approval/denial reason names the invariant too.
-
-**Coverage is deliberately limited.** Holds are evaluated only for the write
-tools `write_file`, `edit_file`, `apply_patch`, and `fim_edit`, and only
-against the filesystem targets named in their inputs (`path`/`target`/
-`destination`/`file_path`, `changes[].path`, and unified-diff /
-`apply_patch`-envelope headers). A shell command that writes a protected path is **not** held by
-repo law — those writes are still governed by the ordinary approval, sandbox,
-and shell-write gates, not by this mechanism.
+`protected_invariants` entries in `.codewhale/constitution.json` are rendered
+into the model prompt as repository guidance. The current canonical Runtime
+does not compile `paths`/`action` fields into a Host write gate and does not emit
+a `tool.repo_law_decision` receipt. Therefore these fields must not be treated
+as deterministic enforcement. Real write authority still comes from the fixed
+tool catalog, canonical approval, execpolicy deny, workspace boundary and
+sandbox.
 
 ### Expert full base-prompt override (#3638)
 
@@ -257,7 +205,7 @@ Supported keys in the project overlay (top-level fields only):
 |---|---|
 | `model` | override `default_text_model` |
 | `reasoning_effort` | force `"high"` / `"max"` for a complex repo |
-| `approval_policy` | only values that tighten the user's current approval posture |
+| `approval_policy` | `on-request` 可将用户的 `auto` 收紧为需要审批；项目配置不能反向放宽 |
 | `sandbox_mode` | only values that tighten the user's current sandbox posture |
 | `notes_path` | keep notes in-repo |
 | `max_subagents` | clamp sub-agent concurrency for a constrained repo (clamped to 1..=20) |
@@ -672,7 +620,7 @@ Remaining variables:
 - `DEEPSEEK_MEMORY` (`1|on|true|yes|y|enabled` turns user memory on)
 - `DEEPSEEK_MEMORY_PATH`
 - `DEEPSEEK_ALLOW_SHELL` (`1`/`true` enables)
-- `DEEPSEEK_APPROVAL_POLICY` (`on-request|untrusted|never`)
+- `DEEPSEEK_APPROVAL_POLICY` (`on-request|auto`)
 - `DEEPSEEK_SANDBOX_MODE` (`read-only|workspace-write|danger-full-access|external-sandbox`)
 - `DEEPSEEK_MANAGED_CONFIG_PATH`
 - `DEEPSEEK_REQUIREMENTS_PATH`
@@ -880,7 +828,9 @@ If you are upgrading from older releases:
   keep the conservative omitted-field default and require `allow_shell = true`
   to expose shell. The startup mode label does not change this tool catalog;
   approval bypass is a separate startup control.
-- `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`.
+- `approval_policy`（可选字符串）：只接受 `on-request` 或 `auto`，默认
+  `on-request`。前者对 canonical preflight 判定需要确认的工具发起持久审批；后者自动批准
+  这些调用。该字段只控制审批，不授予工作区外访问、Shell、sandbox 或 trust 权限。
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
   Platform support is not identical. macOS uses Seatbelt for policy
   enforcement. Linux support is helper-gated around Landlock. Windows does not
@@ -894,11 +844,9 @@ If you are upgrading from older releases:
   `path`, and optional `action = "deny" | "ask" | "allow"`; omitted `action`
   defaults to `"ask"`. `deny` blocks matching invocations before mode-based
   approval handling, `allow` skips approval for matching invocations, and
-  `ask` forces approval only in modes that can prompt. Outside the TUI
-  auto-approve path, a matching `ask` rule under `approval_policy = "never"`
-  is rejected because no prompt can be shown. In Full Access / auto-approval sessions,
-  `ask` rules do not downgrade the session into prompting or blocking; explicit
-  `deny` rules still block according to the current execution-policy logic.
+  `ask` 在 `approval_policy = "on-request"` 时强制审批。在
+  `approval_policy = "auto"` 时，`ask` 规则不会把运行降级为交互等待；显式 `deny`
+  仍按当前执行策略拒绝调用。
 
   Rules can be authored manually. The approval UI is not a policy editor and
   does not create, edit, or delete entries in this file.
@@ -1141,7 +1089,7 @@ By default on Unix:
 Requirements file shape:
 
 ```toml
-allowed_approval_policies = ["on-request", "untrusted", "never"]
+allowed_approval_policies = ["on-request", "auto"]
 allowed_sandbox_modes = ["read-only", "workspace-write"]
 ```
 

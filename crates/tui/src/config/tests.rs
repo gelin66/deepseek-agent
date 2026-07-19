@@ -8,6 +8,84 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn approval_policy_accepts_only_canonical_two_state_values() {
+    for policy in ["on-request", "auto"] {
+        let config = Config {
+            approval_policy: Some(policy.to_string()),
+            ..Config::default()
+        };
+        config
+            .validate()
+            .unwrap_or_else(|error| panic!("{policy}: {error}"));
+    }
+
+    for removed in [
+        "untrusted",
+        "never",
+        "suggest",
+        "auto-review",
+        "full-access",
+    ] {
+        let config = Config {
+            approval_policy: Some(removed.to_string()),
+            ..Config::default()
+        };
+        let error = config
+            .validate()
+            .expect_err("removed approval aliases must fail closed");
+        assert!(
+            error.to_string().contains("on-request or auto"),
+            "{removed}: {error}"
+        );
+    }
+}
+
+#[test]
+fn requirements_validate_explicit_canonical_approval_policy() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let requirements_path = temp.path().join("requirements.toml");
+    std::fs::write(
+        &requirements_path,
+        "allowed_approval_policies = [\"on-request\"]\n",
+    )
+    .expect("requirements fixture");
+    let mut rejected = Config {
+        approval_policy: Some("auto".to_string()),
+        requirements_path: Some(requirements_path.to_string_lossy().into_owned()),
+        ..Config::default()
+    };
+    let error = apply_requirements(&mut rejected).expect_err("auto must be rejected");
+    assert!(
+        error
+            .to_string()
+            .contains("approval_policy 'auto' is not allowed")
+    );
+
+    std::fs::write(
+        &requirements_path,
+        "allowed_approval_policies = [\"on-request\", \"auto\"]\n",
+    )
+    .expect("requirements fixture");
+    apply_requirements(&mut rejected).expect("auto explicitly allowed");
+
+    std::fs::write(
+        &requirements_path,
+        "allowed_approval_policies = [\"never\"]\n",
+    )
+    .expect("requirements fixture");
+    let error = apply_requirements(&mut Config {
+        requirements_path: Some(requirements_path.to_string_lossy().into_owned()),
+        ..Config::default()
+    })
+    .expect_err("retired requirement values must fail closed even without explicit config");
+    assert!(
+        error
+            .to_string()
+            .contains("invalid allowed_approval_policies value 'never'")
+    );
+}
+
+#[test]
 fn api_provider_metadata_helpers_follow_config_provider_metadata() {
     for kind in codewhale_config::ProviderKind::ALL {
         let provider = ApiProvider::from_kind(kind);

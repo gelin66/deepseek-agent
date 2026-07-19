@@ -868,10 +868,16 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   producer 的动态 mode/permission 循环状态机：`set_mode`、Tab/Shift-Tab cycle、Agent baseline、
   policy-lock UI mirror 及对应设置写入均已物理删除。后续调用图确认 `AppMode/default_mode`
   只剩启动标签、颜色与错误的 Plan“只读”提示，现已连同 legacy 设置迁移、Doctor 字段和渲染
-  分支物理删除；旧 `default_mode` 被忽略且不能授予权限。真实显式 Full Access 输入仍直接
+  分支物理删除；旧 `default_mode` 被忽略且不能授予权限。真实显式 `--yolo` 输入仍直接
   投影 shell、自动批准和工作区外访问控制，不依赖模式标签；多 Agent/Fleet 不读取该旧壳。
   审批请求同时删除无人读取的英文 impact 副本，只保留根据 canonical tool/risk 输入生成的
   简体中文展示摘要；该摘要不是策略、证据或风险真相。
+- M4-C 已把 TUI 审批投影从四个标签、三个重复行为收敛为真实 `Ask/AutoApprove` 两态，精确
+  映射 canonical `RunProductControls.auto_approve=false/true`。`approval_policy` 只接受
+  `on-request|auto`；旧 `untrusted/never/suggest/auto-review/full-access` 不再兼容。
+  `Settings.permission_posture`、managed-lock 镜像和 saved-posture project baseline 已删除，
+  配置、Doctor、project tightening、footer/header 只读取同一个 approval owner。trust、Shell、
+  sandbox、durable approval/RunStore 与 Fleet 均保持独立真实语义。
 - M4-C 已把 headless `exec --auto` 从工作区外路径信任中解耦：`--auto` 只启用工具与自动批准，
   不再把 `trust_mode` 置为真；Fleet worker 保留必需的 `exec --auto`，但不会因该 argv 自身
   获得 unrestricted external-path trust。明确的 canonical `trust_mode`、当前显式 yolo 输入、

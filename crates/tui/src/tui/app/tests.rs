@@ -69,7 +69,7 @@ fn test_trust_mode_follows_yolo_on_startup() {
     let app = App::new(test_options(true), &Config::default());
     assert!(app.trust_mode);
     assert!(app.allow_shell);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
+    assert_eq!(app.approval_mode, ApprovalMode::AutoApprove);
 }
 
 #[test]
@@ -1238,46 +1238,28 @@ fn obsolete_default_mode_yolo_cannot_grant_authority() {
 
     assert!(!app.allow_shell);
     assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+    assert_eq!(app.approval_mode, ApprovalMode::Ask);
 }
 
 #[test]
-fn managed_requirements_ignore_saved_full_access() {
-    let _env_lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let requirements_path = tmp.path().join("requirements.toml");
-    std::fs::write(
-        tmp.path().join("settings.toml"),
-        "permission_posture = \"full-access\"\n",
-    )
-    .expect("settings");
-    std::fs::write(
-        &requirements_path,
-        "allowed_approval_policies = [\"on-request\"]\n",
-    )
-    .expect("requirements");
-    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let config = Config {
-        requirements_path: Some(requirements_path.to_string_lossy().into_owned()),
-        ..Config::default()
-    };
-
-    let app = App::new(test_options(false), &config);
-
-    assert!(config.approval_policy_is_managed());
-    assert!(config.approval_policy_is_requirements_managed());
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
+fn default_approval_policy_requires_approval() {
+    let app = App::new(test_options(false), &Config::default());
+    assert_eq!(app.approval_mode, ApprovalMode::Ask);
 }
 
 #[test]
-fn configured_approval_policy_initializes_live_approval_mode() {
-    let config = Config {
-        approval_policy: Some("never".to_string()),
-        ..Default::default()
-    };
-    let app = App::new(test_options(false), &config);
-    assert_eq!(app.approval_mode, ApprovalMode::Never);
+fn configured_approval_policy_initializes_each_live_behavior() {
+    for (policy, expected) in [
+        ("on-request", ApprovalMode::Ask),
+        ("auto", ApprovalMode::AutoApprove),
+    ] {
+        let config = Config {
+            approval_policy: Some(policy.to_string()),
+            ..Default::default()
+        };
+        let app = App::new(test_options(false), &config);
+        assert_eq!(app.approval_mode, expected, "{policy}");
+    }
 }
 
 #[test]

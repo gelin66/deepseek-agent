@@ -163,14 +163,8 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
 /// (or rewording) the upstream chip labels can never silently break the chip.
 fn permission_label(app: &App) -> Cow<'static, str> {
     match app.approval_mode {
-        ApprovalMode::Suggest => tr(MessageId::ChipPermissionAsk),
-        ApprovalMode::Auto => tr(MessageId::ChipPermissionAuto),
-        // Keep the effective permission explicit. `bypass` is an
-        // implementation detail and, more importantly, can imply that
-        // repository law no longer applies. Full Access never bypasses
-        // constitution rules.
-        ApprovalMode::Bypass => tr(MessageId::ChipPermissionFullAccess),
-        ApprovalMode::Never => tr(MessageId::ChipPermissionNever),
+        ApprovalMode::Ask => tr(MessageId::ChipPermissionAsk),
+        ApprovalMode::AutoApprove => tr(MessageId::ChipPermissionAutoApprove),
     }
 }
 

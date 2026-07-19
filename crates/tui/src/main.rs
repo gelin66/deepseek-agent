@@ -120,7 +120,7 @@ struct Cli {
     #[arg(short, long, value_name = "PROMPT", num_args = 1..)]
     prompt: Vec<String>,
 
-    /// Legacy compatibility alias for Act + Full Access.
+    /// Explicit startup override: enable Shell, automatic approval, and workspace-external trust.
     #[arg(long, hide = true)]
     yolo: bool,
 
@@ -361,6 +361,32 @@ const SHELL_ONLY_EXEC_TOOLS: &[&str] = &["exec_shell", "exec_shell_wait", "exec_
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExecToolSurface {
     ShellOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExecApprovalControls {
+    auto_approve: bool,
+    tool_mode: bool,
+}
+
+fn resolve_exec_approval_controls(
+    config: &Config,
+    cli_auto: bool,
+    yolo: bool,
+    explicit_tool_surface: bool,
+) -> ExecApprovalControls {
+    let explicit_auto = cli_auto || yolo;
+    let configured_auto = config
+        .approval_policy
+        .as_deref()
+        .is_some_and(|policy| policy.trim().eq_ignore_ascii_case("auto"));
+    ExecApprovalControls {
+        auto_approve: explicit_auto || configured_auto,
+        // Persistent approval policy never grants a tool surface. Only an
+        // explicit agent/tool request may turn a one-shot completion into a
+        // tool-using run.
+        tool_mode: explicit_auto || explicit_tool_surface,
+    }
 }
 
 fn exec_tool_surface_from_env() -> Option<ExecToolSurface> {
@@ -1319,14 +1345,14 @@ async fn run_async_main() -> Result<()> {
                     || config.max_subagents_for_provider(provider),
                     |value| value.clamp(1, MAX_SUBAGENTS),
                 );
-                let auto_approve = args.auto || yolo;
                 let trust_mode = yolo;
                 // Positive authority enables tools; a deny-list can only
                 // narrow an already-authorized surface and must never turn a
                 // plain one-shot request into a filesystem-writing agent.
                 let explicit_tool_surface =
                     args.allowed_tools.is_some() || env_tool_surface.is_some();
-                let tool_mode = auto_approve || explicit_tool_surface;
+                let approval_controls =
+                    resolve_exec_approval_controls(&config, args.auto, yolo, explicit_tool_surface);
                 let max_turns = args.max_turns.unwrap_or(100);
                 let allowed_tools =
                     resolve_exec_allowed_tools(args.allowed_tools.as_deref(), env_tool_surface);
@@ -1340,11 +1366,11 @@ async fn run_async_main() -> Result<()> {
                     &prompt,
                     workspace,
                     max_subagents,
-                    auto_approve,
+                    approval_controls.auto_approve,
                     args.allow_sandbox_elevation,
                     args.sandbox.as_deref(),
                     trust_mode,
-                    tool_mode,
+                    approval_controls.tool_mode,
                     args.json,
                     run_launch,
                     args.output_format,
@@ -5446,18 +5472,12 @@ fn default_mouse_capture_enabled(
 /// else falls back to the global value.
 #[cfg(test)]
 fn merge_project_config(config: &mut Config, workspace: &Path) {
-    merge_project_config_with_approval_baseline(config, workspace, None);
+    merge_project_config_with_approval_baseline(config, workspace);
 }
 
 /// Apply project config while evaluating approval tightening against the
-/// user's effective interactive baseline. `Config::approval_policy` remains
-/// authoritative when present; the saved TUI posture is used only when the
-/// root config leaves approval unset.
-fn merge_project_config_with_approval_baseline(
-    config: &mut Config,
-    workspace: &Path,
-    saved_permission_posture: Option<&str>,
-) {
+/// user's canonical `Config::approval_policy` baseline.
+fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &Path) {
     // When the workspace is the user's home directory, the project-scope
     // config file is also the global config file. Skip the merge to avoid
     // redundant processing and a misleading "project-scope config key
@@ -5561,14 +5581,7 @@ fn merge_project_config_with_approval_baseline(
     if let Some(v) = table.get("approval_policy").and_then(toml::Value::as_str)
         && !v.is_empty()
     {
-        let saved_approval_baseline =
-            crate::config::approval_policy_baseline_from_permission_posture(
-                saved_permission_posture,
-            );
-        let approval_baseline = config
-            .approval_policy
-            .as_deref()
-            .or(saved_approval_baseline);
+        let approval_baseline = config.approval_policy.as_deref();
         if codewhale_config::project_approval_policy_is_allowed(approval_baseline, v) {
             config.approval_policy = Some(v.to_string());
         } else {
@@ -5760,14 +5773,7 @@ async fn run_interactive(
     let mut merged_config = config.clone();
     merge_user_workspace_config(&mut merged_config, cli.config.clone(), &workspace);
     if !cli.no_project_config {
-        let saved_permission_posture = crate::settings::Settings::load_persisted()
-            .ok()
-            .and_then(|settings| settings.permission_posture);
-        merge_project_config_with_approval_baseline(
-            &mut merged_config,
-            &workspace,
-            saved_permission_posture.as_deref(),
-        );
+        merge_project_config_with_approval_baseline(&mut merged_config, &workspace);
     }
     let config = &merged_config;
 
@@ -6584,7 +6590,7 @@ mod doctor_setup_state_tests {
         .save()
         .expect("persist user constitution");
         let config = Config {
-            approval_policy: Some("never".to_string()),
+            approval_policy: Some("auto".to_string()),
             allow_shell: Some(false),
             sandbox_mode: Some("read-only".to_string()),
             ..Config::default()
@@ -6606,7 +6612,7 @@ mod doctor_setup_state_tests {
         assert_eq!(report["runtime_posture"]["source"], "confirmed");
         assert_eq!(
             report["runtime_posture"]["approval_policy"]["value"],
-            "never"
+            "auto"
         );
         assert_eq!(
             report["runtime_posture"]["approval_policy"]["source"],
@@ -7540,6 +7546,44 @@ mod terminal_mode_tests {
     }
 
     #[test]
+    fn exec_approval_policy_auto_never_grants_a_tool_surface() {
+        let automatic = Config {
+            approval_policy: Some("auto".to_string()),
+            ..Config::default()
+        };
+        assert_eq!(
+            resolve_exec_approval_controls(&automatic, false, false, false),
+            ExecApprovalControls {
+                auto_approve: true,
+                tool_mode: false,
+            }
+        );
+        assert_eq!(
+            resolve_exec_approval_controls(&automatic, false, false, true),
+            ExecApprovalControls {
+                auto_approve: true,
+                tool_mode: true,
+            }
+        );
+
+        let ask = Config::default();
+        assert_eq!(
+            resolve_exec_approval_controls(&ask, false, false, true),
+            ExecApprovalControls {
+                auto_approve: false,
+                tool_mode: true,
+            }
+        );
+        assert_eq!(
+            resolve_exec_approval_controls(&ask, true, false, false),
+            ExecApprovalControls {
+                auto_approve: true,
+                tool_mode: true,
+            }
+        );
+    }
+
+    #[test]
     fn exec_explicit_sandbox_elevation_opt_ins_authorize_retry() {
         let danger = parse_cli(&[
             "codewhale",
@@ -8286,13 +8330,13 @@ mcp_oauth_callback_url = "http://evil.example.com/callback"
     fn project_overlay_overrides_approval_and_sandbox() {
         let tmp = workspace_with_project_config(
             r#"
-approval_policy = "never"
+approval_policy = "on-request"
 sandbox_mode = "read-only"
 "#,
         );
         let mut config = Config::default();
         merge_project_config(&mut config, tmp.path());
-        assert_eq!(config.approval_policy.as_deref(), Some("never"));
+        assert_eq!(config.approval_policy.as_deref(), Some("on-request"));
         assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
     }
 
@@ -8329,80 +8373,40 @@ model = "deepseek-v4-pro"
     }
 
     #[test]
-    fn project_overlay_preserves_user_strict_value_when_project_tries_to_loosen() {
-        // Belt-and-suspenders: if the user has `approval_policy = "never"`
-        // and the project tries `approval_policy = "auto"`, the deny
-        // keeps the user's strict value rather than falling through to
-        // None.
+    fn project_overlay_preserves_on_request_when_project_tries_to_loosen() {
         let tmp = workspace_with_project_config(
             r#"
 approval_policy = "auto"
 "#,
         );
         let mut config = Config {
-            approval_policy: Some("never".to_string()),
+            approval_policy: Some("on-request".to_string()),
             ..Config::default()
         };
         merge_project_config(&mut config, tmp.path());
         assert_eq!(
             config.approval_policy.as_deref(),
-            Some("never"),
+            Some("on-request"),
             "user's strict approval_policy must survive a project escalation attempt"
         );
     }
 
     #[test]
-    fn project_overlay_preserves_user_policy_when_project_tries_intermediate_loosening() {
+    fn project_overlay_can_tighten_auto_to_on_request() {
         let tmp = workspace_with_project_config(
             r#"
 approval_policy = "on-request"
-sandbox_mode = "workspace-write"
-"#,
-        );
-        let mut config = Config {
-            approval_policy: Some("never".to_string()),
-            sandbox_mode: Some("read-only".to_string()),
-            ..Config::default()
-        };
-        merge_project_config(&mut config, tmp.path());
-        assert_eq!(config.approval_policy.as_deref(), Some("never"));
-        assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
-    }
-
-    #[test]
-    fn project_overlay_can_tighten_user_policy() {
-        let tmp = workspace_with_project_config(
-            r#"
-approval_policy = "never"
 sandbox_mode = "read-only"
 "#,
         );
         let mut config = Config {
-            approval_policy: Some("on-request".to_string()),
+            approval_policy: Some("auto".to_string()),
             sandbox_mode: Some("workspace-write".to_string()),
             ..Config::default()
         };
         merge_project_config(&mut config, tmp.path());
-        assert_eq!(config.approval_policy.as_deref(), Some("never"));
+        assert_eq!(config.approval_policy.as_deref(), Some("on-request"));
         assert_eq!(config.sandbox_mode.as_deref(), Some("read-only"));
-    }
-
-    #[test]
-    fn project_overlay_can_tighten_saved_full_access_posture() {
-        let tmp = workspace_with_project_config(
-            r#"
-approval_policy = "on-request"
-"#,
-        );
-        let mut config = Config::default();
-
-        merge_project_config_with_approval_baseline(&mut config, tmp.path(), Some("full-access"));
-
-        assert_eq!(
-            config.approval_policy.as_deref(),
-            Some("on-request"),
-            "a project may tighten the saved Full Access baseline to Ask"
-        );
     }
 
     #[test]

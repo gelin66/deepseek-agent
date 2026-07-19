@@ -67,7 +67,7 @@ pub struct FooterProps {
     /// Configured MCP server count chip (empty when none are configured).
     /// See [`footer_mcp_chip`].
     pub mcp: Vec<Span<'static>>,
-    /// Permission posture chip (Ask / Auto-Review / Full Access) when visible.
+    /// Approval behavior chip (需要审批 / 自动批准) when visible.
     pub permission: Vec<Span<'static>>,
     /// Cumulative model-work chip spans ("worked 3h 12m"). Sums the
     /// elapsed time of completed turns (from `App::cumulative_turn_duration`),
@@ -1042,11 +1042,11 @@ mod tests {
     #[test]
     fn permission_chip_reports_effective_approval_posture() {
         let mut app = make_app();
-        app.approval_mode = crate::tui::approval::ApprovalMode::Bypass;
+        app.approval_mode = crate::tui::approval::ApprovalMode::AutoApprove;
 
         assert_eq!(
             super::spans_text(&super::footer_permission_chip(&app)),
-            "perm 完全访问"
+            "perm 自动批准"
         );
     }
 
@@ -1072,7 +1072,7 @@ mod tests {
         for width in [120, 100, 80] {
             let line = render_at_width(props.clone(), width);
             assert!(
-                line.contains("perm 询问"),
+                line.contains("perm 需要审批"),
                 "effective safety posture missing at {width} cols: {line:?}"
             );
             assert!(line.width() <= usize::from(width));
@@ -1080,20 +1080,21 @@ mod tests {
     }
 
     #[test]
-    fn ask_auto_and_full_access_render_at_release_widths() {
+    fn ask_and_auto_approve_render_at_release_widths() {
         for (posture, expected) in [
-            (crate::tui::approval::ApprovalMode::Suggest, "perm 询问"),
-            (crate::tui::approval::ApprovalMode::Auto, "perm 自动审查"),
-            (crate::tui::approval::ApprovalMode::Bypass, "perm 完全访问"),
+            (crate::tui::approval::ApprovalMode::Ask, "perm 需要审批"),
+            (
+                crate::tui::approval::ApprovalMode::AutoApprove,
+                "perm 自动批准",
+            ),
         ] {
             let mut app = make_app();
             app.approval_mode = posture;
             let props = FooterProps::from_app(
                 &app,
                 Some(super::FooterToast {
-                    text:
-                        "A long runtime status must not displace the effective permission posture"
-                            .to_string(),
+                    text: "A long runtime status must not displace the effective approval behavior"
+                        .to_string(),
                     color: palette::STATUS_WARNING,
                 }),
                 "working",

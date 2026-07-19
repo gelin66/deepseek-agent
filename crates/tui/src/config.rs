@@ -1610,59 +1610,16 @@ struct RequirementsFile {
     allowed_sandbox_modes: Vec<String>,
 }
 
-/// Map the saved TUI permission posture onto the approval-policy ordering used
-/// by project config. Full Access is looser than every project policy, so its
-/// baseline is the loosest ranked policy (`auto`).
-#[must_use]
-pub(crate) fn approval_policy_baseline_from_permission_posture(
-    posture: Option<&str>,
-) -> Option<&'static str> {
-    posture.and_then(
-        |posture| match posture.trim().to_ascii_lowercase().as_str() {
-            "ask" | "suggest" | "on-request" | "untrusted" => Some("on-request"),
-            "auto" | "auto-review" | "auto_review" => Some("auto"),
-            "full" | "full-access" | "full_access" | "bypass" => Some("auto"),
-            _ => None,
-        },
+fn is_canonical_approval_policy(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "on-request" | "auto"
     )
 }
 
 // === Config Loading ===
 
 impl Config {
-    /// Whether an explicit config or requirements file owns approval posture.
-    /// TUI preferences may supply a default only when this is false.
-    #[must_use]
-    pub fn approval_policy_is_managed(&self) -> bool {
-        if self.approval_policy.is_some() {
-            return true;
-        }
-        self.approval_policy_is_requirements_managed()
-    }
-
-    /// Whether organization requirements, rather than user configuration,
-    /// own approval posture. User config still outranks TUI settings.
-    #[must_use]
-    pub fn approval_policy_is_requirements_managed(&self) -> bool {
-        let path = self
-            .requirements_path
-            .as_deref()
-            .map(expand_path)
-            .or_else(default_requirements_path);
-        let Some(path) = path else {
-            return false;
-        };
-        if !path.exists() {
-            return false;
-        }
-        // Fail closed if a present requirements file becomes unreadable or
-        // malformed between Config::load and App::new.
-        std::fs::read_to_string(path)
-            .ok()
-            .and_then(|contents| toml::from_str::<RequirementsFile>(&contents).ok())
-            .is_none_or(|requirements| !requirements.allowed_approval_policies.is_empty())
-    }
-
     #[must_use]
     pub fn search_provider_resolution(&self) -> SearchProviderResolution {
         if let Ok(raw) = std::env::var("DEEPSEEK_SEARCH_PROVIDER")
@@ -1804,16 +1761,10 @@ impl Config {
                 "Invalid default_text_model '{model}': expected auto or a DeepSeek model ID (for example: deepseek-v4-pro, deepseek-v4-flash, deepseek-ai/deepseek-v4-pro)."
             );
         }
-        if let Some(policy) = self.approval_policy.as_deref() {
-            let normalized = policy.trim().to_ascii_lowercase();
-            if !matches!(
-                normalized.as_str(),
-                "on-request" | "untrusted" | "never" | "auto" | "suggest"
-            ) {
-                anyhow::bail!(
-                    "Invalid approval_policy '{policy}': expected on-request, untrusted, never, auto, or suggest."
-                );
-            }
+        if let Some(policy) = self.approval_policy.as_deref()
+            && !is_canonical_approval_policy(policy)
+        {
+            anyhow::bail!("Invalid approval_policy '{policy}': expected on-request or auto.");
         }
         if let Some(v) = self.verbosity.as_deref() {
             let normalized = v.trim().to_ascii_lowercase();
@@ -4456,14 +4407,24 @@ fn apply_requirements(config: &mut Config) -> Result<()> {
     let requirements: RequirementsFile = toml::from_str(&contents)
         .with_context(|| format!("Failed to parse requirements file: {}", path.display()))?;
 
+    if let Some(policy) = requirements
+        .allowed_approval_policies
+        .iter()
+        .find(|policy| !is_canonical_approval_policy(policy))
+    {
+        anyhow::bail!(
+            "invalid allowed_approval_policies value '{policy}': expected on-request or auto"
+        );
+    }
+
     if !requirements.allowed_approval_policies.is_empty()
         && let Some(policy) = config.approval_policy.as_ref()
     {
-        let policy = policy.to_ascii_lowercase();
+        let policy = policy.trim().to_ascii_lowercase();
         if !requirements
             .allowed_approval_policies
             .iter()
-            .any(|p| p.eq_ignore_ascii_case(&policy))
+            .any(|p| p.trim().eq_ignore_ascii_case(&policy))
         {
             anyhow::bail!(
                 "approval_policy '{policy}' is not allowed by requirements ({})",

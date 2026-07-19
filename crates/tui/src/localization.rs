@@ -347,9 +347,7 @@ pub enum MessageId {
     PhaseFinishing,
     // Underwater header chips: mode and permission words.
     ChipPermissionAsk,
-    ChipPermissionAuto,
-    ChipPermissionFullAccess,
-    ChipPermissionNever,
+    ChipPermissionAutoApprove,
     // Underwater footer right-hand hint words (keys stay literal in code).
     FooterHintKeys,
     FooterHintOutput,
@@ -754,9 +752,7 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::PhaseFailed,
     MessageId::PhaseFinishing,
     MessageId::ChipPermissionAsk,
-    MessageId::ChipPermissionAuto,
-    MessageId::ChipPermissionFullAccess,
-    MessageId::ChipPermissionNever,
+    MessageId::ChipPermissionAutoApprove,
     MessageId::FooterHintKeys,
     MessageId::FooterHintOutput,
     MessageId::EmptyStateMcpLabel,

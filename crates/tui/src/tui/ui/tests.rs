@@ -566,6 +566,20 @@ fn canonical_start_command_projects_exact_model_or_auto() {
 }
 
 #[test]
+fn canonical_start_command_projects_exact_approval_behavior() {
+    let config = Config::default();
+    let mut app = create_test_app();
+
+    app.approval_mode = crate::tui::approval::ApprovalMode::Ask;
+    let ask = canonical_start_command(&app, &config, "检查项目".to_owned());
+    assert!(!ask.controls.auto_approve);
+
+    app.approval_mode = crate::tui::approval::ApprovalMode::AutoApprove;
+    let auto = canonical_start_command(&app, &config, "检查项目".to_owned());
+    assert!(auto.controls.auto_approve);
+}
+
+#[test]
 fn canonical_start_command_projects_every_reasoning_effort() {
     let config = Config::default();
     let mut app = create_test_app();

@@ -37,27 +37,18 @@ pub use policy::{ApprovalStakes, ToolCategory, get_tool_category};
 /// Determines when tool executions require user approval
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ApprovalMode {
-    /// Automatically review risky tool calls before deciding whether to ask.
-    Auto,
-    /// Bypass approvals entirely (YOLO mode / --yolo flag).
-    Bypass,
-    /// Suggest approval for non-safe tools (non-YOLO modes)
+    /// Ask before tool calls whose canonical preflight requires approval.
     #[default]
-    Suggest,
-    /// Never execute tools requiring approval
-    Never,
+    Ask,
+    /// Execute approval-gated tool calls without prompting.
+    AutoApprove,
 }
 
 impl ApprovalMode {
     pub fn from_config_value(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "auto" | "auto-review" | "auto_review" => Some(ApprovalMode::Auto),
-            "bypass" | "yolo" | "dontask" | "dont_ask" | "bypass-permissions"
-            | "bypasspermissions" | "full-access" | "full" => Some(ApprovalMode::Bypass),
-            "suggest" | "suggested" | "on-request" | "untrusted" | "ask" => {
-                Some(ApprovalMode::Suggest)
-            }
-            "never" | "deny" | "denied" => Some(ApprovalMode::Never),
+            "on-request" => Some(ApprovalMode::Ask),
+            "auto" => Some(ApprovalMode::AutoApprove),
             _ => None,
         }
     }
@@ -65,10 +56,8 @@ impl ApprovalMode {
     #[must_use]
     pub fn permission_chip_label(self) -> &'static str {
         match self {
-            Self::Suggest => "询问",
-            Self::Auto => "自动审查",
-            Self::Bypass => "完全访问",
-            Self::Never => "从不询问",
+            Self::Ask => "需要审批",
+            Self::AutoApprove => "自动批准",
         }
     }
 }
@@ -2204,19 +2193,26 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn test_approval_mode_from_config_value_accepts_aliases() {
+    fn approval_mode_accepts_only_the_two_canonical_config_values() {
         assert_eq!(
             ApprovalMode::from_config_value("auto"),
-            Some(ApprovalMode::Auto)
+            Some(ApprovalMode::AutoApprove)
         );
         assert_eq!(
             ApprovalMode::from_config_value("on-request"),
-            Some(ApprovalMode::Suggest)
+            Some(ApprovalMode::Ask)
         );
-        assert_eq!(
-            ApprovalMode::from_config_value("deny"),
-            Some(ApprovalMode::Never)
-        );
-        assert_eq!(ApprovalMode::from_config_value("unknown"), None);
+        for removed in [
+            "ask",
+            "suggest",
+            "untrusted",
+            "never",
+            "auto-review",
+            "full-access",
+            "bypass",
+            "yolo",
+        ] {
+            assert_eq!(ApprovalMode::from_config_value(removed), None, "{removed}");
+        }
     }
 }

@@ -3994,9 +3994,10 @@ mod tests {
             "{rendered}"
         );
         assert!(
-            rendered.contains("即使在完全访问模式下也不例外"),
+            rendered.contains("必须由当前审批请求明确确认"),
             "{rendered}"
         );
+        assert!(!rendered.contains("完全访问"), "{rendered}");
         assert!(rendered.contains("Cargo.toml"), "{rendered}");
         assert!((0..area.height).any(|y| {
             let cell = &buf[(1, y)];

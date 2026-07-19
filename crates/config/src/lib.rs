@@ -1915,10 +1915,14 @@ pub fn project_approval_policy_is_allowed(current: Option<&str>, project: &str) 
     let Some(project_rank) = approval_policy_rank(project) else {
         return false;
     };
-    match current.and_then(approval_policy_rank) {
-        Some(current_rank) => project_rank >= current_rank,
-        None => project_rank >= 2,
-    }
+    let current_rank = match current {
+        Some(current) => match approval_policy_rank(current) {
+            Some(rank) => rank,
+            None => return false,
+        },
+        None => approval_policy_rank("on-request").expect("canonical approval policy"),
+    };
+    project_rank >= current_rank
 }
 
 #[must_use]
@@ -1942,8 +1946,7 @@ pub fn project_sandbox_mode_is_allowed(current: Option<&str>, project: &str) -> 
 fn approval_policy_rank(value: &str) -> Option<u8> {
     match value.trim().to_ascii_lowercase().as_str() {
         "auto" => Some(0),
-        "suggest" | "suggested" | "on-request" | "untrusted" => Some(1),
-        "never" | "deny" | "denied" => Some(2),
+        "on-request" => Some(1),
         _ => None,
     }
 }

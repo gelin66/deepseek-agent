@@ -713,10 +713,15 @@ M4-C foreground 切换后还已物理删除：
   producer；`set_mode`、Tab/Shift-Tab cycle、Agent baseline、policy-lock UI mirror 和对应设置
   写入只在自测内闭环，现已物理删除。后续调用图又证明 `AppMode/default_mode` 只剩启动标签、
   颜色和错误的 Plan“只读”提示，因此连同 legacy YOLO 设置迁移、Doctor 字段和渲染分支一起
-  删除；旧 `default_mode` 现在被忽略且不能授予权限。真实显式 Full Access 输入仍直接投影为
+  删除；旧 `default_mode` 现在被忽略且不能授予权限。真实显式 `--yolo` 输入仍直接投影为
   shell、自动批准和工作区外访问控制，不经过模式标签。`ApprovalRequest` 不再重复保存无人
   读取的英文 impact 列表；保留的简体中文 `impacts()` 只是 TUI 展示摘要，canonical risk
   仍只来自 `crates/tools`。
+- TUI 审批状态现在只有 `Ask/AutoApprove`，分别精确投影 canonical
+  `auto_approve=false/true`；footer/header 显示“需要审批/自动批准”。持久配置唯一 owner 是
+  `Config.approval_policy`，只接受 `on-request|auto`。旧 `Settings.permission_posture`、兼容别名、
+  managed-lock UI 镜像和 saved-posture project baseline 已删除；这两个审批状态不改变
+  `trust_mode`、Shell catalog、sandbox、execpolicy deny 或 durable RunStore 语义。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
   删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有

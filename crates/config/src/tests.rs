@@ -1985,40 +1985,108 @@ fn project_merge_forwards_all_provider_model_overrides() {
 }
 
 #[test]
-fn project_merge_only_tightens_approval_and_sandbox_policy() {
-    let mut strict = ConfigToml {
-        approval_policy: Some("never".to_string()),
-        sandbox_mode: Some("read-only".to_string()),
-        ..ConfigToml::default()
-    };
-    strict.merge_project_overrides(ConfigToml {
-        approval_policy: Some("on-request".to_string()),
-        sandbox_mode: Some("workspace-write".to_string()),
-        ..ConfigToml::default()
-    });
-    assert_eq!(strict.approval_policy.as_deref(), Some("never"));
-    assert_eq!(strict.sandbox_mode.as_deref(), Some("read-only"));
+fn approval_policy_rank_accepts_only_canonical_two_states() {
+    assert_eq!(approval_policy_rank("auto"), Some(0));
+    assert_eq!(approval_policy_rank("on-request"), Some(1));
+    assert_eq!(approval_policy_rank(" AUTO "), Some(0));
+    assert_eq!(approval_policy_rank(" ON-REQUEST "), Some(1));
 
-    let mut permissive = ConfigToml {
-        approval_policy: Some("auto".to_string()),
-        sandbox_mode: Some("workspace-write".to_string()),
+    for retired in [
+        "suggest",
+        "suggested",
+        "untrusted",
+        "never",
+        "deny",
+        "denied",
+    ] {
+        assert_eq!(approval_policy_rank(retired), None, "retired: {retired}");
+    }
+}
+
+#[test]
+fn project_approval_policy_defaults_to_on_request_and_only_tightens() {
+    assert!(project_approval_policy_is_allowed(None, "on-request"));
+    assert!(!project_approval_policy_is_allowed(None, "auto"));
+
+    assert!(project_approval_policy_is_allowed(
+        Some("on-request"),
+        "on-request"
+    ));
+    assert!(!project_approval_policy_is_allowed(
+        Some("on-request"),
+        "auto"
+    ));
+
+    assert!(project_approval_policy_is_allowed(Some("auto"), "auto"));
+    assert!(project_approval_policy_is_allowed(
+        Some("auto"),
+        "on-request"
+    ));
+
+    assert!(!project_approval_policy_is_allowed(
+        Some("never"),
+        "on-request"
+    ));
+    assert!(!project_approval_policy_is_allowed(Some("auto"), "never"));
+}
+
+#[test]
+fn project_merge_only_tightens_two_state_approval_policy() {
+    let mut on_request = ConfigToml {
+        approval_policy: Some("on-request".to_string()),
         ..ConfigToml::default()
     };
-    permissive.merge_project_overrides(ConfigToml {
-        approval_policy: Some("never".to_string()),
-        sandbox_mode: Some("read-only".to_string()),
+    on_request.merge_project_overrides(ConfigToml {
+        approval_policy: Some("auto".to_string()),
         ..ConfigToml::default()
     });
-    assert_eq!(permissive.approval_policy.as_deref(), Some("never"));
-    assert_eq!(permissive.sandbox_mode.as_deref(), Some("read-only"));
+    assert_eq!(on_request.approval_policy.as_deref(), Some("on-request"));
+
+    let mut automatic = ConfigToml {
+        approval_policy: Some("auto".to_string()),
+        ..ConfigToml::default()
+    };
+    automatic.merge_project_overrides(ConfigToml {
+        approval_policy: Some("on-request".to_string()),
+        ..ConfigToml::default()
+    });
+    assert_eq!(automatic.approval_policy.as_deref(), Some("on-request"));
 
     let mut unset = ConfigToml::default();
     unset.merge_project_overrides(ConfigToml {
         approval_policy: Some("on-request".to_string()),
+        ..ConfigToml::default()
+    });
+    assert_eq!(unset.approval_policy.as_deref(), Some("on-request"));
+}
+
+#[test]
+fn project_merge_sandbox_policy_still_only_tightens() {
+    let mut strict = ConfigToml {
+        sandbox_mode: Some("read-only".to_string()),
+        ..ConfigToml::default()
+    };
+    strict.merge_project_overrides(ConfigToml {
         sandbox_mode: Some("workspace-write".to_string()),
         ..ConfigToml::default()
     });
-    assert_eq!(unset.approval_policy, None);
+    assert_eq!(strict.sandbox_mode.as_deref(), Some("read-only"));
+
+    let mut permissive = ConfigToml {
+        sandbox_mode: Some("workspace-write".to_string()),
+        ..ConfigToml::default()
+    };
+    permissive.merge_project_overrides(ConfigToml {
+        sandbox_mode: Some("read-only".to_string()),
+        ..ConfigToml::default()
+    });
+    assert_eq!(permissive.sandbox_mode.as_deref(), Some("read-only"));
+
+    let mut unset = ConfigToml::default();
+    unset.merge_project_overrides(ConfigToml {
+        sandbox_mode: Some("workspace-write".to_string()),
+        ..ConfigToml::default()
+    });
     assert_eq!(unset.sandbox_mode, None);
 }
 

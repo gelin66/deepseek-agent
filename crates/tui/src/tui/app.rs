@@ -1247,23 +1247,13 @@ impl App {
             needs_workspace_trust,
         );
 
-        // Resolve the startup approval projection once. Managed config wins over
-        // the saved local posture; explicit full access is projected below.
-        let explicit_approval_mode = config
+        // Approval has one persistent owner (`Config::approval_policy`) and
+        // exactly two canonical behaviors. `--yolo` is an explicit startup
+        // override; trust and shell authority remain independent controls.
+        let configured_approval_mode = config
             .approval_policy
             .as_deref()
-            .and_then(ApprovalMode::from_config_value);
-        let approval_policy_locked = config.approval_policy_is_managed();
-        let saved_permission_posture = if approval_policy_locked {
-            None
-        } else {
-            settings
-                .permission_posture
-                .as_deref()
-                .and_then(ApprovalMode::from_config_value)
-        };
-        let configured_approval_mode = explicit_approval_mode
-            .or(saved_permission_posture)
+            .and_then(ApprovalMode::from_config_value)
             .unwrap_or_default();
         let allow_shell = allow_shell || yolo;
 
@@ -1367,7 +1357,7 @@ impl App {
             api_key_cursor: 0,
             clipboard: ClipboardHandler::new(),
             approval_mode: if yolo {
-                ApprovalMode::Bypass
+                ApprovalMode::AutoApprove
             } else {
                 configured_approval_mode
             },

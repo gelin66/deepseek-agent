@@ -92,7 +92,7 @@ pub(crate) const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 60;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 fn app_auto_approve_enabled(app: &App) -> bool {
-    app.approval_mode == ApprovalMode::Bypass
+    app.approval_mode == ApprovalMode::AutoApprove
 }
 
 fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {

@@ -164,7 +164,7 @@ memory_path = "~/.codewhale/memory.md"
 # Security
 # ─────────────────────────────────────────────────────────────────────────────────
 allow_shell = true
-approval_policy = "on-request" # on-request | untrusted | never
+approval_policy = "on-request" # on-request | auto；只控制审批，不授予 trust/shell/sandbox
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 # prompt_suggestion = true  # opt-in: show ghost-text follow-up question in composer after each turn
 
@@ -870,5 +870,5 @@ default_text_model = "deepseek-ai/deepseek-v4-pro"
 # ─────────────────────────────────────────────────────────────────────────────────
 # Requirements (admin constraints) example file
 # ─────────────────────────────────────────────────────────────────────────────────
-# allowed_approval_policies = ["on-request", "untrusted", "never"]
+# allowed_approval_policies = ["on-request", "auto"]
 # allowed_sandbox_modes = ["read-only", "workspace-write"]
