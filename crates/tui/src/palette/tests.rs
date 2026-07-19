@@ -7,7 +7,6 @@ use super::detect::{PaletteMode, palette_mode_from_apple_interface_style};
 use super::themes::{
     GRAYSCALE_UI_THEME, LIGHT_UI_THEME, SOLARIZED_LIGHT_UI_THEME, TERMINAL_UI_THEME, ThemeId,
     UI_THEME, UiTheme, normalize_hex_rgb_color, normalize_theme_name, parse_hex_rgb_color,
-    theme_label_for_mode, ui_theme_from_settings,
 };
 use super::tokens::{
     ACCENT_REASONING_LIVE, DIFF_ADDED, DIFF_ADDED_BG, GRAYSCALE_BORDER, GRAYSCALE_ELEVATED,
@@ -115,7 +114,6 @@ fn theme_names_normalize_common_grayscale_aliases() {
     assert_eq!(normalize_theme_name("black-white"), Some("grayscale"));
     assert_eq!(normalize_theme_name("mono"), Some("grayscale"));
     assert_eq!(normalize_theme_name("solarized"), Some("solarized-light"));
-    assert_eq!(theme_label_for_mode(PaletteMode::Grayscale), "grayscale");
 }
 
 #[test]
@@ -304,8 +302,11 @@ fn grayscale_luma_handles_bright_rgb_without_overflow() {
 }
 
 #[test]
-fn ui_theme_from_settings_applies_theme_and_background() {
-    let theme = ui_theme_from_settings("grayscale", Some("#111111"));
+fn resolved_theme_applies_custom_background() {
+    let theme = ThemeId::from_name("grayscale")
+        .expect("supported theme")
+        .ui_theme()
+        .with_background_color(parse_hex_rgb_color("#111111").expect("valid background"));
     assert_eq!(theme.mode, PaletteMode::Grayscale);
     assert_eq!(theme.surface_bg, Color::Rgb(17, 17, 17));
     assert_eq!(theme.header_bg, Color::Rgb(17, 17, 17));

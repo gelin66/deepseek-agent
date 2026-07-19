@@ -325,9 +325,9 @@ mod tests {
 
     #[test]
     fn every_shipped_theme_has_an_intentional_ocean_treatment() {
-        use crate::palette::{SELECTABLE_THEMES, ThemeId};
+        use crate::palette::{SHIPPED_THEME_IDS, ThemeId};
 
-        for id in SELECTABLE_THEMES {
+        for id in SHIPPED_THEME_IDS {
             let ramp = OceanRamp::for_theme(&id.ui_theme());
             if matches!(id, ThemeId::Terminal) {
                 assert_eq!(ramp, None, "Terminal must keep its inherited background");

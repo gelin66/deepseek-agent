@@ -691,6 +691,9 @@ M4-C foreground 切换后还已物理删除：
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有
   真实测试 caller，现已删除；新增断言直接经过 `render_footer_from -> FooterProps` 保护
   canonical context-percent 与 session-cost 路由，生产 `FooterWidget`/phase strip 未改动。
+- 主题模块的公开 selectable inventory、setting facade 和 mode-label helper 只有测试调用，现已
+  收缩为 `#[cfg(test)]` shipped-theme 清单；生产 `settings.toml -> ThemeId -> UiTheme ->
+  ColorCompatBackend`、12 套 palette 与 Ocean 渲染链保持不变。
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
   没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。

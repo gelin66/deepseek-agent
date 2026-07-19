@@ -749,22 +749,6 @@ impl ThemeId {
     }
 }
 
-/// Supported themes in stable display order.
-pub const SELECTABLE_THEMES: &[ThemeId] = &[
-    ThemeId::System,
-    ThemeId::Terminal,
-    ThemeId::Whale,
-    ThemeId::WhaleLight,
-    ThemeId::Grayscale,
-    ThemeId::CatppuccinMocha,
-    ThemeId::TokyoNight,
-    ThemeId::Dracula,
-    ThemeId::GruvboxDark,
-    ThemeId::Claude,
-    ThemeId::Matrix,
-    ThemeId::SolarizedLight,
-];
-
 impl UiTheme {
     #[must_use]
     pub fn for_mode(mode: PaletteMode) -> Self {
@@ -779,11 +763,6 @@ impl UiTheme {
     #[must_use]
     pub fn detect() -> Self {
         Self::for_mode(PaletteMode::detect())
-    }
-
-    #[must_use]
-    pub fn from_setting(value: &str) -> Option<Self> {
-        ThemeId::from_name(value).map(ThemeId::ui_theme)
     }
 
     #[must_use]
@@ -816,25 +795,6 @@ pub fn normalize_theme_name(value: &str) -> Option<&'static str> {
 }
 
 #[must_use]
-pub fn theme_label_for_mode(mode: PaletteMode) -> &'static str {
-    match mode {
-        PaletteMode::Dark => "dark",
-        PaletteMode::Light => "light",
-        PaletteMode::Grayscale => "grayscale",
-        PaletteMode::SolarizedLight => "solarized-light",
-    }
-}
-
-#[must_use]
-pub fn ui_theme_from_settings(theme: &str, background_color: Option<&str>) -> UiTheme {
-    let mut ui_theme = UiTheme::from_setting(theme).unwrap_or_else(UiTheme::detect);
-    if let Some(background) = background_color.and_then(parse_hex_rgb_color) {
-        ui_theme = ui_theme.with_background_color(background);
-    }
-    ui_theme
-}
-
-#[must_use]
 pub fn parse_hex_rgb_color(value: &str) -> Option<Color> {
     let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
     if hex.len() != 6 || !hex.chars().all(|ch| ch.is_ascii_hexdigit()) {
@@ -861,14 +821,30 @@ pub fn hex_rgb_string(color: Color) -> Option<String> {
 }
 
 #[cfg(test)]
+pub(crate) const SHIPPED_THEME_IDS: &[ThemeId] = &[
+    ThemeId::System,
+    ThemeId::Terminal,
+    ThemeId::Whale,
+    ThemeId::WhaleLight,
+    ThemeId::Grayscale,
+    ThemeId::CatppuccinMocha,
+    ThemeId::TokyoNight,
+    ThemeId::Dracula,
+    ThemeId::GruvboxDark,
+    ThemeId::Claude,
+    ThemeId::Matrix,
+    ThemeId::SolarizedLight,
+];
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
     /// Dogfood A7 (#4092): every mode must be tellable apart from the footer
     /// badge alone — Operate must never wear the YOLO red again.
     #[test]
-    fn every_selectable_theme_keeps_mode_badges_distinct() {
-        for theme_id in SELECTABLE_THEMES {
+    fn every_shipped_theme_keeps_mode_badges_distinct() {
+        for theme_id in SHIPPED_THEME_IDS {
             let ui = theme_id.ui_theme();
             let badges = [
                 ("act", ui.mode_agent),
@@ -889,8 +865,8 @@ mod tests {
     }
 
     #[test]
-    fn every_selectable_theme_separates_live_workers_from_completed_work() {
-        for theme_id in SELECTABLE_THEMES {
+    fn every_shipped_theme_separates_live_workers_from_completed_work() {
+        for theme_id in SHIPPED_THEME_IDS {
             let ui = theme_id.ui_theme();
             assert_ne!(
                 ui.info,
