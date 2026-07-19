@@ -73,7 +73,7 @@ ACTIVE_OUTPUT_STREAM: TextIO | None = None
 SCHEDULE_POLICY = "deterministic_pair_order_balance_v1"
 SYSTEM_PROMPT_EVIDENCE_SCHEMA = "codewhale.eval.system-prompt-evidence.v1"
 SYSTEM_PROMPT_FINGERPRINT_SCHEMA = "codewhale.eval.system-prompt-fingerprint.v1"
-SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({9, 10, 11})
+SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({9, 10, 11, 12})
 SUPPORTED_RUNTIME_EVENT_SCHEMA_VERSIONS = {6}
 PROMPT_HASH_DOMAIN = b"codewhale.eval.system-prompt/v1\0"
 PROMPT_BLOCK_HASH_DOMAIN = b"codewhale.eval.system-prompt-block/v1\0"
@@ -4556,14 +4556,14 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertFalse(temporary_path.exists())
         self.assertTrue(evidence["complete"])
 
-    def test_prompt_evidence_consumes_rust_v6_contract_fixture_in_state_v9_v10_and_v11(
+    def test_prompt_evidence_consumes_rust_v6_contract_fixture_in_supported_state_versions(
         self,
     ) -> None:
         # crates/protocol/tests/prompt_ledger_fixture.rs proves every record in
         # this same file deserializes and round-trips as StoredRuntimeEvent v6.
-        # State v10 only rematerializes the advertised-catalog snapshot from
-        # this canonical ledger, so prompt identity must remain byte-for-byte
-        # equivalent to v9 while the version whitelist stays fail-closed.
+        # Later State schemas only rematerialize projections or delete retired
+        # tables around this canonical ledger, so prompt identity must remain
+        # byte-for-byte equivalent while the version whitelist stays fail-closed.
         stored_events = json.loads(
             RUNTIME_EVENT_V6_PROMPT_LEDGER_FIXTURE.read_text(
                 encoding="utf-8"
@@ -4637,7 +4637,9 @@ class HarnessSelfTests(unittest.TestCase):
             version: extract_fixture(version)
             for version in sorted(SUPPORTED_STATE_SCHEMA_VERSIONS)
         }
-        self.assertEqual(set(evidence_by_state_schema), {9, 10, 11})
+        self.assertEqual(
+            set(evidence_by_state_schema), set(SUPPORTED_STATE_SCHEMA_VERSIONS)
+        )
         for version, version_evidence in evidence_by_state_schema.items():
             self.assertTrue(
                 version_evidence["complete"],
@@ -4652,26 +4654,21 @@ class HarnessSelfTests(unittest.TestCase):
             for key, value in evidence_by_state_schema[9].items()
             if key != "state_schema_version"
         }
-        v10_identity = {
-            key: value
-            for key, value in evidence_by_state_schema[10].items()
-            if key != "state_schema_version"
-        }
-        self.assertEqual(v10_identity, v9_identity)
-        v11_identity = {
-            key: value
-            for key, value in evidence_by_state_schema[11].items()
-            if key != "state_schema_version"
-        }
-        self.assertEqual(v11_identity, v10_identity)
-        for unsupported_version in (8, 12):
+        for version in sorted(SUPPORTED_STATE_SCHEMA_VERSIONS - {9}):
+            identity = {
+                key: value
+                for key, value in evidence_by_state_schema[version].items()
+                if key != "state_schema_version"
+            }
+            self.assertEqual(identity, v9_identity)
+        for unsupported_version in (8, 13):
             unsupported = extract_fixture(unsupported_version)
             self.assertFalse(unsupported["complete"])
             self.assertEqual(
                 unsupported["error_codes"], ["unsupported_state_schema"]
             )
 
-        evidence = evidence_by_state_schema[11]
+        evidence = evidence_by_state_schema[12]
         self.assertTrue(evidence["complete"], evidence["error_codes"])
         self.assertEqual(evidence["runtime_event_schema_versions"], [6])
         self.assertEqual(evidence["canonical_run_count"], 2)

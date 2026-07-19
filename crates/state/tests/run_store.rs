@@ -1601,7 +1601,7 @@ async fn v5_migration_replays_and_backfills_prepared_and_in_flight_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 11);
+    assert_eq!(user_version, 12);
     for (run_id, expected_state) in [
         ("v5-prepared", DurableActionState::Prepared),
         ("v5-in-flight", DurableActionState::InFlight),
@@ -1665,8 +1665,8 @@ async fn v9_migration_rebuilds_committed_response_catalog_from_canonical_events(
     let conn = Connection::open(path).expect("inspect migrated catalog database");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("read migrated v11 version");
-    assert_eq!(user_version, 11);
+        .expect("read migrated v12 version");
+    assert_eq!(user_version, 12);
     let snapshot_json: String = conn
         .query_row(
             "SELECT snapshot_json FROM agent_run_snapshots WHERE run_id = ?1",
@@ -1703,13 +1703,13 @@ async fn corrupt_v9_snapshot_rolls_back_the_v10_catalog_migration() {
 }
 
 #[tokio::test]
-async fn v10_migration_deletes_thread_goals_and_preserves_canonical_run_replay() {
-    let path = temp_state_path("v10_thread_goal_deletion");
+async fn v10_migration_deletes_retired_state_and_preserves_canonical_run_replay() {
+    let path = temp_state_path("v10_retired_state_deletion");
     let store = StateStore::open(Some(path.clone())).expect("open current state store");
     let created = store
         .create(request(
             "v10-preserved-run",
-            "/tmp/v10-thread-goal-deletion",
+            "/tmp/v10-retired-state-deletion",
         ))
         .await
         .expect("create canonical run before downgrade");
@@ -1727,6 +1727,7 @@ async fn v10_migration_deletes_thread_goals_and_preserves_canonical_run_replay()
     let conn = Connection::open(&path).expect("open current database for v10 downgrade");
     conn.execute_batch(
         r#"
+        ALTER TABLE threads ADD COLUMN current_leaf_id INTEGER;
         CREATE TABLE thread_goals (
             thread_id TEXT PRIMARY KEY NOT NULL,
             goal_id TEXT NOT NULL,
@@ -1747,12 +1748,21 @@ async fn v10_migration_deletes_thread_goals_and_preserves_canonical_run_replay()
             continuation_count INTEGER NOT NULL DEFAULT 0,
             FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
         );
+        CREATE TABLE thread_dynamic_tools (legacy INTEGER);
+        CREATE TABLE messages (legacy INTEGER);
+        CREATE TABLE checkpoints (legacy INTEGER);
+        CREATE TABLE jobs (legacy INTEGER);
+        CREATE TABLE workflow_runs (legacy INTEGER);
+        CREATE TABLE branch_runs (legacy INTEGER);
+        CREATE TABLE leaf_runs (legacy INTEGER);
+        CREATE TABLE control_node_runs (legacy INTEGER);
+        CREATE TABLE teacher_candidates (legacy INTEGER);
         INSERT INTO threads (
             id, preview, ephemeral, model_provider, created_at, updated_at,
             status, cwd, cli_version, source, archived
         ) VALUES (
             'legacy-thread', 'retired goal fixture', 0, 'deepseek', 1, 1,
-            'idle', '/tmp/v10-thread-goal-deletion', '0.8.68', 'interactive', 0
+            'idle', '/tmp/v10-retired-state-deletion', '0.8.68', 'interactive', 0
         );
         INSERT INTO thread_goals (
             thread_id, goal_id, objective, status, token_budget, tokens_used,
@@ -1767,28 +1777,52 @@ async fn v10_migration_deletes_thread_goals_and_preserves_canonical_run_replay()
     .expect("restore exact retired v10 thread goal schema and data");
     drop(conn);
 
-    let reopened = StateStore::open(Some(path.clone())).expect("migrate v10 store to v11");
+    let reopened = StateStore::open(Some(path.clone())).expect("migrate v10 store to v12");
     let replay_after = reopened
         .load(&created.lease.run_id)
         .await
-        .expect("load canonical run after v11 migration")
-        .expect("canonical run survives v11 migration");
+        .expect("load canonical run after v12 migration")
+        .expect("canonical run survives v12 migration");
     assert_canonical_replay_eq(&replay_before, &replay_after);
     drop(reopened);
 
-    let conn = Connection::open(path).expect("inspect migrated v11 database");
+    let conn = Connection::open(path).expect("inspect migrated v12 database");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("read migrated v11 version");
-    assert_eq!(user_version, 11);
-    let retired_table_exists: bool = conn
+        .expect("read migrated v12 version");
+    assert_eq!(user_version, 12);
+    for table in [
+        "thread_goals",
+        "thread_dynamic_tools",
+        "messages",
+        "checkpoints",
+        "jobs",
+        "workflow_runs",
+        "branch_runs",
+        "leaf_runs",
+        "control_node_runs",
+        "teacher_candidates",
+    ] {
+        let retired_table_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|error| panic!("inspect retired table {table}: {error}"));
+        assert!(!retired_table_exists, "{table} survived v12 migration");
+    }
+    let current_leaf_exists: bool = conn
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'thread_goals')",
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('threads') WHERE name = 'current_leaf_id')",
             [],
             |row| row.get(0),
         )
-        .expect("inspect retired thread goal table");
-    assert!(!retired_table_exists, "thread_goals survived v11 migration");
+        .expect("inspect retired thread current-leaf projection");
+    assert!(
+        !current_leaf_exists,
+        "current_leaf_id survived v12 migration"
+    );
 }
 
 #[test]
@@ -1851,7 +1885,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 11);
+        assert_eq!(user_version, 12);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -1863,13 +1897,13 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 12)
+    conn.pragma_update(None, "user_version", 13)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 11")
+            .contains("newer than supported version 12")
     );
 }

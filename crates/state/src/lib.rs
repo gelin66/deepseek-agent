@@ -1,13 +1,10 @@
-//! Persistent state management for conversation threads, messages, and jobs.
+//! Persistent state management for conversation threads and canonical Agent runs.
 //!
 //! The [`StateStore`] is the primary entry point, backed by a SQLite database and an
 //! append-only JSONL session index file. It provides CRUD operations for:
 //!
 //! - **Threads** — conversation metadata, archival, and session indexing.
-//! - **Messages** — append-only message storage with tree-structured branching.
-//! - **Checkpoints** — named state snapshots for restoring conversation progress.
-//! - **Jobs** — background task tracking with status and progress.
-//! - **Dynamic tools** — per-thread tool registrations.
+//! - **Agent runs** — canonical event, snapshot, creation, and replay persistence.
 
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
@@ -20,11 +17,10 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, ErrorCode, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 11;
+const STATE_SCHEMA_VERSION: u32 = 12;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -94,97 +90,8 @@ pub struct ThreadMetadata {
     pub git_branch: Option<String>,
     /// URL of the git remote origin, if available.
     pub git_origin_url: Option<String>,
-    /// Memory mode configured for this thread (e.g. `"local"`, `"remote"`).
+    /// Memory mode recorded by legacy thread metadata.
     pub memory_mode: Option<String>,
-    /// ID of the current leaf message in the conversation tree.
-    pub current_leaf_id: Option<i64>,
-}
-
-/// A dynamically registered tool associated with a thread.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DynamicToolRecord {
-    /// Ordinal position of this tool in the thread tool list.
-    pub position: i64,
-    /// Unique name identifying the tool.
-    pub name: String,
-    /// Human-readable description of what the tool does.
-    pub description: Option<String>,
-    /// JSON Schema describing the tool input parameters.
-    pub input_schema: Value,
-}
-
-/// A single message entry in a conversation thread.
-///
-/// Messages form a tree structure via [`parent_entry_id`](Self::parent_entry_id),
-/// enabling conversation branching and forking.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MessageRecord {
-    /// Auto-incremented unique identifier for this message.
-    pub id: i64,
-    /// ID of the thread this message belongs to.
-    pub thread_id: String,
-    /// Role of the message sender (e.g. `"user"`, `"assistant"`, `"system"`).
-    pub role: String,
-    /// Text content of the message.
-    pub content: String,
-    /// Optional structured item payload (tool calls, tool results, etc.).
-    pub item: Option<Value>,
-    /// Unix timestamp (seconds) when the message was created.
-    pub created_at: i64,
-    /// ID of the parent message, forming a tree structure. `None` for root messages.
-    pub parent_entry_id: Option<i64>,
-}
-
-/// A named checkpoint capturing the state of a thread at a point in time.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CheckpointRecord {
-    /// ID of the thread this checkpoint belongs to.
-    pub thread_id: String,
-    /// Unique identifier for this checkpoint within its thread.
-    pub checkpoint_id: String,
-    /// Serialized state snapshot stored as a JSON value.
-    pub state: Value,
-    /// Unix timestamp (seconds) when the checkpoint was created or last updated.
-    pub created_at: i64,
-}
-
-/// Status of a background job.
-///
-/// Serialized as lowercase snake_case strings.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum JobStateStatus {
-    /// Job is waiting to be executed.
-    Queued,
-    /// Job is currently executing.
-    Running,
-    /// Job has been temporarily paused.
-    Paused,
-    /// Job has finished successfully.
-    Completed,
-    /// Job has failed with an error.
-    Failed,
-    /// Job was cancelled before completion.
-    Cancelled,
-}
-
-/// Persisted state of a background job.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JobStateRecord {
-    /// Unique identifier for the job.
-    pub id: String,
-    /// Human-readable name describing the job.
-    pub name: String,
-    /// Current lifecycle status of the job.
-    pub status: JobStateStatus,
-    /// Completion progress as a percentage (0--100), if available.
-    pub progress: Option<u8>,
-    /// Optional detail message providing additional status information.
-    pub detail: Option<String>,
-    /// Unix timestamp (seconds) when the job was created.
-    pub created_at: i64,
-    /// Unix timestamp (seconds) of the most recent status update.
-    pub updated_at: i64,
 }
 
 /// Filters for listing conversation threads.
@@ -220,7 +127,7 @@ fn session_index_compact_line_threshold() -> usize {
     if cfg!(test) { 5 } else { 5_000 }
 }
 
-/// Persistent storage for conversation threads, messages, checkpoints, and jobs.
+/// Persistent storage for thread metadata and canonical Agent runs.
 ///
 /// Backed by a SQLite database and an append-only JSONL session index file.
 /// The database schema is automatically initialized and migrated on [`open`](Self::open).
@@ -332,179 +239,11 @@ impl StateStore {
                 CREATE INDEX IF NOT EXISTS idx_threads_archived_at ON threads(archived_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_threads_archived_updated ON threads(archived, updated_at DESC);
 
-                CREATE TABLE IF NOT EXISTS thread_dynamic_tools (
-                    thread_id TEXT NOT NULL,
-                    position INTEGER NOT NULL,
-                    name TEXT NOT NULL,
-                    description TEXT,
-                    input_schema TEXT NOT NULL,
-                    PRIMARY KEY (thread_id, position),
-                    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
-                );
-
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    thread_id TEXT NOT NULL,
-                    role TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    item_json TEXT,
-                    created_at INTEGER NOT NULL,
-                    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_messages_thread_created_at ON messages(thread_id, created_at ASC);
-
-                CREATE TABLE IF NOT EXISTS checkpoints (
-                    thread_id TEXT NOT NULL,
-                    checkpoint_id TEXT NOT NULL,
-                    state_json TEXT NOT NULL,
-                    created_at INTEGER NOT NULL,
-                    PRIMARY KEY(thread_id, checkpoint_id),
-                    FOREIGN KEY(thread_id) REFERENCES threads(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_checkpoints_thread_created_at ON checkpoints(thread_id, created_at DESC);
-
-                CREATE TABLE IF NOT EXISTS jobs (
-                    id TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    progress INTEGER,
-                    detail TEXT,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_jobs_updated_at ON jobs(updated_at DESC);
-
-                -- Add parent_entry_id column, and set to last message before current message
-                ALTER TABLE messages ADD COLUMN parent_entry_id INTEGER NULL;
-                UPDATE messages
-                    SET parent_entry_id = (
-                        SELECT m2.id
-                        FROM messages m2
-                        WHERE m2.thread_id = messages.thread_id
-                            AND (
-                                m2.created_at < messages.created_at
-                                OR (
-                                    m2.created_at = messages.created_at
-                                    AND m2.id < messages.id
-                                )
-                            )
-                        ORDER BY m2.created_at DESC, m2.id DESC
-                        LIMIT 1
-                    );
-                CREATE INDEX idx_messages_parent_entry_id ON messages(parent_entry_id);
-
-                -- Add current_leaf_id column, and set to last message in thread
-                ALTER TABLE threads ADD COLUMN current_leaf_id INTEGER NULL;
-                UPDATE threads
-                    SET current_leaf_id = (
-                        SELECT m.id
-                        FROM messages m
-                        WHERE m.thread_id = threads.id
-                        ORDER BY m.id DESC
-                        LIMIT 1
-                    );
-
                 PRAGMA user_version = 1;
                 "#,
             )
             .context("failed to initialize thread schema")?;
             user_version = 1;
-        }
-        if user_version < 2 {
-            tx.execute_batch(
-                r#"
-                CREATE TABLE IF NOT EXISTS workflow_runs (
-                    id TEXT PRIMARY KEY,
-                    workflow_id TEXT NOT NULL,
-                    goal TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    input_hash TEXT,
-                    started_at INTEGER NOT NULL,
-                    completed_at INTEGER,
-                    metadata_json TEXT NOT NULL DEFAULT '{}'
-                );
-                CREATE INDEX IF NOT EXISTS idx_workflow_runs_status_started_at
-                    ON workflow_runs(status, started_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_started_at
-                    ON workflow_runs(workflow_id, started_at DESC);
-
-                CREATE TABLE IF NOT EXISTS branch_runs (
-                    id TEXT PRIMARY KEY,
-                    workflow_run_id TEXT NOT NULL,
-                    branch_id TEXT NOT NULL,
-                    node_id TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    started_at INTEGER NOT NULL,
-                    completed_at INTEGER,
-                    result_json TEXT NOT NULL DEFAULT '{}',
-                    FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_branch_runs_workflow_run_id
-                    ON branch_runs(workflow_run_id);
-                CREATE INDEX IF NOT EXISTS idx_branch_runs_branch_id
-                    ON branch_runs(branch_id);
-
-                CREATE TABLE IF NOT EXISTS leaf_runs (
-                    id TEXT PRIMARY KEY,
-                    workflow_run_id TEXT NOT NULL,
-                    branch_run_id TEXT,
-                    leaf_id TEXT NOT NULL,
-                    task_id TEXT NOT NULL,
-                    input_hash TEXT,
-                    status TEXT NOT NULL,
-                    output_json TEXT NOT NULL DEFAULT '{}',
-                    artifacts_json TEXT NOT NULL DEFAULT '[]',
-                    started_at INTEGER NOT NULL,
-                    completed_at INTEGER,
-                    FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE,
-                    FOREIGN KEY(branch_run_id) REFERENCES branch_runs(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_leaf_runs_workflow_run_id
-                    ON leaf_runs(workflow_run_id);
-                CREATE INDEX IF NOT EXISTS idx_leaf_runs_replay_lookup
-                    ON leaf_runs(workflow_run_id, leaf_id, input_hash);
-
-                CREATE TABLE IF NOT EXISTS control_node_runs (
-                    id TEXT PRIMARY KEY,
-                    workflow_run_id TEXT NOT NULL,
-                    node_id TEXT NOT NULL,
-                    kind TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    selected_children_json TEXT NOT NULL DEFAULT '[]',
-                    result_json TEXT NOT NULL DEFAULT '{}',
-                    started_at INTEGER NOT NULL,
-                    completed_at INTEGER,
-                    FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
-                );
-                CREATE INDEX IF NOT EXISTS idx_control_node_runs_workflow_run_id
-                    ON control_node_runs(workflow_run_id);
-                CREATE INDEX IF NOT EXISTS idx_control_node_runs_node_id
-                    ON control_node_runs(node_id);
-
-                CREATE TABLE IF NOT EXISTS teacher_candidates (
-                    id TEXT PRIMARY KEY,
-                    workflow_run_id TEXT NOT NULL,
-                    control_node_run_id TEXT NOT NULL,
-                    candidate_id TEXT NOT NULL,
-                    branch_run_id TEXT,
-                    score REAL,
-                    passed INTEGER,
-                    rationale_json TEXT NOT NULL DEFAULT '{}',
-                    created_at INTEGER NOT NULL,
-                    FOREIGN KEY(workflow_run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE,
-                    FOREIGN KEY(control_node_run_id) REFERENCES control_node_runs(id) ON DELETE CASCADE,
-                    FOREIGN KEY(branch_run_id) REFERENCES branch_runs(id) ON DELETE SET NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_teacher_candidates_workflow_run_id
-                    ON teacher_candidates(workflow_run_id);
-                CREATE INDEX IF NOT EXISTS idx_teacher_candidates_control_node_run_id
-                    ON teacher_candidates(control_node_run_id);
-
-                PRAGMA user_version = 2;
-                "#,
-            )
-            .context("failed to initialize workflow trace schema")?;
-            user_version = 2;
         }
         if user_version < 5 {
             tx.execute_batch(
@@ -645,6 +384,29 @@ impl StateStore {
                 .context("failed to delete the retired thread goal schema")?;
             tx.pragma_update(None, "user_version", 11)
                 .context("failed to commit retired thread goal schema deletion")?;
+            user_version = 11;
+        }
+        if user_version < 12 {
+            tx.execute_batch(
+                r#"
+                DROP TABLE IF EXISTS teacher_candidates;
+                DROP TABLE IF EXISTS leaf_runs;
+                DROP TABLE IF EXISTS control_node_runs;
+                DROP TABLE IF EXISTS branch_runs;
+                DROP TABLE IF EXISTS workflow_runs;
+                DROP TABLE IF EXISTS thread_dynamic_tools;
+                DROP TABLE IF EXISTS messages;
+                DROP TABLE IF EXISTS checkpoints;
+                DROP TABLE IF EXISTS jobs;
+                "#,
+            )
+            .context("failed to delete retired thread and workflow state tables")?;
+            if threads_has_current_leaf_column(&tx)? {
+                tx.execute_batch("ALTER TABLE threads DROP COLUMN current_leaf_id;")
+                    .context("failed to delete retired thread current-leaf projection")?;
+            }
+            tx.pragma_update(None, "user_version", 12)
+                .context("failed to commit retired state table deletion")?;
         }
         tx.commit()
             .context("failed to commit state schema migration")?;
@@ -685,9 +447,6 @@ impl StateStore {
     }
 
     /// Insert or update thread metadata.
-    ///
-    /// This does **not** update `current_leaf_id`; use [`append_message`](Self::append_message)
-    /// or [`set_current_leaf_id`](Self::set_current_leaf_id) for that.
     pub fn upsert_thread(&self, thread: &ThreadMetadata) -> Result<()> {
         let conn = self.conn()?;
         conn.execute(
@@ -767,7 +526,7 @@ impl StateStore {
             r#"
             SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd,
                    cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at,
-                   git_sha, git_branch, git_origin_url, memory_mode, current_leaf_id
+                   git_sha, git_branch, git_origin_url, memory_mode
             FROM threads
             WHERE id = ?1
             "#,
@@ -785,9 +544,9 @@ impl StateStore {
     pub fn list_threads(&self, filters: ThreadListFilters) -> Result<Vec<ThreadMetadata>> {
         let conn = self.conn()?;
         let sql = if filters.include_archived {
-            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode, current_leaf_id FROM threads ORDER BY updated_at DESC LIMIT ?1"
+            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode FROM threads ORDER BY updated_at DESC LIMIT ?1"
         } else {
-            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode, current_leaf_id FROM threads WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?1"
+            "SELECT id, rollout_path, preview, ephemeral, model_provider, created_at, updated_at, status, path, cwd, cli_version, source, title, sandbox_policy, approval_mode, archived, archived_at, git_sha, git_branch, git_origin_url, memory_mode FROM threads WHERE archived = 0 ORDER BY updated_at DESC LIMIT ?1"
         };
 
         let mut stmt = conn.prepare(sql).context("failed to prepare list query")?;
@@ -833,8 +592,7 @@ impl StateStore {
         Ok(())
     }
 
-    /// Permanently delete a thread and all of its associated data
-    /// (messages, checkpoints, dynamic tools) via cascading foreign keys.
+    /// Permanently delete thread metadata.
     pub fn delete_thread(&self, id: &str) -> Result<()> {
         let conn = self.conn()?;
         conn.execute("DELETE FROM threads WHERE id = ?1", params![id])
@@ -868,575 +626,6 @@ impl StateStore {
         .optional()
         .context("failed to read thread memory mode")
         .map(Option::flatten)
-    }
-
-    /// List all leaf messages in a thread.
-    ///
-    /// A leaf message is one that has no other message referencing it as a parent.
-    /// In a branching conversation tree, there may be multiple leaf messages.
-    pub fn list_leaf_messages(&self, thread_id: &str) -> Result<Vec<MessageRecord>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                r#"
-                SELECT m1.id, m1.thread_id, m1.role, m1.content, m1.item_json, m1.created_at, m1.parent_entry_id
-                FROM messages m1
-                LEFT JOIN messages m2 ON m1.id = m2.parent_entry_id
-                WHERE m1.thread_id = ?1 AND m2.id IS NULL
-                "#,
-            )
-            .context("failed to prepare message listing query")?;
-        let mut rows = stmt
-            .query(params![thread_id])
-            .with_context(|| format!("failed to list leaf messages for thread {thread_id}"))?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().context("failed to iterate message rows")? {
-            let item_json: Option<String> = row.get(4).context("failed to read item json")?;
-            let item = item_json
-                .as_deref()
-                .map(serde_json::from_str)
-                .transpose()
-                .with_context(|| {
-                    format!("failed to parse message item json in thread {thread_id}")
-                })?;
-            out.push(MessageRecord {
-                id: row.get(0).context("failed to read message id")?,
-                thread_id: row.get(1).context("failed to read message thread id")?,
-                role: row.get(2).context("failed to read message role")?,
-                content: row.get(3).context("failed to read message content")?,
-                item,
-                created_at: row.get(5).context("failed to read message timestamp")?,
-                parent_entry_id: row.get(6).context("failed to read parent entry id")?,
-            });
-        }
-        Ok(out)
-    }
-
-    /// Update the current leaf message pointer for a thread.
-    ///
-    /// This controls which branch of the conversation tree is considered active
-    /// when listing messages via [`list_messages`](Self::list_messages).
-    pub fn set_current_leaf_id(&self, thread_id: &str, current_leaf_id: &str) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "UPDATE threads SET current_leaf_id = ?1 WHERE id = ?2",
-            params![current_leaf_id, thread_id],
-        )
-        .context("failed to update thread current leaf id")?;
-        Ok(())
-    }
-
-    /// Replace the dynamic tools for a thread.
-    ///
-    /// All existing dynamic tools for the thread are deleted and replaced with the
-    /// provided list. The operation is performed within a transaction.
-    pub fn persist_dynamic_tools(
-        &self,
-        thread_id: &str,
-        tools: &[DynamicToolRecord],
-    ) -> Result<()> {
-        let mut conn = self.conn()?;
-        let tx = conn
-            .transaction()
-            .context("failed to begin dynamic tools transaction")?;
-        tx.execute(
-            "DELETE FROM thread_dynamic_tools WHERE thread_id = ?1",
-            params![thread_id],
-        )
-        .context("failed to clear dynamic tools")?;
-        for tool in tools {
-            tx.execute(
-                "INSERT INTO thread_dynamic_tools(thread_id, position, name, description, input_schema) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    thread_id,
-                    tool.position,
-                    tool.name,
-                    tool.description,
-                    tool.input_schema.to_string()
-                ],
-            )
-            .with_context(|| format!("failed to persist dynamic tool {}", tool.name))?;
-        }
-        tx.commit().context("failed to commit dynamic tools")?;
-        Ok(())
-    }
-
-    /// Retrieve all dynamic tools registered for a thread, ordered by position.
-    pub fn get_dynamic_tools(&self, thread_id: &str) -> Result<Vec<DynamicToolRecord>> {
-        let conn = self.conn()?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT position, name, description, input_schema FROM thread_dynamic_tools WHERE thread_id = ?1 ORDER BY position ASC",
-            )
-            .context("failed to prepare get dynamic tools query")?;
-        let mut rows = stmt
-            .query(params![thread_id])
-            .context("failed to query dynamic tools")?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().context("failed to iterate dynamic tools")? {
-            let input_schema_raw: String =
-                row.get(3).context("failed to read tool input schema")?;
-            let input_schema: Value =
-                serde_json::from_str(&input_schema_raw).with_context(|| {
-                    format!("failed to parse input schema for dynamic tool in thread {thread_id}")
-                })?;
-            out.push(DynamicToolRecord {
-                position: row.get(0).context("failed to read tool position")?,
-                name: row.get(1).context("failed to read tool name")?,
-                description: row.get(2).context("failed to read tool description")?,
-                input_schema,
-            });
-        }
-        Ok(out)
-    }
-
-    /// Append a new message to a thread.
-    ///
-    /// The message is linked to the thread's current leaf as its parent, and the
-    /// thread's `current_leaf_id` is updated to the new message. Returns the ID
-    /// of the newly created message.
-    pub fn append_message(
-        &self,
-        thread_id: &str,
-        role: &str,
-        content: &str,
-        item: Option<Value>,
-    ) -> Result<i64> {
-        let mut conn = self.conn()?;
-        let created_at = Utc::now().timestamp();
-        let item_json = item
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .context("failed to serialize message item payload")?;
-
-        let tx = conn
-            .transaction()
-            .context("failed to begin append message transaction")?;
-
-        let current_leaf_id: Option<i64> = tx
-            .query_row(
-                "SELECT current_leaf_id FROM threads WHERE id = ?1",
-                params![thread_id],
-                |row| row.get(0),
-            )
-            .with_context(|| {
-                format!("failed to query thread current leaf id for thread {thread_id}")
-            })?;
-
-        let next_leaf_id: i64 = tx.query_row(
-            r#"
-                INSERT INTO messages(thread_id, role, content, item_json, created_at, parent_entry_id)
-                SELECT ?1, ?2, ?3, ?4, ?5, ?6
-                RETURNING id
-            "#, params![thread_id, role, content, item_json, created_at, current_leaf_id], |row| row.get(0)
-        ).with_context(|| format!("failed to append message for thread {thread_id}"))?;
-
-        tx.execute(
-            r#"
-            UPDATE threads
-            SET current_leaf_id = ?1
-            WHERE id = ?2;
-            "#,
-            params![next_leaf_id, thread_id],
-        )
-        .with_context(|| {
-            format!("failed to update thread current leaf id for thread {thread_id}")
-        })?;
-
-        tx.commit()
-            .context("failed to commit append message transaction")?;
-
-        Ok(next_leaf_id)
-    }
-
-    /// List messages in the current conversation branch, walking backwards from
-    /// the thread's `current_leaf_id`.
-    ///
-    /// Messages are returned in chronological order (oldest first). The `limit`
-    /// parameter caps how many ancestor messages are traversed; it defaults to 500.
-    pub fn list_messages(
-        &self,
-        thread_id: &str,
-        limit: Option<usize>,
-    ) -> Result<Vec<MessageRecord>> {
-        let conn = self.conn()?;
-        let limit = i64::try_from(limit.unwrap_or(500)).unwrap_or(500);
-        let mut stmt = conn
-            .prepare(
-                r#"
-                WITH RECURSIVE
-                    leaf_id AS (
-                        SELECT current_leaf_id FROM threads WHERE id = ?1
-                    ),
-                    ancestors AS (
-                        SELECT id, thread_id, role, content, item_json, created_at, parent_entry_id, 0 AS depth
-                        FROM messages
-                        WHERE id = (SELECT current_leaf_id FROM leaf_id)
-
-                        UNION ALL
-
-                        SELECT m.id, m.thread_id, m.role, m.content, m.item_json, m.created_at, m.parent_entry_id, a.depth + 1
-                        FROM messages m
-                        JOIN ancestors a ON m.id = a.parent_entry_id
-                        WHERE a.depth < ?2
-                    )
-                    SELECT id, thread_id, role, content, item_json, created_at, parent_entry_id FROM ancestors
-                    ORDER BY depth DESC
-                "#
-            )
-            .context("failed to prepare message listing query")?;
-        let mut rows = stmt
-            .query(params![thread_id, limit - 1])
-            .with_context(|| format!("failed to list messages for thread {thread_id}"))?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().context("failed to iterate message rows")? {
-            let item_json: Option<String> = row.get(4).context("failed to read item json")?;
-            let item = item_json
-                .as_deref()
-                .map(serde_json::from_str)
-                .transpose()
-                .with_context(|| {
-                    format!("failed to parse message item json in thread {thread_id}")
-                })?;
-            out.push(MessageRecord {
-                id: row.get(0).context("failed to read message id")?,
-                thread_id: row.get(1).context("failed to read message thread id")?,
-                role: row.get(2).context("failed to read message role")?,
-                content: row.get(3).context("failed to read message content")?,
-                item,
-                created_at: row.get(5).context("failed to read message timestamp")?,
-                parent_entry_id: row.get(6).context("failed to read parent entry id")?,
-            });
-        }
-        Ok(out)
-    }
-
-    /// Fork the conversation at a specific message.
-    ///
-    /// Creates a new message whose parent is `message_id` and updates the thread's
-    /// `current_leaf_id` to the new message. Returns the ID of the new message.
-    /// This enables branching conversations from any point in the history.
-    pub fn fork_at_message(
-        &self,
-        message_id: &str,
-        role: &str,
-        content: &str,
-        item: Option<Value>,
-    ) -> Result<i64> {
-        let mut conn = self.conn()?;
-        let created_at = Utc::now().timestamp();
-        let item_json = item
-            .as_ref()
-            .map(serde_json::to_string)
-            .transpose()
-            .context("failed to serialize message item payload")?;
-
-        let tx = conn
-            .transaction()
-            .context("failed to begin fork message transaction")?;
-
-        let thread_id: String = tx
-            .query_row(
-                "SELECT thread_id FROM messages WHERE id = ?1",
-                params![message_id],
-                |row| row.get(0),
-            )
-            .with_context(|| format!("failed to query thread id for message {message_id}"))?;
-
-        let next_leaf_id: i64 = tx.query_row(
-            r#"
-                INSERT INTO messages(thread_id, role, content, item_json, created_at, parent_entry_id)
-                SELECT ?1, ?2, ?3, ?4, ?5, ?6
-                RETURNING id
-            "#, params![thread_id, role, content, item_json, created_at, message_id], |row| row.get(0)
-        ).with_context(|| format!("failed to fork at message for thread {thread_id:?}"))?;
-
-        tx.execute(
-            r#"
-            UPDATE threads
-            SET current_leaf_id = ?1
-            WHERE id = ?2;
-            "#,
-            params![next_leaf_id, thread_id],
-        )
-        .with_context(|| {
-            format!("failed to update thread current leaf id for thread {thread_id:?}")
-        })?;
-
-        tx.commit()
-            .context("failed to commit fork message transaction")?;
-
-        Ok(next_leaf_id)
-    }
-
-    /// Delete all messages belonging to a thread and reset its `current_leaf_id`.
-    ///
-    /// Returns the number of messages deleted.
-    pub fn clear_messages(&self, thread_id: &str) -> Result<usize> {
-        let mut conn = self.conn()?;
-        let tx = conn
-            .transaction()
-            .context("failed to begin clear messages transaction")?;
-
-        tx.execute(
-            r#"
-            UPDATE threads
-            SET current_leaf_id = NULL
-            WHERE id = ?1;
-            "#,
-            params![thread_id],
-        )
-        .with_context(|| format!("failed to clear messages for thread {thread_id}"))?;
-        let result = tx
-            .execute(
-                r#"
-                DELETE FROM messages WHERE thread_id = ?1
-                "#,
-                params![thread_id],
-            )
-            .with_context(|| format!("failed to clear messages for thread {thread_id}"))?;
-        tx.commit()
-            .context("failed to commit clear messages transaction")?;
-
-        Ok(result)
-    }
-
-    /// Save (or update) a named checkpoint for a thread.
-    ///
-    /// If a checkpoint with the same `thread_id` and `checkpoint_id` already exists,
-    /// its state and timestamp are overwritten.
-    pub fn save_checkpoint(
-        &self,
-        thread_id: &str,
-        checkpoint_id: &str,
-        state: &Value,
-    ) -> Result<()> {
-        let conn = self.conn()?;
-        let state_json =
-            serde_json::to_string(state).context("failed to encode checkpoint state")?;
-        conn.execute(
-            r#"
-            INSERT INTO checkpoints(thread_id, checkpoint_id, state_json, created_at)
-            VALUES (?1, ?2, ?3, ?4)
-            ON CONFLICT(thread_id, checkpoint_id) DO UPDATE SET
-                state_json = excluded.state_json,
-                created_at = excluded.created_at
-            "#,
-            params![thread_id, checkpoint_id, state_json, Utc::now().timestamp()],
-        )
-        .with_context(|| {
-            format!("failed to save checkpoint {checkpoint_id} for thread {thread_id}")
-        })?;
-        Ok(())
-    }
-
-    /// Load a checkpoint for a thread.
-    ///
-    /// If `checkpoint_id` is provided, loads that specific checkpoint. Otherwise,
-    /// loads the most recently created checkpoint for the thread. Returns `None`
-    /// if no matching checkpoint exists.
-    pub fn load_checkpoint(
-        &self,
-        thread_id: &str,
-        checkpoint_id: Option<&str>,
-    ) -> Result<Option<CheckpointRecord>> {
-        let conn = self.conn()?;
-        if let Some(checkpoint_id) = checkpoint_id {
-            let row = conn
-                .query_row(
-                    "SELECT thread_id, checkpoint_id, state_json, created_at FROM checkpoints WHERE thread_id = ?1 AND checkpoint_id = ?2",
-                    params![thread_id, checkpoint_id],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, String>(1)?,
-                            row.get::<_, String>(2)?,
-                            row.get::<_, i64>(3)?,
-                        ))
-                    },
-                )
-                .optional()
-                .with_context(|| {
-                    format!("failed to load checkpoint {checkpoint_id} for thread {thread_id}")
-                })?;
-            if let Some((thread_id, checkpoint_id, state_json, created_at)) = row {
-                let state = parse_checkpoint_state(&state_json)?;
-                return Ok(Some(CheckpointRecord {
-                    thread_id,
-                    checkpoint_id,
-                    state,
-                    created_at,
-                }));
-            }
-            return Ok(None);
-        }
-
-        let row = conn
-            .query_row(
-                "SELECT thread_id, checkpoint_id, state_json, created_at FROM checkpoints WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT 1",
-                params![thread_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
-            )
-            .optional()
-            .with_context(|| format!("failed to load latest checkpoint for thread {thread_id}"))?;
-        if let Some((thread_id, checkpoint_id, state_json, created_at)) = row {
-            let state = parse_checkpoint_state(&state_json)?;
-            return Ok(Some(CheckpointRecord {
-                thread_id,
-                checkpoint_id,
-                state,
-                created_at,
-            }));
-        }
-        Ok(None)
-    }
-
-    /// List checkpoints for a thread, ordered by creation time (newest first).
-    ///
-    /// The `limit` parameter caps the number of results and defaults to 100.
-    pub fn list_checkpoints(
-        &self,
-        thread_id: &str,
-        limit: Option<usize>,
-    ) -> Result<Vec<CheckpointRecord>> {
-        let conn = self.conn()?;
-        let limit = i64::try_from(limit.unwrap_or(100)).unwrap_or(100);
-        let mut stmt = conn
-            .prepare(
-                "SELECT thread_id, checkpoint_id, state_json, created_at FROM checkpoints WHERE thread_id = ?1 ORDER BY created_at DESC LIMIT ?2",
-            )
-            .context("failed to prepare checkpoint list query")?;
-        let mut rows = stmt
-            .query(params![thread_id, limit])
-            .with_context(|| format!("failed to list checkpoints for thread {thread_id}"))?;
-
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().context("failed to iterate checkpoint rows")? {
-            let state_json: String = row.get(2).context("failed to read checkpoint state json")?;
-            let state = parse_checkpoint_state(&state_json)?;
-            out.push(CheckpointRecord {
-                thread_id: row.get(0).context("failed to read checkpoint thread id")?,
-                checkpoint_id: row.get(1).context("failed to read checkpoint id")?,
-                state,
-                created_at: row.get(3).context("failed to read checkpoint timestamp")?,
-            });
-        }
-        Ok(out)
-    }
-
-    /// Delete a specific checkpoint from a thread.
-    pub fn delete_checkpoint(&self, thread_id: &str, checkpoint_id: &str) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            "DELETE FROM checkpoints WHERE thread_id = ?1 AND checkpoint_id = ?2",
-            params![thread_id, checkpoint_id],
-        )
-        .with_context(|| {
-            format!("failed to delete checkpoint {checkpoint_id} for thread {thread_id}")
-        })?;
-        Ok(())
-    }
-
-    /// Insert or update a background job record.
-    pub fn upsert_job(&self, job: &JobStateRecord) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute(
-            r#"
-            INSERT INTO jobs(id, name, status, progress, detail, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-            ON CONFLICT(id) DO UPDATE SET
-                name = excluded.name,
-                status = excluded.status,
-                progress = excluded.progress,
-                detail = excluded.detail,
-                created_at = excluded.created_at,
-                updated_at = excluded.updated_at
-            "#,
-            params![
-                job.id,
-                job.name,
-                job_state_status_to_str(&job.status),
-                job.progress.map(i64::from),
-                job.detail,
-                job.created_at,
-                job.updated_at
-            ],
-        )
-        .with_context(|| format!("failed to upsert job {}", job.id))?;
-        Ok(())
-    }
-
-    /// Retrieve a single job by its ID.
-    ///
-    /// Returns `None` if no job with the given ID exists.
-    pub fn get_job(&self, id: &str) -> Result<Option<JobStateRecord>> {
-        let conn = self.conn()?;
-        conn.query_row(
-            "SELECT id, name, status, progress, detail, created_at, updated_at FROM jobs WHERE id = ?1",
-            params![id],
-            |row| {
-                let status_raw: String = row.get(2)?;
-                let progress: Option<i64> = row.get(3)?;
-                Ok(JobStateRecord {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    status: job_state_status_from_str(&status_raw),
-                    progress: progress.and_then(|v| u8::try_from(v).ok()),
-                    detail: row.get(4)?,
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                })
-            },
-        )
-        .optional()
-        .with_context(|| format!("failed to read job {id}"))
-    }
-
-    /// List jobs ordered by most recently updated.
-    ///
-    /// The `limit` parameter caps the number of results and defaults to 100.
-    pub fn list_jobs(&self, limit: Option<usize>) -> Result<Vec<JobStateRecord>> {
-        let conn = self.conn()?;
-        let limit = i64::try_from(limit.unwrap_or(100)).unwrap_or(100);
-        let mut stmt = conn
-            .prepare(
-                "SELECT id, name, status, progress, detail, created_at, updated_at FROM jobs ORDER BY updated_at DESC LIMIT ?1",
-            )
-            .context("failed to prepare job list query")?;
-        let mut rows = stmt
-            .query(params![limit])
-            .context("failed to query persisted jobs")?;
-        let mut out = Vec::new();
-        while let Some(row) = rows.next().context("failed to iterate persisted jobs")? {
-            let status_raw: String = row.get(2).context("failed to read job status")?;
-            let progress: Option<i64> = row.get(3).context("failed to read job progress")?;
-            out.push(JobStateRecord {
-                id: row.get(0).context("failed to read job id")?,
-                name: row.get(1).context("failed to read job name")?,
-                status: job_state_status_from_str(&status_raw),
-                progress: progress.and_then(|v| u8::try_from(v).ok()),
-                detail: row.get(4).context("failed to read job detail")?,
-                created_at: row.get(5).context("failed to read job created_at")?,
-                updated_at: row.get(6).context("failed to read job updated_at")?,
-            });
-        }
-        Ok(out)
-    }
-
-    /// Permanently delete a job record.
-    pub fn delete_job(&self, id: &str) -> Result<()> {
-        let conn = self.conn()?;
-        conn.execute("DELETE FROM jobs WHERE id = ?1", params![id])
-            .with_context(|| format!("failed to delete job {id}"))?;
-        Ok(())
     }
 
     /// Look up the rollout file path for a thread by its ID.
@@ -1662,6 +851,20 @@ fn agent_runs_has_continuation_column(conn: &Connection) -> Result<bool> {
     .context("failed to inspect AgentRuntime continuation projection schema")
 }
 
+fn threads_has_current_leaf_column(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM pragma_table_info('threads')
+            WHERE name = 'current_leaf_id'
+        )
+        "#,
+        [],
+        |row| row.get(0),
+    )
+    .context("failed to inspect retired thread current-leaf projection")
+}
+
 fn default_state_db_path() -> PathBuf {
     // $CODEWHALE_HOME is a hard override of the base data directory.
     if let Some(overridden) = codewhale_home_override() {
@@ -1741,33 +944,6 @@ fn path_to_opt_string(path: Option<&Path>) -> Option<String> {
     path.map(|p| p.display().to_string())
 }
 
-fn parse_checkpoint_state(state_json: &str) -> Result<Value> {
-    serde_json::from_str(state_json).context("failed to parse checkpoint state json")
-}
-
-fn job_state_status_to_str(status: &JobStateStatus) -> &'static str {
-    match status {
-        JobStateStatus::Queued => "queued",
-        JobStateStatus::Running => "running",
-        JobStateStatus::Paused => "paused",
-        JobStateStatus::Completed => "completed",
-        JobStateStatus::Failed => "failed",
-        JobStateStatus::Cancelled => "cancelled",
-    }
-}
-
-fn job_state_status_from_str(value: &str) -> JobStateStatus {
-    match value {
-        "queued" => JobStateStatus::Queued,
-        "running" => JobStateStatus::Running,
-        "paused" => JobStateStatus::Paused,
-        "completed" => JobStateStatus::Completed,
-        "failed" => JobStateStatus::Failed,
-        "cancelled" => JobStateStatus::Cancelled,
-        _ => JobStateStatus::Queued,
-    }
-}
-
 fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
     let status_raw: String = row.get(7)?;
     let source_raw: String = row.get(11)?;
@@ -1795,14 +971,12 @@ fn row_to_thread(row: &rusqlite::Row<'_>) -> rusqlite::Result<ThreadMetadata> {
         git_branch: row.get(18)?,
         git_origin_url: row.get(19)?,
         memory_mode: row.get(20)?,
-        current_leaf_id: row.get(21)?,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_state_store(name: &str) -> StateStore {
@@ -1841,42 +1015,6 @@ mod tests {
             git_branch: None,
             git_origin_url: None,
             memory_mode: None,
-            current_leaf_id: None,
-        }
-    }
-
-    #[test]
-    fn delete_thread_cascades_child_rows() {
-        let store = temp_state_store("thread-delete-cascade");
-        store
-            .upsert_thread(&test_thread("thread-1"))
-            .expect("upsert thread");
-        store
-            .append_message("thread-1", "user", "hello", None)
-            .expect("append message");
-        store
-            .save_checkpoint("thread-1", "checkpoint-1", &serde_json::json!({"ok": true}))
-            .expect("save checkpoint");
-        store
-            .persist_dynamic_tools(
-                "thread-1",
-                &[DynamicToolRecord {
-                    position: 0,
-                    name: "test_tool".to_string(),
-                    description: Some("test".to_string()),
-                    input_schema: serde_json::json!({"type": "object"}),
-                }],
-            )
-            .expect("persist dynamic tools");
-        store.delete_thread("thread-1").expect("delete thread");
-
-        let conn = store.conn().expect("conn");
-        for table in ["messages", "checkpoints", "thread_dynamic_tools"] {
-            let sql = format!("SELECT COUNT(*) FROM {table} WHERE thread_id = ?1");
-            let count: i64 = conn
-                .query_row(&sql, params!["thread-1"], |row| row.get(0))
-                .expect("count child rows");
-            assert_eq!(count, 0, "{table} row survived thread deletion");
         }
     }
 
@@ -2002,34 +1140,6 @@ mod tests {
         // <CODEWHALE_HOME>/.codewhale/state.db, and the legacy ~/.deepseek
         // fallback is bypassed entirely.
         assert_eq!(default_state_db_path(), dir.join("state.db"));
-    }
-
-    #[test]
-    fn load_checkpoint_propagates_invalid_state_json() {
-        let store = temp_state_store("checkpoint-parse-error");
-        store
-            .upsert_thread(&test_thread("thread-1"))
-            .expect("upsert thread");
-        store
-            .save_checkpoint("thread-1", "broken", &json!({"ok": true}))
-            .expect("save checkpoint");
-
-        {
-            let conn = store.conn().expect("conn");
-            conn.execute(
-                "UPDATE checkpoints SET state_json = ?1 WHERE thread_id = ?2 AND checkpoint_id = ?3",
-                params!["not-json", "thread-1", "broken"],
-            )
-            .expect("corrupt checkpoint");
-        }
-
-        let err = store
-            .load_checkpoint("thread-1", Some("broken"))
-            .expect_err("invalid checkpoint json should fail");
-        assert!(
-            err.to_string()
-                .contains("failed to parse checkpoint state json")
-        );
     }
 
     #[test]
