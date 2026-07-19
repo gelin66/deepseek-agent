@@ -7,12 +7,8 @@ pub enum RunTerminationReason {
     Resolved,
     Unresolved,
     Canceled,
-    Stuck,
     Timeout,
     BudgetExhausted,
-    ApprovalRequired,
     ModelError,
-    ToolError,
     InfrastructureError,
-    EvidenceMissing,
 }

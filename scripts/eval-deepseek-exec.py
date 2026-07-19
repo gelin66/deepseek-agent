@@ -136,14 +136,10 @@ TERMINAL_REASON_STATUS = {
     "resolved": "completed",
     "canceled": "interrupted",
     "unresolved": "failed",
-    "stuck": "failed",
     "timeout": "failed",
     "budget_exhausted": "failed",
-    "approval_required": "failed",
     "model_error": "failed",
-    "tool_error": "failed",
     "infrastructure_error": "failed",
-    "evidence_missing": "failed",
 }
 
 BASE_TASK = """任务：修复当前 Python 项目中的范围合并缺陷。

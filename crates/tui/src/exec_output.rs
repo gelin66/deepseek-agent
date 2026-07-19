@@ -37,14 +37,10 @@ impl ExecTerminalReceipt {
             RunTerminationReason::Resolved => ExecTerminalStatus::Completed,
             RunTerminationReason::Canceled => ExecTerminalStatus::Interrupted,
             RunTerminationReason::Unresolved
-            | RunTerminationReason::Stuck
             | RunTerminationReason::Timeout
             | RunTerminationReason::BudgetExhausted
-            | RunTerminationReason::ApprovalRequired
             | RunTerminationReason::ModelError
-            | RunTerminationReason::ToolError
-            | RunTerminationReason::InfrastructureError
-            | RunTerminationReason::EvidenceMissing => ExecTerminalStatus::Failed,
+            | RunTerminationReason::InfrastructureError => ExecTerminalStatus::Failed,
         };
         Self {
             status,
@@ -383,7 +379,7 @@ mod tests {
             (RunTerminationReason::Resolved, "completed"),
             (RunTerminationReason::Canceled, "interrupted"),
             (RunTerminationReason::Timeout, "failed"),
-            (RunTerminationReason::ToolError, "failed"),
+            (RunTerminationReason::InfrastructureError, "failed"),
         ] {
             let receipt = ExecTerminalReceipt::from_reason(reason);
             let json = serde_json::to_value(receipt).expect("terminal receipt serializes");
