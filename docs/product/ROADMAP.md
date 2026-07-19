@@ -953,6 +953,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   只有自证测试的 TUI TOML evaluator/matcher、heuristics fallback 和 `Evaluation`，并去掉
   整模块 `allow(dead_code/unused_imports)`；新增真实 Starlark load/match/JSON 回归，不复活
   sibling `permissions.toml` 或第二套 Agent 执行策略。
+- M4-C 已删除不控制任何生产能力的 `shell_tool`/`web_search`/`apply_patch`/`mcp`
+  假 feature flag、Doctor 假 MCP 开关和 lifecycle metadata，并删除文档中不存在的内建
+  browsing/compatibility alias 承诺。`[features]` 现只保留有真实 caller 的 `subagents` 和
+  `exec_policy`：前者控制 canonical `agent` 目录与 depth/concurrency，后者控制 Shell
+  policy snapshot 加载；Shell、patch 与 MCP CLI 仍由各自真实 owner 控制，不通过假开关。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

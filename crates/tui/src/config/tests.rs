@@ -278,9 +278,7 @@ authMode = "api_key"
 baseUrl = "https://token-plan-sgp.xiaomimimo.com/v1"
 
 [features.enabled]
-shell_tool = true
 subagents = true
-web_search = true
 "#,
     )?;
     let _codewhale_home = EnvVarGuard::set("CODEWHALE_HOME", codewhale_home.as_os_str());
@@ -304,9 +302,8 @@ web_search = true
         Some("https://token-plan-sgp.xiaomimimo.com/v1")
     );
     let features = config.features();
-    assert!(features.enabled(crate::features::Feature::ShellTool));
     assert!(features.enabled(crate::features::Feature::Subagents));
-    assert!(features.enabled(crate::features::Feature::WebSearch));
+    assert!(features.enabled(crate::features::Feature::ExecPolicy));
     Ok(())
 }
 

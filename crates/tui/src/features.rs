@@ -1,76 +1,17 @@
-#![allow(dead_code)]
-
 //! Feature flags and metadata for codewhale.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fmt::{self, Write as _};
+use std::fmt::Write as _;
 
 use serde::{Deserialize, Deserializer, Serialize, de};
-
-/// Lifecycle stage for a feature flag.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Stage {
-    Experimental,
-    Beta,
-    Stable,
-    Deprecated,
-    Removed,
-}
-
-impl Stage {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Experimental => "experimental",
-            Self::Beta => "beta",
-            Self::Stable => "stable",
-            Self::Deprecated => "deprecated",
-            Self::Removed => "removed",
-        }
-    }
-}
 
 /// Unique features toggled via configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Feature {
-    /// Enable the default shell tool.
-    ShellTool,
     /// Enable background sub-agent tooling.
     Subagents,
-    /// Enable web search tool.
-    WebSearch,
-    /// Enable apply_patch tool.
-    ApplyPatch,
-    /// Enable MCP tools.
-    Mcp,
     /// Enable execpolicy integration/tooling.
     ExecPolicy,
-}
-
-impl fmt::Display for Stage {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl Feature {
-    pub fn key(self) -> &'static str {
-        self.info().key
-    }
-
-    pub fn stage(self) -> Stage {
-        self.info().stage
-    }
-
-    pub fn default_enabled(self) -> bool {
-        self.info().default_enabled
-    }
-
-    fn info(self) -> &'static FeatureSpec {
-        FEATURES
-            .iter()
-            .find(|spec| spec.id == self)
-            .unwrap_or_else(|| unreachable!("missing FeatureSpec for {:?}", self))
-    }
 }
 
 /// Holds the effective set of enabled features.
@@ -116,12 +57,6 @@ impl Features {
             }
         }
     }
-
-    pub fn enabled_features(&self) -> Vec<Feature> {
-        let mut list: Vec<_> = self.enabled.iter().copied().collect();
-        list.sort();
-        list
-    }
 }
 
 /// Keys accepted in `[features]` tables.
@@ -136,20 +71,10 @@ pub fn feature_from_key(key: &str) -> Option<Feature> {
         .map(|spec| spec.id)
 }
 
-pub fn feature_spec_by_key(key: &str) -> Option<&'static FeatureSpec> {
-    FEATURES.iter().find(|spec| spec.key == key)
-}
-
 pub fn render_feature_table(features: &Features) -> String {
-    let mut output = String::from("feature\tstage\tenabled\n");
+    let mut output = String::from("功能\t启用\n");
     for spec in FEATURES {
-        let _ = writeln!(
-            output,
-            "{}\t{}\t{}",
-            spec.key,
-            spec.stage,
-            features.enabled(spec.id)
-        );
+        let _ = writeln!(output, "{}\t{}", spec.key, features.enabled(spec.id));
     }
     output
 }
@@ -203,48 +128,21 @@ impl<'de> Deserialize<'de> for FeaturesToml {
 
 /// Single registry of all feature definitions.
 #[derive(Debug, Clone, Copy)]
-pub struct FeatureSpec {
-    pub id: Feature,
-    pub key: &'static str,
-    pub stage: Stage,
-    pub default_enabled: bool,
+struct FeatureSpec {
+    id: Feature,
+    key: &'static str,
+    default_enabled: bool,
 }
 
-pub const FEATURES: &[FeatureSpec] = &[
-    FeatureSpec {
-        id: Feature::ShellTool,
-        key: "shell_tool",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
+const FEATURES: &[FeatureSpec] = &[
     FeatureSpec {
         id: Feature::Subagents,
         key: "subagents",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::WebSearch,
-        key: "web_search",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::ApplyPatch,
-        key: "apply_patch",
-        stage: Stage::Stable,
-        default_enabled: true,
-    },
-    FeatureSpec {
-        id: Feature::Mcp,
-        key: "mcp",
-        stage: Stage::Stable,
         default_enabled: true,
     },
     FeatureSpec {
         id: Feature::ExecPolicy,
         key: "exec_policy",
-        stage: Stage::Stable,
         default_enabled: true,
     },
 ];
@@ -257,28 +155,27 @@ mod tests {
     fn apply_map_toggles_known_features_and_ignores_unknown_keys() {
         let mut features = Features::with_defaults();
         let entries = BTreeMap::from([
-            ("mcp".to_string(), false),
-            ("shell_tool".to_string(), false),
+            ("subagents".to_string(), false),
             ("not_real".to_string(), false),
         ]);
 
         features.apply_map(&entries);
 
-        assert!(!features.enabled(Feature::Mcp));
-        assert!(!features.enabled(Feature::ShellTool));
+        assert!(!features.enabled(Feature::Subagents));
+        assert!(features.enabled(Feature::ExecPolicy));
         assert_eq!(feature_from_key("not_real"), None);
     }
 
     #[test]
     fn render_feature_table_uses_registry_order_and_effective_state() {
         let mut features = Features::with_defaults();
-        features.disable(Feature::Mcp);
+        features.disable(Feature::Subagents);
 
         let table = render_feature_table(&features);
         let lines = table.lines().collect::<Vec<_>>();
 
-        assert_eq!(lines.first(), Some(&"feature\tstage\tenabled"));
-        assert!(lines.contains(&"shell_tool\tstable\ttrue"));
-        assert!(lines.contains(&"mcp\tstable\tfalse"));
+        assert_eq!(lines.first(), Some(&"功能\t启用"));
+        assert!(lines.contains(&"subagents\tfalse"));
+        assert!(lines.contains(&"exec_policy\ttrue"));
     }
 }

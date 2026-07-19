@@ -2784,19 +2784,6 @@ async fn run_doctor(config: &Config, workspace: &Path, config_path_override: Opt
     // MCP configuration
     println!();
     println!("{}", "MCP Servers:".bold());
-    let features = config.features();
-    if features.enabled(Feature::Mcp) {
-        println!(
-            "  {} MCP feature flag enabled",
-            "✓".truecolor(aqua_r, aqua_g, aqua_b)
-        );
-    } else {
-        println!(
-            "  {} MCP feature flag disabled",
-            "!".truecolor(sky_r, sky_g, sky_b)
-        );
-    }
-
     let mcp_config_path = config.mcp_config_path();
     let project_mcp_config_path = crate::mcp::workspace_mcp_config_path(workspace);
     if mcp_config_path.exists() {

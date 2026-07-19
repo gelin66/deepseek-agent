@@ -7,9 +7,9 @@ checking connections, and discovering advertised tools. Servers can be local
 stdio processes started by the client, or remote URL-based servers that speak
 Streamable HTTP with legacy SSE fallback.
 
-Browsing note:
-- `web.run` is the canonical built-in browsing tool.
-- `web_search` remains available as a compatibility alias for older prompts and integrations.
+The fixed Agent catalog has no built-in browsing tool or compatibility alias.
+An MCP server may advertise browsing tools to the explicit MCP CLI, but the
+current canonical Agent catalog does not load MCP tools into model requests.
 
 CodeWhale only consumes external MCP tool servers; it no longer exposes itself
 as an MCP server. The canonical local Agent API is `codewhale app-server` over

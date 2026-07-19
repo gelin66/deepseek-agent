@@ -230,9 +230,7 @@ authMode = "api_key"
 [providers.deepseek.httpHeaders]
 
 [features.enabled]
-shell_tool = true
 subagents = true
-web_search = true
 "#,
     )?;
 
