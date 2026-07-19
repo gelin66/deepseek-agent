@@ -359,19 +359,6 @@ impl SidebarFocus {
             _ => Self::Auto,
         }
     }
-
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn as_setting(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Pinned => "pinned",
-            Self::Tasks => "tasks",
-            Self::Agents => "agents",
-            Self::Context => "context",
-            Self::Hidden => "hidden",
-        }
-    }
 }
 
 /// Controls how dense tool-call runs are collapsed in the transcript.
@@ -1298,8 +1285,6 @@ pub struct App {
     pub transcript_spacing: TranscriptSpacing,
     pub sidebar_width_percent: u16,
     pub sidebar_focus: SidebarFocus,
-    /// Sidebar focus/hidden state changed and needs persistence.
-    pub sidebar_focus_dirty: bool,
     /// Whether the session-context panel is enabled (#504).
     pub context_panel: bool,
     /// Minimum number of consecutive safe tool cells needed for auto-collapse.
@@ -1883,7 +1868,6 @@ impl App {
             transcript_spacing,
             sidebar_width_percent,
             sidebar_focus,
-            sidebar_focus_dirty: false,
             context_panel: settings.context_panel,
             tool_collapse_threshold: 3,
             expanded_tool_runs: HashSet::new(),
@@ -2792,14 +2776,6 @@ impl App {
 
     pub fn clear_sticky_status(&mut self) {
         self.sticky_status = None;
-    }
-
-    pub fn set_sidebar_focus(&mut self, focus: SidebarFocus) {
-        if self.sidebar_focus != focus {
-            self.sidebar_focus = focus;
-            self.sidebar_focus_dirty = true;
-        }
-        self.needs_redraw = true;
     }
 
     pub fn close_slash_menu(&mut self) {

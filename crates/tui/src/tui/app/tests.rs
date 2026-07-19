@@ -558,8 +558,6 @@ fn sidebar_focus_accepts_current_values() {
     assert_eq!(SidebarFocus::from_setting("context"), SidebarFocus::Context);
     assert_eq!(SidebarFocus::from_setting("hidden"), SidebarFocus::Hidden);
     assert_eq!(SidebarFocus::from_setting("off"), SidebarFocus::Hidden);
-    assert_eq!(SidebarFocus::Pinned.as_setting(), "pinned");
-    assert_eq!(SidebarFocus::Hidden.as_setting(), "hidden");
 }
 
 #[test]
