@@ -1286,10 +1286,6 @@ pub struct Config {
     /// separately — we do NOT vendor bwrap.
     #[serde(alias = "preferBwrap")]
     pub prefer_bwrap: Option<bool>,
-    #[serde(alias = "managedConfigPath")]
-    pub managed_config_path: Option<String>,
-    #[serde(alias = "requirementsPath")]
-    pub requirements_path: Option<String>,
     #[serde(alias = "maxSubagents")]
     pub max_subagents: Option<usize>,
     pub retry: Option<RetryConfig>,
@@ -1594,14 +1590,6 @@ struct ConfigFile {
     profiles: Option<HashMap<String, Config>>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-struct RequirementsFile {
-    #[serde(default)]
-    allowed_approval_policies: Vec<String>,
-    #[serde(default)]
-    allowed_sandbox_modes: Vec<String>,
-}
-
 fn is_canonical_approval_policy(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
@@ -1665,8 +1653,6 @@ impl Config {
         };
 
         apply_env_overrides(&mut config);
-        apply_managed_overrides(&mut config)?;
-        apply_requirements(&mut config)?;
         normalize_model_config(&mut config);
         config.validate()?;
         config.warn_on_misplaced_root_base_url();
@@ -2749,9 +2735,9 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ApiProvider, mode
 // the workspace-trust/config-load logic that stays in this file (#3311).
 mod paths;
 use paths::{
-    canonicalize_or_keep, codewhale_home_dir, default_config_path, default_managed_config_path,
-    default_mcp_config_path, default_memory_path, default_notes_path, default_requirements_path,
-    default_skills_dir, env_config_path, expand_pathbuf, home_config_path, workspace_config_key,
+    canonicalize_or_keep, codewhale_home_dir, default_config_path, default_mcp_config_path,
+    default_memory_path, default_notes_path, default_skills_dir, env_config_path, expand_pathbuf,
+    home_config_path, workspace_config_key,
 };
 pub(crate) use paths::{effective_home_dir, expand_path};
 
@@ -3643,9 +3629,6 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_SANDBOX_API_KEY") {
         config.sandbox_api_key = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_MANAGED_CONFIG_PATH") {
-        config.managed_config_path = Some(value);
-    }
     if let Ok(value) = std::env::var("DEEPSEEK_SEARCH_API_KEY")
         && !value.trim().is_empty()
     {
@@ -3659,9 +3642,6 @@ fn apply_env_overrides(config: &mut Config) {
             .search
             .get_or_insert_with(SearchConfig::default)
             .base_url = Some(value);
-    }
-    if let Ok(value) = std::env::var("DEEPSEEK_REQUIREMENTS_PATH") {
-        config.requirements_path = Some(value);
     }
     if let Ok(value) = std::env::var("DEEPSEEK_MAX_SUBAGENTS")
         && let Ok(parsed) = value.parse::<usize>()
@@ -4133,9 +4113,9 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
             .or(base.mcp_oauth_callback_url),
         notes_path: override_cfg.notes_path.or(base.notes_path),
         memory_path: override_cfg.memory_path.or(base.memory_path),
-        // #454: user-owned overlays such as profiles and managed config may
-        // replace the instruction array. Project-scope config is filtered in
-        // main.rs and cannot set instruction paths.
+        // #454: user-owned profiles may replace the instruction array.
+        // Project-scope config is filtered in main.rs and cannot set
+        // instruction paths.
         instructions: override_cfg.instructions.or(base.instructions),
         allow_shell: override_cfg.allow_shell.or(base.allow_shell),
         yolo: override_cfg.yolo.or(base.yolo),
@@ -4151,10 +4131,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         sandbox_url: override_cfg.sandbox_url.or(base.sandbox_url),
         sandbox_api_key: override_cfg.sandbox_api_key.or(base.sandbox_api_key),
         prefer_bwrap: override_cfg.prefer_bwrap.or(base.prefer_bwrap),
-        managed_config_path: override_cfg
-            .managed_config_path
-            .or(base.managed_config_path),
-        requirements_path: override_cfg.requirements_path.or(base.requirements_path),
         max_subagents: override_cfg.max_subagents.or(base.max_subagents),
         retry: override_cfg.retry.or(base.retry),
         tui: override_cfg.tui.or(base.tui),
@@ -4283,14 +4259,6 @@ fn merge_providers(
     }
 }
 
-fn load_single_config_file(path: &Path) -> Result<Config> {
-    let contents = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-    let parsed: ConfigFile = toml::from_str(&contents)
-        .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-    Ok(parsed.base)
-}
-
 /// Build a one-line warning when top-level-only keys are nested under a section
 /// CodeWhale does not define (`[general]` / `[sandbox]`). TOML silently drops
 /// those keys, so e.g. `[general]\nallow_shell = true` never takes effect and
@@ -4332,84 +4300,6 @@ fn warn_on_misplaced_top_level_keys(raw: &str) -> Option<String> {
          disabled. (#2589)",
         hits.join(", ")
     ))
-}
-
-fn apply_managed_overrides(config: &mut Config) -> Result<()> {
-    let path = config
-        .managed_config_path
-        .as_deref()
-        .map(expand_path)
-        .or_else(default_managed_config_path);
-    let Some(path) = path else {
-        return Ok(());
-    };
-    if !path.exists() {
-        return Ok(());
-    }
-    let managed = load_single_config_file(&path)?;
-    *config = merge_config(config.clone(), managed);
-    Ok(())
-}
-
-fn apply_requirements(config: &mut Config) -> Result<()> {
-    let path = config
-        .requirements_path
-        .as_deref()
-        .map(expand_path)
-        .or_else(default_requirements_path);
-    let Some(path) = path else {
-        return Ok(());
-    };
-    if !path.exists() {
-        return Ok(());
-    }
-    let contents = fs::read_to_string(&path)
-        .with_context(|| format!("Failed to read requirements file: {}", path.display()))?;
-    let requirements: RequirementsFile = toml::from_str(&contents)
-        .with_context(|| format!("Failed to parse requirements file: {}", path.display()))?;
-
-    if let Some(policy) = requirements
-        .allowed_approval_policies
-        .iter()
-        .find(|policy| !is_canonical_approval_policy(policy))
-    {
-        anyhow::bail!(
-            "invalid allowed_approval_policies value '{policy}': expected on-request or auto"
-        );
-    }
-
-    if !requirements.allowed_approval_policies.is_empty()
-        && let Some(policy) = config.approval_policy.as_ref()
-    {
-        let policy = policy.trim().to_ascii_lowercase();
-        if !requirements
-            .allowed_approval_policies
-            .iter()
-            .any(|p| p.trim().eq_ignore_ascii_case(&policy))
-        {
-            anyhow::bail!(
-                "approval_policy '{policy}' is not allowed by requirements ({})",
-                requirements.allowed_approval_policies.join(", ")
-            );
-        }
-    }
-    if !requirements.allowed_sandbox_modes.is_empty()
-        && let Some(mode) = config.sandbox_mode.as_ref()
-    {
-        let mode = mode.to_ascii_lowercase();
-        if !requirements
-            .allowed_sandbox_modes
-            .iter()
-            .any(|m| m.eq_ignore_ascii_case(&mode))
-        {
-            anyhow::bail!(
-                "sandbox_mode '{mode}' is not allowed by requirements ({})",
-                requirements.allowed_sandbox_modes.join(", ")
-            );
-        }
-    }
-
-    Ok(())
 }
 
 fn merge_features(

@@ -106,40 +106,6 @@ pub(crate) fn expand_pathbuf(path: PathBuf) -> PathBuf {
     path
 }
 
-pub(crate) fn default_managed_config_path() -> Option<PathBuf> {
-    #[cfg(unix)]
-    {
-        Some(PathBuf::from("/etc/deepseek/managed_config.toml"))
-    }
-    #[cfg(not(unix))]
-    {
-        effective_home_dir().map(|home| {
-            let primary = home.join(".codewhale").join("managed_config.toml");
-            if primary.exists() {
-                return primary;
-            }
-            home.join(".deepseek").join("managed_config.toml")
-        })
-    }
-}
-
-pub(crate) fn default_requirements_path() -> Option<PathBuf> {
-    #[cfg(unix)]
-    {
-        Some(PathBuf::from("/etc/deepseek/requirements.toml"))
-    }
-    #[cfg(not(unix))]
-    {
-        effective_home_dir().map(|home| {
-            let primary = home.join(".codewhale").join("requirements.toml");
-            if primary.exists() {
-                return primary;
-            }
-            home.join(".deepseek").join("requirements.toml")
-        })
-    }
-}
-
 pub(crate) fn expand_path(path: &str) -> PathBuf {
     if let Some(stripped) = path.strip_prefix('~')
         && (stripped.is_empty() || stripped.starts_with('/') || stripped.starts_with('\\'))

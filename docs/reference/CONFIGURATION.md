@@ -621,8 +621,6 @@ Remaining variables:
 - `DEEPSEEK_ALLOW_SHELL` (`1`/`true` enables)
 - `DEEPSEEK_APPROVAL_POLICY` (`on-request|auto`)
 - `DEEPSEEK_SANDBOX_MODE` (`read-only|workspace-write|danger-full-access|external-sandbox`)
-- `DEEPSEEK_MANAGED_CONFIG_PATH`
-- `DEEPSEEK_REQUIREMENTS_PATH`
 - `DEEPSEEK_MAX_SUBAGENTS` (clamped to `1..=128`)
 - `DEEPSEEK_TASKS_DIR` (runtime task queue/artifact storage, default
   `~/.codewhale/tasks`, with legacy `~/.deepseek/tasks` fallback when only the
@@ -680,7 +678,7 @@ Rules:
   truncated with a `[…elided]` marker rather than skipped.
 - Missing files are skipped with a tracing warning so a stale
   entry doesn't fail the launch.
-- Only user-owned config, profiles, and managed config may set this array.
+- Only user-owned config and profiles may set this array.
   Project config (`<workspace>/.codewhale/config.toml`, or legacy
   `<workspace>/.deepseek/config.toml`) ignores `instructions` so a cloned repo
   cannot choose arbitrary local files to place into the prompt.
@@ -837,8 +835,6 @@ If you are upgrading from older releases:
   with process-tree containment only and must not be described as read-only
   filesystem isolation, workspace-write enforcement, network blocking,
   registry isolation, or AppContainer isolation until those are implemented.
-- `managed_config_path` (string, optional): managed config file loaded after user/env config.
-- `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `64` and is clamped to `1..=128`.
 - `subagents.*` (optional): availability, concurrency, and depth controls for
   the canonical `agent` runtime. Supported keys are `enabled`,
@@ -1060,27 +1056,6 @@ does not read or inline the file, directory, image, or hidden XML context.
 DeepSeek can inspect a path through the canonical `read_file` tool; supported
 local images route to OCR only when that tool is invoked. Terminal paste
 continues through normal text paste events.
-
-## Managed Configuration and Requirements
-
-codewhale supports a policy layering model:
-
-1. user config + profile + env overrides
-2. managed config (if present)
-3. requirements validation (if present)
-
-By default on Unix:
-- managed config: `/etc/deepseek/managed_config.toml`
-- requirements: `/etc/deepseek/requirements.toml`
-
-Requirements file shape:
-
-```toml
-allowed_approval_policies = ["on-request", "auto"]
-allowed_sandbox_modes = ["read-only", "workspace-write"]
-```
-
-If configured values violate requirements, startup fails with a descriptive error.
 
 ## Notes On `codewhale-tui doctor`
 

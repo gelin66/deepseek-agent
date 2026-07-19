@@ -235,10 +235,6 @@ max_subagents = 10 # optional (1-128; default 64)
 # limit cannot be spawned regardless of what the model decides.
 # max_depth = 3
 
-# Optional managed policy paths (defaults to /etc/deepseek/*.toml on unix):
-# managed_config_path = "/etc/deepseek/managed_config.toml"
-# requirements_path = "/etc/deepseek/requirements.toml"
-
 # ─────────────────────────────────────────────────────────────────────────────────
 # Per-provider credentials (peer providers — NIM is first-class, not a flag)
 # ─────────────────────────────────────────────────────────────────────────────────

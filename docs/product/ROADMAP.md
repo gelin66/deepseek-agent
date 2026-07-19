@@ -904,6 +904,14 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   config/protocol all-target 与 TUI production bin 严格 Clippy 无 warning；focused 继续通过
   tools 299/299、DeepSeek 35/35、Runtime 53/53、App 38/1 ignored、app-server 23/23、exec
   terminal 24/24、canonical Run 19/19 与真实 PTY 7/7。
+- M4-C 已删除 TUI 私有 managed config/requirements 假权限上限：它只在 `Config::load`
+  检查显式写入的 approval/sandbox 字段，未进入 canonical `ProductionComposition`，因此
+  `exec --auto`、HTTP/stdio、恢复/继续和 Fleet 均可绕过；默认值为空时也不受约束。该路径
+  既不是自用 DeepSeek 产品范围，也不能作为 Host authority ceiling。现已删除 schema、
+  `/etc/deepseek` 默认路径、环境变量、merge/load/check、项目 overlay 特判、自证测试和配置
+  文档，不用一套表面策略冒充生产强制能力。真实 canonical approval、sandbox、trust、Shell
+  execpolicy、RunStore 和多 Agent 权限输入保持原 owner；若未来确需不可绕过的宿主上限，必须
+  经新 ADR 在唯一 application composition admission 处实现，而不能恢复 TUI 配置期检查。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

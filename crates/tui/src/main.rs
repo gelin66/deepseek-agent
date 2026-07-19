@@ -5677,9 +5677,6 @@ fn merge_user_workspace_config(
     config_path: Option<PathBuf>,
     workspace: &Path,
 ) {
-    if config.managed_config_path.is_some() || config.requirements_path.is_some() {
-        return;
-    }
     let allow_shell_before = config.allow_shell;
     let allow_shell_from_env = std::env::var_os("DEEPSEEK_ALLOW_SHELL").is_some();
     let Some(path) = crate::config::resolve_load_config_path(config_path) else {
@@ -8519,31 +8516,6 @@ allow_shell = true
         unsafe {
             std::env::remove_var("DEEPSEEK_ALLOW_SHELL");
         }
-
-        assert_eq!(config.allow_shell, Some(false));
-    }
-
-    #[test]
-    fn user_workspace_overlay_does_not_override_managed_config() {
-        let tmp = tempdir().expect("tempdir");
-        let workspace = tmp.path().join("project");
-        fs::create_dir_all(&workspace).expect("mkdir workspace");
-        let config_path = tmp.path().join("config.toml");
-        fs::write(
-            &config_path,
-            format!(
-                "[workspace.'{}']\nallow_shell = true\n",
-                workspace.display()
-            ),
-        )
-        .expect("write config");
-
-        let mut config = Config {
-            allow_shell: Some(false),
-            managed_config_path: Some("managed.toml".to_string()),
-            ..Config::default()
-        };
-        merge_user_workspace_config(&mut config, Some(config_path), &workspace);
 
         assert_eq!(config.allow_shell, Some(false));
     }
