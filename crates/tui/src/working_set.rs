@@ -1,28 +1,24 @@
-//! Repo-aware workspace resolution and `@`-mention completion.
+//! Repo-aware `@`-mention completion.
 //!
-//! This module resolves `@`-mentions and discovers completion candidates while
-//! respecting workspace boundaries and repository ignore rules.
+//! This module discovers completion candidates while respecting workspace
+//! boundaries and repository ignore rules. Accepted mentions remain plain
+//! composer text; the TUI does not resolve or read the referenced file.
 
 use crate::workspace_discovery::{
     DISCOVERY_ALWAYS_DIRS, path_is_excluded_from_discovery, should_skip_unignored_discovery_entry,
 };
 use ignore::WalkBuilder;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::OnceLock;
 
-/// Repo-aware resolver for `@`-mentions.
+/// Repo-aware completion source for `@`-mentions.
 ///
 /// `cwd` is captured at construction; if the host's current directory changes
-/// during a session, build a fresh `Workspace`. Fuzzy lookups are backed by a
-/// lazy basename → paths index built once on first miss and reused for the
-/// rest of the session — without it, every mis-typed mention triggered a full
-/// `WalkBuilder` traversal up to the configured completion depth.
+/// during a session, build a fresh `Workspace`.
 #[derive(Debug)]
 pub struct Workspace {
     pub root: PathBuf,
     cwd: Option<PathBuf>,
-    file_index: OnceLock<HashMap<String, Vec<PathBuf>>>,
     completion_walk_depth: Option<usize>,
     /// Follow symbolic links during file discovery walks. When `true`,
     /// symlinked directories are traversed, enabling multi-project workspaces
@@ -58,19 +54,6 @@ impl SearchContext<'_> {
 }
 
 impl Workspace {
-    /// Construct with an explicit cwd. Used by tests that need deterministic
-    /// resolution against a known directory without depending on (and
-    /// mutating) the process's real working directory.
-    pub fn with_cwd(root: PathBuf, cwd: Option<PathBuf>) -> Self {
-        Self::with_cwd_and_depth(root, cwd, DEFAULT_COMPLETIONS_WALK_DEPTH)
-    }
-
-    /// Construct with an explicit completion walk depth. A depth of `0`
-    /// disables the depth limit for users with deeply nested workspaces.
-    pub fn with_cwd_and_depth(root: PathBuf, cwd: Option<PathBuf>, walk_depth: usize) -> Self {
-        Self::with_cwd_depth_and_follow_links(root, cwd, walk_depth, false)
-    }
-
     /// Construct with an explicit completion walk depth and symlink-following
     /// preference. See [`Workspace::follow_links`].
     pub fn with_cwd_depth_and_follow_links(
@@ -82,142 +65,9 @@ impl Workspace {
         Self {
             root,
             cwd,
-            file_index: OnceLock::new(),
             completion_walk_depth: normalize_completion_walk_depth(walk_depth),
             follow_links,
         }
-    }
-
-    /// Two-pass resolution: workspace, then cwd, then fuzzy fallback.
-    pub fn resolve(&self, raw_path: &str) -> Result<PathBuf, PathBuf> {
-        let path = expand_mention_home(raw_path);
-        if path.is_absolute() {
-            if path.exists() {
-                return Ok(path);
-            }
-            return Err(path);
-        }
-
-        let ws_path = self.root.join(&path);
-        if ws_path.exists() {
-            return Ok(ws_path);
-        }
-
-        if let Some(cwd) = self.cwd.as_ref() {
-            let cwd_path = cwd.join(&path);
-            if cwd_path.exists() {
-                return Ok(cwd_path);
-            }
-        }
-
-        if let Some(fuzzy) = self.fuzzy_resolve(&path) {
-            return Ok(fuzzy);
-        }
-
-        Err(ws_path)
-    }
-
-    fn fuzzy_resolve(&self, path: &Path) -> Option<PathBuf> {
-        let needle = path.file_name()?.to_string_lossy().to_lowercase();
-        if needle.is_empty() {
-            return None;
-        }
-
-        let index = self.file_index.get_or_init(|| self.build_file_index());
-        index.get(&needle).and_then(|paths| paths.first()).cloned()
-    }
-
-    fn build_file_index(&self) -> HashMap<String, Vec<PathBuf>> {
-        let mut index: HashMap<String, Vec<PathBuf>> = HashMap::new();
-        let mut total: usize = 0;
-        let builder =
-            discovery_walk_builder(&self.root, self.completion_walk_depth, self.follow_links);
-
-        for entry in builder.build().flatten() {
-            if total >= FILE_INDEX_MAX_ENTRIES {
-                tracing::warn!(
-                    target: "working_set",
-                    limit = FILE_INDEX_MAX_ENTRIES,
-                    "file-index discovery hit the entry cap; truncating to keep first-turn latency bounded (#697)"
-                );
-                return index;
-            }
-            if entry
-                .file_type()
-                .is_some_and(|ft| ft.is_file() || ft.is_dir())
-            {
-                let name = entry.file_name().to_string_lossy().to_lowercase();
-                index
-                    .entry(name)
-                    .or_default()
-                    .push(entry.path().to_path_buf());
-                total += 1;
-            }
-        }
-
-        // Also index AI-tool dot-directories with gitignore disabled.
-        for dir_name in DISCOVERY_ALWAYS_DIRS {
-            if total >= FILE_INDEX_MAX_ENTRIES {
-                break;
-            }
-            let dot_dir = self.root.join(dir_name);
-            if !dot_dir.is_dir() {
-                continue;
-            }
-            let mut dot_builder = WalkBuilder::new(&dot_dir);
-            dot_builder
-                .hidden(true)
-                .follow_links(self.follow_links)
-                .git_ignore(false)
-                .ignore(false);
-            if let Some(depth) = child_completion_walk_depth(self.completion_walk_depth) {
-                dot_builder.max_depth(Some(depth));
-            }
-            for entry in dot_builder.build().flatten() {
-                if total >= FILE_INDEX_MAX_ENTRIES {
-                    break;
-                }
-                // Exclude machine-generated bulk (e.g. .deepseek/snapshots/).
-                if path_is_excluded_from_discovery(&self.root, entry.path()) {
-                    continue;
-                }
-                if entry
-                    .file_type()
-                    .is_some_and(|ft| ft.is_file() || ft.is_dir())
-                {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    index
-                        .entry(name)
-                        .or_default()
-                        .push(entry.path().to_path_buf());
-                    total += 1;
-                }
-            }
-        }
-
-        // Beyond the curated dot-dir whitelist above, also index any explicit
-        // hidden/ignored path the user might `@`-mention (e.g. a project's
-        // own `.generated/specs/`). `local_reference_paths` walks with
-        // gitignore disabled but still honors `.deepseekignore`.
-        for path in local_reference_paths(
-            &self.root,
-            LOCAL_REFERENCE_SCAN_LIMIT,
-            self.completion_walk_depth,
-            self.follow_links,
-        ) {
-            if total >= FILE_INDEX_MAX_ENTRIES {
-                break;
-            }
-            let Some(name) = path
-                .file_name()
-                .map(|name| name.to_string_lossy().to_lowercase())
-            else {
-                continue;
-            };
-            index.entry(name).or_default().push(path);
-            total += 1;
-        }
-        index
     }
 
     /// Walk the workspace (and the recorded `cwd` when it diverges) and
@@ -434,29 +284,9 @@ fn browser_completion_dir_part(dir_part: &str) -> Option<PathBuf> {
     Some(safe)
 }
 
-/// Default directory depth walked when surfacing file-mention completions.
-/// Set high enough that conventionally nested source trees (Java/.NET/web
-/// projects routinely reach 7-9 levels) stay reachable, while a `0` override
-/// removes the limit entirely. Keeps Tab snappy in deep monorepos via the
-/// `.gitignore`-aware walk and per-keypress candidate caps (#2488).
-pub const DEFAULT_COMPLETIONS_WALK_DEPTH: usize = 10;
-
 fn normalize_completion_walk_depth(depth: usize) -> Option<usize> {
     if depth == 0 { None } else { Some(depth) }
 }
-
-fn child_completion_walk_depth(depth: Option<usize>) -> Option<usize> {
-    depth.map(|depth| depth.saturating_sub(1))
-}
-
-/// Hard cap on the number of `(file or directory)` entries indexed by
-/// [`Workspace::build_file_index`]. The fuzzy-resolve index is a
-/// convenience for [`Workspace::fuzzy_resolve`]; missing entries fall
-/// back to literal-path resolution. Capping here keeps the first
-/// `fuzzy_resolve` call bounded on huge workspaces (#697 reported a
-/// ~10s hang on the first turn). For typical projects 50K is well
-/// above the actual entry count and the cap is a no-op.
-const FILE_INDEX_MAX_ENTRIES: usize = 50_000;
 
 /// Configure a `WalkBuilder` for workspace discovery: hidden files,
 /// depth-limited, custom `.deepseekignore` honored, and gitignore overrides
@@ -690,83 +520,19 @@ fn local_reference_paths(
 
 impl Clone for Workspace {
     fn clone(&self) -> Self {
-        // Don't carry the cached file_index — clones get a fresh OnceLock so
-        // they don't pin a stale snapshot of the previous owner's tree.
         Self {
             root: self.root.clone(),
             cwd: self.cwd.clone(),
-            file_index: OnceLock::new(),
             completion_walk_depth: self.completion_walk_depth,
             follow_links: self.follow_links,
         }
     }
 }
 
-fn expand_mention_home(path: &str) -> PathBuf {
-    if path == "~"
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return PathBuf::from(home);
-    }
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Some(home) = std::env::var_os("HOME")
-    {
-        return PathBuf::from(home).join(rest);
-    }
-    PathBuf::from(path)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
-
-    #[test]
-    fn workspace_resolve_respects_cwd_and_workspace() {
-        let tmp = TempDir::new().unwrap();
-
-        let sub = tmp.path().join("sub");
-        std::fs::create_dir_all(&sub).unwrap();
-        let bar = sub.join("bar.txt");
-        std::fs::write(&bar, "bar").unwrap();
-
-        let nested = tmp.path().join("nested/deep");
-        std::fs::create_dir_all(&nested).unwrap();
-        let file_md = nested.join("file.md");
-        std::fs::write(&file_md, "md").unwrap();
-
-        // Construct with an explicit cwd so the test doesn't race with other
-        // tests that mutate the real process cwd.
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(sub.clone()));
-
-        // #101 repro #1: @bar.txt with cwd=sub MUST resolve via the cwd pass,
-        // never to the bogus workspace path tmp/bar.txt (which doesn't exist).
-        let res1 = ws.resolve("bar.txt").unwrap();
-        assert_eq!(
-            res1.canonicalize().unwrap_or(res1.clone()),
-            bar.canonicalize().unwrap_or(bar.clone())
-        );
-        let wrong = tmp.path().join("bar.txt");
-        assert_ne!(res1, wrong, "must not have routed to workspace fallback");
-
-        // #101 repro #2: @nested/deep/file.md falls through to workspace root.
-        let res2 = ws.resolve("nested/deep/file.md").unwrap();
-        assert_eq!(
-            res2.canonicalize().unwrap_or(res2),
-            file_md.canonicalize().unwrap_or(file_md)
-        );
-    }
-
-    /// Negative test (#101): a truly missing path returns `Err` with a path
-    /// that callers can show to the user as a signal of failure.
-    #[test]
-    fn workspace_resolve_returns_err_for_truly_missing_path() {
-        let tmp = TempDir::new().unwrap();
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()));
-
-        let res = ws.resolve("does/not/exist.txt");
-        assert!(res.is_err(), "expected Err for missing path, got: {res:?}");
-    }
 
     /// `Workspace::completions` returns workspace-relative entries for files
     /// under the root, and cwd-relative entries when the cwd-only file lives
@@ -784,7 +550,12 @@ mod tests {
         std::fs::write(ws_root.join("alpha.txt"), "a").unwrap();
         std::fs::write(cwd_root.join("alphabeta.txt"), "b").unwrap();
 
-        let ws = Workspace::with_cwd(ws_root.clone(), Some(cwd_root.clone()));
+        let ws = Workspace::with_cwd_depth_and_follow_links(
+            ws_root.clone(),
+            Some(cwd_root.clone()),
+            10,
+            false,
+        );
         let entries = ws.completions("alpha", 16);
         assert!(
             entries.iter().any(|e| e == "alpha.txt"),
@@ -799,22 +570,24 @@ mod tests {
     #[test]
     fn workspace_completions_honor_configured_walk_depth() {
         let tmp = TempDir::new().unwrap();
-        // Sits at component depth 12, past the default walk depth (10) but
+        // Sits at component depth 12, past the configured walk depth (10) but
         // within the explicit deeper walk (16) below.
         let deep_dir = tmp.path().join("a/b/c/d/e/f/g/h/i/j/k");
         std::fs::create_dir_all(&deep_dir).unwrap();
         std::fs::write(deep_dir.join("target.txt"), "target").unwrap();
 
-        let default_ws = Workspace::with_cwd(tmp.path().to_path_buf(), None);
+        let default_ws =
+            Workspace::with_cwd_depth_and_follow_links(tmp.path().to_path_buf(), None, 10, false);
         let default_entries = default_ws.completions("target", 16);
         assert!(
             !default_entries
                 .iter()
                 .any(|entry| entry.ends_with("target.txt")),
-            "default depth should keep very deep entries out of the hot completion path: {default_entries:?}",
+            "configured depth should keep very deep entries out of the hot completion path: {default_entries:?}",
         );
 
-        let deep_ws = Workspace::with_cwd_and_depth(tmp.path().to_path_buf(), None, 16);
+        let deep_ws =
+            Workspace::with_cwd_depth_and_follow_links(tmp.path().to_path_buf(), None, 16, false);
         let deep_entries = deep_ws.completions("target", 16);
         assert!(
             deep_entries
@@ -823,7 +596,8 @@ mod tests {
             "configured deeper walk should surface the nested file: {deep_entries:?}",
         );
 
-        let unlimited_ws = Workspace::with_cwd_and_depth(tmp.path().to_path_buf(), None, 0);
+        let unlimited_ws =
+            Workspace::with_cwd_depth_and_follow_links(tmp.path().to_path_buf(), None, 0, false);
         let unlimited_entries = unlimited_ws.completions("target", 16);
         assert!(
             unlimited_entries
@@ -841,7 +615,8 @@ mod tests {
         std::fs::write(tmp.path().join("src/nested/deep.rs"), "deep").unwrap();
         std::fs::write(tmp.path().join("README.md"), "readme").unwrap();
 
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None);
+        let ws =
+            Workspace::with_cwd_depth_and_follow_links(tmp.path().to_path_buf(), None, 10, false);
 
         let root_entries = ws.browser_completions("", 16);
         assert_eq!(root_entries, vec!["README.md", "src/"]);
@@ -861,7 +636,8 @@ mod tests {
         std::fs::write(tmp.path().join(".env"), "secret-ish fixture").unwrap();
         std::fs::write(tmp.path().join("app.rs"), "app").unwrap();
 
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None);
+        let ws =
+            Workspace::with_cwd_depth_and_follow_links(tmp.path().to_path_buf(), None, 10, false);
 
         let default_entries = ws.browser_completions("", 16);
         assert_eq!(default_entries, vec!["app.rs"]);
@@ -880,7 +656,7 @@ mod tests {
         std::fs::write(workspace.join("inside.rs"), "inside").unwrap();
         std::fs::write(sibling.join("secret.rs"), "outside").unwrap();
 
-        let ws = Workspace::with_cwd(workspace, None);
+        let ws = Workspace::with_cwd_depth_and_follow_links(workspace, None, 10, false);
 
         assert_eq!(ws.browser_completions("", 16), vec!["inside.rs"]);
         assert!(
@@ -910,7 +686,12 @@ mod tests {
         std::fs::write(generated_specs.join("device-layout.md"), "layout").unwrap();
         std::fs::write(generated_specs.join("secrets.env"), "secret").unwrap();
 
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), Some(tmp.path().to_path_buf()));
+        let ws = Workspace::with_cwd_depth_and_follow_links(
+            tmp.path().to_path_buf(),
+            Some(tmp.path().to_path_buf()),
+            10,
+            false,
+        );
 
         let start_entries = ws.completions(".deepseek/commands", 16);
         assert!(
@@ -966,7 +747,12 @@ mod tests {
         std::fs::create_dir_all(root.join(".generated/specs")).unwrap();
         std::fs::write(root.join(".generated/specs/device-layout.md"), "layout").unwrap();
 
-        let ws = Workspace::with_cwd(root.to_path_buf(), Some(root.to_path_buf()));
+        let ws = Workspace::with_cwd_depth_and_follow_links(
+            root.to_path_buf(),
+            Some(root.to_path_buf()),
+            10,
+            false,
+        );
 
         let worktree_entries = ws.completions(".worktrees", 32);
         assert!(
@@ -999,62 +785,6 @@ mod tests {
                 .any(|entry| entry == ".claude/commands/keep.md"),
             "normal .claude command files should still complete: {command_entries:?}",
         );
-
-        assert!(
-            ws.resolve("worktree-only.rs").is_err(),
-            "fuzzy resolution must not index files from hidden release worktrees"
-        );
-        assert!(
-            ws.resolve("agent-only.md").is_err(),
-            "fuzzy resolution must not index files from .claude/worktrees"
-        );
-        assert!(ws.resolve("keep.md").is_ok());
-    }
-
-    #[test]
-    fn fuzzy_index_resolves_hidden_and_ignored_files_except_deepseekignored() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::write(tmp.path().join(".gitignore"), ".generated/\n").unwrap();
-        std::fs::write(
-            tmp.path().join(".deepseekignore"),
-            ".generated/specs/secrets.env\n",
-        )
-        .unwrap();
-        let generated_specs = tmp.path().join(".generated").join("specs");
-        std::fs::create_dir_all(&generated_specs).unwrap();
-        std::fs::write(generated_specs.join("device-layout.md"), "layout").unwrap();
-        std::fs::write(generated_specs.join("secrets.env"), "secret").unwrap();
-
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None);
-        let resolved = ws.resolve("device-layout.md").unwrap();
-
-        assert!(resolved.ends_with(".generated/specs/device-layout.md"));
-        assert!(
-            ws.resolve("secrets.env").is_err(),
-            "basename fuzzy resolution must honor .deepseekignore"
-        );
-        assert!(
-            ws.resolve(".generated/specs/secrets.env").is_ok(),
-            "exact user-specified paths should still resolve"
-        );
-    }
-
-    #[test]
-    fn fuzzy_index_finds_files_and_directories() {
-        let tmp = TempDir::new().unwrap();
-        std::fs::create_dir_all(tmp.path().join("a/b/target_dir")).unwrap();
-        std::fs::write(tmp.path().join("a/b/needle.rs"), "fn main(){}").unwrap();
-
-        let ws = Workspace::with_cwd(tmp.path().to_path_buf(), None);
-
-        // Basename-only mention triggers fuzzy fallback for both files and dirs.
-        let f = ws.resolve("needle.rs").unwrap();
-        assert!(f.ends_with("a/b/needle.rs"));
-        let d = ws.resolve("target_dir").unwrap();
-        assert!(d.ends_with("a/b/target_dir"));
-
-        // Index was populated exactly once (subsequent lookups reuse it).
-        assert!(ws.file_index.get().is_some());
     }
 
     /// Regression: `@`-mention completion must discover files inside
@@ -1088,7 +818,7 @@ mod tests {
         )
         .unwrap();
 
-        let ws = Workspace::with_cwd(root.to_path_buf(), None);
+        let ws = Workspace::with_cwd_depth_and_follow_links(root.to_path_buf(), None, 10, false);
 
         // Completions should find entries inside the dot-dirs.
         {
@@ -1112,12 +842,6 @@ mod tests {
                 "expected test.md from .claude/; got: {entries:?}"
             );
         }
-
-        // Fuzzy resolution should also work.
-        let f = ws.resolve("build.md").unwrap();
-        assert!(f.ends_with("build.md"));
-        let f2 = ws.resolve("SKILL.md").unwrap();
-        assert!(f2.ends_with("SKILL.md"));
     }
 
     /// Regression: the dot-dir walk must NOT index `.deepseek/snapshots/`,
@@ -1141,7 +865,7 @@ mod tests {
         std::fs::create_dir_all(root.join(".deepseek/commands")).unwrap();
         std::fs::write(root.join(".deepseek/commands/build.md"), "build cmd").unwrap();
 
-        let ws = Workspace::with_cwd(root.to_path_buf(), None);
+        let ws = Workspace::with_cwd_depth_and_follow_links(root.to_path_buf(), None, 10, false);
 
         // Searching for "build" must find build.md.
         let entries = ws.completions("build", 16);
@@ -1154,16 +878,6 @@ mod tests {
         assert!(
             !snap_entries.iter().any(|e| e.contains("snapshot")),
             "snapshot files must NOT appear in completions; got: {snap_entries:?}"
-        );
-
-        // Fuzzy index must also exclude snapshots.
-        let f = ws.resolve("build.md").unwrap();
-        assert!(f.ends_with("build.md"));
-        // snapshot.pack should NOT resolve.
-        let result = ws.resolve("snapshot.pack");
-        assert!(
-            result.is_err(),
-            "snapshot.pack must not resolve via fuzzy index"
         );
     }
 
@@ -1203,7 +917,7 @@ mod tests {
         std::fs::write(root.join("README.md"), "# readme").unwrap();
         std::fs::write(root.join("Makefile"), "all:").unwrap();
 
-        let ws = Workspace::with_cwd(root.to_path_buf(), None);
+        let ws = Workspace::with_cwd_depth_and_follow_links(root.to_path_buf(), None, 10, false);
         let candidates = ws.completion_candidates();
         assert!(
             candidates.iter().any(|c| c == "src/main.rs"),
@@ -1237,7 +951,7 @@ mod tests {
         for i in 0..40 {
             std::fs::write(root.join(format!("file_{i}.txt")), "x").unwrap();
         }
-        let ws = Workspace::with_cwd(root.to_path_buf(), None);
+        let ws = Workspace::with_cwd_depth_and_follow_links(root.to_path_buf(), None, 10, false);
 
         let start = std::time::Instant::now();
         let entries = ws.completions("/", 64);
