@@ -771,6 +771,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   history-search 状态、匹配器、renderer 和消息目录。下一独立切片又删除无键盘入口的
   input-history recall、只写不可读的磁盘 history 线程及其设置，并把 `Ctrl-C`/`Esc` 清空输入
   收缩为直接 clear；普通输入、paste、mention、slash、提交及 canonical Run 投影保持不变。
+- M4-C 已删除只有 App 自测、没有 canonical key/mouse/paste producer 的 composer line/word
+  forward 编辑 helpers 与两个 selection 叶子，并同步删除虚假的 `Ctrl-U`、word-motion 和
+  `! command` 快捷键声明。真实 `Ctrl-W`、左右/Home/End、Backspace/Delete、paste、现有
+  selection 状态/renderer 与模型 `exec_shell` 工具不受影响。
 - M4-C 已删除零生产消费者、仅由自身测试调用的 TUI `is_key_file`/`summarize_project`/
   `project_tree` 浅层 project-map helpers；当前生产上下文继续由 `crates/context`、显式文件
   工具和 canonical transcript 构造，M5 的 RepoGraph/ContextBroker 不通过保留旧 helper

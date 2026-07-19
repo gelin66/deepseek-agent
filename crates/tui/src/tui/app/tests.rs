@@ -142,60 +142,6 @@ fn initial_input_submit_marks_startup_dispatch() {
 }
 
 #[test]
-fn move_cursor_line_start_multiline() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "abc\ndef\nghi".to_string();
-    app.cursor_position = "abc\ndef\nghi".chars().count(); // absolute end
-    app.move_cursor_line_start();
-    assert_eq!(app.cursor_position, "abc\ndef\n".len()); // start of "ghi"
-}
-
-#[test]
-fn move_cursor_line_start_singleline() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello".to_string();
-    app.cursor_position = 3;
-    app.move_cursor_line_start();
-    assert_eq!(app.cursor_position, 0);
-}
-
-#[test]
-fn move_cursor_line_end_multiline() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "abc\ndef\nghi".to_string();
-    app.cursor_position = 0; // start of first line
-    app.move_cursor_line_end();
-    assert_eq!(app.cursor_position, "abc".len()); // before first '\n'
-}
-
-#[test]
-fn move_cursor_line_end_at_newline_stays_at_line_end() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "abc\ndef\nghi".to_string();
-    app.cursor_position = "abc".len(); // on the '\n'
-    app.move_cursor_line_end();
-    assert_eq!(app.cursor_position, "abc".len()); // stays at line end
-}
-
-#[test]
-fn move_cursor_line_end_last_line() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "abc\ndef".to_string();
-    app.cursor_position = "abc\n".len(); // start of last line
-    app.move_cursor_line_end();
-    assert_eq!(app.cursor_position, "abc\ndef".chars().count()); // absolute end
-}
-
-#[test]
-fn move_cursor_line_start_already_at_start() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "abc\ndef".to_string();
-    app.cursor_position = "abc\n".len(); // start of second line
-    app.move_cursor_line_start();
-    assert_eq!(app.cursor_position, "abc\n".len()); // unchanged
-}
-
-#[test]
 fn test_trust_mode_follows_yolo_on_startup() {
     let app = App::new(test_options(true), &Config::default());
     assert!(app.trust_mode);
@@ -2035,22 +1981,6 @@ fn test_add_message() {
 }
 
 #[test]
-fn word_cursor_helpers_move_by_whitespace_delimited_words() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "alpha beta  gamma".to_string();
-    app.cursor_position = 0;
-
-    app.move_cursor_word_forward();
-    assert_eq!(app.cursor_position, "alpha ".chars().count());
-
-    app.move_cursor_word_forward();
-    assert_eq!(app.cursor_position, "alpha beta  ".chars().count());
-
-    app.move_cursor_word_backward();
-    assert_eq!(app.cursor_position, "alpha ".chars().count());
-}
-
-#[test]
 fn composer_paste_normalizes_crlf_and_bare_carriage_returns() {
     let mut app = App::new(test_options(false), &Config::default());
     app.insert_paste_text("a\r\nb\rc");
@@ -2113,30 +2043,6 @@ fn delete_word_backward_handles_trailing_space_and_utf8() {
 
     assert_eq!(app.input, "cafe ");
     assert_eq!(app.cursor_position, char_count("cafe "));
-}
-
-#[test]
-fn delete_word_forward_handles_leading_space_and_utf8() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello 你好 world".to_string();
-    app.cursor_position = char_count("hello");
-
-    app.delete_word_forward();
-
-    assert_eq!(app.input, "hello world");
-    assert_eq!(app.cursor_position, char_count("hello"));
-}
-
-#[test]
-fn delete_to_start_of_line_respects_multiline_cursor() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "first\nsecond line".to_string();
-    app.cursor_position = char_count("first\nsecond");
-
-    app.delete_to_start_of_line();
-
-    assert_eq!(app.input, "first\n line");
-    assert_eq!(app.cursor_position, char_count("first\n"));
 }
 
 #[test]
@@ -2208,15 +2114,6 @@ fn delete_char_removes_selection_instead_of_single_char() {
     app.delete_char();
     assert_eq!(app.input, "he world");
     assert_eq!(app.cursor_position, 2);
-}
-
-#[test]
-fn selected_text_returns_correct_substring() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello world".to_string();
-    app.cursor_position = 5;
-    app.selection_anchor = Some(2);
-    assert_eq!(app.selected_text(), "llo");
 }
 
 #[test]

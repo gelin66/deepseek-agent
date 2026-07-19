@@ -109,7 +109,7 @@
     "KbJumpTopBottomEmpty": "跳转到顶部/底部（输入框为空时）",
     "KbJumpToolBlocks": "在工具输出块之间跳转",
     "KbMoveCursor": "在输入框中移动光标",
-    "KbJumpLineStartEnd": "跳转到行首/行尾",
+    "KbJumpLineStartEnd": "跳转到草稿开头/结尾",
     "KbDeleteChar": "删除光标前/后的字符",
     "KbClearDraft": "清空当前草稿",
     "KbInsertNewline": "在输入框中插入换行",

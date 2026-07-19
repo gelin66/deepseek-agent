@@ -446,7 +446,8 @@ M4-C foreground 切换后还已物理删除：
   UserInput modal 直接消费 protocol request/response，提交仍落入 canonical RunStore。
 - 旧 `composer_ui` 键盘处理器岛；唯一真实使用的 slash-menu 选择已迁回 canonical 事件
   owner `ui.rs`，其余 escape/history/word-motion/newline helpers 没有生产调用方。无 canonical
-  输入入口的 recall 与只写不可读的跨进程 history 文件线程也已物理删除。
+  输入入口的 recall、line/word-forward 编辑 helpers 与只写不可读的跨进程 history 文件线程
+  也已物理删除；普通输入和模型 `exec_shell` 工具保持原真实链路。
 - TUI 私有 approval cache、exact/grouping key、永远未设置的 timeout/tick，以及没有
   canonical Runtime 消费者的“批准并保存询问规则”事件载荷和界面。当前审批事件只携带
   `interaction_id + decision`，由 `TuiRunClient` 调用 canonical `resolve_interaction` 或

@@ -2697,72 +2697,6 @@ impl App {
         }
     }
 
-    /// Delete from the cursor to the start of the line.
-    pub fn delete_to_start_of_line(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        if self.cursor_position == 0 {
-            return;
-        }
-
-        let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
-        // Find the start of the current line (last newline or start of string)
-        let line_start = self.input[..cursor_byte]
-            .rfind('\n')
-            .map(|idx| idx + 1)
-            .unwrap_or(0);
-
-        if line_start < cursor_byte {
-            self.input.replace_range(line_start..cursor_byte, "");
-            self.cursor_position = char_count(&self.input[..line_start]);
-            self.slash_menu_hidden = false;
-            self.mention_menu_hidden = false;
-            self.mention_menu_selected = 0;
-            self.needs_redraw = true;
-        }
-    }
-
-    /// Delete the word after the cursor.
-    pub fn delete_word_forward(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        let cursor_byte = byte_index_at_char(&self.input, self.cursor_position);
-        if cursor_byte >= self.input.len() {
-            return;
-        }
-
-        let mut word_end = cursor_byte;
-        while word_end < self.input.len() {
-            let Some(ch) = self.input[word_end..].chars().next() else {
-                break;
-            };
-            if !ch.is_whitespace() {
-                break;
-            }
-            word_end += ch.len_utf8();
-        }
-
-        while word_end < self.input.len() {
-            let Some(ch) = self.input[word_end..].chars().next() else {
-                break;
-            };
-            if ch.is_whitespace() {
-                break;
-            }
-            word_end += ch.len_utf8();
-        }
-
-        if cursor_byte < word_end {
-            self.input.replace_range(cursor_byte..word_end, "");
-            self.slash_menu_hidden = false;
-            self.mention_menu_hidden = false;
-            self.mention_menu_selected = 0;
-            self.needs_redraw = true;
-        }
-    }
-
     pub fn move_cursor_left(&mut self) {
         self.cursor_position = self.cursor_position.saturating_sub(1);
         self.needs_redraw = true;
@@ -2785,96 +2719,6 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// In a multiline composer, jump to the start of the current line.
-    /// On single-line input this is equivalent to `move_cursor_start`.
-    pub fn move_cursor_line_start(&mut self) {
-        let byte_pos = byte_index_at_char(&self.input, self.cursor_position);
-        let before = &self.input[..byte_pos];
-        if let Some(last_nl_byte) = before.rfind('\n') {
-            // Position after the '\n' (start of the current line).
-            self.cursor_position = char_count(&self.input[..=last_nl_byte]);
-        } else {
-            self.cursor_position = 0;
-        }
-        self.needs_redraw = true;
-    }
-
-    /// In a multiline composer, jump to the end of the current line
-    /// (just before the next `\n` or at the end of input).
-    /// On single-line input this is equivalent to `move_cursor_end`.
-    pub fn move_cursor_line_end(&mut self) {
-        let search_start = byte_index_at_char(&self.input, self.cursor_position);
-        if let Some(offset) = self.input[search_start..].find('\n') {
-            self.cursor_position = char_count(&self.input[..search_start + offset]);
-        } else {
-            self.cursor_position = char_count(&self.input);
-        }
-        self.needs_redraw = true;
-    }
-
-    /// Move forward one word. Skips over the current word then any trailing
-    /// whitespace to land on the first character of the next word.
-    pub fn move_cursor_word_forward(&mut self) {
-        let text = self.input.clone();
-        let total = char_count(&text);
-        let mut pos = self.cursor_position;
-        if pos >= total {
-            return;
-        }
-        // Skip non-whitespace (current word).
-        while pos < total {
-            let byte = byte_index_at_char(&text, pos);
-            let ch = text[byte..].chars().next().unwrap_or(' ');
-            if ch.is_whitespace() {
-                break;
-            }
-            pos += 1;
-        }
-        // Skip whitespace.
-        while pos < total {
-            let byte = byte_index_at_char(&text, pos);
-            let ch = text[byte..].chars().next().unwrap_or(' ');
-            if !ch.is_whitespace() {
-                break;
-            }
-            pos += 1;
-        }
-        self.cursor_position = pos;
-        self.needs_redraw = true;
-    }
-
-    /// Move backward one word. Skips leading whitespace then the preceding
-    /// word to land on its first character.
-    pub fn move_cursor_word_backward(&mut self) {
-        let text = self.input.clone();
-        let mut pos = self.cursor_position;
-        if pos == 0 {
-            return;
-        }
-        // Step back one so we're not already at the word start.
-        pos -= 1;
-        // Skip whitespace.
-        while pos > 0 {
-            let byte = byte_index_at_char(&text, pos);
-            let ch = text[byte..].chars().next().unwrap_or(' ');
-            if !ch.is_whitespace() {
-                break;
-            }
-            pos -= 1;
-        }
-        // Skip non-whitespace.
-        while pos > 0 {
-            let byte = byte_index_at_char(&text, pos - 1);
-            let ch = text[byte..].chars().next().unwrap_or(' ');
-            if ch.is_whitespace() {
-                break;
-            }
-            pos -= 1;
-        }
-        self.cursor_position = pos;
-        self.needs_redraw = true;
-    }
-
     // === Selection helpers ===
 
     /// Return the (start, end) of the active selection, or `None`.
@@ -2893,17 +2737,6 @@ impl App {
         })
     }
 
-    /// Return the selected text, or empty string if no selection.
-    pub fn selected_text(&self) -> String {
-        self.selection_range()
-            .map(|(s, e)| {
-                let sb = byte_index_at_char(&self.input, s);
-                let eb = byte_index_at_char(&self.input, e);
-                self.input[sb..eb].to_string()
-            })
-            .unwrap_or_default()
-    }
-
     /// Delete the selected text, place cursor at the start of the deleted range.
     /// Returns true if a selection was deleted.
     pub fn delete_selection(&mut self) -> bool {
@@ -2920,11 +2753,6 @@ impl App {
         self.mention_menu_selected = 0;
         self.needs_redraw = true;
         true
-    }
-
-    /// Clear the selection without moving the cursor.
-    pub fn clear_selection(&mut self) {
-        self.selection_anchor = None;
     }
 
     pub fn clear_input(&mut self) {

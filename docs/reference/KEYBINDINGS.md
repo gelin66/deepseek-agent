@@ -31,15 +31,11 @@ Editing the message you're about to send.
 |-----------------------------|---------------------------------------------------------|
 | `Enter`                     | Start a run, or submit a canonical steer to the active run |
 | `Shift-Enter` / `Alt-Enter` | Insert a newline without sending                         |
-| `Ctrl-U`                    | Delete to start of line                                 |
 | `Ctrl-W`                    | Delete previous word                                    |
-| `Ctrl-A` / `Home`           | Move to start of line                                   |
-| `Ctrl-E` / `End`            | Move to end of line                                     |
-| `Ctrl-←` / `Alt-←`          | Move backward one word                                  |
-| `Ctrl-→` / `Alt-→`          | Move forward one word                                   |
+| `Ctrl-A` / `Home`           | Move to start of input                                  |
+| `Ctrl-E` / `End`            | Move to end of input                                    |
 | `Ctrl-V` / `Cmd-V`          | Terminal text paste (`Event::Paste` or normal text input)|
 | `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
-| `! command`                 | Run a shell command through normal approval, sandbox, and output surfaces |
 
 ### `@` mentions
 
