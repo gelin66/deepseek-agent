@@ -834,6 +834,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   TOML writers 及私有 normalization 闭包；这些函数只有自身测试调用。共享原子 TOML mutation、
   DeepSeek 首次配置、workspace trust、CLI login/logout 与 legacy approval migration 的生产写入
   路径继续保留并由原有验收覆盖。
+- M4-C 已继续删除 provider-scoped API-key/model writers、targeted-key clear 和 Kimi
+  credential-valid convenience predicate；它们同样只有自证测试或完全没有 caller。真实 CLI
+  login/logout、DeepSeek 首启、Doctor key readiness 与 Kimi token refresh 不经过这些旧函数。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

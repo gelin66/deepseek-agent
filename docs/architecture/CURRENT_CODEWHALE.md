@@ -680,6 +680,9 @@ M4-C foreground 切换后还已物理删除：
   只有自身测试调用，现已连同私有 normalization 闭包物理删除。生产配置修改仍统一经过
   `mutate_config_document` 和原子 `0o600` 写入；DeepSeek 首次配置、workspace trust、CLI
   login/logout 与 legacy approval migration 的真实窄入口均保留。
+- 同一旧 setup 链的 provider-scoped API-key/model writers、targeted-key clear 和 Kimi
+  credential-valid convenience predicate 也没有生产消费者，现已物理删除。`codewhale login`
+  /`logout`、TUI DeepSeek 首次配置、Doctor `has_api_key_for` 与 Kimi token refresh 链保持不变。
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
   没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。

@@ -5193,81 +5193,6 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     false
 }
 
-/// Save an API key to the appropriate place for the given provider.
-/// DeepSeek goes through [`save_api_key`]. Other providers write
-/// `[providers.<name>] api_key = "..."` to `~/.codewhale/config.toml`.
-/// Returns the config file path.
-pub fn save_api_key_for(provider: ApiProvider, api_key: &str) -> Result<PathBuf> {
-    if provider == ApiProvider::OpenaiCodex {
-        anyhow::bail!(
-            "OpenAI Codex uses OAuth. Run `codex login` or set OPENAI_CODEX_ACCESS_TOKEN; CodeWhale does not store an API key for this provider."
-        );
-    }
-    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
-        return match save_api_key(api_key)? {
-            SavedCredential::KeyringAndConfigFile { path, .. }
-            | SavedCredential::ConfigFile(path) => Ok(path),
-        };
-    }
-
-    let config_path = default_config_path()
-        .context("Failed to resolve config path: home directory not found.")?;
-    ensure_parent_dir(&config_path)?;
-
-    let key_inside = provider_config_key(provider).context("provider api key table")?;
-    // Edit the `[providers.<name>]` table in place so unrelated sections,
-    // comments, and formatting survive the write.
-    crate::config_persistence::mutate_config_document(&config_path, |doc| {
-        crate::config_persistence::set_document_value(
-            doc,
-            &["providers", key_inside, "api_key"],
-            api_key,
-        )
-    })
-    .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    log_sensitive_event(
-        "credential.save",
-        json!({
-            "backend": "config_file",
-            "provider": provider.as_str(),
-            "config_path": config_path.display().to_string(),
-        }),
-    );
-
-    Ok(config_path)
-}
-
-/// Persist a default model for `provider` via the comment-preserving config
-/// path used by guided provider setup (#3875). DeepSeek writes root
-/// `default_text_model`; other hosted providers write `[providers.<name>] model`.
-pub fn save_provider_model_for(provider: ApiProvider, model: &str) -> Result<PathBuf> {
-    let model = model.trim();
-    anyhow::ensure!(!model.is_empty(), "model cannot be empty");
-
-    let config_path = default_config_path()
-        .context("Failed to resolve config path: home directory not found.")?;
-    ensure_parent_dir(&config_path)?;
-
-    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
-        crate::config_persistence::mutate_config_document(&config_path, |doc| {
-            crate::config_persistence::set_document_value(doc, &["default_text_model"], model)
-        })
-        .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-        return Ok(config_path);
-    }
-
-    let key_inside = provider_config_key(provider).context("provider model table")?;
-    crate::config_persistence::mutate_config_document(&config_path, |doc| {
-        crate::config_persistence::set_document_value(
-            doc,
-            &["providers", key_inside, "model"],
-            model,
-        )
-    })
-    .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    Ok(config_path)
-}
-
 pub fn save_provider_auth_mode_for_at(
     provider: ApiProvider,
     auth_mode: &str,
@@ -5529,27 +5454,6 @@ pub fn kimi_cli_credentials_present() -> bool {
     kimi_cli_oauth_credentials_path().is_ok_and(|path| path.exists())
 }
 
-/// Prompt-free structural check for Kimi CLI OAuth material. This deliberately
-/// performs no refresh: a fresh access token or a non-empty refresh token is
-/// enough to say login material is saved, while malformed/empty files are not.
-#[must_use]
-pub fn kimi_cli_credentials_valid() -> bool {
-    let Ok(path) = kimi_cli_oauth_credentials_path() else {
-        return false;
-    };
-    let Ok(raw) = fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(credential) = serde_json::from_str::<KimiOAuthCredential>(&raw) else {
-        return false;
-    };
-    kimi_oauth_access_token_is_fresh(&credential)
-        || credential
-            .refresh_token
-            .as_deref()
-            .is_some_and(|token| !token.trim().is_empty())
-}
-
 /// Clear the API key from config-file storage.
 ///
 /// `/logout` calls this to wipe credentials so the next request can't
@@ -5585,39 +5489,6 @@ pub fn clear_api_key() -> Result<()> {
             "backend": "config_file",
             "config_path": config_path.display().to_string(),
             "scope": "root_and_provider_keys",
-        }),
-    );
-
-    Ok(())
-}
-
-/// Clear only the active provider's API key from the config file.
-/// Unlike `clear_api_key()` which strips ALL api_key entries, this
-/// removes only the key for the specified provider section (plus the
-/// legacy root `api_key` when the provider is DeepSeek).
-pub fn clear_active_provider_api_key(provider: &str) -> Result<()> {
-    let config_path = default_config_path()
-        .context("Failed to resolve config path: home directory not found.")?;
-
-    if !config_path.exists() {
-        return Ok(());
-    }
-
-    crate::config_persistence::mutate_config_document(&config_path, |doc| {
-        // The root-level api_key is the legacy DeepSeek slot.
-        if provider == "deepseek" {
-            crate::config_persistence::unset_document_value(doc, &["api_key"])?;
-        }
-        crate::config_persistence::unset_document_value(doc, &["providers", provider, "api_key"])?;
-        Ok(())
-    })
-    .with_context(|| format!("Failed to write config to {}", config_path.display()))?;
-    log_sensitive_event(
-        "credential.clear",
-        json!({
-            "backend": "config_file",
-            "config_path": config_path.display().to_string(),
-            "scope": provider,
         }),
     );
 
