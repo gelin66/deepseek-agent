@@ -1148,18 +1148,6 @@ impl App {
                 None
             }
         });
-        let tui_prefs_warning = crate::settings::TuiPrefs::path().ok().and_then(|p| {
-            if p.exists() {
-                std::fs::read_to_string(&p).ok().and_then(|raw| {
-                    ::toml::from_str::<::toml::Value>(&raw)
-                        .err()
-                        .map(|e| format!("⚠ tui.toml is malformed — using defaults ({e})"))
-                })
-            } else {
-                None
-            }
-        });
-
         let provider = config.api_provider();
         let mut effective_auth_config = config.clone();
         effective_auth_config.provider = Some(provider.as_str().to_string());
@@ -1307,7 +1295,7 @@ impl App {
             turn_error_posted: false,
             // Surface parse warnings so the user knows their config file is
             // broken instead of silently losing all settings.
-            status_message: settings_parse_warning.or(tui_prefs_warning),
+            status_message: settings_parse_warning,
             status_toasts: VecDeque::new(),
             sticky_status: None,
             last_status_message_seen: None,

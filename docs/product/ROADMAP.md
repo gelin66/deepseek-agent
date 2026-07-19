@@ -912,6 +912,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   文档，不用一套表面策略冒充生产强制能力。真实 canonical approval、sandbox、trust、Shell
   execpolicy、RunStore 和多 Agent 权限输入保持原 owner；若未来确需不可绕过的宿主上限，必须
   经新 ADR 在唯一 application composition admission 处实现，而不能恢复 TUI 配置期检查。
+- M4-C 已物理删除 400 余行从未接入启动、按键处理或设置写入的 `TuiPrefs`/`KeybindPrefs`
+  与 `tui.toml` 读写原型。该文件的唯一生产调用只是解析 TOML 后显示“配置损坏”警告，实际
+  theme、font size 和 keybinding 从未消费，因此不能算作可配置 UI 能力。同步删除专属自证
+  测试、假警告和文档承诺；真实 `settings.toml`、主题选择、生产按键 handler、终端字体和
+  canonical TUI Run 投影不变，已有用户 `tui.toml` 不主动删除也不再读取。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

@@ -122,4 +122,4 @@ selection step or runtime language shortcut.
 
 - **Phantom `Alt+Up` removed.** The "Edit last queued message" binding was listed in README but never existed in the key dispatch code.
 - **Bare Up/Down only scroll the transcript when the composer is empty.** The current canonical input loop has no prompt-recall binding.
-- **Configurable keymap (#436) and `tui.toml` (#437) remain deferred.** The `TuiPrefs` struct and loader exist in `settings.rs` but are not wired at startup. The named-binding registry that would let `~/.codewhale/tui.toml` override individual entries is still pending.
+- **Configurable keymaps are not implemented.** Keybindings follow the production handlers documented above; the former unwired `tui.toml` prototype has been removed.
