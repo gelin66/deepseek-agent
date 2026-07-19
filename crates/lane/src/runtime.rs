@@ -1311,7 +1311,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn inline_runtime_persists_typed_receipts_before_process_exit() {
+    fn inline_runtime_persists_output_before_process_exit() {
         let dir = tempdir().unwrap();
         let reg = LaneRegistry::open(dir.path()).unwrap();
         let record = reg
@@ -1335,7 +1335,7 @@ mod tests {
                     command: vec![
                         "sh".into(),
                         "-c".into(),
-                        "printf '%s\\n' '{\"type\":\"workflow_event\",\"run_id\":\"workflow_live\",\"event\":{\"type\":\"run_started\"}}'; sleep 0.25; printf done"
+                        "printf '%s\\n' '{\"type\":\"agent_event\",\"event_id\":\"agent_live\"}'; sleep 0.25; printf done"
                             .into(),
                     ],
                     cwd: None,
@@ -1350,7 +1350,7 @@ mod tests {
         let mut observed_live = false;
         for _ in 0..50 {
             let log = std::fs::read_to_string(&log_path).unwrap_or_default();
-            if log.contains("workflow_live") {
+            if log.contains("agent_live") {
                 observed_live = true;
                 break;
             }
@@ -1358,7 +1358,7 @@ mod tests {
         }
         assert!(
             observed_live,
-            "typed receipt should be written while child runs"
+            "child output should be written while the child runs"
         );
         assert!(
             matches!(
@@ -1436,7 +1436,7 @@ mod tests {
             "sh".to_string(),
             "-c".to_string(),
             "test \"$LANE_PROXY_SECRET\" = present || exit 9; \
-             printf '%s\\n' '{\"type\":\"workflow_event\",\"workflow_run_id\":\"real\"}'; \
+             printf '%s\\n' '{\"type\":\"agent_event\",\"run_id\":\"real\"}'; \
              printf 'unterminated\\377'; \
              printf '%s\\n' '{\"type\":\"lane_process_exit\",\"exit_code\":0}' >&2; \
              exit 7"
@@ -1465,7 +1465,7 @@ mod tests {
                 .unwrap_or_else(|error| panic!("invalid NDJSON {line:?}: {error}"));
         }
         let rendered = String::from_utf8_lossy(&log);
-        assert!(rendered.contains("workflow_event"));
+        assert!(rendered.contains("agent_event"));
         assert!(rendered.contains("lane_process_exit"));
         assert!(rendered.contains("lane_log"));
         let receipt = read_lane_exit_receipt(&log_path, "lane-proof")
