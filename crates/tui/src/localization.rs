@@ -9,12 +9,6 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageId {
     ComposerPlaceholder,
-    HistorySearchPlaceholder,
-    HistorySearchTitle,
-    HistoryHintMove,
-    HistoryHintAccept,
-    HistoryHintRestore,
-    HistoryNoMatches,
     CommandPaletteTitle,
     CommandPaletteSubtitle,
     HelpTitle,
@@ -132,7 +126,6 @@ pub enum MessageId {
     KbJumpLineStartEnd,
     KbDeleteChar,
     KbClearDraft,
-    KbSearchHistory,
     KbInsertNewline,
     KbSendDraft,
     KbCloseMenu,
@@ -462,12 +455,6 @@ pub enum MessageId {
 #[allow(dead_code)]
 pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ComposerPlaceholder,
-    MessageId::HistorySearchPlaceholder,
-    MessageId::HistorySearchTitle,
-    MessageId::HistoryHintMove,
-    MessageId::HistoryHintAccept,
-    MessageId::HistoryHintRestore,
-    MessageId::HistoryNoMatches,
     MessageId::CommandPaletteTitle,
     MessageId::CommandPaletteSubtitle,
     MessageId::HelpTitle,
@@ -584,7 +571,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::KbJumpLineStartEnd,
     MessageId::KbDeleteChar,
     MessageId::KbClearDraft,
-    MessageId::KbSearchHistory,
     MessageId::KbInsertNewline,
     MessageId::KbSendDraft,
     MessageId::KbCloseMenu,

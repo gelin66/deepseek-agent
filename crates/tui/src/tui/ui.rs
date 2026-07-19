@@ -1572,10 +1572,9 @@ fn render(f: &mut Frame, app: &mut App) {
         app.viewport.last_composer_content = Some(inner);
 
         // Compute scroll offset and top padding for mouse coordinate mapping.
-        let input_text = app.composer_display_input();
-        let input_cursor = app.composer_display_cursor();
-        let content_geometry =
-            crate::tui::widgets::composer_content_geometry(inner, app.is_history_search_active());
+        let input_text = &app.input;
+        let input_cursor = app.cursor_position;
+        let content_geometry = crate::tui::widgets::composer_content_geometry(inner);
         let content_width = content_geometry.text_width();
         let menu_lines = ComposerWidget::new(
             app,

@@ -39,7 +39,6 @@ Editing the message you're about to send.
 | `Ctrl-→` / `Alt-→`          | Move forward one word                                   |
 | `Ctrl-V` / `Cmd-V`          | Terminal text paste (`Event::Paste` or normal text input)|
 | `Ctrl-P` / `Ctrl-N`         | Cycle composer history (alternative)                     |
-| `Alt-R`                    | Search prompt history (Alt-R to exit)                  |
 | `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
 | `! command`                 | Run a shell command through normal approval, sandbox, and output surfaces |
 

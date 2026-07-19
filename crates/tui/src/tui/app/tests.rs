@@ -2145,71 +2145,6 @@ fn editing_history_entry_leaves_navigation_mode() {
 }
 
 #[test]
-fn history_search_filters_matches_and_skips_duplicates() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.clear();
-    app.input_history.push("alpha one".to_string());
-    app.input_history.push("beta two".to_string());
-    app.input_history.push("alpha one".to_string());
-    app.draft_history.push_back("draft alpha".to_string());
-
-    app.start_history_search();
-    app.history_search_insert_str("alpha");
-
-    assert_eq!(
-        app.history_search_matches(),
-        vec!["draft alpha".to_string(), "alpha one".to_string()]
-    );
-}
-
-#[test]
-fn history_search_matches_unicode_case_insensitively() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.clear();
-    app.input_history.push("CAFÉ prompt".to_string());
-
-    app.start_history_search();
-    app.history_search_insert_str("café");
-
-    assert_eq!(
-        app.history_search_matches(),
-        vec!["CAFÉ prompt".to_string()]
-    );
-}
-
-#[test]
-fn history_search_accepts_match_without_submitting() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.clear();
-    app.input_history.push("older prompt".to_string());
-
-    app.start_history_search();
-    app.history_search_insert_str("older");
-
-    assert!(app.accept_history_search());
-    assert_eq!(app.input, "older prompt");
-    assert_eq!(app.cursor_position, "older prompt".chars().count());
-    assert!(app.composer_history_search.is_none());
-}
-
-#[test]
-fn history_search_cancel_restores_pre_search_draft() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.clear();
-    app.input = "current draft".to_string();
-    app.cursor_position = 7;
-    app.input_history.push("older prompt".to_string());
-
-    app.start_history_search();
-    app.history_search_insert_str("older");
-    app.cancel_history_search();
-
-    assert_eq!(app.input, "current draft");
-    assert_eq!(app.cursor_position, 7);
-    assert!(app.composer_history_search.is_none());
-}
-
-#[test]
 fn recoverable_clear_stashes_nonempty_draft() {
     let mut app = App::new(test_options(false), &Config::default());
     app.input_history.clear();
@@ -2217,12 +2152,10 @@ fn recoverable_clear_stashes_nonempty_draft() {
     app.cursor_position = app.input.chars().count();
 
     app.clear_input_recoverable();
-    app.start_history_search();
-    app.history_search_insert_str("recover");
 
     assert_eq!(
-        app.history_search_matches(),
-        vec!["recover this".to_string()]
+        app.draft_history.back().map(String::as_str),
+        Some("recover this")
     );
 }
 

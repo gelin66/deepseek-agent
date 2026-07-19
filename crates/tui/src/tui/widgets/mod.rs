@@ -908,13 +908,8 @@ impl ComposerContentGeometry {
 }
 
 #[must_use]
-pub(crate) fn composer_content_geometry(
-    inner_area: Rect,
-    history_search_active: bool,
-) -> ComposerContentGeometry {
-    let prompt_inset = if !history_search_active
-        && inner_area.width >= COMPOSER_PROMPT_GUTTER_WIDTH.saturating_add(1)
-    {
+pub(crate) fn composer_content_geometry(inner_area: Rect) -> ComposerContentGeometry {
+    let prompt_inset = if inner_area.width >= COMPOSER_PROMPT_GUTTER_WIDTH.saturating_add(1) {
         COMPOSER_PROMPT_GUTTER_WIDTH
     } else {
         0
@@ -958,9 +953,7 @@ impl<'a> ComposerWidget<'a> {
     /// the partial-mention check is positional and stricter than slash's
     /// "starts-with-/" check.
     fn active_menu_row_count(&self) -> usize {
-        if self.app.is_history_search_active() {
-            self.app.history_search_matches().len().max(1)
-        } else if !self.mention_menu_entries.is_empty() {
+        if !self.mention_menu_entries.is_empty() {
             self.mention_menu_entries.len()
         } else {
             self.slash_menu_entries.len()
@@ -983,9 +976,6 @@ impl<'a> ComposerWidget<'a> {
         if actual == 0 {
             return 0;
         }
-        if self.app.is_history_search_active() {
-            return actual;
-        }
         // Slash- and mention-menu are the cases that grow/shrink mid-typing.
         // Reserve the composer's panel-max so the layout stays stable
         // for the lifetime of the menu session.
@@ -994,9 +984,7 @@ impl<'a> ComposerWidget<'a> {
 
     fn wants_enclosed_panel(&self) -> bool {
         self.app.composer_border
-            && (self.app.is_history_search_active()
-                || self.app.composer_display_input().contains('\n')
-                || self.active_menu_row_count() > 0)
+            && (self.app.input.contains('\n') || self.active_menu_row_count() > 0)
     }
 
     pub(crate) fn has_panel(&self, area: Rect) -> bool {
@@ -1033,13 +1021,8 @@ impl Renderable for ComposerWidget<'_> {
         let background = Style::default().bg(self.app.ui_theme.composer_bg);
         let has_panel = self.has_panel(area);
         let inner_area = self.inner_area(area);
-        let input_text = self.app.composer_display_input();
-        let input_cursor = self.app.composer_display_cursor();
-        let history_search_matches = if self.app.is_history_search_active() {
-            self.app.history_search_matches()
-        } else {
-            Vec::new()
-        };
+        let input_text = &self.app.input;
+        let input_cursor = self.app.cursor_position;
         let menu_lines = self.active_menu_row_count();
         // For the layout-budget calculation, treat the menu as if it were
         // already at its locked, worst-case height (see
@@ -1052,8 +1035,7 @@ impl Renderable for ComposerWidget<'_> {
         // Menu rows span the full inner panel. Input text alone uses the
         // prompt-adjusted geometry below.
         let content_width = usize::from(inner_area.width.max(1));
-        let content_geometry =
-            composer_content_geometry(inner_area, self.app.is_history_search_active());
+        let content_geometry = composer_content_geometry(inner_area);
         let input_content_width = content_geometry.text_width();
 
         // Use the extended version that also returns character indices to avoid
@@ -1072,30 +1054,7 @@ impl Renderable for ComposerWidget<'_> {
             } else {
                 self.mode_color()
             };
-            let hint_line = if self.app.is_history_search_active() {
-                Some(Line::from(vec![
-                    Span::styled(
-                        format!(
-                            " {}  ",
-                            self.app.tr(crate::localization::MessageId::HistoryHintMove)
-                        ),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                    Span::styled(
-                        format!(
-                            "{}  ",
-                            self.app
-                                .tr(crate::localization::MessageId::HistoryHintAccept)
-                        ),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                    Span::styled(
-                        self.app
-                            .tr(crate::localization::MessageId::HistoryHintRestore),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    ),
-                ]))
-            } else if !self.slash_menu_entries.is_empty() {
+            let hint_line = if !self.slash_menu_entries.is_empty() {
                 Some(Line::from(Span::styled(
                     self.app
                         .tr(crate::localization::MessageId::ComposerSlashMenuHint),
@@ -1109,19 +1068,11 @@ impl Renderable for ComposerWidget<'_> {
                 .borders(Borders::TOP | Borders::BOTTOM)
                 .border_style(Style::default().fg(border_color))
                 .style(background);
-            if self.app.is_history_search_active() || is_draft_mode {
-                block = if self.app.is_history_search_active() {
-                    block.title(Line::from(Span::styled(
-                        self.app
-                            .tr(crate::localization::MessageId::HistorySearchTitle),
-                        Style::default().fg(palette::TEXT_MUTED),
-                    )))
-                } else {
-                    block.title(Line::from(Span::styled(
-                        "Draft",
-                        Style::default().fg(palette::TEXT_MUTED),
-                    )))
-                };
+            if is_draft_mode {
+                block = block.title(Line::from(Span::styled(
+                    "Draft",
+                    Style::default().fg(palette::TEXT_MUTED),
+                )));
             }
             // Top-right corner: transient turn receipts or the session title.
             // Receipts are lifecycle chrome, not transcript content; they
@@ -1210,63 +1161,7 @@ impl Renderable for ComposerWidget<'_> {
         }
         lines.extend(input_lines);
 
-        if self.app.is_history_search_active() {
-            if history_search_matches.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    self.app
-                        .tr(crate::localization::MessageId::HistoryNoMatches),
-                    Style::default().fg(palette::TEXT_MUTED),
-                )));
-            } else {
-                let selected = self
-                    .app
-                    .history_search_selected_index()
-                    .min(history_search_matches.len().saturating_sub(1));
-                let menu_visible_rows = inner_area
-                    .height
-                    .saturating_sub(visual_rows as u16)
-                    .saturating_sub(top_padding as u16)
-                    .saturating_sub(1)
-                    .max(1) as usize;
-                let menu_total = history_search_matches.len();
-                let menu_top = if menu_total <= menu_visible_rows {
-                    0
-                } else {
-                    let half = menu_visible_rows / 2;
-                    if selected <= half {
-                        0
-                    } else if selected + half >= menu_total {
-                        menu_total.saturating_sub(menu_visible_rows)
-                    } else {
-                        selected.saturating_sub(half)
-                    }
-                };
-                let menu_bottom = (menu_top + menu_visible_rows).min(menu_total);
-
-                for (idx, entry) in history_search_matches
-                    .iter()
-                    .enumerate()
-                    .take(menu_bottom)
-                    .skip(menu_top)
-                {
-                    let is_selected = idx == selected;
-                    let style = if is_selected {
-                        Style::default()
-                            .fg(palette::SELECTION_TEXT)
-                            .bg(palette::SELECTION_BG)
-                    } else {
-                        Style::default().fg(palette::TEXT_MUTED)
-                    };
-                    let marker = if is_selected { "▸" } else { " " };
-                    lines.push(Line::from(vec![
-                        Span::styled(" ", Style::default()),
-                        Span::styled(marker, style),
-                        Span::styled(" ", style),
-                        Span::styled(entry.clone(), style),
-                    ]));
-                }
-            }
-        } else if !self.mention_menu_entries.is_empty() {
+        if !self.mention_menu_entries.is_empty() {
             let selected = self
                 .app
                 .mention_menu_selected
@@ -1487,7 +1382,7 @@ impl Renderable for ComposerWidget<'_> {
 
     fn desired_height(&self, width: u16) -> u16 {
         composer_height(
-            self.app.composer_display_input(),
+            &self.app.input,
             width.saturating_sub(2),
             self.max_height.min(self.max_height_cap()),
             self.active_menu_reserved_rows(),
@@ -1498,10 +1393,9 @@ impl Renderable for ComposerWidget<'_> {
 
     fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
         let inner_area = self.inner_area(area);
-        let input_text = self.app.composer_display_input();
-        let input_cursor = self.app.composer_display_cursor();
-        let content_geometry =
-            composer_content_geometry(inner_area, self.app.is_history_search_active());
+        let input_text = &self.app.input;
+        let input_cursor = self.app.cursor_position;
+        let content_geometry = composer_content_geometry(inner_area);
         let input_content_width = content_geometry.text_width();
         // Match the render path's locked-budget calculation so the cursor
         // lands on the same row the input is drawn on.
@@ -2442,11 +2336,7 @@ fn placeholder_visual_lines_for(placeholder: &str, content_width: usize) -> usiz
 }
 
 pub(crate) fn composer_empty_hint_text(app: &App) -> Cow<'static, str> {
-    if app.is_history_search_active() {
-        app.tr(crate::localization::MessageId::HistorySearchPlaceholder)
-    } else {
-        app.tr(crate::localization::MessageId::ComposerPlaceholder)
-    }
+    app.tr(crate::localization::MessageId::ComposerPlaceholder)
 }
 
 pub(crate) fn empty_composer_visual_rows(
@@ -3238,23 +3128,19 @@ mod tests {
     #[test]
     fn composer_content_geometry_is_the_single_prompt_adjusted_text_rect() {
         let inner = Rect::new(10, 4, 7, 3);
-        let normal = composer_content_geometry(inner, false);
+        let normal = composer_content_geometry(inner);
         assert_eq!(normal.prompt_inset, 2);
         assert_eq!(normal.text_area, Rect::new(12, 4, 5, 3));
         assert_eq!(normal.text_width(), 5);
 
-        let history = composer_content_geometry(inner, true);
-        assert_eq!(history.prompt_inset, 0);
-        assert_eq!(history.text_area, inner);
-
-        let narrow = composer_content_geometry(Rect::new(3, 2, 2, 1), false);
+        let narrow = composer_content_geometry(Rect::new(3, 2, 2, 1));
         assert_eq!(narrow.prompt_inset, 0);
         assert_eq!(narrow.text_area, Rect::new(3, 2, 2, 1));
     }
 
     #[test]
     fn composer_wrap_boundary_cursor_scroll_and_mouse_lines_share_text_width() {
-        let geometry = composer_content_geometry(Rect::new(0, 0, 7, 2), false);
+        let geometry = composer_content_geometry(Rect::new(0, 0, 7, 2));
         let input = "abcde";
         let cursor = input.chars().count();
         let width = geometry.text_width();
@@ -3415,7 +3301,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_border_keeps_mode_titles_contextual() {
+    fn composer_border_only_titles_multiline_drafts() {
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
         let area = Rect {
@@ -3434,10 +3320,6 @@ mod tests {
         let normal_rendered = buffer_text(&normal_buf, area);
         assert!(!normal_rendered.contains("Composer"));
         assert!(!normal_rendered.contains("Draft"));
-        assert!(
-            !normal_rendered
-                .contains(&*normal_app.tr(crate::localization::MessageId::HistorySearchTitle))
-        );
 
         let mut draft_app = create_test_app();
         draft_app.composer_density = ComposerDensity::Comfortable;
@@ -3447,18 +3329,6 @@ mod tests {
         let mut draft_buf = Buffer::empty(area);
         draft_widget.render(area, &mut draft_buf);
         assert!(buffer_text(&draft_buf, area).contains("Draft"));
-
-        let mut search_app = create_test_app();
-        search_app.composer_density = ComposerDensity::Comfortable;
-        search_app.start_history_search();
-        let search_widget =
-            ComposerWidget::new(&search_app, 5, &slash_menu_entries, &mention_menu_entries);
-        let mut search_buf = Buffer::empty(area);
-        search_widget.render(area, &mut search_buf);
-        assert!(
-            buffer_text(&search_buf, area)
-                .contains(&*search_app.tr(crate::localization::MessageId::HistorySearchTitle))
-        );
     }
 
     #[test]

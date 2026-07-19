@@ -801,8 +801,7 @@ Common settings keys:
   `hidden` disables the right sidebar entirely so raw terminal selection cannot
   cross from the transcript into sidebar borders. Legacy `plan` and `todos`
   values, plus the old `work` name, are accepted and normalized to `pinned`.
-- `max_history` (number of submitted input history entries; cleared drafts are
-  also kept locally for composer history search)
+- `max_history` (number of submitted input history entries)
 - `default_model` (model name override)
 
 The composer has one direct-editing path. `composer_vim_mode`, `vim_mode`, and

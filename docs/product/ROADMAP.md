@@ -767,8 +767,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   的 prompt shadow。保留的 UserInput modal 直接使用 canonical protocol 类型，并继续通过
   `AgentRuntime` interaction 与 `RunStore` 提交或取消，不再经过第二套 TUI ToolSpec。
 - M4-C 已把仍在使用的 slash-menu 上下选择收回 canonical `ui.rs`，并删除其余全部零调用
-  的旧 `composer_ui` 键盘处理器；历史搜索状态本身暂保留，但不再把未接入事件循环的旧
-  handler 伪装成可用输入能力。
+  的旧 `composer_ui` 键盘处理器；随后又删除同样没有 canonical 键盘入口的 composer
+  history-search 状态、匹配器、renderer 和消息目录。输入历史、草稿恢复与磁盘 history
+  未混入该切片，继续按各自真实调用图独立处理。
 - M4-C 已删除零生产消费者、仅由自身测试调用的 TUI `is_key_file`/`summarize_project`/
   `project_tree` 浅层 project-map helpers；当前生产上下文继续由 `crates/context`、显式文件
   工具和 canonical transcript 构造，M5 的 RepoGraph/ContextBroker 不通过保留旧 helper

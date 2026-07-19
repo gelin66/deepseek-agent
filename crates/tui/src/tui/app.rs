@@ -355,25 +355,6 @@ impl StatusToast {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ComposerHistorySearch {
-    pre_search_input: String,
-    pre_search_cursor: usize,
-    query: String,
-    selected: usize,
-}
-
-impl ComposerHistorySearch {
-    fn new(pre_search_input: String, pre_search_cursor: usize) -> Self {
-        Self {
-            pre_search_input,
-            pre_search_cursor,
-            query: String::new(),
-            selected: 0,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InputHistoryDraft {
     input: String,
     cursor: usize,
@@ -993,7 +974,6 @@ pub struct ComposerState {
     pub clear_undo_buffer: Option<String>,
     pub history_index: Option<usize>,
     pub(crate) history_navigation_draft: Option<InputHistoryDraft>,
-    pub composer_history_search: Option<ComposerHistorySearch>,
     pub slash_menu_selected: usize,
     pub slash_menu_hidden: bool,
     pub mention_menu_selected: usize,
@@ -1638,7 +1618,6 @@ impl App {
                 clear_undo_buffer: None,
                 history_index: None,
                 history_navigation_draft: None,
-                composer_history_search: None,
                 slash_menu_selected: 0,
                 slash_menu_hidden: false,
                 mention_menu_selected: 0,
@@ -3022,179 +3001,6 @@ impl App {
         while self.draft_history.len() > MAX_DRAFT_HISTORY {
             let _ = self.draft_history.pop_front();
         }
-    }
-
-    pub fn start_history_search(&mut self) {
-        if self.composer_history_search.is_some() {
-            return;
-        }
-        // Expand any truncated paste first so the history search seed
-        // contains the full text, not the truncated preview (#3263).
-        self.auto_expand_oversized_paste();
-        self.composer_history_search = Some(ComposerHistorySearch::new(
-            self.input.clone(),
-            self.cursor_position,
-        ));
-        self.slash_menu_hidden = true;
-        self.mention_menu_hidden = true;
-        self.status_message = Some("History search: type to filter, Enter accepts".to_string());
-        self.needs_redraw = true;
-    }
-
-    pub fn is_history_search_active(&self) -> bool {
-        self.composer_history_search.is_some()
-    }
-
-    pub fn history_search_query(&self) -> Option<&str> {
-        self.composer_history_search
-            .as_ref()
-            .map(|search| search.query.as_str())
-    }
-
-    pub fn history_search_selected_index(&self) -> usize {
-        self.composer_history_search
-            .as_ref()
-            .map_or(0, |search| search.selected)
-    }
-
-    pub fn composer_display_input(&self) -> &str {
-        self.history_search_query().unwrap_or(&self.input)
-    }
-
-    pub fn composer_display_cursor(&self) -> usize {
-        self.composer_history_search
-            .as_ref()
-            .map_or(self.cursor_position, |search| char_count(&search.query))
-    }
-
-    pub fn history_search_matches(&self) -> Vec<String> {
-        let Some(query) = self.history_search_query() else {
-            return Vec::new();
-        };
-        self.history_search_matches_for_query(query)
-    }
-
-    fn history_search_matches_for_query(&self, query: &str) -> Vec<String> {
-        let normalized_query = query.trim().to_lowercase();
-        let mut seen: HashSet<&str> = HashSet::new();
-        let mut matches = Vec::new();
-
-        for candidate in self
-            .draft_history
-            .iter()
-            .rev()
-            .chain(self.input_history.iter().rev())
-        {
-            if candidate.trim().is_empty() || !seen.insert(candidate.as_str()) {
-                continue;
-            }
-            if normalized_query.is_empty() || candidate.to_lowercase().contains(&normalized_query) {
-                matches.push(candidate.clone());
-            }
-        }
-
-        matches
-    }
-
-    fn clamp_history_search_selection(&mut self) {
-        let Some(search) = self.composer_history_search.as_ref() else {
-            return;
-        };
-        let selected = search.selected;
-        let query = search.query.clone();
-        let match_count = self.history_search_matches_for_query(&query).len();
-        if let Some(search) = self.composer_history_search.as_mut() {
-            search.selected = if match_count == 0 {
-                0
-            } else {
-                selected.min(match_count.saturating_sub(1))
-            };
-        }
-    }
-
-    pub fn history_search_insert_char(&mut self, ch: char) {
-        if let Some(search) = self.composer_history_search.as_mut() {
-            search.query.push(ch);
-            search.selected = 0;
-            self.status_message = Some("History search: Enter accepts, Esc restores".to_string());
-            self.needs_redraw = true;
-        }
-    }
-
-    pub fn history_search_insert_str(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        if let Some(search) = self.composer_history_search.as_mut() {
-            search.query.push_str(&normalize_paste_text(text));
-            search.selected = 0;
-            self.status_message = Some("History search: Enter accepts, Esc restores".to_string());
-            self.needs_redraw = true;
-        }
-    }
-
-    pub fn history_search_backspace(&mut self) {
-        if let Some(search) = self.composer_history_search.as_mut() {
-            search.query.pop();
-            search.selected = 0;
-            self.needs_redraw = true;
-        }
-        self.clamp_history_search_selection();
-    }
-
-    pub fn history_search_select_previous(&mut self) {
-        if let Some(search) = self.composer_history_search.as_mut() {
-            search.selected = search.selected.saturating_sub(1);
-            self.needs_redraw = true;
-        }
-    }
-
-    pub fn history_search_select_next(&mut self) {
-        let Some(search) = self.composer_history_search.as_ref() else {
-            return;
-        };
-        let query = search.query.clone();
-        let selected = search.selected;
-        let match_count = self.history_search_matches_for_query(&query).len();
-        if let Some(search) = self.composer_history_search.as_mut()
-            && match_count > 0
-        {
-            search.selected = (selected + 1).min(match_count.saturating_sub(1));
-            self.needs_redraw = true;
-        }
-    }
-
-    pub fn accept_history_search(&mut self) -> bool {
-        let Some(search) = self.composer_history_search.take() else {
-            return false;
-        };
-        let matches = self.history_search_matches_for_query(&search.query);
-        if let Some(selected) = matches
-            .get(search.selected.min(matches.len().saturating_sub(1)))
-            .cloned()
-        {
-            self.input = selected;
-            self.cursor_position = char_count(&self.input);
-            self.history_index = None;
-            self.status_message = Some("History match inserted into composer".to_string());
-            self.needs_redraw = true;
-            true
-        } else {
-            self.composer_history_search = Some(search);
-            self.status_message = Some("No history matches".to_string());
-            self.needs_redraw = true;
-            false
-        }
-    }
-
-    pub fn cancel_history_search(&mut self) {
-        let Some(search) = self.composer_history_search.take() else {
-            return;
-        };
-        self.input = search.pre_search_input;
-        self.cursor_position = search.pre_search_cursor.min(char_count(&self.input));
-        self.status_message = Some("History search canceled".to_string());
-        self.needs_redraw = true;
     }
 
     pub fn submit_input(&mut self) -> Option<String> {
