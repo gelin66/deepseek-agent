@@ -39,11 +39,9 @@ impl PhaseStripPlacement {
     #[must_use]
     pub fn for_phase(phase: ShellPhase) -> Self {
         match phase {
-            ShellPhase::Working
-            | ShellPhase::Waiting
-            | ShellPhase::Approval
-            | ShellPhase::Failed
-            | ShellPhase::Done => Self::AboveComposer,
+            ShellPhase::Working | ShellPhase::Approval | ShellPhase::Failed | ShellPhase::Done => {
+                Self::AboveComposer
+            }
             ShellPhase::Idle | ShellPhase::Typing => Self::BelowComposer,
         }
     }
@@ -113,13 +111,14 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
         .render(area, buf);
 
     let (marker, phase_label) = phase_marker(app, phase);
-    let phase_style = Style::default().fg(phase.color(app)).add_modifier(
-        if matches!(phase, ShellPhase::Waiting | ShellPhase::Approval) {
-            Modifier::BOLD
-        } else {
-            Modifier::empty()
-        },
-    );
+    let phase_style =
+        Style::default()
+            .fg(phase.color(app))
+            .add_modifier(if phase == ShellPhase::Approval {
+                Modifier::BOLD
+            } else {
+                Modifier::empty()
+            });
     let mut left = vec![
         Span::styled(marker, phase_style),
         Span::raw(" "),
@@ -257,10 +256,6 @@ mod tests {
     fn live_phases_sit_above_composer_idle_stays_below() {
         assert_eq!(
             PhaseStripPlacement::for_phase(ShellPhase::Working),
-            PhaseStripPlacement::AboveComposer
-        );
-        assert_eq!(
-            PhaseStripPlacement::for_phase(ShellPhase::Waiting),
             PhaseStripPlacement::AboveComposer
         );
         assert_eq!(

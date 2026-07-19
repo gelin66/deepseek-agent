@@ -273,7 +273,7 @@ mod tests {
     use crate::config::Config;
     use crate::localization::tr;
     use crate::tui::app::{App, TuiOptions};
-    use crate::tui::canonical_commands::command_infos;
+    use crate::tui::canonical_commands::matching_command_infos;
     use std::collections::HashSet;
     use std::path::PathBuf;
 
@@ -330,8 +330,8 @@ mod tests {
                 .to_string()
             })
             .collect::<HashSet<_>>();
-        let canonical = command_infos()
-            .iter()
+        let canonical = matching_command_infos("/", 128)
+            .into_iter()
             .flat_map(|info| {
                 std::iter::once(format!("/{}", info.name))
                     .chain(info.aliases.iter().map(|alias| format!("/{alias}")))

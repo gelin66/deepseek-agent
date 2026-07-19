@@ -1,6 +1,6 @@
 use super::adapt::{
     ColorDepth, adapt_bg, adapt_bg_for_palette_mode, adapt_bg_for_theme, adapt_color,
-    adapt_fg_for_palette_mode, adapt_fg_for_theme, blend, luma, nearest_ansi16, pulse_brightness,
+    adapt_fg_for_palette_mode, adapt_fg_for_theme, luma, nearest_ansi16, pulse_brightness,
     reasoning_surface_tint, rgb_to_ansi256,
 };
 use super::detect::{PaletteMode, palette_mode_from_apple_interface_style};
@@ -396,20 +396,6 @@ fn light_palette_maps_reasoning_tint_to_light_surface() {
         ),
         LIGHT_REASONING
     );
-}
-
-#[test]
-fn blend_at_zero_returns_bg_at_one_returns_fg() {
-    let fg = Color::Rgb(200, 100, 50);
-    let bg = Color::Rgb(0, 0, 0);
-    assert_eq!(blend(fg, bg, 0.0), bg);
-    assert_eq!(blend(fg, bg, 1.0), fg);
-}
-
-#[test]
-fn blend_at_half_is_midpoint() {
-    let mid = blend(Color::Rgb(200, 100, 0), Color::Rgb(0, 0, 0), 0.5);
-    assert_eq!(mid, Color::Rgb(100, 50, 0));
 }
 
 #[test]

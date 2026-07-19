@@ -56,10 +56,6 @@ pub(crate) enum CanonicalSlashParse {
     Error(String),
 }
 
-pub(crate) fn command_infos() -> &'static [CanonicalSlashCommandInfo] {
-    COMMANDS
-}
-
 #[cfg(test)]
 pub(crate) fn command_info(command: CanonicalSlashCommand) -> &'static CanonicalSlashCommandInfo {
     COMMANDS
@@ -180,7 +176,7 @@ mod tests {
 
     #[test]
     fn every_discovered_command_is_parseable_by_the_same_contract() {
-        for info in command_infos() {
+        for info in COMMANDS {
             assert_eq!(
                 parse(&format!("/{}", info.name)),
                 CanonicalSlashParse::Command(info.command)
@@ -230,7 +226,7 @@ mod tests {
     #[test]
     fn help_is_derived_from_the_complete_command_contract() {
         let help = help_text();
-        for info in command_infos() {
+        for info in COMMANDS {
             assert!(help.contains(&format!("/{}", info.name)));
         }
     }
@@ -238,7 +234,7 @@ mod tests {
     #[test]
     fn names_aliases_and_localized_descriptions_are_complete_and_unique() {
         let mut names = HashSet::new();
-        for info in command_infos() {
+        for info in COMMANDS {
             assert!(names.insert(info.name), "duplicate command: {}", info.name);
             for alias in info.aliases {
                 assert!(names.insert(*alias), "duplicate command alias: {alias}");

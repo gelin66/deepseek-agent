@@ -213,10 +213,7 @@ impl OceanRamp {
         } else {
             f32::from(row.min(height - 1)) / f32::from(height - 1)
         };
-        if matches!(
-            phase,
-            ShellPhase::Waiting | ShellPhase::Approval | ShellPhase::Failed
-        ) {
+        if matches!(phase, ShellPhase::Approval | ShellPhase::Failed) {
             return base;
         }
         let cycle = (elapsed_ms % 90_000) as f32 / 90_000.0;
@@ -226,7 +223,7 @@ impl OceanRamp {
             ShellPhase::Typing => (0.025, 1.0 - depth),
             ShellPhase::Working => (0.045, 0.35 + depth * 0.65),
             ShellPhase::Done => (0.018, 1.0 - depth),
-            ShellPhase::Waiting | ShellPhase::Approval | ShellPhase::Failed => unreachable!(),
+            ShellPhase::Approval | ShellPhase::Failed => unreachable!(),
         };
         mix_colors(base, self.ambient, breath * phase_bias * phase_depth)
     }
@@ -401,11 +398,7 @@ mod tests {
     #[test]
     fn attention_phases_are_still() {
         let ramp = OceanRamp::for_theme(&crate::palette::UI_THEME).expect("RGB theme");
-        for phase in [
-            ShellPhase::Waiting,
-            ShellPhase::Approval,
-            ShellPhase::Failed,
-        ] {
+        for phase in [ShellPhase::Approval, ShellPhase::Failed] {
             assert_eq!(
                 ramp.color_at_phase(4, 20, 0, phase),
                 ramp.color_at_phase(4, 20, 45_000, phase)

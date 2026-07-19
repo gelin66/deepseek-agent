@@ -64,7 +64,6 @@ pub enum ShellPhase {
     Idle,
     Typing,
     Working,
-    Waiting,
     Approval,
     Done,
     Failed,
@@ -106,7 +105,7 @@ impl ShellPhase {
             Self::Idle => tr(MessageId::PhaseIdle),
             Self::Typing => tr(MessageId::PhaseDraft),
             Self::Working => tr(MessageId::PhaseWorking),
-            Self::Waiting | Self::Approval => tr(MessageId::PhaseWaitingOnYou),
+            Self::Approval => tr(MessageId::PhaseWaitingOnYou),
             Self::Done => tr(MessageId::PhaseDone),
             Self::Failed => tr(MessageId::PhaseFailed),
         }
@@ -119,7 +118,7 @@ impl ShellPhase {
             Self::Done => app.ui_theme.success,
             Self::Typing => app.ui_theme.accent_primary,
             Self::Working => app.ui_theme.status_working,
-            Self::Waiting | Self::Approval => app.ui_theme.accent_action,
+            Self::Approval => app.ui_theme.accent_action,
             Self::Failed => app.ui_theme.error_fg,
         }
     }
@@ -151,7 +150,7 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
             };
             (frame, phase.label())
         }
-        ShellPhase::Waiting | ShellPhase::Approval => ("◆", phase.label()),
+        ShellPhase::Approval => ("◆", phase.label()),
         ShellPhase::Done => match completion_elapsed_ms(app) {
             Some(elapsed) if elapsed < COMPLETION_RELEASE_MS => {
                 let index = ((elapsed / 140) as usize + 4).min(WORKING_BUBBLE_FRAMES.len() - 1);
@@ -574,11 +573,10 @@ mod tests {
     #[test]
     fn attention_and_failure_keep_distinct_semantic_hues() {
         let app = test_app();
-        assert_eq!(ShellPhase::Waiting.color(&app), app.ui_theme.accent_action);
         assert_eq!(ShellPhase::Approval.color(&app), app.ui_theme.accent_action);
         assert_eq!(ShellPhase::Failed.color(&app), app.ui_theme.error_fg);
         assert_ne!(
-            ShellPhase::Waiting.color(&app),
+            ShellPhase::Approval.color(&app),
             ShellPhase::Failed.color(&app)
         );
     }
