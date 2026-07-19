@@ -683,6 +683,9 @@ M4-C foreground 切换后还已物理删除：
 - 同一旧 setup 链的 provider-scoped API-key/model writers、targeted-key clear 和 Kimi
   credential-valid convenience predicate 也没有生产消费者，现已物理删除。`codewhale login`
   /`logout`、TUI DeepSeek 首次配置、Doctor `has_api_key_for` 与 Kimi token refresh 链保持不变。
+- TUI ProviderConfig 曾接受 `max_concurrency` 及三个 alias，却从未把它接到任何请求 semaphore；
+  该字段、默认/夹紧逻辑和自证测试现已删除。canonical Runtime request budget、Fleet scheduler
+  的 worker limits 与 subagent profile limits 是独立的真实执行链，均未改动。
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
   没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。

@@ -1242,61 +1242,6 @@ max_depth = 2
 }
 
 #[test]
-fn provider_request_concurrency_defaults_to_zai_and_can_be_overridden() {
-    let default_zai: Config = toml::from_str(
-        r#"
-provider = "zai"
-"#,
-    )
-    .expect("parse zai provider config");
-    assert_eq!(
-        default_zai.provider_max_concurrency(ApiProvider::Zai),
-        Some(DEFAULT_ZAI_PROVIDER_MAX_CONCURRENCY)
-    );
-    assert_eq!(
-        default_zai.provider_max_concurrency(ApiProvider::Deepseek),
-        None
-    );
-
-    let configured: Config = toml::from_str(
-        r#"
-provider = "zai"
-
-[providers.zhipu]
-max-concurrency = 10
-"#,
-    )
-    .expect("parse zhipu concurrency alias");
-    assert_eq!(
-        configured.provider_max_concurrency(ApiProvider::Zai),
-        Some(10)
-    );
-
-    let disabled: Config = toml::from_str(
-        r#"
-provider = "zai"
-
-[providers.zai]
-maxConcurrency = 0
-"#,
-    )
-    .expect("parse disabled concurrency cap");
-    assert_eq!(disabled.provider_max_concurrency(ApiProvider::Zai), None);
-
-    let clamped: Config = toml::from_str(
-        r#"
-[providers.openai]
-concurrency = 999
-"#,
-    )
-    .expect("parse openai concurrency alias");
-    assert_eq!(
-        clamped.provider_max_concurrency(ApiProvider::Openai),
-        Some(MAX_PROVIDER_REQUEST_CONCURRENCY)
-    );
-}
-
-#[test]
 fn provider_subagent_profiles_inherit_and_clamp_against_provider_max() {
     let config: Config = toml::from_str(
         r#"
