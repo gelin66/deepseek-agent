@@ -694,6 +694,11 @@ M4-C foreground 切换后还已物理删除：
   没有 `/user/balance` 请求或任何 writer；该链运行期永远为 `None`。现已连同自证测试和文案
   整体删除，旧 `status_items = ["balance"]` 会由既有未知项规则忽略。真实 usage/cost、
   cache、scorecard、`/cost` 和 root/child accounting 不经过该幽灵链。
+- TUI 的 `subagent_cost` 与 cost high-water 字段没有生产 writer，sidebar 因此长期显示虚假的
+  `session + agents` 拆账。该第二账本和零-reader header cost 参数现已删除；Run presenter 只把
+  canonical `ModelAccounting` 的 root+child 聚合总额投影为 `total_cost_usd/cny`，`/cost`、
+  footer、phase strip 和 sidebar 都直接读取该唯一总额。按 Agent 拆账只有 protocol 增加 actor
+  cost 维度后才可实现，不能由 TUI 推算。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
   删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有

@@ -155,7 +155,7 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
         ));
     }
 
-    let cost = app.displayed_session_cost_for_currency(app.cost_currency);
+    let cost = app.total_cost_for_currency(app.cost_currency);
     let chip = crate::route_billing::usage_chip(
         app.billing_presentation,
         app.api_provider,

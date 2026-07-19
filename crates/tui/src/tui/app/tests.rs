@@ -424,12 +424,12 @@ fn app_new_uses_only_the_explicit_cost_currency_setting() {
 fn cny_display_falls_back_to_usd_for_usd_only_costs() {
     let mut app = App::new(test_options(false), &Config::default());
     app.cost_currency = CostCurrency::Cny;
-    app.accrue_session_cost_estimate(CostEstimate::usd_only(0.42));
+    app.session.total_cost_usd = 0.42;
 
-    let displayed = app.displayed_session_cost_for_currency(CostCurrency::Cny);
+    let displayed = app.total_cost_for_currency(CostCurrency::Cny);
 
     assert_eq!(displayed, 0.42);
-    assert_eq!(app.session_cost_for_currency(CostCurrency::Cny), 0.42);
+    assert_eq!(app.total_cost_for_currency(CostCurrency::Cny), 0.42);
     assert_eq!(app.format_cost_amount(displayed), "$0.42");
 }
 
@@ -437,12 +437,10 @@ fn cny_display_falls_back_to_usd_for_usd_only_costs() {
 fn cny_display_keeps_cny_when_costs_have_cny_rates() {
     let mut app = App::new(test_options(false), &Config::default());
     app.cost_currency = CostCurrency::Cny;
-    app.accrue_session_cost_estimate(CostEstimate {
-        usd: 0.42,
-        cny: 2.5,
-    });
+    app.session.total_cost_usd = 0.42;
+    app.session.total_cost_cny = 2.5;
 
-    let displayed = app.displayed_session_cost_for_currency(CostCurrency::Cny);
+    let displayed = app.total_cost_for_currency(CostCurrency::Cny);
 
     assert_eq!(displayed, 2.5);
     assert_eq!(app.format_cost_amount(displayed), "¥2.50");
@@ -451,7 +449,7 @@ fn cny_display_keeps_cny_when_costs_have_cny_rates() {
 #[test]
 fn subscription_route_hides_stale_session_dollars_in_footer() {
     let mut app = App::new(test_options(false), &Config::default());
-    app.accrue_session_cost_estimate(CostEstimate::usd_only(12.34));
+    app.session.total_cost_usd = 12.34;
     app.billing_presentation =
         crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
     assert!(crate::tui::footer_ui::footer_cost_spans(&app).is_empty());

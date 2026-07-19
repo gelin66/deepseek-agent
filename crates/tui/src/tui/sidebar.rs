@@ -22,10 +22,6 @@ use super::app::{App, SidebarFocus};
 use super::history::{GenericToolCell, HistoryCell, ToolStatus, summarize_tool_output};
 use super::ui_text::truncate_line_to_width;
 
-/// Tolerance for floating-point cost comparison in the sidebar breakdown.
-/// Must be large enough that accumulated f64 error across hundreds of turns
-/// does not prematurely hide the session+agents breakdown.
-const COST_EQ_TOLERANCE: f64 = 1e-6;
 const RECENT_TOOL_SCAN_LIMIT: usize = 24;
 
 /// The explicit Agents view remains available for settled children. Auto mode
@@ -944,7 +940,7 @@ fn render_context_panel(f: &mut Frame, area: Rect, app: &mut App) {
 }
 
 fn context_panel_cost_line(app: &App) -> String {
-    let displayed_total = app.displayed_session_cost_for_currency(app.cost_currency);
+    let displayed_total = app.total_cost_for_currency(app.cost_currency);
     let chip = crate::route_billing::usage_chip(
         app.billing_presentation,
         app.api_provider,
@@ -953,33 +949,7 @@ fn context_panel_cost_line(app: &App) -> String {
         app.cost_display_currency(app.cost_currency),
         None,
     );
-    match &chip {
-        crate::route_billing::UsageChip::Money(_)
-            if crate::route_billing::has_priced_metered_basis(
-                app.billing_presentation,
-                app.api_provider,
-                &app.model,
-            ) =>
-        {
-            let session_cost = app.session_cost_for_currency(app.cost_currency);
-            let agent_cost = app.subagent_cost_for_currency(app.cost_currency);
-            let real_total = session_cost + agent_cost;
-            // Only show the additive breakdown when it matches the displayed
-            // total; when the high-water mark is in effect (post-reconciliation),
-            // the breakdown would not sum to the displayed value (#244).
-            if (displayed_total - real_total).abs() < COST_EQ_TOLERANCE {
-                format!(
-                    "cost: {} (session {} + agents {})",
-                    app.format_cost_amount(displayed_total),
-                    app.format_cost_amount(session_cost),
-                    app.format_cost_amount(agent_cost)
-                )
-            } else {
-                crate::route_billing::format_usage_line(&chip)
-            }
-        }
-        _ => crate::route_billing::format_usage_line(&chip),
-    }
+    crate::route_billing::format_usage_line(&chip)
 }
 
 fn render_sidebar_section(
@@ -1145,7 +1115,7 @@ mod tests {
         app.model = "gpt-5.5".to_string();
         app.billing_presentation =
             crate::route_billing::BillingPresentation::Subscription("Codex OAuth quota");
-        app.accrue_session_cost_estimate(crate::pricing::CostEstimate::usd_only(12.34));
+        app.session.total_cost_usd = 12.34;
 
         let line = context_panel_cost_line(&app);
         assert_eq!(line, "usage: Codex OAuth quota");
@@ -1173,7 +1143,7 @@ mod tests {
         app.api_provider = crate::config::ApiProvider::Moonshot;
         app.billing_presentation = crate::route_billing::BillingPresentation::Metered;
         app.cost_currency = crate::pricing::CostCurrency::Cny;
-        app.accrue_session_cost_estimate(crate::pricing::CostEstimate::usd_only(0.42));
+        app.session.total_cost_usd = 0.42;
 
         let line = context_panel_cost_line(&app);
 

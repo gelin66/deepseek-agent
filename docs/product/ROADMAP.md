@@ -858,6 +858,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   DTO、App `None` cell、可配置 footer item、余额布局、文案和六个自证测试均已物理删除。旧
   `status_items = ["balance"]` 由现有 tolerant unknown-item 规则自然忽略；canonical usage/cost、
   cache、scorecard、`/cost` 与 root/child accounting 保持原 owner。
+- M4-C 已删除没有生产 writer 的 TUI `subagent_cost`、cost high-water 和本地 accrue 账本，
+  sidebar 不再展示永久为零的假 `session + agents` 拆分。保留的 view scalar 已诚实命名为
+  `total_cost_usd/cny`，唯一 writer 是 canonical Run presenter；`/cost`、footer、phase strip、
+  sidebar 和 CNY fallback 直接读取 root+child 聚合总额。Header 中零-reader 的 cost 参数同步删除。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

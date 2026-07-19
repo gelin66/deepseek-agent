@@ -1035,7 +1035,7 @@ async fn handle_canonical_key(
                     app.status_message = Some(app.tr(MessageId::CanonicalHelpShown).into_owned());
                 }
                 CanonicalSlashParse::Command(CanonicalSlashCommand::Cost) => {
-                    let total = app.displayed_session_cost_for_currency(app.cost_currency);
+                    let total = app.total_cost_for_currency(app.cost_currency);
                     let content = tr(MessageId::CmdCostReport)
                         .replace("{cost}", &app.format_cost_amount_precise(total));
                     app.add_message(HistoryCell::System { content });
@@ -1361,7 +1361,6 @@ fn render_classic_header(area: Rect, buf: &mut Buffer, app: &App) {
         .with_usage(
             app.session.total_conversation_tokens,
             context_window,
-            app.session.session_cost,
             prompt_tokens,
         )
         .with_reasoning_effort(Some(&effort))

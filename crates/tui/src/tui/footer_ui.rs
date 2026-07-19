@@ -278,9 +278,9 @@ mod tests {
     }
 
     #[test]
-    fn canonical_session_cost_routes_through_the_production_footer_props() {
+    fn canonical_total_cost_routes_through_the_production_footer_props() {
         let mut app = create_test_app();
-        app.session.session_cost = 0.25;
+        app.session.total_cost_usd = 0.25;
         app.billing_presentation = crate::route_billing::BillingPresentation::Metered;
 
         let props = render_footer_from(&app, &[StatusItem::Cost], None);
@@ -513,7 +513,7 @@ pub(crate) fn footer_context_percent_spans(app: &App) -> Vec<Span<'static>> {
 }
 
 pub(crate) fn footer_cost_spans(app: &App) -> Vec<Span<'static>> {
-    let displayed_cost = app.displayed_session_cost_for_currency(app.cost_currency);
+    let displayed_cost = app.total_cost_for_currency(app.cost_currency);
     let chip = crate::route_billing::usage_chip(
         app.billing_presentation,
         app.api_provider,

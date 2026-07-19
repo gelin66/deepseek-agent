@@ -540,8 +540,8 @@ fn project_accounting(app: &mut App, accounting: &ModelAccounting) {
     app.session.total_cache_miss_tokens = narrow_u64(usage.cache_miss_tokens);
     app.session.total_tokens = narrow_u64(usage.total_tokens());
     app.session.total_conversation_tokens = app.session.total_tokens;
-    app.session.session_cost = accounting.cost_nanousd as f64 / 1_000_000_000.0;
-    app.session.session_cost_cny = accounting.cost_nanocny as f64 / 1_000_000_000.0;
+    app.session.total_cost_usd = accounting.cost_nanousd as f64 / 1_000_000_000.0;
+    app.session.total_cost_cny = accounting.cost_nanocny as f64 / 1_000_000_000.0;
 }
 
 fn narrow_u64(value: u64) -> u32 {
@@ -1042,6 +1042,8 @@ mod tests {
                 reasoning_replay_tokens: 400,
                 ..Usage::default()
             },
+            cost_nanousd: 420_000_000,
+            cost_nanocny: 2_500_000_000,
             ..ModelAccounting::default()
         };
         let event = stored(
@@ -1077,6 +1079,8 @@ mod tests {
         assert_eq!(app.session.total_output_tokens, 1_000);
         assert_eq!(app.session.total_cache_hit_tokens, 15_000);
         assert_eq!(app.session.total_cache_miss_tokens, 5_000);
+        assert_eq!(app.session.total_cost_usd, 0.42);
+        assert_eq!(app.session.total_cost_cny, 2.5);
     }
 
     #[test]

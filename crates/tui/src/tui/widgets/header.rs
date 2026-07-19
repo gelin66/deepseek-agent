@@ -79,8 +79,6 @@ pub struct HeaderData<'a> {
     pub total_tokens: u32,
     /// Context window size for the model (if known).
     pub context_window: Option<u32>,
-    /// Accumulated session cost in the active display currency.
-    pub session_cost: f64,
     /// Active context input tokens used for context utilization. Callers should
     /// pass a sanitized live-context estimate, not cumulative API usage.
     pub last_prompt_tokens: Option<u32>,
@@ -115,7 +113,6 @@ impl<'a> HeaderData<'a> {
             background,
             total_tokens: 0,
             context_window: None,
-            session_cost: 0.0,
             last_prompt_tokens: None,
             reasoning_effort_label: None,
             provider_label: None,
@@ -147,18 +144,16 @@ impl<'a> HeaderData<'a> {
         self
     }
 
-    /// Set token/cost fields.
+    /// Set token and active-context fields.
     #[must_use]
     pub fn with_usage(
         mut self,
         total_tokens: u32,
         context_window: Option<u32>,
-        session_cost: f64,
         active_context_input_tokens: Option<u32>,
     ) -> Self {
         self.total_tokens = total_tokens;
         self.context_window = context_window;
-        self.session_cost = session_cost;
         self.last_prompt_tokens = active_context_input_tokens;
         self
     }
@@ -500,7 +495,7 @@ mod tests {
         let rendered =
             render_header(
                 HeaderData::new(AppMode::Yolo, "deepseek-v4-pro", true, palette::WHALE_BG)
-                    .with_usage(1_000, Some(128_000), 0.0, Some(2_000)),
+                    .with_usage(1_000, Some(128_000), Some(2_000)),
                 12,
             );
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
@@ -519,7 +514,7 @@ mod tests {
         let rendered =
             render_header(
                 HeaderData::new(AppMode::Plan, "deepseek-v4-pro", true, palette::WHALE_BG)
-                    .with_usage(42_000, Some(128_000), 0.0, Some(48_000)),
+                    .with_usage(42_000, Some(128_000), Some(48_000)),
                 72,
             );
 
@@ -534,7 +529,6 @@ mod tests {
             HeaderData::new(AppMode::Agent, "", true, palette::WHALE_BG).with_usage(
                 0,
                 Some(128_000),
-                0.0,
                 Some(48_000),
             ),
             14,
@@ -547,7 +541,7 @@ mod tests {
     fn narrow_header_falls_back_to_mode_without_rendering_all_modes() {
         let rendered = render_header(
             HeaderData::new(AppMode::Yolo, "deepseek-v4-flash", true, palette::WHALE_BG)
-                .with_usage(1_000, Some(10_000), 0.0, Some(4_000)),
+                .with_usage(1_000, Some(10_000), Some(4_000)),
             8,
         );
 
@@ -584,7 +578,7 @@ mod tests {
                 false,
                 palette::WHALE_BG,
             )
-            .with_usage(1_000, Some(128_000), 0.0, Some(320_000)),
+            .with_usage(1_000, Some(128_000), Some(320_000)),
             48,
         );
 

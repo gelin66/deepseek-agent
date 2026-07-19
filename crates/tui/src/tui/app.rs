@@ -13,7 +13,7 @@ use codewhale_config::route::RouteLimits;
 use crate::config::{ApiProvider, Config, DEFAULT_TEXT_MODEL, has_api_key};
 use crate::localization::{MessageId, tr};
 use crate::palette::{self, UiTheme};
-use crate::pricing::{CostCurrency, CostEstimate};
+use crate::pricing::CostCurrency;
 use crate::settings::Settings;
 use crate::tui::approval::ApprovalMode;
 use crate::tui::child_agents::ChildAgents;
@@ -1005,12 +1005,9 @@ impl Default for ViewportState {
 /// Session cost and token telemetry state.
 #[derive(Debug, Clone)]
 pub struct SessionState {
-    pub session_cost: f64,
-    pub session_cost_cny: f64,
-    pub subagent_cost: f64,
-    pub subagent_cost_cny: f64,
-    pub displayed_cost_high_water: f64,
-    pub displayed_cost_high_water_cny: f64,
+    /// Canonical aggregate cost for all root and child model responses.
+    pub total_cost_usd: f64,
+    pub total_cost_cny: f64,
     pub last_prompt_tokens: Option<u32>,
     pub last_completion_tokens: Option<u32>,
     pub last_prompt_cache_hit_tokens: Option<u32>,
@@ -1028,12 +1025,8 @@ pub struct SessionState {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
-            session_cost: 0.0,
-            session_cost_cny: 0.0,
-            subagent_cost: 0.0,
-            subagent_cost_cny: 0.0,
-            displayed_cost_high_water: 0.0,
-            displayed_cost_high_water_cny: 0.0,
+            total_cost_usd: 0.0,
+            total_cost_cny: 0.0,
             last_prompt_tokens: None,
             last_completion_tokens: None,
             last_prompt_cache_hit_tokens: None,
@@ -2022,80 +2015,13 @@ impl App {
         }
     }
 
-    /// Add `delta` to the parent-turn session cost and bump the displayed
-    /// high-water mark so the footer total never reverses (#244).
-    #[allow(dead_code)]
-    pub fn accrue_session_cost(&mut self, delta: f64) {
-        self.accrue_session_cost_estimate(CostEstimate::usd_only(delta));
-    }
-
-    /// Add a dual-currency parent-turn cost estimate.
-    pub fn accrue_session_cost_estimate(&mut self, estimate: CostEstimate) {
-        self.session.session_cost += estimate.usd;
-        self.session.session_cost_cny += estimate.cny;
-        self.refresh_displayed_cost_high_water();
-    }
-
-    /// Add `delta` to the running sub-agent cost and bump the displayed
-    /// high-water mark so the footer total never reverses (#244).
-    #[allow(dead_code)]
-    pub fn accrue_subagent_cost(&mut self, delta: f64) {
-        self.accrue_subagent_cost_estimate(CostEstimate::usd_only(delta));
-    }
-
-    /// Add a dual-currency sub-agent/background cost estimate.
-    pub fn accrue_subagent_cost_estimate(&mut self, estimate: CostEstimate) {
-        self.session.subagent_cost += estimate.usd;
-        self.session.subagent_cost_cny += estimate.cny;
-        self.refresh_displayed_cost_high_water();
-    }
-
-    /// Recompute the displayed cost high-water mark. Called any time a cost
-    /// counter is mutated; never decreases.
-    pub fn refresh_displayed_cost_high_water(&mut self) {
-        let current = self.session.session_cost + self.session.subagent_cost;
-        if current > self.session.displayed_cost_high_water {
-            self.session.displayed_cost_high_water = current;
-        }
-        let current_cny = self.session.session_cost_cny + self.session.subagent_cost_cny;
-        if current_cny > self.session.displayed_cost_high_water_cny {
-            self.session.displayed_cost_high_water_cny = current_cny;
-        }
-    }
-
-    /// Read the visible session+sub-agent cost. Guaranteed monotonic across
-    /// reconciliation events (cache adjustments, provisional → final swaps)
-    /// for the lifetime of one session (#244).
-    #[allow(dead_code)]
-    pub fn displayed_session_cost(&self) -> f64 {
-        self.displayed_session_cost_for_currency(CostCurrency::Usd)
-    }
-
-    /// Read the visible session+sub-agent cost in the chosen currency.
-    pub fn displayed_session_cost_for_currency(&self, currency: CostCurrency) -> f64 {
+    /// Read the canonical root-and-child accounting total in the chosen
+    /// display currency. `run_presenter` projects the aggregate Run ledger
+    /// into these two fields; the TUI does not maintain a second child ledger.
+    pub fn total_cost_for_currency(&self, currency: CostCurrency) -> f64 {
         match self.cost_display_currency(currency) {
-            CostCurrency::Usd => {
-                let current = self.session.session_cost + self.session.subagent_cost;
-                current.max(self.session.displayed_cost_high_water)
-            }
-            CostCurrency::Cny => {
-                let current = self.session.session_cost_cny + self.session.subagent_cost_cny;
-                current.max(self.session.displayed_cost_high_water_cny)
-            }
-        }
-    }
-
-    pub fn session_cost_for_currency(&self, currency: CostCurrency) -> f64 {
-        match self.cost_display_currency(currency) {
-            CostCurrency::Usd => self.session.session_cost,
-            CostCurrency::Cny => self.session.session_cost_cny,
-        }
-    }
-
-    pub fn subagent_cost_for_currency(&self, currency: CostCurrency) -> f64 {
-        match self.cost_display_currency(currency) {
-            CostCurrency::Usd => self.session.subagent_cost,
-            CostCurrency::Cny => self.session.subagent_cost_cny,
+            CostCurrency::Usd => self.session.total_cost_usd,
+            CostCurrency::Cny => self.session.total_cost_cny,
         }
     }
 
@@ -2112,12 +2038,8 @@ impl App {
 
     pub(crate) fn cost_display_currency(&self, currency: CostCurrency) -> CostCurrency {
         if currency == CostCurrency::Cny
-            && self.session.session_cost_cny == 0.0
-            && self.session.subagent_cost_cny == 0.0
-            && self.session.displayed_cost_high_water_cny == 0.0
-            && (self.session.session_cost > 0.0
-                || self.session.subagent_cost > 0.0
-                || self.session.displayed_cost_high_water > 0.0)
+            && self.session.total_cost_cny == 0.0
+            && self.session.total_cost_usd > 0.0
         {
             CostCurrency::Usd
         } else {
