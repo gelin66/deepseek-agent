@@ -1310,29 +1310,6 @@ fn launch_concurrency_new_key_wins_over_deprecated_alias() {
 }
 
 #[test]
-fn subagent_token_budget_is_optional_and_zero_disables() {
-    assert_eq!(Config::default().subagent_token_budget(), None);
-
-    let disabled = Config {
-        subagents: Some(SubagentsConfig {
-            token_budget: Some(0),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(disabled.subagent_token_budget(), None);
-
-    let configured = Config {
-        subagents: Some(SubagentsConfig {
-            token_budget: Some(50_000),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(configured.subagent_token_budget(), Some(50_000));
-}
-
-#[test]
 fn subagent_admission_limit_defaults_and_clamps() {
     assert_eq!(
         Config::default().max_admitted_subagents(),
@@ -1385,18 +1362,12 @@ max_concurrent = 20
 launch_concurrency = 20
 max_admitted = 200
 max_depth = 6
-token_budget = 100000
-api_timeout_secs = 900
-heartbeat_timeout_secs = 1200
 
 [subagents.providers.glm]
 max_concurrent = 4
 launch_concurrency = 3
 max_admitted = 12
 max_depth = 2
-token_budget = 25000
-api_timeout_secs = 180
-heartbeat_timeout_secs = 240
 "#,
     )
     .expect("parse provider subagent profile");
@@ -1412,18 +1383,6 @@ heartbeat_timeout_secs = 240
     assert_eq!(
         config.subagent_max_spawn_depth_for_provider(ApiProvider::Zai),
         2
-    );
-    assert_eq!(
-        config.subagent_token_budget_for_provider(ApiProvider::Zai),
-        Some(25_000)
-    );
-    assert_eq!(
-        config.subagent_api_timeout_secs_for_provider(ApiProvider::Zai),
-        180
-    );
-    assert_eq!(
-        config.subagent_heartbeat_timeout_secs_for_provider(ApiProvider::Zai),
-        240
     );
 }
 
@@ -1490,7 +1449,6 @@ fn provider_subagent_profiles_inherit_and_clamp_against_provider_max() {
 max_concurrent = 12
 launch_concurrency = 8
 max_depth = 5
-api_timeout_secs = 300
 
 [subagents.providers.deepseek_api]
 max_concurrent = 30
@@ -1515,10 +1473,6 @@ enabled = false
     assert_eq!(
         config.subagent_max_spawn_depth_for_provider(ApiProvider::Deepseek),
         5
-    );
-    assert_eq!(
-        config.subagent_api_timeout_secs_for_provider(ApiProvider::Deepseek),
-        300
     );
     assert!(config.subagents_enabled_for_provider(ApiProvider::Deepseek));
     assert!(!config.subagents_enabled_for_provider(ApiProvider::Anthropic));
@@ -1643,105 +1597,6 @@ fn subagent_max_spawn_depth_defaults_allows_zero_and_clamps() {
     assert_eq!(
         high.subagent_max_spawn_depth(),
         codewhale_config::MAX_SPAWN_DEPTH_CEILING
-    );
-}
-
-#[test]
-fn subagent_api_timeout_defaults_and_clamps() {
-    assert_eq!(
-        Config::default().subagent_api_timeout_secs(),
-        DEFAULT_SUBAGENT_API_TIMEOUT_SECS
-    );
-
-    let zero = Config {
-        subagents: Some(SubagentsConfig {
-            api_timeout_secs: Some(0),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(
-        zero.subagent_api_timeout_secs(),
-        DEFAULT_SUBAGENT_API_TIMEOUT_SECS
-    );
-
-    let explicit_min = Config {
-        subagents: Some(SubagentsConfig {
-            api_timeout_secs: Some(MIN_SUBAGENT_API_TIMEOUT_SECS),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(explicit_min.subagent_api_timeout_secs(), 1);
-
-    let high = Config {
-        subagents: Some(SubagentsConfig {
-            api_timeout_secs: Some(MAX_SUBAGENT_API_TIMEOUT_SECS + 60),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(
-        high.subagent_api_timeout_secs(),
-        MAX_SUBAGENT_API_TIMEOUT_SECS
-    );
-}
-
-#[test]
-fn subagent_heartbeat_timeout_defaults_clamps_and_respects_api_timeout() {
-    assert_eq!(
-        Config::default().subagent_heartbeat_timeout_secs(),
-        DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS
-    );
-
-    let zero = Config {
-        subagents: Some(SubagentsConfig {
-            heartbeat_timeout_secs: Some(0),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(
-        zero.subagent_heartbeat_timeout_secs(),
-        DEFAULT_SUBAGENT_HEARTBEAT_TIMEOUT_SECS
-    );
-
-    let low = Config {
-        subagents: Some(SubagentsConfig {
-            api_timeout_secs: Some(1),
-            heartbeat_timeout_secs: Some(1),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(
-        low.subagent_heartbeat_timeout_secs(),
-        MIN_SUBAGENT_API_TIMEOUT_SECS + 30
-    );
-
-    let follows_long_api_timeout = Config {
-        subagents: Some(SubagentsConfig {
-            api_timeout_secs: Some(900),
-            heartbeat_timeout_secs: Some(300),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(
-        follows_long_api_timeout.subagent_heartbeat_timeout_secs(),
-        930
-    );
-
-    let high = Config {
-        subagents: Some(SubagentsConfig {
-            heartbeat_timeout_secs: Some(MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS + 60),
-            ..SubagentsConfig::default()
-        }),
-        ..Config::default()
-    };
-    assert_eq!(
-        high.subagent_heartbeat_timeout_secs(),
-        MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS
     );
 }
 

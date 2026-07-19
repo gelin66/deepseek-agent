@@ -23,7 +23,6 @@ enabled = true
 [subagents]
 max_concurrent = 6
 max_depth = 2
-api_timeout_secs = 300
 
 [features]
 shell_tool = true

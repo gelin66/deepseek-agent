@@ -927,13 +927,10 @@ If you are upgrading from older releases:
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `20` and is clamped to `1..=20`.
-- `subagents.*` (optional): per-role/type model defaults for `agent`.
-  Explicit tool `model` values win, then role/type
-  overrides, then the parent runtime model. Supported convenience keys are
-  `default_model`, `worker_model`, `explorer_model`, `awaiter_model`,
-  `review_model`, `custom_model`, `max_concurrent`, `max_admitted`,
-  `launch_concurrency`, `token_budget`, `api_timeout_secs`, and
-  `heartbeat_timeout_secs`. The `[subagents] max_concurrent` value overrides
+- `subagents.*` (optional): availability, concurrency, and depth controls for
+  the canonical `agent` runtime. Supported keys are `enabled`,
+  `max_concurrent`, `max_admitted`, `launch_concurrency`, and `max_depth`.
+  The `[subagents] max_concurrent` value overrides
   top-level `max_subagents` and is also clamped to `1..=20`. `[subagents]
   max_admitted` (aliases: `max_total`, `admission_limit`) is the bounded total
   of queued plus running sub-agents; it defaults to `200` so high-fanout turns
@@ -943,17 +940,9 @@ If you are upgrading from older releases:
   rest queue for a launch slot; it defaults to the resolved `max_subagents` cap
   and is clamped to `1..=max_subagents` (the deprecated
   `interactive_max_launch` key is accepted as an alias, with the new key
-  winning when both are set). `[subagents] token_budget` is an optional
-  aggregate token ceiling for each root `agent` run and its descendants; unset
-  or `0` preserves unlimited legacy behavior. `[subagents] api_timeout_secs`
-  controls the per-step API timeout for sub-agent model calls and is clamped to
-  `1..=1800`, with `0` or unset preserving the legacy 120 second default.
-  `[subagents] heartbeat_timeout_secs` controls stale running agent cleanup,
-  defaults to `300`, and is clamped to `30..=3600` while staying above the
-  resolved API timeout. `[subagents.providers.<provider>]` accepts the same
-  fanout, depth, budget, and timeout knobs (`enabled`, `max_concurrent`,
-  `max_admitted`, `launch_concurrency`, `max_depth`, `token_budget`,
-  `api_timeout_secs`, `heartbeat_timeout_secs`) and inherits the global
+  winning when both are set). `[subagents.providers.<provider>]` accepts the
+  same availability, fanout, and depth knobs (`enabled`, `max_concurrent`,
+  `max_admitted`, `launch_concurrency`, `max_depth`) and inherits the global
   `[subagents]` value for any key you omit. Provider keys accept canonical
   names such as `deepseek`, `zai`, `openrouter`, `anthropic`, plus convenience
   aliases such as `glm` for Z.ai and `deepseek_api` for direct DeepSeek:
@@ -982,15 +971,6 @@ If you are upgrading from older releases:
   max_admitted = 20
   ```
 
-  `[subagents.models]` accepts lower-case role or type keys such as `worker`,
-  `explorer`, `general`, `explore`, `plan`, and `review`. Values are validated
-  against the active provider at spawn time; direct DeepSeek requires DeepSeek
-  IDs, while OpenAI-compatible/custom provider routes pass explicit model IDs
-  through to that provider. To route a child to a different provider than the
-  parent session, save a Fleet/AgentProfile with explicit `provider` and
-  `model` fields (including user-named custom providers such as `lm-studio`)
-  and call `agent(profile: "...")`; see
-  [SUBAGENTS.md](../architecture/SUBAGENTS.md).
 - `skills_dir` (string, optional): defaults to `~/.codewhale/skills` (each skill is
   a directory containing `SKILL.md`). Workspace-local `.agents/skills` or
   `./skills` are preferred when present; the runtime also discovers global

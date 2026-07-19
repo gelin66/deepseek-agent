@@ -17,18 +17,13 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use crate::audit::log_sensitive_event;
 use crate::features::{Feature, Features, FeaturesToml, is_known_feature_key};
 
-// Sub-agent concurrency/timeout limit constants and their clamp resolvers live
-// in the `subagent_limits` leaf module. The constants are re-exported (keeping
-// each item's visibility) so `crate::config::<CONST>` paths resolve unchanged;
-// the private resolvers are pulled back in without widening external surface
-// (#3311).
+// Sub-agent concurrency and DeepSeek stream-idle limits live in the
+// `subagent_limits` leaf module and are re-exported for crate-wide use.
 mod subagent_limits;
 pub use subagent_limits::*;
-use subagent_limits::{resolve_subagent_api_timeout_secs, resolve_subagent_heartbeat_timeout_secs};
 
 // Provider model-name and base-URL constants live in the `models` leaf module
-// and are re-exported below so every `crate::config::<CONST>` path is unchanged
-// (#3311).
+// and are re-exported for crate-wide use.
 mod models;
 pub use models::*;
 
@@ -1426,9 +1421,7 @@ pub struct ContextConfig {
     pub project_pack: Option<bool>,
 }
 
-/// Sub-agent model overrides. Keys in `models` can be role names (`worker`,
-/// `explorer`, `awaiter`) or type names (`general`, `explore`, `plan`,
-/// `review`, `custom`). Per-call explicit model choices still win.
+/// Canonical child-agent availability and fanout limits.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SubagentsConfig {
     /// Top-level switch for the model-facing `agent` tool. `None` preserves
@@ -1436,20 +1429,6 @@ pub struct SubagentsConfig {
     /// without changing the numeric queue/depth knobs.
     #[serde(default)]
     pub enabled: Option<bool>,
-    #[serde(default)]
-    pub default_model: Option<String>,
-    #[serde(default)]
-    pub worker_model: Option<String>,
-    #[serde(default)]
-    pub explorer_model: Option<String>,
-    #[serde(default)]
-    pub awaiter_model: Option<String>,
-    #[serde(default)]
-    pub review_model: Option<String>,
-    #[serde(default)]
-    pub custom_model: Option<String>,
-    #[serde(default)]
-    pub models: Option<HashMap<String, String>>,
     /// Maximum concurrent sub-agents. Overrides the top-level max_subagents
     /// setting. Clamped to [1, MAX_SUBAGENTS].
     #[serde(default)]
@@ -1475,30 +1454,11 @@ pub struct SubagentsConfig {
     /// execution bounded.
     #[serde(default, alias = "max_total", alias = "admission_limit")]
     pub max_admitted: Option<usize>,
-    /// Optional aggregate token budget shared by a root `agent` run and its
-    /// descendants. When unset or 0, sub-agents keep legacy unlimited spend
-    /// behavior unless an individual `agent` call supplies a per-run override.
-    #[serde(default)]
-    pub token_budget: Option<u64>,
     /// Deprecated pre-v0.8.61 alias for `launch_concurrency`. Honored only
     /// when `launch_concurrency` is unset, so the new key always wins.
     #[serde(default, rename = "interactive_max_launch")]
     pub interactive_max_launch_legacy: Option<usize>,
-    /// Per-step DeepSeek API timeout for sub-agent requests, in seconds. The
-    /// timeout wraps `client.create_message` so a stuck single step cannot
-    /// pin the parent's parent-completion wakeup channel indefinitely.
-    /// Defaults to `DEFAULT_SUBAGENT_API_TIMEOUT_SECS` (120) and is clamped
-    /// to `MIN_SUBAGENT_API_TIMEOUT_SECS..=MAX_SUBAGENT_API_TIMEOUT_SECS`
-    /// (1..=1800). Zero or unset uses the legacy 120s default (#1806, #1808).
-    #[serde(default)]
-    pub api_timeout_secs: Option<u64>,
-    /// Wall-clock timeout for a running sub-agent that stops making
-    /// manager-visible progress. Defaults to 5 minutes and is kept above the
-    /// per-step API timeout so slow but legitimate model calls are not
-    /// cancelled before their request timeout can fire (#2614).
-    #[serde(default)]
-    pub heartbeat_timeout_secs: Option<u64>,
-    /// Per-provider overrides for sub-agent fanout and budget knobs. Keys are
+    /// Per-provider overrides for sub-agent fanout knobs. Keys are
     /// provider names such as `deepseek`, `zai`, `openrouter`, or `anthropic`.
     #[serde(default)]
     pub providers: Option<HashMap<String, SubagentProviderConfig>>,
@@ -1520,12 +1480,6 @@ pub struct SubagentProviderConfig {
     pub launch_concurrency: Option<usize>,
     #[serde(default, alias = "max_total", alias = "admission_limit")]
     pub max_admitted: Option<usize>,
-    #[serde(default)]
-    pub token_budget: Option<u64>,
-    #[serde(default)]
-    pub api_timeout_secs: Option<u64>,
-    #[serde(default)]
-    pub heartbeat_timeout_secs: Option<u64>,
 }
 
 /// Resolved CLI configuration, including defaults and environment overrides.
@@ -3327,86 +3281,6 @@ impl Config {
             .clamp(max_concurrent, MAX_SUBAGENT_ADMISSION)
     }
 
-    /// Optional aggregate token budget for each root `agent` run.
-    ///
-    /// Reads `[subagents] token_budget`. `None` and `0` both mean unlimited,
-    /// preserving legacy behavior until a budget is explicitly configured.
-    #[must_use]
-    pub fn subagent_token_budget(&self) -> Option<u64> {
-        self.subagents
-            .as_ref()
-            .and_then(|cfg| cfg.token_budget)
-            .filter(|budget| *budget > 0)
-    }
-
-    /// Return the provider-specific aggregate token budget for each root
-    /// `agent` run.
-    #[must_use]
-    pub fn subagent_token_budget_for_provider(&self, provider: ApiProvider) -> Option<u64> {
-        self.subagent_provider_config(provider)
-            .and_then(|cfg| cfg.token_budget)
-            .or_else(|| self.subagents.as_ref().and_then(|cfg| cfg.token_budget))
-            .filter(|budget| *budget > 0)
-    }
-
-    /// Resolved per-step DeepSeek API timeout for sub-agents, in seconds.
-    ///
-    /// Reads `[subagents] api_timeout_secs` and clamps to
-    /// `[MIN_SUBAGENT_API_TIMEOUT_SECS, MAX_SUBAGENT_API_TIMEOUT_SECS]`
-    /// (1..=1800). `None` or `0` resolve to the legacy
-    /// `DEFAULT_SUBAGENT_API_TIMEOUT_SECS` (120) so existing configs keep
-    /// their old behavior; explicit `1` is honored, useful only in fast
-    /// fail-fast tests, not production (#1806, #1808).
-    #[must_use]
-    pub fn subagent_api_timeout_secs(&self) -> u64 {
-        resolve_subagent_api_timeout_secs(
-            self.subagents.as_ref().and_then(|cfg| cfg.api_timeout_secs),
-        )
-    }
-
-    /// Return the provider-specific per-step API timeout for sub-agents.
-    #[must_use]
-    pub fn subagent_api_timeout_secs_for_provider(&self, provider: ApiProvider) -> u64 {
-        resolve_subagent_api_timeout_secs(
-            self.subagent_provider_config(provider)
-                .and_then(|cfg| cfg.api_timeout_secs)
-                .or_else(|| self.subagents.as_ref().and_then(|cfg| cfg.api_timeout_secs)),
-        )
-    }
-
-    /// Resolved no-progress heartbeat timeout for running sub-agents.
-    ///
-    /// Reads `[subagents] heartbeat_timeout_secs` and clamps to
-    /// `[MIN_SUBAGENT_HEARTBEAT_TIMEOUT_SECS, MAX_SUBAGENT_HEARTBEAT_TIMEOUT_SECS]`.
-    /// `None` or `0` resolve to the default 300 seconds. The final value is
-    /// also kept at least 30 seconds above `subagent_api_timeout_secs()` so a
-    /// configured long model request is not pre-empted by heartbeat cleanup.
-    #[must_use]
-    pub fn subagent_heartbeat_timeout_secs(&self) -> u64 {
-        resolve_subagent_heartbeat_timeout_secs(
-            self.subagents
-                .as_ref()
-                .and_then(|cfg| cfg.heartbeat_timeout_secs),
-            self.subagent_api_timeout_secs(),
-        )
-    }
-
-    /// Return the provider-specific no-progress heartbeat timeout.
-    #[must_use]
-    pub fn subagent_heartbeat_timeout_secs_for_provider(&self, provider: ApiProvider) -> u64 {
-        let api_timeout = self.subagent_api_timeout_secs_for_provider(provider);
-        resolve_subagent_heartbeat_timeout_secs(
-            self.subagent_provider_config(provider)
-                .and_then(|cfg| cfg.heartbeat_timeout_secs)
-                .or_else(|| {
-                    self.subagents
-                        .as_ref()
-                        .and_then(|cfg| cfg.heartbeat_timeout_secs)
-                }),
-            api_timeout,
-        )
-    }
-
     /// Resolved per-SSE-chunk idle timeout in seconds.
     ///
     /// Reads `[tui].stream_chunk_timeout_secs`, falling back to the legacy
@@ -3429,43 +3303,6 @@ impl Config {
             return DEFAULT_STREAM_CHUNK_TIMEOUT_SECS;
         }
         raw.clamp(MIN_STREAM_CHUNK_TIMEOUT_SECS, MAX_STREAM_CHUNK_TIMEOUT_SECS)
-    }
-
-    /// Raw sub-agent model override map. Values are validated at spawn time
-    /// so an invalid role/type model fails before any partial agent spawn.
-    #[must_use]
-    pub fn subagent_model_overrides(&self) -> HashMap<String, String> {
-        let mut overrides = HashMap::new();
-        let Some(cfg) = self.subagents.as_ref() else {
-            return overrides;
-        };
-
-        let mut insert = |key: &str, value: &Option<String>| {
-            if let Some(model) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
-                overrides.insert(key.to_string(), model.to_string());
-            }
-        };
-        insert("default", &cfg.default_model);
-        insert("worker", &cfg.worker_model);
-        insert("general", &cfg.worker_model);
-        insert("explorer", &cfg.explorer_model);
-        insert("explore", &cfg.explorer_model);
-        insert("awaiter", &cfg.awaiter_model);
-        insert("plan", &cfg.awaiter_model);
-        insert("review", &cfg.review_model);
-        insert("custom", &cfg.custom_model);
-
-        if let Some(models) = cfg.models.as_ref() {
-            for (key, model) in models {
-                let key = key.trim();
-                let model = model.trim();
-                if !key.is_empty() && !model.is_empty() {
-                    overrides.insert(key.to_ascii_lowercase(), model.to_string());
-                }
-            }
-        }
-
-        overrides
     }
 
     /// Parsed `[fleet]` table, or defaults when the table is absent
