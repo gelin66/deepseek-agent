@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use crate::localization::{MessageId, tr};
 use crate::palette;
-use crate::tui::app::{App, AppMode, ComposerDensity};
+use crate::tui::app::{App, ComposerDensity};
 use crate::tui::approval::{ApprovalRequest, ApprovalStakes, ApprovalView, ToolCategory};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
 use crate::tui::scrolling::TranscriptLineMeta;
@@ -1003,14 +1003,6 @@ impl<'a> ComposerWidget<'a> {
         }
     }
 
-    fn mode_color(&self) -> Color {
-        match self.app.mode {
-            AppMode::Agent | AppMode::Auto | AppMode::Yolo => palette::MODE_AGENT,
-            AppMode::Plan => palette::MODE_PLAN,
-            AppMode::Operate => palette::MODE_OPERATE,
-        }
-    }
-
     fn max_height_cap(&self) -> u16 {
         composer_max_height(self.app.composer_density)
     }
@@ -1049,7 +1041,7 @@ impl Renderable for ComposerWidget<'_> {
             let border_color = if input_text.trim().is_empty() {
                 palette::BORDER_COLOR
             } else {
-                self.mode_color()
+                self.app.ui_theme.accent_primary
             };
             let hint_line = if !self.slash_menu_entries.is_empty() {
                 Some(Line::from(Span::styled(
@@ -2546,7 +2538,6 @@ mod tests {
             model: "deepseek-v4-flash".to_string(),
             workspace: PathBuf::from("."),
             config_path: None,
-            config_profile: None,
             allow_shell: false,
             use_alt_screen: true,
             use_mouse_capture: false,
@@ -2557,7 +2548,6 @@ mod tests {
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
-            start_in_agent_mode: true,
             skip_onboarding: true,
             yolo: false,
             resume_session_id: None,

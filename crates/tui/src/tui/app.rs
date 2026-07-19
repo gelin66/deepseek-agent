@@ -100,18 +100,6 @@ fn onboarding_is_workspace_trust_gate(
     !skip_onboarding && was_onboarded && !needs_api_key && needs_workspace_trust
 }
 
-/// Supported application modes for the TUI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppMode {
-    Agent,
-    #[allow(dead_code)]
-    Auto,
-    /// Legacy compatibility alias; resolves to [`Self::Agent`] + bypass approvals.
-    Yolo,
-    Plan,
-    Operate,
-}
-
 /// Reasoning-effort tier, mirrored across DeepSeek and Codex effort pickers.
 ///
 /// The config file accepts all five string values for forward-compat with
@@ -697,31 +685,6 @@ const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
 /// Beyond this, the text is truncated for rendering but the full content
 /// is preserved for model submission (#3263).
 const MAX_COMPOSER_DISPLAY_CHARS: usize = 4_000;
-impl AppMode {
-    #[must_use]
-    pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "agent" | "act" | "auto" | "1" => Some(Self::Agent),
-            "plan" | "2" => Some(Self::Plan),
-            "operate" | "operation" | "ops" | "3" => Some(Self::Operate),
-            // Invisible one-way permission shorthand only — never a visible mode.
-            "yolo" | "4" | "bypass" | "bypass-permissions" | "bypasspermissions" => {
-                Some(Self::Yolo)
-            }
-            _ => None,
-        }
-    }
-
-    #[must_use]
-    pub fn from_setting(value: &str) -> Self {
-        // Unreleased Multitask never shipped; normalize leftover settings to Operate.
-        match value.trim().to_ascii_lowercase().as_str() {
-            "multitask" | "multi" | "5" => Self::Operate,
-            other => Self::parse(other).unwrap_or(Self::Agent),
-        }
-    }
-}
-
 /// Configuration required to bootstrap the TUI.
 #[derive(Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -729,7 +692,6 @@ pub struct TuiOptions {
     pub model: String,
     pub workspace: PathBuf,
     pub config_path: Option<PathBuf>,
-    pub config_profile: Option<String>,
     pub allow_shell: bool,
     /// Use the alternate screen buffer (fullscreen TUI).
     pub use_alt_screen: bool,
@@ -751,8 +713,6 @@ pub struct TuiOptions {
     pub mcp_config_path: PathBuf,
     #[allow(dead_code)]
     pub use_memory: bool,
-    /// Start in agent mode (defaults to agent; --yolo starts in YOLO)
-    pub start_in_agent_mode: bool,
     /// Skip onboarding screens
     pub skip_onboarding: bool,
     /// Auto-approve tool executions (yolo mode)
@@ -920,7 +880,6 @@ impl Default for SessionState {
 /// Global UI state for the TUI.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
-    pub mode: AppMode,
     /// Composer sub-state (input, cursor, history, menus).
     pub composer: ComposerState,
     /// Viewport sub-state (scroll, cache, selection).
@@ -1048,10 +1007,6 @@ pub struct App {
     pub api_key_env_only: bool,
     pub api_key_input: String,
     pub api_key_cursor: usize,
-    #[allow(dead_code)]
-    pub yolo: bool,
-    /// One-shot YOLO→Act+Bypass migration notice for this session (#0.8.68 M6).
-    yolo_compat_notified: bool,
     // Clipboard handler
     pub clipboard: ClipboardHandler,
     pub approval_mode: ApprovalMode,
@@ -1159,7 +1114,6 @@ impl App {
             model,
             workspace,
             config_path,
-            config_profile,
             allow_shell,
             use_alt_screen: _,
             use_mouse_capture,
@@ -1170,67 +1124,15 @@ impl App {
             notes_path: _,
             mcp_config_path,
             use_memory,
-            start_in_agent_mode,
             skip_onboarding,
             yolo,
             resume_session_id: _,
             initial_input,
         } = options;
 
-        // Start from disk-only preferences so one-time migrations can never
-        // persist terminal/environment overlays such as NO_ANIMATIONS. Apply
-        // those overlays only after any normalized settings write succeeds.
+        // Start from disk-only preferences, then apply terminal/environment
+        // overlays such as NO_ANIMATIONS without persisting them.
         let mut settings = Settings::load_persisted().unwrap_or_else(|_| Settings::default());
-        let legacy_yolo_default = settings.legacy_yolo_default_detected();
-        let legacy_yolo_full_access = if legacy_yolo_default {
-            let control = config.approval_policy_control(
-                config_path.as_deref(),
-                config_profile.as_deref(),
-                &workspace,
-            );
-            match control {
-                crate::config::ApprovalPolicyControl::Unset => {
-                    if let Err(error) = settings.save() {
-                        tracing::warn!(
-                            "failed to normalize legacy YOLO settings; retrying next launch: {error:#}"
-                        );
-                    }
-                    true
-                }
-                crate::config::ApprovalPolicyControl::RootConfig => {
-                    let active_config_path =
-                        crate::config::resolve_load_config_path(config_path.clone());
-                    match crate::config_persistence::persist_unset_root_key(
-                        active_config_path.as_deref(),
-                        "approval_policy",
-                    ) {
-                        Ok(_) => {
-                            if let Err(error) = settings.save() {
-                                tracing::warn!(
-                                    "removed legacy approval_policy but could not normalize settings; retrying next launch: {error:#}"
-                                );
-                            }
-                            true
-                        }
-                        Err(error) => {
-                            tracing::warn!(
-                                "could not migrate legacy YOLO approval policy; keeping the controlling policy: {error:#}"
-                            );
-                            false
-                        }
-                    }
-                }
-                source => {
-                    tracing::warn!(
-                        "legacy YOLO setting was not allowed to override {}",
-                        source.label()
-                    );
-                    false
-                }
-            }
-        } else {
-            false
-        };
         settings.apply_env_overrides();
         // If settings.toml exists on disk but couldn't be parsed (we fell back
         // to defaults), surface a warning in the TUI so the user knows their
@@ -1330,16 +1232,8 @@ impl App {
             })
         };
 
-        // Resolve the saved mode separately from the permission posture.
-        let preferred_mode = AppMode::from_setting(&settings.default_mode);
-        let yolo_compat = yolo || (preferred_mode == AppMode::Yolo && !start_in_agent_mode);
-        let initial_mode = if yolo_compat || start_in_agent_mode {
-            AppMode::Agent
-        } else {
-            preferred_mode
-        };
-        let needs_workspace_trust = !yolo_compat
-            && crate::tui::onboarding::needs_trust_at(config_path.as_deref(), &workspace);
+        let needs_workspace_trust =
+            !yolo && crate::tui::onboarding::needs_trust_at(config_path.as_deref(), &workspace);
         let onboarding = initial_onboarding_state(
             skip_onboarding,
             was_onboarded,
@@ -1354,14 +1248,12 @@ impl App {
         );
 
         // Resolve the startup approval projection once. Managed config wins over
-        // the saved local posture; legacy YOLO migration is handled above before
-        // the canonical application and Run controls are constructed.
-        let explicit_approval_mode = (!legacy_yolo_full_access)
-            .then_some(config.approval_policy.as_deref())
-            .flatten()
+        // the saved local posture; explicit full access is projected below.
+        let explicit_approval_mode = config
+            .approval_policy
+            .as_deref()
             .and_then(ApprovalMode::from_config_value);
-        let approval_policy_locked =
-            !legacy_yolo_full_access && config.approval_policy_is_managed();
+        let approval_policy_locked = config.approval_policy_is_managed();
         let saved_permission_posture = if approval_policy_locked {
             None
         } else {
@@ -1373,7 +1265,7 @@ impl App {
         let configured_approval_mode = explicit_approval_mode
             .or(saved_permission_posture)
             .unwrap_or_default();
-        let allow_shell = allow_shell || yolo_compat || matches!(initial_mode, AppMode::Yolo);
+        let allow_shell = allow_shell || yolo;
 
         let skills_scan_codewhale_only = config.skills_config().scan_codewhale_only();
         let skills_dir = resolve_skills_dir(&workspace, &global_skills_dir, config);
@@ -1400,8 +1292,7 @@ impl App {
             crate::mcp::load_config_with_workspace(&mcp_config_path, &workspace)
                 .map(|cfg| cfg.servers.len())
                 .unwrap_or(0);
-        let mut app = Self {
-            mode: initial_mode,
+        Self {
             composer: ComposerState {
                 input: initial_input_text,
                 cursor_position: initial_input_cursor,
@@ -1474,16 +1365,14 @@ impl App {
             api_key_env_only,
             api_key_input: String::new(),
             api_key_cursor: 0,
-            yolo: yolo_compat,
-            yolo_compat_notified: false,
             clipboard: ClipboardHandler::new(),
-            approval_mode: if yolo_compat || matches!(initial_mode, AppMode::Yolo) {
+            approval_mode: if yolo {
                 ApprovalMode::Bypass
             } else {
                 configured_approval_mode
             },
             view_stack: ViewStack::new(),
-            trust_mode: yolo_compat || initial_mode == AppMode::Yolo,
+            trust_mode: yolo,
             status_items: config
                 .tui
                 .as_ref()
@@ -1519,11 +1408,7 @@ impl App {
             mention_menu_behavior: settings.mention_menu_behavior.clone(),
             workspace_follow_symlinks: settings.workspace_follow_symlinks,
             session_title: None,
-        };
-        if yolo_compat {
-            app.notify_yolo_compat_once();
         }
-        app
     }
 
     fn discover_cached_skills(
@@ -1548,31 +1433,6 @@ impl App {
             self.status_message = Some(format!("Failed to mark onboarding: {err}"));
         }
         self.needs_redraw = true;
-    }
-
-    fn notify_yolo_compat_once(&mut self) {
-        if self.yolo_compat_notified {
-            return;
-        }
-        self.yolo_compat_notified = true;
-        // Per-install suppression: check the persisted flag so the toast
-        // appears exactly once across sessions, not every launch.
-        if let Ok(settings) = crate::settings::Settings::load()
-            && settings.yolo_deprecation_shown
-        {
-            return;
-        }
-        // Persist the flag best-effort; toast still fires even if the write
-        // fails (retries on the next attempt).
-        if let Ok(mut settings) = crate::settings::Settings::load_persisted() {
-            settings.yolo_deprecation_shown = true;
-            let _ = settings.save();
-        }
-        self.push_status_toast(
-            "旧版完全访问模式已迁移；请在配置中明确设置启动权限。".to_string(),
-            StatusToastLevel::Warning,
-            Some(8_000),
-        );
     }
 
     /// Whether the interface is asking the user to make a decision. Ambient

@@ -60,14 +60,13 @@ handler 从未接入生产事件循环，却生成不存在的 `/task` 与 `/job
 选择、滚动、打开、停止和 hitbox 状态已物理删除。没有生产 writer、没有 RunStore 表或
 RuntimeEvent 的 TUI-local Plan/Todo Store、`App.task_panel`、假工具及其 sidebar/footer/
 transcript reader 也已删除。工具 Activity 继续读取 `run_presenter` 产生的 canonical
-`GenericToolCell`，多 Agent 展示继续读取 canonical `child_agents`；`AppMode::Plan` 的只读
-标签当前只来自启动设置，不会改变 canonical 工具或审批策略。M5 的
+`GenericToolCell`，多 Agent 展示继续读取 canonical `child_agents`。M5 的
 TaskContract/EvidenceReceipt 不通过恢复这些私有状态实现。
 WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 
 旧 `ModePickerView` 与 `StatusPickerView` 没有生产构造或打开入口，只有模块内测试；两者及
 其专属 View event 已删除。底层 `StatusItem` 与 footer 状态投影仍由现有真实调用方拥有；
-`AppMode` 暂时只保留启动标签投影，不是 canonical 权限 owner。
+没有执行语义的 `AppMode/default_mode` 启动标签链也已物理删除。
 
 旧 `ConfigView` 同样没有生产构造、打开入口或 canonical 命令；其 2,000 余行编辑/筛选/
 渲染岛和专属消息已删除。底层配置仍从文件和环境加载，Doctor 指向实际配置文件。
@@ -372,8 +371,7 @@ M4-C foreground 切换后还已物理删除：
   canonical Runtime terminal、RunStore 和确定性 `crates/tools::run_verifiers` 保留。
 - 没有生产构造或写入方的 TUI-local Plan/Todo Store 与 `update_plan`/`todo_*` 假工具，以及
   只读取永久空状态的 WorkSurface/sidebar/footer 和旧 transcript/checklist 特判；
-  canonical root/child Run 投影和多 Agent 能力保留；`AppMode::Plan` 只剩启动标签，不具有
-  canonical read-only 权限语义。
+  canonical root/child Run 投影和多 Agent 能力保留。
 - 只有测试构造、没有 canonical producer、RunStore 表或 RuntimeEvent writer 的
   `App.task_panel`/`TaskPanelEntry` 及其 background shell reader；WorkSurface 现在只显示
   canonical child Agent，Activity 继续显示 canonical `GenericToolCell`。
@@ -706,10 +704,12 @@ M4-C foreground 切换后还已物理删除：
   命令/多 Agent 调度不经过该幽灵提示。
 - App 的动态模式与 permission posture 状态机没有 canonical key、slash command 或 Run event
   producer；`set_mode`、Tab/Shift-Tab cycle、Agent baseline、policy-lock UI mirror 和对应设置
-  写入只在自测内闭环，现已物理删除。启动配置仍一次性决定 shell catalog、trust、sandbox
-  和 `auto_approve`。`default_mode` 当前只改变启动标签，Plan/Operate 不构成 canonical 权限或
-  多 Agent 编排能力。`ApprovalRequest` 不再重复保存无人读取的英文 impact 列表；保留的简体
-  中文 `impacts()` 只是 TUI 展示摘要，canonical risk 仍只来自 `crates/tools`。
+  写入只在自测内闭环，现已物理删除。后续调用图又证明 `AppMode/default_mode` 只剩启动标签、
+  颜色和错误的 Plan“只读”提示，因此连同 legacy YOLO 设置迁移、Doctor 字段和渲染分支一起
+  删除；旧 `default_mode` 现在被忽略且不能授予权限。真实显式 Full Access 输入仍直接投影为
+  shell、自动批准和工作区外访问控制，不经过模式标签。`ApprovalRequest` 不再重复保存无人
+  读取的英文 impact 列表；保留的简体中文 `impacts()` 只是 TUI 展示摘要，canonical risk
+  仍只来自 `crates/tools`。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
   删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有

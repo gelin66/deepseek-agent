@@ -786,11 +786,6 @@ Common settings keys:
 - `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
   `/cost`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
-- `default_mode` (`agent` or `plan`): selects the startup UI label.
-  It does not change the canonical Run tool policy or approval policy, and the
-  current TUI has no live mode-switch command or shortcut. Legacy values are
-  accepted only while this startup projection is reviewed for removal or a
-  future canonical implementation. Legacy `operate` values load as `agent`.
 - `sidebar_focus` (`pinned`, `auto`, `tasks`, `agents`, `context`, `hidden`; default
   `pinned`): selects the right sidebar focus. `pinned` keeps the right sidebar
   visible when the terminal is wide enough and composes Work, Tasks, Agents,
@@ -808,9 +803,10 @@ The composer has one direct-editing path. `composer_vim_mode`, `vim_mode`, and
 composer input. Vim-style `j`/`k`/`g`/`G`/`y`/`q` bindings belong only to the
 separate Pager modal.
 
-The current TUI has no `/mode`, `Tab` mode cycle, or `Shift-Tab` permission
-cycle. For compatibility, older settings files with `default_mode = "normal"`
-still load as the `agent` startup label.
+The current TUI has no application mode, `/mode` command, `Tab` mode cycle, or
+`Shift-Tab` permission cycle. Permissions come from the real startup approval,
+Shell, sandbox, and trust controls. Obsolete `default_mode` values are ignored
+and never grant authority.
 
 The human-facing interface is fixed to Simplified Chinese. `locale` and
 `language` are not supported settings; `LANG`, `LC_ALL`, and `LC_MESSAGES` do
@@ -854,8 +850,6 @@ If you are upgrading from older releases:
 - Old: `/set model deepseek-reasoner`
   New: set `model = "deepseek-v4-pro"` or `model = "deepseek-v4-flash"` in
   `~/.codewhale/config.toml`, then restart
-- Old: visible `Normal` mode or `default_mode = "normal"`
-  New: use `Agent` / `default_mode = "agent"`; legacy `normal` still maps to `agent`
 - Old: discover `/set` in slash UX/help
   New: edit the configuration and settings files directly
 

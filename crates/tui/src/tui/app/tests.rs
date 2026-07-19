@@ -8,7 +8,6 @@ fn test_options(yolo: bool) -> TuiOptions {
         model: "test-model".to_string(),
         workspace: PathBuf::from("."),
         config_path: None,
-        config_profile: None,
         allow_shell: yolo,
         use_alt_screen: true,
         use_mouse_capture: false,
@@ -19,9 +18,6 @@ fn test_options(yolo: bool) -> TuiOptions {
         notes_path: PathBuf::from("notes.txt"),
         mcp_config_path: PathBuf::from("mcp.json"),
         use_memory: false,
-        // Keep unit tests independent from the developer's saved
-        // `default_mode` setting.
-        start_in_agent_mode: true,
         skip_onboarding: false,
         yolo,
         resume_session_id: None,
@@ -72,6 +68,8 @@ fn initial_input_submit_marks_startup_dispatch() {
 fn test_trust_mode_follows_yolo_on_startup() {
     let app = App::new(test_options(true), &Config::default());
     assert!(app.trust_mode);
+    assert!(app.allow_shell);
+    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
 }
 
 #[test]
@@ -1201,23 +1199,6 @@ fn app_starts_without_seeded_transcript_messages() {
 }
 
 #[test]
-fn app_mode_parses_initial_static_settings() {
-    assert_eq!(AppMode::parse("agent"), Some(AppMode::Agent));
-    assert_eq!(AppMode::parse("act"), Some(AppMode::Agent));
-    assert_eq!(AppMode::parse("2"), Some(AppMode::Plan));
-    assert_eq!(AppMode::parse("auto"), Some(AppMode::Agent));
-    assert_eq!(AppMode::parse("3"), Some(AppMode::Operate));
-    assert_eq!(AppMode::parse("operate"), Some(AppMode::Operate));
-    assert_eq!(AppMode::parse("YOLO"), Some(AppMode::Yolo));
-    assert_eq!(AppMode::parse("4"), Some(AppMode::Yolo));
-    assert_eq!(AppMode::parse("multitask"), None);
-    assert_eq!(AppMode::parse("5"), None);
-    assert_eq!(AppMode::parse("fast"), None);
-    assert_eq!(AppMode::from_setting("multitask"), AppMode::Operate);
-    assert_eq!(AppMode::from_setting("5"), AppMode::Operate);
-}
-
-#[test]
 fn test_clear_input() {
     let mut app = App::new(test_options(false), &Config::default());
     app.input = "test input".to_string();
@@ -1235,97 +1216,29 @@ fn test_clear_input() {
 fn app_new_respects_allow_shell_option_when_not_yolo() {
     let mut options = test_options(false);
     options.allow_shell = false;
-    options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
     let app = App::new(options, &Config::default());
     assert!(!app.allow_shell);
 }
 
 #[test]
-fn legacy_yolo_migrates_root_policy_to_agent_full_access() {
+fn obsolete_default_mode_yolo_cannot_grant_authority() {
     let _env_lock = lock_test_env();
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
-    let settings_path = tmp.path().join("settings.toml");
-    let workspace = tmp.path().join("workspace");
-    std::fs::create_dir_all(&workspace).expect("workspace");
-    std::fs::write(&config_path, "# keep\napproval_policy = \"on-request\"\n")
-        .expect("legacy config");
-    std::fs::write(&settings_path, "default_mode = \"yolo\"\n").expect("legacy settings");
-    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let _approval_env = EnvVarGuard::remove("DEEPSEEK_APPROVAL_POLICY");
-    let config = Config::load(Some(config_path.clone()), None).expect("load config");
-    let mut options = test_options(false);
-    options.start_in_agent_mode = false;
-    options.workspace = workspace;
-    options.config_path = Some(config_path.clone());
-
-    let app = App::new(options.clone(), &config);
-
-    assert_eq!(app.mode, AppMode::Agent);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-    let saved_config = std::fs::read_to_string(&config_path).expect("saved config");
-    assert!(saved_config.contains("# keep"));
-    assert!(!saved_config.contains("approval_policy"));
-    let saved_settings = std::fs::read_to_string(&settings_path).expect("saved settings");
-    assert!(saved_settings.contains("default_mode = \"agent\""));
-    assert!(saved_settings.contains("permission_posture = \"full-access\""));
-
-    let restarted_config = Config::load(Some(config_path), None).expect("reload config");
-    let restarted = App::new(options, &restarted_config);
-    assert_eq!(restarted.mode, AppMode::Agent);
-    assert_eq!(restarted.approval_mode, ApprovalMode::Bypass);
-}
-
-#[test]
-fn legacy_yolo_migrates_the_actual_fallback_config_not_a_missing_env_path() {
-    let _env_lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let home = tmp.path().join("home");
-    let home_config_dir = home.join(codewhale_config::CODEWHALE_APP_DIR);
-    let override_dir = tmp.path().join("missing-override");
-    let missing_override = override_dir.join("config.toml");
-    let workspace = tmp.path().join("workspace");
-    std::fs::create_dir_all(&home_config_dir).expect("home config dir");
-    std::fs::create_dir_all(&override_dir).expect("override dir");
-    std::fs::create_dir_all(&workspace).expect("workspace");
-    let home_config = home_config_dir.join("config.toml");
     std::fs::write(
-        &home_config,
-        "# actual fallback\napproval_policy = \"on-request\"\n",
+        tmp.path().join("settings.toml"),
+        "default_mode = \"yolo\"\n",
     )
-    .expect("home config");
-    let override_settings = override_dir.join("settings.toml");
-    std::fs::write(&override_settings, "default_mode = \"yolo\"\n").expect("legacy settings");
-
-    let _home = EnvVarGuard::set("HOME", &home);
-    let _user_profile = EnvVarGuard::set("USERPROFILE", &home);
-    let _codewhale_home = EnvVarGuard::remove("CODEWHALE_HOME");
-    let _codewhale_config = EnvVarGuard::remove("CODEWHALE_CONFIG_PATH");
-    let _deepseek_config = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &missing_override);
-    let _approval_env = EnvVarGuard::remove("DEEPSEEK_APPROVAL_POLICY");
-
-    let config = Config::load(None, None).expect("load fallback config");
-    assert_eq!(config.approval_policy.as_deref(), Some("on-request"));
+    .expect("obsolete settings fixture");
+    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
     let mut options = test_options(false);
-    options.start_in_agent_mode = false;
-    options.workspace = workspace;
-    options.config_path = None;
+    options.config_path = Some(config_path);
 
-    let app = App::new(options, &config);
+    let app = App::new(options, &Config::default());
 
-    assert_eq!(app.mode, AppMode::Agent);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-    assert!(
-        !missing_override.exists(),
-        "migration must not create the missing DEEPSEEK_CONFIG_PATH target"
-    );
-    let saved_home_config = std::fs::read_to_string(&home_config).expect("saved fallback config");
-    assert!(saved_home_config.contains("# actual fallback"));
-    assert!(!saved_home_config.contains("approval_policy"));
-    let saved_settings =
-        std::fs::read_to_string(&override_settings).expect("normalized override settings");
-    assert!(saved_settings.contains("default_mode = \"agent\""));
-    assert!(saved_settings.contains("permission_posture = \"full-access\""));
+    assert!(!app.allow_shell);
+    assert!(!app.trust_mode);
+    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
 }
 
 #[test]
@@ -1363,12 +1276,7 @@ fn configured_approval_policy_initializes_live_approval_mode() {
         approval_policy: Some("never".to_string()),
         ..Default::default()
     };
-    let mut options = test_options(false);
-    options.start_in_agent_mode = true;
-
-    let app = App::new(options, &config);
-
-    assert_eq!(app.mode, AppMode::Agent);
+    let app = App::new(test_options(false), &config);
     assert_eq!(app.approval_mode, ApprovalMode::Never);
 }
 

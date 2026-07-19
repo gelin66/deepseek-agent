@@ -661,9 +661,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   状态行 picker 文案；`StatusItem` 配置与实际 footer 投影继续由原调用方保留，不恢复
   不可达的 `/mode` 或 `/statusline` 外壳。
 - M4-C 已删除同样没有生产构造、canonical 命令或 Run 事件入口的旧 `ConfigView` 编译岛、
-  专属测试和消息目录；`Config`、`Settings`、`ApprovalPolicyControl` 与启动时配置加载继续
-  保留。Doctor 和当前参考文档改为真实 `~/.codewhale/config.toml` 路径，不再宣传不存在的
-  `/config` 编辑器。
+  专属测试和消息目录；真实 `Config`/`Settings` 启动加载继续保留。后续静态模式切片又删除
+  失去迁移调用方的 `ApprovalPolicyControl`。Doctor 和当前参考文档改为真实
+  `~/.codewhale/config.toml` 路径，不再宣传不存在的 `/config` 编辑器。
 - M4-C 已删除只有自测构造的旧 `ThemePickerView` 及其专用 `settings_picker` 框架、
   `ConfigUpdated` 事件与主题 picker 消息；主题配置文件加载、`ThemeId`/`UiTheme`、Ocean
   渲染和主题对比测试继续保留，未把不可达 modal 当成真实主题能力。
@@ -866,10 +866,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   onboarding 和空状态不依赖该提示。
 - M4-C 已删除只有 App/Approval 自测互相调用、没有 canonical key、slash command 或 Run event
   producer 的动态 mode/permission 循环状态机：`set_mode`、Tab/Shift-Tab cycle、Agent baseline、
-  policy-lock UI mirror 及对应设置写入均已物理删除。启动时配置仍一次性决定 shell catalog、
-  trust、sandbox 和 `auto_approve`；`default_mode` 暂时只投影启动标签，不宣称 Plan/Operate
-  具备 canonical 权限或编排语义。审批请求同时删除无人读取的英文 impact 副本，只保留根据
-  canonical tool/risk 输入生成的简体中文展示摘要；该摘要不是策略、证据或风险真相。
+  policy-lock UI mirror 及对应设置写入均已物理删除。后续调用图确认 `AppMode/default_mode`
+  只剩启动标签、颜色与错误的 Plan“只读”提示，现已连同 legacy 设置迁移、Doctor 字段和渲染
+  分支物理删除；旧 `default_mode` 被忽略且不能授予权限。真实显式 Full Access 输入仍直接
+  投影 shell、自动批准和工作区外访问控制，不依赖模式标签；多 Agent/Fleet 不读取该旧壳。
+  审批请求同时删除无人读取的英文 impact 副本，只保留根据 canonical tool/risk 输入生成的
+  简体中文展示摘要；该摘要不是策略、证据或风险真相。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

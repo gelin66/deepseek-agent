@@ -59,7 +59,7 @@ use crate::tui::run_projection::CanonicalRunProjection;
 use crate::tui::user_input::UserInputView;
 
 use super::app::{
-    App, AppMode, OnboardingState, ReasoningEffort, SidebarFocus, StatusToastLevel, TuiOptions,
+    App, OnboardingState, ReasoningEffort, SidebarFocus, StatusToastLevel, TuiOptions,
 };
 use super::approval::{ApprovalMode, ApprovalRequest, ApprovalView, ReviewDecision};
 use super::canonical_commands::{self, CanonicalSlashCommand, CanonicalSlashParse};
@@ -92,7 +92,7 @@ pub(crate) const SIDEBAR_VISIBLE_MIN_WIDTH: u16 = 60;
 const DEFAULT_TERMINAL_PROBE_TIMEOUT_MS: u64 = 500;
 
 fn app_auto_approve_enabled(app: &App) -> bool {
-    app.mode == AppMode::Yolo || app.approval_mode == ApprovalMode::Bypass
+    app.approval_mode == ApprovalMode::Bypass
 }
 
 fn sidebar_width_for_chat_area(app: &App, chat_width: u16) -> Option<u16> {
@@ -1357,7 +1357,7 @@ fn render_classic_header(area: Rect, buf: &mut Buffer, app: &App) {
     let model = app.model_display_label();
     let effort = app.reasoning_effort_display_label();
     let started_at = (!app.low_motion).then_some(app.turn_started_at).flatten();
-    let data = HeaderData::new(app.mode, &model, app.is_loading, app.ui_theme.header_bg)
+    let data = HeaderData::new(&model, app.is_loading, app.ui_theme.header_bg)
         .with_usage(
             app.session.total_conversation_tokens,
             context_window,

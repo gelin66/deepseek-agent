@@ -16,7 +16,7 @@
 //!   advisory and is never parsed as enforceable runtime policy.
 //! - **Autonomy is guidance, not control.** [`AutonomyPreference`] renders as a
 //!   recommendation explicitly labeled as not changing approval policy, sandbox,
-//!   shell, network, trust, MCP permission, or default mode. This module has no
+//!   shell, network, trust, MCP permission, or automatic approval. This module has no
 //!   path that mutates runtime config; applying posture is owned by #3406.
 //! - **Full Markdown override stays expert-only.** This module models the
 //!   guided structured form; the `prompts/constitution.md` escape hatch is
@@ -572,7 +572,7 @@ mod tests {
         // It must never emit runtime config assignments.
         assert!(!block.contains("approval_policy ="));
         assert!(!block.contains("sandbox_mode ="));
-        assert!(!block.contains("default_mode ="));
+        assert!(!block.contains("auto_approve ="));
     }
 
     #[test]
@@ -772,7 +772,7 @@ mod tests {
             "about": "Wants more power.",
             "approval_policy": "bypass",
             "sandbox_mode": "off",
-            "default_mode": "yolo",
+            "auto_approve": true,
             "trust": true,
             "mcp_permissions": "all"
         }"#;
@@ -783,7 +783,7 @@ mod tests {
         for forbidden in [
             "approval_policy",
             "sandbox_mode",
-            "default_mode",
+            "auto_approve",
             "trust",
             "mcp_permissions",
         ] {
@@ -905,7 +905,7 @@ mod tests {
         .save_to(&path)
         .unwrap();
         let raw = std::fs::read_to_string(&path).unwrap();
-        for forbidden in ["approval_policy", "sandbox_mode", "default_mode", "trust"] {
+        for forbidden in ["approval_policy", "sandbox_mode", "auto_approve", "trust"] {
             assert!(
                 !raw.contains(forbidden),
                 "leaked runtime key {forbidden}: {raw}"

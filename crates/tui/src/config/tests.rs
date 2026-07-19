@@ -5833,11 +5833,10 @@ fn status_items_deser_ignores_unknown_variants() {
     "#;
     let tui: TuiConfig = toml::from_str(toml_str).expect("should parse without error");
     let items = tui.status_items.expect("status_items should be Some");
-    assert_eq!(items.len(), 4, "unknown items should be silently dropped");
-    assert_eq!(items[0], StatusItem::Mode);
-    assert_eq!(items[1], StatusItem::Model);
-    assert_eq!(items[2], StatusItem::Cost);
-    assert_eq!(items[3], StatusItem::Status);
+    assert_eq!(items.len(), 3, "unknown items should be silently dropped");
+    assert_eq!(items[0], StatusItem::Model);
+    assert_eq!(items[1], StatusItem::Cost);
+    assert_eq!(items[2], StatusItem::Status);
 }
 
 #[test]

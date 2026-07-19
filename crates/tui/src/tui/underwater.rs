@@ -18,11 +18,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 use crate::localization::{MessageId, tr};
-use crate::tui::{
-    app::{App, AppMode},
-    approval::ApprovalMode,
-    views::ModalKind,
-};
+use crate::tui::{app::App, approval::ApprovalMode, views::ModalKind};
 
 /// Responsive density tier. It changes how much truth is shown, never the
 /// underlying state grammar.
@@ -162,21 +158,10 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
     }
 }
 
-fn mode_label(mode: AppMode) -> Cow<'static, str> {
-    match mode {
-        AppMode::Agent | AppMode::Auto | AppMode::Yolo => tr(MessageId::ChipModeAct),
-        AppMode::Plan => tr(MessageId::ChipModePlan),
-        AppMode::Operate => tr(MessageId::ChipModeOperate),
-    }
-}
-
 /// Permission chip words. This maps from the typed [`ApprovalMode`] state —
 /// never from the English `permission_chip_label()` strings — so localizing
 /// (or rewording) the upstream chip labels can never silently break the chip.
 fn permission_label(app: &App) -> Cow<'static, str> {
-    if app.mode == AppMode::Plan {
-        return tr(MessageId::ChipPermissionReadOnly);
-    }
     match app.approval_mode {
         ApprovalMode::Suggest => tr(MessageId::ChipPermissionAsk),
         ApprovalMode::Auto => tr(MessageId::ChipPermissionAuto),
@@ -227,7 +212,7 @@ fn compact_tokens(tokens: i64) -> String {
     }
 }
 
-/// Render the one-line shell header. Route, mode, permission, active-agent
+/// Render the one-line shell header. Route, permission, active-agent
 /// count, and context each have exactly one owner here.
 pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
     if area.width == 0 || area.height == 0 {
@@ -252,15 +237,6 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
         ),
         Span::raw("  "),
         Span::styled(route_label, Style::default().fg(app.ui_theme.text_muted)),
-        Span::styled(" · ", Style::default().fg(app.ui_theme.text_dim)),
-        Span::styled(
-            mode_label(app.mode),
-            Style::default().fg(match app.mode {
-                AppMode::Plan => app.ui_theme.mode_plan,
-                AppMode::Operate => app.ui_theme.mode_operate,
-                _ => app.ui_theme.mode_agent,
-            }),
-        ),
     ];
     if tier != ShellTier::Compact {
         // The Underwater shell owns its header rather than delegating to the
@@ -335,11 +311,6 @@ pub fn render_header(area: Rect, buf: &mut Buffer, app: &App) {
             Span::styled(
                 truncate_to_width(&app.model_display_label(), left_budget.saturating_sub(7)),
                 Style::default().fg(app.ui_theme.text_muted),
-            ),
-            Span::styled(" · ", Style::default().fg(app.ui_theme.text_dim)),
-            Span::styled(
-                mode_label(app.mode),
-                Style::default().fg(app.ui_theme.accent_primary),
             ),
         ];
     }
@@ -449,7 +420,6 @@ mod tests {
                 model: "deepseek-v4-flash".to_string(),
                 workspace: PathBuf::from("."),
                 config_path: None,
-                config_profile: None,
                 allow_shell: false,
                 use_alt_screen: true,
                 use_mouse_capture: false,
@@ -460,7 +430,6 @@ mod tests {
                 notes_path: PathBuf::from("notes.txt"),
                 mcp_config_path: PathBuf::from("mcp.json"),
                 use_memory: false,
-                start_in_agent_mode: true,
                 skip_onboarding: true,
                 yolo: false,
                 resume_session_id: None,

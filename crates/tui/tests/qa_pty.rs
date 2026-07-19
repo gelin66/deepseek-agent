@@ -178,12 +178,7 @@ fn assert_viewport_starts_at_top(frame: &qa_harness::Frame) {
     );
     let header = frame.row(0).to_ascii_lowercase();
     assert!(
-        header.contains("plan")
-            || header.contains("act")
-            || header.contains("agent")
-            || header.contains("operate")
-            || header.contains("yolo")
-            || header.contains("deepseek"),
+        header.contains("deepseek"),
         "expected header content on row 0:\n{dump}"
     );
 }

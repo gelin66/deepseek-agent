@@ -1,4 +1,4 @@
-//! Header bar widget displaying mode, workspace/model context, and session status.
+//! Header bar widget displaying model context and session status.
 
 use std::time::Instant;
 
@@ -12,7 +12,6 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::palette;
-use crate::tui::app::AppMode;
 
 use super::Renderable;
 
@@ -73,7 +72,6 @@ pub fn header_status_indicator_frame(
 /// Data required to render the header bar.
 pub struct HeaderData<'a> {
     pub model: &'a str,
-    pub mode: AppMode,
     pub background: ratatui::style::Color,
     /// Total tokens used in this session (cumulative, for display).
     pub total_tokens: u32,
@@ -101,15 +99,9 @@ pub struct HeaderData<'a> {
 impl<'a> HeaderData<'a> {
     /// Create header data from common app fields.
     #[must_use]
-    pub fn new(
-        mode: AppMode,
-        model: &'a str,
-        _is_streaming: bool,
-        background: ratatui::style::Color,
-    ) -> Self {
+    pub fn new(model: &'a str, _is_streaming: bool, background: ratatui::style::Color) -> Self {
         Self {
             model,
-            mode,
             background,
             total_tokens: 0,
             context_window: None,
@@ -168,22 +160,6 @@ impl<'a> HeaderWidget<'a> {
     #[must_use]
     pub fn new(data: HeaderData<'a>) -> Self {
         Self { data }
-    }
-
-    fn mode_color(mode: AppMode) -> Color {
-        match mode {
-            AppMode::Agent | AppMode::Auto | AppMode::Yolo => palette::MODE_AGENT,
-            AppMode::Plan => palette::MODE_PLAN,
-            AppMode::Operate => palette::MODE_OPERATE,
-        }
-    }
-
-    fn mode_name(mode: AppMode) -> &'static str {
-        match mode {
-            AppMode::Agent | AppMode::Auto | AppMode::Yolo => "Act",
-            AppMode::Plan => "Plan",
-            AppMode::Operate => "Operate",
-        }
     }
 
     fn span_width(spans: &[Span<'_>]) -> usize {
@@ -363,10 +339,6 @@ impl<'a> HeaderWidget<'a> {
             return Vec::new();
         }
 
-        let mode_label = Self::mode_name(self.data.mode).to_ascii_lowercase();
-        let mode_style = Style::default()
-            .fg(Self::mode_color(self.data.mode))
-            .add_modifier(Modifier::BOLD);
         let mut spans = self.status_indicator_spans();
         let used = Self::span_width(&spans);
 
@@ -378,8 +350,7 @@ impl<'a> HeaderWidget<'a> {
             format!("{provider}:{model}")
         };
         let effort = self.data.reasoning_effort_label.unwrap_or("").trim();
-        let fixed_width =
-            3 + mode_label.width() + usize::from(!effort.is_empty()) * (3 + effort.width());
+        let fixed_width = usize::from(!effort.is_empty()) * (3 + effort.width());
         let route_budget = max_width.saturating_sub(used + fixed_width + 1);
         let route = if route_budget >= 4 {
             Self::truncate_to_width(&route, route_budget)
@@ -392,10 +363,6 @@ impl<'a> HeaderWidget<'a> {
         }
         if !route.is_empty() {
             spans.push(Span::styled(route, Style::default().fg(palette::TEXT_HINT)));
-        }
-        if Self::span_width(&spans) + 3 + mode_label.width() <= max_width {
-            spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
-            spans.push(Span::styled(mode_label, mode_style));
         }
         if !effort.is_empty() && Self::span_width(&spans) + 3 + effort.width() <= max_width {
             spans.push(Span::styled(" · ", Style::default().fg(palette::TEXT_DIM)));
@@ -444,7 +411,6 @@ impl Renderable for HeaderWidget<'_> {
 mod tests {
     use super::{HeaderData, HeaderWidget, Renderable};
     use crate::palette;
-    use crate::tui::app::AppMode;
     use ratatui::{buffer::Buffer, layout::Rect};
 
     fn render_header(data: HeaderData<'_>, width: u16) -> String {
@@ -457,18 +423,14 @@ mod tests {
     }
 
     #[test]
-    fn wide_header_shows_plain_mode_and_single_metadata_cluster() {
+    fn wide_header_shows_model_and_single_metadata_cluster() {
         let rendered = render_header(
-            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG),
+            HeaderData::new("deepseek-v4-pro", false, palette::WHALE_BG),
             72,
         );
 
-        // Wave 7: the Agent mode chip reads "Act".
         assert!(rendered.contains("cw"));
-        assert!(rendered.contains("act"));
         assert!(rendered.contains("deepseek-v4-pro"));
-        assert!(!rendered.contains("Plan"));
-        assert!(!rendered.contains("Yolo"));
     }
 
     #[test]
@@ -477,7 +439,7 @@ mod tests {
         // — users repeatedly ask for it in the live UI (vs only via
         // `codewhale --version` / `/status`).
         let rendered = render_header(
-            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG),
+            HeaderData::new("deepseek-v4-pro", false, palette::WHALE_BG),
             120,
         );
         let expected = format!("v{}", env!("CARGO_PKG_VERSION"));
@@ -488,35 +450,38 @@ mod tests {
     }
 
     #[test]
-    fn narrow_header_drops_version_chip_before_dropping_mode() {
+    fn narrow_header_drops_version_chip_before_status_mark() {
         // Very tight width budget — the version is among the first
-        // chips to disappear; the mode label must still render.
-        // YOLO is invisible Act+Bypass shorthand, so the chip reads "Act".
-        let rendered =
-            render_header(
-                HeaderData::new(AppMode::Yolo, "deepseek-v4-pro", true, palette::WHALE_BG)
-                    .with_usage(1_000, Some(128_000), Some(2_000)),
-                12,
-            );
+        // chips to disappear; the status mark must still render.
+        let rendered = render_header(
+            HeaderData::new("deepseek-v4-pro", true, palette::WHALE_BG).with_usage(
+                1_000,
+                Some(128_000),
+                Some(2_000),
+            ),
+            12,
+        );
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         assert!(
             !rendered.contains(&version),
             "version chip should drop under width pressure: {rendered:?}",
         );
         assert!(
-            rendered.contains("act") || rendered.contains('a'),
-            "mode label must survive: {rendered:?}",
+            rendered.contains("cw"),
+            "status mark must survive: {rendered:?}"
         );
     }
 
     #[test]
     fn streaming_header_integrates_live_state_with_context_signal() {
-        let rendered =
-            render_header(
-                HeaderData::new(AppMode::Plan, "deepseek-v4-pro", true, palette::WHALE_BG)
-                    .with_usage(42_000, Some(128_000), Some(48_000)),
-                72,
-            );
+        let rendered = render_header(
+            HeaderData::new("deepseek-v4-pro", true, palette::WHALE_BG).with_usage(
+                42_000,
+                Some(128_000),
+                Some(48_000),
+            ),
+            72,
+        );
 
         assert!(!rendered.contains("Live"));
         assert!(rendered.contains("38%"));
@@ -526,11 +491,7 @@ mod tests {
     #[test]
     fn narrow_header_keeps_context_percent_visible() {
         let rendered = render_header(
-            HeaderData::new(AppMode::Agent, "", true, palette::WHALE_BG).with_usage(
-                0,
-                Some(128_000),
-                Some(48_000),
-            ),
+            HeaderData::new("", true, palette::WHALE_BG).with_usage(0, Some(128_000), Some(48_000)),
             14,
         );
 
@@ -538,30 +499,23 @@ mod tests {
     }
 
     #[test]
-    fn narrow_header_falls_back_to_mode_without_rendering_all_modes() {
+    fn narrow_header_keeps_only_real_status_and_context_facts() {
         let rendered = render_header(
-            HeaderData::new(AppMode::Yolo, "deepseek-v4-flash", true, palette::WHALE_BG)
-                .with_usage(1_000, Some(10_000), Some(4_000)),
+            HeaderData::new("deepseek-v4-flash", true, palette::WHALE_BG).with_usage(
+                1_000,
+                Some(10_000),
+                Some(4_000),
+            ),
             8,
         );
 
-        // YOLO renders as Act; under extreme width pressure only the first
-        // glyph of the mode chip remains.
         assert!(rendered.trim_start().starts_with("cw"));
-        assert!(rendered.contains("act"));
-        assert!(!rendered.contains("Plan"));
-        assert!(!rendered.contains("Operate"));
     }
 
     #[test]
     fn header_hides_context_signal_when_usage_snapshot_is_missing() {
         let rendered = render_header(
-            HeaderData::new(
-                AppMode::Agent,
-                "deepseek-v4-flash",
-                false,
-                palette::WHALE_BG,
-            ),
+            HeaderData::new("deepseek-v4-flash", false, palette::WHALE_BG),
             48,
         );
 
@@ -572,13 +526,11 @@ mod tests {
     #[test]
     fn header_caps_context_signal_at_hundred_percent() {
         let rendered = render_header(
-            HeaderData::new(
-                AppMode::Agent,
-                "deepseek-v4-flash",
-                false,
-                palette::WHALE_BG,
-            )
-            .with_usage(1_000, Some(128_000), Some(320_000)),
+            HeaderData::new("deepseek-v4-flash", false, palette::WHALE_BG).with_usage(
+                1_000,
+                Some(128_000),
+                Some(320_000),
+            ),
             48,
         );
 
@@ -589,13 +541,8 @@ mod tests {
     #[test]
     fn header_shows_provider_chip_when_set() {
         let rendered = render_header(
-            HeaderData::new(
-                AppMode::Agent,
-                "deepseek-ai/deepseek-v4-flash",
-                false,
-                palette::WHALE_BG,
-            )
-            .with_provider(Some("NIM")),
+            HeaderData::new("deepseek-ai/deepseek-v4-flash", false, palette::WHALE_BG)
+                .with_provider(Some("NIM")),
             72,
         );
         assert!(
@@ -607,7 +554,7 @@ mod tests {
     #[test]
     fn header_hides_provider_chip_when_default_deepseek() {
         let rendered = render_header(
-            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG),
+            HeaderData::new("deepseek-v4-pro", false, palette::WHALE_BG),
             72,
         );
         // Sanity: no `NIM` text leaks in when provider is None.
@@ -673,7 +620,7 @@ mod tests {
     #[test]
     fn header_renders_whale_chip_next_to_effort_label() {
         let rendered = render_header(
-            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG)
+            HeaderData::new("deepseek-v4-pro", false, palette::WHALE_BG)
                 .with_reasoning_effort(Some("max"))
                 .with_status_indicator(Some("🐳")),
             72,
@@ -698,7 +645,7 @@ mod tests {
     #[test]
     fn header_hides_whale_chip_when_status_indicator_off() {
         let rendered = render_header(
-            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG)
+            HeaderData::new("deepseek-v4-pro", false, palette::WHALE_BG)
                 .with_reasoning_effort(Some("max"))
                 .with_status_indicator(None),
             72,

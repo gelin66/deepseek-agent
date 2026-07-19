@@ -221,7 +221,6 @@ mod tests {
             model: "deepseek-v4-pro".to_string(),
             workspace: PathBuf::from("."),
             config_path: None,
-            config_profile: None,
             allow_shell: false,
             use_alt_screen: true,
             use_mouse_capture: false,
@@ -232,7 +231,6 @@ mod tests {
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
-            start_in_agent_mode: false,
             skip_onboarding: true,
             yolo: false,
             resume_session_id: None,
@@ -253,11 +251,10 @@ mod tests {
     }
 
     #[test]
-    fn production_footer_does_not_repeat_header_model_or_mode() {
+    fn production_footer_does_not_repeat_header_model() {
         let app = create_test_app();
         let props = render_footer_from(&app, &app.status_items, None);
         assert!(props.model.is_empty());
-        assert!(props.mode_label.is_empty());
         assert_eq!(props.state_label, "idle");
     }
 
@@ -389,8 +386,8 @@ pub(crate) fn active_subagent_status_label(app: &App) -> Option<String> {
 
 /// Build [`FooterProps`] from a user-configured `status_items` slice.
 ///
-/// Variants are routed to their structural cluster. Header-owned `Mode` and
-/// `Model` remain blank here; `Cost` and `Status` belong in the left cluster,
+/// Variants are routed to their structural cluster. Header-owned `Model`
+/// remains blank here; `Cost` and `Status` belong in the left cluster,
 /// and the rest in the right.
 ///
 /// A variant absent from `items` produces an empty span vec, which the
@@ -446,7 +443,6 @@ pub(crate) fn render_footer_from(
         cost,
     );
     props.model.clear();
-    props.mode_label = "";
 
     // Right-cluster extension chips: append in `items` order so user
     // ordering is preserved across the new variants.

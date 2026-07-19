@@ -1073,11 +1073,11 @@ pub use search::*;
 /// One configurable footer item.
 ///
 /// Order in the user's `Vec<StatusItem>` is preserved: items in the left
-/// cluster (`Mode`, `Model`, `Cost`, `Status`) render in the order given;
+/// cluster (`Model`, `Cost`, `Status`) render in the order given;
 /// right-cluster chips (`Agents`, `ReasoningReplay`, `Cache`,
 /// `ContextPercent`, `Workspace`, `LastToolElapsed`, `RateLimit`)
 /// likewise honour ordering inside their cluster. The split between left and right is deliberate — left holds steady
-/// identity (mode/model/cost), right holds transient signals — so we route
+/// identity (model/cost), right holds transient signals — so we route
 /// each variant to the correct side rather than letting users reorder across
 /// the spacer.
 ///
@@ -1088,8 +1088,6 @@ pub use search::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum StatusItem {
-    /// "act" / "plan" / "operate" chip.
-    Mode,
     /// Model identifier (e.g. `deepseek-v4-pro`).
     Model,
     /// Session cost in the configured display currency.
@@ -1121,7 +1119,6 @@ impl StatusItem {
     #[must_use]
     pub fn default_footer() -> Vec<StatusItem> {
         vec![
-            StatusItem::Mode,
             StatusItem::Model,
             StatusItem::Cost,
             StatusItem::Status,
@@ -1138,7 +1135,6 @@ impl StatusItem {
     #[must_use]
     pub fn from_key(key: &str) -> Option<Self> {
         match key {
-            "mode" => Some(Self::Mode),
             "model" => Some(Self::Model),
             "cost" => Some(Self::Cost),
             "status" => Some(Self::Status),
@@ -1614,39 +1610,6 @@ struct RequirementsFile {
     allowed_sandbox_modes: Vec<String>,
 }
 
-/// The highest-precedence source that can currently own approval policy.
-///
-/// The resolved [`Config`] retains the final string, while the permission
-/// runtime also needs to know whether a profile, environment, managed file,
-/// requirements, or project constraint owns that value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ApprovalPolicyControl {
-    Unset,
-    RootConfig,
-    Profile,
-    Environment,
-    ManagedConfig,
-    ProjectConfig,
-    Requirements,
-    Ambiguous,
-}
-
-impl ApprovalPolicyControl {
-    #[must_use]
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Unset => "saved TUI posture",
-            Self::RootConfig => "the root config.toml approval_policy",
-            Self::Profile => "the active config profile",
-            Self::Environment => "DEEPSEEK_APPROVAL_POLICY",
-            Self::ManagedConfig => "managed configuration",
-            Self::ProjectConfig => "project configuration",
-            Self::Requirements => "managed approval requirements",
-            Self::Ambiguous => "an unresolved configuration source",
-        }
-    }
-}
-
 /// Map the saved TUI permission posture onto the approval-policy ordering used
 /// by project config. Full Access is looser than every project policy, so its
 /// baseline is the loosest ranked policy (`auto`).
@@ -1667,102 +1630,6 @@ pub(crate) fn approval_policy_baseline_from_permission_posture(
 // === Config Loading ===
 
 impl Config {
-    /// Identify whether the effective approval policy can safely be edited by
-    /// changing the root user config. Sources applied later in the load chain
-    /// are deliberately treated as controlling even when their value happens
-    /// to equal the root value; equality is not provenance.
-    #[must_use]
-    pub(crate) fn approval_policy_control(
-        &self,
-        config_path: Option<&Path>,
-        profile: Option<&str>,
-        workspace: &Path,
-    ) -> ApprovalPolicyControl {
-        if self.approval_policy_is_requirements_managed() {
-            return ApprovalPolicyControl::Requirements;
-        }
-
-        let workspace_is_home = effective_home_dir().is_some_and(|home| {
-            let workspace = workspace
-                .canonicalize()
-                .unwrap_or_else(|_| workspace.to_path_buf());
-            let home = home.canonicalize().unwrap_or(home);
-            workspace == home
-        });
-        if !workspace_is_home {
-            let saved_approval_baseline = crate::settings::Settings::load_persisted()
-                .ok()
-                .and_then(|settings| settings.permission_posture)
-                .and_then(|posture| {
-                    approval_policy_baseline_from_permission_posture(Some(&posture))
-                });
-            let approval_baseline = self.approval_policy.as_deref().or(saved_approval_baseline);
-            if codewhale_config::load_project_config(workspace)
-                .and_then(|project| project.approval_policy)
-                .is_some_and(|policy| {
-                    codewhale_config::project_approval_policy_is_allowed(approval_baseline, &policy)
-                })
-            {
-                return ApprovalPolicyControl::ProjectConfig;
-            }
-        }
-
-        let managed_path = self
-            .managed_config_path
-            .as_deref()
-            .map(expand_path)
-            .or_else(default_managed_config_path);
-        if let Some(path) = managed_path
-            && path.exists()
-        {
-            match load_single_config_file(&path) {
-                Ok(managed) if managed.approval_policy.is_some() => {
-                    return ApprovalPolicyControl::ManagedConfig;
-                }
-                Err(_) => return ApprovalPolicyControl::Ambiguous,
-                Ok(_) => {}
-            }
-        }
-
-        if std::env::var_os("DEEPSEEK_APPROVAL_POLICY").is_some() {
-            return ApprovalPolicyControl::Environment;
-        }
-
-        let Some(path) = resolve_load_config_path(config_path.map(Path::to_path_buf)) else {
-            return if self.approval_policy.is_some() {
-                ApprovalPolicyControl::Ambiguous
-            } else {
-                ApprovalPolicyControl::Unset
-            };
-        };
-        let parsed = std::fs::read_to_string(path)
-            .ok()
-            .and_then(|raw| toml::from_str::<ConfigFile>(&raw).ok());
-        let Some(parsed) = parsed else {
-            return if self.approval_policy.is_some() {
-                ApprovalPolicyControl::Ambiguous
-            } else {
-                ApprovalPolicyControl::Unset
-            };
-        };
-        if let Some(profile) = profile
-            && parsed
-                .profiles
-                .as_ref()
-                .and_then(|profiles| profiles.get(profile))
-                .is_some_and(|profile| profile.approval_policy.is_some())
-        {
-            return ApprovalPolicyControl::Profile;
-        }
-        if parsed.base.approval_policy.is_some() {
-            ApprovalPolicyControl::RootConfig
-        } else if self.approval_policy.is_some() {
-            ApprovalPolicyControl::Ambiguous
-        } else {
-            ApprovalPolicyControl::Unset
-        }
-    }
-
     /// Whether an explicit config or requirements file owns approval posture.
     /// TUI preferences may supply a default only when this is false.
     #[must_use]

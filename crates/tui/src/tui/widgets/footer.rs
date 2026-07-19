@@ -1,4 +1,4 @@
-//! Footer bar widget displaying mode, status, model, and auxiliary chips.
+//! Footer bar widget displaying status and auxiliary chips.
 //!
 //! `FooterWidget` is a pure render of a [`FooterProps`] struct: all content
 //! (labels, colors, span clusters) is computed once per redraw at a higher
@@ -15,7 +15,6 @@
 //! |-------------|--------------|------------------|
 //! | state | `state_label` (+ working strip) | transcript / live work strip |
 //! | work count | `agents` | Agents sidebar, `/fleet` |
-//! | mode | `mode_label` | current runtime posture |
 //! | permission | `permission` | current runtime posture |
 //! | cost/rate | `cost`, `cache` | canonical usage projection and `/cost` |
 //! | anomalies | MCP chip | MCP manager |
@@ -34,7 +33,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::localization::{MessageId, tr};
 use crate::palette;
-use crate::tui::app::{App, AppMode};
+use crate::tui::app::App;
 
 use super::Renderable;
 
@@ -44,12 +43,8 @@ use super::Renderable;
 /// can be built once per redraw and then handed to a borrow-free widget.
 #[derive(Debug, Clone)]
 pub struct FooterProps {
-    /// The current model identifier shown after the mode chip.
+    /// The current model identifier.
     pub model: String,
-    /// `"agent"` / `"yolo"` / `"plan"` — the canonical setting label.
-    pub mode_label: &'static str,
-    /// Color used for the mode chip.
-    pub mode_color: Color,
     /// Color used for small separators between chips.
     pub text_dim_color: Color,
     /// Color used for the model label.
@@ -292,7 +287,6 @@ impl FooterProps {
         cache: Vec<Span<'static>>,
         cost: Vec<Span<'static>>,
     ) -> Self {
-        let (mode_label, mode_color) = mode_style(app);
         let mcp = footer_mcp_chip(app.mcp_configured_count);
         let permission = footer_permission_chip(app);
         // #448: cumulative work-time chip. Sums actual turn durations
@@ -303,8 +297,6 @@ impl FooterProps {
         let worked = footer_worked_chip(app.cumulative_turn_duration);
         Self {
             model: app.model_display_label(),
-            mode_label,
-            mode_color,
             text_dim_color: app.ui_theme.text_dim,
             text_hint_color: app.ui_theme.text_hint,
             text_muted_color: app.ui_theme.text_muted,
@@ -324,28 +316,8 @@ impl FooterProps {
     }
 }
 
-fn mode_style(app: &App) -> (&'static str, Color) {
-    let label = match app.mode {
-        AppMode::Agent | AppMode::Auto | AppMode::Yolo => "act",
-        AppMode::Plan => "plan",
-        AppMode::Operate => "operate",
-    };
-    // Visible modes get distinct badge colors (dogfood A7). YOLO is no longer
-    // a visible mode — it remaps to Act + bypass permissions.
-    let color = match app.mode {
-        AppMode::Agent | AppMode::Auto | AppMode::Yolo => app.ui_theme.mode_agent,
-        AppMode::Plan => app.ui_theme.mode_plan,
-        AppMode::Operate => app.ui_theme.mode_operate,
-    };
-    (label, color)
-}
-
 pub fn footer_permission_chip(app: &App) -> Vec<Span<'static>> {
-    let label = if app.mode == AppMode::Plan {
-        "只读"
-    } else {
-        app.approval_mode.permission_chip_label()
-    };
+    let label = app.approval_mode.permission_chip_label();
     vec![
         Span::raw("perm "),
         Span::styled(
@@ -410,15 +382,13 @@ impl FooterWidget {
 
     /// Build the left status line with priority-ordered hint dropping.
     ///
-    /// Production leaves mode/model blank because the header owns them. The
-    /// generic widget still supports callers that supply them, while the
+    /// Production leaves the model blank because the header owns it. The
     /// header-owned path prioritizes state, then cost.
     fn status_line_spans(&self, max_width: usize) -> Vec<Span<'static>> {
         if max_width == 0 {
             return Vec::new();
         }
 
-        let mode_label = self.props.mode_label;
         let sep = " \u{00B7} ";
         let model = self.props.model.as_str();
         let show_status = self.props.state_label != "ready";
@@ -426,7 +396,7 @@ impl FooterWidget {
         let cost_text = spans_text(&self.props.cost);
         let show_cost = !cost_text.is_empty();
 
-        if mode_label.is_empty() && model.is_empty() {
+        if model.is_empty() {
             let mut spans = Vec::new();
             if show_status {
                 spans.push(Span::styled(
@@ -453,61 +423,38 @@ impl FooterWidget {
             return spans;
         }
 
-        let mode_w = mode_label.width();
         let sep_w = sep.width();
         let model_w = UnicodeWidthStr::width(model);
         let status_w = if show_status { status_label.width() } else { 0 };
         let cost_w = if show_cost { cost_text.width() } else { 0 };
         let extra_sep = |w: usize| if w > 0 { sep_w } else { 0 };
-        let model_prefix_w = if mode_w > 0 { mode_w + sep_w } else { 0 };
 
-        // Tier 1: [mode ·] model · cost · status
-        let full_w =
-            model_prefix_w + model_w + extra_sep(cost_w) + cost_w + extra_sep(status_w) + status_w;
+        // Tier 1: model · cost · status
+        let full_w = model_w + extra_sep(cost_w) + cost_w + extra_sep(status_w) + status_w;
         if (show_cost || show_status) && full_w <= max_width {
             return self.build_status_line_spans(
-                mode_label,
                 model.to_string(),
                 show_cost.then(|| cost_text.clone()),
                 show_status.then_some(status_label),
             );
         }
 
-        // Tier 2: [mode ·] model · cost — drop status.
-        let with_cost_w = model_prefix_w + model_w + extra_sep(cost_w) + cost_w;
+        // Tier 2: model · cost — drop status.
+        let with_cost_w = model_w + extra_sep(cost_w) + cost_w;
         if show_cost && with_cost_w <= max_width {
             return self.build_status_line_spans(
-                mode_label,
                 model.to_string(),
                 show_cost.then(|| cost_text.clone()),
                 None,
             );
         }
 
-        // Tier 3: [mode ·] model — drop cost too.
-        let mode_model_w = model_prefix_w + model_w;
-        if mode_model_w <= max_width {
-            return self.build_status_line_spans(mode_label, model.to_string(), None, None);
+        // Tier 3: model — drop cost too.
+        if model_w <= max_width {
+            return self.build_status_line_spans(model.to_string(), None, None);
         }
 
-        // Tier 4: [mode ·] <truncated model> — ellipsize model when prefix fits.
-        if model_prefix_w < max_width {
-            let model_budget = max_width - model_prefix_w;
-            if model_budget >= 4 {
-                let truncated = truncate_to_width(model, model_budget);
-                if !truncated.is_empty() {
-                    return self.build_status_line_spans(mode_label, truncated, None, None);
-                }
-            }
-        }
-
-        // Tier 5: mode-only when present, otherwise truncated model.
-        if mode_w > 0 && mode_w <= max_width {
-            return vec![Span::styled(
-                mode_label.to_string(),
-                Style::default().fg(self.props.mode_color),
-            )];
-        }
+        // Tier 4: truncated model.
         vec![Span::styled(
             truncate_to_width(model, max_width.max(1)),
             Style::default().fg(self.props.text_hint_color),
@@ -516,26 +463,13 @@ impl FooterWidget {
 
     fn build_status_line_spans(
         &self,
-        mode_label: &'static str,
         model_label: String,
         cost: Option<String>,
         status: Option<&str>,
     ) -> Vec<Span<'static>> {
         let sep = " \u{00B7} ";
         let mut spans: Vec<Span<'static>> = Vec::new();
-        if !mode_label.is_empty() {
-            spans.push(Span::styled(
-                mode_label.to_string(),
-                Style::default().fg(self.props.mode_color),
-            ));
-        }
         if !model_label.is_empty() {
-            if !spans.is_empty() {
-                spans.push(Span::styled(
-                    sep.to_string(),
-                    Style::default().fg(self.props.text_dim_color),
-                ));
-            }
             spans.push(Span::styled(
                 model_label,
                 Style::default().fg(self.props.text_hint_color),
@@ -692,7 +626,7 @@ mod tests {
     use super::{FooterProps, FooterWidget, Renderable};
     use crate::config::Config;
     use crate::palette;
-    use crate::tui::app::{App, AppMode, TuiOptions};
+    use crate::tui::app::{App, TuiOptions};
     use ratatui::{
         buffer::Buffer,
         layout::Rect,
@@ -718,7 +652,6 @@ mod tests {
             model: "deepseek-v4-flash".to_string(),
             workspace: PathBuf::from("."),
             config_path: None,
-            config_profile: None,
             allow_shell: false,
             use_alt_screen: true,
             use_mouse_capture: false,
@@ -729,7 +662,6 @@ mod tests {
             notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
-            start_in_agent_mode: true,
             skip_onboarding: true,
             yolo: false,
             resume_session_id: None,
@@ -749,7 +681,7 @@ mod tests {
     }
 
     fn idle_props_for(app: &App) -> FooterProps {
-        let mut props = FooterProps::from_app(
+        FooterProps::from_app(
             app,
             None,
             "ready",
@@ -758,9 +690,7 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-        );
-        props.mode_label = "";
-        props
+        )
     }
 
     #[test]
@@ -770,8 +700,6 @@ mod tests {
 
         assert_eq!(props.state_label, "ready");
         assert_eq!(props.state_color, palette::TEXT_MUTED);
-        assert!(props.mode_label.is_empty());
-        assert_eq!(props.mode_color, palette::MODE_AGENT);
         assert_eq!(props.text_dim_color, palette::TEXT_DIM);
         assert_eq!(props.text_hint_color, palette::TEXT_HINT);
         assert_eq!(props.text_muted_color, palette::TEXT_MUTED);
@@ -900,7 +828,6 @@ mod tests {
     #[test]
     fn from_app_statusline_colors_come_from_ui_theme() {
         let mut app = make_app();
-        app.ui_theme.mode_agent = Color::Rgb(1, 2, 3);
         app.ui_theme.text_dim = Color::Rgb(4, 5, 6);
         app.ui_theme.text_hint = Color::Rgb(7, 8, 9);
         app.ui_theme.text_muted = Color::Rgb(10, 11, 12);
@@ -908,7 +835,6 @@ mod tests {
 
         let props = idle_props_for(&app);
 
-        assert_eq!(props.mode_color, Color::Rgb(1, 2, 3));
         assert_eq!(props.text_dim_color, Color::Rgb(4, 5, 6));
         assert_eq!(props.text_hint_color, Color::Rgb(7, 8, 9));
         assert_eq!(props.text_muted_color, Color::Rgb(10, 11, 12));
@@ -975,38 +901,6 @@ mod tests {
             rendered.contains("2 个子代理"),
             "expected agents chip in render: {rendered:?}",
         );
-    }
-
-    #[test]
-    fn from_app_mode_color_matches_mode_for_each_variant() {
-        let mut app = make_app();
-        let cases = [
-            (AppMode::Agent, "act", palette::MODE_AGENT),
-            (AppMode::Yolo, "act", palette::MODE_AGENT),
-            (AppMode::Plan, "plan", palette::MODE_PLAN),
-            (AppMode::Operate, "operate", palette::MODE_OPERATE),
-        ];
-        for (mode, expected_label, expected_color) in cases {
-            app.mode = mode;
-            let props = FooterProps::from_app(
-                &app,
-                None,
-                "ready",
-                palette::TEXT_MUTED,
-                Vec::<Span<'static>>::new(),
-                Vec::<Span<'static>>::new(),
-                Vec::<Span<'static>>::new(),
-                Vec::<Span<'static>>::new(),
-            );
-            assert_eq!(
-                props.mode_label, expected_label,
-                "label mismatch for {mode:?}",
-            );
-            assert_eq!(
-                props.mode_color, expected_color,
-                "color mismatch for {mode:?}",
-            );
-        }
     }
 
     #[test]
@@ -1146,31 +1040,19 @@ mod tests {
     }
 
     #[test]
-    fn permission_chip_reports_effective_posture_for_every_visible_mode() {
+    fn permission_chip_reports_effective_approval_posture() {
         let mut app = make_app();
         app.approval_mode = crate::tui::approval::ApprovalMode::Bypass;
 
-        app.mode = AppMode::Agent;
         assert_eq!(
             super::spans_text(&super::footer_permission_chip(&app)),
             "perm 完全访问"
-        );
-        app.mode = AppMode::Operate;
-        assert_eq!(
-            super::spans_text(&super::footer_permission_chip(&app)),
-            "perm 完全访问"
-        );
-        app.mode = AppMode::Plan;
-        assert_eq!(
-            super::spans_text(&super::footer_permission_chip(&app)),
-            "perm 只读"
         );
     }
 
     #[test]
     fn permission_safety_chip_survives_long_toast_at_release_widths() {
-        let mut app = make_app();
-        app.mode = AppMode::Plan;
+        let app = make_app();
         let props = FooterProps::from_app(
             &app,
             Some(super::FooterToast {
@@ -1190,7 +1072,7 @@ mod tests {
         for width in [120, 100, 80] {
             let line = render_at_width(props.clone(), width);
             assert!(
-                line.contains("perm 只读"),
+                line.contains("perm 询问"),
                 "effective safety posture missing at {width} cols: {line:?}"
             );
             assert!(line.width() <= usize::from(width));
@@ -1205,7 +1087,6 @@ mod tests {
             (crate::tui::approval::ApprovalMode::Bypass, "perm 完全访问"),
         ] {
             let mut app = make_app();
-            app.mode = AppMode::Operate;
             app.approval_mode = posture;
             let props = FooterProps::from_app(
                 &app,
@@ -1246,7 +1127,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
         );
-        props.mode_label = "";
         props.permission.clear();
         props
     }
@@ -1332,7 +1212,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             vec![Span::styled(cost.to_string(), Style::default())],
         );
-        props.mode_label = "";
         props.permission.clear();
         props
     }
@@ -1344,7 +1223,7 @@ mod tests {
             "Cache: 75.0% hit | hit 36000 | miss 12000".to_string(),
             Style::default(),
         )];
-        let mut props = FooterProps::from_app(
+        let props = FooterProps::from_app(
             &app,
             None,
             "ready",
@@ -1354,8 +1233,6 @@ mod tests {
             long_cache,
             Vec::<Span<'static>>::new(),
         );
-        props.mode_label = "";
-
         let line = render_at_width(props, 40);
 
         assert!(
@@ -1376,7 +1253,7 @@ mod tests {
             "Cache: 75.0% hit".to_string(),
             Style::default(),
         )];
-        let mut props = FooterProps::from_app(
+        let props = FooterProps::from_app(
             &app,
             None,
             "ready",
@@ -1386,8 +1263,6 @@ mod tests {
             cache,
             Vec::<Span<'static>>::new(),
         );
-        props.mode_label = "";
-
         let line = render_at_width(props, 80);
 
         assert!(

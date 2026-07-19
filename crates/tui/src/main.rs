@@ -3642,15 +3642,7 @@ fn autonomy_preference_id(preference: codewhale_config::AutonomyPreference) -> &
     }
 }
 
-fn doctor_runtime_default_mode() -> (String, &'static str) {
-    match crate::settings::Settings::load() {
-        Ok(settings) => (settings.default_mode, "settings"),
-        Err(_) => (crate::settings::Settings::default().default_mode, "default"),
-    }
-}
-
 fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
-    let (default_mode, default_mode_source) = doctor_runtime_default_mode();
     let approval = config.approval_policy.as_deref().unwrap_or("on-request");
     let approval_source = if config.approval_policy.is_some() {
         "config"
@@ -3663,7 +3655,7 @@ fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
     } else {
         "interactive default"
     };
-    let sandbox = config.sandbox_mode.as_deref().unwrap_or("mode-derived");
+    let sandbox = config.sandbox_mode.as_deref().unwrap_or("workspace-write");
     let sandbox_source = if config.sandbox_mode.is_some() {
         "config"
     } else {
@@ -3676,7 +3668,7 @@ fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
     };
 
     format!(
-        "default_mode={default_mode} ({default_mode_source}), approval_policy={approval} ({approval_source}), allow_shell={allow_shell} ({allow_shell_source}), sandbox={sandbox} ({sandbox_source}), trust={trust}"
+        "approval_policy={approval} ({approval_source}), allow_shell={allow_shell} ({allow_shell_source}), sandbox={sandbox} ({sandbox_source}), trust={trust}"
     )
 }
 
@@ -3782,7 +3774,6 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
     use serde_json::json;
 
     let (state, source) = doctor_setup_state(config, workspace);
-    let (default_mode, default_mode_source) = doctor_runtime_default_mode();
     let approval_policy = config.approval_policy.as_deref().unwrap_or("on-request");
     let approval_policy_source = if config.approval_policy.is_some() {
         "config"
@@ -3795,7 +3786,7 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
     } else {
         "interactive_default"
     };
-    let sandbox_mode = config.sandbox_mode.as_deref().unwrap_or("mode-derived");
+    let sandbox_mode = config.sandbox_mode.as_deref().unwrap_or("workspace-write");
     let sandbox_mode_source = if config.sandbox_mode.is_some() {
         "config"
     } else {
@@ -3836,10 +3827,6 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
         "runtime_posture_source": runtime_posture_source_id(state.runtime_posture_source),
         "runtime_posture": {
             "source": runtime_posture_source_id(state.runtime_posture_source),
-            "default_mode": {
-                "value": default_mode,
-                "source": default_mode_source,
-            },
             "approval_policy": {
                 "value": approval_policy,
                 "source": approval_policy_source,
@@ -5816,7 +5803,6 @@ async fn run_interactive(
             model,
             workspace,
             config_path: cli.config.clone(),
-            config_profile: cli.profile.clone(),
             allow_shell: interactive_tui_allow_shell(yolo, config),
             use_alt_screen,
             use_mouse_capture,
@@ -5826,7 +5812,6 @@ async fn run_interactive(
             notes_path: config.notes_path(),
             mcp_config_path: config.mcp_config_path(),
             use_memory: config.memory_enabled(),
-            start_in_agent_mode: yolo,
             skip_onboarding: cli.skip_onboarding,
             yolo, // YOLO mode auto-approves all tool executions
             resume_session_id,
@@ -6219,7 +6204,7 @@ mod doctor_legacy_state_tests {
         let tmp = TempDir::new().expect("tempdir");
         let (primary_root, legacy_root) = roots(&tmp);
         fs::create_dir_all(primary_root.join("sessions")).expect("primary sessions");
-        fs::write(primary_root.join("settings.toml"), "default_mode = 'ask'")
+        fs::write(primary_root.join("settings.toml"), "calm_mode = true")
             .expect("primary settings");
 
         let report = doctor_legacy_state_report(&primary_root, &legacy_root);
@@ -6447,7 +6432,7 @@ mod doctor_setup_state_tests {
         assert_eq!(report["constitution"]["source"], "bundled");
         assert_eq!(report["constitution"]["autonomy_preference"], "unspecified");
         assert_eq!(report["runtime_posture"]["source"], "unset");
-        assert_eq!(report["runtime_posture"]["default_mode"]["value"], "agent");
+        assert!(report["runtime_posture"].get("default_mode").is_none());
         assert_eq!(
             report["runtime_posture"]["approval_policy"]["value"],
             "on-request"
@@ -6455,7 +6440,7 @@ mod doctor_setup_state_tests {
         assert_eq!(report["runtime_posture"]["allow_shell"]["value"], true);
         assert_eq!(
             report["runtime_posture"]["sandbox_mode"]["value"],
-            "mode-derived"
+            "workspace-write"
         );
         assert_eq!(provider_step(&report)["status"], "needs_action");
     }

@@ -103,8 +103,7 @@ pub(crate) fn set_document_value(
     let (key, parents) = segments
         .split_last()
         .context("config value path must not be empty")?;
-    let table = table_like_at_path_mut(doc.as_table_mut(), parents, PathLookup::Create)?
-        .expect("Create lookups always yield a table");
+    let table = table_like_at_path_mut(doc.as_table_mut(), parents)?;
     match table.get_mut(key) {
         Some(item) => {
             let mut value = value.into();
@@ -118,40 +117,6 @@ pub(crate) fn set_document_value(
         }
     }
     Ok(())
-}
-
-/// Remove the value at `segments`. Returns `Ok(true)` when an entry was
-/// removed; missing keys and missing (or non-table) parents are a no-op.
-pub(crate) fn unset_document_value(
-    doc: &mut toml_edit::DocumentMut,
-    segments: &[&str],
-) -> anyhow::Result<bool> {
-    let (key, parents) = segments
-        .split_last()
-        .context("config value path must not be empty")?;
-    let orphaned_root_prefix = (parents.is_empty() && doc.as_table().len() == 1)
-        .then(|| leading_prefix_for_key(doc.as_table(), key))
-        .flatten();
-    let removed = {
-        let Some(table) =
-            table_like_at_path_mut(doc.as_table_mut(), parents, PathLookup::Existing)?
-        else {
-            return Ok(false);
-        };
-        remove_key_preserving_leading_decor(table, key)
-    };
-    if removed
-        && let Some(prefix) = orphaned_root_prefix
-        && prefix.as_str().is_some_and(|prefix| !prefix.is_empty())
-    {
-        let trailing = format!(
-            "{}{}",
-            prefix.as_str().unwrap_or_default(),
-            doc.trailing().as_str().unwrap_or_default()
-        );
-        doc.set_trailing(trailing);
-    }
-    Ok(removed)
 }
 
 /// Remove every entry named `key` from `table` and, recursively, from nested
@@ -223,48 +188,28 @@ fn leading_prefix_for_key(
         })
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PathLookup {
-    /// Create missing intermediate tables; error when a segment exists but is
-    /// not table-like.
-    Create,
-    /// Return `None` when a segment is missing or not table-like.
-    Existing,
-}
-
 fn table_like_at_path_mut<'a>(
     root: &'a mut toml_edit::Table,
     segments: &[&str],
-    lookup: PathLookup,
-) -> anyhow::Result<Option<&'a mut dyn toml_edit::TableLike>> {
+) -> anyhow::Result<&'a mut dyn toml_edit::TableLike> {
     let mut current: &mut dyn toml_edit::TableLike = root;
     for segment in segments {
         if current.get(segment).is_none() {
-            match lookup {
-                PathLookup::Create => {
-                    // Implicit, so creating `providers.foo.base_url` does not
-                    // emit an empty `[providers]` header.
-                    let mut table = toml_edit::Table::new();
-                    table.set_implicit(true);
-                    current.insert(segment, toml_edit::Item::Table(table));
-                }
-                PathLookup::Existing => return Ok(None),
-            }
+            // Implicit, so creating `providers.foo.base_url` does not emit an
+            // empty `[providers]` header.
+            let mut table = toml_edit::Table::new();
+            table.set_implicit(true);
+            current.insert(segment, toml_edit::Item::Table(table));
         }
         let item = current
             .get_mut(segment)
             .expect("segment exists or was inserted above");
         match item.as_table_like_mut() {
             Some(table) => current = table,
-            None => match lookup {
-                PathLookup::Create => {
-                    anyhow::bail!("`{segment}` in config.toml must be a table")
-                }
-                PathLookup::Existing => return Ok(None),
-            },
+            None => anyhow::bail!("`{segment}` in config.toml must be a table"),
         }
     }
-    Ok(Some(current))
+    Ok(current)
 }
 
 pub(crate) fn persist_root_string_key(
@@ -274,15 +219,6 @@ pub(crate) fn persist_root_string_key(
 ) -> anyhow::Result<PathBuf> {
     let path = config_toml_path(config_path)?;
     mutate_config_document(&path, |doc| set_document_value(doc, &[key], value))?;
-    Ok(path)
-}
-
-pub(crate) fn persist_unset_root_key(
-    config_path: Option<&Path>,
-    key: &str,
-) -> anyhow::Result<PathBuf> {
-    let path = config_toml_path(config_path)?;
-    mutate_config_document(&path, |doc| unset_document_value(doc, &[key]).map(|_| ()))?;
     Ok(path)
 }
 
@@ -634,30 +570,6 @@ base_url = "https://quoted.example/v1"
             Some("sk-fresh"),
             "real key must be inserted despite the comment: {body}"
         );
-    }
-
-    #[test]
-    fn unset_document_value_reports_removal_and_tolerates_missing_parents() {
-        let mut doc = "model = \"deepseek-v4-pro\"\n"
-            .parse::<toml_edit::DocumentMut>()
-            .unwrap();
-        assert!(!unset_document_value(&mut doc, &["providers", "openrouter", "api_key"]).unwrap());
-        assert!(!unset_document_value(&mut doc, &["model", "nested"]).unwrap());
-        assert!(unset_document_value(&mut doc, &["model"]).unwrap());
-        assert!(!unset_document_value(&mut doc, &["model"]).unwrap());
-    }
-
-    #[test]
-    fn unset_last_root_value_preserves_its_leading_comment() {
-        let mut doc = "# keep this explanation\napproval_policy = \"on-request\"\n"
-            .parse::<toml_edit::DocumentMut>()
-            .unwrap();
-
-        assert!(unset_document_value(&mut doc, &["approval_policy"]).unwrap());
-
-        let saved = doc.to_string();
-        assert!(saved.contains("# keep this explanation"), "{saved:?}");
-        assert!(!saved.contains("approval_policy"), "{saved:?}");
     }
 
     #[test]
