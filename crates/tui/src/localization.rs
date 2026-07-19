@@ -403,7 +403,6 @@ pub enum MessageId {
     FleetRosterMembersCount,
     FleetRosterOperatorFirst,
     FleetRosterOperatorRow,
-    FleetReadyNotice,
     /// Sticky error when Fleet profile save cannot prove collision safety.
     FleetProfileIdentityVerifyFailed,
     /// Sticky error when the drafted profile id collides with another file.
@@ -816,7 +815,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::FleetRosterMembersCount,
     MessageId::FleetRosterOperatorFirst,
     MessageId::FleetRosterOperatorRow,
-    MessageId::FleetReadyNotice,
     MessageId::FleetProfileIdentityVerifyFailed,
     MessageId::FleetProfileIdConflict,
     MessageId::FleetProfileProviderUnconfigured,

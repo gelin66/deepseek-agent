@@ -1,6 +1,5 @@
 use super::*;
 use crate::config::{ApiProvider, Config, ProviderConfig, ProvidersConfig};
-use crate::settings::Settings;
 use crate::test_support::{EnvVarGuard, lock_test_env};
 use crate::tui::history::HistoryCell;
 
@@ -38,78 +37,6 @@ fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) -> std::
 #[cfg(windows)]
 fn create_dir_symlink(target: &std::path::Path, link: &std::path::Path) -> std::io::Result<()> {
     std::os::windows::fs::symlink_dir(target, link)
-}
-
-#[test]
-fn feature_intro_is_silent_while_onboarding_is_in_progress() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.onboarding = OnboardingState::Welcome;
-    let before = app.history.len();
-    app.maybe_show_feature_intro();
-    assert_eq!(
-        app.history.len(),
-        before,
-        "must not nudge while onboarding is in progress"
-    );
-}
-
-#[test]
-fn feature_intro_is_silent_when_auth_setup_is_incomplete() {
-    // --skip-onboarding with no provider key must not claim setup is ready (#3985).
-    let mut app = App::new(test_options(false), &Config::default());
-    app.onboarding = OnboardingState::None;
-    app.onboarding_needs_api_key = true;
-    let before = app.history.len();
-    app.maybe_show_feature_intro();
-    assert_eq!(
-        app.history.len(),
-        before,
-        "must not show 'setup is ready' when API key / auth is missing"
-    );
-}
-
-#[test]
-fn feature_intro_shows_once_persists_then_is_idempotent() {
-    let _env_lock = lock_test_env();
-    let tmp = std::env::temp_dir().join(format!("cw-feature-intro-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).unwrap();
-    let config_path = tmp.join("config.toml");
-    let _env = EnvVarGuard::set(
-        "DEEPSEEK_CONFIG_PATH",
-        config_path.to_string_lossy().as_ref(),
-    );
-    let _ = std::fs::remove_file(tmp.join("settings.toml"));
-
-    let mut app = App::new(test_options(false), &Config::default());
-    app.onboarding = OnboardingState::None;
-    // Isolated config has no key; pin readiness so the ready-tip path is exercised.
-    app.onboarding_needs_api_key = false;
-    let before = app.history.len();
-
-    app.maybe_show_feature_intro();
-    assert_eq!(app.history.len(), before, "intro must not hide empty state");
-    assert!(
-        app.status_message
-            .as_deref()
-            .is_some_and(|message| message.contains("Fleet") && message.contains("/fleet setup"))
-    );
-
-    // Persisted flag now set → a second call is a no-op.
-    assert!(
-        Settings::load()
-            .expect("settings should load")
-            .feature_intro_shown,
-        "feature_intro_shown should be persisted"
-    );
-    app.maybe_show_feature_intro();
-    assert_eq!(
-        app.history.len(),
-        before,
-        "intro must not repeat once the flag is persisted"
-    );
-
-    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 #[test]

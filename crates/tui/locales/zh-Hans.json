@@ -365,7 +365,6 @@
     "FleetRosterMembersCount": "{count} 个成员",
     "FleetRosterOperatorFirst": "operator 优先 · 路线已解析",
     "FleetRosterOperatorRow": "operator",
-    "FleetReadyNotice": "Fleet 已就绪 · /fleet 打开角色 · /fleet setup 自定义路线",
     "FleetProfileIdentityVerifyFailed": "无法校验现有配置标识（{error}）；请先修复列出的文件再保存。",
     "FleetProfileIdConflict": "配置 id `{id}` 已被 {path} 占用；请重新起草为不同的角色或先移除旧文件。",
     "FleetProfileProviderUnconfigured": "配置指定的 provider `{provider}` 尚未配置凭据（{env}）；请先在 /provider 中设置，再保存。",

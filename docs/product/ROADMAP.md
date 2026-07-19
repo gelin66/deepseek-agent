@@ -862,6 +862,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   sidebar 不再展示永久为零的假 `session + agents` 拆分。保留的 view scalar 已诚实命名为
   `total_cost_usd/cny`，唯一 writer 是 canonical Run presenter；`/cost`、footer、phase strip、
   sidebar 和 CNY fallback 直接读取 root+child 聚合总额。Header 中零-reader 的 cost 参数同步删除。
+- M4-C 已删除只有自证测试调用、从未在生产启动或 onboarding 后触发的 Fleet-ready nudge，
+  连同其 `feature_intro_shown` 持久化字段与专属文案一起物理删除；真实 Fleet、多 Agent、
+  onboarding 和空状态不依赖该提示。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

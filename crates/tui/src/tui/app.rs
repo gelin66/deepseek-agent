@@ -1712,33 +1712,6 @@ impl App {
         self.needs_redraw = true;
     }
 
-    /// Mark the first-run follow-up as seen without inserting a transcript
-    /// message. The empty underwater launch surface owns setup guidance; a
-    /// synthetic history cell would hide that surface before the user sends
-    /// anything.
-    pub fn maybe_show_feature_intro(&mut self) {
-        if self.onboarding != OnboardingState::None {
-            return;
-        }
-        // Never claim "setup is ready" when auth is still missing — e.g.
-        // `--skip-onboarding` with no API key (#3985). Leave the flag unset so
-        // the tip can appear after the user finishes provider setup.
-        if self.onboarding_needs_api_key {
-            return;
-        }
-        let mut settings = Settings::load_persisted().unwrap_or_default();
-        if settings.feature_intro_shown {
-            return;
-        }
-        settings.feature_intro_shown = true;
-        if let Err(err) = settings.save() {
-            self.status_message = Some(format!("Failed to save feature-intro flag: {err}"));
-            // Still show the nudge; the flag write may simply retry next launch.
-        }
-        self.status_message = Some(self.tr(MessageId::FleetReadyNotice).into_owned());
-        self.needs_redraw = true;
-    }
-
     pub fn set_mode(&mut self, mode: AppMode) -> bool {
         let requested_mode = mode;
         let mode = match mode {

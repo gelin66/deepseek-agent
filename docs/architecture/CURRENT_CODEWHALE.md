@@ -699,6 +699,9 @@ M4-C foreground 切换后还已物理删除：
   canonical `ModelAccounting` 的 root+child 聚合总额投影为 `total_cost_usd/cny`，`/cost`、
   footer、phase strip 和 sidebar 都直接读取该唯一总额。按 Agent 拆账只有 protocol 增加 actor
   cost 维度后才可实现，不能由 TUI 推算。
+- 首次启动后的 Fleet-ready nudge 只有测试调用、没有生产触发点；其 App 方法、持久化
+  `feature_intro_shown` 标记、中文文案和自证测试现已删除。真实 onboarding、空状态与 Fleet
+  命令/多 Agent 调度不经过该幽灵提示。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
   删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有
