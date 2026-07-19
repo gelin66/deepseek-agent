@@ -929,6 +929,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   start_worker_on_host -> poll_terminal_with_status -> forget_worker`，真实进程和并发 worker 回归
   14/14、worker route/prompt 回归 7/7 通过；保留 Fleet Manager、Ledger、Local/SSH Host 和
   `codewhale exec -> AgentApplication -> AgentRuntime` 的 canonical 多 Agent 链。
+- M4-C 已删除 TUI `App` 中旧 foreground Engine 退役后只初始化/清空、没有任何
+  production producer 或 reader 的 `project_doc`、`dispatch_started_at`、
+  `ignored_tool_calls` 和 `pending_tool_uses`。真实 project instruction 继续由 canonical
+  prompt composition 拥有，tool prepare/outcome、turn lifecycle 和 terminal 继续只由
+  `CanonicalRunProjection -> run_presenter -> App` 投影；不建 UI 镜像状态或兼容双写。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use ratatui::layout::Rect;
-use serde_json::Value;
 
 use codewhale_config::route::RouteLimits;
 
@@ -1017,9 +1016,6 @@ pub struct App {
     /// Ordered footer items loaded from `tui.status_items` at startup. The
     /// renderer iterates this slice; no item is hardcoded in the footer path.
     pub status_items: Vec<crate::config::StatusItem>,
-    /// Project documentation (AGENTS.md or CLAUDE.md)
-    #[allow(dead_code)]
-    pub project_doc: Option<String>,
     /// Number of MCP servers declared in the user's config at app boot.
     /// Used by passive UI projections; `0` hides the MCP status.
     pub mcp_configured_count: usize,
@@ -1030,12 +1026,8 @@ pub struct App {
     /// Canonical tool call cells by tool id. Prepared tools are written
     /// directly to `history`; committed outcomes update the indexed cell.
     pub tool_cells: HashMap<String, usize>,
-    /// Tool calls that should be ignored by the UI
-    pub ignored_tool_calls: HashSet<String>,
     /// Current streaming assistant cell
     pub streaming_message_index: Option<usize>,
-    /// Tool calls captured for the pending assistant message
-    pub pending_tool_uses: Vec<(String, String, Value)>,
     /// Start time for current turn
     pub turn_started_at: Option<Instant>,
     /// Most recent engine event observed for the current turn. This is
@@ -1055,9 +1047,6 @@ pub struct App {
     /// Monotonic turn counter for stable user-facing labels (#3030).
     /// Incremented each time a new turn starts; displayed as "Turn N".
     pub turn_counter: u64,
-    /// When the UI accepted a user message but has not observed `TurnStarted` yet.
-    pub dispatch_started_at: Option<Instant>,
-
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
     /// Whether context compaction is currently in progress.
@@ -1356,23 +1345,19 @@ impl App {
                 .as_ref()
                 .and_then(|tui| tui.status_items.clone())
                 .unwrap_or_else(crate::config::StatusItem::default_footer),
-            project_doc: None,
             // Read the MCP config once at boot to know how many servers the
             // user declared. Errors fall through to zero so a missing or
             // malformed config simply hides the passive UI projections.
             mcp_configured_count,
             cached_skills,
             tool_cells: HashMap::new(),
-            ignored_tool_calls: HashSet::new(),
             streaming_message_index: None,
-            pending_tool_uses: Vec::new(),
             turn_started_at: None,
             turn_last_activity_at: None,
             cumulative_turn_duration: std::time::Duration::ZERO,
             runtime_turn_id: None,
             runtime_turn_status: None,
             turn_counter: 0,
-            dispatch_started_at: None,
             needs_redraw: true,
             is_compacting: false,
             is_purging: false,

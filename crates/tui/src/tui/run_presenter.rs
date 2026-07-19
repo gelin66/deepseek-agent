@@ -291,9 +291,7 @@ fn present_canonical_event(
 fn reset_run_display(app: &mut App) {
     app.clear_history();
     app.tool_cells.clear();
-    app.ignored_tool_calls.clear();
     app.streaming_message_index = None;
-    app.pending_tool_uses.clear();
     app.is_compacting = false;
 }
 
@@ -503,7 +501,6 @@ fn finish_terminal(app: &mut App, terminal: &TerminalState, accounting: &ModelAc
     project_accounting(app, accounting);
     app.is_loading = false;
     app.is_compacting = false;
-    app.dispatch_started_at = None;
     app.turn_started_at = None;
     app.turn_last_activity_at = None;
     app.runtime_turn_status = Some(terminal_runtime_status(terminal).to_owned());
