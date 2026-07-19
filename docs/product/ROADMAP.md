@@ -1220,6 +1220,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   校验，不再依赖伪 `/set` 入口。无效 `/settings set`、`/sidebar auto --save` 文档已改成直接
   编辑配置文件，并纠正当前默认值和环境覆盖事实。settings 26/26、catalog sync 1/1、App
   67/67 通过，并通过 TUI strict Clippy、fmt 和 diff-check。
+- M4-C 已删除 `crates/tools` 中只由 `parity_tools` 自证的第二套 `ToolDescriptor`/
+  `ToolRegistry`/`ToolCallRuntime`/handler 调度抽象，以及 protocol 中只被该岛占用的
+  `ToolKind`/`ToolPayload`/`ToolOutput`/`LocalShellParams` DTO。生产固定目录、canonical
+  `ToolDefinition`/`ToolInvocation`/`ToolOutcome`、`ProductionToolExecutor`、DeepSeek 工具
+  调用和确定性 `run_verifiers` 均保持不变。tools 296/296、tools doctest 2/2（1 ignored）、
+  protocol 71/71 通过，并通过两个 crate 的 all-target strict Clippy、fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
