@@ -845,7 +845,6 @@ name = "codewhale-config"
 version = "0.8.68"
 dependencies = [
  "anyhow",
- "codewhale-execpolicy",
  "codewhale-secrets",
  "dirs",
  "libc",
@@ -1032,7 +1031,6 @@ dependencies = [
  "codewhale-config",
  "codewhale-context",
  "codewhale-deepseek",
- "codewhale-execpolicy",
  "codewhale-lane",
  "codewhale-protocol",
  "codewhale-release",

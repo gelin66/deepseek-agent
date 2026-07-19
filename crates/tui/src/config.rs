@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use codewhale_execpolicy::ExecPolicyEngine;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 #[cfg(unix)]
@@ -1333,13 +1332,6 @@ pub struct Config {
     /// Sub-agent model overrides.
     #[serde(default)]
     pub subagents: Option<SubagentsConfig>,
-
-    /// Sibling `permissions.toml` ask-rules compiled for runtime checks.
-    ///
-    /// This is deliberately not part of `config.toml`; it is loaded from the
-    /// companion permissions file after profile/env/managed config resolution.
-    #[serde(skip)]
-    pub exec_policy_engine: ExecPolicyEngine,
 }
 
 /// `[skills]` table — controls which local skill roots are discovered.
@@ -1676,7 +1668,6 @@ impl Config {
         apply_managed_overrides(&mut config)?;
         apply_requirements(&mut config)?;
         normalize_model_config(&mut config);
-        config.exec_policy_engine = load_sibling_exec_policy_engine(path.as_deref())?;
         config.validate()?;
         config.warn_on_misplaced_root_base_url();
         Ok(config)
@@ -4181,36 +4172,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         fleet: override_cfg.fleet.or(base.fleet),
         subagents: override_cfg.subagents.or(base.subagents),
         strict_tool_mode: override_cfg.strict_tool_mode.or(base.strict_tool_mode),
-        exec_policy_engine: override_cfg.exec_policy_engine,
-    }
-}
-
-fn load_sibling_exec_policy_engine(config_path: Option<&Path>) -> Result<ExecPolicyEngine> {
-    let Some(config_path) = config_path else {
-        return Ok(ExecPolicyEngine::new(Vec::new(), Vec::new()));
-    };
-    let permissions_path = codewhale_config::permissions_path_for_config_path(config_path);
-    if !permissions_path.exists() {
-        return Ok(ExecPolicyEngine::new(Vec::new(), Vec::new()));
-    }
-
-    let raw = fs::read_to_string(&permissions_path).with_context(|| {
-        format!(
-            "Failed to read permissions file: {}",
-            permissions_path.display()
-        )
-    })?;
-    let permissions: codewhale_config::PermissionsToml =
-        toml::from_str(&raw).with_context(|| {
-            format!(
-                "Failed to parse permissions file: {}",
-                permissions_path.display()
-            )
-        })?;
-    if permissions.is_empty() {
-        Ok(ExecPolicyEngine::new(Vec::new(), Vec::new()))
-    } else {
-        Ok(ExecPolicyEngine::with_rulesets(vec![permissions.ruleset()]))
     }
 }
 

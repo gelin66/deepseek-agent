@@ -168,64 +168,6 @@ approval_policy = "on-request" # on-request | auto；只控制审批，不授予
 sandbox_mode = "workspace-write" # read-only | workspace-write | danger-full-access | external-sandbox
 # prompt_suggestion = true  # opt-in: show ghost-text follow-up question in composer after each turn
 
-# Typed permission rules live in a sibling `permissions.toml` file, not in
-# config.toml. Each `[[rules]]` entry accepts `tool`, optional `command`
-# or `path`, and an `action` field: `"deny"`, `"ask"` (default), or `"allow"`.
-# Deny always wins over ask, which wins over allow.  Globs, broad directory
-# rules, and a rule editor/deleter UI are future work.
-#
-# In supported approval cards, press `S` to approve once and save exact rules
-# (currently saved as ask-only; deny/allow UI save is future work):
-#   exec_shell  -> exact approved command string
-#   write_file  -> exact workspace-relative target path
-#   edit_file   -> exact workspace-relative target path
-#   apply_patch -> one exact workspace-relative path per validated touched file
-# `read_file` rules can be written manually, but the approval UI does not save
-# them.
-#
-# Example ~/.codewhale/permissions.toml:
-#
-# [[rules]]
-# tool = "exec_shell"
-# command = "cargo test"
-# action = "ask"
-#
-# # Block dangerous commands
-# [[rules]]
-# tool = "exec_shell"
-# command = "sed"
-# action = "deny"
-#
-# [[rules]]
-# tool = "exec_shell"
-# command = "awk"
-# action = "deny"
-#
-# # Allow trusted commands without asking
-# [[rules]]
-# tool = "exec_shell"
-# command = "git status"
-# action = "allow"
-#
-# # Path-based deny
-# [[rules]]
-# tool = "write_file"
-# path = "src/main.rs"
-# action = "deny"
-#
-# [[rules]]
-# tool = "edit_file"
-# path = "src/lib.rs"
-# action = "ask"
-#
-# [[rules]]
-# tool = "apply_patch"
-# path = "src/patch-target.rs"
-#
-# [[rules]]
-# tool = "read_file"
-# path = "secrets/api_key.txt"
-# action = "deny"
 # ─────────────────────────────────────────────────────────────────────────────────
 # External Sandbox Backend (pluggable remote execution)
 # ─────────────────────────────────────────────────────────────────────────────────

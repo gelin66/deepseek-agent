@@ -837,18 +837,6 @@ If you are upgrading from older releases:
   with process-tree containment only and must not be described as read-only
   filesystem isolation, workspace-write enforcement, network blocking,
   registry isolation, or AppContainer isolation until those are implemented.
-- `permissions.toml` (sibling file, optional): typed permission rule records
-  loaded next to `config.toml`, for example `~/.codewhale/permissions.toml`.
-  Manually authored `[[rules]]` entries accept `tool`, optional `command` or
-  `path`, and optional `action = "deny" | "ask" | "allow"`; omitted `action`
-  defaults to `"ask"`. `deny` blocks matching invocations before mode-based
-  approval handling, `allow` skips approval for matching invocations, and
-  `ask` 在 `approval_policy = "on-request"` 时强制审批。在
-  `approval_policy = "auto"` 时，`ask` 规则不会把运行降级为交互等待；显式 `deny`
-  仍按当前执行策略拒绝调用。
-
-  Rules can be authored manually. The approval UI is not a policy editor and
-  does not create, edit, or delete entries in this file.
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `64` and is clamped to `1..=128`.

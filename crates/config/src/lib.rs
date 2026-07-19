@@ -35,14 +35,11 @@ use std::ffi::{OsStr, OsString};
 use std::fs;
 #[cfg(unix)]
 use std::io::Read;
-use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::{Context, Result, bail};
 pub use auth_source::{AuthSourceKind, ProviderAuthSourceToml};
-pub use codewhale_execpolicy::ToolAskRule;
-use codewhale_execpolicy::{ExecPolicyEngine, Ruleset};
 use codewhale_secrets::SecretSource;
 pub use codewhale_secrets::Secrets;
 use serde::{Deserialize, Serialize};
@@ -51,7 +48,6 @@ use serde::{Deserialize, Serialize};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
 pub const CONFIG_FILE_NAME: &str = "config.toml";
-pub const PERMISSIONS_FILE_NAME: &str = "permissions.toml";
 
 fn http_headers_are_effectively_empty(headers: &BTreeMap<String, String>) -> bool {
     !headers
@@ -285,62 +281,6 @@ pub struct ProvidersToml {
     /// provider's config.
     #[serde(default, skip_serializing_if = "ProviderConfigToml::is_empty")]
     pub custom: ProviderConfigToml,
-}
-
-/// Sibling `permissions.toml` schema.
-///
-/// Each rule is a typed condition that can deny, allow, or ask before a tool
-/// invocation. UI actions that persist deny/allow rules are future work; the
-/// approval card still saves ask rules.
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PermissionsToml {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub rules: Vec<ToolAskRule>,
-}
-
-impl PermissionsToml {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.rules.is_empty()
-    }
-
-    #[must_use]
-    pub fn ruleset(&self) -> Ruleset {
-        use codewhale_execpolicy::PermissionAction;
-        let mut denied = Vec::new();
-        let mut trusted = Vec::new();
-        let mut ask_rules = Vec::new();
-
-        for rule in &self.rules {
-            match rule.action {
-                PermissionAction::Deny => {
-                    // Command-based deny rules are promoted to denied_prefixes
-                    // so they are caught by execpolicy's deny-always-wins check.
-                    if let Some(cmd) = &rule.command {
-                        denied.push(cmd.clone());
-                    }
-                    // Always keep in ask_rules for path-based and tool-only matching.
-                    ask_rules.push(rule.clone());
-                }
-                PermissionAction::Allow => {
-                    // Command-based allow rules are promoted to trusted_prefixes
-                    // for arity-aware matching.  Path-only allow rules are
-                    // handled through ask_rules (they skip the approval prompt).
-                    if let Some(cmd) = &rule.command {
-                        trusted.push(cmd.clone());
-                    }
-                    // Keep in ask_rules so path-only allow rules also work.
-                    ask_rules.push(rule.clone());
-                }
-                PermissionAction::Ask => {
-                    ask_rules.push(rule.clone());
-                }
-            }
-        }
-
-        Ruleset::user(trusted, denied).with_ask_rules(ask_rules)
-    }
 }
 
 impl ProvidersToml {
@@ -2713,7 +2653,6 @@ pub struct ResolvedRuntimeOptions {
 pub struct ConfigStore {
     path: PathBuf,
     pub config: ConfigToml,
-    permissions: PermissionsToml,
     /// Original file text, retained so [`save`](Self::save) can merge
     /// comments back after serialisation.
     original_raw: Option<String>,
@@ -2730,12 +2669,9 @@ impl ConfigStore {
         } else {
             (ConfigToml::default(), None)
         };
-        let permissions = load_sibling_permissions(&path)?;
-
         Ok(Self {
             path,
             config,
-            permissions,
             original_raw,
         })
     }
@@ -2784,89 +2720,6 @@ impl ConfigStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
-
-    #[must_use]
-    pub fn permissions(&self) -> &PermissionsToml {
-        &self.permissions
-    }
-
-    #[must_use]
-    pub fn permissions_path(&self) -> PathBuf {
-        checked_permissions_path_for_config_path(&self.path)
-            .expect("ConfigStore path is validated before construction")
-    }
-
-    #[must_use]
-    pub fn exec_policy_engine(&self) -> ExecPolicyEngine {
-        if self.permissions.is_empty() {
-            ExecPolicyEngine::new(Vec::new(), Vec::new())
-        } else {
-            ExecPolicyEngine::with_rulesets(vec![self.permissions.ruleset()])
-        }
-    }
-
-    /// Atomically append ask-only permission rules to the sibling
-    /// `permissions.toml` file.
-    ///
-    /// Existing comments and formatting are preserved. Exact duplicate rules
-    /// are ignored, and the in-memory permissions snapshot is refreshed after
-    /// a successful write.
-    pub fn append_ask_rules(&mut self, rules: &[ToolAskRule]) -> Result<usize> {
-        if rules.is_empty() {
-            return Ok(0);
-        }
-
-        let path = checked_permissions_path_for_config_path(&self.path)?;
-        let raw = if checked_path_exists(&path)? {
-            read_checked_permissions_file(&path)?
-        } else {
-            String::new()
-        };
-        let mut permissions = if raw.trim().is_empty() {
-            PermissionsToml::default()
-        } else {
-            toml::from_str(&raw)
-                .with_context(|| format!("failed to parse permissions at {}", path.display()))?
-        };
-        let mut document = if raw.trim().is_empty() {
-            toml_edit::DocumentMut::new()
-        } else {
-            raw.parse::<toml_edit::DocumentMut>()
-                .with_context(|| format!("failed to edit permissions at {}", path.display()))?
-        };
-
-        if !document.contains_key("rules") {
-            document["rules"] = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
-        }
-        let rules_item = document
-            .get_mut("rules")
-            .expect("rules entry was inserted above");
-
-        let mut added = 0;
-        for rule in rules {
-            if permissions.rules.contains(rule) {
-                continue;
-            }
-            append_ask_rule(rules_item, rule)?;
-            permissions.rules.push(rule.clone());
-            added += 1;
-        }
-        if added == 0 {
-            self.permissions = permissions;
-            return Ok(0);
-        }
-
-        let body = document.to_string();
-        let persisted: PermissionsToml = toml::from_str(&body).with_context(|| {
-            format!(
-                "generated invalid permissions document for {}",
-                path.display()
-            )
-        })?;
-        write_permissions_atomic(&path, body.as_bytes())?;
-        self.permissions = persisted;
-        Ok(added)
-    }
 }
 
 fn config_backup_file_name(path: &Path) -> OsString {
@@ -2876,13 +2729,6 @@ fn config_backup_file_name(path: &Path) -> OsString {
         .unwrap_or_else(|| OsString::from(CONFIG_FILE_NAME));
     file_name.push(".bak");
     file_name
-}
-
-fn config_sibling_path_unchecked(config_path: &Path, file_name: &OsStr) -> PathBuf {
-    config_path
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join(file_name)
 }
 
 fn checked_config_sibling_path(config_path: &Path, file_name: &OsStr) -> Result<PathBuf> {
@@ -2897,7 +2743,9 @@ fn checked_config_sibling_path(config_path: &Path, file_name: &OsStr) -> Result<
 
 #[cfg(test)]
 fn config_backup_path(path: &Path) -> PathBuf {
-    config_sibling_path_unchecked(path, &config_backup_file_name(path))
+    path.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(config_backup_file_name(path))
 }
 
 fn checked_config_backup_path(path: &Path) -> Result<PathBuf> {
@@ -3376,125 +3224,6 @@ fn config_path_from_env_value(path: &str) -> Result<Option<PathBuf>> {
     }
 }
 
-#[must_use]
-pub fn permissions_path_for_config_path(config_path: &Path) -> PathBuf {
-    config_sibling_path_unchecked(config_path, OsStr::new(PERMISSIONS_FILE_NAME))
-}
-
-fn checked_permissions_path_for_config_path(config_path: &Path) -> Result<PathBuf> {
-    checked_config_sibling_path(config_path, OsStr::new(PERMISSIONS_FILE_NAME))
-}
-
-pub fn resolve_permissions_path(config_path: Option<PathBuf>) -> Result<PathBuf> {
-    checked_permissions_path_for_config_path(&resolve_config_path(config_path)?)
-}
-
-/// Read a resolved `permissions.toml` path using the same checked/no-follow
-/// path handling as config loading.
-pub fn read_permissions_file(path: &Path) -> Result<String> {
-    read_checked_permissions_file(path)
-}
-
-fn load_sibling_permissions(config_path: &Path) -> Result<PermissionsToml> {
-    let permissions_path = checked_permissions_path_for_config_path(config_path)?;
-    if !checked_path_exists(&permissions_path)? {
-        return Ok(PermissionsToml::default());
-    }
-
-    let raw = read_checked_permissions_file(&permissions_path)?;
-    toml::from_str(&raw).with_context(|| {
-        format!(
-            "failed to parse permissions at {}",
-            permissions_path.display()
-        )
-    })
-}
-
-fn append_ask_rule(item: &mut toml_edit::Item, rule: &ToolAskRule) -> Result<()> {
-    match item {
-        toml_edit::Item::ArrayOfTables(rules) => {
-            rules.push(ask_rule_table(rule));
-            Ok(())
-        }
-        toml_edit::Item::Value(value) => {
-            let Some(rules) = value.as_array_mut() else {
-                bail!("`rules` in permissions.toml must be an array");
-            };
-            rules.push(toml_edit::Value::InlineTable(ask_rule_inline_table(rule)));
-            Ok(())
-        }
-        _ => bail!("`rules` in permissions.toml must be an array"),
-    }
-}
-
-fn ask_rule_table(rule: &ToolAskRule) -> toml_edit::Table {
-    let mut table = toml_edit::Table::new();
-    table["tool"] = toml_edit::value(rule.tool.clone());
-    if let Some(command) = rule.command.as_deref() {
-        table["command"] = toml_edit::value(command);
-    }
-    if let Some(path) = rule.path.as_deref() {
-        table["path"] = toml_edit::value(path);
-    }
-    table
-}
-
-fn ask_rule_inline_table(rule: &ToolAskRule) -> toml_edit::InlineTable {
-    let mut table = toml_edit::InlineTable::new();
-    table.insert("tool", toml_edit::Value::from(rule.tool.clone()));
-    if let Some(command) = rule.command.as_deref() {
-        table.insert("command", toml_edit::Value::from(command));
-    }
-    if let Some(path) = rule.path.as_deref() {
-        table.insert("path", toml_edit::Value::from(path));
-    }
-    table
-}
-
-fn write_permissions_atomic(path: &Path, body: &[u8]) -> Result<()> {
-    let parent = path.parent().with_context(|| {
-        format!(
-            "permissions path has no parent directory: {}",
-            path.display()
-        )
-    })?;
-    fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "failed to create permissions directory {}",
-            parent.display()
-        )
-    })?;
-
-    let mut temporary = tempfile::NamedTempFile::new_in(parent).with_context(|| {
-        format!(
-            "failed to create temporary permissions file in {}",
-            parent.display()
-        )
-    })?;
-    #[cfg(unix)]
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(0o600))
-        .with_context(|| {
-            format!(
-                "failed to secure temporary permissions file for {}",
-                path.display()
-            )
-        })?;
-    temporary
-        .write_all(body)
-        .with_context(|| format!("failed to write permissions at {}", path.display()))?;
-    temporary
-        .as_file()
-        .sync_all()
-        .with_context(|| format!("failed to sync permissions at {}", path.display()))?;
-    temporary
-        .persist(path)
-        .map_err(|error| error.error)
-        .with_context(|| format!("failed to replace permissions at {}", path.display()))?;
-    Ok(())
-}
-
 pub fn default_config_path() -> Result<PathBuf> {
     // Prefer ~/.codewhale/config.toml when it exists (fresh install or
     // migrated), otherwise fall back to ~/.deepseek/config.toml.
@@ -3823,10 +3552,6 @@ fn checked_path_exists(path: &Path) -> Result<bool> {
 
 fn read_checked_config_file(path: &Path) -> Result<String> {
     read_checked_toml_file(path, "config")
-}
-
-fn read_checked_permissions_file(path: &Path) -> Result<String> {
-    read_checked_toml_file(path, "permissions")
 }
 
 fn read_checked_toml_file(path: &Path, label: &str) -> Result<String> {

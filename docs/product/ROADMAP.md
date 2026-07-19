@@ -892,6 +892,18 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   durable approval、risk、intent、参数预览、execpolicy deny 和 canonical Run 投影均保留。
   Context 17/17、TUI approval 35/35、汉化目录 9/9 通过，context all-target 与 TUI production
   bin 严格 Clippy 均无 warning。
+- M4-C 已物理删除 sibling `permissions.toml` 假策略闭环：TUI `Config` 和共享 `ConfigStore`
+  虽会解析、合并、持久化并自测 typed rules，但没有 production consumer 把该 engine 注入
+  canonical `ProductionToolConfig`，所以旧文件唯一真实效果是让无关启动因解析错误失败。
+  现已删除 schema、loader、writer、路径 API、`ConfigReload` 假协议、示例/文档承诺及 config/TUI
+  对 `codewhale-execpolicy` 的无效依赖，共净删约 1,000 行。另一条真实
+  `~/.deepseek/execpolicy.toml -> production_snapshot -> ProductionToolConfig -> Shell host`
+  deny-before-auto 链完整保留，并新增配置到 canonical snapshot 的桥接回归；config 348/348、
+  protocol 71/71、TUI config 216/216、execpolicy 4/4、tools deny 回归、CLI lib 75/75 与
+  dispatcher canonical 集成 5/5 通过，
+  config/protocol all-target 与 TUI production bin 严格 Clippy 无 warning；focused 继续通过
+  tools 299/299、DeepSeek 35/35、Runtime 53/53、App 38/1 ignored、app-server 23/23、exec
+  terminal 24/24、canonical Run 19/19 与真实 PTY 7/7。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

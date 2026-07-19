@@ -26,7 +26,6 @@ codewhale-app = { path = "../app", version = "0.8.68" }
 codewhale-config = { path = "../config", version = "0.8.68" }
 codewhale-context = { path = "../context", version = "0.8.68" }
 codewhale-deepseek = { path = "../deepseek", version = "0.8.68" }
-codewhale-execpolicy = { path = "../execpolicy", version = "0.8.68" }
 codewhale-lane = { path = "../lane", version = "0.8.68" }
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
 codewhale-release = { path = "../release", version = "0.8.68" }

@@ -247,19 +247,6 @@ pub enum AppRequest {
     ConfigUnset { key: String },
     /// List all configuration entries.
     ConfigList,
-    /// Reload configuration from disk and apply to the live runtime.
-    ///
-    /// Re-reads both `config.toml` and the sibling `permissions.toml`,
-    /// refreshing the live `Runtime.config` and `Runtime.exec_policy`
-    /// so headless clients can pick up external config-file *and*
-    /// permission-rule edits without restarting.
-    ///
-    /// Mirrors the TUI `reload_runtime_config` codepath for everything
-    /// reachable from the headless `Runtime`. MCP server connections
-    /// are not refreshed — changing `mcp_config_path` or the referenced
-    /// `mcp.json` still requires a restart, matching the TUI's
-    /// `mcp_restart_required` behavior.
-    ConfigReload,
     /// List available models.
     Models,
     /// List threads that are currently loaded in memory.

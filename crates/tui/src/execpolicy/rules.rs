@@ -197,4 +197,22 @@ mod tests {
             ExecPolicyDecision::AskUser(_)
         ));
     }
+
+    #[test]
+    fn loaded_rules_become_the_canonical_production_snapshot() {
+        let config = ExecPolicyConfig::from_str(
+            r#"
+[rules.shell]
+allow = ["git status"]
+deny = ["git push --force"]
+"#,
+        )
+        .expect("parse production execpolicy fixture");
+
+        let snapshot = config.production_snapshot();
+        let shell = snapshot.rules.get("shell").expect("shell rules");
+
+        assert_eq!(shell.allow, ["git status"]);
+        assert_eq!(shell.deny, ["git push --force"]);
+    }
 }
