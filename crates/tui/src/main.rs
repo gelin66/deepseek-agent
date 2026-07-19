@@ -30,7 +30,6 @@ mod audit;
 mod codex_model_cache;
 mod config;
 mod config_persistence;
-mod core;
 mod deepseek_theme;
 mod dependencies;
 mod error_taxonomy;
@@ -74,9 +73,8 @@ mod workspace_trust;
 mod xai_oauth;
 
 use crate::config::{Config, DEFAULT_TEXT_MODEL, MAX_SUBAGENTS, effective_home_dir};
-use crate::core::termination::RunTerminationReason;
 use crate::eval::{EvalHarness, EvalHarnessConfig, ScenarioStepKind};
-use crate::exec_output::ExecTerminalReceipt;
+use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
 use crate::features::{Feature, render_feature_table};
 use crate::mcp::{McpPool, McpServerConfig, McpServerOAuthConfig, McpWriteStatus};
 use crate::tui::history::summarize_tool_output;

@@ -1029,7 +1029,6 @@ dependencies = [
  "codewhale-config",
  "codewhale-context",
  "codewhale-deepseek",
- "codewhale-lane",
  "codewhale-protocol",
  "codewhale-release",
  "codewhale-runtime",

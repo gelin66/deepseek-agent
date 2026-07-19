@@ -31,8 +31,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::{Config, MAX_SUBAGENTS};
-use crate::core::termination::RunTerminationReason;
-use crate::exec_output::ExecTerminalReceipt;
+use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
 use crate::localization::{MessageId, tr};
 
 use super::{

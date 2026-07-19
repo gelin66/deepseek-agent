@@ -7,8 +7,20 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::core::termination::RunTerminationReason;
 use crate::localization::{MessageId, tr};
+
+/// Typed terminal reasons exposed by the headless output protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RunTerminationReason {
+    Resolved,
+    Unresolved,
+    Canceled,
+    Timeout,
+    BudgetExhausted,
+    ModelError,
+    InfrastructureError,
+}
 
 /// Machine-facing status paired with a typed runtime termination reason.
 ///
