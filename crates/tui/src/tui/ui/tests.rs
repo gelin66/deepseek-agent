@@ -242,7 +242,6 @@ fn canonical_approval_can_inspect_and_copy_full_params_locally() {
     let request = ApprovalRequest::elevated(
         "interaction-1",
         "read_file",
-        "读取完整参数测试",
         &serde_json::json!({"path": "src/main.rs"}),
     );
     app.view_stack.push(ApprovalView::new(request));
@@ -290,7 +289,6 @@ fn canonical_mouse_click_on_approval_emits_decision() {
     let request = ApprovalRequest::routine(
         "interaction-mouse",
         "read_file",
-        "测试鼠标批准",
         &serde_json::json!({"path": "src/main.rs"}),
     );
     let approval = ApprovalView::new(request);
@@ -327,7 +325,6 @@ fn canonical_mouse_wheel_is_consumed_by_active_modal() {
     let request = ApprovalRequest::routine(
         "interaction-wheel",
         "read_file",
-        "测试模态框滚轮",
         &serde_json::json!({"path": "src/main.rs"}),
     );
     app.view_stack.push(ApprovalView::new(request));

@@ -249,10 +249,9 @@ struct RepoConstitution {
     /// (highest authority first).
     #[serde(default)]
     authority: Option<Vec<String>>,
-    /// Repo invariants the agent must not break. Plain strings are advisory
-    /// prose (rendered into the prompt only); object entries with `paths`
-    /// are additionally compiled into mechanical write holds (see
-    /// `crate::repo_law`). Law can only tighten — there is no allow shape.
+    /// Repo invariants the agent must not break. Plain strings and scoped
+    /// object entries are both rendered into the model prompt; Host write
+    /// authority is enforced separately by the canonical tool boundary.
     #[serde(default)]
     protected_invariants: Option<Vec<ProtectedInvariant>>,
     /// Branch / release policy in effect (e.g. "PRs target codex/v0.8.53").
@@ -272,120 +271,20 @@ struct VerificationPolicy {
     before_claiming_done: Option<Vec<String>>,
 }
 
-/// One protected invariant: either advisory prose (the historical shape) or
-/// an enforced entry carrying path globs. Untagged so existing files keep
-/// parsing unchanged.
+/// One protected invariant: either prose or an entry scoped to related paths.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 enum ProtectedInvariant {
     Advisory(String),
-    Enforced(EnforcedInvariant),
+    Scoped(ScopedInvariant),
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct EnforcedInvariant {
+struct ScopedInvariant {
     text: String,
-    /// Workspace-relative path globs this invariant protects (e.g.
-    /// `crates/protocol/**`). Empty means advisory-only despite the shape.
+    /// Workspace-relative paths or globs related to this guidance.
     #[serde(default)]
     paths: Vec<String>,
-    /// What the harness does when a write targets a protected path.
-    #[serde(default)]
-    action: RepoLawAction,
-}
-
-/// Enforcement level for a protected path. `Ask` force-prompts (in every
-/// mode, including YOLO — law can add holds, never remove them); `Block`
-/// denies outright.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RepoLawAction {
-    #[default]
-    Ask,
-    Block,
-}
-
-/// A compiled, mechanically-enforceable repo-law rule.
-pub struct RepoLawRule {
-    pub text: String,
-    pub patterns: Vec<String>,
-    pub globs: globset::GlobSet,
-    pub action: RepoLawAction,
-}
-
-/// Load and compile the enforceable rules from the workspace's repo
-/// constitution. Any failure — missing file, parse error, invalid glob —
-/// degrades to fewer (or zero) rules: enforcement can silently do less,
-/// never more, and never poisons the tool gate. Parse warnings still reach
-/// the user through the prompt-side load path, which reads the same file.
-pub fn load_repo_law_rules(workspace: &Path) -> Vec<RepoLawRule> {
-    let Some((_, constitution)) = discover_repo_constitution(workspace) else {
-        return Vec::new();
-    };
-    let mut rules = Vec::new();
-    for invariant in constitution.protected_invariants.into_iter().flatten() {
-        let ProtectedInvariant::Enforced(enforced) = invariant else {
-            continue;
-        };
-        if enforced.text.trim().is_empty() {
-            continue;
-        }
-        let mut builder = globset::GlobSetBuilder::new();
-        let mut patterns = Vec::new();
-        for pattern in &enforced.paths {
-            let trimmed = pattern.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(glob) = globset::Glob::new(trimmed) {
-                builder.add(glob);
-                patterns.push(trimmed.to_string());
-            }
-        }
-        if patterns.is_empty() {
-            continue;
-        }
-        let Ok(globs) = builder.build() else {
-            continue;
-        };
-        rules.push(RepoLawRule {
-            text: enforced.text.trim().to_string(),
-            patterns,
-            globs,
-            action: enforced.action,
-        });
-    }
-    rules
-}
-
-/// Walk from `workspace` toward the git root looking for the repo
-/// constitution; parse best-effort. Shared by the enforcement loader; the
-/// prompt-side loader keeps its richer warning handling.
-fn discover_repo_constitution(workspace: &Path) -> Option<(PathBuf, RepoConstitution)> {
-    let git_root = find_git_root(workspace);
-    let mut current = workspace.to_path_buf();
-    loop {
-        let mut path = current.clone();
-        for component in REPO_CONSTITUTION_RELATIVE_PATH {
-            path.push(component);
-        }
-        if context_candidate_exists(&path) {
-            let constitution = load_context_file(&path)
-                .ok()
-                .and_then(|raw| serde_json::from_str::<RepoConstitution>(&raw).ok())?;
-            return Some((path, constitution));
-        }
-        if let Some(ref root) = git_root
-            && current == *root
-        {
-            break;
-        }
-        match current.parent() {
-            Some(parent) if parent != current => current = parent.to_path_buf(),
-            _ => break,
-        }
-    }
-    None
 }
 
 impl RepoConstitution {
@@ -424,20 +323,17 @@ impl RepoConstitution {
                     ProtectedInvariant::Advisory(text) => {
                         body.push_str(&format!("- {text}\n"));
                     }
-                    ProtectedInvariant::Enforced(enforced) => {
-                        let paths = enforced
+                    ProtectedInvariant::Scoped(scoped) => {
+                        let paths = scoped
                             .paths
                             .iter()
                             .map(String::as_str)
                             .collect::<Vec<_>>()
                             .join(", ");
                         if paths.is_empty() {
-                            body.push_str(&format!("- {}\n", enforced.text));
+                            body.push_str(&format!("- {}\n", scoped.text));
                         } else {
-                            body.push_str(&format!(
-                                "- {}（机制强制范围：{paths}）\n",
-                                enforced.text
-                            ));
+                            body.push_str(&format!("- {}（相关路径：{paths}）\n", scoped.text));
                         }
                     }
                 }
@@ -1512,3 +1408,25 @@ pub fn merge_contexts(contexts: &[ProjectContext]) -> Option<String> {
 }
 
 // === Unit Tests ===
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scoped_constitution_invariant_is_prompt_guidance_only() {
+        let constitution: RepoConstitution = serde_json::from_value(serde_json::json!({
+            "protected_invariants": [{
+                "text": "不得破坏运行时协议",
+                "paths": ["crates/protocol/**"]
+            }]
+        }))
+        .expect("parse scoped invariant");
+
+        let rendered = constitution.render_block(Path::new(".codewhale/constitution.json"));
+
+        assert!(rendered.contains("不得破坏运行时协议"));
+        assert!(rendered.contains("相关路径：crates/protocol/**"));
+        assert!(!rendered.contains("机制强制"));
+    }
+}

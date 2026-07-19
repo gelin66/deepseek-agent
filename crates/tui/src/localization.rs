@@ -402,11 +402,6 @@ pub enum MessageId {
     SidebarDestructiveArmed,
     // Composer slash menu.
     ComposerSlashMenuHint,
-    // Approval modal — repository law band.
-    ApprovalRepoLawBadge,
-    ApprovalRepoLawTitle,
-    ApprovalRepoLawWarning,
-    ApprovalRepoLawRuleLabel,
     // Canonical transcript chrome.
     HistoryReasoningTitle,
     HistoryReasoningPlaceholder,
@@ -797,10 +792,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::SidebarTasksLabel,
     MessageId::SidebarDestructiveArmed,
     MessageId::ComposerSlashMenuHint,
-    MessageId::ApprovalRepoLawBadge,
-    MessageId::ApprovalRepoLawTitle,
-    MessageId::ApprovalRepoLawWarning,
-    MessageId::ApprovalRepoLawRuleLabel,
     MessageId::HistoryReasoningTitle,
     MessageId::HistoryReasoningPlaceholder,
     MessageId::HistoryReasoningHiddenActivity,

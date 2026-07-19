@@ -884,6 +884,14 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   workspace-scoped trusted roots 以及已持久 Run 的恢复语义均保留，本切片不混入 managed
   requirements。真实 exec/HTTP/stdio surface parity 证明 `auto_approve=true`、
   `trust_mode=false`，Fleet argv 与 CLI help 定向回归同时通过。
+- M4-C 已删除零调用方的 `.codewhale/constitution.json` RepoLaw 编译器、`globset` 依赖和
+  从未进入 canonical Runtime/tool gate 的 `RepoLawRule/RepoLawAction`；constitution 的真实
+  生产能力继续只作为简体中文 system-prompt guidance，由相关 `paths` 标注作用范围，不再
+  谎称 Host 机械强制。TUI 同步删除没有任何 Runtime producer 的英文前缀识别、特殊审批皮肤、
+  专属文案和自证测试，并删除只为该假路径保存却从不展示的原始英文 description 副本；普通
+  durable approval、risk、intent、参数预览、execpolicy deny 和 canonical Run 投影均保留。
+  Context 17/17、TUI approval 35/35、汉化目录 9/9 通过，context all-target 与 TUI production
+  bin 严格 Clippy 均无 warning。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

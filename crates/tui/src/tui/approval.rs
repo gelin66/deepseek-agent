@@ -80,8 +80,6 @@ pub struct ApprovalRequest {
     pub id: String,
     /// Tool being executed
     pub tool_name: String,
-    /// Human-readable tool description from the engine
-    pub description: String,
     /// Tool category
     pub category: ToolCategory,
     /// Canonical runtime risk projected into the three presentation stakes.
@@ -105,15 +103,6 @@ pub struct ApprovalDetail {
 }
 
 impl ApprovalRequest {
-    /// Mechanical repo-law asks are a distinct authority boundary, not an
-    /// ordinary risk prompt. The engine stamps this stable prefix when a
-    /// `.codewhale/constitution.json` ask rule forces review.
-    #[must_use]
-    pub fn is_repo_law_prompt(&self) -> bool {
-        self.description.starts_with("Repo law holds this write:")
-            && self.description.contains(".codewhale/constitution.json")
-    }
-
     /// Presentation stakes for this request (see [`ApprovalStakes`]).
     #[must_use]
     pub fn stakes(&self) -> ApprovalStakes {
@@ -121,45 +110,23 @@ impl ApprovalRequest {
     }
 
     #[cfg(test)]
-    pub fn routine(id: &str, tool_name: &str, description: &str, params: &Value) -> Self {
-        Self::new_with_intent(
-            id,
-            tool_name,
-            description,
-            params,
-            ApprovalStakes::Routine,
-            None,
-        )
+    pub fn routine(id: &str, tool_name: &str, params: &Value) -> Self {
+        Self::new_with_intent(id, tool_name, params, ApprovalStakes::Routine, None)
     }
 
     #[cfg(test)]
-    pub fn elevated(id: &str, tool_name: &str, description: &str, params: &Value) -> Self {
-        Self::new_with_intent(
-            id,
-            tool_name,
-            description,
-            params,
-            ApprovalStakes::Elevated,
-            None,
-        )
+    pub fn elevated(id: &str, tool_name: &str, params: &Value) -> Self {
+        Self::new_with_intent(id, tool_name, params, ApprovalStakes::Elevated, None)
     }
 
     #[cfg(test)]
-    pub fn critical(id: &str, tool_name: &str, description: &str, params: &Value) -> Self {
-        Self::new_with_intent(
-            id,
-            tool_name,
-            description,
-            params,
-            ApprovalStakes::Critical,
-            None,
-        )
+    pub fn critical(id: &str, tool_name: &str, params: &Value) -> Self {
+        Self::new_with_intent(id, tool_name, params, ApprovalStakes::Critical, None)
     }
 
     pub fn new_with_intent(
         id: &str,
         tool_name: &str,
-        description: &str,
         params: &Value,
         stakes: ApprovalStakes,
         intent_summary: Option<&str>,
@@ -169,7 +136,6 @@ impl ApprovalRequest {
         Self {
             id: id.to_string(),
             tool_name: tool_name.to_string(),
-            description: description.to_string(),
             category,
             stakes,
             params: params.clone(),
@@ -1113,37 +1079,25 @@ mod tests {
     }
 
     fn benign_request() -> ApprovalRequest {
-        ApprovalRequest::routine(
-            "test-id",
-            "read_file",
-            "Read a file from disk",
-            &json!({"path": "src/main.rs"}),
-        )
+        ApprovalRequest::routine("test-id", "read_file", &json!({"path": "src/main.rs"}))
     }
 
     fn elevated_request() -> ApprovalRequest {
         ApprovalRequest::elevated(
             "test-id",
             "write_file",
-            "Write a file to disk",
             &json!({"path": "src/main.rs", "content": "test"}),
         )
     }
 
     fn critical_request() -> ApprovalRequest {
-        ApprovalRequest::critical(
-            "test-id",
-            "exec_shell",
-            "Run a shell command",
-            &json!({"command": "rm -rf ~/"}),
-        )
+        ApprovalRequest::critical("test-id", "exec_shell", &json!({"command": "rm -rf ~/"}))
     }
 
     fn shell_request() -> ApprovalRequest {
         ApprovalRequest::elevated(
             "test-id",
             "exec_shell",
-            "Run a shell command",
             &json!({"command": "cargo test --workspace"}),
         )
     }
@@ -1197,8 +1151,7 @@ mod tests {
     #[test]
     fn test_approval_request_new() {
         let params = json!({"path": "src/main.rs", "content": "test"});
-        let request =
-            ApprovalRequest::elevated("test-id", "write_file", "Write a file to disk", &params);
+        let request = ApprovalRequest::elevated("test-id", "write_file", &params);
 
         assert_eq!(request.id, "test-id");
         assert_eq!(request.tool_name, "write_file");
@@ -1211,8 +1164,7 @@ mod tests {
     fn test_approval_request_params_display_truncates() {
         let long_content = "x".repeat(300);
         let params = json!({"path": "src/main.rs", "content": long_content});
-        let request =
-            ApprovalRequest::elevated("test-id", "write_file", "Write a file to disk", &params);
+        let request = ApprovalRequest::elevated("test-id", "write_file", &params);
 
         let display = request.params_display();
         assert!(display.len() < 250);
@@ -1222,8 +1174,7 @@ mod tests {
     #[test]
     fn test_approval_request_params_display_short() {
         let params = json!({"path": "src/main.rs"});
-        let request =
-            ApprovalRequest::routine("test-id", "read_file", "Read a file from disk", &params);
+        let request = ApprovalRequest::routine("test-id", "read_file", &params);
 
         let display = request.params_display();
         assert!(display.contains("src/main.rs"));
@@ -1232,8 +1183,7 @@ mod tests {
     #[test]
     fn test_approval_request_derives_impact_summary() {
         let params = json!({"cmd": "cargo test", "workdir": "/tmp/project"});
-        let request =
-            ApprovalRequest::elevated("test-id", "exec_shell", "Run a shell command", &params);
+        let request = ApprovalRequest::elevated("test-id", "exec_shell", &params);
 
         assert_eq!(request.category, ToolCategory::Shell);
         let impacts = request.impacts();
@@ -1252,12 +1202,7 @@ mod tests {
 
     #[test]
     fn mcp_impact_summary_preserves_full_target_for_underscored_names() {
-        let request = ApprovalRequest::elevated(
-            "test-id",
-            "mcp_my_db_execute_sql",
-            "Call an MCP tool",
-            &json!({}),
-        );
+        let request = ApprovalRequest::elevated("test-id", "mcp_my_db_execute_sql", &json!({}));
 
         let zh_impacts = request.impacts();
         assert!(
@@ -1274,7 +1219,6 @@ mod tests {
         let request = ApprovalRequest::elevated(
             "test-id",
             "exec_shell",
-            "Run a shell command",
             &json!({"command": command, "cwd": "/tmp/project"}),
         );
 
@@ -1298,7 +1242,6 @@ mod tests {
         let request = ApprovalRequest::elevated(
             "test-id",
             "write_file",
-            "Write a file to disk",
             &json!({"path": "src/main.rs", "content": "fn main() {}"}),
         );
 
@@ -1317,7 +1260,6 @@ mod tests {
         let request = ApprovalRequest::elevated(
             "test-id",
             "edit_file",
-            "Edit a file on disk",
             &json!({
                 "path": "src/lib.rs",
                 "search": "old_call();",
@@ -1345,12 +1287,7 @@ mod tests {
 -old
 +new
 "#;
-        let request = ApprovalRequest::elevated(
-            "test-id",
-            "apply_patch",
-            "Apply a patch",
-            &json!({"patch": patch}),
-        );
+        let request = ApprovalRequest::elevated("test-id", "apply_patch", &json!({"patch": patch}));
 
         let details = request.prominent_detail_items();
         let preview = details
@@ -1369,7 +1306,6 @@ mod tests {
         let request = ApprovalRequest::elevated(
             "test-id",
             "apply_patch",
-            "Apply a patch",
             &json!({
                 "changes": [
                     {
@@ -1411,7 +1347,6 @@ mod tests {
         let request = ApprovalRequest::elevated(
             "test-id",
             "apply_patch",
-            "Apply a patch",
             &json!({
                 "changes": [
                     {
@@ -1499,7 +1434,6 @@ mod tests {
         let write = ApprovalRequest::elevated(
             "test-id",
             "write_file",
-            "Write a file",
             &json!({"path": "src/lib.rs", "content": "proposed content\nreplacement content"}),
         );
         let write_preview = write
@@ -1523,7 +1457,6 @@ mod tests {
         let edit = ApprovalRequest::elevated(
             "test-id",
             "edit_file",
-            "Edit a file",
             &json!({
                 "path": "src/lib.rs",
                 "search": "with this",
@@ -1544,7 +1477,6 @@ mod tests {
         let empty = ApprovalRequest::elevated(
             "test-id",
             "write_file",
-            "Write an empty file",
             &json!({"path": "src/empty.rs", "content": ""}),
         );
         let empty_preview = empty
@@ -1968,7 +1900,6 @@ mod tests {
         let request = ApprovalRequest::elevated(
             "test-id",
             "agent",
-            "Start a sub-agent",
             &json!({"action": "start", "type": "explore", "prompt": "map the workspace"}),
         );
         assert_eq!(request.category, ToolCategory::Agent);
@@ -1996,7 +1927,6 @@ mod tests {
             let request = ApprovalRequest::routine(
                 "test-id",
                 "agent",
-                "Inspect a sub-agent",
                 &json!({"action": action, "agent_id": "agent_1"}),
             );
             assert_eq!(request.stakes(), ApprovalStakes::Routine, "{action}");

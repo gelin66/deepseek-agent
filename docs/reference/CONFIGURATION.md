@@ -82,10 +82,9 @@ Each repo can carry two distinct, complementary files:
   prompt as concise prose in a higher-authority block. Legacy `WHALE.md` files
   are ignored and reported as migration-only diagnostics.
 
-  Each `protected_invariants` entry may be either a plain string (advisory
-  prose, the historical shape) or an object carrying path globs, which is
-  additionally **mechanically enforced** in the tool gate. See
-  [Enforced repo-law invariants](#enforced-repo-law-invariants) below.
+  Each `protected_invariants` entry may be either plain prose or an object with
+  related `paths`. Both shapes are model guidance; `paths` only adds scope to
+  the rendered prompt and does not create a Host write gate.
 
   This is the **repo-local law** layer in CodeWhale's hierarchy: *bundled global
   Constitution* → *user-global constitution* (`$CODEWHALE_HOME/constitution.json`,

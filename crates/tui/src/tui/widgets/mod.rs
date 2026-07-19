@@ -1421,12 +1421,7 @@ impl<'a> ApprovalWidget<'a> {
     /// dimmed backdrop region always agree.
     fn build_inline_content(&self, area: Rect) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
         let stakes = self.request.stakes();
-        let repo_law = self.request.is_repo_law_prompt();
-        let palette_colors = if repo_law {
-            repo_law_approval_palette()
-        } else {
-            approval_palette(stakes)
-        };
+        let palette_colors = approval_palette(stakes);
         let critical = matches!(stakes, crate::tui::approval::ApprovalStakes::Critical);
 
         let mut body: Vec<Line<'static>> = Vec::with_capacity(16);
@@ -1434,14 +1429,7 @@ impl<'a> ApprovalWidget<'a> {
         body.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
-                format!(
-                    " {} ",
-                    if repo_law {
-                        tr(MessageId::ApprovalRepoLawBadge)
-                    } else {
-                        stakes_badge_text(stakes)
-                    }
-                ),
+                format!(" {} ", stakes_badge_text(stakes)),
                 Style::default()
                     .fg(palette::WHALE_BG)
                     .bg(palette_colors.accent)
@@ -1449,49 +1437,12 @@ impl<'a> ApprovalWidget<'a> {
             ),
             Span::raw("  "),
             Span::styled(
-                if repo_law {
-                    format!(
-                        "{} · {}",
-                        tr(MessageId::ApprovalRepoLawTitle),
-                        self.request.tool_name
-                    )
-                } else {
-                    self.request.tool_name.clone()
-                },
+                self.request.tool_name.clone(),
                 Style::default()
                     .fg(palette::WHALE_INFO)
                     .add_modifier(Modifier::BOLD),
             ),
         ]));
-
-        if repo_law {
-            body.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    "◆ ",
-                    Style::default()
-                        .fg(palette::STATUS_WARNING)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    tr(MessageId::ApprovalRepoLawWarning),
-                    Style::default()
-                        .fg(palette::WHALE_ERROR)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            body.push(Line::from(vec![
-                Span::raw("  "),
-                Span::styled(
-                    tr(MessageId::ApprovalRepoLawRuleLabel),
-                    Style::default().fg(palette::TEXT_HINT),
-                ),
-                Span::styled(
-                    self.request.description.clone(),
-                    Style::default().fg(palette::TEXT_SECONDARY),
-                ),
-            ]));
-        }
 
         // Command / change preview FIRST — for an approval the thing being run
         // is the load-bearing content, so on a short terminal it is the
@@ -1664,24 +1615,11 @@ impl Renderable for ApprovalWidget<'_> {
             Clear.render(bar_area, buf);
 
             let stakes = self.request.stakes();
-            let repo_law = self.request.is_repo_law_prompt();
-            let palette_colors = if repo_law {
-                repo_law_approval_palette()
-            } else {
-                approval_palette(stakes)
-            };
+            let palette_colors = approval_palette(stakes);
             let summary = format!(
                 " {} — {}  [Tab to expand] ",
-                if repo_law {
-                    tr(MessageId::ApprovalRepoLawTitle)
-                } else {
-                    Cow::Borrowed(self.request.tool_name.as_str())
-                },
-                if repo_law {
-                    tr(MessageId::ApprovalRepoLawBadge)
-                } else {
-                    stakes_badge_text(stakes)
-                },
+                Cow::Borrowed(self.request.tool_name.as_str()),
+                stakes_badge_text(stakes),
             );
             let line = Line::from(Span::styled(
                 summary,
@@ -1698,12 +1636,7 @@ impl Renderable for ApprovalWidget<'_> {
         // analysis on shell commands); reuse it for the palette and the
         // left-rail gate instead of re-deriving per band.
         let stakes = self.request.stakes();
-        let repo_law = self.request.is_repo_law_prompt();
-        let palette_colors = if repo_law {
-            repo_law_approval_palette()
-        } else {
-            approval_palette(stakes)
-        };
+        let palette_colors = approval_palette(stakes);
         let (body, controls) = self.build_inline_content(area);
         let region = inline_region_for(area, &body, &controls);
         if region.width == 0 || region.height == 0 {
@@ -1720,8 +1653,7 @@ impl Renderable for ApprovalWidget<'_> {
 
         // Top separator rule, risk-tinted, so the prompt reads as a distinct
         // panel without a heavy full border box.
-        let rule_glyph = if repo_law { "═" } else { "─" };
-        let rule: String = rule_glyph.repeat(region.width as usize);
+        let rule: String = "─".repeat(region.width as usize);
         buf.set_string(
             region.x,
             region.y,
@@ -1944,14 +1876,6 @@ fn approval_palette(stakes: crate::tui::approval::ApprovalStakes) -> ApprovalCol
             accent: palette::WHALE_ERROR,
             shortcut: palette::STATUS_WARNING,
         },
-    }
-}
-
-fn repo_law_approval_palette() -> ApprovalColors {
-    ApprovalColors {
-        border: palette::STATUS_WARNING,
-        accent: palette::WHALE_ERROR,
-        shortcut: palette::STATUS_WARNING,
     }
 }
 
@@ -3941,7 +3865,6 @@ mod tests {
         let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
-            "Run git commit",
             &serde_json::json!({ "command": "git commit -m fix" }),
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
@@ -3966,51 +3889,10 @@ mod tests {
     }
 
     #[test]
-    fn repo_law_approval_has_distinct_authority_grammar() {
-        let request = crate::tui::approval::ApprovalRequest::elevated(
-            "approval-law",
-            "edit_file",
-            "Repo law holds this write: \"manifest review\" protects Cargo.toml (matched Cargo.toml, .codewhale/constitution.json)",
-            &serde_json::json!({ "path": "Cargo.toml", "old": "a", "new": "b" }),
-        );
-        assert!(request.is_repo_law_prompt());
-        let view = crate::tui::approval::ApprovalView::new(request.clone());
-        let widget = ApprovalWidget::new(&request, &view);
-        let area = Rect::new(0, 0, 120, 30);
-        let mut buf = Buffer::empty(area);
-
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-        assert!(
-            rendered.contains(&*crate::localization::tr(
-                crate::localization::MessageId::ApprovalRepoLawBadge
-            )),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains(&*crate::localization::tr(
-                crate::localization::MessageId::ApprovalRepoLawTitle
-            )),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("必须由当前审批请求明确确认"),
-            "{rendered}"
-        );
-        assert!(!rendered.contains("完全访问"), "{rendered}");
-        assert!(rendered.contains("Cargo.toml"), "{rendered}");
-        assert!((0..area.height).any(|y| {
-            let cell = &buf[(1, y)];
-            cell.symbol() == "═" && cell.fg == palette::STATUS_WARNING
-        }));
-    }
-
-    #[test]
     fn approval_selected_destructive_option_uses_contrasting_highlight() {
         let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
-            "Run git commit",
             &serde_json::json!({ "command": "git commit -m fix" }),
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
@@ -4046,7 +3928,6 @@ mod tests {
         let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
-            "Run git commit",
             &serde_json::json!({ "command": "git commit -m fix" }),
         );
         let view = crate::tui::approval::ApprovalView::new(request.clone());
@@ -4077,7 +3958,6 @@ mod tests {
         let request = crate::tui::approval::ApprovalRequest::new_with_intent(
             "approval-1",
             "exec_shell",
-            "Run shell command",
             &serde_json::json!({
                 "command": "rm -rf ./build && find . -name '*.tmp' -delete && cargo clean && echo done",
             }),
@@ -4126,7 +4006,6 @@ mod tests {
         let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
-            "Run git commit",
             &serde_json::json!({ "command": "git commit -m fix" }),
         );
 
@@ -4152,7 +4031,6 @@ mod tests {
         let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "exec_shell",
-            "Run shell command",
             &serde_json::json!({
                 "command": "printf '%s\\n' 'alpha' 'beta' > src/generated.txt",
                 "cwd": "/tmp/project",
@@ -4182,7 +4060,6 @@ mod tests {
         let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "write_file",
-            "Write a file",
             &serde_json::json!({
                 "path": "src/main.rs",
                 "content": "fn main() {\n    println!(\"visible before approval\");\n}\n",
@@ -4209,7 +4086,6 @@ mod tests {
         let request = crate::tui::approval::ApprovalRequest::elevated(
             "approval-1",
             "apply_patch",
-            "Apply a patch",
             &serde_json::json!({
                 "patch": "diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
             }),
@@ -4234,7 +4110,6 @@ mod tests {
         let request = crate::tui::approval::ApprovalRequest::new_with_intent(
             "approval-1",
             "exec_shell",
-            "Run shell command",
             &serde_json::json!({
                 "command": "cargo build || echo fallback",
                 "cwd": "/tmp/project",
@@ -4262,7 +4137,6 @@ mod tests {
         let request = crate::tui::approval::ApprovalRequest::new_with_intent(
             "approval-1",
             "exec_shell",
-            "Built-in safety gate requires approval: destructive background/headless actions cannot auto-approve",
             &serde_json::json!({
                 "command": "cd /Volumes/VIXinSSD/codewhale; cargo clippy -p codewhale-tui --all-targets --locked -- -D warnings 2>&1 | tee /tmp/codewhale-clippy.log",
                 "cwd": "/Volumes/VIXinSSD/codewhale",

@@ -1235,7 +1235,6 @@ fn apply_presenter_action(
                     let approval = ApprovalRequest::new_with_intent(
                         &interaction_id.0,
                         &request.tool_name,
-                        &prompt.description,
                         &arguments,
                         project_approval_risk(prompt.risk),
                         Some(&prompt.title),
