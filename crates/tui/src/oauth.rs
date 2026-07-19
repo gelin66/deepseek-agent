@@ -331,18 +331,6 @@ pub fn missing_auth_message() -> String {
     )
 }
 
-/// Best-effort ChatGPT account id for the `chatgpt-account-id` request header.
-///
-/// Resolves from env overrides first, then the on-disk auth file. Never
-/// refreshes and never errors — a missing account id just means the header is
-/// omitted.
-pub fn codex_account_id() -> Option<String> {
-    if let Some(id) = codex_account_id_env() {
-        return Some(id);
-    }
-    load_credentials().ok().flatten().and_then(|c| c.account_id)
-}
-
 /// Read a ChatGPT account id from env overrides only.
 fn codex_account_id_env() -> Option<String> {
     for var in ["OPENAI_CODEX_ACCOUNT_ID", "CODEX_ACCOUNT_ID"] {

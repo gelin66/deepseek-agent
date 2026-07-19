@@ -1183,13 +1183,6 @@ impl McpPool {
         Ok(pool)
     }
 
-    /// Attach a per-domain network policy (#135). When set, HTTP/SSE
-    /// transports are gated through it; STDIO transports are unaffected.
-    pub fn with_network_policy(mut self, policy: NetworkPolicyDecider) -> Self {
-        self.network_policy = Some(policy);
-        self
-    }
-
     async fn shutdown_connection(&mut self, server_name: &str, reason: &str) {
         if let Some(mut connection) = self.connections.remove(server_name) {
             tracing::debug!(

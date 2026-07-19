@@ -183,10 +183,6 @@ pub fn needs_trust_at(config_path: Option<&Path>, workspace: &Path) -> bool {
     !crate::config::is_workspace_trusted_at(config_path, workspace)
 }
 
-pub fn mark_trusted(workspace: &Path) -> anyhow::Result<PathBuf> {
-    mark_trusted_at(None, workspace)
-}
-
 pub fn mark_trusted_at(config_path: Option<&Path>, workspace: &Path) -> anyhow::Result<PathBuf> {
     crate::config::save_workspace_trust_at(config_path, workspace)
 }
