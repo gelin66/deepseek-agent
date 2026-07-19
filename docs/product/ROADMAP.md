@@ -965,6 +965,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除仅由 MCP 自测调用、重复安装 rustls provider 的 `tls::reqwest_client`
   门面；自测与生产 transport 现都从同一个 platform HTTP client builder 构建客户端，
   async/blocking builder 和 MCP 网络行为保持不变。
+- M4-C 已删除 Fleet alerts 中六个没有生产 caller 的事件 factory 及两条自证测试，并移除
+  整模块 `allow(dead_code)`。生产 `fleet alert-dry-run` 继续直接构造事件并通过真实
+  dispatcher、HTTPS adapter、脱敏和 inspection command 链；Ledger、scheduler、worker
+  生命周期和 canonical 多 Agent 执行均未改变。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

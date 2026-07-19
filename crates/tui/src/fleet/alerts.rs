@@ -1,15 +1,10 @@
 //! Opt-in fleet alert routing and adapter payloads.
 
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
-use codewhale_protocol::fleet::{
-    FleetAlertEventClass, FleetReceipt, FleetRunId, FleetTaskFailureKind, FleetWorkerEvent,
-    FleetWorkerEventPayload,
-};
+use codewhale_protocol::fleet::{FleetAlertEventClass, FleetRunId};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -151,100 +146,6 @@ where
 }
 
 impl FleetAlertEvent {
-    pub fn stale_from_worker_event(event: &FleetWorkerEvent) -> Option<Self> {
-        let FleetWorkerEventPayload::Stale { last_heartbeat_at } = &event.payload else {
-            return None;
-        };
-        Some(Self {
-            class: FleetAlertEventClass::Stale,
-            run_id: event.run_id.clone(),
-            worker_id: Some(event.worker_id.clone()),
-            task_id: Some(event.task_id.clone()),
-            status: "stale".to_string(),
-            reason: last_heartbeat_at
-                .as_ref()
-                .map(|ts| format!("worker heartbeat stale since {ts}"))
-                .unwrap_or_else(|| "worker heartbeat is stale".to_string()),
-        })
-    }
-
-    pub fn restart_exhausted(
-        run_id: FleetRunId,
-        worker_id: impl Into<String>,
-        task_id: impl Into<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            class: FleetAlertEventClass::RestartExhausted,
-            run_id,
-            worker_id: Some(worker_id.into()),
-            task_id: Some(task_id.into()),
-            status: "failed".to_string(),
-            reason: reason.into(),
-        }
-    }
-
-    pub fn needs_human(
-        run_id: FleetRunId,
-        worker_id: Option<String>,
-        task_id: Option<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            class: FleetAlertEventClass::NeedsHuman,
-            run_id,
-            worker_id,
-            task_id,
-            status: "needs_human".to_string(),
-            reason: reason.into(),
-        }
-    }
-
-    pub fn budget_exceeded(
-        run_id: FleetRunId,
-        worker_id: Option<String>,
-        task_id: Option<String>,
-        reason: impl Into<String>,
-    ) -> Self {
-        Self {
-            class: FleetAlertEventClass::BudgetExceeded,
-            run_id,
-            worker_id,
-            task_id,
-            status: "budget_exceeded".to_string(),
-            reason: reason.into(),
-        }
-    }
-
-    pub fn verifier_failed(receipt: &FleetReceipt) -> Option<Self> {
-        if receipt.failure_kind != Some(FleetTaskFailureKind::Verifier) {
-            return None;
-        }
-        Some(Self {
-            class: FleetAlertEventClass::VerifierFailed,
-            run_id: receipt.run_id.clone(),
-            worker_id: Some(receipt.worker_id.clone()),
-            task_id: Some(receipt.task_id.clone()),
-            status: "verifier_failed".to_string(),
-            reason: receipt
-                .score
-                .as_ref()
-                .and_then(|score| score.notes.clone())
-                .unwrap_or_else(|| "verifier failed".to_string()),
-        })
-    }
-
-    pub fn run_completed(run_id: FleetRunId, reason: impl Into<String>) -> Self {
-        Self {
-            class: FleetAlertEventClass::RunCompleted,
-            run_id,
-            worker_id: None,
-            task_id: None,
-            status: "completed".to_string(),
-            reason: reason.into(),
-        }
-    }
-
     pub fn inspection_commands(&self) -> Vec<String> {
         let mut commands = vec!["codewhale fleet status".to_string()];
         if let Some(worker_id) = &self.worker_id {
@@ -525,7 +426,6 @@ fn default_pagerduty_severity() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use codewhale_protocol::fleet::{FleetScore, FleetTaskResult};
 
     #[derive(Default)]
     struct MapResolver {
@@ -667,59 +567,5 @@ mod tests {
 
         let url = required_https_url(&resolver, "FLEET_WEBHOOK_URL").expect("resolve URL");
         assert_eq!(url, "https://hooks.example.invalid/fleet");
-    }
-
-    #[test]
-    fn fleet_alert_event_is_derived_from_ledgered_stale_worker_event() {
-        let worker_event = FleetWorkerEvent {
-            seq: 4,
-            run_id: FleetRunId::from("run-1"),
-            worker_id: "worker-1".to_string(),
-            task_id: "task-a".to_string(),
-            timestamp: "2026-06-13T02:00:00Z".to_string(),
-            payload: FleetWorkerEventPayload::Stale {
-                last_heartbeat_at: Some("2026-06-13T01:57:00Z".to_string()),
-            },
-            extra: BTreeMap::new(),
-        };
-
-        let alert = FleetAlertEvent::stale_from_worker_event(&worker_event).unwrap();
-
-        assert_eq!(alert.class, FleetAlertEventClass::Stale);
-        assert_eq!(alert.worker_id.as_deref(), Some("worker-1"));
-        assert!(alert.reason.contains("2026-06-13T01:57:00Z"));
-        assert_eq!(
-            alert.inspection_commands(),
-            vec![
-                "codewhale fleet status".to_string(),
-                "codewhale fleet inspect worker-1".to_string()
-            ]
-        );
-    }
-
-    #[test]
-    fn fleet_alert_verifier_failed_event_is_derived_from_receipt() {
-        let receipt = FleetReceipt {
-            run_id: FleetRunId::from("run-1"),
-            task_id: "task-a".to_string(),
-            worker_id: "worker-1".to_string(),
-            completed_at: "2026-06-13T02:00:00Z".to_string(),
-            result: FleetTaskResult::Fail,
-            failure_kind: Some(FleetTaskFailureKind::Verifier),
-            artifacts: vec![],
-            score: Some(FleetScore {
-                value: 0.0,
-                max: Some(1.0),
-                notes: Some("regex scorer could not be compiled".to_string()),
-            }),
-            resolved_route: None,
-            effective_permissions: None,
-        };
-
-        let alert = FleetAlertEvent::verifier_failed(&receipt).unwrap();
-
-        assert_eq!(alert.class, FleetAlertEventClass::VerifierFailed);
-        assert_eq!(alert.status, "verifier_failed");
-        assert!(alert.reason.contains("regex scorer"));
     }
 }
