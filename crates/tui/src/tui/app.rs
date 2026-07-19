@@ -1048,8 +1048,6 @@ pub struct App {
     /// streamed chunks don't yank the view back to the live tail. Cleared
     /// when the user explicitly returns to bottom or the turn completes.
     pub user_scrolled_during_stream: bool,
-    /// Timestamp of the last user message send (for brief visual feedback).
-    pub last_send_at: Option<Instant>,
     /// Startup prompt should be submitted automatically after the engine is ready.
     pub auto_submit_initial_input: bool,
     // === Transcript filtering (#397) ===
@@ -1350,7 +1348,6 @@ impl App {
             needs_redraw: true,
             is_compacting: false,
             user_scrolled_during_stream: false,
-            last_send_at: None,
             auto_submit_initial_input,
             collapsed_cells: HashSet::new(),
             collapsed_cell_map: Vec::new(),

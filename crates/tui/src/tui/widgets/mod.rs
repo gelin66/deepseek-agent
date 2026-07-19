@@ -11,7 +11,6 @@ pub use renderable::Renderable;
 
 use std::borrow::Cow;
 use std::collections::HashSet;
-use std::time::Duration;
 
 use crate::localization::{MessageId, tr};
 use crate::palette;
@@ -33,7 +32,6 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-const SEND_FLASH_DURATION: Duration = Duration::from_millis(500);
 #[cfg(test)]
 const COMPOSER_PANEL_HEIGHT: u16 = 2;
 const JUMP_TO_LATEST_BUTTON_WIDTH: u16 = 3;
@@ -330,23 +328,6 @@ impl ChatWidget {
                 start,
                 started.elapsed().as_millis(),
             );
-        }
-
-        // Brief flash highlight on the most recently sent user message.
-        if !app.low_motion
-            && let Some(send_at) = app.last_send_at
-        {
-            if send_at.elapsed() < SEND_FLASH_DURATION {
-                apply_send_flash(
-                    &mut lines,
-                    top,
-                    &app.history,
-                    line_meta,
-                    &app.collapsed_cell_map,
-                );
-            } else {
-                app.last_send_at = None;
-            }
         }
 
         // The HTML contract is a top-first ledger. Bottom-padding the short
@@ -2114,40 +2095,6 @@ pub(crate) fn pad_lines_to_bottom(lines: &mut Vec<Line<'static>>, height: usize)
     *lines = padded;
 }
 
-/// Apply a brief background tint to the last user message's visible lines.
-fn apply_send_flash(
-    lines: &mut [Line<'static>],
-    top: usize,
-    history: &[HistoryCell],
-    line_meta: &[TranscriptLineMeta],
-    original_index_map: &[usize],
-) {
-    // Find the last User cell index.
-    let last_user_cell = history
-        .iter()
-        .rposition(|cell| matches!(cell, HistoryCell::User { .. }));
-    let Some(target_cell) = last_user_cell else {
-        return;
-    };
-
-    let flash_bg = Color::Rgb(30, 40, 55); // subtle dark-blue tint
-
-    for (idx, line) in lines.iter_mut().enumerate() {
-        let line_index = top + idx;
-        if let Some(TranscriptLineMeta::CellLine { cell_index, .. }) = line_meta.get(line_index)
-            && original_index_map
-                .get(*cell_index)
-                .copied()
-                .unwrap_or(*cell_index)
-                == target_cell
-        {
-            for span in &mut line.spans {
-                span.style = span.style.bg(flash_bg);
-            }
-        }
-    }
-}
-
 fn truncate_display_width(text: &str, max_width: usize) -> String {
     if max_width == 0 {
         return String::new();
@@ -2433,7 +2380,7 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 mod tests {
     use super::{
         ApprovalWidget, COMPOSER_PANEL_HEIGHT, COMPOSER_PLACEHOLDER, ChatWidget, ComposerWidget,
-        Renderable, SlashMenuEntry, ambient_ping_pong, apply_send_flash, build_empty_state_lines,
+        Renderable, SlashMenuEntry, ambient_ping_pong, build_empty_state_lines,
         composer_content_geometry, composer_empty_hint_text, composer_height, composer_max_height,
         composer_min_input_rows, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
         fish_flee_offset, fish_heading, fish_mark, layout_input, layout_input_with_scroll,
@@ -2445,7 +2392,7 @@ mod tests {
     use crate::tui::app::{App, ComposerDensity, ToolCollapseMode, TuiOptions};
     use crate::tui::approval::ApprovalStakes;
     use crate::tui::history::{GenericToolCell, HistoryCell, ToolStatus};
-    use crate::tui::scrolling::{TranscriptLineMeta, TranscriptScroll};
+    use crate::tui::scrolling::TranscriptScroll;
     use ratatui::{buffer::Buffer, layout::Rect, style::Color, text::Line};
     use std::{
         path::PathBuf,
@@ -2531,27 +2478,6 @@ mod tests {
         app.add_message(success_tool_cell("read_file"));
         app.add_message(success_tool_cell("list_dir"));
         app.add_message(success_tool_cell("web_search"));
-    }
-
-    #[test]
-    fn send_flash_uses_original_index_map_for_collapsed_rows() {
-        let history = vec![
-            success_tool_cell("read_file"),
-            success_tool_cell("list_dir"),
-            HistoryCell::User {
-                content: "sent".to_string(),
-            },
-        ];
-        let mut lines = vec![Line::from("sent")];
-        let line_meta = vec![TranscriptLineMeta::CellLine {
-            cell_index: 0,
-            line_in_cell: 0,
-        }];
-        let original_index_map = vec![2];
-
-        apply_send_flash(&mut lines, 0, &history, &line_meta, &original_index_map);
-
-        assert_eq!(lines[0].spans[0].style.bg, Some(Color::Rgb(30, 40, 55)));
     }
 
     #[test]
