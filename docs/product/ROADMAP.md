@@ -3,8 +3,9 @@
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
 - 状态：执行中
-- 当前阶段：M4 已关闭；M5-A canonical `TaskContract`/`EvidenceReceipt` 已完成代码与
-  完整本地门禁，正式 DeepSeek A/B 待记录。M4 最终代码检查点为 `65fa88ba`；当前
+- 当前阶段：M4 已关闭；M5-A canonical `TaskContract`/`EvidenceReceipt` 已完成并通过
+  正式 DeepSeek 显式 verifier A/B，当前进入 M5-B evidence-aware ContextBroker。M4 最终
+  代码检查点为 `65fa88ba`；当前
   Run API v5、RuntimeEvent v7、State schema v12。CLI、TUI、本地 API 与根/子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
@@ -115,7 +116,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
-| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 进行中（M5-A 代码/本地门禁完成，live A/B 待记录） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
+| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 进行中（M5-A 已完成；M5-B 待开发） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定，ContextBroker/RepoGraph 各自由 A/B 证明净收益 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 部分开始（canonical 根/子同 Runtime 已完成） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
@@ -1409,7 +1410,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 ## 9. M5：RepoGraph、ContextBroker 与 canonical 证据链
 
-### M5-A：canonical TaskContract 与 EvidenceReceipt（代码/本地门禁完成，live A/B 待记录）
+### M5-A：canonical TaskContract 与 EvidenceReceipt（已完成）
 
 - 真实问题：当前模型可以提出完成，Host 只有 terminal 机制，却没有绑定任务 generation、
   最新 workspace revision 和确定性验收结果的产品级完成契约，因此仍可能“回答完成但没有
@@ -1441,28 +1442,39 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - SQLite 没有增加 receipt 私表；现有 canonical event/snapshot/reducer 是唯一持久真相。
   Prepared/InFlight/Committed 三个 Host verifier 窗口均通过真实子进程 `SIGKILL` 后重开。
 - focused、严格 workspace Clippy、完整 workspace tests、真实 PTY/exec 和
-  exec/HTTP/stdio 逐事件 parity 已通过。该证据证明机制正确且入口未回归；在正式
-  DeepSeek A/B 完成前，不声称成功率、Token、时间或费用得到提升。
+  exec/HTTP/stdio 逐事件 parity 已通过。
+- 正式 DeepSeek 12-run 显式 verifier A/B 为
+  `2eabda53cb8943b1875a20d2cf7a70f8`：编码 baseline/candidate 均 `3/3` verified；
+  强制伪完成 baseline `3/3` false-success，candidate `3/3` correct-rejection、0
+  false-success；四个 cell 计量有效且成对首请求投影相同。编码 candidate 相对 baseline
+  请求持平、Token `+1.08%`、时间 `+9.22%`、费用 `+3.13%`，保留理由只来自完成正确性
+  改善而非效率收益。完整结果见
+  [M5-A canonical 完成门禁精确 A/B](../../eval/summaries/m5-completion-gate-ab-2026-07-19.md)。
 
-### 工作
+### M5-B：evidence-aware ContextBroker 与 compaction（下一阶段）
 
-- 用 tree-sitter、ripgrep、LSP、包依赖和 git diff 建立增量 RepoGraph。
-- 在统一 Runtime 上实现 `ContextBroker`，按任务相关性、证据新鲜度和 Token 预算选择上下文。
+- 真实问题：当前 canonical transcript 与 compaction 已可恢复，但投影策略尚未确定性保证
+  保留 TaskContract、未决问题、当前 workspace/diff 和最新有效 evidence；长任务可能在
+  压缩后丢失完成所需事实。
+- 单一 owner：选择与预算策略位于 `crates/context`，`AgentRuntime` 只在现有
+  ModelRequest/compaction 边界调用它；不得建立第二 transcript、第二 compaction loop 或
+  presentation-local memory。
+- 先实现最小 deterministic pinned set：TaskContract、未决 interaction/control、当前
+  workspace generation/revision、最新有效 receipt、未解决 verifier failure 和已 join 的
+  child handoff。其余历史按相关性与 Token 预算裁剪。
 - 基于 M4-C C2 的唯一 projection/event 状态机增强 compaction，使其可确定性保留
   TaskContract、未决问题、当前 diff 和最新证据；不得另建第二套 compaction runtime。
 - 用同任务、同预算的 compaction on/off A/B 测量 verified success、false-success、Token、
   时间和费用；M4-C 的协议/恢复通过不能替代该收益证据。
-- 在 canonical `protocol/runtime/state` 中新实现唯一的 `TaskContract`、
-  `EvidenceReceipt` 和 Host completion owner，并让 `workspace_revision` 与确定性 verifier
-  结果进入同一个 `AgentRuntime`/`RunStore`。M4 已删除无生产消费者的历史 TUI prototype；
-  可以参考其测试反例，但不得为旧类型建立 adapter、双写或兼容状态机。
-- 每个 generation 冻结 objective、constraints、non-goals 和 acceptance；显式 verifier
-  只接受匹配 generation、精确参数和最新 workspace revision 的 receipt，objective-only
-  任务只能由 Host 验收。普通 `run_tests`、参数不匹配的 verifier 和模型自评只记录为
-  artifact，不能自行升级为完成证据。
-- 提供可执行任意项目命令的显式 verify 入口，不写命令字符串猜测器。
-- 让 `ToolOutcome`、证据失效和 completion 判定都经过同一 Runtime/RunStore；先完成这条
-  单 Agent 证据链，再让多 Agent 复用，避免把不可靠终态并行放大。
+- 切换真实调用方后删除被替代的旧启发式 projection 分支；若 A/B 无净收益，缩小或删除
+  新策略，不以更多摘要提示词或配置项掩盖。
+
+### M5-C：增量 RepoGraph（证据触发，暂不开发）
+
+- 只有 M5-B 真实长任务能定位“缺少结构检索”而不是“上下文选择错误”时才开始。
+- 首个纵向切片优先复用 ripgrep、git diff 和包清单；tree-sitter/LSP/embedding 必须各自
+  证明比现有 project map 提高 verified success 或减少 Token，不能一次性全部引入。
+- RepoGraph 只向同一 ContextBroker 提供候选事实，不拥有模型循环、任务状态或完成判定。
 
 ### 删除/替代
 

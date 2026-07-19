@@ -12,6 +12,20 @@ M4-A 的 canonical `ToolOutcome`、SQLite RunStore、进程中断恢复、生产
 单次 live resume canary 明确不属于产品指标。长期恢复判定以
 [EVALUATION.md](../docs/product/EVALUATION.md#53-持久化进程中断与恢复证据契约)为准。
 
+M5-A 的 canonical TaskContract/EvidenceReceipt 不能由普通 Host-only exec A/B 验收。
+专用评测器通过 app-server Run API v4/v5 给 baseline/candidate 提供相同 model-visible
+任务，并让 candidate 真正执行冻结的 exact Host verifier：
+
+```bash
+python3 scripts/eval-m5-completion-gate.py --self-test
+python3 scripts/eval-m5-completion-gate.py --dry-run
+```
+
+正式 12-run 结果、二进制/asset SHA、false-success 对照、费用和复杂度边界见
+[M5-A canonical 完成门禁精确 A/B](summaries/m5-completion-gate-ab-2026-07-19.md)。
+凭据化运行必须显式提供两个冻结二进制、`--key-file`、被忽略的 `--output` 和
+`--acknowledge-cost`；Key 只进入 app-server 子进程环境。
+
 M4-A resume supervisor 先复用生产编码 Harness 做离线自检；自检和 dry-run 都不读取 Key、
 不联网：
 

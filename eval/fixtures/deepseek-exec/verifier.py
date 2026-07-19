@@ -96,10 +96,10 @@ def main() -> int:
     workspace = args.workspace.resolve()
 
     public_ok, public_timeout = run(
-        [sys.executable, "-m", "unittest", "-q"], workspace
+        [sys.executable, "-B", "-m", "unittest", "-q"], workspace
     )
     hidden_ok, hidden_timeout = run(
-        [sys.executable, "-I", "-c", HIDDEN_CASES, str(workspace)], workspace
+        [sys.executable, "-I", "-B", "-c", HIDDEN_CASES, str(workspace)], workspace
     )
     immutable_ok, files_ok, regular_files_ok, file_modes_ok = workspace_contract(workspace)
     checks = {

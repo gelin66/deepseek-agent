@@ -333,7 +333,7 @@ artifact 的状态同样不能越级推断。`Produced` 只表示工具产出了
 最新 `workspace_revision` 和预定义验收器同时匹配的成功 receipt，才能把对应证据判为
 `Host Verified`。
 
-#### 2026-07-19 M5-A 本地机制证据
+#### 2026-07-19 M5-A 机制与真实 A/B 证据
 
 当前候选已实现上述 canonical 边界：Run API v5、RuntimeEvent v7、State schema v12；
 TaskContract 在 `RunCreated` 冻结，模型 `Stop` 只产生 completion candidate，Runtime 是
@@ -346,8 +346,24 @@ generation/revision 和实际 Available artifact。任何 `MayWrite` 执行都�
 本地证据包括 root/child 同门禁 conformance、伪完成/缺 artifact/same-hash write 反例、
 Memory/SQLite parity、Host verifier Prepared/InFlight/Committed 的真实子进程 `SIGKILL`
 恢复、三入口逐事件 parity、focused、严格 workspace Clippy 和完整 workspace tests。
-这些结果只证明机制与恢复正确、现有入口无回归；正式 DeepSeek baseline/candidate A/B
-记录完成前，`product_metric_eligible=false`，不得声称成功率、Token、时间或费用提升。
+
+正式官方 DeepSeek A/B 使用 `503d6294` baseline 和 `ba25f836` candidate，通过
+app-server Run API 显式冻结 exact verifier，而不是用 Host-only exec 的外部验收冒充
+canonical receipt。两个场景、两个版本、3/cell 共 12/12 运行计量有效，成对首个模型请求
+投影完全相同：
+
+- 编码场景 baseline/candidate 均为 `3/3` verified；
+- 强制伪完成场景 baseline 为 `3/3 completed + false-success`，candidate 为
+  `3/3 blocked + correct-rejection`；
+- candidate 编码成功 3/3 均有精确 receipt，反例 3/3 均有 CompletionRejected 且无 receipt；
+- 编码 cell 的 candidate 请求持平、Token `+1.08%`、端到端时间 `+9.22%`、费用
+  `+3.13%`；这是单任务小样本，不能外推为普遍效率变化；
+- verifier 的 Python 进程使用 `-B`，失败与成功自测都要求 Git tracked/untracked 状态
+  前后精确一致，避免缓存文件让 workspace-bound receipt 偶发失效。
+
+该切片 `product_metric_eligible=true`，保留依据是 false-success 显著下降且固定编码任务
+不回归，而不是 Token 或速度更优。身份、逐 cell 指标、复杂度成本和非结论见
+[M5-A canonical 完成门禁精确 A/B](../../eval/summaries/m5-completion-gate-ab-2026-07-19.md)。
 
 ### 5.3 持久化、进程中断与恢复证据契约
 
@@ -467,7 +483,9 @@ no_key_replay
 
 能力进入稳定核心必须同时满足：
 
-1. 在目标任务组中提升 verified success，或在成功率不退化时显著降低成本/时间；
+1. 至少满足一种预先冻结的产品收益：提高正向任务 verified success；正向成功率不退化时
+   显著降低成本/时间；或在预定义负向任务中可重复降低 false-success、提高
+   correct-rejection，同时正向任务不退化且新增开销经记录后可接受；
 2. 不增加 false-success；
 3. 默认用户流程不变复杂；
 4. 失败模式明确且可恢复；

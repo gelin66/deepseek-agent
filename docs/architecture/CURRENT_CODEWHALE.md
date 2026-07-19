@@ -10,8 +10,8 @@
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - M4 最终代码检查点：`65fa88ba`
-- 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 已完成代码与本地门禁，
-  正式 DeepSeek A/B 待记录
+- 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 已完成并通过正式
+  DeepSeek 显式 verifier A/B；下一实现切片为 M5-B ContextBroker
 - 当前协议：Run API v5、RuntimeEvent v7、State schema v12
 
 ## 1. 当前结论
@@ -828,8 +828,8 @@ compaction on/off A/B 仍属于 M5 产品收益证据；M4 的结构与可靠性
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
   [收敛 canary](../../eval/summaries/prompt-convergence-canaries-2026-07-18.md)；
 - RepoGraph、writer-worktree Orchestrator 已完成；
-- M5-A EvidenceReceipt 已在本地机制门禁中完成，但尚未用真正触发显式 verifier
-  acceptance 的正式 DeepSeek canary 证明产品收益；
+- M5-A 只在一个固定 Python 编码任务和一个伪完成反例上证明 false-success 下降，尚未证明
+  所有真实项目的假成功归零或获得通用 Token/时间收益；
 - eager join 已在广泛任务上提高 multi verified success、降低 Token/费用或缩短时间；
 - transport 迁移本身提升了真实编码成功率；
 - 单次 live canary 可以成为产品指标。
