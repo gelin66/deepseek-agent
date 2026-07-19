@@ -3008,37 +3008,3 @@ fn status_classifier_does_not_paint_negated_success_green() {
     let (level, _, _) = App::classify_status_text("Turn cancelled");
     assert_eq!(level, StatusToastLevel::Warning);
 }
-
-#[test]
-fn onboarding_submit_api_key_routes_non_deepseek_provider_table() -> std::io::Result<()> {
-    use crate::config::SavedCredential;
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let _lock = lock_test_env();
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let temp_root = std::env::temp_dir().join(format!(
-        "codewhale-app-onboarding-provider-{}-{}",
-        std::process::id(),
-        nanos
-    ));
-    fs::create_dir_all(&temp_root)?;
-    let _home = EnvVarGuard::set("HOME", temp_root.to_string_lossy().as_ref());
-
-    let mut app = App::new(test_options(false), &Config::default());
-    app.onboarding_provider = ApiProvider::Openrouter;
-    app.api_key_input = "onboarding-openrouter-key".to_string();
-    let saved = app
-        .submit_api_key()
-        .expect("openrouter onboarding key should save");
-    let SavedCredential::ConfigFile(path) = saved else {
-        panic!("expected config file save, got {saved:?}");
-    };
-    let contents = fs::read_to_string(path)?;
-    assert!(contents.contains("openrouter"), "{contents}");
-    assert!(contents.contains("onboarding-openrouter-key"));
-    Ok(())
-}

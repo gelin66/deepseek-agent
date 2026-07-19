@@ -7,14 +7,10 @@ use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
 use serde_json::Value;
-use thiserror::Error;
 
 use codewhale_config::route::RouteLimits;
 
-use crate::config::{
-    ApiProvider, Config, DEFAULT_TEXT_MODEL, SavedCredential, has_api_key, save_api_key,
-    save_api_key_for,
-};
+use crate::config::{ApiProvider, Config, DEFAULT_TEXT_MODEL, has_api_key};
 use crate::localization::{MessageId, tr};
 use crate::palette::{self, UiTheme};
 use crate::pricing::{CostCurrency, CostEstimate};
@@ -1420,19 +1416,6 @@ impl QueuedMessage {
     }
 }
 
-// === Errors ===
-
-/// Errors that can occur while submitting API keys during onboarding.
-#[derive(Debug, Error)]
-pub enum ApiKeyError {
-    /// The provided API key was empty.
-    #[error("Failed to save API key: API key cannot be empty")]
-    Empty,
-    /// Persisting the API key failed.
-    #[error("Failed to save API key: {source}")]
-    SaveFailed { source: anyhow::Error },
-}
-
 // === Deref to ComposerState for backward compat ===
 
 impl std::ops::Deref for App {
@@ -1893,29 +1876,6 @@ impl App {
         .iter()
         .map(|s| (s.name.clone(), s.description.clone()))
         .collect()
-    }
-
-    pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
-        let key = self.api_key_input.trim().to_string();
-        if key.is_empty() {
-            return Err(ApiKeyError::Empty);
-        }
-
-        let saved = if matches!(
-            self.onboarding_provider,
-            ApiProvider::Deepseek | ApiProvider::DeepseekCN
-        ) {
-            save_api_key(&key).map_err(|source| ApiKeyError::SaveFailed { source })?
-        } else {
-            let path = save_api_key_for(self.onboarding_provider, &key)
-                .map_err(|source| ApiKeyError::SaveFailed { source })?;
-            SavedCredential::ConfigFile(path)
-        };
-        self.api_key_input.clear();
-        self.api_key_cursor = 0;
-        self.onboarding_needs_api_key = false;
-        self.api_key_env_only = false;
-        Ok(saved)
     }
 
     pub fn finish_onboarding_without_feature_intro(&mut self) {
