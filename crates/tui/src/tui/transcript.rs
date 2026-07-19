@@ -945,17 +945,19 @@ mod tests {
             user_cell("again"),
         ];
         let revisions = vec![1u64, 2, 3, 4];
+        // This test compares two render strategies, not animation timing.
+        // Freeze the running-tool spinner so crossing a frame boundary
+        // between the sequential renders cannot create a false mismatch.
+        let options = TranscriptRenderOptions {
+            low_motion: true,
+            ..TranscriptRenderOptions::default()
+        };
         let mut split_cache = TranscriptViewCache::new();
-        split_cache.ensure_split(
-            &[&cells],
-            &revisions,
-            40,
-            TranscriptRenderOptions::default(),
-        );
+        split_cache.ensure_split(&[&cells], &revisions, 40, options);
 
         let refs: Vec<&HistoryCell> = cells.iter().collect();
         let mut filtered_cache = TranscriptViewCache::new();
-        filtered_cache.ensure_filtered(&refs, &revisions, 40, TranscriptRenderOptions::default());
+        filtered_cache.ensure_filtered(&refs, &revisions, 40, options);
 
         assert_eq!(plain_lines(&split_cache), plain_lines(&filtered_cache));
         assert_eq!(
