@@ -938,6 +938,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `model_overrides` facade 与专属测试，并去掉文件级 `allow(dead_code)`。真实
   `FleetRoster::load -> members -> FleetManager -> profile-aware canonical exec worker` 合并优先级、
   容错加载、内置角色权限下限和多 Agent 调度链保留，不建立测试专用生产 API。
+- M4-C 已按精确零引用证据删除 palette 中 6 个未消费的 RGB/语义常量及其
+  `allow(dead_code)`；真实 `UiTheme`、命名主题解析、浅色/深色对比和
+  `ColorCompatBackend` 完整保留，本切片不改变任何可见颜色。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接
