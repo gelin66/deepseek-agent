@@ -1389,34 +1389,22 @@ fn render_classic_header(area: Rect, buf: &mut Buffer, app: &App) {
     let prompt_tokens = context_usage
         .as_ref()
         .and_then(|(used, _, _)| u32::try_from(*used).ok());
-    let workspace = app
-        .workspace
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or("workspace");
     let model = app.model_display_label();
     let effort = app.reasoning_effort_display_label();
     let started_at = (!app.low_motion).then_some(app.turn_started_at).flatten();
-    let data = HeaderData::new(
-        app.mode,
-        &model,
-        workspace,
-        app.is_loading,
-        app.ui_theme.header_bg,
-    )
-    .with_usage(
-        app.session.total_conversation_tokens,
-        context_window,
-        app.session.session_cost,
-        prompt_tokens,
-    )
-    .with_reasoning_effort(Some(&effort))
-    .with_provider(None)
-    .with_status_indicator(crate::tui::widgets::header_status_indicator_frame(
-        started_at,
-        &app.status_indicator,
-    ));
+    let data = HeaderData::new(app.mode, &model, app.is_loading, app.ui_theme.header_bg)
+        .with_usage(
+            app.session.total_conversation_tokens,
+            context_window,
+            app.session.session_cost,
+            prompt_tokens,
+        )
+        .with_reasoning_effort(Some(&effort))
+        .with_provider(None)
+        .with_status_indicator(crate::tui::widgets::header_status_indicator_frame(
+            started_at,
+            &app.status_indicator,
+        ));
     HeaderWidget::new(data).render(area, buf);
 }
 
@@ -2053,22 +2041,6 @@ fn render_toast_stack_overlay(
         let line = ratatui::text::Line::styled(format!(" {} ", toast.text), style);
         f.render_widget(ratatui::widgets::Paragraph::new(line), row);
     }
-}
-
-#[allow(dead_code)]
-fn transcript_scroll_percent(top: usize, visible: usize, total: usize) -> Option<u16> {
-    if total <= visible {
-        return None;
-    }
-
-    let max_top = total.saturating_sub(visible);
-    if max_top == 0 {
-        return None;
-    }
-
-    let clamped_top = top.min(max_top);
-    let percent = ((clamped_top as f64 / max_top as f64) * 100.0).round() as u16;
-    Some(percent.min(100))
 }
 
 pub(crate) fn context_usage_snapshot(app: &App) -> Option<(i64, u32, f64)> {

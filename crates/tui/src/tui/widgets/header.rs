@@ -73,7 +73,6 @@ pub fn header_status_indicator_frame(
 /// Data required to render the header bar.
 pub struct HeaderData<'a> {
     pub model: &'a str,
-    pub workspace_name: &'a str,
     pub mode: AppMode,
     pub background: ratatui::style::Color,
     /// Total tokens used in this session (cumulative, for display).
@@ -107,13 +106,11 @@ impl<'a> HeaderData<'a> {
     pub fn new(
         mode: AppMode,
         model: &'a str,
-        workspace_name: &'a str,
         _is_streaming: bool,
         background: ratatui::style::Color,
     ) -> Self {
         Self {
             model,
-            workspace_name,
             mode,
             background,
             total_tokens: 0,
@@ -298,51 +295,6 @@ impl<'a> HeaderWidget<'a> {
         )]
     }
 
-    #[allow(dead_code)]
-    fn provider_chip_spans(&self) -> Vec<Span<'static>> {
-        let Some(label) = self.data.provider_label else {
-            return Vec::new();
-        };
-        let trimmed = label.trim();
-        if trimmed.is_empty() {
-            return Vec::new();
-        }
-        vec![Span::styled(
-            trimmed.to_string(),
-            Style::default()
-                .fg(palette::WHALE_INFO)
-                .add_modifier(Modifier::BOLD),
-        )]
-    }
-
-    #[allow(dead_code)]
-    fn effort_chip_spans(&self, include_prefix: bool) -> Vec<Span<'static>> {
-        let Some(label) = self.data.reasoning_effort_label else {
-            return Vec::new();
-        };
-        let trimmed = label.trim();
-        if trimmed.is_empty() {
-            return Vec::new();
-        }
-        let is_off = trimmed.eq_ignore_ascii_case("off");
-        let color = if is_off {
-            palette::TEXT_HINT
-        } else {
-            palette::WHALE_INFO
-        };
-        let body = if !include_prefix {
-            trimmed.to_string()
-        } else if trimmed.eq_ignore_ascii_case("max") || trimmed.eq_ignore_ascii_case("maximum") {
-            // Use a non-emoji diamond (U+25C6, always 1 column) instead of an
-            // SMP emoji whose rendered width is inconsistent across terminals
-            // (cmd/PowerShell, WezTerm, Alacritty). See issue #1314.
-            format!("\u{25C6} {trimmed}")
-        } else {
-            format!("\u{00B7} {trimmed}")
-        };
-        vec![Span::styled(body, Style::default().fg(color))]
-    }
-
     fn status_variant(
         &self,
         _show_stream_label: bool,
@@ -409,74 +361,6 @@ impl<'a> HeaderWidget<'a> {
             .into_iter()
             .find(|spans| Self::span_width(spans) <= max_width)
             .unwrap_or_default()
-    }
-
-    #[allow(dead_code)]
-    fn metadata_spans(&self, max_width: usize) -> Vec<Span<'static>> {
-        let workspace = self.data.workspace_name.trim();
-        let model = self.data.model.trim();
-
-        if max_width < 4 || (workspace.is_empty() && model.is_empty()) {
-            return Vec::new();
-        }
-
-        if workspace.is_empty() {
-            return vec![Span::styled(
-                Self::truncate_to_width(model, max_width),
-                Style::default().fg(palette::TEXT_HINT),
-            )];
-        }
-
-        if model.is_empty() || max_width < 12 {
-            return vec![Span::styled(
-                Self::truncate_to_width(workspace, max_width),
-                Style::default().fg(palette::TEXT_SECONDARY),
-            )];
-        }
-
-        let separator_width = 3; // " · "
-        if workspace.width() + separator_width + model.width() <= max_width {
-            return vec![
-                Span::styled(
-                    workspace.to_string(),
-                    Style::default().fg(palette::TEXT_SECONDARY),
-                ),
-                Span::styled(" · ", Style::default().fg(palette::TEXT_HINT)),
-                Span::styled(model.to_string(), Style::default().fg(palette::TEXT_HINT)),
-            ];
-        }
-
-        let content_width = max_width.saturating_sub(separator_width);
-        if content_width < 9 {
-            return vec![Span::styled(
-                Self::truncate_to_width(workspace, max_width),
-                Style::default().fg(palette::TEXT_SECONDARY),
-            )];
-        }
-
-        let workspace_width = workspace.width();
-        let model_width = model.width();
-        let total_width = workspace_width + model_width;
-        let min_workspace = 4;
-        let min_model = 4;
-
-        let proportional_workspace =
-            ((content_width as f64 * workspace_width as f64) / total_width as f64).round() as usize;
-        let workspace_budget =
-            proportional_workspace.clamp(min_workspace, content_width.saturating_sub(min_model));
-        let model_budget = content_width.saturating_sub(workspace_budget);
-
-        vec![
-            Span::styled(
-                Self::truncate_to_width(workspace, workspace_budget),
-                Style::default().fg(palette::TEXT_SECONDARY),
-            ),
-            Span::styled(" · ", Style::default().fg(palette::TEXT_HINT)),
-            Span::styled(
-                Self::truncate_to_width(model, model_budget),
-                Style::default().fg(palette::TEXT_HINT),
-            ),
-        ]
     }
 
     fn left_spans(&self, max_width: usize) -> Vec<Span<'static>> {
@@ -580,13 +464,7 @@ mod tests {
     #[test]
     fn wide_header_shows_plain_mode_and_single_metadata_cluster() {
         let rendered = render_header(
-            HeaderData::new(
-                AppMode::Agent,
-                "deepseek-v4-pro",
-                "codewhale-tui",
-                false,
-                palette::WHALE_BG,
-            ),
+            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG),
             72,
         );
 
@@ -604,13 +482,7 @@ mod tests {
         // — users repeatedly ask for it in the live UI (vs only via
         // `codewhale --version` / `/status`).
         let rendered = render_header(
-            HeaderData::new(
-                AppMode::Agent,
-                "deepseek-v4-pro",
-                "codewhale-tui",
-                false,
-                palette::WHALE_BG,
-            ),
+            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG),
             120,
         );
         let expected = format!("v{}", env!("CARGO_PKG_VERSION"));
@@ -625,17 +497,12 @@ mod tests {
         // Very tight width budget — the version is among the first
         // chips to disappear; the mode label must still render.
         // YOLO is invisible Act+Bypass shorthand, so the chip reads "Act".
-        let rendered = render_header(
-            HeaderData::new(
-                AppMode::Yolo,
-                "deepseek-v4-pro",
-                "codewhale-tui",
-                true,
-                palette::WHALE_BG,
-            )
-            .with_usage(1_000, Some(128_000), 0.0, Some(2_000)),
-            12,
-        );
+        let rendered =
+            render_header(
+                HeaderData::new(AppMode::Yolo, "deepseek-v4-pro", true, palette::WHALE_BG)
+                    .with_usage(1_000, Some(128_000), 0.0, Some(2_000)),
+                12,
+            );
         let version = format!("v{}", env!("CARGO_PKG_VERSION"));
         assert!(
             !rendered.contains(&version),
@@ -649,17 +516,12 @@ mod tests {
 
     #[test]
     fn streaming_header_integrates_live_state_with_context_signal() {
-        let rendered = render_header(
-            HeaderData::new(
-                AppMode::Plan,
-                "deepseek-v4-pro",
-                "workspace",
-                true,
-                palette::WHALE_BG,
-            )
-            .with_usage(42_000, Some(128_000), 0.0, Some(48_000)),
-            72,
-        );
+        let rendered =
+            render_header(
+                HeaderData::new(AppMode::Plan, "deepseek-v4-pro", true, palette::WHALE_BG)
+                    .with_usage(42_000, Some(128_000), 0.0, Some(48_000)),
+                72,
+            );
 
         assert!(!rendered.contains("Live"));
         assert!(rendered.contains("38%"));
@@ -669,7 +531,7 @@ mod tests {
     #[test]
     fn narrow_header_keeps_context_percent_visible() {
         let rendered = render_header(
-            HeaderData::new(AppMode::Agent, "", "", true, palette::WHALE_BG).with_usage(
+            HeaderData::new(AppMode::Agent, "", true, palette::WHALE_BG).with_usage(
                 0,
                 Some(128_000),
                 0.0,
@@ -684,14 +546,8 @@ mod tests {
     #[test]
     fn narrow_header_falls_back_to_mode_without_rendering_all_modes() {
         let rendered = render_header(
-            HeaderData::new(
-                AppMode::Yolo,
-                "deepseek-v4-flash",
-                "repo",
-                true,
-                palette::WHALE_BG,
-            )
-            .with_usage(1_000, Some(10_000), 0.0, Some(4_000)),
+            HeaderData::new(AppMode::Yolo, "deepseek-v4-flash", true, palette::WHALE_BG)
+                .with_usage(1_000, Some(10_000), 0.0, Some(4_000)),
             8,
         );
 
@@ -709,7 +565,6 @@ mod tests {
             HeaderData::new(
                 AppMode::Agent,
                 "deepseek-v4-flash",
-                "repo",
                 false,
                 palette::WHALE_BG,
             ),
@@ -726,7 +581,6 @@ mod tests {
             HeaderData::new(
                 AppMode::Agent,
                 "deepseek-v4-flash",
-                "repo",
                 false,
                 palette::WHALE_BG,
             )
@@ -744,7 +598,6 @@ mod tests {
             HeaderData::new(
                 AppMode::Agent,
                 "deepseek-ai/deepseek-v4-flash",
-                "codewhale-tui",
                 false,
                 palette::WHALE_BG,
             )
@@ -760,13 +613,7 @@ mod tests {
     #[test]
     fn header_hides_provider_chip_when_default_deepseek() {
         let rendered = render_header(
-            HeaderData::new(
-                AppMode::Agent,
-                "deepseek-v4-pro",
-                "codewhale-tui",
-                false,
-                palette::WHALE_BG,
-            ),
+            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG),
             72,
         );
         // Sanity: no `NIM` text leaks in when provider is None.
@@ -832,15 +679,9 @@ mod tests {
     #[test]
     fn header_renders_whale_chip_next_to_effort_label() {
         let rendered = render_header(
-            HeaderData::new(
-                AppMode::Agent,
-                "deepseek-v4-pro",
-                "codewhale-tui",
-                false,
-                palette::WHALE_BG,
-            )
-            .with_reasoning_effort(Some("max"))
-            .with_status_indicator(Some("🐳")),
+            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG)
+                .with_reasoning_effort(Some("max"))
+                .with_status_indicator(Some("🐳")),
             72,
         );
         assert!(
@@ -863,15 +704,9 @@ mod tests {
     #[test]
     fn header_hides_whale_chip_when_status_indicator_off() {
         let rendered = render_header(
-            HeaderData::new(
-                AppMode::Agent,
-                "deepseek-v4-pro",
-                "codewhale-tui",
-                false,
-                palette::WHALE_BG,
-            )
-            .with_reasoning_effort(Some("max"))
-            .with_status_indicator(None),
+            HeaderData::new(AppMode::Agent, "deepseek-v4-pro", false, palette::WHALE_BG)
+                .with_reasoning_effort(Some("max"))
+                .with_status_indicator(None),
             72,
         );
         assert!(!rendered.contains("🐳"));

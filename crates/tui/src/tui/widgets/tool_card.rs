@@ -36,12 +36,6 @@ pub enum ToolFamily {
     Delegate,
     /// Verification gates, tests, and validators. `✓ verify`.
     Verify,
-    /// Reasoning / chain-of-thought. `… think`. Reasoning has its own
-    /// render path (`render_thinking` in `history.rs`); the family is
-    /// declared here for completeness so any future code that reaches for
-    /// it has the matching glyph + label vocabulary.
-    #[allow(dead_code)]
-    Think,
     /// Anything we don't have a family glyph for yet — falls back to a
     /// neutral bullet so the card still renders cleanly.
     Generic,
@@ -101,9 +95,7 @@ pub fn tool_header_summary_for_name(name: &str, input_summary: Option<&str>) -> 
         ToolFamily::Find => ["query", "pattern", "path", "scope"].as_slice(),
         ToolFamily::Delegate => ["prompt", "task", "model"].as_slice(),
         ToolFamily::Verify => ["profile", "level", "command", "args", "path"].as_slice(),
-        ToolFamily::Think | ToolFamily::Generic => {
-            ["query", "path", "command", "prompt"].as_slice()
-        }
+        ToolFamily::Generic => ["query", "path", "command", "prompt"].as_slice(),
     };
 
     let selected_summary = summary.and_then(|summary| {
@@ -197,7 +189,6 @@ pub fn family_glyph(family: ToolFamily) -> &'static str {
         ToolFamily::Find => "\u{2315}",     // ⌕
         ToolFamily::Delegate => "\u{25D0}", // ◐
         ToolFamily::Verify => "\u{2713}",
-        ToolFamily::Think => "\u{2026}",   // …
         ToolFamily::Generic => "\u{2022}", // •
     }
 }
@@ -214,7 +205,6 @@ pub fn family_label(family: ToolFamily) -> &'static str {
         ToolFamily::Find => "find",
         ToolFamily::Delegate => "delegate",
         ToolFamily::Verify => "verify",
-        ToolFamily::Think => "think",
         ToolFamily::Generic => "tool",
     }
 }
@@ -222,7 +212,6 @@ pub fn family_label(family: ToolFamily) -> &'static str {
 /// Position of a line within a multi-line card — drives the left-rail
 /// glyph so the box reads as a contiguous group from top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // wired by future card-refactor follow-ups
 pub enum CardRail {
     /// First line of the card — the header. `╭`.
     Top,
@@ -237,7 +226,6 @@ pub enum CardRail {
 /// Map a [`CardRail`] position to its rail glyph. Returned as a `&str`
 /// because callers paste it into a span.
 #[must_use]
-#[allow(dead_code)] // wired by future card-refactor follow-ups
 pub fn rail_glyph(rail: CardRail) -> &'static str {
     match rail {
         CardRail::Top => "\u{256D}",    // ╭
@@ -349,7 +337,6 @@ mod tests {
             ToolFamily::Find,
             ToolFamily::Delegate,
             ToolFamily::Verify,
-            ToolFamily::Think,
             ToolFamily::Generic,
         ] {
             assert!(

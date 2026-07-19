@@ -1,14 +1,5 @@
 mod footer;
 mod header;
-// Some helpers (`shift`, `ctrl_alt`, `is_press`, etc.) are part of the
-// public surface for issue #93's help overlay and future call sites; allow
-// dead code rather than scattering `#[allow]` across every constructor.
-#[allow(dead_code)]
-pub mod key_hint;
-// Phase 1 of #85: widget lands without a wire-up site so reviewers can
-// evaluate the rendering in isolation. The follow-up PR plumbs it through
-// the composer area in `ui.rs`. `pub mod` (vs the usual `pub use` pattern)
-// keeps the unused-imports lint quiet until then.
 pub mod pending_input_preview;
 mod renderable;
 pub mod tool_card;

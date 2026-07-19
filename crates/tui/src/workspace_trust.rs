@@ -73,20 +73,6 @@ impl WorkspaceTrust {
     pub fn paths(&self) -> &[PathBuf] {
         &self.paths
     }
-
-    /// Whether the candidate is trusted: the candidate (after canonical
-    /// normalization) starts with one of the trusted prefixes. Directory
-    /// trust grants access to anything under the directory.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn permits(&self, candidate: &Path) -> bool {
-        let canonical = candidate
-            .canonicalize()
-            .unwrap_or_else(|_| candidate.to_path_buf());
-        self.paths
-            .iter()
-            .any(|trusted| canonical.starts_with(trusted))
-    }
 }
 
 fn workspace_key(workspace: &Path) -> String {
@@ -135,11 +121,10 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         let trust = WorkspaceTrust::load_from_file(&workspace, &trust_path);
         assert!(trust.paths().is_empty());
-        assert!(!trust.permits(Path::new("/anywhere")));
     }
 
     #[test]
-    fn existing_trust_file_is_workspace_scoped_and_permits_descendants() {
+    fn existing_trust_file_is_workspace_scoped() {
         let (tmp, trust_path) = isolated_trust_path();
         let ws_a = tmp.path().join("ws-a");
         let ws_b = tmp.path().join("ws-b");
@@ -158,10 +143,7 @@ mod tests {
 
         let trust = WorkspaceTrust::load_from_file(&ws_a, &trust_path);
         assert_eq!(trust.paths().len(), 1);
-        let inner = other.join("file.md");
-        std::fs::write(&inner, "x").unwrap();
-        assert!(trust.permits(&inner));
-        assert!(!trust.permits(Path::new("/etc/passwd")));
+        assert_eq!(trust.paths()[0], canonicalize_or_keep(&other));
         assert_eq!(
             WorkspaceTrust::load_from_file(&ws_b, &trust_path)
                 .paths()
