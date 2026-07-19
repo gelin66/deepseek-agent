@@ -580,7 +580,14 @@ M4-C foreground 切换后还已物理删除：
   `ChildFinished.handoff_content` 继续由 canonical presenter 投影进 transcript。当前证据为
   sidebar 33/33、presenter 14/14、Run projection 6/6、六子 Agent fanout 1/1、两项 exec 父子/
   孙级汇合各 1/1、Fleet worker 1/1，并通过 TUI check、fmt 和 diff-check。header 的
-  `progress_only_count`/`fanout_*` 尚未在本切片扩张处理。
+  `progress_only_count`/`fanout_*` 已由后续独立调用图切片处理。
+- `SidebarSubagentSummary` 原有的 `progress_only_count`、`fanout_total`、`fanout_running` 没有
+  生产 producer：唯一生产构造器始终通过 Default 写入 `0`/`None`，唯一非默认 fanout 值来自
+  自身测试。三字段、header 的不可达覆盖分支及自证测试现已删除；header 只投影 canonical
+  `child_agents` 的 total/running/role counts。真实 Runtime pending children、child lifecycle、
+  release fanout、exec 汇合和 FleetExecutor 不依赖这组 sidebar 私有字段。当前证据为 sidebar
+  32/32、presenter 14/14、Run projection 6/6、六子 Agent fanout 1/1、两项 exec 汇合各 1/1、
+  Fleet worker 1/1，并通过 TUI all-target check、fmt 和 diff-check。
 - 没有生产构造者的 TUI `AutoReviewPolicy`、动态 allow/block 配置、私有审计事件和重复的
   shell/action 风险分类。production `crates/tools` 直接在 canonical
   `ToolApprovalPrompt::risk` 中给出 `Routine`/`Elevated`/`Critical`，TUI 只负责穷尽投影与

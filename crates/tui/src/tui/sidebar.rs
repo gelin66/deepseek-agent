@@ -706,9 +706,6 @@ fn sidebar_subagent_summary(app: &App) -> SidebarSubagentSummary {
 pub struct SidebarSubagentSummary {
     pub cached_total: usize,
     pub cached_running: usize,
-    pub progress_only_count: usize,
-    pub fanout_total: Option<usize>,
-    pub fanout_running: usize,
     pub role_counts: std::collections::BTreeMap<String, usize>,
 }
 
@@ -769,8 +766,7 @@ fn subagent_panel_rows(
 ) -> Vec<Line<'static>> {
     let mut lines: Vec<Line<'static>> = Vec::with_capacity(max_rows.max(4));
 
-    let fanout_total = summary.fanout_total.unwrap_or(0);
-    if summary.cached_total == 0 && summary.progress_only_count == 0 && fanout_total == 0 {
+    if summary.cached_total == 0 {
         lines.push(Line::from(Span::styled(
             "No agents",
             Style::default().fg(theme.text_muted),
@@ -778,14 +774,8 @@ fn subagent_panel_rows(
         return lines;
     }
 
-    let (live_running, total) = if let Some(total) = summary.fanout_total {
-        (summary.fanout_running, total)
-    } else {
-        (
-            summary.cached_running + summary.progress_only_count,
-            summary.cached_total + summary.progress_only_count,
-        )
-    };
+    let live_running = summary.cached_running;
+    let total = summary.cached_total;
     let done = total.saturating_sub(live_running);
     let header = if live_running > 0 {
         vec![
@@ -1732,38 +1722,12 @@ mod tests {
     }
 
     #[test]
-    fn navigator_uses_fanout_total_when_fanout_has_seeded_slots() {
-        let summary = SidebarSubagentSummary {
-            cached_total: 1,
-            cached_running: 1,
-            progress_only_count: 0,
-            fanout_total: Some(6),
-            fanout_running: 1,
-            role_counts: std::collections::BTreeMap::new(),
-        };
-
-        let text = lines_to_text(&subagent_panel_lines(
-            &summary,
-            &[],
-            64,
-            8,
-            &palette::UI_THEME,
-        ));
-
-        assert!(text[0].contains("1 running"), "header: {:?}", text[0]);
-        assert!(text[0].contains("/ 6"), "fanout total: {:?}", text[0]);
-    }
-
-    #[test]
     fn navigator_settled_state_says_done() {
         let mut role_counts = std::collections::BTreeMap::new();
         role_counts.insert("子 Agent".to_string(), 1);
         let summary = SidebarSubagentSummary {
             cached_total: 1,
             cached_running: 0,
-            progress_only_count: 0,
-            fanout_total: None,
-            fanout_running: 0,
             role_counts,
         };
         let text = lines_to_text(&subagent_panel_lines(
@@ -1785,9 +1749,6 @@ mod tests {
         let summary = SidebarSubagentSummary {
             cached_total: 579,
             cached_running: 579,
-            progress_only_count: 0,
-            fanout_total: None,
-            fanout_running: 0,
             role_counts,
         };
         let lines = subagent_panel_lines(&summary, &[], 16, 8, &palette::UI_THEME);
