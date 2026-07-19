@@ -122,7 +122,6 @@
     "KbCyclePermissions": "循环权限：询问 → 自动审查 → 完全访问（Shift+Tab）",
     "KbAltJumpPlanAgentYolo": "替代快捷键跳转到 Plan / Act / Operate 模式",
     "KbFocusSidebar": "聚焦 Pinned / Activity / 代理 / Context / 自动 / 隐藏侧边栏",
-    "KbCopySelection": "复制当前选中内容（macOS 为 Cmd+C）",
     "KbContextMenu": "打开上下文操作菜单，用于粘贴、选择、消息详情、上下文和帮助",
     "KbHelpOverlay": "打开此帮助覆盖层（输入框为空时）",
     "KbToggleHelp": "切换帮助覆盖层",

@@ -773,8 +773,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   收缩为直接 clear；普通输入、paste、mention、slash、提交及 canonical Run 投影保持不变。
 - M4-C 已删除只有 App 自测、没有 canonical key/mouse/paste producer 的 composer line/word
   forward 编辑 helpers 与两个 selection 叶子，并同步删除虚假的 `Ctrl-U`、word-motion 和
-  `! command` 快捷键声明。真实 `Ctrl-W`、左右/Home/End、Backspace/Delete、paste、现有
-  selection 状态/renderer 与模型 `exec_shell` 工具不受影响。
+  `! command` 快捷键声明。真实 `Ctrl-W`、左右/Home/End、Backspace/Delete、paste 与模型
+  `exec_shell` 工具不受影响；完整 selection 状态当时未混入该切片。
+- M4-C 随后的独立调用图确认 composer selection 只有默认 `None` 和清理 writer，没有任何
+  canonical key/mouse/paste producer；现已删除该 App 状态、编辑分支、字符索引重复布局和着色
+  renderer。终端原生选择、菜单/审批选中、Pager 复制及普通 composer cursor/layout 保持不变；
+  从未被读取的内部鼠标定位缓存同步删除。
 - M4-C 已删除零生产消费者、仅由自身测试调用的 TUI `is_key_file`/`summarize_project`/
   `project_tree` 浅层 project-map helpers；当前生产上下文继续由 `crates/context`、显式文件
   工具和 canonical transcript 构造，M5 的 RepoGraph/ContextBroker 不通过保留旧 helper
@@ -916,22 +920,22 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   颜色深度适配、palette/theme 动态更新与 OSC8 link 输出保持原生产路径。
 - M4-C 已删除没有 Key/Mouse/Run event producer 的 transcript selection/autoscroll 模块、
   默认空状态、自动滚动 guard、resize clear 和 renderer 着色岛，并移除只直接调用私有着色函数的自测。
-  composer 真实选区、菜单/审批选中态、系统文本复制、canonical transcript/scroll 与 Pager 保持原 owner。
+  普通 composer cursor/layout、菜单/审批选中态、系统文本复制、canonical transcript/scroll 与 Pager 保持原 owner。
 - M4-C 已删除随上述 transcript selection/copy 生产路径一同失去 reader 的 copy metadata writer-only 管线：
   `CopyLineSeparator`、soft-wrap separator、装饰 prefix width 曾跨 markdown/history/cache/
   `TranscriptLineMeta` 逐行计算与传递，却没有生产消费者。字段、计算器、cache 数组与专属自测已物理删除；
   真实 render metadata helper 已按职责重命名，继续传递 `Line`、links、`is_code` 和 cell/line 映射。
-  OSC8、Pager/审批系统复制、composer 选区、scroll/cache 渲染均保持原 owner。
+  OSC8、Pager/审批系统复制、普通 composer cursor/layout、scroll/cache 渲染均保持原 owner。
 - M4-C 已继续删除只由自身测试或上述退役 copy/export 假路径调用的 `ui_text`
   `history_cell_to_text`/`line_to_string`/`line_to_plain`/`append_spans_plain`/`slice_text`。
   沿调用图成为零消费者的 `HistoryCell::transcript_lines`、`GenericToolCell::transcript_lines`、
   `osc8::strip_into` 与专属常量/自测同步物理删除；没有把不存在的 transcript export 或 clipboard
   consumer 写成产品能力。中文/CJK 宽度回归已迁到真实 `text_display_width` owner；
   `RenderMode::Transcript` 的失败工具 uncapped 路径、ANSI 清理、OSC8 生成/链接区域/发送以及
-  Pager/审批复制、composer 选区、render/cache 均保持原生产路径。
+  Pager/审批复制、普通 composer cursor/layout、render/cache 均保持原生产路径。
 - M4-C 已删除从未被 canonical key handler 调用的 composer Vim 孤岛：
   `vim_mode.rs` 的 Normal-mode handler 没有任何生产调用方，设置值只能构造 App 状态并显示顶栏标签。
-  模块、App helper/字段、设置/别名/列表、标签本地化和 widget 分支已物理删除；普通 composer 输入/选区/渲染、
+  模块、App helper/字段、设置/别名/列表、标签本地化和 widget 分支已物理删除；普通 composer 输入/cursor/渲染、
   canonical 键盘路由和 Pager 自有 `j/k/g/G/y/q` 保持原 owner，可打印字符 `v` 仍为 composer 正常输入。
 - M4-C 已删除 sidebar 每帧构造但从未被事件处理器、popover 或 renderer 读取的
   `SidebarHoverState`/section/row/action 元数据、全文副本和 tooltip shadow，以及从未被

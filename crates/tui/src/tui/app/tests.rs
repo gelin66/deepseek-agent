@@ -1419,13 +1419,11 @@ fn test_clear_input() {
     app.cursor_position = app.input.len();
     app.pending_paste_reference = Some("@.codewhale/pastes/input.md".to_string());
     app.oversized_paste_full_text = Some("full input".to_string());
-    app.selection_anchor = Some(0);
     app.clear_input();
     assert!(app.input.is_empty());
     assert_eq!(app.cursor_position, 0);
     assert!(app.pending_paste_reference.is_none());
     assert!(app.oversized_paste_full_text.is_none());
-    assert!(app.selection_anchor.is_none());
 }
 
 #[test]
@@ -2043,100 +2041,6 @@ fn delete_word_backward_handles_trailing_space_and_utf8() {
 
     assert_eq!(app.input, "cafe ");
     assert_eq!(app.cursor_position, char_count("cafe "));
-}
-
-#[test]
-fn selection_range_returns_none_when_no_anchor() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello world".to_string();
-    app.cursor_position = 5;
-    app.selection_anchor = None;
-    assert!(app.selection_range().is_none());
-}
-
-#[test]
-fn selection_range_returns_ordered_range() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello world".to_string();
-    app.cursor_position = 5;
-    app.selection_anchor = Some(2);
-    assert_eq!(app.selection_range(), Some((2, 5)));
-}
-
-#[test]
-fn selection_range_normalizes_order() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello world".to_string();
-    app.cursor_position = 2;
-    app.selection_anchor = Some(5);
-    assert_eq!(app.selection_range(), Some((2, 5)));
-}
-
-#[test]
-fn selection_range_returns_none_when_anchor_equals_cursor() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello".to_string();
-    app.cursor_position = 3;
-    app.selection_anchor = Some(3);
-    assert!(app.selection_range().is_none());
-}
-
-#[test]
-fn delete_selection_removes_selected_text() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello world".to_string();
-    app.cursor_position = 5;
-    app.selection_anchor = Some(2);
-    assert!(app.delete_selection());
-    assert_eq!(app.input, "he world");
-    assert_eq!(app.cursor_position, 2);
-    assert!(app.selection_anchor.is_none());
-}
-
-#[test]
-fn insert_char_replaces_selection() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello world".to_string();
-    app.cursor_position = 5;
-    app.selection_anchor = Some(2);
-    app.insert_char('X');
-    assert_eq!(app.input, "heX world");
-    assert_eq!(app.cursor_position, 3);
-    assert!(app.selection_anchor.is_none());
-}
-
-#[test]
-fn delete_char_removes_selection_instead_of_single_char() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello world".to_string();
-    app.cursor_position = 5;
-    app.selection_anchor = Some(2);
-    app.delete_char();
-    assert_eq!(app.input, "he world");
-    assert_eq!(app.cursor_position, 2);
-}
-
-#[test]
-fn insert_str_replaces_selection() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello world".to_string();
-    app.cursor_position = 5;
-    app.selection_anchor = Some(2);
-    app.insert_str("yo");
-    assert_eq!(app.input, "heyo world");
-    assert_eq!(app.cursor_position, 4);
-    assert!(app.selection_anchor.is_none());
-}
-
-#[test]
-fn delete_selection_noop_when_no_selection() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello".to_string();
-    app.cursor_position = 3;
-    app.selection_anchor = None;
-    assert!(!app.delete_selection());
-    assert_eq!(app.input, "hello");
-    assert_eq!(app.cursor_position, 3);
 }
 
 #[test]

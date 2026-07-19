@@ -971,10 +971,6 @@ pub struct ComposerState {
     /// Cached full candidate list so successive keystrokes inside one mention
     /// token filter in memory instead of re-walking the workspace (#3757).
     pub mention_candidate_cache: Option<MentionCandidateCache>,
-    /// When set, the cursor is the active end of a text selection and
-    /// `selection_anchor` is the fixed end.  Both are char-indexed.
-    /// `None` means no selection is active.
-    pub selection_anchor: Option<usize>,
 }
 
 /// Viewport/scroll state — fields related to transcript scrolling and caching.
@@ -983,21 +979,11 @@ pub struct ViewportState {
     pub pending_scroll_delta: i32,
     pub transcript_cache: TranscriptViewCache,
     pub last_transcript_area: Option<Rect>,
-    pub last_composer_area: Option<Rect>,
     pub last_transcript_top: usize,
     pub last_transcript_visible: usize,
     pub last_transcript_total: usize,
     pub last_transcript_padding_top: usize,
     pub jump_to_latest_button_area: Option<Rect>,
-    /// Inner content rect of the composer (excluding border/padding),
-    /// stored at render time for mouse coordinate mapping.
-    pub last_composer_content: Option<Rect>,
-    /// Number of rendered text lines scrolled off the top of the composer,
-    /// stored at render time for mouse coordinate mapping.
-    pub last_composer_scroll_offset: usize,
-    /// Vertical padding above the first text line in the composer,
-    /// stored at render time for mouse coordinate mapping.
-    pub last_composer_top_padding: usize,
 }
 
 impl Default for ViewportState {
@@ -1007,15 +993,11 @@ impl Default for ViewportState {
             pending_scroll_delta: 0,
             transcript_cache: TranscriptViewCache::new(),
             last_transcript_area: None,
-            last_composer_area: None,
             last_transcript_top: 0,
             last_transcript_visible: 0,
             last_transcript_total: 0,
             last_transcript_padding_top: 0,
             jump_to_latest_button_area: None,
-            last_composer_content: None,
-            last_composer_scroll_offset: 0,
-            last_composer_top_padding: 0,
         }
     }
 }
@@ -1600,7 +1582,6 @@ impl App {
                 mention_menu_hidden: false,
                 mention_completion_cache: None,
                 mention_candidate_cache: None,
-                selection_anchor: None,
             },
             viewport: ViewportState::default(),
             work_surface: crate::tui::work_surface::WorkSurfaceState::with_placement(
@@ -2518,7 +2499,6 @@ impl App {
             return;
         }
         self.auto_expand_oversized_paste();
-        self.delete_selection();
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert_str(byte_index, text);
@@ -2596,7 +2576,6 @@ impl App {
 
     pub fn insert_char(&mut self, c: char) {
         self.auto_expand_oversized_paste();
-        self.delete_selection();
         let cursor = self.cursor_position.min(char_count(&self.input));
         let byte_index = byte_index_at_char(&self.input, cursor);
         self.input.insert(byte_index, c);
@@ -2619,9 +2598,6 @@ impl App {
 
     pub fn delete_char(&mut self) {
         self.auto_expand_oversized_paste();
-        if self.delete_selection() {
-            return;
-        }
         if self.cursor_position == 0 {
             return;
         }
@@ -2638,9 +2614,6 @@ impl App {
 
     pub fn delete_char_forward(&mut self) {
         self.auto_expand_oversized_paste();
-        if self.delete_selection() {
-            return;
-        }
         if self.input.is_empty() {
             return;
         }
@@ -2657,9 +2630,6 @@ impl App {
 
     /// Delete the word before the cursor.
     pub fn delete_word_backward(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
         if self.cursor_position == 0 {
             return;
         }
@@ -2719,42 +2689,6 @@ impl App {
         self.needs_redraw = true;
     }
 
-    // === Selection helpers ===
-
-    /// Return the (start, end) of the active selection, or `None`.
-    /// `start` is inclusive, `end` is exclusive; both are char indices.
-    pub fn selection_range(&self) -> Option<(usize, usize)> {
-        let total = char_count(&self.input);
-        let anchor = self.selection_anchor?.min(total);
-        let cursor = self.cursor_position.min(total);
-        if anchor == cursor {
-            return None;
-        }
-        Some(if anchor < cursor {
-            (anchor, cursor)
-        } else {
-            (cursor, anchor)
-        })
-    }
-
-    /// Delete the selected text, place cursor at the start of the deleted range.
-    /// Returns true if a selection was deleted.
-    pub fn delete_selection(&mut self) -> bool {
-        let Some((start, end)) = self.selection_range() else {
-            return false;
-        };
-        let sb = byte_index_at_char(&self.input, start);
-        let eb = byte_index_at_char(&self.input, end);
-        self.input.replace_range(sb..eb, "");
-        self.cursor_position = start;
-        self.selection_anchor = None;
-        self.slash_menu_hidden = false;
-        self.mention_menu_hidden = false;
-        self.mention_menu_selected = 0;
-        self.needs_redraw = true;
-        true
-    }
-
     pub fn clear_input(&mut self) {
         self.input.clear();
         self.cursor_position = 0;
@@ -2762,7 +2696,6 @@ impl App {
         // clears the composer or navigates to a different input (#3263).
         self.pending_paste_reference = None;
         self.oversized_paste_full_text = None;
-        self.selection_anchor = None;
         self.slash_menu_selected = 0;
         self.slash_menu_hidden = false;
         self.needs_redraw = true;

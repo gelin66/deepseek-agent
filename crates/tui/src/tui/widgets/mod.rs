@@ -1038,15 +1038,12 @@ impl Renderable for ComposerWidget<'_> {
         let content_geometry = composer_content_geometry(inner_area);
         let input_content_width = content_geometry.text_width();
 
-        // Use the extended version that also returns character indices to avoid
-        // redundant wrapping when rendering text selections (issue #3909).
-        let (visible_lines, _cursor_row, _cursor_col, _scroll_offset, visible_char_indices) =
-            layout_input_with_scroll_and_char_indices(
-                input_text,
-                input_cursor,
-                input_content_width,
-                input_rows_budget,
-            );
+        let (visible_lines, _cursor_row, _cursor_col, _scroll_offset) = layout_input_with_scroll(
+            input_text,
+            input_cursor,
+            input_content_width,
+            input_rows_budget,
+        );
         let is_draft_mode = input_text.contains('\n') || visible_lines.len() > 1;
         if has_panel {
             let border_color = if input_text.trim().is_empty() {
@@ -1109,28 +1106,6 @@ impl Renderable for ComposerWidget<'_> {
                 Span::raw(content_geometry.prompt_padding()),
                 Span::styled(placeholder, style),
             ]));
-        } else if let Some((sel_start, sel_end)) = self.app.selection_range() {
-            // Use the character indices we already computed during layout
-            // to avoid redundant wrapping (issue #3909).
-            let line_ranges: Vec<(usize, usize)> = visible_char_indices
-                .iter()
-                .map(|(start, text)| (*start, *start + text.chars().count()))
-                .collect();
-            for (line_text, (line_start, line_end)) in visible_lines.iter().zip(line_ranges.iter())
-            {
-                let mut spans = line_spans_with_selection(
-                    line_text,
-                    *line_start,
-                    *line_end,
-                    sel_start,
-                    sel_end,
-                    self.app.ui_theme.selection_bg,
-                );
-                if content_geometry.prompt_inset > 0 {
-                    spans.insert(0, Span::raw(content_geometry.prompt_padding()));
-                }
-                input_lines.push(Line::from(spans));
-            }
         } else {
             for line in &visible_lines {
                 let mut spans = Vec::new();
@@ -2435,56 +2410,6 @@ pub fn layout_input_with_scroll(
     )
 }
 
-/// Extended version of `layout_input_with_scroll` that also returns character
-/// indices for each wrapped line. Used by ComposerWidget to avoid redundant
-/// wrapping when rendering text selections.
-fn layout_input_with_scroll_and_char_indices(
-    input: &str,
-    cursor: usize,
-    width: usize,
-    max_height: usize,
-) -> (Vec<String>, usize, usize, usize, Vec<(usize, String)>) {
-    let (all_lines, all_with_indices) = wrap_input_lines_internal(input, width);
-
-    let lines = if all_lines.is_empty() {
-        vec![String::new()]
-    } else {
-        all_lines
-    };
-
-    let (cursor_row, cursor_col) = cursor_row_col(input, cursor, width.max(1));
-
-    let max_height = max_height.max(1);
-    let mut start = 0usize;
-    if cursor_row >= max_height {
-        start = cursor_row + 1 - max_height;
-    }
-    if start + max_height > lines.len() {
-        start = lines.len().saturating_sub(max_height);
-    }
-    let visible = lines
-        .into_iter()
-        .skip(start)
-        .take(max_height)
-        .collect::<Vec<_>>();
-    let visible_cursor_row = cursor_row.saturating_sub(start);
-
-    // Also slice the char indices to match visible lines
-    let visible_with_indices = all_with_indices
-        .into_iter()
-        .skip(start)
-        .take(max_height)
-        .collect();
-
-    (
-        visible,
-        visible_cursor_row,
-        cursor_col.min(width.saturating_sub(1)),
-        start,
-        visible_with_indices,
-    )
-}
-
 fn cursor_row_col(input: &str, cursor: usize, width: usize) -> (usize, usize) {
     let mut row = 0usize;
     let mut col = 0usize;
@@ -2527,65 +2452,28 @@ fn cursor_row_col(input: &str, cursor: usize, width: usize) -> (usize, usize) {
     (row, col)
 }
 
-/// Internal helper that returns both wrapped lines and character indices.
-/// Used by `wrap_input_lines`, `wrap_input_lines_for_mouse`, and
-/// `layout_input_with_scroll` to avoid redundant wrapping computations.
-fn wrap_input_lines_internal(input: &str, width: usize) -> (Vec<String>, Vec<(usize, String)>) {
+fn wrap_input_lines(input: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
-    let mut lines_with_indices = Vec::new();
-    let mut char_idx = 0usize;
 
     if input.is_empty() {
-        lines_with_indices.push((0, String::new()));
-        return (lines, lines_with_indices);
+        return lines;
     }
 
     for raw_line in input.split('\n') {
         if raw_line.is_empty() {
             lines.push(String::new());
-            if width != 0 {
-                lines_with_indices.push((char_idx, String::new()));
-            }
-            char_idx += 1; // the '\n'
             continue;
         }
 
         let wrapped = wrap_text(raw_line, width);
         if wrapped.is_empty() {
             lines.push(String::new());
-            if width != 0 {
-                lines_with_indices.push((char_idx, String::new()));
-            }
         } else {
-            for wrapped_line in &wrapped {
-                let line_char_len: usize = wrapped_line.chars().count();
-                lines.push(wrapped_line.clone());
-                if width != 0 {
-                    lines_with_indices.push((char_idx, wrapped_line.clone()));
-                }
-                char_idx += line_char_len;
-            }
+            lines.extend(wrapped);
         }
-        char_idx += 1; // the '\n'
     }
 
-    (lines, lines_with_indices)
-}
-
-fn wrap_input_lines(input: &str, width: usize) -> Vec<String> {
-    let (lines, _) = wrap_input_lines_internal(input, width);
     lines
-}
-
-/// For mouse coordinate mapping: returns (char_start_of_line, line_text) pairs
-/// matching the wrapping produced by `wrap_input_lines`.
-pub fn wrap_input_lines_for_mouse(input: &str, width: usize) -> Vec<(usize, String)> {
-    if input.is_empty() || width == 0 {
-        return vec![(0, String::new())];
-    }
-
-    let (_, lines_with_indices) = wrap_input_lines_internal(input, width);
-    lines_with_indices
 }
 
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
@@ -2629,56 +2517,6 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
-fn line_spans_with_selection<'a>(
-    line: &'a str,
-    line_start: usize,
-    line_end: usize,
-    sel_start: usize,
-    sel_end: usize,
-    highlight_bg: Color,
-) -> Vec<Span<'a>> {
-    let normal_style = Style::default().fg(palette::TEXT_PRIMARY);
-    let sel_style = Style::default().fg(palette::TEXT_PRIMARY).bg(highlight_bg);
-
-    // No overlap between this line and the selection
-    if line_end <= sel_start || line_start >= sel_end {
-        return vec![Span::styled(line, normal_style)];
-    }
-
-    let local_sel_start = sel_start.saturating_sub(line_start);
-    let local_sel_end = sel_end.min(line_end).saturating_sub(line_start);
-
-    // Build a Vec of byte offsets for each char boundary, plus one past the end.
-    let mut byte_offsets: Vec<usize> = line.char_indices().map(|(i, _)| i).collect();
-    byte_offsets.push(line.len());
-
-    let b0 = byte_offsets
-        .get(local_sel_start)
-        .copied()
-        .unwrap_or(line.len());
-    let b1 = byte_offsets
-        .get(local_sel_end)
-        .copied()
-        .unwrap_or(line.len());
-
-    let mut spans = Vec::with_capacity(3);
-
-    // Text before selection
-    if b0 > 0 {
-        spans.push(Span::styled(&line[..b0], normal_style));
-    }
-    // Selected text
-    if b1 > b0 {
-        spans.push(Span::styled(&line[b0..b1], sel_style));
-    }
-    // Text after selection
-    if b1 < line.len() {
-        spans.push(Span::styled(&line[b1..], normal_style));
-    }
-
-    spans
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2688,7 +2526,7 @@ mod tests {
         composer_min_input_rows, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
         fish_flee_offset, fish_heading, fish_mark, layout_input, layout_input_with_scroll,
         pad_lines_to_bottom, placeholder_visual_lines, receipt_is_settling,
-        should_render_empty_state, wrap_input_lines, wrap_input_lines_for_mouse, wrap_text,
+        should_render_empty_state, wrap_input_lines, wrap_text,
     };
     use crate::config::Config;
     use crate::palette;
@@ -3017,18 +2855,6 @@ mod tests {
     }
 
     #[test]
-    fn wrap_input_lines_for_mouse_empty_input() {
-        // Empty input should return a single empty line at position 0.
-        // This ensures empty composer mouse selection works correctly (issue #3909).
-        let result = wrap_input_lines_for_mouse("", 10);
-        assert_eq!(result, vec![(0, String::new())]);
-
-        // Also verify with width=0 edge case
-        let result_zero = wrap_input_lines_for_mouse("", 0);
-        assert_eq!(result_zero, vec![(0, String::new())]);
-    }
-
-    #[test]
     fn cursor_and_wrap_consistency() {
         // Ensure cursor_row_col is consistent with wrap_text
         // for various inputs
@@ -3139,7 +2965,7 @@ mod tests {
     }
 
     #[test]
-    fn composer_wrap_boundary_cursor_scroll_and_mouse_lines_share_text_width() {
+    fn composer_wrap_boundary_cursor_and_scroll_share_text_width() {
         let geometry = composer_content_geometry(Rect::new(0, 0, 7, 2));
         let input = "abcde";
         let cursor = input.chars().count();
@@ -3148,13 +2974,10 @@ mod tests {
         let (absolute_row, absolute_col) = cursor_row_col(input, cursor, width);
         let (visible, visible_row, visible_col, scroll_offset) =
             layout_input_with_scroll(input, cursor, width, 1);
-        let mouse_lines = wrap_input_lines_for_mouse(input, width);
-
         assert_eq!((absolute_row, absolute_col), (1, 0));
         assert_eq!(scroll_offset, 1);
         assert_eq!((visible_row, visible_col), (0, 0));
         assert_eq!(visible, vec![String::new()]);
-        assert_eq!(mouse_lines[scroll_offset], (cursor, String::new()));
     }
 
     #[test]

@@ -464,23 +464,24 @@ M4-C foreground 切换后还已物理删除：
   Crossterm backend；保留的颜色深度适配、palette/theme 更新与 OSC8 link 发送继续由原 owner 执行。
 - transcript `selection.rs` 的 selection/autoscroll 状态没有任何生产事件 writer，只会默认构造，
   再被自动滚动 guard 与 renderer 读取；该模块、viewport 字段、resize clear、着色 helper 和专属自测
-  现已删除。composer `selection_anchor`、菜单/审批 palette 状态、Pager 系统复制及 canonical scroll 均未改变。
+  现已删除。后续同样按无生产 writer 的调用图删除 composer 内部 selection 状态与着色分支；
+  菜单/审批 palette 状态、Pager 系统复制、终端原生选择及 canonical scroll 均未改变。
 - `CopyLineSeparator`、copy prefix width 和 soft-wrap separator 只服务已删除的 transcript selection/copy，
   但曾从 markdown 经 history 与 per-cell cache 一直写入 `TranscriptLineMeta`，没有任何生产 reader。
   该逐行字段、装饰 prefix 计算器、cache 影子数组和专属自证测试现已删除。仍有真实消费者的
   metadata helper 已重命名为 render 职责，仅传递 `Line`、OSC8 links、`is_code` 和 cell/line 映射；
-  Pager/审批复制、composer 选区、transcript scroll/cache 与渲染均未改变。
+  Pager/审批复制、终端原生选择、transcript scroll/cache 与渲染均未改变。
 - `ui_text` 的 `history_cell_to_text`/`line_to_string`/`line_to_plain`/`append_spans_plain`/
   `slice_text` 只由自身测试或上述已退役 copy/export 假路径调用；删除后，
   `HistoryCell::transcript_lines`、`GenericToolCell::transcript_lines`、`osc8::strip_into` 与
   `TOOL_COMMAND_LINE_LIMIT` 也成为零消费者并已同步删除。当前不存在独立 transcript export owner；
   中文/CJK display-width 回归由真实 `text_display_width` owner 直接覆盖。仍被失败工具完整展示
   使用的 `RenderMode::Transcript`、`strip_ansi_into`、OSC8 生成/链接区域/发送、Pager/审批复制、
-  composer 选区和 transcript render/cache 均保持原生产链。
+  普通 composer cursor/layout 和 transcript render/cache 均保持原生产链。
 - composer Vim 设置曾只能在 App 启动时构造本地状态和顶栏标签；canonical key handler
   从未调用 `vim_mode.rs` 或任何 Vim helper，因而所谓 Normal/Insert/Visual 编辑没有生产交互入口。
   该模块、App 字段/helper、设置与别名、标签本地化和 widget 分支已删除。composer 仍由单一
-  canonical 键盘路由驱动普通输入、选区与渲染，字符 `v` 不再可能被幽灵 modal 状态吞掉；Pager
+  canonical 键盘路由驱动普通输入、cursor 与渲染，字符 `v` 不再可能被幽灵 modal 状态吞掉；Pager
   的 `j/k/g/G/y/q` 是独立真实交互，保持不变。
 - sidebar 的旧 hover/click 元数据只有 renderer producer，没有事件 handler、tooltip 或
   popover consumer；`SidebarHoverState`/section/row/action、每帧全文克隆、tooltip shadow

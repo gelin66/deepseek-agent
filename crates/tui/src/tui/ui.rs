@@ -1549,58 +1549,6 @@ fn render(f: &mut Frame, app: &mut App) {
         composer_widget.render(body_chunks[composer_slot], buf);
         composer_widget.cursor_pos(body_chunks[composer_slot])
     };
-    app.viewport.last_composer_area = Some(body_chunks[composer_slot]);
-    {
-        let area = body_chunks[composer_slot];
-        let composer_widget = ComposerWidget::new(
-            app,
-            composer_max_height,
-            &slash_menu_entries,
-            &mention_menu_entries,
-        );
-        let inner = if composer_widget.has_panel(area) {
-            ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::TOP | ratatui::widgets::Borders::BOTTOM)
-                .inner(area)
-        } else if area.height >= 2 {
-            ratatui::widgets::Block::default()
-                .borders(ratatui::widgets::Borders::TOP)
-                .inner(area)
-        } else {
-            area
-        };
-        app.viewport.last_composer_content = Some(inner);
-
-        // Compute scroll offset and top padding for mouse coordinate mapping.
-        let input_text = &app.input;
-        let input_cursor = app.cursor_position;
-        let content_geometry = crate::tui::widgets::composer_content_geometry(inner);
-        let content_width = content_geometry.text_width();
-        let menu_lines = ComposerWidget::new(
-            app,
-            composer_max_height,
-            &slash_menu_entries,
-            &mention_menu_entries,
-        )
-        .active_menu_reserved_rows();
-        let budget = crate::tui::widgets::composer_input_rows_budget(inner.height, menu_lines);
-        let (_, _, _, scroll_offset) = crate::tui::widgets::layout_input_with_scroll(
-            input_text,
-            input_cursor,
-            content_width,
-            budget,
-        );
-        let visual_rows = if input_text.is_empty() {
-            let hint = Some(crate::tui::widgets::composer_empty_hint_text(app));
-            crate::tui::widgets::empty_composer_visual_rows(hint.as_deref(), content_width, budget)
-        } else {
-            // Count wrapped lines (approximation matching the render path).
-            crate::tui::widgets::wrap_input_lines_for_mouse(input_text, content_width).len()
-        };
-        let top_padding = budget.saturating_sub(visual_rows.clamp(1, budget));
-        app.viewport.last_composer_scroll_offset = scroll_offset;
-        app.viewport.last_composer_top_padding = top_padding;
-    }
     if let Some(cursor_pos) = cursor_pos {
         f.set_cursor_position(cursor_pos);
     }
