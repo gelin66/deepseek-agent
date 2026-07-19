@@ -34,7 +34,6 @@ fn create_test_app() -> App {
     app.auto_model = false;
     app.last_effective_model = None;
     app.active_route_limits = None;
-    app.active_context_window_override = None;
     app.status_message = None;
     app
 }

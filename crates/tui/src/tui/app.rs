@@ -1267,19 +1267,6 @@ pub struct ToolEvidence {
     pub summary: String,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct PendingProviderSwitch {
-    pub previous_provider: ApiProvider,
-    pub previous_model: String,
-    pub previous_model_ids_passthrough: bool,
-    pub previous_route_limits: Option<RouteLimits>,
-    pub previous_context_window_override: Option<u32>,
-    pub previous_config: Config,
-    pub previous_onboarding: OnboardingState,
-    pub previous_onboarding_needs_api_key: bool,
-    pub previous_api_key_env_only: bool,
-}
-
 /// Global UI state for the TUI.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
@@ -1350,16 +1337,8 @@ pub struct App {
     provider_readiness: Vec<(ApiProvider, bool)>,
     /// Human-readable description of the last provider fallback event.
     pub last_fallback_reason: Option<String>,
-    /// True when the active provider/base URL accepts arbitrary model IDs
-    /// verbatim rather than DeepSeek-only aliases.
-    pub model_ids_passthrough: bool,
     /// Resolved provider/model route limits for the active runtime route.
     pub active_route_limits: Option<RouteLimits>,
-    /// User-configured provider context-window override for the active route.
-    pub active_context_window_override: Option<u32>,
-    /// Pending provider transition for transactional rollback when the next
-    /// auth failure indicates the new provider cannot be used.
-    pub pending_provider_switch: Option<PendingProviderSwitch>,
     /// Current reasoning-effort tier for DeepSeek thinking mode.
     /// Cycled via Shift+Tab; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
@@ -1726,16 +1705,6 @@ fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, _is_wind
 }
 
 impl App {
-    pub(crate) fn clear_model_scoped_telemetry(&mut self) {
-        self.session.last_prompt_tokens = None;
-        self.session.last_completion_tokens = None;
-        self.session.last_prompt_cache_hit_tokens = None;
-        self.session.last_prompt_cache_miss_tokens = None;
-        self.session.last_reasoning_replay_tokens = None;
-        self.pending_turn_route = None;
-        self.active_turn = None;
-    }
-
     pub fn tr(&self, id: MessageId) -> Cow<'static, str> {
         tr(id)
     }
@@ -1848,7 +1817,6 @@ impl App {
         let provider = config.api_provider();
         let mut effective_auth_config = config.clone();
         effective_auth_config.provider = Some(provider.as_str().to_string());
-        let model_ids_passthrough = effective_auth_config.model_ids_pass_through();
         let provider_chain = provider
             .kind()
             .map(|kind| ProviderChain::new(kind, &config.fallback_providers))
@@ -2088,10 +2056,7 @@ impl App {
             provider_chain,
             provider_readiness,
             last_fallback_reason: None,
-            model_ids_passthrough,
             active_route_limits,
-            active_context_window_override,
-            pending_provider_switch: None,
             reasoning_effort,
             last_effective_reasoning_effort: None,
             workspace,
@@ -4358,58 +4323,6 @@ impl App {
         self.history_navigation_draft = None;
     }
 
-    pub fn set_active_route_limits(&mut self, limits: RouteLimits) {
-        self.active_route_limits = crate::route_budget::known_route_limits(limits);
-    }
-
-    pub fn set_active_context_window_override(&mut self, context_window: Option<u32>) {
-        self.active_context_window_override = context_window;
-        if self.active_route_limits.is_none() {
-            self.active_route_limits = self.context_window_override_limits();
-        }
-    }
-
-    pub fn context_window_override_limits(&self) -> Option<RouteLimits> {
-        self.active_context_window_override
-            .map(|window| RouteLimits {
-                context_tokens: Some(u64::from(window)),
-                ..RouteLimits::default()
-            })
-    }
-
-    pub fn set_model_selection(&mut self, model: String) {
-        let auto_model = model.trim().eq_ignore_ascii_case("auto");
-        self.model = if auto_model {
-            "auto".to_string()
-        } else {
-            model
-        };
-        self.auto_model = auto_model;
-        self.last_effective_model = None;
-        self.last_effective_provider = None;
-        self.last_effective_reasoning_effort = None;
-        if auto_model {
-            self.reasoning_effort = ReasoningEffort::Auto;
-        } else {
-            self.reasoning_effort = self
-                .reasoning_effort
-                .normalize_for_provider(self.api_provider);
-        }
-    }
-
-    pub fn model_selection_for_persistence(&self) -> String {
-        if self.auto_model || self.model.trim().eq_ignore_ascii_case("auto") {
-            "auto".to_string()
-        } else {
-            self.model.clone()
-        }
-    }
-
-    pub fn accepts_custom_model_ids(&self) -> bool {
-        self.model_ids_passthrough
-            || crate::config::provider_passes_model_through(self.api_provider)
-    }
-
     pub fn effective_model_for_budget(&self) -> &str {
         if self.auto_model {
             return self
@@ -4466,27 +4379,8 @@ impl App {
             .to_string()
     }
 
-    pub fn fallback_chain_entries(&self) -> Vec<(usize, ApiProvider, bool)> {
-        let Some(chain) = &self.provider_chain else {
-            return Vec::new();
-        };
-        let position = chain.position();
-        chain
-            .providers()
-            .iter()
-            .enumerate()
-            .map(|(index, provider)| (index, ApiProvider::from_kind(*provider), index == position))
-            .collect()
-    }
-
     pub fn fallback_chain_position(&self) -> Option<usize> {
         self.provider_chain.as_ref().map(ProviderChain::position)
-    }
-
-    pub fn fallback_chain_len(&self) -> usize {
-        self.provider_chain
-            .as_ref()
-            .map_or(0, |chain| chain.providers().len())
     }
 
     /// Whether a fallback chain entry can serve a turn right now (#2574).

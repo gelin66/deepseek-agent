@@ -319,19 +319,6 @@ fn reasoning_effort_api_values_are_provider_aware_for_codex() {
 }
 
 #[test]
-fn set_model_selection_normalizes_codex_fixed_model_effort() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.api_provider = ApiProvider::OpenaiCodex;
-    app.reasoning_effort = ReasoningEffort::Off;
-
-    app.set_model_selection("gpt-5.5-codex".to_string());
-
-    assert_eq!(app.reasoning_effort, ReasoningEffort::Low);
-    assert!(!app.auto_model);
-    assert_eq!(app.reasoning_effort_display_label(), "low");
-}
-
-#[test]
 fn app_new_normalizes_saved_codex_reasoning_effort() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
