@@ -137,31 +137,6 @@ impl ReasoningEffort {
         Self::from_setting(value).normalize_for_provider(provider)
     }
 
-    /// Short label for the header chip.
-    #[must_use]
-    pub fn short_label(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Low => "low",
-            Self::Medium => "med",
-            Self::High => "high",
-            Self::Auto => "auto",
-            Self::Max => "max",
-        }
-    }
-
-    /// Provider-facing label for user-visible surfaces.
-    #[must_use]
-    pub fn display_label_for_provider(self, provider: ApiProvider) -> &'static str {
-        match (provider, self.normalize_for_provider(provider)) {
-            (ApiProvider::OpenaiCodex, Self::Low) => "low",
-            (ApiProvider::OpenaiCodex, Self::Medium) => "medium",
-            (ApiProvider::OpenaiCodex, Self::High) => "high",
-            (ApiProvider::OpenaiCodex, Self::Max) => "xhigh",
-            (_, effort) => effort.short_label(),
-        }
-    }
-
     #[must_use]
     pub fn normalize_for_provider(self, provider: ApiProvider) -> Self {
         if provider != ApiProvider::OpenaiCodex {
@@ -679,11 +654,7 @@ pub struct TuiOptions {
     #[allow(dead_code)]
     pub skills_dir: PathBuf,
     #[allow(dead_code)]
-    pub memory_path: PathBuf,
-    #[allow(dead_code)]
     pub mcp_config_path: PathBuf,
-    #[allow(dead_code)]
-    pub use_memory: bool,
     /// Skip onboarding screens
     pub skip_onboarding: bool,
     /// Auto-approve tool executions (yolo mode)
@@ -870,12 +841,6 @@ pub struct App {
     pub reasoning_effort: ReasoningEffort,
     pub workspace: PathBuf,
     pub config_path: Option<PathBuf>,
-    /// Path to the user-memory file (#489). Always populated; only
-    /// consulted when `use_memory` is `true`.
-    pub memory_path: PathBuf,
-    /// Whether the user-memory feature is enabled (#489). Mirrors
-    /// `Config::memory_enabled()` at app boot.
-    pub use_memory: bool,
     pub use_mouse_capture: bool,
     /// Data-side cap for the `@`-mention popup. The renderer still limits the
     /// visible rows to available terminal height.
@@ -925,8 +890,6 @@ pub struct App {
     pub tool_collapse_mode: ToolCollapseMode,
     pub allow_shell: bool,
     pub max_subagents: usize,
-    /// Per-SSE-chunk idle timeout for streamed turns, in seconds.
-    pub stream_chunk_timeout_secs: u64,
     /// Ephemeral projection of canonical root/child runtime events.
     pub child_agents: ChildAgents,
     pub ui_theme: UiTheme,
@@ -1021,9 +984,7 @@ impl App {
             use_bracketed_paste: _,
             max_subagents,
             skills_dir: global_skills_dir,
-            memory_path,
             mcp_config_path,
-            use_memory,
             skip_onboarding,
             yolo,
             resume_session_id: _,
@@ -1203,8 +1164,6 @@ impl App {
             reasoning_effort,
             workspace,
             config_path,
-            memory_path,
-            use_memory,
             use_mouse_capture,
             calm_mode,
             low_motion,
@@ -1224,7 +1183,6 @@ impl App {
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             allow_shell,
             max_subagents,
-            stream_chunk_timeout_secs: config.stream_chunk_timeout_secs(),
             child_agents: ChildAgents::default(),
             ui_theme,
             theme_id,
@@ -1328,10 +1286,6 @@ impl App {
             CostCurrency::Usd => self.session.total_cost_usd,
             CostCurrency::Cny => self.session.total_cost_cny,
         }
-    }
-
-    pub fn format_cost_amount(&self, amount: f64) -> String {
-        crate::pricing::format_cost_amount(amount, self.cost_display_currency(self.cost_currency))
     }
 
     pub fn format_cost_amount_precise(&self, amount: f64) -> String {
@@ -1980,25 +1934,6 @@ impl App {
             return "auto".to_string();
         }
         self.model.clone()
-    }
-
-    pub fn reasoning_effort_display_label(&self) -> String {
-        if self.auto_model {
-            if self.reasoning_effort != ReasoningEffort::Auto {
-                return format!(
-                    "auto: {}",
-                    self.reasoning_effort
-                        .display_label_for_provider(self.api_provider)
-                );
-            }
-            return "auto".to_string();
-        }
-        if self.reasoning_effort == ReasoningEffort::Auto {
-            return "auto".to_string();
-        }
-        self.reasoning_effort
-            .display_label_for_provider(self.api_provider)
-            .to_string()
     }
 }
 

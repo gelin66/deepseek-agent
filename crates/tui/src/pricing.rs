@@ -664,37 +664,6 @@ fn calculate_turn_cost_from_usage_with_pricing(pricing: CurrencyPricing, usage: 
     hit_cost + miss_cost + write_cost + output_cost
 }
 
-/// Estimate how much money was saved by serving `cache_hit_tokens` from the
-/// prefix cache instead of billing them at the cache-miss rate.  Returns `None`
-/// when the model's pricing is unknown or the number of cache-hit tokens is
-/// zero (nothing to save).
-#[must_use]
-#[cfg(test)]
-pub fn calculate_cache_savings(model: &str, cache_hit_tokens: u32) -> Option<CostEstimate> {
-    if cache_hit_tokens == 0 {
-        return None;
-    }
-    // M3's cache-read savings depend on whether total input crosses 512k;
-    // this helper receives only cache-hit tokens, so an estimate would guess
-    // the tier. The full turn-cost path has total input and remains precise.
-    if model.trim().eq_ignore_ascii_case("minimax-m3") {
-        return None;
-    }
-    let pricing = pricing_for_model(model)?;
-    let tokens = cache_hit_tokens as f64 / 1_000_000.0;
-    Some(CostEstimate {
-        usd: tokens
-            * (pricing.usd.input_cache_miss_per_million - pricing.usd.input_cache_hit_per_million),
-        cny: pricing
-            .cny
-            .map(|pricing| {
-                tokens
-                    * (pricing.input_cache_miss_per_million - pricing.input_cache_hit_per_million)
-            })
-            .unwrap_or(0.0),
-    })
-}
-
 /// Format a cost amount for compact display in the chosen currency.
 #[must_use]
 pub fn format_cost_amount(cost: f64, currency: CostCurrency) -> String {
@@ -906,7 +875,6 @@ mod tests {
             assert_eq!(pricing.usd.input_cache_miss_per_million, input);
             assert_eq!(pricing.usd.output_per_million, output);
         }
-        assert!(calculate_cache_savings("MiniMax-M3", 1).is_none());
     }
 
     #[test]

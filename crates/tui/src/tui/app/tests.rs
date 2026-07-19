@@ -14,9 +14,7 @@ fn test_options(yolo: bool) -> TuiOptions {
         use_bracketed_paste: true,
         max_subagents: 1,
         skills_dir: PathBuf::from("."),
-        memory_path: PathBuf::from("memory.md"),
         mcp_config_path: PathBuf::from("mcp.json"),
-        use_memory: false,
         skip_onboarding: false,
         yolo,
         resume_session_id: None,
@@ -72,39 +70,6 @@ fn test_trust_mode_follows_yolo_on_startup() {
 }
 
 #[test]
-fn reasoning_effort_display_label_uses_codex_xhigh() {
-    assert_eq!(
-        ReasoningEffort::Off.display_label_for_provider(ApiProvider::OpenaiCodex),
-        "low"
-    );
-    assert_eq!(
-        ReasoningEffort::Medium.display_label_for_provider(ApiProvider::OpenaiCodex),
-        "medium"
-    );
-    assert_eq!(
-        ReasoningEffort::Max.display_label_for_provider(ApiProvider::OpenaiCodex),
-        "xhigh"
-    );
-    assert_eq!(
-        ReasoningEffort::Max.display_label_for_provider(ApiProvider::Deepseek),
-        "max"
-    );
-    assert_eq!(
-        ReasoningEffort::High.display_label_for_provider(ApiProvider::OpenaiCodex),
-        "high"
-    );
-
-    let mut app = App::new(test_options(false), &Config::default());
-    app.api_provider = ApiProvider::OpenaiCodex;
-    app.reasoning_effort = ReasoningEffort::Max;
-    app.auto_model = false;
-    assert_eq!(app.reasoning_effort_display_label(), "xhigh");
-
-    app.reasoning_effort = ReasoningEffort::Auto;
-    assert_eq!(app.reasoning_effort_display_label(), "auto");
-}
-
-#[test]
 fn reasoning_effort_parsing_is_provider_aware_for_codex() {
     assert_eq!(
         ReasoningEffort::Off.normalize_for_provider(ApiProvider::OpenaiCodex),
@@ -139,10 +104,10 @@ fn app_new_normalizes_saved_codex_reasoning_effort() {
         ..Config::default()
     };
 
-    for (raw, expected, display) in [
-        ("off", ReasoningEffort::Low, "low"),
-        ("auto", ReasoningEffort::Medium, "medium"),
-        ("max", ReasoningEffort::Max, "xhigh"),
+    for (raw, expected) in [
+        ("off", ReasoningEffort::Low),
+        ("auto", ReasoningEffort::Medium),
+        ("max", ReasoningEffort::Max),
     ] {
         std::fs::write(
             tmp.path().join("settings.toml"),
@@ -154,7 +119,6 @@ fn app_new_normalizes_saved_codex_reasoning_effort() {
 
         assert_eq!(app.api_provider, ApiProvider::OpenaiCodex);
         assert_eq!(app.reasoning_effort, expected, "raw setting {raw}");
-        assert_eq!(app.reasoning_effort_display_label(), display);
     }
 }
 
@@ -329,7 +293,10 @@ fn cny_display_falls_back_to_usd_for_usd_only_costs() {
 
     assert_eq!(displayed, 0.42);
     assert_eq!(app.total_cost_for_currency(CostCurrency::Cny), 0.42);
-    assert_eq!(app.format_cost_amount(displayed), "$0.42");
+    assert_eq!(
+        app.cost_display_currency(CostCurrency::Cny),
+        CostCurrency::Usd
+    );
 }
 
 #[test]
@@ -342,7 +309,10 @@ fn cny_display_keeps_cny_when_costs_have_cny_rates() {
     let displayed = app.total_cost_for_currency(CostCurrency::Cny);
 
     assert_eq!(displayed, 2.5);
-    assert_eq!(app.format_cost_amount(displayed), "¥2.50");
+    assert_eq!(
+        app.cost_display_currency(CostCurrency::Cny),
+        CostCurrency::Cny
+    );
 }
 
 #[test]

@@ -34,20 +34,6 @@ impl ChildAgents {
         &self.rows
     }
 
-    pub fn active_rows(&self) -> impl Iterator<Item = &ChildAgentRow> {
-        self.rows.iter().filter(|row| row.is_active())
-    }
-
-    #[must_use]
-    pub fn active_count(&self) -> usize {
-        self.active_rows().count()
-    }
-
-    #[must_use]
-    pub fn has_active(&self) -> bool {
-        self.rows.iter().any(ChildAgentRow::is_active)
-    }
-
     pub(super) fn begin_root(&mut self, root_run_id: RunId) {
         if self.root_run_id.as_ref() != Some(&root_run_id) {
             self.root_run_id = Some(root_run_id);

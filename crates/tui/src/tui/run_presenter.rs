@@ -629,9 +629,7 @@ mod tests {
                 use_bracketed_paste: true,
                 max_subagents: 1,
                 skills_dir: PathBuf::from("."),
-                memory_path: PathBuf::from("memory.md"),
                 mcp_config_path: PathBuf::from("mcp.json"),
-                use_memory: false,
                 skip_onboarding: false,
                 yolo: false,
                 resume_session_id: None,
@@ -783,7 +781,7 @@ mod tests {
         assert_eq!(app.model, "deepseek-v4-pro");
         assert_eq!(app.effective_model_for_budget(), "deepseek-v4-pro");
         assert_eq!(app.model_display_label(), "auto: deepseek-v4-pro");
-        assert_eq!(app.reasoning_effort_display_label(), "auto: max");
+        assert_eq!(app.reasoning_effort, crate::tui::app::ReasoningEffort::Max);
     }
 
     #[test]
@@ -1368,7 +1366,14 @@ mod tests {
             ],
         );
 
-        assert_eq!(app.child_agents.active_count(), 1);
+        assert_eq!(
+            app.child_agents
+                .rows()
+                .iter()
+                .filter(|row| row.is_active())
+                .count(),
+            1
+        );
         let row = &app.child_agents.rows()[0];
         assert_eq!(row.parent_run_id, root);
         assert_eq!(row.call_id, "call-child");
@@ -1399,9 +1404,8 @@ mod tests {
             &mut app,
             vec![created(&RunId::from("unrelated-projection"), Vec::new())],
         );
-        assert_eq!(
-            app.child_agents.active_count(),
-            0,
+        assert!(
+            app.child_agents.rows().iter().all(|row| !row.is_active()),
             "a new root must not retain an active child from the previous root"
         );
     }
@@ -1471,7 +1475,7 @@ mod tests {
             ],
         );
 
-        assert_eq!(app.child_agents.active_count(), 0);
+        assert!(app.child_agents.rows().iter().all(|row| !row.is_active()));
         let rows = app.child_agents.rows();
         assert_eq!(
             rows.iter()
@@ -1512,7 +1516,7 @@ mod tests {
 
         apply_events(&mut app, vec![created(&continuation, transcript)]);
 
-        assert_eq!(app.child_agents.active_count(), 0);
+        assert!(app.child_agents.rows().iter().all(|row| !row.is_active()));
         let row = &app.child_agents.rows()[0];
         assert_eq!(
             row.parent_run_id,

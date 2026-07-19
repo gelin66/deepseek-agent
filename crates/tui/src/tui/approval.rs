@@ -52,14 +52,6 @@ impl ApprovalMode {
             _ => None,
         }
     }
-
-    #[must_use]
-    pub fn permission_chip_label(self) -> &'static str {
-        match self {
-            Self::Ask => "需要审批",
-            Self::AutoApprove => "自动批准",
-        }
-    }
 }
 
 /// User's decision for a pending approval

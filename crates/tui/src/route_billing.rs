@@ -175,21 +175,6 @@ pub fn usage_chip(
     }
 }
 
-/// Sidebar / detail line. Always returns a string so the panel has an owner.
-#[must_use]
-pub fn format_usage_line(chip: &UsageChip) -> String {
-    match chip {
-        UsageChip::Money(amount) => format!("cost: {amount}"),
-        UsageChip::Allowance { label, used_pct } => match used_pct {
-            Some(pct) => format!("usage: {label} · {pct:.0}% used"),
-            None => format!("usage: {label}"),
-        },
-        UsageChip::Local => "cost: local".to_string(),
-        UsageChip::Unknown => "cost: unknown".to_string(),
-        UsageChip::Hidden => "cost: —".to_string(),
-    }
-}
-
 fn custom_billing_unknown(config: &ProviderConfig) -> bool {
     // A custom OpenAI-compatible endpoint with no explicit pay mode and no
     // priced catalog is treated as unknown rather than inventing metered
@@ -330,8 +315,13 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert_eq!(format_usage_line(&chip), "usage: Codex OAuth quota");
-        assert!(!format_usage_line(&chip).contains('$'));
+        assert_eq!(
+            chip,
+            UsageChip::Allowance {
+                label: "Codex OAuth quota",
+                used_pct: None
+            }
+        );
     }
 
     #[test]
@@ -356,7 +346,13 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert!(!format_usage_line(&chip).contains('$'));
+        assert_eq!(
+            chip,
+            UsageChip::Allowance {
+                label: "Z.ai Coding Plan quota",
+                used_pct: None
+            }
+        );
     }
 
     #[test]
@@ -380,7 +376,7 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert_eq!(format_usage_line(&payg_chip), "cost: $0.42");
+        assert_eq!(payg_chip, UsageChip::Money("$0.42".to_owned()));
 
         let plan_config = config_with(
             ApiProvider::Stepfun,
@@ -402,7 +398,13 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert!(!format_usage_line(&plan_chip).contains('$'));
+        assert_eq!(
+            plan_chip,
+            UsageChip::Allowance {
+                label: "StepFun Step Plan quota",
+                used_pct: None
+            }
+        );
     }
 
     #[test]
@@ -416,8 +418,11 @@ mod tests {
             Some(37.0),
         );
         assert_eq!(
-            format_usage_line(&chip),
-            "usage: Grok OAuth quota · 37% used"
+            chip,
+            UsageChip::Allowance {
+                label: "Grok OAuth quota",
+                used_pct: Some(37.0)
+            }
         );
     }
 
@@ -437,7 +442,7 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert_eq!(format_usage_line(&spent), "cost: $0.42");
+        assert_eq!(spent, UsageChip::Money("$0.42".to_owned()));
 
         let zero = usage_chip(
             billing,
@@ -448,7 +453,6 @@ mod tests {
             None,
         );
         assert_eq!(zero, UsageChip::Hidden);
-        assert!(!format_usage_line(&zero).contains('$'));
     }
 
     #[test]
@@ -465,8 +469,7 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert_eq!(format_usage_line(&chip), "cost: local");
-        assert!(!format_usage_line(&chip).contains('$'));
+        assert_eq!(chip, UsageChip::Local);
     }
 
     #[test]
@@ -480,8 +483,6 @@ mod tests {
             None,
         );
         assert_eq!(chip, UsageChip::Unknown);
-        assert_eq!(format_usage_line(&chip), "cost: unknown");
-        assert!(!format_usage_line(&chip).contains('$'));
 
         let unknown_billing = usage_chip(
             BillingPresentation::Unknown,
@@ -492,7 +493,6 @@ mod tests {
             None,
         );
         assert_eq!(unknown_billing, UsageChip::Unknown);
-        assert!(!format_usage_line(&unknown_billing).contains('$'));
     }
 
     #[test]
@@ -537,7 +537,13 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert!(!format_usage_line(&chip).contains('$'));
+        assert_eq!(
+            chip,
+            UsageChip::Allowance {
+                label: "Claude OAuth quota",
+                used_pct: None
+            }
+        );
     }
 
     #[test]

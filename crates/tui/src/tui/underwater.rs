@@ -139,9 +139,8 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
     }
 }
 
-/// Permission chip words. This maps from the typed [`ApprovalMode`] state —
-/// never from the English `permission_chip_label()` strings — so localizing
-/// (or rewording) the upstream chip labels can never silently break the chip.
+/// Permission chip words map directly from the typed [`ApprovalMode`] state,
+/// so rewording the localized labels cannot change approval behavior.
 fn permission_label(app: &App) -> Cow<'static, str> {
     match app.approval_mode {
         ApprovalMode::Ask => tr(MessageId::ChipPermissionAsk),
@@ -399,9 +398,7 @@ mod tests {
                 use_bracketed_paste: true,
                 max_subagents: 1,
                 skills_dir: PathBuf::from("."),
-                memory_path: PathBuf::from("memory.md"),
                 mcp_config_path: PathBuf::from("mcp.json"),
-                use_memory: false,
                 skip_onboarding: true,
                 yolo: false,
                 resume_session_id: None,

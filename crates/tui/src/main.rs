@@ -5808,9 +5808,7 @@ async fn run_interactive(
             use_mouse_capture,
             use_bracketed_paste,
             skills_dir,
-            memory_path: config.memory_path(),
             mcp_config_path: config.mcp_config_path(),
-            use_memory: config.memory_enabled(),
             skip_onboarding: cli.skip_onboarding,
             yolo, // YOLO mode auto-approves all tool executions
             resume_session_id,
