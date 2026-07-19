@@ -1184,19 +1184,6 @@ pub struct RetryPolicy {
     pub exponential_base: f64,
 }
 
-impl RetryPolicy {
-    /// Compute the backoff delay for a retry attempt.
-    #[must_use]
-    pub fn delay_for_attempt(&self, attempt: u32) -> std::time::Duration {
-        let exponent = i32::try_from(attempt).unwrap_or(i32::MAX);
-        let delay = self.initial_delay * self.exponential_base.powi(exponent);
-        let delay = delay.min(self.max_delay);
-        // Clamp to a sane range to guard against NaN/negative from misconfigured values
-        let delay = delay.clamp(0.0, 300.0);
-        std::time::Duration::from_secs_f64(delay)
-    }
-}
-
 /// Stable project context included in the production prompt.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ContextConfig {
@@ -1840,11 +1827,6 @@ impl Config {
             provider: SearchProvider::default(),
             source: SearchProviderSource::Default,
         }
-    }
-
-    #[must_use]
-    pub fn search_provider(&self) -> SearchProvider {
-        self.search_provider_resolution().provider
     }
 
     /// Load configuration from disk and merge with environment overrides.

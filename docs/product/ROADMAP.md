@@ -840,6 +840,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除从未接入请求执行的 TUI ProviderConfig `max_concurrency` 字段、alias、默认/夹紧
   逻辑及自证测试；canonical Runtime request budget、Fleet scheduler worker limits 和 subagent
   profile limits 保持各自生产 owner，不与该配置黑洞混淆。
+- M4-C 已删除无调用方的 TUI retry-delay 与 search-provider convenience facade；DeepSeek
+  transport retry projection 和 Doctor 使用的 typed search-provider resolution 保持原 owner。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接
