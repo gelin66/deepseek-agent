@@ -999,9 +999,8 @@ pub struct RetryConfig {
 }
 
 /// Deserialize `status_items` tolerantly: skip keys unknown to this build
-/// instead of erroring with "unknown variant".  This lets a dev build write
-/// `"balance"` (or any future item) while the stable build still parses the
-/// config file successfully.
+/// instead of erroring with "unknown variant". This lets a newer build write
+/// a future item while an older build still parses the config successfully.
 fn deser_status_items<'de, D>(deserializer: D) -> Result<Option<Vec<StatusItem>>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -1113,8 +1112,6 @@ pub enum StatusItem {
     RateLimit,
     /// Session token usage: input / cache-hit / output.
     Tokens,
-    /// DeepSeek account balance, refreshed once per turn completion.
-    Balance,
 }
 
 impl StatusItem {
@@ -1153,7 +1150,6 @@ impl StatusItem {
             "last_tool_elapsed" => Some(Self::LastToolElapsed),
             "rate_limit" => Some(Self::RateLimit),
             "tokens" => Some(Self::Tokens),
-            "balance" => Some(Self::Balance),
             _ => None,
         }
     }

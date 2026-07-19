@@ -690,6 +690,10 @@ M4-C foreground 切换后还已物理删除：
   `CostEstimate` convenience methods 已删除。官方 DeepSeek 双币 pricing、canonical
   `ModelAccounting`、`RunStore` 回放、`/cost`、footer/sidebar、scorecard、确定性预算和 Fleet
   回执均继续走原生产 owner；本切片没有删除或伪造子 Agent 的真实 Token/成本聚合。
+- TUI 曾声明 DeepSeek 账户余额 DTO、后台刷新 cell、可配置 footer item 和余额布局，但全仓
+  没有 `/user/balance` 请求或任何 writer；该链运行期永远为 `None`。现已连同自证测试和文案
+  整体删除，旧 `status_items = ["balance"]` 会由既有未知项规则忽略。真实 usage/cost、
+  cache、scorecard、`/cost` 和 root/child accounting 不经过该幽灵链。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
   删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有

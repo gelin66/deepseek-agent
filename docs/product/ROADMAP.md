@@ -854,6 +854,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `CostEstimate` convenience methods 和重复 catalog predicates；回归测试改为直接验证生产
   `for_route -> usage_chip -> format_usage_line`。官方 DeepSeek pricing、canonical accounting、
   `RunStore`、`/cost`、footer/sidebar、scorecard、Runtime/Fleet 预算与 child usage 聚合均保留。
+- M4-C 已删除无任何 HTTP fetch、事件、Store 字段或 writer 的 DeepSeek account-balance 幽灵链：
+  DTO、App `None` cell、可配置 footer item、余额布局、文案和六个自证测试均已物理删除。旧
+  `status_items = ["balance"]` 由现有 tolerant unknown-item 规则自然忽略；canonical usage/cost、
+  cache、scorecard、`/cost` 与 root/child accounting 保持原 owner。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

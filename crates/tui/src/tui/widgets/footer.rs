@@ -17,7 +17,7 @@
 //! | work count | `agents` | Agents sidebar, `/fleet` |
 //! | mode | `mode_label` | current runtime posture |
 //! | permission | `permission` | current runtime posture |
-//! | cost/rate | `cost`, `balance`, `cache` | canonical usage projection and `/cost` |
+//! | cost/rate | `cost`, `cache` | canonical usage projection and `/cost` |
 //! | anomalies | MCP chip | MCP manager |
 //!
 //! Dense proof (tool receipts, full workflow history, raw config keys) stays
@@ -84,9 +84,6 @@ pub struct FooterProps {
     /// Rendered in the left cluster (after the model name) — cost is steady
     /// info, not a transient signal, so it lives with mode and model.
     pub cost: Vec<Span<'static>>,
-    /// Account balance chip spans (empty when un fetched or zero). Rendered
-    /// in the left cluster right after cost.
-    pub balance: Vec<Span<'static>>,
     /// Optional toast that, when present, replaces the left status line.
     pub toast: Option<FooterToast>,
     /// When `Some(frame_idx)`, the gap between the left status line and the
@@ -294,7 +291,6 @@ impl FooterProps {
         reasoning_replay: Vec<Span<'static>>,
         cache: Vec<Span<'static>>,
         cost: Vec<Span<'static>>,
-        balance: Vec<Span<'static>>,
     ) -> Self {
         let (mode_label, mode_color) = mode_style(app);
         let mcp = footer_mcp_chip(app.mcp_configured_count);
@@ -322,7 +318,6 @@ impl FooterProps {
             permission,
             worked,
             cost,
-            balance,
             toast,
             working_strip_frame: None,
         }
@@ -417,7 +412,7 @@ impl FooterWidget {
     ///
     /// Production leaves mode/model blank because the header owns them. The
     /// generic widget still supports callers that supply them, while the
-    /// header-owned path prioritizes state, then cost and balance.
+    /// header-owned path prioritizes state, then cost.
     fn status_line_spans(&self, max_width: usize) -> Vec<Span<'static>> {
         if max_width == 0 {
             return Vec::new();
@@ -430,8 +425,6 @@ impl FooterWidget {
         let status_label = self.props.state_label.as_str();
         let cost_text = spans_text(&self.props.cost);
         let show_cost = !cost_text.is_empty();
-        let balance_text = spans_text(&self.props.balance);
-        let show_balance = !balance_text.is_empty();
 
         if mode_label.is_empty() && model.is_empty() {
             let mut spans = Vec::new();
@@ -441,13 +434,7 @@ impl FooterWidget {
                     Style::default().fg(self.props.state_color),
                 ));
             }
-            for (text, color) in [
-                (cost_text.as_str(), self.props.text_muted_color),
-                (balance_text.as_str(), self.props.text_muted_color),
-            ] {
-                if text.is_empty() {
-                    continue;
-                }
+            if !cost_text.is_empty() {
                 let mut candidate = spans.clone();
                 if !candidate.is_empty() {
                     candidate.push(Span::styled(
@@ -455,7 +442,10 @@ impl FooterWidget {
                         Style::default().fg(self.props.text_dim_color),
                     ));
                 }
-                candidate.push(Span::styled(text.to_string(), Style::default().fg(color)));
+                candidate.push(Span::styled(
+                    cost_text,
+                    Style::default().fg(self.props.text_muted_color),
+                ));
                 if span_width(&candidate) <= max_width {
                     spans = candidate;
                 }
@@ -468,83 +458,50 @@ impl FooterWidget {
         let model_w = UnicodeWidthStr::width(model);
         let status_w = if show_status { status_label.width() } else { 0 };
         let cost_w = if show_cost { cost_text.width() } else { 0 };
-        let balance_w = if show_balance {
-            balance_text.width()
-        } else {
-            0
-        };
-
         let extra_sep = |w: usize| if w > 0 { sep_w } else { 0 };
         let model_prefix_w = if mode_w > 0 { mode_w + sep_w } else { 0 };
 
-        // Tier 1: [mode ·] model · balance · cost · status
-        let full_w = model_prefix_w
-            + model_w
-            + extra_sep(balance_w)
-            + balance_w
-            + extra_sep(cost_w)
-            + cost_w
-            + extra_sep(status_w)
-            + status_w;
-        if (show_balance || show_cost || show_status) && full_w <= max_width {
+        // Tier 1: [mode ·] model · cost · status
+        let full_w =
+            model_prefix_w + model_w + extra_sep(cost_w) + cost_w + extra_sep(status_w) + status_w;
+        if (show_cost || show_status) && full_w <= max_width {
             return self.build_status_line_spans(
                 mode_label,
                 model.to_string(),
-                show_balance.then(|| balance_text.clone()),
                 show_cost.then(|| cost_text.clone()),
                 show_status.then_some(status_label),
             );
         }
 
-        // Tier 2: [mode ·] model · balance · cost — drop status.
-        let with_cost_w = model_prefix_w
-            + model_w
-            + extra_sep(balance_w)
-            + balance_w
-            + extra_sep(cost_w)
-            + cost_w;
-        if (show_balance || show_cost) && with_cost_w <= max_width {
+        // Tier 2: [mode ·] model · cost — drop status.
+        let with_cost_w = model_prefix_w + model_w + extra_sep(cost_w) + cost_w;
+        if show_cost && with_cost_w <= max_width {
             return self.build_status_line_spans(
                 mode_label,
                 model.to_string(),
-                show_balance.then(|| balance_text.clone()),
                 show_cost.then(|| cost_text.clone()),
                 None,
             );
         }
 
-        // Tier 3: [mode ·] model · balance — drop cost.
-        if show_balance {
-            let with_balance_w = model_prefix_w + model_w + sep_w + balance_w;
-            if with_balance_w <= max_width {
-                return self.build_status_line_spans(
-                    mode_label,
-                    model.to_string(),
-                    Some(balance_text.clone()),
-                    None,
-                    None,
-                );
-            }
-        }
-
-        // Tier 4: [mode ·] model — drop balance too.
+        // Tier 3: [mode ·] model — drop cost too.
         let mode_model_w = model_prefix_w + model_w;
         if mode_model_w <= max_width {
-            return self.build_status_line_spans(mode_label, model.to_string(), None, None, None);
+            return self.build_status_line_spans(mode_label, model.to_string(), None, None);
         }
 
-        // Tier 5: [mode ·] <truncated model> — ellipsize model when prefix fits.
+        // Tier 4: [mode ·] <truncated model> — ellipsize model when prefix fits.
         if model_prefix_w < max_width {
             let model_budget = max_width - model_prefix_w;
             if model_budget >= 4 {
                 let truncated = truncate_to_width(model, model_budget);
                 if !truncated.is_empty() {
-                    return self.build_status_line_spans(mode_label, truncated, None, None, None);
+                    return self.build_status_line_spans(mode_label, truncated, None, None);
                 }
             }
         }
 
-        // Tier 6: mode-only when present, otherwise truncated model.
+        // Tier 5: mode-only when present, otherwise truncated model.
         if mode_w > 0 && mode_w <= max_width {
             return vec![Span::styled(
                 mode_label.to_string(),
@@ -561,7 +518,6 @@ impl FooterWidget {
         &self,
         mode_label: &'static str,
         model_label: String,
-        balance: Option<String>,
         cost: Option<String>,
         status: Option<&str>,
     ) -> Vec<Span<'static>> {
@@ -583,18 +539,6 @@ impl FooterWidget {
             spans.push(Span::styled(
                 model_label,
                 Style::default().fg(self.props.text_hint_color),
-            ));
-        }
-        if let Some(balance_text) = balance {
-            if !spans.is_empty() {
-                spans.push(Span::styled(
-                    sep.to_string(),
-                    Style::default().fg(self.props.text_dim_color),
-                ));
-            }
-            spans.push(Span::styled(
-                balance_text,
-                Style::default().fg(self.props.text_muted_color),
             ));
         }
         if let Some(cost_text) = cost {
@@ -814,7 +758,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-            Vec::<Span<'static>>::new(),
         );
         props.mode_label = "";
         props
@@ -948,7 +891,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-            Vec::<Span<'static>>::new(),
         );
 
         assert_eq!(props.state_label, "busy");
@@ -1023,7 +965,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-            Vec::<Span<'static>>::new(),
         );
         let widget = FooterWidget::new(props);
         let area = ratatui::layout::Rect::new(0, 0, 60, 1);
@@ -1052,7 +993,6 @@ mod tests {
                 None,
                 "ready",
                 palette::TEXT_MUTED,
-                Vec::<Span<'static>>::new(),
                 Vec::<Span<'static>>::new(),
                 Vec::<Span<'static>>::new(),
                 Vec::<Span<'static>>::new(),
@@ -1245,7 +1185,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
-            Vec::<Span<'static>>::new(),
         );
 
         for width in [120, 100, 80] {
@@ -1282,7 +1221,6 @@ mod tests {
                 Vec::<Span<'static>>::new(),
                 Vec::<Span<'static>>::new(),
                 Vec::<Span<'static>>::new(),
-                Vec::<Span<'static>>::new(),
             );
             for width in [120, 100, 80] {
                 let line = render_at_width(props.clone(), width);
@@ -1303,7 +1241,6 @@ mod tests {
             // copy to match that lifetime.
             Box::leak(state.to_string().into_boxed_str()),
             palette::WHALE_INFO,
-            Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
@@ -1394,7 +1331,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             vec![Span::styled(cost.to_string(), Style::default())],
-            Vec::<Span<'static>>::new(),
         );
         props.mode_label = "";
         props.permission.clear();
@@ -1416,7 +1352,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             long_cache,
-            Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
         );
         props.mode_label = "";
@@ -1449,7 +1384,6 @@ mod tests {
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             cache,
-            Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
         );
         props.mode_label = "";
@@ -1503,7 +1437,6 @@ mod tests {
             Some(toast),
             "ready",
             palette::TEXT_MUTED,
-            Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),
             Vec::<Span<'static>>::new(),

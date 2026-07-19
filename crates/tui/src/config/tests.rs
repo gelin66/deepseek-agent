@@ -5825,9 +5825,8 @@ fn provider_capability_roundtrip_serialization() {
 
 #[test]
 fn status_items_deser_ignores_unknown_variants() {
-    // Simulate a stable build reading config written by a dev build that
-    // knows about items the stable build doesn't (e.g. "balance" or a
-    // future status chip).
+    // Simulate an older build reading config written by a newer build that
+    // knows about a future status chip.
     let toml_str = r#"
         alternate_screen = "auto"
         status_items = ["mode", "model", "unknown_future_item", "cost", "another_unknown", "status"]
