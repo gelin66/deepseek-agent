@@ -2443,11 +2443,8 @@ fn truncate_display_width(text: &str, max_width: usize) -> String {
 }
 
 fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>> {
-    let receipt = app.active_receipt_text();
     let session_title = app.session_title.as_deref();
-    if receipt.is_none() && session_title.is_none() {
-        return None;
-    }
+    let session_title = session_title?;
 
     // Leave room for the left title and both borders. On narrow panes, skip
     // extra chrome rather than letting status text collide with "Composer".
@@ -2456,23 +2453,10 @@ fn composer_top_right_chrome(app: &App, area_width: u16) -> Option<Line<'static>
         return None;
     }
 
-    let receipt_style = Style::default()
-        .fg(palette::STATUS_SUCCESS)
-        .add_modifier(Modifier::DIM);
-    if let Some(receipt) = receipt {
-        let receipt_text = receipt.trim();
-        return Some(Line::from(Span::styled(
-            truncate_display_width(receipt_text, max_width),
-            receipt_style,
-        )));
-    }
-
-    session_title.map(|title| {
-        Line::from(Span::styled(
-            truncate_display_width(title, max_width),
-            Style::default().fg(palette::TEXT_MUTED),
-        ))
-    })
+    Some(Line::from(Span::styled(
+        truncate_display_width(session_title, max_width),
+        Style::default().fg(palette::TEXT_MUTED),
+    )))
 }
 
 fn should_render_empty_state(app: &App) -> bool {
@@ -3513,31 +3497,6 @@ mod tests {
     }
 
     #[test]
-    fn composer_border_renders_active_turn_receipt() {
-        let mut app = create_test_app();
-        app.ocean_treatment = crate::tui::ocean::OceanTreatment::Classic;
-        app.composer_density = ComposerDensity::Comfortable;
-        app.set_receipt_text("✓ turn completed · 2 tool(s) used");
-        let slash_menu_entries = Vec::<SlashMenuEntry>::new();
-        let mention_menu_entries = Vec::<String>::new();
-        let widget = ComposerWidget::new(&app, 5, &slash_menu_entries, &mention_menu_entries);
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 96,
-            height: 5,
-        };
-        let mut buf = Buffer::empty(area);
-
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-
-        assert!(!rendered.contains("Composer"));
-        assert!(rendered.contains("turn completed"));
-        assert!(rendered.contains("tool(s) used"));
-    }
-
-    #[test]
     fn composer_border_keeps_mode_titles_contextual() {
         let slash_menu_entries = Vec::<SlashMenuEntry>::new();
         let mention_menu_entries = Vec::<String>::new();
@@ -4178,35 +4137,6 @@ mod tests {
         assert_eq!(
             buf[(area.x + area.width - 1, area.y + area.height - 1)].bg,
             custom
-        );
-    }
-
-    #[test]
-    fn chat_widget_does_not_render_turn_receipt_as_transcript_content() {
-        let mut app = create_test_app();
-        for i in 0..8 {
-            app.add_message(HistoryCell::Assistant {
-                content: format!("assistant line {i}"),
-                streaming: false,
-            });
-        }
-        app.set_receipt_text("✓ turn completed · 2 tool(s) used");
-
-        let area = Rect {
-            x: 0,
-            y: 0,
-            width: 48,
-            height: 6,
-        };
-        let mut buf = Buffer::empty(area);
-        let widget = ChatWidget::new(&mut app, area);
-        widget.render(area, &mut buf);
-        let rendered = buffer_text(&buf, area);
-
-        assert!(!rendered.contains("turn completed"));
-        assert!(
-            rendered.contains("assistant line 7"),
-            "receipt should not displace the latest transcript line: {rendered:?}"
         );
     }
 

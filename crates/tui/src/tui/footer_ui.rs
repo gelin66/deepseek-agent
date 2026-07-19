@@ -18,24 +18,9 @@ pub(crate) fn render_footer(f: &mut Frame, area: Rect, app: &mut App) {
     // Pull in the toast first so we don't re-borrow `app` mutably mid-build,
     // then build the FooterProps once. The widget itself is a pure render —
     // it owns no `App` knowledge; all width-aware layout lives in the widget.
-    //
-    // The quit-confirmation prompt takes precedence over normal status toasts
-    // because it represents a transient instruction the user must respond to
-    // within ~2s. Mirrors codex-rs's `FooterMode::QuitShortcutReminder`.
-    let quit_prompt = if app.quit_is_armed() {
-        Some(FooterToast {
-            text: crate::localization::tr(crate::localization::MessageId::FooterPressCtrlCAgain)
-                .to_string(),
-            color: palette::STATUS_WARNING,
-        })
-    } else {
-        None
-    };
-    let toast = quit_prompt.or_else(|| {
-        app.active_status_toast().map(|toast| FooterToast {
-            text: toast.text,
-            color: status_color(toast.level),
-        })
+    let toast = app.active_status_toast().map(|toast| FooterToast {
+        text: toast.text,
+        color: status_color(toast.level),
     });
 
     // Drive every cluster from the user's configured `status_items`. The

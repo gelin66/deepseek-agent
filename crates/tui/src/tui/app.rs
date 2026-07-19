@@ -1342,14 +1342,6 @@ pub struct App {
     pub last_submitted_prompt: Option<String>,
     /// Startup prompt should be submitted automatically after the engine is ready.
     pub auto_submit_initial_input: bool,
-    /// Two-tap quit confirmation. When set, a prior Ctrl+C in idle state has
-    /// armed the quit shortcut; a second Ctrl+C before this `Instant` exits
-    /// the app, while expiry silently re-arms the prompt for next time.
-    /// Stays `None` while a turn is in flight or a modal/picker is open so
-    /// Ctrl+C keeps its current "interrupt this turn" semantics in those
-    /// states. See [`App::arm_quit`] / [`App::quit_is_armed`].
-    pub quit_armed_until: Option<Instant>,
-
     // === Transcript filtering (#397) ===
     /// Transcript cells the user has collapsed (hidden from view).
     /// Stores **original** virtual cell indices (pre-filtering).
@@ -1362,11 +1354,6 @@ pub struct App {
 
     /// Optional title shown in the composer border.
     pub session_title: Option<String>,
-
-    /// Post-turn receipt rendered as transient composer chrome.
-    /// Set when a turn completes; cleared when a new turn starts or after expiry.
-    pub receipt_text: Option<String>,
-    pub receipt_started_at: Option<Instant>,
 }
 
 /// Message queued while the engine is busy.
@@ -1845,7 +1832,6 @@ impl App {
             last_send_at: None,
             last_submitted_prompt: None,
             auto_submit_initial_input,
-            quit_armed_until: None,
             collapsed_cells: HashSet::new(),
             collapsed_cell_map: Vec::new(),
             mention_menu_limit: settings.mention_menu_limit,
@@ -1853,8 +1839,6 @@ impl App {
             mention_menu_behavior: settings.mention_menu_behavior.clone(),
             workspace_follow_symlinks: settings.workspace_follow_symlinks,
             session_title: None,
-            receipt_text: None,
-            receipt_started_at: None,
         };
         if yolo_compat {
             app.notify_yolo_compat_once();
@@ -2546,81 +2530,6 @@ impl App {
             self.status_toasts.pop_front();
         }
         self.needs_redraw = true;
-    }
-
-    /// How long the "press Ctrl+C again to quit" prompt stays armed before it
-    /// silently expires.
-    pub const QUIT_CONFIRMATION_WINDOW: Duration = Duration::from_secs(2);
-
-    /// Arm the quit confirmation timer. The next Ctrl+C within
-    /// [`Self::QUIT_CONFIRMATION_WINDOW`] should exit the app cleanly. Call this only
-    /// from idle state — while a turn is in flight or a modal is open Ctrl+C
-    /// retains its existing "interrupt this turn" / "close modal" semantics.
-    pub fn arm_quit(&mut self) {
-        self.quit_armed_until = Some(Instant::now() + Self::QUIT_CONFIRMATION_WINDOW);
-        self.needs_redraw = true;
-    }
-
-    /// Whether the quit timer is currently armed (i.e. a prior Ctrl+C set it
-    /// and it hasn't expired yet).
-    pub fn quit_is_armed(&self) -> bool {
-        self.quit_armed_until
-            .map(|deadline| Instant::now() < deadline)
-            .unwrap_or(false)
-    }
-
-    /// Clear the quit-armed timer. Call when expiry is detected on a tick or
-    /// when the user takes any other action that should disarm the prompt
-    /// (typing, sending a message, etc.).
-    pub fn disarm_quit(&mut self) {
-        if self.quit_armed_until.is_some() {
-            self.quit_armed_until = None;
-            self.needs_redraw = true;
-        }
-    }
-
-    /// Tick called from the redraw loop. Lets time-based UI state (the
-    /// quit-armed prompt) expire even when no input event is delivered.
-    pub fn tick_quit_armed(&mut self) {
-        if let Some(deadline) = self.quit_armed_until
-            && Instant::now() >= deadline
-        {
-            self.quit_armed_until = None;
-            self.needs_redraw = true;
-        }
-    }
-
-    pub const RECEIPT_VISIBLE_DURATION: Duration = Duration::from_secs(8);
-
-    pub fn set_receipt_text(&mut self, text: impl Into<String>) {
-        self.receipt_text = Some(text.into());
-        self.receipt_started_at = Some(Instant::now());
-        self.needs_redraw = true;
-    }
-
-    pub fn clear_receipt(&mut self) {
-        if self.receipt_text.is_some() || self.receipt_started_at.is_some() {
-            self.receipt_text = None;
-            self.receipt_started_at = None;
-            self.needs_redraw = true;
-        }
-    }
-
-    pub fn active_receipt_text(&self) -> Option<&str> {
-        let receipt = self.receipt_text.as_deref()?;
-        let started = self.receipt_started_at?;
-        (started.elapsed() <= Self::RECEIPT_VISIBLE_DURATION).then_some(receipt)
-    }
-
-    /// Tick called from the redraw loop so transient receipts leave the UI
-    /// without waiting for the next keypress.
-    pub fn tick_receipt(&mut self) {
-        if self
-            .receipt_started_at
-            .is_some_and(|started| started.elapsed() > Self::RECEIPT_VISIBLE_DURATION)
-        {
-            self.clear_receipt();
-        }
     }
 
     pub fn set_sticky_status(
