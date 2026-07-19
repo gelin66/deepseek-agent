@@ -140,20 +140,6 @@ pub(crate) fn default_mcp_config_path() -> Option<PathBuf> {
     })
 }
 
-pub(crate) fn default_notes_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("notes.txt");
-        if primary.exists() {
-            return primary;
-        }
-        let legacy = home.join(".deepseek").join("notes.txt");
-        if legacy.exists() {
-            return legacy;
-        }
-        primary
-    })
-}
-
 pub(crate) fn default_memory_path() -> Option<PathBuf> {
     effective_home_dir().map(|home| {
         let primary = home.join(".codewhale").join("memory.md");

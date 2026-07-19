@@ -707,8 +707,6 @@ pub struct TuiOptions {
     #[allow(dead_code)]
     pub memory_path: PathBuf,
     #[allow(dead_code)]
-    pub notes_path: PathBuf,
-    #[allow(dead_code)]
     pub mcp_config_path: PathBuf,
     #[allow(dead_code)]
     pub use_memory: bool,
@@ -1110,7 +1108,6 @@ impl App {
             max_subagents,
             skills_dir: global_skills_dir,
             memory_path,
-            notes_path: _,
             mcp_config_path,
             use_memory,
             skip_onboarding,

@@ -1245,7 +1245,6 @@ pub struct Config {
     pub mcp_config_path: Option<String>,
     pub mcp_oauth_callback_port: Option<u16>,
     pub mcp_oauth_callback_url: Option<String>,
-    pub notes_path: Option<String>,
     pub memory_path: Option<String>,
     /// When true, atomically opt a fully compatible function catalog into
     /// DeepSeek beta strict schema validation. This never forces a tool call;
@@ -2442,16 +2441,6 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("./mcp.json"))
     }
 
-    /// Resolve the notes file path.
-    #[must_use]
-    pub fn notes_path(&self) -> PathBuf {
-        self.notes_path
-            .as_deref()
-            .map(expand_path)
-            .or_else(default_notes_path)
-            .unwrap_or_else(|| PathBuf::from("./notes.txt"))
-    }
-
     /// Resolve the memory file path.
     #[must_use]
     pub fn memory_path(&self) -> PathBuf {
@@ -2736,8 +2725,8 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ApiProvider, mode
 mod paths;
 use paths::{
     canonicalize_or_keep, codewhale_home_dir, default_config_path, default_mcp_config_path,
-    default_memory_path, default_notes_path, default_skills_dir, env_config_path, expand_pathbuf,
-    home_config_path, workspace_config_key,
+    default_memory_path, default_skills_dir, env_config_path, expand_pathbuf, home_config_path,
+    workspace_config_key,
 };
 pub(crate) use paths::{effective_home_dir, expand_path};
 
@@ -3587,9 +3576,6 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_MCP_CONFIG") {
         config.mcp_config_path = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_NOTES_PATH") {
-        config.notes_path = Some(value);
-    }
     if let Ok(value) = std::env::var("DEEPSEEK_MEMORY_PATH") {
         config.memory_path = Some(value);
     }
@@ -4111,7 +4097,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         mcp_oauth_callback_url: override_cfg
             .mcp_oauth_callback_url
             .or(base.mcp_oauth_callback_url),
-        notes_path: override_cfg.notes_path.or(base.notes_path),
         memory_path: override_cfg.memory_path.or(base.memory_path),
         // #454: user-owned profiles may replace the instruction array.
         // Project-scope config is filtered in main.rs and cannot set

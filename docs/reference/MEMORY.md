@@ -218,7 +218,7 @@ loaded by `project_context` and live in the repo (or wherever you commit them).
 # ~/.codewhale/config.toml
 [memory]
 enabled = true                    # default false; or set DEEPSEEK_MEMORY=on
-# Path is configured at the top-level (next to skills_dir, notes_path):
+# Path is configured at the top-level (next to skills_dir):
 memory_path = "~/.codewhale/memory.md"
 ```
 

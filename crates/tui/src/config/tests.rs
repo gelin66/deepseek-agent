@@ -2108,10 +2108,6 @@ fn default_user_paths_use_codewhale_home_for_fresh_installs() -> Result<()> {
         temp_root.join(".codewhale").join("mcp.json")
     );
     assert_eq!(
-        config.notes_path(),
-        temp_root.join(".codewhale").join("notes.txt")
-    );
-    assert_eq!(
         config.memory_path(),
         temp_root.join(".codewhale").join("memory.md")
     );
@@ -2133,7 +2129,7 @@ fn default_user_paths_preserve_existing_legacy_files() -> Result<()> {
     ));
     let legacy_home = temp_root.join(".deepseek");
     fs::create_dir_all(&legacy_home)?;
-    for name in ["config.toml", "mcp.json", "notes.txt", "memory.md"] {
+    for name in ["config.toml", "mcp.json", "memory.md"] {
         fs::write(legacy_home.join(name), "")?;
     }
     let _guard = EnvGuard::new(&temp_root);
@@ -2148,7 +2144,6 @@ fn default_user_paths_preserve_existing_legacy_files() -> Result<()> {
         legacy_home.join("config.toml")
     );
     assert_eq!(config.mcp_config_path(), legacy_home.join("mcp.json"));
-    assert_eq!(config.notes_path(), legacy_home.join("notes.txt"));
     assert_eq!(config.memory_path(), legacy_home.join("memory.md"));
 
     Ok(())

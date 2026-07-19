@@ -958,6 +958,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   browsing/compatibility alias 承诺。`[features]` 现只保留有真实 caller 的 `subagents` 和
   `exec_policy`：前者控制 canonical `agent` 目录与 depth/concurrency，后者控制 Shell
   policy snapshot 加载；Shell、patch 与 MCP CLI 仍由各自真实 owner 控制，不通过假开关。
+- M4-C 已物理删除整条无生产 reader 的 Notes 配置投影：`Config.notes_path`、环境与项目
+  overlay、默认/旧路径解析和从主入口传入后立即丢弃的 `TuiOptions.notes_path`，并同步
+  删除“model-visible note tool”的错误文档承诺。评测 Harness 独立创建和读取的
+  `SeedWorkspace.notes_path` 保持不变；canonical 固定工具目录从未包含 `note`。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

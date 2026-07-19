@@ -206,7 +206,6 @@ Supported keys in the project overlay (top-level fields only):
 | `reasoning_effort` | force `"high"` / `"max"` for a complex repo |
 | `approval_policy` | `on-request` 可将用户的 `auto` 收紧为需要审批；项目配置不能反向放宽 |
 | `sandbox_mode` | only values that tighten the user's current sandbox posture |
-| `notes_path` | keep notes in-repo |
 | `max_subagents` | clamp sub-agent concurrency for a constrained repo (clamped to 1..=20) |
 | `allow_shell` | `false` can disable shell access; `true` is ignored |
 
@@ -615,7 +614,6 @@ Remaining variables:
 - `DEEPSEEK_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
-- `DEEPSEEK_NOTES_PATH`
 - `DEEPSEEK_MEMORY` (`1|on|true|yes|y|enabled` turns user memory on)
 - `DEEPSEEK_MEMORY_PATH`
 - `DEEPSEEK_ALLOW_SHELL` (`1`/`true` enables)
@@ -884,9 +882,6 @@ If you are upgrading from older releases:
   applicable, but configuration writes never copy those additions into the
   global file. The canonical Agent does not currently advertise discovered
   MCP tools to the model.
-- `notes_path` (string, optional): defaults to `~/.codewhale/notes.txt`, with
-  legacy `~/.deepseek/notes.txt` fallback when the CodeWhale path is absent, and
-  is used by the model-visible `note` tool.
 - `[memory].enabled` (bool, optional): defaults to `false`. When `true`,
   the TUI loads the user memory file into a `<user_memory>` prompt block,
   enables `# foo` quick-capture in the composer, surfaces the `/memory`
@@ -930,27 +925,6 @@ If you are upgrading from older releases:
 - `tui.osc8_links` (bool, optional, default on for macOS/Linux, off for Windows): emit OSC 8 escape sequences around URLs in transcript output so supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) can open them with the terminal's link gesture—usually Cmd-click on macOS and Ctrl-click on Linux/Windows. Terminals without OSC 8 support render the plain label and ignore the escape. The escapes are emitted out-of-band (not inside buffer cells), so column corruption is not a concern; set `false` only for terminals that misrender the OSC 8 terminator itself. Windows legacy consoles default off; opt in with `true`.
 - `features.*` (optional): feature flag overrides (see below).
 
-### Workspace notes
-
-`/note` manages a simple notes file in the current workspace at
-`.deepseek/notes.md`. Existing `/note <text>` usage still appends a note.
-The management forms are:
-
-| Command | Action |
-|---|---|
-| `/note <text>` | Append a note (legacy shorthand) |
-| `/note add <text>` | Append a note explicitly |
-| `/note list` | List notes with temporary 1-based numbers |
-| `/note show <n>` | Show the full note at number `n` |
-| `/note edit <n> <text>` | Replace note `n` with new text |
-| `/note remove <n>` | Delete note `n`; `rm` and `delete` are aliases |
-| `/note clear` | Empty the workspace notes file |
-| `/note path` | Show the resolved workspace notes path |
-
-The numbers shown by `/note list` are not stored in the file; they are derived
-from the current order each time notes are read. This keeps the file format
-compatible with the existing `---`-separated notes.
-
 ### User memory
 
 User memory is split across one top-level path setting and one opt-in
@@ -965,8 +939,8 @@ enabled = true
 
 Notes:
 
-- `memory_path` stays at the top level beside `notes_path` and
-  `skills_dir`; it is not nested under `[memory]`.
+- `memory_path` stays at the top level beside `skills_dir`; it is not nested
+  under `[memory]`.
 - `DEEPSEEK_MEMORY_PATH` overrides the file path from the environment.
 - `DEEPSEEK_MEMORY=on` (also `1`, `true`, `yes`, `y`, or `enabled`)
   flips the feature on without editing `config.toml`.

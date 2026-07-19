@@ -5551,12 +5551,10 @@ fn merge_project_config_with_approval_baseline(config: &mut Config, workspace: &
         }
     }
 
-    // String fields a project may legitimately override (model,
-    // approval/sandbox tightening, notes path, reasoning effort).
+    // String fields a project may legitimately override (model and reasoning effort).
     for (key, field) in [
         ("model", &mut config.default_text_model),
         ("reasoning_effort", &mut config.reasoning_effort),
-        ("notes_path", &mut config.notes_path),
     ] {
         if let Some(v) = table.get(key).and_then(toml::Value::as_str)
             && !v.is_empty()
@@ -5819,7 +5817,6 @@ async fn run_interactive(
             use_bracketed_paste,
             skills_dir,
             memory_path: config.memory_path(),
-            notes_path: config.notes_path(),
             mcp_config_path: config.mcp_config_path(),
             use_memory: config.memory_enabled(),
             skip_onboarding: cli.skip_onboarding,

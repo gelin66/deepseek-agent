@@ -30,7 +30,6 @@ mod tests {
             max_subagents: 4,
             skills_dir: PathBuf::from("."),
             memory_path: PathBuf::from("memory.md"),
-            notes_path: PathBuf::from("notes.txt"),
             mcp_config_path: PathBuf::from("mcp.json"),
             use_memory: false,
             skip_onboarding: true,
