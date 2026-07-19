@@ -34,9 +34,10 @@ use super::worker_runtime::{
 /// Build the `codewhale exec` argv that runs a fleet task headlessly.
 ///
 /// `--auto` is always passed: a headless worker has no human to approve tool
-/// calls, so it runs with full (policy-gated) tool access. `--output-format
-/// stream-json` makes the worker emit the NDJSON event stream this module
-/// parses. Fleet recursion depth is inherited from the worker's own config
+/// calls, so it runs with automatic approval. `--auto` itself does not grant
+/// unrestricted external-path trust. `--output-format stream-json` makes the
+/// worker emit the NDJSON event stream this module parses. Fleet recursion
+/// depth is inherited from the worker's own config
 /// (`[fleet.exec] max_spawn_depth`, default [`codewhale_config::DEFAULT_SPAWN_DEPTH`]).
 ///
 /// Secrets are NEVER placed on the argv: provider credentials are resolved by
@@ -500,6 +501,7 @@ mod tests {
         assert_eq!(cmd.program, "codewhale");
         assert_eq!(cmd.args[0], "exec");
         assert!(cmd.args.contains(&"--auto".to_string()));
+        assert!(!cmd.args.contains(&"--yolo".to_string()));
         // stream-json so the executor can ingest the worker's event stream.
         let joined = cmd.args.join(" ");
         assert!(joined.contains("--output-format stream-json"));

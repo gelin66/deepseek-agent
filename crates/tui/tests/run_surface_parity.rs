@@ -300,7 +300,7 @@ fn production_application(
         },
     };
     let tools = ProductionToolConfig::new(workspace)
-        .with_trust_mode(true)
+        .with_trust_mode(false)
         .with_auto_approve(true)
         .with_shell_policy(ShellPolicy::Full);
     let prompt = ProductionPromptConfig {
@@ -339,7 +339,7 @@ fn equivalent_start_command(exec: &RunRequest) -> StartRunCommand {
         limits: exec.limits,
         controls: RunProductControls {
             auto_approve: true,
-            trust_mode: true,
+            trust_mode: false,
             allow_sandbox_elevation: false,
             interactive: false,
             sandbox: None,
@@ -374,7 +374,7 @@ fn assert_exec_command_contract(request: &RunRequest, workspace: &Path) {
     assert_eq!(request.limits.max_depth, 0);
     assert_eq!(request.limits.max_concurrent_children, 0);
     assert!(request.environment.auto_approve);
-    assert!(request.environment.trust_mode);
+    assert!(!request.environment.trust_mode);
     assert!(!request.environment.allow_sandbox_elevation);
     assert_eq!(request.environment.sandbox, None);
 }

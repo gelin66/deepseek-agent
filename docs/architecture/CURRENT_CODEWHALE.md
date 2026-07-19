@@ -68,6 +68,11 @@ WorkSurface 不拥有 Runtime、Store、工具执行或 completion 判定。
 其专属 View event 已删除。底层 `StatusItem` 与 footer 状态投影仍由现有真实调用方拥有；
 没有执行语义的 `AppMode/default_mode` 启动标签链也已物理删除。
 
+Headless `exec --auto` 现在只控制工具启用与自动批准，不再同时设置 `trust_mode`；因此 Fleet
+worker 固定使用该参数也不会仅凭 `--auto` 获得任意工作区外路径访问。canonical API 的显式
+`trust_mode`、当前显式 yolo 输入、workspace-scoped trusted roots 与持久 Run 恢复仍保持原
+owner。surface parity 已验证真实 exec request 为 `auto_approve=true`、`trust_mode=false`。
+
 旧 `ConfigView` 同样没有生产构造、打开入口或 canonical 命令；其 2,000 余行编辑/筛选/
 渲染岛和专属消息已删除。底层配置仍从文件和环境加载，Doctor 指向实际配置文件。
 旧 `ThemePickerView` 及其 `settings_picker` 框架也只有自测构造；两者、无消费者的

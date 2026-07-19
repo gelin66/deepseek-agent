@@ -259,8 +259,9 @@ Examples:
 
 Plain `codewhale exec` is a one-shot model response. Use `--auto` for
 non-interactive agent-with-tools execution. `--auto` does not change the
-sandbox posture or elevate a denied tool. Use `--sandbox danger-full-access`
-or `--allow-sandbox-elevation` to explicitly authorize sandbox elevation.
+sandbox posture, grant access outside the workspace, or elevate a denied tool.
+Use `--sandbox danger-full-access` or `--allow-sandbox-elevation` to explicitly
+authorize sandbox elevation.
 ")]
 struct ExecArgs {
     /// Override model for this run
@@ -1318,13 +1319,14 @@ async fn run_async_main() -> Result<()> {
                     || config.max_subagents_for_provider(provider),
                     |value| value.clamp(1, MAX_SUBAGENTS),
                 );
-                let auto_mode = args.auto || yolo;
+                let auto_approve = args.auto || yolo;
+                let trust_mode = yolo;
                 // Positive authority enables tools; a deny-list can only
                 // narrow an already-authorized surface and must never turn a
                 // plain one-shot request into a filesystem-writing agent.
                 let explicit_tool_surface =
                     args.allowed_tools.is_some() || env_tool_surface.is_some();
-                let tool_mode = auto_mode || explicit_tool_surface;
+                let tool_mode = auto_approve || explicit_tool_surface;
                 let max_turns = args.max_turns.unwrap_or(100);
                 let allowed_tools =
                     resolve_exec_allowed_tools(args.allowed_tools.as_deref(), env_tool_surface);
@@ -1338,10 +1340,10 @@ async fn run_async_main() -> Result<()> {
                     &prompt,
                     workspace,
                     max_subagents,
-                    auto_mode,
+                    auto_approve,
                     args.allow_sandbox_elevation,
                     args.sandbox.as_deref(),
-                    auto_mode,
+                    trust_mode,
                     tool_mode,
                     args.json,
                     run_launch,
@@ -7567,7 +7569,7 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn exec_help_separates_agent_mode_from_sandbox_elevation() {
+    fn exec_help_separates_agent_mode_from_elevated_authority() {
         let mut cli = Cli::command();
         let help = cli
             .find_subcommand_mut("exec")
@@ -7578,7 +7580,8 @@ mod terminal_mode_tests {
         assert!(help.contains("--sandbox"));
         assert!(help.contains("--allow-sandbox-elevation"));
         assert!(help.contains("does not change the"));
-        assert!(help.contains("explicitly authorize sandbox elevation"));
+        assert!(help.contains("grant access outside the workspace"));
+        assert!(help.contains("authorize sandbox elevation"));
     }
 
     #[test]

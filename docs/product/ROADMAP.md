@@ -872,6 +872,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   投影 shell、自动批准和工作区外访问控制，不依赖模式标签；多 Agent/Fleet 不读取该旧壳。
   审批请求同时删除无人读取的英文 impact 副本，只保留根据 canonical tool/risk 输入生成的
   简体中文展示摘要；该摘要不是策略、证据或风险真相。
+- M4-C 已把 headless `exec --auto` 从工作区外路径信任中解耦：`--auto` 只启用工具与自动批准，
+  不再把 `trust_mode` 置为真；Fleet worker 保留必需的 `exec --auto`，但不会因该 argv 自身
+  获得 unrestricted external-path trust。明确的 canonical `trust_mode`、当前显式 yolo 输入、
+  workspace-scoped trusted roots 以及已持久 Run 的恢复语义均保留，本切片不混入 managed
+  requirements。真实 exec/HTTP/stdio surface parity 证明 `auto_approve=true`、
+  `trust_mode=false`，Fleet argv 与 CLI help 定向回归同时通过。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接
