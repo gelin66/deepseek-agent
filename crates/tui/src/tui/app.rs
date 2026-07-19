@@ -113,17 +113,6 @@ pub(crate) fn resolve_skills_dir(
     global_skills_dir.to_path_buf()
 }
 
-pub(crate) fn shell_command_from_bang_input(input: &str) -> Result<Option<&str>, &'static str> {
-    let Some(rest) = input.trim_start().strip_prefix('!') else {
-        return Ok(None);
-    };
-    let command = rest.trim();
-    if command.is_empty() {
-        return Err("Usage: ! <shell command>");
-    }
-    Ok(Some(command))
-}
-
 fn initial_onboarding_state(
     skip_onboarding: bool,
     was_onboarded: bool,

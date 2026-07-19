@@ -598,29 +598,6 @@ fn slash_command_classifier_treats_absolute_path_as_message() {
 }
 
 #[test]
-fn bang_shell_prefix_parses_compact_and_spaced_forms() {
-    assert_eq!(shell_command_from_bang_input("!pwd"), Ok(Some("pwd")));
-    assert_eq!(shell_command_from_bang_input("! pwd"), Ok(Some("pwd")));
-    assert_eq!(
-        shell_command_from_bang_input("  !  cargo test -p codewhale-tui sidebar"),
-        Ok(Some("cargo test -p codewhale-tui sidebar"))
-    );
-    assert_eq!(shell_command_from_bang_input("normal message"), Ok(None));
-}
-
-#[test]
-fn bang_shell_prefix_rejects_empty_command() {
-    assert_eq!(
-        shell_command_from_bang_input("!"),
-        Err("Usage: ! <shell command>")
-    );
-    assert_eq!(
-        shell_command_from_bang_input("!   "),
-        Err("Usage: ! <shell command>")
-    );
-}
-
-#[test]
 fn submit_input_records_absolute_slash_path_as_message_history() {
     let mut app = App::new(test_options(false), &Config::default());
     let input = "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？";
