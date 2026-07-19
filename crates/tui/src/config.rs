@@ -3069,7 +3069,7 @@ default_text_model = "{DEFAULT_TEXT_MODEL}"
 
 # Thinking mode (DeepSeek V4 reasoning effort):
 # "auto" | "off" | "low" | "medium" | "high" | "max"
-# Shift+Tab in the TUI cycles between off / high / max.
+# Ctrl+T in the TUI cycles between off / high / max.
 reasoning_effort = "auto"
 
 "#
@@ -4854,7 +4854,7 @@ default_text_model = "{DEFAULT_TEXT_MODEL}"
 
 # Thinking mode (DeepSeek V4 reasoning effort):
 # "off" | "low" | "medium" | "high" | "max"
-# Shift+Tab in the TUI cycles between off / high / max.
+# Ctrl+T in the TUI cycles between off / high / max.
 reasoning_effort = "max"
 "#
         );

@@ -25,43 +25,6 @@ use crate::tui::views::ViewStack;
 
 // === Types ===
 
-/// Durable permission baseline restored when the UI returns to Agent mode.
-#[derive(Debug, Clone, Copy)]
-struct ModeSessionPrefs {
-    agent_allow_shell: bool,
-    agent_trust_mode: bool,
-    agent_approval_mode: ApprovalMode,
-}
-
-/// Permission fields projected from the visible mode and the Agent baseline.
-#[derive(Debug, Clone, Copy)]
-struct EffectiveModePolicy {
-    allow_shell: bool,
-    trust_mode: bool,
-    approval_mode: ApprovalMode,
-}
-
-#[must_use]
-fn base_policy_for_mode(mode: AppMode, prefs: &ModeSessionPrefs) -> EffectiveModePolicy {
-    match mode {
-        AppMode::Plan => EffectiveModePolicy {
-            allow_shell: false,
-            trust_mode: false,
-            approval_mode: ApprovalMode::Suggest,
-        },
-        AppMode::Agent | AppMode::Auto | AppMode::Operate => EffectiveModePolicy {
-            allow_shell: prefs.agent_allow_shell,
-            trust_mode: prefs.agent_trust_mode,
-            approval_mode: prefs.agent_approval_mode,
-        },
-        AppMode::Yolo => EffectiveModePolicy {
-            allow_shell: true,
-            trust_mode: true,
-            approval_mode: ApprovalMode::Bypass,
-        },
-    }
-}
-
 /// State machine for onboarding new users.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingState {
@@ -735,16 +698,6 @@ const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
 /// is preserved for model submission (#3263).
 const MAX_COMPOSER_DISPLAY_CHARS: usize = 4_000;
 impl AppMode {
-    /// Productive keyboard cycle: Plan -> Act -> Plan.
-    ///
-    /// `Auto` remains an internal variant while the real implementation is
-    /// redesigned; do not expose it through user-facing mode selection (#3733).
-    /// `Yolo` is kept for parse/back-compat only and is not in the Tab cycle.
-    /// Operate remains parseable for restored sessions and compatibility, but
-    /// user-facing selection must not offer a fail-closed mode whose control
-    /// board and host-enforced workflow receipts are not shipped yet.
-    pub const CYCLE: [Self; 2] = [Self::Plan, Self::Agent];
-
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
@@ -766,84 +719,6 @@ impl AppMode {
             "multitask" | "multi" | "5" => Self::Operate,
             other => Self::parse(other).unwrap_or(Self::Agent),
         }
-    }
-
-    #[must_use]
-    pub fn as_setting(self) -> &'static str {
-        match self {
-            Self::Agent => "agent",
-            Self::Auto => "agent",
-            // Write current permission vocabulary, not the legacy YOLO label.
-            Self::Yolo => "agent",
-            Self::Plan => "plan",
-            Self::Operate => "operate",
-        }
-    }
-
-    /// Short label used in the UI footer.
-    pub fn label(self) -> &'static str {
-        match self {
-            AppMode::Agent => "ACT",
-            AppMode::Auto => "ACT",
-            AppMode::Yolo => "ACT",
-            AppMode::Plan => "PLAN",
-            AppMode::Operate => "OPERATE",
-        }
-    }
-
-    #[must_use]
-    pub fn display_name(self) -> &'static str {
-        match self {
-            AppMode::Agent => "Act",
-            AppMode::Auto => "Act",
-            AppMode::Yolo => "Act",
-            AppMode::Plan => "Plan",
-            AppMode::Operate => "Operate",
-        }
-    }
-
-    #[must_use]
-    pub fn uses_agent_baseline(self) -> bool {
-        matches!(self, Self::Agent | Self::Auto | Self::Operate)
-    }
-
-    /// Operate gets a higher parallel launch floor so background fan-out is
-    /// not throttled to a single slot when config is low.
-    #[must_use]
-    pub fn mode_delegation_launch_floor(self) -> usize {
-        match self {
-            Self::Operate => 4,
-            _ => 1,
-        }
-    }
-
-    #[allow(dead_code)]
-    /// Description shown in help or onboarding text.
-    pub fn description(self) -> &'static str {
-        match self {
-            AppMode::Agent | AppMode::Auto => {
-                "Act mode - direct work in the current session with tools"
-            }
-            AppMode::Yolo => "Act mode with Full Access (legacy compatibility setting)",
-            AppMode::Plan => "Plan mode - research and design before implementing",
-            AppMode::Operate => "Operate mode - coordinate a Fleet for multi-step work",
-        }
-    }
-
-    #[must_use]
-    pub fn next(self) -> Self {
-        let Some(index) = Self::CYCLE.iter().position(|mode| *mode == self) else {
-            return Self::Agent;
-        };
-        Self::CYCLE[(index + 1) % Self::CYCLE.len()]
-    }
-
-    #[must_use]
-    pub fn previous(self) -> Self {
-        let Some(index) = Self::CYCLE.iter().position(|mode| *mode == self) else {
-            return Self::Agent;
-        };
-        Self::CYCLE[(index + Self::CYCLE.len() - 1) % Self::CYCLE.len()]
     }
 }
 
@@ -1085,7 +960,7 @@ pub struct App {
     /// Resolved provider/model route limits for the active runtime route.
     pub active_route_limits: Option<RouteLimits>,
     /// Current reasoning-effort tier for DeepSeek thinking mode.
-    /// Cycled via Shift+Tab; initialized from config at startup.
+    /// Cycled via Ctrl+T; initialized from config at startup.
     pub reasoning_effort: ReasoningEffort,
     pub workspace: PathBuf,
     pub config_path: Option<PathBuf>,
@@ -1177,16 +1052,6 @@ pub struct App {
     pub yolo: bool,
     /// One-shot YOLO→Act+Bypass migration notice for this session (#0.8.68 M6).
     yolo_compat_notified: bool,
-    /// Durable Agent-era permission baseline that Plan/YOLO derive from and
-    /// restore to (#3386). Refreshed from the live fields whenever the user
-    /// leaves Agent mode; see [`base_policy_for_mode`] and `set_mode`.
-    mode_prefs: ModeSessionPrefs,
-    /// True when config/requirements supplied an approval policy. In that
-    /// case the TUI-only Shift+Tab preference must not loosen it.
-    approval_policy_locked: bool,
-    /// True only when an organization requirements file owns approval policy.
-    /// Unlike a user-owned config key, this source cannot be edited in-app.
-    approval_policy_requirements_managed: bool,
     // Clipboard handler
     pub clipboard: ClipboardHandler,
     pub approval_mode: ApprovalMode,
@@ -1488,27 +1353,15 @@ impl App {
             needs_workspace_trust,
         );
 
-        // Durable Agent-era permission baseline (#3386). Plan/YOLO derive from
-        // and restore to this. Legacy Auto inputs parse to Agent; if an older
-        // caller still constructs `AppMode::Auto` directly, it projects through
-        // the Agent baseline instead of enabling a fourth runtime posture. When
-        // the user starts in YOLO the live shell flag is force-enabled below, so
-        // the baseline shell value is taken from the interactive default (the
-        // pre-mode Agent surface) rather than the YOLO-forced live mirror;
-        // otherwise it mirrors the resolved `allow_shell` option, which already
-        // carries that same interactive default. Using `interactive_allow_shell()`
-        // here keeps the Agent baseline identical regardless of launch mode, so
-        // a YOLO -> Agent downshift exposes shell (approval-gated) exactly as
-        // documented, while an explicit `allow_shell = false` still hides it.
-        // Trust is never part of the Agent baseline (it is YOLO-only authority).
-        // Approval mirrors the configured policy.
+        // Resolve the startup approval projection once. Managed config wins over
+        // the saved local posture; legacy YOLO migration is handled above before
+        // the canonical application and Run controls are constructed.
         let explicit_approval_mode = (!legacy_yolo_full_access)
             .then_some(config.approval_policy.as_deref())
             .flatten()
             .and_then(ApprovalMode::from_config_value);
         let approval_policy_locked =
             !legacy_yolo_full_access && config.approval_policy_is_managed();
-        let approval_policy_requirements_managed = config.approval_policy_is_requirements_managed();
         let saved_permission_posture = if approval_policy_locked {
             None
         } else {
@@ -1520,18 +1373,6 @@ impl App {
         let configured_approval_mode = explicit_approval_mode
             .or(saved_permission_posture)
             .unwrap_or_default();
-        let mode_prefs = ModeSessionPrefs {
-            agent_allow_shell: if yolo_compat || matches!(initial_mode, AppMode::Yolo) {
-                config.interactive_allow_shell()
-            } else {
-                allow_shell
-            },
-            agent_trust_mode: false,
-            // The YOLO-compat launch elevates the *live* approval mirror to
-            // Bypass below; the durable Agent baseline keeps the configured
-            // policy so a YOLO -> Agent downshift restores it.
-            agent_approval_mode: configured_approval_mode,
-        };
         let allow_shell = allow_shell || yolo_compat || matches!(initial_mode, AppMode::Yolo);
 
         let skills_scan_codewhale_only = config.skills_config().scan_codewhale_only();
@@ -1635,9 +1476,6 @@ impl App {
             api_key_cursor: 0,
             yolo: yolo_compat,
             yolo_compat_notified: false,
-            mode_prefs,
-            approval_policy_locked,
-            approval_policy_requirements_managed,
             clipboard: ClipboardHandler::new(),
             approval_mode: if yolo_compat || matches!(initial_mode, AppMode::Yolo) {
                 ApprovalMode::Bypass
@@ -1712,57 +1550,6 @@ impl App {
         self.needs_redraw = true;
     }
 
-    pub fn set_mode(&mut self, mode: AppMode) -> bool {
-        let requested_mode = mode;
-        let mode = match mode {
-            AppMode::Yolo => AppMode::Agent,
-            other => other,
-        };
-        let yolo_compat = requested_mode == AppMode::Yolo;
-        let previous_mode = self.mode;
-        if previous_mode == mode && !yolo_compat && !self.yolo {
-            return false;
-        }
-
-        self.mode = mode;
-        // Mode chip lives in the header — skip redundant status/toast copy.
-
-        // Mode cycling is untangled from permission policy (#3386). The user
-        // only edits the durable permission surface while in Agent mode, so
-        // refresh the baseline from the live mirrors whenever we leave Agent —
-        // before any transient Plan/YOLO policy overwrites them. This subsumes
-        // the old per-mode `YoloRestoreState`/`PlanRestoreState` snapshots:
-        // cross-mode hops (Plan -> YOLO, YOLO -> Plan) do not touch the baseline,
-        // so YOLO's elevated authority never bleeds into the restored Agent
-        // surface (#3279).
-        if previous_mode.uses_agent_baseline() && !self.yolo {
-            self.mode_prefs = ModeSessionPrefs {
-                agent_allow_shell: self.allow_shell,
-                agent_trust_mode: self.trust_mode,
-                agent_approval_mode: self.approval_mode,
-            };
-        }
-
-        if yolo_compat {
-            // Transient full-access mirrors for legacy YOLO entry points; do not
-            // persist trust/shell elevation into the durable Agent baseline.
-            self.allow_shell = true;
-            self.trust_mode = true;
-            self.approval_mode = ApprovalMode::Bypass;
-            self.yolo = true;
-            self.notify_yolo_compat_once();
-        } else {
-            let policy = base_policy_for_mode(mode, &self.mode_prefs);
-            self.allow_shell = policy.allow_shell;
-            self.trust_mode = policy.trust_mode;
-            self.approval_mode = policy.approval_mode;
-            self.yolo = matches!(policy.approval_mode, ApprovalMode::Bypass);
-        }
-
-        self.needs_redraw = true;
-        true
-    }
-
     fn notify_yolo_compat_once(&mut self) {
         if self.yolo_compat_notified {
             return;
@@ -1782,169 +1569,10 @@ impl App {
             let _ = settings.save();
         }
         self.push_status_toast(
-            "Legacy full-access mode is deprecated — use Act + Full Access (Shift+Tab)".to_string(),
+            "旧版完全访问模式已迁移；请在配置中明确设置启动权限。".to_string(),
             StatusToastLevel::Warning,
             Some(8_000),
         );
-    }
-
-    /// Whether mode selection is locked because a turn is in flight.
-    ///
-    /// While `is_loading`, the model/permission surface the engine is acting on
-    /// must not shift underneath it, so user-initiated mode and thinking changes
-    /// are refused (#2982). Returns true (and posts a concise status message) if
-    /// the change should be rejected — the caller leaves the selection unchanged
-    /// so the chip "twitches" back instead of moving.
-    fn reject_setting_change_while_busy(&mut self, what: &str) -> bool {
-        if self.is_loading {
-            self.status_message = Some(format!(
-                "{what} is locked while a turn is running — press Esc to interrupt first"
-            ));
-            self.needs_redraw = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Cycle through productive modes: Plan → Act → Plan.
-    pub fn cycle_mode(&mut self) {
-        if self.reject_setting_change_while_busy("Mode") {
-            return;
-        }
-        let next = self.mode.next();
-        let _ = self.set_mode(next);
-    }
-
-    /// Cycle through modes in reverse.
-    #[allow(dead_code)]
-    pub fn cycle_mode_reverse(&mut self) {
-        if self.reject_setting_change_while_busy("Mode") {
-            return;
-        }
-        let next = self.mode.previous();
-        let _ = self.set_mode(next);
-    }
-
-    /// Cycle the durable Agent permission posture: Ask → Auto-Review → Bypass.
-    pub fn cycle_approval_posture(&mut self) -> bool {
-        if self.reject_setting_change_while_busy("Permissions") {
-            return false;
-        }
-        if self.mode == AppMode::Plan {
-            self.push_status_toast(
-                "Plan is Read Only; switch to Act to change permissions".to_string(),
-                StatusToastLevel::Info,
-                Some(5_000),
-            );
-            self.needs_redraw = true;
-            return false;
-        }
-        if self.approval_policy_locked() {
-            self.push_status_toast(
-                "Permissions are controlled by config or managed requirements".to_string(),
-                StatusToastLevel::Warning,
-                Some(6_000),
-            );
-            self.needs_redraw = true;
-            return false;
-        }
-        let next = self.mode_prefs.agent_approval_mode.cycle_permission_next();
-        let persisted = match next {
-            ApprovalMode::Suggest => "ask",
-            ApprovalMode::Auto => "auto-review",
-            ApprovalMode::Bypass => "full-access",
-            ApprovalMode::Never => "never",
-        };
-        let persistence_result = (|| -> anyhow::Result<()> {
-            let mut settings = Settings::load_persisted()?;
-            settings.permission_posture = Some(persisted.to_string());
-            settings.save()
-        })();
-        if let Err(err) = persistence_result {
-            self.push_status_toast(
-                format!("Permissions were not changed: could not save TUI posture ({err})"),
-                StatusToastLevel::Warning,
-                Some(8_000),
-            );
-            self.needs_redraw = true;
-            return false;
-        }
-        self.set_agent_approval_posture(next);
-        self.needs_redraw = true;
-        // Footer permission chip is canonical — no duplicate status toast.
-        true
-    }
-
-    /// Replace the complete durable Act baseline and project it onto the live
-    /// runtime when the current mode uses that baseline. Keeping these three
-    /// fields together prevents setup presets from updating a live mirror while
-    /// leaving the next Plan → Act transition stale.
-    pub fn set_agent_runtime_baseline(
-        &mut self,
-        allow_shell: bool,
-        trust_mode: bool,
-        approval_mode: ApprovalMode,
-    ) {
-        self.mode_prefs = ModeSessionPrefs {
-            agent_allow_shell: allow_shell,
-            agent_trust_mode: trust_mode,
-            agent_approval_mode: approval_mode,
-        };
-        if self.mode.uses_agent_baseline() {
-            let policy = base_policy_for_mode(self.mode, &self.mode_prefs);
-            self.allow_shell = policy.allow_shell;
-            self.trust_mode = policy.trust_mode;
-            self.approval_mode = policy.approval_mode;
-            self.yolo = matches!(policy.approval_mode, ApprovalMode::Bypass);
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn agent_trust_baseline(&self) -> bool {
-        self.mode_prefs.agent_trust_mode
-    }
-
-    /// Update the durable Act shell choice without disturbing trust or
-    /// approval. The live mirror changes only while Act owns the runtime.
-    pub fn set_agent_shell_access(&mut self, allow_shell: bool) {
-        self.set_agent_runtime_baseline(
-            allow_shell,
-            self.mode_prefs.agent_trust_mode,
-            self.mode_prefs.agent_approval_mode,
-        );
-    }
-
-    /// Update the durable Act approval choice without changing its saved shell
-    /// or trust choices. Plan remains read-only.
-    pub fn set_agent_approval_posture(&mut self, next: ApprovalMode) {
-        self.set_agent_runtime_baseline(
-            self.mode_prefs.agent_allow_shell,
-            self.mode_prefs.agent_trust_mode,
-            next,
-        );
-    }
-
-    #[must_use]
-    pub fn approval_policy_locked(&self) -> bool {
-        self.approval_policy_locked
-    }
-
-    #[cfg(test)]
-    #[must_use]
-    pub fn approval_policy_requirements_managed(&self) -> bool {
-        self.approval_policy_requirements_managed
-    }
-
-    /// Session transitions must never detach live runtime producers. Late
-    /// engine, compaction, purge, or background-task events could otherwise
-    /// contaminate the replacement session after clear/load/new.
-    #[must_use]
-    pub fn session_transition_blocked(&self) -> bool {
-        self.is_loading
-            || self.runtime_turn_status.as_deref() == Some("in_progress")
-            || self.is_compacting
-            || self.is_purging
     }
 
     /// Whether the interface is asking the user to make a decision. Ambient
@@ -1953,16 +1581,6 @@ impl App {
     #[must_use]
     pub fn attention_hold_active(&self) -> bool {
         !self.view_stack.is_empty()
-    }
-
-    pub fn mark_approval_policy_locked(&mut self) {
-        self.approval_policy_locked = true;
-    }
-
-    pub fn clear_saved_approval_policy_lock(&mut self) {
-        if !self.approval_policy_requirements_managed {
-            self.approval_policy_locked = false;
-        }
     }
 
     /// Soft cap on [`Self::history`] length. When history exceeds this count,

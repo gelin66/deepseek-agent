@@ -108,31 +108,6 @@ fn reasoning_effort_display_label_uses_codex_xhigh() {
 }
 
 #[test]
-fn mode_is_locked_while_a_turn_is_running() {
-    // While a turn is in flight, user-initiated mode changes are refused with
-    // a concise message instead of shifting the surface the engine is acting on.
-    let mut app = App::new(test_options(false), &Config::default());
-    app.mode = AppMode::Agent;
-    app.is_loading = true;
-
-    app.cycle_mode();
-    assert_eq!(app.mode, AppMode::Agent, "mode must not change while busy");
-    assert!(
-        app.status_message
-            .as_deref()
-            .unwrap_or_default()
-            .contains("locked"),
-        "expected a 'locked' status message, got {:?}",
-        app.status_message
-    );
-
-    // Once the turn finishes, the same gesture works again.
-    app.is_loading = false;
-    app.cycle_mode();
-    assert_ne!(app.mode, AppMode::Agent, "mode should change when idle");
-}
-
-#[test]
 fn reasoning_effort_parsing_is_provider_aware_for_codex() {
     assert_eq!(
         ReasoningEffort::Off.normalize_for_provider(ApiProvider::OpenaiCodex),
@@ -1226,16 +1201,7 @@ fn app_starts_without_seeded_transcript_messages() {
 }
 
 #[test]
-fn entering_operate_preserves_user_sidebar_focus() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.sidebar_focus = SidebarFocus::Tasks;
-
-    assert!(app.set_mode(AppMode::Operate));
-    assert_eq!(app.sidebar_focus, SidebarFocus::Tasks);
-}
-
-#[test]
-fn app_mode_helpers_centralize_parse_labels_and_cycle_order() {
+fn app_mode_parses_initial_static_settings() {
     assert_eq!(AppMode::parse("agent"), Some(AppMode::Agent));
     assert_eq!(AppMode::parse("act"), Some(AppMode::Agent));
     assert_eq!(AppMode::parse("2"), Some(AppMode::Plan));
@@ -1249,92 +1215,6 @@ fn app_mode_helpers_centralize_parse_labels_and_cycle_order() {
     assert_eq!(AppMode::parse("fast"), None);
     assert_eq!(AppMode::from_setting("multitask"), AppMode::Operate);
     assert_eq!(AppMode::from_setting("5"), AppMode::Operate);
-
-    assert_eq!(AppMode::Agent.as_setting(), "agent");
-    assert_eq!(AppMode::Auto.as_setting(), "agent");
-    assert_eq!(AppMode::Yolo.as_setting(), "agent");
-    assert_eq!(AppMode::Plan.display_name(), "Plan");
-    assert_eq!(AppMode::Auto.display_name(), "Act");
-    assert_eq!(AppMode::Auto.label(), "ACT");
-    assert_eq!(AppMode::Yolo.label(), "ACT");
-    assert_eq!(AppMode::Yolo.display_name(), "Act");
-    assert_eq!(AppMode::CYCLE, [AppMode::Plan, AppMode::Agent]);
-
-    assert_eq!(AppMode::Plan.next(), AppMode::Agent);
-    assert_eq!(AppMode::Agent.next(), AppMode::Plan);
-    assert_eq!(AppMode::Operate.next(), AppMode::Agent);
-    assert_eq!(AppMode::Auto.next(), AppMode::Agent);
-    assert_eq!(AppMode::Yolo.next(), AppMode::Agent);
-    assert_eq!(AppMode::Plan.previous(), AppMode::Agent);
-    assert_eq!(AppMode::Agent.previous(), AppMode::Plan);
-    assert_eq!(AppMode::Operate.previous(), AppMode::Agent);
-    assert_eq!(AppMode::Auto.previous(), AppMode::Agent);
-    assert_eq!(AppMode::Yolo.previous(), AppMode::Agent);
-}
-
-#[test]
-fn test_cycle_mode_transitions() {
-    let mut app = App::new(test_options(false), &Config::default());
-    let initial_mode = app.mode;
-    app.cycle_mode();
-    // Mode should have changed
-    assert_ne!(app.mode, initial_mode);
-}
-
-#[test]
-fn test_cycle_mode_reverse_transitions() {
-    let mut app = App::new(test_options(false), &Config::default());
-
-    app.mode = AppMode::Plan;
-    app.cycle_mode_reverse();
-    assert_eq!(app.mode, AppMode::Agent);
-
-    app.mode = AppMode::Operate;
-    app.cycle_mode_reverse();
-    assert_eq!(app.mode, AppMode::Agent);
-
-    app.mode = AppMode::Agent;
-    app.cycle_mode_reverse();
-    assert_eq!(app.mode, AppMode::Plan);
-
-    app.mode = AppMode::Auto;
-    app.cycle_mode_reverse();
-    assert_eq!(app.mode, AppMode::Agent);
-}
-
-#[test]
-fn test_mode_switch_does_not_emit_redundant_toast() {
-    let mut app = App::new(test_options(false), &Config::default());
-    let first_mode = app.mode.next();
-    let second_mode = first_mode.next();
-
-    app.set_mode(first_mode);
-    app.sync_status_message_to_toasts();
-    assert!(app.status_toasts.is_empty());
-
-    app.set_mode(second_mode);
-    app.sync_status_message_to_toasts();
-    assert!(app.status_toasts.is_empty());
-}
-
-#[test]
-fn test_mode_switch_toasts_do_not_disrupt_non_mode_toasts() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.yolo_compat_notified = true;
-    app.status_message = Some("Task queued".to_string());
-    app.sync_status_message_to_toasts();
-
-    app.set_mode(AppMode::Agent);
-    app.sync_status_message_to_toasts();
-    app.set_mode(AppMode::Yolo);
-    app.sync_status_message_to_toasts();
-
-    assert_eq!(app.status_toasts.len(), 1);
-    assert!(
-        app.status_toasts
-            .iter()
-            .any(|toast| toast.text == "Task queued")
-    );
 }
 
 #[test]
@@ -1352,249 +1232,12 @@ fn test_clear_input() {
 }
 
 #[test]
-fn test_set_mode_updates_state() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.set_mode(AppMode::Plan);
-    assert_eq!(app.mode, AppMode::Plan);
-    // The deprecated YOLO alias remaps to Agent (M6 back-compat shim).
-    app.set_mode(AppMode::Yolo);
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(app.yolo);
-    // YOLO compat shim should enable trust, shell, and bypass approvals.
-    assert!(app.trust_mode);
-    assert!(app.allow_shell);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-}
-
-#[test]
 fn app_new_respects_allow_shell_option_when_not_yolo() {
     let mut options = test_options(false);
     options.allow_shell = false;
     options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
     let app = App::new(options, &Config::default());
     assert!(!app.allow_shell);
-}
-
-#[test]
-fn set_mode_yolo_restores_previous_policies_on_exit() {
-    let mut options = test_options(false);
-    options.allow_shell = false;
-    options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
-    let mut app = App::new(options, &Config::default());
-    app.allow_shell = false;
-    app.trust_mode = false;
-    app.approval_mode = ApprovalMode::Never;
-
-    app.set_mode(AppMode::Yolo);
-    assert!(app.allow_shell);
-    assert!(app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-    app.set_mode(AppMode::Agent);
-    assert!(!app.allow_shell);
-    assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Never);
-}
-
-#[test]
-fn set_mode_plan_restores_previous_approval_on_agent_exit() {
-    let config = Config {
-        approval_policy: Some("never".to_string()),
-        ..Default::default()
-    };
-    let mut options = test_options(false);
-    options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
-    let mut app = App::new(options, &config);
-    assert_eq!(app.mode, AppMode::Agent);
-    assert_eq!(app.approval_mode, ApprovalMode::Never);
-
-    app.set_mode(AppMode::Plan);
-    app.approval_mode = ApprovalMode::Suggest;
-
-    app.set_mode(AppMode::Agent);
-    assert_eq!(app.mode, AppMode::Agent);
-    assert_eq!(app.approval_mode, ApprovalMode::Never);
-}
-
-#[test]
-fn set_mode_plan_to_yolo_keeps_yolo_permissions_and_restores_agent_baseline() {
-    let mut options = test_options(false);
-    options.allow_shell = false;
-    options.start_in_agent_mode = true; // avoid coupling to settings.default_mode
-    let mut app = App::new(options, &Config::default());
-    app.allow_shell = false;
-    app.trust_mode = false;
-    app.approval_mode = ApprovalMode::Never;
-
-    app.set_mode(AppMode::Plan);
-    app.approval_mode = ApprovalMode::Suggest;
-
-    app.set_mode(AppMode::Yolo);
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(app.allow_shell);
-    assert!(app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-    app.set_mode(AppMode::Agent);
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(!app.allow_shell);
-    assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Never);
-}
-
-#[test]
-fn base_policy_for_mode_projects_the_mode_permission_table() {
-    // Pure projection of (mode, prefs) — the single source of truth for #3386.
-    let prefs = ModeSessionPrefs {
-        agent_allow_shell: true,
-        agent_trust_mode: true,
-        agent_approval_mode: ApprovalMode::Never,
-    };
-
-    // Plan: read-only, no shell, no trust, Suggest — and it never inherits the
-    // (here elevated) Agent baseline.
-    let plan = base_policy_for_mode(AppMode::Plan, &prefs);
-    assert!(!plan.allow_shell);
-    assert!(!plan.trust_mode);
-    assert_eq!(plan.approval_mode, ApprovalMode::Suggest);
-
-    // Agent: exactly the durable baseline.
-    let agent = base_policy_for_mode(AppMode::Agent, &prefs);
-    assert!(agent.allow_shell);
-    assert!(agent.trust_mode);
-    assert_eq!(agent.approval_mode, ApprovalMode::Never);
-
-    // Auto: compatibility alias for the durable Agent baseline.
-    let auto = base_policy_for_mode(AppMode::Auto, &prefs);
-    assert!(auto.allow_shell);
-    assert!(auto.trust_mode);
-    assert_eq!(auto.approval_mode, ApprovalMode::Never);
-
-    // Operate uses the Agent baseline.
-    let operate = base_policy_for_mode(AppMode::Operate, &prefs);
-    assert_eq!(operate.approval_mode, ApprovalMode::Never);
-
-    // YOLO: full authority is represented by Bypass, not a separate
-    // auto-approve field (#3736).
-    let yolo = base_policy_for_mode(AppMode::Yolo, &prefs);
-    assert!(yolo.allow_shell);
-    assert!(yolo.trust_mode);
-    assert_eq!(yolo.approval_mode, ApprovalMode::Bypass);
-
-    // A minimal Agent baseline projects through Agent unchanged.
-    let minimal = ModeSessionPrefs {
-        agent_allow_shell: false,
-        agent_trust_mode: false,
-        agent_approval_mode: ApprovalMode::Suggest,
-    };
-    let agent_min = base_policy_for_mode(AppMode::Agent, &minimal);
-    assert!(!agent_min.allow_shell);
-    assert!(!agent_min.trust_mode);
-    assert_eq!(agent_min.approval_mode, ApprovalMode::Suggest);
-}
-
-#[test]
-fn cycle_approval_posture_cycles_suggest_auto_bypass() {
-    let _env_lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let mut options = test_options(false);
-    options.start_in_agent_mode = true;
-    options.config_path = Some(config_path);
-    let mut app = App::new(options, &Config::default());
-    app.approval_mode = ApprovalMode::Suggest;
-
-    assert!(app.cycle_approval_posture());
-    assert_eq!(app.approval_mode, ApprovalMode::Auto);
-
-    assert!(app.cycle_approval_posture());
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-    assert!(app.cycle_approval_posture());
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-    let persisted = std::fs::read_to_string(tmp.path().join("settings.toml")).expect("settings");
-    assert!(persisted.contains("permission_posture = \"ask\""));
-}
-
-#[test]
-fn plan_permission_cycle_is_rejected_without_mutating_agent_baseline() {
-    let _env_lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let mut options = test_options(false);
-    options.config_path = Some(config_path);
-    let mut app = App::new(options, &Config::default());
-    app.set_agent_approval_posture(ApprovalMode::Auto);
-    app.set_mode(AppMode::Plan);
-
-    assert!(!app.cycle_approval_posture());
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-    assert_eq!(app.mode_prefs.agent_approval_mode, ApprovalMode::Auto);
-    let persisted = std::fs::read_to_string(tmp.path().join("settings.toml")).unwrap_or_default();
-    assert!(
-        !persisted.contains("permission_posture"),
-        "rejected Plan cycle must not persist a permission posture: {persisted}"
-    );
-    assert!(
-        app.status_toasts
-            .iter()
-            .any(|toast| toast.text.contains("Read Only"))
-    );
-
-    app.set_mode(AppMode::Operate);
-    assert_eq!(app.approval_mode, ApprovalMode::Auto);
-}
-
-#[test]
-fn busy_permission_cycle_changes_neither_runtime_nor_persistence() {
-    let _env_lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let mut options = test_options(false);
-    options.config_path = Some(config_path);
-    let mut app = App::new(options, &Config::default());
-    let before = app.approval_mode;
-    app.is_loading = true;
-
-    assert!(!app.cycle_approval_posture());
-    assert_eq!(app.approval_mode, before);
-    assert_eq!(app.mode_prefs.agent_approval_mode, before);
-    assert!(!tmp.path().join("settings.toml").exists());
-    assert!(
-        app.status_message
-            .as_deref()
-            .is_some_and(|message| message.contains("locked"))
-    );
-}
-
-#[test]
-fn permission_postures_persist_across_restart() {
-    let _env_lock = lock_test_env();
-    for (cycles, expected) in [
-        (1, ApprovalMode::Auto),
-        (2, ApprovalMode::Bypass),
-        (3, ApprovalMode::Suggest),
-    ] {
-        let tmp = tempfile::tempdir().expect("tempdir");
-        let path = tmp.path().join("config.toml");
-        let config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &path);
-        let mut options = test_options(false);
-        options.start_in_agent_mode = true;
-        options.config_path = Some(path.clone());
-        let mut app = App::new(options.clone(), &Config::default());
-        for _ in 0..cycles {
-            assert!(app.cycle_approval_posture());
-        }
-        assert_eq!(app.approval_mode, expected);
-
-        let restarted = App::new(options, &Config::default());
-        assert_eq!(restarted.approval_mode, expected);
-        assert_eq!(restarted.mode_prefs.agent_approval_mode, expected);
-        drop(config_env);
-    }
 }
 
 #[test]
@@ -1620,7 +1263,6 @@ fn legacy_yolo_migrates_root_policy_to_agent_full_access() {
 
     assert_eq!(app.mode, AppMode::Agent);
     assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-    assert!(!app.approval_policy_locked());
     let saved_config = std::fs::read_to_string(&config_path).expect("saved config");
     assert!(saved_config.contains("# keep"));
     assert!(!saved_config.contains("approval_policy"));
@@ -1632,7 +1274,6 @@ fn legacy_yolo_migrates_root_policy_to_agent_full_access() {
     let restarted = App::new(options, &restarted_config);
     assert_eq!(restarted.mode, AppMode::Agent);
     assert_eq!(restarted.approval_mode, ApprovalMode::Bypass);
-    assert!(!restarted.approval_policy_locked());
 }
 
 #[test]
@@ -1674,7 +1315,6 @@ fn legacy_yolo_migrates_the_actual_fallback_config_not_a_missing_env_path() {
 
     assert_eq!(app.mode, AppMode::Agent);
     assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-    assert!(!app.approval_policy_locked());
     assert!(
         !missing_override.exists(),
         "migration must not create the missing DEEPSEEK_CONFIG_PATH target"
@@ -1689,7 +1329,7 @@ fn legacy_yolo_migrates_the_actual_fallback_config_not_a_missing_env_path() {
 }
 
 #[test]
-fn managed_requirements_ignore_saved_full_access_and_lock_changes() {
+fn managed_requirements_ignore_saved_full_access() {
     let _env_lock = lock_test_env();
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
@@ -1710,163 +1350,10 @@ fn managed_requirements_ignore_saved_full_access_and_lock_changes() {
         ..Config::default()
     };
 
-    let mut app = App::new(test_options(false), &config);
+    let app = App::new(test_options(false), &config);
 
-    assert!(app.approval_policy_locked());
-    assert!(app.approval_policy_requirements_managed());
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-    assert!(!app.cycle_approval_posture());
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-    assert!(
-        app.status_toasts
-            .iter()
-            .any(|toast| toast.text.contains("controlled"))
-    );
-}
-
-#[test]
-fn set_mode_agent_to_yolo_to_agent_restores_baseline_without_yolo_leak() {
-    // Round-trip Agent -> YOLO -> Agent must not leave YOLO's elevated authority
-    // (shell/trust/Auto) bleeding into the restored Agent surface (#3386).
-    let mut options = test_options(false);
-    options.allow_shell = false;
-    options.start_in_agent_mode = true;
-    let mut app = App::new(options, &Config::default());
-    // User's chosen Agent surface: shell on, trust off, Suggest approvals.
-    app.allow_shell = true;
-    app.trust_mode = false;
-    app.approval_mode = ApprovalMode::Suggest;
-
-    app.set_mode(AppMode::Yolo);
-    assert!(app.allow_shell);
-    assert!(app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-    assert!(app.yolo);
-
-    app.set_mode(AppMode::Agent);
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(app.allow_shell, "shell baseline preserved");
-    assert!(
-        !app.trust_mode,
-        "YOLO trust authority must not leak into Agent"
-    );
-    assert_eq!(
-        app.approval_mode,
-        ApprovalMode::Suggest,
-        "YOLO Auto approvals must not leak into Agent"
-    );
-    assert!(!app.yolo);
-}
-
-#[test]
-fn set_mode_plan_to_yolo_to_agent_does_not_bleed_yolo_into_agent() {
-    // Plan -> YOLO -> Agent: the Agent baseline captured before leaving Agent is
-    // what we land on, untouched by the transient Plan or YOLO policies (#3386).
-    let mut options = test_options(false);
-    options.allow_shell = false;
-    options.start_in_agent_mode = true;
-    let mut app = App::new(options, &Config::default());
-    app.allow_shell = false;
-    app.trust_mode = false;
-    app.approval_mode = ApprovalMode::Never;
-
-    app.set_mode(AppMode::Plan);
-    // Plan is read-only regardless of the baseline.
-    assert!(!app.allow_shell);
-    assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-
-    app.set_mode(AppMode::Yolo);
-    assert!(app.allow_shell);
-    assert!(app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-    app.set_mode(AppMode::Agent);
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(!app.allow_shell);
-    assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Never);
-}
-
-#[test]
-fn set_mode_captures_agent_edits_as_the_durable_baseline() {
-    // Editing the permission surface in Agent updates the baseline that a later
-    // Plan -> Agent (or YOLO -> Agent) restores to (#3386).
-    let mut options = test_options(false);
-    options.allow_shell = false;
-    options.start_in_agent_mode = true;
-    let mut app = App::new(options, &Config::default());
-    assert_eq!(app.mode, AppMode::Agent);
-    app.allow_shell = false;
-    app.set_agent_approval_posture(ApprovalMode::Suggest);
-
-    // Initial baseline restores to no-shell / Suggest.
-    app.set_mode(AppMode::Plan);
-    app.set_mode(AppMode::Agent);
-    assert!(!app.allow_shell);
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-
-    // User now turns shell on and tightens approvals while in Agent.
-    app.allow_shell = true;
-    app.approval_mode = ApprovalMode::Never;
-
-    // A Plan hop and back must restore the *edited* baseline, not the original.
-    app.set_mode(AppMode::Plan);
-    assert!(!app.allow_shell, "Plan is read-only");
-    app.set_mode(AppMode::Agent);
-    assert!(app.allow_shell, "edited shell baseline restored");
-    assert_eq!(app.approval_mode, ApprovalMode::Never);
-}
-
-#[test]
-fn yolo_start_with_default_config_restores_interactive_agent_shell_baseline() {
-    let _env_lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let mut options = test_options(true);
-    options.config_path = Some(config_path);
-    let mut app = App::new(options, &Config::default());
-    // --yolo starts in Agent mode with the full-access compat shim (M6).
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(app.yolo);
-    assert!(app.allow_shell);
-    assert!(app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-    app.set_mode(AppMode::Agent);
-    assert!(
-        app.allow_shell,
-        "default interactive Agent baseline should expose approval-gated shell after YOLO downshift"
-    );
-    assert!(!app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Suggest);
-}
-
-#[test]
-fn leaving_yolo_after_startup_restores_baseline_policies() {
-    let _env_lock = lock_test_env();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let config_path = tmp.path().join("config.toml");
-    let _config_env = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
-    let config = Config {
-        allow_shell: Some(false),
-        ..Default::default()
-    };
-
-    let mut options = test_options(true);
-    options.config_path = Some(config_path);
-    let mut app = App::new(options, &config);
-    // --yolo starts in Agent mode with the full-access compat shim (M6).
-    assert_eq!(app.mode, AppMode::Agent);
-    assert!(app.yolo);
-    assert!(app.allow_shell);
-    assert!(app.trust_mode);
-    assert_eq!(app.approval_mode, ApprovalMode::Bypass);
-
-    app.set_mode(AppMode::Agent);
-    assert!(!app.allow_shell);
-    assert!(!app.trust_mode);
+    assert!(config.approval_policy_is_managed());
+    assert!(config.approval_policy_is_requirements_managed());
     assert_eq!(app.approval_mode, ApprovalMode::Suggest);
 }
 

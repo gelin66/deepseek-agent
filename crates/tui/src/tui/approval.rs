@@ -49,18 +49,6 @@ pub enum ApprovalMode {
 }
 
 impl ApprovalMode {
-    /// Shift+Tab permission cycle order (#0.8.68 M2).
-    pub const PERMISSION_CYCLE: [Self; 3] = [Self::Suggest, Self::Auto, Self::Bypass];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            ApprovalMode::Auto => "AUTO",
-            ApprovalMode::Bypass => "BYPASS",
-            ApprovalMode::Suggest => "SUGGEST",
-            ApprovalMode::Never => "NEVER",
-        }
-    }
-
     pub fn from_config_value(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "auto" | "auto-review" | "auto_review" => Some(ApprovalMode::Auto),
@@ -72,14 +60,6 @@ impl ApprovalMode {
             "never" | "deny" | "denied" => Some(ApprovalMode::Never),
             _ => None,
         }
-    }
-
-    #[must_use]
-    pub fn cycle_permission_next(self) -> Self {
-        let Some(index) = Self::PERMISSION_CYCLE.iter().position(|mode| *mode == self) else {
-            return Self::Suggest;
-        };
-        Self::PERMISSION_CYCLE[(index + 1) % Self::PERMISSION_CYCLE.len()]
     }
 
     #[must_use]
@@ -117,8 +97,6 @@ pub struct ApprovalRequest {
     pub category: ToolCategory,
     /// Canonical runtime risk projected into the three presentation stakes.
     stakes: ApprovalStakes,
-    /// Derived impact summary for the approval prompt
-    pub impacts: Vec<String>,
     /// Tool parameters (for display)
     pub params: Value,
     /// The model's explanation of intent before invoking write tools (#2381).
@@ -205,7 +183,6 @@ impl ApprovalRequest {
             description: description.to_string(),
             category,
             stakes,
-            impacts: build_impact_summary(tool_name, category, params),
             params: params.clone(),
             intent_summary: intent_summary.and_then(|summary| {
                 let summary = summary.trim();
@@ -290,77 +267,6 @@ fn mcp_target_hint(tool_name: &str) -> Option<String> {
         None
     } else {
         Some(remainder.to_string())
-    }
-}
-
-fn build_impact_summary(tool_name: &str, category: ToolCategory, params: &Value) -> Vec<String> {
-    match category {
-        ToolCategory::Safe => {
-            let mut impacts = vec!["Read-only operation.".to_string()];
-            if let Some(path) = param_preview(params, &["path", "ref_id", "uri"], 72) {
-                impacts.push(format!("Reads: {path}"));
-            }
-            impacts
-        }
-        ToolCategory::FileWrite => {
-            let mut impacts =
-                vec!["Writes files in the workspace or an approved write scope.".to_string()];
-            if let Some(path) = param_preview(params, &["path", "target", "destination"], 72) {
-                impacts.push(format!("Writes: {path}"));
-            }
-            impacts
-        }
-        ToolCategory::Shell => {
-            vec!["Executes a Bash command in your workspace.".to_string()]
-        }
-        ToolCategory::Network => {
-            let mut impacts = vec!["May reach network services or remote content.".to_string()];
-            if let Some(target) =
-                param_preview(params, &["url", "q", "query", "location", "repo"], 96)
-            {
-                impacts.push(format!("Target: {target}"));
-            }
-            impacts
-        }
-        ToolCategory::McpRead => {
-            let mut impacts =
-                vec!["Reads from an MCP server without an obvious local write.".to_string()];
-            if let Some(target) = mcp_target_hint(tool_name) {
-                impacts.push(format!("MCP target: {target}"));
-            }
-            impacts
-        }
-        ToolCategory::McpAction => {
-            let mut impacts =
-                vec!["Calls an MCP server action that may have side effects.".to_string()];
-            if let Some(target) = mcp_target_hint(tool_name) {
-                impacts.push(format!("MCP target: {target}"));
-            }
-            impacts
-        }
-        ToolCategory::Agent => {
-            let mut impacts = vec![
-                "Starts or inspects a child agent task; the child's own tool gates still apply."
-                    .to_string(),
-            ];
-            if let Some(kind) = param_preview(params, &["type"], 40) {
-                impacts.push(format!("Child type: {kind}"));
-            }
-            impacts
-        }
-        ToolCategory::Unknown => {
-            let mut impacts = vec![
-                "Tool is not classified. Review params carefully before approving.".to_string(),
-            ];
-            if let Some(target) = param_preview(
-                params,
-                &["path", "cmd", "command", "url", "q", "query", "ref_id"],
-                96,
-            ) {
-                impacts.push(format!("Primary input: {target}"));
-            }
-            impacts
-        }
     }
 }
 
@@ -1341,17 +1247,10 @@ mod tests {
             ApprovalRequest::elevated("test-id", "exec_shell", "Run a shell command", &params);
 
         assert_eq!(request.category, ToolCategory::Shell);
+        let impacts = request.impacts();
+        assert!(impacts.iter().any(|line| line.contains("执行 Bash 命令")));
         assert!(
-            request
-                .impacts
-                .iter()
-                .any(|line| line.contains("Executes a Bash command"))
-        );
-        assert!(
-            request
-                .impacts
-                .iter()
-                .all(|line| !line.contains("cargo test")),
+            impacts.iter().all(|line| !line.contains("cargo test")),
             "command detail should not be duplicated in the impact summary"
         );
         let details = request.prominent_detail_items();
@@ -1370,14 +1269,6 @@ mod tests {
             "Call an MCP tool",
             &json!({}),
         );
-
-        assert!(
-            request
-                .impacts
-                .iter()
-                .any(|line| line == "MCP target: my_db_execute_sql")
-        );
-        assert!(!request.impacts.iter().any(|line| line == "Server: my"));
 
         let zh_impacts = request.impacts();
         assert!(
@@ -2311,13 +2202,6 @@ mod tests {
     // ========================================================================
     // ApprovalMode Tests
     // ========================================================================
-
-    #[test]
-    fn test_approval_mode_labels() {
-        assert_eq!(ApprovalMode::Auto.label(), "AUTO");
-        assert_eq!(ApprovalMode::Suggest.label(), "SUGGEST");
-        assert_eq!(ApprovalMode::Never.label(), "NEVER");
-    }
 
     #[test]
     fn test_approval_mode_from_config_value_accepts_aliases() {

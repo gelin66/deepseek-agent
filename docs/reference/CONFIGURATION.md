@@ -786,7 +786,11 @@ Common settings keys:
 - `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
   `/cost`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
-- `default_mode` (`agent`, `plan`, or `operate`; legacy values are accepted for migration but are not live mode vocabulary)
+- `default_mode` (`agent` or `plan`): selects the startup UI label.
+  It does not change the canonical Run tool policy or approval policy, and the
+  current TUI has no live mode-switch command or shortcut. Legacy values are
+  accepted only while this startup projection is reviewed for removal or a
+  future canonical implementation. Legacy `operate` values load as `agent`.
 - `sidebar_focus` (`pinned`, `auto`, `tasks`, `agents`, `context`, `hidden`; default
   `pinned`): selects the right sidebar focus. `pinned` keeps the right sidebar
   visible when the terminal is wide enough and composes Work, Tasks, Agents,
@@ -804,10 +808,9 @@ The composer has one direct-editing path. `composer_vim_mode`, `vim_mode`, and
 composer input. Vim-style `j`/`k`/`g`/`G`/`y`/`q` bindings belong only to the
 separate Pager modal.
 
-Plan and Act are the everyday visible modes in the UI; Operate is an explicit
-preview entry while its Workflow control surface is still being built. Switch
-between them with `/mode`. For compatibility, older settings files with
-`default_mode = "normal"` still load as `agent`.
+The current TUI has no `/mode`, `Tab` mode cycle, or `Shift-Tab` permission
+cycle. For compatibility, older settings files with `default_mode = "normal"`
+still load as the `agent` startup label.
 
 The human-facing interface is fixed to Simplified Chinese. `locale` and
 `language` are not supported settings; `LANG`, `LC_ALL`, and `LC_MESSAGES` do
@@ -877,12 +880,12 @@ If you are upgrading from older releases:
   `eval`) default to `concise` unless config/env/CLI overrides it.
   Override per process with `CODEWHALE_VERBOSITY` or the legacy
   `DEEPSEEK_VERBOSITY` alias.
-- `allow_shell` (bool, optional): in interactive TUI Agent sessions, omitting
+- `allow_shell` (bool, optional): in interactive TUI sessions, omitting
   this keeps shell tools available with approval prompts; setting it to `false`
   hides shell tools. Headless, durable-task, and other noninteractive profiles
   keep the conservative omitted-field default and require `allow_shell = true`
-  to expose shell. Plan mode always hides shell; Full Access enables shell and
-  auto-approval.
+  to expose shell. The startup mode label does not change this tool catalog;
+  approval bypass is a separate startup control.
 - `approval_policy` (string, optional): `on-request`, `untrusted`, or `never`.
 - `sandbox_mode` (string, optional): `read-only`, `workspace-write`, `danger-full-access`, `external-sandbox`.
   Platform support is not identical. macOS uses Seatbelt for policy
@@ -903,21 +906,8 @@ If you are upgrading from older releases:
   `ask` rules do not downgrade the session into prompting or blocking; explicit
   `deny` rules still block according to the current execution-policy logic.
 
-  In a supported approval card, press `S` to approve the request once and
-  append exact `action = "ask"` rules to this file. Supported saves are
-  intentionally narrow:
-  `exec_shell` stores the exact approved command string; `write_file` and
-  `edit_file` store the exact workspace-relative file path; `apply_patch`
-  stores one exact workspace-relative `path` rule per validated touched file
-  from apply-patch preflight. Existing exec command matching remains
-  arity-aware, and file paths are normalized to the same workspace-relative
-  form used by runtime matching.
-
-  `read_file` rules can still be authored manually when you want future reads
-  of a specific path to ask, allow, or deny, but the approval UI does not save
-  `read_file` rules. The UI is not a policy editor: it does not save
-  `allow`/`deny`, edit or delete rules, expand globs, or create broad
-  directory/recursive rules.
+  Rules can be authored manually. The approval UI is not a policy editor and
+  does not create, edit, or delete entries in this file.
 - `managed_config_path` (string, optional): managed config file loaded after user/env config.
 - `requirements_path` (string, optional): requirements file used to enforce allowed approval/sandbox values.
 - `max_subagents` (int, optional): defaults to `64` and is clamped to `1..=128`.

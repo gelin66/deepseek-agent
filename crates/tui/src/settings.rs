@@ -284,7 +284,7 @@ pub struct Settings {
     /// Default reasoning effort selected from the TUI model picker.
     /// `None` falls back to `config.toml` and then the runtime default.
     pub reasoning_effort: Option<String>,
-    /// TUI-only Shift+Tab posture: ask, auto-review, or full-access.
+    /// Startup-only posture preference: ask, auto-review, or full-access.
     /// An explicit/managed `config.toml` approval policy always takes
     /// precedence, so this preference cannot loosen project requirements.
     #[serde(default, skip_serializing_if = "Option::is_none")]

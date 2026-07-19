@@ -13,8 +13,6 @@ Global key chords are not yet user-configurable — tracked for a future release
 | `F1` or `Ctrl-/`     | Toggle the help overlay                                       |
 | `Ctrl-C`             | Interrupt current turn / dismiss modal / quit when idle        |
 | `Ctrl-D`             | Quit (only when the composer is empty)                         |
-| `Tab`                | Cycle TUI mode: Plan ↔ Act; choose Operate preview explicitly with `/mode`  |
-| `Shift-Tab`          | Cycle permission posture: Ask → Auto-Review → Full Access                    |
 | `Ctrl-T`             | Cycle reasoning effort for the active provider. DeepSeek-style providers cycle off → high → max → off; OpenAI Codex cycles low → medium → high → xhigh → low. |
 | `Ctrl-R`             | Open the resume-session picker                                 |
 | `Ctrl-L`             | Refresh / clear the screen                                     |
@@ -97,10 +95,12 @@ When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo
 
 | Chord                | Action                                              |
 |----------------------|-----------------------------------------------------|
-| `y` / `Y`            | Approve once                                        |
-| `a` / `A`            | Approve all (auto-approve subsequent calls)        |
-| `n` / `N` / `Esc`    | Deny                                                |
-| `e`                  | Edit the approved input before running              |
+| `↑` / `↓` / `j` / `k`| Select an available decision                       |
+| `Enter`              | Submit the selected decision                        |
+| `y` / `Y` / `1`      | Approve once                                        |
+| `n` / `N` / `d` / `D` / `2` | Deny the tool call                         |
+| `v` / `V`            | View parameters in the pager                        |
+| `Esc`                | Abort the current turn                              |
 
 ## Onboarding (first-run flow)
 

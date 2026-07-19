@@ -631,16 +631,15 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已物理删除没有 production consumer 的 TUI Goal/Hunt loop、私有
   TaskContract/receipt/Goal completion store、Slop ledger、`ToolContext.goal_contract`、
   假 custom-command allowed-tools/pause 状态及其 Work/UI/config surface。交互 TUI 启动
-  canonical Run 时 `ToolPolicy.allowed` 明确为 `None`；mode 权限基线只保留在真实调用方
-  `App`。canonical Runtime terminal、RunStore、确定性 `run_verifiers` 和多 Agent/Fleet
-  均未改变。
+  canonical Run 时 `ToolPolicy.allowed` 明确为 `None`。canonical Runtime terminal、RunStore、
+  确定性 `run_verifiers` 和多 Agent/Fleet 均未改变。
 - M4-C 已将 WorkSurface 收敛为 canonical child Agent 的只读投影：删除从未被生产事件循环
   调用的键盘/鼠标输入、焦点/选择/滚动、打开详情、停止确认、命中区和失效
   `/task`/`/jobs` 动作；随后删除没有生产 writer、RunStore 表或 RuntimeEvent 的 TUI-local
   Plan/Todo Store、`App.task_panel`/`TaskPanelEntry`、假工具及其 sidebar/footer/transcript
-  reader。top/left/right 布局、状态排序、`AppMode::Plan` 权限语义与 canonical child 投影
-  保留；Activity 继续读取 canonical `GenericToolCell`。M5 的 TaskContract/EvidenceReceipt
-  必须由唯一 canonical owner 实现，不能恢复私有 Store。
+  reader。top/left/right 布局、状态排序与 canonical child 投影保留；Activity 继续读取
+  canonical `GenericToolCell`。M5 的 TaskContract/EvidenceReceipt 必须由唯一 canonical
+  owner 实现，不能恢复私有 Store。
 - M4-C 已删除从未被 production presenter 构造的 TUI `ExecCell`/`ExecSource` 专用展示岛，
   同步删除只服务旧类型的 foreground shell chip、pending-CI 猜测、命令时长与 live-output
   分支。真实 `exec_shell` 仍从 canonical `ToolPrepared`/`ToolOutcomeCommitted` 投影为
@@ -659,8 +658,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   广告器。该广告器从未进入 canonical `AgentRuntime` 或 RunStore；MCP 配置、transport、
   OAuth、发现与 CLI 管理保留，后续若接入模型必须走唯一 `ToolExecutor`/`ToolOutcome` 契约。
 - M4-C 已删除只有自测构造、没有生产打开入口的旧 Mode/Status picker modal、专属事件和
-  状态行 picker 文案；`AppMode` 权限基线、`StatusItem` 配置与实际 footer 投影继续由原
-  调用方保留，不恢复不可达的 `/mode` 或 `/statusline` 外壳。
+  状态行 picker 文案；`StatusItem` 配置与实际 footer 投影继续由原调用方保留，不恢复
+  不可达的 `/mode` 或 `/statusline` 外壳。
 - M4-C 已删除同样没有生产构造、canonical 命令或 Run 事件入口的旧 `ConfigView` 编译岛、
   专属测试和消息目录；`Config`、`Settings`、`ApprovalPolicyControl` 与启动时配置加载继续
   保留。Doctor 和当前参考文档改为真实 `~/.codewhale/config.toml` 路径，不再宣传不存在的
@@ -865,6 +864,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除只有自证测试调用、从未在生产启动或 onboarding 后触发的 Fleet-ready nudge，
   连同其 `feature_intro_shown` 持久化字段与专属文案一起物理删除；真实 Fleet、多 Agent、
   onboarding 和空状态不依赖该提示。
+- M4-C 已删除只有 App/Approval 自测互相调用、没有 canonical key、slash command 或 Run event
+  producer 的动态 mode/permission 循环状态机：`set_mode`、Tab/Shift-Tab cycle、Agent baseline、
+  policy-lock UI mirror 及对应设置写入均已物理删除。启动时配置仍一次性决定 shell catalog、
+  trust、sandbox 和 `auto_approve`；`default_mode` 暂时只投影启动标签，不宣称 Plan/Operate
+  具备 canonical 权限或编排语义。审批请求同时删除无人读取的英文 impact 副本，只保留根据
+  canonical tool/risk 输入生成的简体中文展示摘要；该摘要不是策略、证据或风险真相。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接
