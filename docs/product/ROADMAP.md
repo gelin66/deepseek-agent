@@ -1231,6 +1231,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   DTO 及其自证 parity。它们既不是 canonical `RuntimeEvent`，也从未接入 app-server Run API；
   删除后唯一对外事件契约仍为持久化 `StoredRuntimeEvent`/Run API projection。protocol
   57/57 通过，并通过 all-target strict Clippy、fmt 和 diff-check。
+- M4-C 已删除只由自身测试构造、面向 mobile/chat bridge 和未来共享链接的整个
+  `protocol::workroom` 岛。它没有 Store、app-server route、TUI 或 Runtime consumer，且违反
+  本地 DeepSeek coding agent 的固定产品边界；canonical Run/child/Fleet 协议均未使用该概念。
+  protocol 48/48 通过，并通过 all-target strict Clippy、fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
