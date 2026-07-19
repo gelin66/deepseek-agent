@@ -917,6 +917,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   theme、font size 和 keybinding 从未消费，因此不能算作可配置 UI 能力。同步删除专属自证
   测试、假警告和文档承诺；真实 `settings.toml`、主题选择、生产按键 handler、终端字体和
   canonical TUI Run 投影不变，已有用户 `tui.toml` 不主动删除也不再读取。
+- M4-C 已删除 Fleet 中旧的“模型生成 Agent Profile 草稿”编译孤岛：草稿 DTO、
+  不可信 JSON 抽取/清洗、TOML 渲染、文件名生成与专属自证测试在 setup UI 删除后已无
+  production caller，只靠文件级 `allow(dead_code)` 留在构建中。同步删除三个只服务旧
+  authoring 流程的 strict/identity 公开包装，保留 `load_workspace_agent_profiles_tolerant ->
+  FleetRoster -> FleetManager -> canonical exec worker` 真实链、Profile 身份/权限校验和多 Agent
+  能力；不恢复模型草稿 UI，也不新增兼容包装。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接
