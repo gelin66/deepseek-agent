@@ -27,7 +27,6 @@ use self::stdio::StdioTransport;
 #[cfg(all(test, unix))]
 use self::stdio::{STDIO_SHUTDOWN_GRACE, StderrTail};
 use self::streamable_http::{StreamableHttpTransport, StreamableSendError};
-use crate::network_policy::{Decision, NetworkPolicyDecider, host_from_url};
 use crate::utils::write_atomic;
 
 // === Error diagnostics helpers (#71) ===
@@ -753,42 +752,16 @@ pub struct McpConnection {
 
 impl McpConnection {
     /// Connect to an MCP server and initialize it.
-    ///
-    /// `network_policy` (added in v0.7.0 for #135) is consulted for HTTP/SSE
-    /// transports only — STDIO transports are unaffected. Pass `None` to
-    /// match pre-v0.7.0 permissive behavior.
-    pub async fn connect_with_policy(
+    pub async fn connect(
         name: String,
         config: McpServerConfig,
         global_timeouts: &McpTimeouts,
-        network_policy: Option<&NetworkPolicyDecider>,
     ) -> Result<Self> {
         let connect_timeout_secs = config.effective_connect_timeout(global_timeouts);
         let read_timeout_secs = config.effective_read_timeout(global_timeouts);
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
         let transport: Box<dyn McpTransport> = if let Some(url) = &config.url {
-            // Per-domain network policy gate (#135). Only the HTTP/SSE transport
-            // is gated; STDIO MCP servers run as local subprocesses and never
-            // touch the network from this code path.
-            if let Some(decider) = network_policy
-                && let Some(host) = host_from_url(url)
-            {
-                match decider.evaluate(&host, "mcp") {
-                    Decision::Allow => {}
-                    Decision::Deny => {
-                        anyhow::bail!(
-                            "MCP server '{name}' connection to '{host}' blocked by network policy"
-                        );
-                    }
-                    Decision::Prompt => {
-                        anyhow::bail!(
-                            "MCP server '{name}' connection to '{host}' requires approval; \
-                             re-run after `/network allow {host}` or set network.default = \"allow\" in config"
-                        );
-                    }
-                }
-            }
             // Honor the standard `HTTP_PROXY` / `HTTPS_PROXY` (and their
             // lowercase equivalents) plus `NO_PROXY` env vars when
             // reaching MCP HTTP servers (#1408). Reqwest 0.13 does not
@@ -1118,7 +1091,6 @@ impl Drop for McpConnection {
 pub struct McpPool {
     connections: HashMap<String, McpConnection>,
     config: McpConfig,
-    network_policy: Option<NetworkPolicyDecider>,
     /// Source paths the config was loaded from. Empty for pools constructed
     /// directly via `new` (tests, ad-hoc snapshots). Workspace-aware pools
     /// track both global and project-level MCP config paths so lazy reload sees
@@ -1140,7 +1112,6 @@ impl McpPool {
         Self {
             connections: HashMap::new(),
             config,
-            network_policy: None,
             config_sources: Vec::new(),
             workspace: None,
             config_hash,
@@ -1299,11 +1270,10 @@ impl McpPool {
             anyhow::bail!("Failed to connect MCP server '{server_name}': server is disabled");
         }
 
-        let connection = McpConnection::connect_with_policy(
+        let connection = McpConnection::connect(
             server_name.to_string(),
             server_config,
             &self.config.timeouts,
-            self.network_policy.as_ref(),
         )
         .await?;
 
@@ -1604,8 +1574,8 @@ fn paths_refer_to_same_config(left: &Path, right: &Path) -> bool {
 /// 64-bit content hash of an [`McpConfig`]. Used by [`McpPool`] to decide
 /// whether a freshly-read config differs from the one currently driving the
 /// live connections. Hashing the JSON serialization avoids forcing every
-/// nested config type to derive `Hash` (the timeouts struct, network policy
-/// stubs, etc.). The hash is stable across runs of the same Rust toolchain
+/// nested config type to derive `Hash` (for example the timeouts struct).
+/// The hash is stable across runs of the same Rust toolchain
 /// for byte-identical input.
 fn hash_mcp_config(config: &McpConfig) -> u64 {
     use std::hash::{Hash, Hasher};

@@ -12,21 +12,6 @@ fn env_lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 #[test]
-fn network_policy_toml_deserializes_proxy_hosts() {
-    let policy: NetworkPolicyToml = toml::from_str(
-        r#"
-        default = "allow"
-        proxy = ["github.com", ".githubusercontent.com"]
-        "#,
-    )
-    .expect("network policy toml");
-
-    assert_eq!(policy.default, "allow");
-    assert_eq!(policy.proxy, ["github.com", ".githubusercontent.com"]);
-    assert!(policy.audit);
-}
-
-#[test]
 fn permissions_toml_deserializes_typed_ask_rules() {
     let permissions: PermissionsToml = toml::from_str(
         r#"

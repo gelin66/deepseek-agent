@@ -1107,8 +1107,8 @@ when an API-backed provider is preferred.
 
 For a private/internal search service that serves DuckDuckGo-compatible HTML,
 keep `provider = "duckduckgo"` and set `base_url`; CodeWhale appends the `q`
-query parameter to that endpoint and applies network policy to its host.
-Custom endpoints do not fall back to public Bing. `CODEWHALE_SEARCH_BASE_URL`
+query parameter to that endpoint. Custom endpoints do not fall back to public
+Bing. `CODEWHALE_SEARCH_BASE_URL`
 can override this per process; `DEEPSEEK_SEARCH_BASE_URL` remains accepted as
 the legacy alias.
 

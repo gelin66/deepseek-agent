@@ -265,9 +265,8 @@ impl SseTransport {
                 base.join(endpoint_url)?
             };
         // Security: the server-supplied `endpoint` event must stay same-origin
-        // as the connect URL. The connect host is vetted by network policy
-        // once, but the endpoint host is never re-checked — so an absolute
-        // cross-origin endpoint would let a malicious MCP server redirect the
+        // as the configured connect URL. An absolute cross-origin endpoint
+        // would let a malicious MCP server redirect the
         // client's *authenticated* POSTs (Bearer/OAuth headers attached) to an
         // internal host (169.254.169.254, localhost admin ports, …): an SSRF /
         // policy bypass. Relative endpoints are same-origin by construction.

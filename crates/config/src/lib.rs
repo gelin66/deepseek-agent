@@ -463,10 +463,6 @@ pub struct ConfigToml {
     /// itself still reports the selected primary provider.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fallback_providers: Vec<ProviderKind>,
-    /// Per-domain network policy (#135). When absent, network tools fall back
-    /// to a permissive default that mirrors pre-v0.7.0 behavior.
-    #[serde(default)]
-    pub network: Option<NetworkPolicyToml>,
     /// Per-model harness profiles (#2693). Runtime wiring lands in follow-up
     /// v0.9 slices; this is the durable config data model.
     #[serde(default)]
@@ -1396,57 +1392,13 @@ pub fn built_in_role_presets() -> BTreeMap<String, FleetRolePreset> {
     .into()
 }
 
-/// On-disk schema for the `[network]` table (#135). See `config.example.toml`
-/// for documentation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NetworkPolicyToml {
-    /// Decision for hosts that are not in `allow` or `deny`. One of
-    /// `"allow" | "deny" | "prompt"`. Defaults to `"prompt"`.
-    #[serde(default = "default_network_decision")]
-    pub default: String,
-    /// Hosts that are always allowed. Subdomain rules: a leading dot
-    /// (`.example.com`) matches subdomains but not the apex.
-    #[serde(default)]
-    pub allow: Vec<String>,
-    /// Hosts that are always denied. Deny entries win over allow entries.
-    #[serde(default)]
-    pub deny: Vec<String>,
-    /// Hostnames whose DNS may resolve to fake-IP/private proxy ranges in an
-    /// explicitly trusted proxy setup. Literal IP URLs remain blocked.
-    #[serde(default)]
-    pub proxy: Vec<String>,
-    /// Whether to record one audit-log line per outbound network call.
-    #[serde(default = "default_network_audit")]
-    pub audit: bool,
-}
-
-fn default_network_decision() -> String {
-    "prompt".to_string()
-}
-
-fn default_network_audit() -> bool {
-    true
-}
-
-impl Default for NetworkPolicyToml {
-    fn default() -> Self {
-        Self {
-            default: default_network_decision(),
-            allow: Vec::new(),
-            deny: Vec::new(),
-            proxy: Vec::new(),
-            audit: default_network_audit(),
-        }
-    }
-}
-
 impl ConfigToml {
     /// Merge safe project-level overrides from `$WORKSPACE/.codewhale/config.toml`
     /// or legacy `$WORKSPACE/.deepseek/config.toml`.
     ///
     /// Repo-local config is untrusted input. This helper intentionally ignores
     /// credentials, endpoints, provider selection, auth/session values, telemetry,
-    /// network policy and unknown extras.
+    /// unknown extras.
     /// Approval and sandbox values may only tighten the existing user/global
     /// posture.
     pub fn merge_project_overrides(&mut self, project: ConfigToml) {

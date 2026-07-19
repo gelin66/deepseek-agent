@@ -356,23 +356,6 @@ web_search = true
 }
 
 #[test]
-fn network_policy_toml_maps_proxy_hosts_to_runtime_policy() {
-    let policy: NetworkPolicyToml = toml::from_str(
-        r#"
-        default = "allow"
-        proxy = ["github.com", ".githubusercontent.com"]
-        "#,
-    )
-    .expect("network policy toml");
-
-    let runtime = policy.into_runtime();
-
-    assert_eq!(runtime.proxy, ["github.com", ".githubusercontent.com"]);
-    assert!(runtime.trusts_proxy_fakeip_host("github.com"));
-    assert!(runtime.trusts_proxy_fakeip_host("raw.githubusercontent.com"));
-}
-
-#[test]
 fn search_provider_defaults_to_duckduckgo() {
     assert_eq!(SearchProvider::default(), SearchProvider::DuckDuckGo);
 }

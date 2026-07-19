@@ -1845,14 +1845,9 @@ async fn mcp_connection_supports_streamable_http_event_stream_responses() {
         oauth_resource: None,
     };
 
-    let conn = McpConnection::connect_with_policy(
-        "deepwiki".to_string(),
-        config,
-        &McpTimeouts::default(),
-        None,
-    )
-    .await
-    .unwrap();
+    let conn = McpConnection::connect("deepwiki".to_string(), config, &McpTimeouts::default())
+        .await
+        .unwrap();
 
     assert_eq!(conn.state, ConnectionState::Ready);
     assert_eq!(conn.tools().len(), 1);

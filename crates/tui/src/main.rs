@@ -47,7 +47,6 @@ mod logging;
 mod mcp;
 mod model_catalog;
 mod models;
-mod network_policy;
 mod oauth;
 mod palette;
 mod plugins;
@@ -3671,15 +3670,6 @@ fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
     } else {
         "default"
     };
-    let network = config
-        .network
-        .as_ref()
-        .map_or("prompt", |policy| policy.default.as_str());
-    let network_source = if config.network.is_some() {
-        "config"
-    } else {
-        "default"
-    };
     let trust = if crate::tui::onboarding::needs_trust(workspace) {
         "workspace not elevated"
     } else {
@@ -3687,7 +3677,7 @@ fn doctor_runtime_posture_line(config: &Config, workspace: &Path) -> String {
     };
 
     format!(
-        "default_mode={default_mode} ({default_mode_source}), approval_policy={approval} ({approval_source}), allow_shell={allow_shell} ({allow_shell_source}), sandbox={sandbox} ({sandbox_source}), network.default={network} ({network_source}), trust={trust}"
+        "default_mode={default_mode} ({default_mode_source}), approval_policy={approval} ({approval_source}), allow_shell={allow_shell} ({allow_shell_source}), sandbox={sandbox} ({sandbox_source}), trust={trust}"
     )
 }
 
@@ -3812,15 +3802,6 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
     } else {
         "default"
     };
-    let network_default = config
-        .network
-        .as_ref()
-        .map_or("prompt", |policy| policy.default.as_str());
-    let network_source = if config.network.is_some() {
-        "config"
-    } else {
-        "default"
-    };
     let workspace_trusted = !crate::tui::onboarding::needs_trust(workspace);
     let steps: Vec<_> = codewhale_config::SetupStep::ALL
         .into_iter()
@@ -3871,10 +3852,6 @@ fn doctor_setup_report_json(config: &Config, workspace: &Path) -> serde_json::Va
             "sandbox_mode": {
                 "value": sandbox_mode,
                 "source": sandbox_mode_source,
-            },
-            "network_default": {
-                "value": network_default,
-                "source": network_source,
             },
             "workspace_trust": {
                 "trusted": workspace_trusted,
@@ -6481,10 +6458,6 @@ mod doctor_setup_state_tests {
             report["runtime_posture"]["sandbox_mode"]["value"],
             "mode-derived"
         );
-        assert_eq!(
-            report["runtime_posture"]["network_default"]["value"],
-            "prompt"
-        );
         assert_eq!(provider_step(&report)["status"], "needs_action");
     }
 
@@ -6610,10 +6583,6 @@ mod doctor_setup_state_tests {
             approval_policy: Some("never".to_string()),
             allow_shell: Some(false),
             sandbox_mode: Some("read-only".to_string()),
-            network: Some(crate::config::NetworkPolicyToml {
-                default: "deny".to_string(),
-                ..Default::default()
-            }),
             ..Config::default()
         };
 
@@ -6647,14 +6616,6 @@ mod doctor_setup_state_tests {
         );
         assert_eq!(
             report["runtime_posture"]["sandbox_mode"]["source"],
-            "config"
-        );
-        assert_eq!(
-            report["runtime_posture"]["network_default"]["value"],
-            "deny"
-        );
-        assert_eq!(
-            report["runtime_posture"]["network_default"]["source"],
             "config"
         );
         assert_eq!(provider_step(&report)["result"], "deepseek/deepseek-chat");
