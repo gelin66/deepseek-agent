@@ -768,13 +768,31 @@ fn resolve_interactive_deepseek_model(config: &Config) -> Result<String> {
         );
     }
 
-    let model = config.default_model();
-    if model.trim().eq_ignore_ascii_case("auto") {
+    let Some(configured_model) = config
+        .providers
+        .as_ref()
+        .and_then(|providers| providers.deepseek.model.as_deref())
+        .or(config.default_text_model.as_deref())
+    else {
+        return Ok(crate::config::DEFAULT_TEXT_MODEL.to_owned());
+    };
+    let configured_model = configured_model.trim();
+    if configured_model.eq_ignore_ascii_case("auto") {
         return Ok("auto".to_owned());
     }
+
+    let model = crate::config::normalize_model_name_for_provider(
+        crate::config::ApiProvider::Deepseek,
+        configured_model,
+    )
+    .ok_or_else(|| {
+        anyhow!(
+            "交互式 Agent 只支持 auto、deepseek-v4-pro 或 deepseek-v4-flash；当前模型为 {configured_model}。"
+        )
+    })?;
     official_model_capabilities(&model).map_err(|_| {
         anyhow!(
-            "交互式 Agent 只支持 auto、deepseek-v4-pro 或 deepseek-v4-flash；当前模型为 {model}。"
+            "交互式 Agent 只支持 auto、deepseek-v4-pro 或 deepseek-v4-flash；当前模型为 {configured_model}。"
         )
     })?;
     Ok(model)
@@ -7204,17 +7222,31 @@ mod terminal_mode_tests {
         let _default_model =
             crate::test_support::EnvVarGuard::remove("DEEPSEEK_DEFAULT_TEXT_MODEL");
 
-        for model in ["auto", "deepseek-v4-pro", "deepseek-v4-flash"] {
+        for (configured, expected) in [
+            ("auto", "auto"),
+            ("deepseek-v4-pro", "deepseek-v4-pro"),
+            ("deepseek-v4-flash", "deepseek-v4-flash"),
+            ("deepseek-ai/DeepSeek-V4-Pro", "deepseek-v4-pro"),
+        ] {
             let config = Config {
                 provider: Some("deepseek".to_owned()),
-                default_text_model: Some(model.to_owned()),
+                default_text_model: Some(configured.to_owned()),
                 ..Config::default()
             };
             assert_eq!(
                 resolve_interactive_deepseek_model(&config).expect("supported entry"),
-                model
+                expected
             );
         }
+
+        let config = Config {
+            provider: Some("deepseek".to_owned()),
+            ..Config::default()
+        };
+        assert_eq!(
+            resolve_interactive_deepseek_model(&config).expect("default official model"),
+            crate::config::DEFAULT_TEXT_MODEL
+        );
 
         for provider in ["openrouter", "zai", "openai"] {
             let config = Config {
@@ -7235,7 +7267,24 @@ mod terminal_mode_tests {
             let error = resolve_interactive_deepseek_model(&config)
                 .expect_err("unsupported model must fail closed");
             assert!(error.to_string().contains("只支持 auto、deepseek-v4-pro"));
+            assert!(error.to_string().contains(model));
         }
+
+        let config = Config {
+            provider: Some("deepseek".to_owned()),
+            default_text_model: Some("deepseek-v4-pro".to_owned()),
+            providers: Some(crate::config::ProvidersConfig {
+                deepseek: crate::config::ProviderConfig {
+                    model: Some("gpt-5.5-codex".to_owned()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Config::default()
+        };
+        let error = resolve_interactive_deepseek_model(&config)
+            .expect_err("provider-scoped foreign model must fail closed");
+        assert!(error.to_string().contains("gpt-5.5-codex"));
     }
 
     #[test]
@@ -8158,23 +8207,22 @@ model = "deepseek-ai/deepseek-v4-pro"
         let _guard = crate::test_support::lock_test_env();
         let _default_model =
             crate::test_support::EnvVarGuard::remove("DEEPSEEK_DEFAULT_TEXT_MODEL");
-        let tmp = workspace_with_project_config(
-            r#"
-model = "deepseek-chat"
-"#,
-        );
-        let mut config = Config {
-            provider: Some("deepseek".to_owned()),
-            default_text_model: Some("deepseek-v4-pro".to_owned()),
-            ..Config::default()
-        };
+        for model in ["deepseek-chat", "gpt-5.5-codex"] {
+            let tmp = workspace_with_project_config(&format!("model = {model:?}\n"));
+            let mut config = Config {
+                provider: Some("deepseek".to_owned()),
+                default_text_model: Some("deepseek-v4-pro".to_owned()),
+                ..Config::default()
+            };
 
-        merge_project_config(&mut config, tmp.path());
+            merge_project_config(&mut config, tmp.path());
 
-        assert_eq!(config.default_text_model.as_deref(), Some("deepseek-chat"));
-        let error = resolve_interactive_deepseek_model(&config)
-            .expect_err("merged unsupported model must fail before TUI startup");
-        assert!(error.to_string().contains("只支持 auto、deepseek-v4-pro"));
+            assert_eq!(config.default_text_model.as_deref(), Some(model));
+            let error = resolve_interactive_deepseek_model(&config)
+                .expect_err("merged unsupported model must fail before TUI startup");
+            assert!(error.to_string().contains("只支持 auto、deepseek-v4-pro"));
+            assert!(error.to_string().contains(model));
+        }
     }
 
     #[test]

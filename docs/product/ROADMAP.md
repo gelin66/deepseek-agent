@@ -1053,10 +1053,14 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `provider_models` 状态已删除。`AgentApplication` 同时在创建 reservation 之前校验所有入口
   的显式模型，非法模型不会留下 pending creation。`auto` 仍由 production DeepSeek planner
   决定官方模型；onboarding 只持久化/安装官方 DeepSeek Key，并幂等写回同一个 DeepSeek
-  Provider，不改变已校验模型路由。通用 Settings/Config schema 的物理清理仍属于 M7，
+  Provider，不改变已校验模型路由。最终集成门又证明通用 `Config::default_model` 会把显式
+  外国模型静默回落到默认 V4 Pro；交互入口现先读取 provider-scoped/root 的原始显式值，
+  只有确实未配置时才使用默认模型，并在任何回落前完成官方模型校验。过期的 Z.ai PTY
+  fixture 同步改为官方 DeepSeek dispatcher 配置。通用 Settings/Config schema 的物理清理仍属于 M7，
   本切片不声称 FIM transport 已完成。定向与 focused 证据为 App 38/38（另 1 个外部进程
   helper 忽略）、Runtime conformance 53/53、DeepSeek 35/35、工具 299/299、exec 24/24、
-  canonical Run 19/19、PTY 7/7，并通过 app/TUI all-target check、fmt 和 diff-check。
+  canonical Run 19/19、canonical PTY 7/7；集成修复后的 TUI bin 为 1,537/1,537（另 1 个
+  忽略）、通用 PTY 为 9/9，并通过 app/TUI all-target check、fmt 和 diff-check。
 - M4-C 已删除零调用的 exec stream-json 旧 stdout 直写 helper；生产内容、工具结果、子 Agent
   lifecycle 与 terminal receipt 继续统一经 `ExecOutput` 队列、`exec_stream_line` 和
   `write_exec_stream_terminal` 输出，保留背压、terminal acknowledgement 与有界关闭语义。

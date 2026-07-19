@@ -535,11 +535,13 @@ M4-C foreground 切换后还已物理删除：
   RunStore 和 HTTP 之前。`run_tui` 会在终端初始化前再次核对 `TuiOptions.model` 与配置投影，
   `App::new` 不再允许持久 Settings 覆盖 provider/model。旧启动后 Provider 强制改写和 App
   私有 `provider_models` 状态已经删除。应用层也会在持久 creation reservation 前校验显式
-  模型，因此 CLI、TUI 和本地 API 不会为非法模型留下 pending creation。`auto` 仍走官方
+  模型，因此 CLI、TUI 和本地 API 不会为非法模型留下 pending creation。交互入口读取
+  provider-scoped/root 的原始显式模型并先行校验，不能再经通用默认解析把外国模型静默
+  回落成 V4 Pro；确实没有配置时才采用官方默认。`auto` 仍走官方
   DeepSeek production planner，onboarding 仍可写入官方 Key；通用 Provider 配置 schema 尚待
   M7 删除，Beta FIM transport 也没有被本切片实现或替代。当前 focused、App 38/38（另 1 个
-  外部进程 helper 忽略）、canonical Run 19/19、PTY 7/7、app/TUI all-target check、fmt 和
-  diff-check 均通过。
+  外部进程 helper 忽略）、canonical Run 19/19、canonical PTY 7/7、TUI bin 1,537/1,537
+  （另 1 个忽略）、通用 PTY 9/9、app/TUI all-target check、fmt 和 diff-check 均通过。
 - exec stream-json 中零调用的旧 stdout 直写 helper 已删除。真实输出仍由 `ExecOutput` 队列
   统一写出，事件序列化继续由 `exec_stream_line`/`exec_stream_value` 拥有，terminal 仍通过
   `write_exec_stream_terminal` 等待 acknowledgement；canonical Runtime/RunStore、工具和子

@@ -217,17 +217,17 @@ fn interactive_init_accepts_input_with_dispatcher_written_config() -> anyhow::Re
     std::fs::write(
         ws.home().join(".codewhale").join("config.toml"),
         r#"
-provider = "zai"
+provider = "deepseek"
 fallbackProviders = []
 apiKey = "deepseek-test-key"
 defaultTextModel = "deepseek-v4-pro"
 authMode = "api_key"
 
-[providers.zai]
-apiKey = "zai-test-key"
+[providers.deepseek]
+apiKey = "deepseek-test-key"
 authMode = "api_key"
 
-[providers.zai.httpHeaders]
+[providers.deepseek.httpHeaders]
 
 [features.enabled]
 shell_tool = true
