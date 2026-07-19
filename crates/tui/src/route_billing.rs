@@ -51,17 +51,6 @@ impl BillingPresentation {
     pub const fn shows_money(self) -> bool {
         matches!(self, Self::Metered)
     }
-
-    #[must_use]
-    #[allow(dead_code)] // label helpers for non-metered chip copy (TUI-DOG-010)
-    pub const fn label(self) -> Option<&'static str> {
-        match self {
-            Self::Metered => None,
-            Self::Subscription(label) => Some(label),
-            Self::Local => Some("local"),
-            Self::Unknown => Some("unknown"),
-        }
-    }
 }
 
 /// Resolve how the active provider route should present usage.
@@ -131,32 +120,6 @@ fn uses_zai_coding_plan(config: Option<&ProviderConfig>) -> bool {
         .ends_with("/api/coding/paas/v4")
 }
 
-/// Billing for a child route when its full dispatch config is not present in
-/// the completion envelope. Never invent metered dollars for providers that
-/// support subscription/OAuth routes; the parent route remains authoritative
-/// only when the provider is the same.
-#[must_use]
-pub fn for_child_route(
-    parent_provider: ApiProvider,
-    parent_billing: BillingPresentation,
-    child_provider: ApiProvider,
-) -> BillingPresentation {
-    if child_provider == parent_provider {
-        return parent_billing;
-    }
-    match child_provider {
-        ApiProvider::Ollama | ApiProvider::Sglang | ApiProvider::Vllm => BillingPresentation::Local,
-        ApiProvider::OpenaiCodex
-        | ApiProvider::Xai
-        | ApiProvider::Moonshot
-        | ApiProvider::Anthropic
-        | ApiProvider::XiaomiMimo
-        | ApiProvider::Zai => BillingPresentation::Subscription("provider quota"),
-        ApiProvider::Stepfun | ApiProvider::Custom => BillingPresentation::Unknown,
-        _ => BillingPresentation::Metered,
-    }
-}
-
 /// Whether this route may show a dollar amount for the given model.
 ///
 /// Requires both a metered billing presentation and an authoritative priced
@@ -209,22 +172,6 @@ pub fn usage_chip(
                 UsageChip::Hidden
             }
         }
-    }
-}
-
-/// Compact footer/header chip text. `None` means omit the chip.
-#[must_use]
-#[allow(dead_code)] // shared chip formatter for footer/sidebar siblings (TUI-DOG-010)
-pub fn format_usage_chip(chip: &UsageChip) -> Option<String> {
-    match chip {
-        UsageChip::Money(amount) => Some(amount.clone()),
-        UsageChip::Allowance { label, used_pct } => Some(match used_pct {
-            Some(pct) => format!("usage: {label} · {pct:.0}%"),
-            None => format!("usage: {label}"),
-        }),
-        UsageChip::Local => Some("cost: local".to_string()),
-        UsageChip::Unknown => Some("cost: unknown".to_string()),
-        UsageChip::Hidden => None,
     }
 }
 
@@ -383,10 +330,7 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert_eq!(
-            format_usage_chip(&chip).as_deref(),
-            Some("usage: Codex OAuth quota")
-        );
+        assert_eq!(format_usage_line(&chip), "usage: Codex OAuth quota");
         assert!(!format_usage_line(&chip).contains('$'));
     }
 
@@ -436,7 +380,7 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert_eq!(format_usage_chip(&payg_chip).as_deref(), Some("$0.42"));
+        assert_eq!(format_usage_line(&payg_chip), "cost: $0.42");
 
         let plan_config = config_with(
             ApiProvider::Stepfun,
@@ -459,27 +403,6 @@ mod tests {
             None,
         );
         assert!(!format_usage_line(&plan_chip).contains('$'));
-
-        assert_eq!(
-            for_child_route(
-                ApiProvider::Deepseek,
-                BillingPresentation::Metered,
-                ApiProvider::Stepfun,
-            ),
-            BillingPresentation::Unknown
-        );
-    }
-
-    #[test]
-    fn routed_zai_child_never_claims_api_dollars_without_full_route_config() {
-        assert_eq!(
-            for_child_route(
-                ApiProvider::Deepseek,
-                BillingPresentation::Metered,
-                ApiProvider::Zai,
-            ),
-            BillingPresentation::Subscription("provider quota")
-        );
     }
 
     #[test]
@@ -493,8 +416,8 @@ mod tests {
             Some(37.0),
         );
         assert_eq!(
-            format_usage_chip(&chip).as_deref(),
-            Some("usage: Grok OAuth quota · 37%")
+            format_usage_line(&chip),
+            "usage: Grok OAuth quota · 37% used"
         );
     }
 
@@ -514,7 +437,7 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert_eq!(format_usage_chip(&spent).as_deref(), Some("$0.42"));
+        assert_eq!(format_usage_line(&spent), "cost: $0.42");
 
         let zero = usage_chip(
             billing,
@@ -525,7 +448,6 @@ mod tests {
             None,
         );
         assert_eq!(zero, UsageChip::Hidden);
-        assert!(format_usage_chip(&zero).is_none());
         assert!(!format_usage_line(&zero).contains('$'));
     }
 
@@ -543,7 +465,7 @@ mod tests {
             CostCurrency::Usd,
             None,
         );
-        assert_eq!(format_usage_chip(&chip).as_deref(), Some("cost: local"));
+        assert_eq!(format_usage_line(&chip), "cost: local");
         assert!(!format_usage_line(&chip).contains('$'));
     }
 
@@ -558,7 +480,7 @@ mod tests {
             None,
         );
         assert_eq!(chip, UsageChip::Unknown);
-        assert_eq!(format_usage_chip(&chip).as_deref(), Some("cost: unknown"));
+        assert_eq!(format_usage_line(&chip), "cost: unknown");
         assert!(!format_usage_line(&chip).contains('$'));
 
         let unknown_billing = usage_chip(
@@ -602,10 +524,20 @@ mod tests {
                 ..ProviderConfig::default()
             },
         );
+        let billing = for_route(&oauth, ApiProvider::Anthropic);
         assert_eq!(
-            for_route(&oauth, ApiProvider::Anthropic).label(),
-            Some("Claude OAuth quota")
+            billing,
+            BillingPresentation::Subscription("Claude OAuth quota")
         );
+        let chip = usage_chip(
+            billing,
+            ApiProvider::Anthropic,
+            "claude-sonnet-5",
+            12.34,
+            CostCurrency::Usd,
+            None,
+        );
+        assert!(!format_usage_line(&chip).contains('$'));
     }
 
     #[test]
@@ -635,26 +567,6 @@ mod tests {
             },
         );
         assert!(for_route(&standard_key, ApiProvider::XiaomiMimo).shows_money());
-    }
-
-    #[test]
-    fn unknown_cross_provider_oauth_capable_child_never_invents_dollars() {
-        assert!(
-            !for_child_route(
-                ApiProvider::Deepseek,
-                BillingPresentation::Metered,
-                ApiProvider::Xai,
-            )
-            .shows_money()
-        );
-        assert!(
-            for_child_route(
-                ApiProvider::Deepseek,
-                BillingPresentation::Metered,
-                ApiProvider::Openrouter,
-            )
-            .shows_money()
-        );
     }
 
     #[test]

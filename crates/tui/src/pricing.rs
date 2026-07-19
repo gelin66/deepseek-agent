@@ -49,17 +49,6 @@ impl CostEstimate {
     pub fn usd_only(usd: f64) -> Self {
         Self { usd, cny: 0.0 }
     }
-
-    pub fn is_positive(self) -> bool {
-        self.usd > 0.0 || self.cny > 0.0
-    }
-
-    pub fn amount(self, currency: CostCurrency) -> f64 {
-        match currency {
-            CostCurrency::Usd => self.usd,
-            CostCurrency::Cny => self.cny,
-        }
-    }
 }
 
 // === DeepSeek Account Balance ===
@@ -186,12 +175,6 @@ fn route_requires_billing_surface(provider: ApiProvider, model: &str) -> bool {
 /// Look up pricing for a model name.
 fn pricing_for_model(model: &str) -> Option<ModelPricing> {
     pricing_for_model_at(model, Utc::now())
-}
-
-/// Return whether a model has a row in the pricing table.
-#[must_use]
-pub fn has_pricing_for_model(model: &str) -> bool {
-    pricing_for_model(model).is_some()
 }
 
 /// Return whether the selected provider route exposes authoritative dollar
@@ -412,13 +395,6 @@ fn claude_sonnet_5_pricing(now: DateTime<Utc>) -> ModelPricing {
     }
 }
 
-/// Calculate cost from provider usage, honoring DeepSeek context-cache fields.
-#[must_use]
-#[cfg(test)]
-pub fn calculate_turn_cost_from_usage(model: &str, usage: &Usage) -> Option<f64> {
-    calculate_turn_cost_estimate_from_usage(model, usage).map(|estimate| estimate.usd)
-}
-
 /// Calculate cost from provider usage in both official currencies.
 #[must_use]
 #[cfg(test)]
@@ -448,22 +424,6 @@ pub fn calculate_turn_cost_estimate_for_provider(
     usage: &Usage,
 ) -> Option<CostEstimate> {
     calculate_turn_cost_estimate_for_provider_at(provider, model, usage, Utc::now())
-}
-
-/// Calculate cost only for routes that are actually money-metered. OAuth and
-/// token-plan routes deliberately return `None` even when the underlying model
-/// also exists behind a separately-priced public API.
-#[must_use]
-pub fn calculate_turn_cost_estimate_for_route(
-    provider: ApiProvider,
-    model: &str,
-    usage: &Usage,
-    billing: crate::route_billing::BillingPresentation,
-) -> Option<CostEstimate> {
-    if !billing.shows_money() {
-        return None;
-    }
-    calculate_turn_cost_estimate_for_provider(provider, model, usage)
 }
 
 /// Estimate a turn when endpoint-derived billing provenance is available.
@@ -824,21 +784,10 @@ pub fn format_cost_amount_precise(cost: f64, currency: CostCurrency) -> String {
     }
 }
 
-/// Format a dual-currency estimate using the selected display currency.
-#[must_use]
-pub fn format_cost_estimate(estimate: CostEstimate, currency: CostCurrency) -> String {
-    format_cost_amount(estimate.amount(currency), currency)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-
-    #[test]
-    fn nvidia_nim_deepseek_model_does_not_use_deepseek_platform_pricing() {
-        assert!(!has_pricing_for_model("deepseek-ai/deepseek-v4-pro"));
-    }
 
     #[test]
     fn stepfun_billing_surface_keeps_payg_separate_from_step_plan() {
@@ -1018,7 +967,6 @@ mod tests {
             let pricing = pricing_for_model_at(model, Utc::now()).expect(model);
             assert_eq!(pricing.usd.input_cache_miss_per_million, input, "{model}");
             assert_eq!(pricing.usd.output_per_million, output, "{model}");
-            assert!(has_pricing_for_model(model));
         }
     }
 
@@ -1113,7 +1061,6 @@ mod tests {
             assert_eq!(pricing.usd.input_cache_miss_per_million, miss);
             assert_eq!(pricing.usd.output_per_million, output);
             assert!(pricing.cny.is_none());
-            assert!(has_pricing_for_model(model));
 
             let estimate = calculate_turn_cost_estimate_from_usage(model, &usage).expect(model);
             assert!(estimate.usd > 0.0, "expected positive USD for {model}");
@@ -1421,33 +1368,6 @@ mod tests {
     }
 
     #[test]
-    fn subscription_route_does_not_inherit_same_models_api_price() {
-        let usage = Usage {
-            input_tokens: 1_000,
-            output_tokens: 100,
-            ..Default::default()
-        };
-        assert!(
-            calculate_turn_cost_estimate_for_route(
-                ApiProvider::Anthropic,
-                "claude-sonnet-5",
-                &usage,
-                crate::route_billing::BillingPresentation::Metered,
-            )
-            .is_some()
-        );
-        assert!(
-            calculate_turn_cost_estimate_for_route(
-                ApiProvider::Anthropic,
-                "claude-sonnet-5",
-                &usage,
-                crate::route_billing::BillingPresentation::Subscription("Claude OAuth quota"),
-            )
-            .is_none()
-        );
-    }
-
-    #[test]
     fn token_usage_for_pricing_infers_missing_cache_miss_from_hit_source() {
         let usage = Usage {
             input_tokens: 1_000,
@@ -1527,7 +1447,6 @@ mod tests {
         assert_eq!(pricing.usd.output_per_million, 15.00);
         assert_eq!(pricing.usd.cache_write_per_million, Some(3.75));
         assert!(pricing.cny.is_none());
-        assert!(has_pricing_for_model("claude-sonnet-5"));
     }
 
     #[test]
@@ -1598,7 +1517,6 @@ mod tests {
             "xiaomi/mimo-v2.5",
         ] {
             assert!(pricing_for_model_at(model, now).is_none());
-            assert!(!has_pricing_for_model(model));
         }
     }
 

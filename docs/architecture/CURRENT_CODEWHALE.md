@@ -686,6 +686,10 @@ M4-C foreground 切换后还已物理删除：
 - TUI ProviderConfig 曾接受 `max_concurrency` 及三个 alias，却从未把它接到任何请求 semaphore；
   该字段、默认/夹紧逻辑和自证测试现已删除。canonical Runtime request budget、Fleet scheduler
   的 worker limits 与 subagent profile limits 是独立的真实执行链，均未改动。
+- TUI pricing/route-billing 中只供模块自测调用的通用 route/child/compact-chip 包装层和
+  `CostEstimate` convenience methods 已删除。官方 DeepSeek 双币 pricing、canonical
+  `ModelAccounting`、`RunStore` 回放、`/cost`、footer/sidebar、scorecard、确定性预算和 Fleet
+  回执均继续走原生产 owner；本切片没有删除或伪造子 Agent 的真实 Token/成本聚合。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
   删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
 - test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有

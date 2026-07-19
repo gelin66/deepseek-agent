@@ -850,6 +850,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除从未接入 transport 的 TUI 私有 `http_headers` 字段、env merge、accessor 与
   自证测试；canonical config 仍残留的 generic header schema 留待 M7，生产 DeepSeek transport
   当前不消费任意 custom headers。
+- M4-C 已删除 pricing/route-billing 中只有模块自测消费者的 route/child/compact-chip facade、
+  `CostEstimate` convenience methods 和重复 catalog predicates；回归测试改为直接验证生产
+  `for_route -> usage_chip -> format_usage_line`。官方 DeepSeek pricing、canonical accounting、
+  `RunStore`、`/cost`、footer/sidebar、scorecard、Runtime/Fleet 预算与 child usage 聚合均保留。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接
