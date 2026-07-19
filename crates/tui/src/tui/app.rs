@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use ratatui::layout::Rect;
 use serde_json::Value;
@@ -1120,11 +1120,6 @@ pub struct App {
     /// Monotonic counter used to issue fresh per-cell revisions.
     pub next_history_revision: u64,
     pub is_loading: bool,
-    /// Timestamp of the most recent Enter while the engine was busy.
-    /// Used by `enter_with_double_tap()` to detect a double-tap within 500 ms.
-    pub last_enter_instant: Option<Instant>,
-    /// Degraded connectivity mode; new user inputs are queued for later retry.
-    pub offline_mode: bool,
     /// Whether an `EngineEvent::Error` has already been posted for the
     /// current turn. Suppresses the redundant "Turn failed:" status line
     /// that `TurnComplete { error: .. }` would otherwise emit on top of
@@ -1283,23 +1278,6 @@ pub struct App {
     pub streaming_message_index: Option<usize>,
     /// Tool calls captured for the pending assistant message
     pub pending_tool_uses: Vec<(String, String, Value)>,
-    /// User messages queued while a turn is running
-    pub queued_messages: VecDeque<QueuedMessage>,
-    /// Draft queued message being edited
-    pub queued_draft: Option<QueuedMessage>,
-    /// Legacy pending-steer bucket retained for session compatibility. New
-    /// in-flight input uses Enter for same-turn steering and Tab for queued
-    /// follow-ups; Esc only cancels the active turn.
-    pub pending_steers: VecDeque<QueuedMessage>,
-    /// Engine-rejected steers (e.g. a tool was already running and couldn't be
-    /// cancelled cleanly). Surfaced in the pending-input preview so the user
-    /// knows the steer was deferred to end-of-turn. Today no engine path
-    /// produces these; the field is scaffolding for a future signalling
-    /// channel and the bucket renders with a rejected-steer label when
-    /// populated.
-    pub rejected_steers: VecDeque<String>,
-    /// Legacy resend flag for pending steer recovery.
-    pub submit_pending_steers_after_interrupt: bool,
     /// Start time for current turn
     pub turn_started_at: Option<Instant>,
     /// Most recent engine event observed for the current turn. This is
@@ -1354,53 +1332,6 @@ pub struct App {
 
     /// Optional title shown in the composer border.
     pub session_title: Option<String>,
-}
-
-/// Message queued while the engine is busy.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QueuedMessage {
-    pub display: String,
-    pub skill_instruction: Option<String>,
-}
-
-/// How a freshly-typed user input should be sent.
-///
-/// Picked by [`App::decide_submit_disposition`] when the user hits Enter on a
-/// non-empty composer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SubmitDisposition {
-    /// Engine idle and online: send immediately.
-    Immediate,
-    /// Park on `queued_messages` (offline, or engine busy — #382).
-    Queue,
-    /// Explicit steer via Ctrl+Enter (#382). Not returned by `decide_submit_disposition`.
-    #[allow(dead_code)]
-    Steer,
-    /// Park on `queued_messages` for dispatch after TurnComplete.
-    /// Legacy path; #382 unified busy states under `Queue`.
-    #[allow(dead_code)]
-    QueueFollowUp,
-}
-
-impl QueuedMessage {
-    pub fn new(display: String, skill_instruction: Option<String>) -> Self {
-        Self {
-            display,
-            skill_instruction,
-        }
-    }
-
-    #[allow(dead_code)] // Tests and queue helpers use the display-only form; send path resolves @mentions.
-    pub fn content(&self) -> String {
-        if let Some(skill_instruction) = self.skill_instruction.as_ref() {
-            format!(
-                "{skill_instruction}\n\n---\n\nUser request: {}",
-                self.display
-            )
-        } else {
-            self.display.clone()
-        }
-    }
 }
 
 // === Deref to ComposerState for backward compat ===
@@ -1729,8 +1660,6 @@ impl App {
             history_revisions: Vec::new(),
             next_history_revision: 1,
             is_loading: false,
-            last_enter_instant: None,
-            offline_mode: false,
             turn_error_posted: false,
             // Surface parse warnings so the user knows their config file is
             // broken instead of silently losing all settings.
@@ -1812,11 +1741,6 @@ impl App {
             ignored_tool_calls: HashSet::new(),
             streaming_message_index: None,
             pending_tool_uses: Vec::new(),
-            queued_messages: VecDeque::new(),
-            queued_draft: None,
-            pending_steers: VecDeque::new(),
-            rejected_steers: VecDeque::new(),
-            submit_pending_steers_after_interrupt: false,
             turn_started_at: None,
             turn_last_activity_at: None,
             cumulative_turn_duration: std::time::Duration::ZERO,
@@ -3550,155 +3474,6 @@ impl App {
             StatusToastLevel::Info,
             Some(5_000),
         );
-    }
-
-    pub fn queue_message(&mut self, message: QueuedMessage) {
-        self.queued_messages.push_back(message);
-    }
-
-    pub fn pop_queued_message(&mut self) -> Option<QueuedMessage> {
-        self.queued_messages.pop_front()
-    }
-
-    pub fn remove_queued_message(&mut self, index: usize) -> Option<QueuedMessage> {
-        self.queued_messages.remove(index)
-    }
-
-    pub fn queued_message_count(&self) -> usize {
-        self.queued_messages.len()
-    }
-
-    /// Pop the most-recently queued message back into the composer for editing
-    /// (issue #85 — ↑ affordance). The popped message is parked in
-    /// [`Self::queued_draft`] so the next Enter re-queues it carrying its
-    /// original skill instruction. No-op if the composer already has typed
-    /// content or a draft is already being edited — surfacing the affordance
-    /// would be ambiguous in either case.
-    ///
-    /// Returns `true` when the composer state was mutated.
-    pub fn pop_last_queued_into_draft(&mut self) -> bool {
-        if !self.input.is_empty() || self.queued_draft.is_some() {
-            return false;
-        }
-        let Some(msg) = self.queued_messages.pop_back() else {
-            return false;
-        };
-        self.input = msg.display.clone();
-        self.cursor_position = char_count(&self.input);
-        self.queued_draft = Some(msg);
-        self.needs_redraw = true;
-        true
-    }
-
-    /// Stop editing a queued follow-up and put the original queued message back
-    /// at the tail where [`Self::pop_last_queued_into_draft`] took it from.
-    pub fn cancel_queued_draft_edit(&mut self) -> bool {
-        let Some(draft) = self.queued_draft.take() else {
-            return false;
-        };
-        self.queued_messages.push_back(draft);
-        self.clear_input_recoverable();
-        self.needs_redraw = true;
-        true
-    }
-
-    /// Park a legacy pending steer. New keyboard handling routes running-turn
-    /// drafts through Enter (same-turn steer) or Tab (next-turn follow-up).
-    #[allow(dead_code)]
-    pub fn push_pending_steer(&mut self, message: QueuedMessage) {
-        self.pending_steers.push_back(message);
-        self.submit_pending_steers_after_interrupt = true;
-        self.needs_redraw = true;
-    }
-
-    /// Drain the pending-steer queue and clear the resend flag. Returns the
-    /// messages in submit order (oldest first).
-    pub fn drain_pending_steers(&mut self) -> Vec<QueuedMessage> {
-        self.submit_pending_steers_after_interrupt = false;
-        if self.pending_steers.is_empty() {
-            return Vec::new();
-        }
-        self.needs_redraw = true;
-        self.pending_steers.drain(..).collect()
-    }
-
-    /// Decide how to route a fresh composer submit.
-    ///
-    /// v0.8.68: streaming output queues. Busy-but-waiting turns steer so
-    /// Enter can amend the active turn before output starts. A double-tap
-    /// Enter within 500 ms triggers Steer while streaming; Ctrl+Enter forces
-    /// Steer in all busy states.
-    ///
-    /// Truth table:
-    ///   offline=F, busy=F → Immediate
-    ///   offline=F, busy=T, streaming=F → Steer
-    ///   offline=F, busy=T, streaming=T → Queue (double-tap → Steer)
-    ///   offline=T, busy=* → Queue
-    #[must_use]
-    pub fn decide_submit_disposition(&self) -> SubmitDisposition {
-        if self.offline_mode {
-            return SubmitDisposition::Queue;
-        }
-        if !self.is_loading {
-            return SubmitDisposition::Immediate;
-        }
-        if self.streaming_message_index.is_none() {
-            return SubmitDisposition::Steer;
-        }
-        // Streaming: queue the message. Double-tap Enter within 500 ms
-        // triggers Steer via enter_with_double_tap(); see the ui.rs submit
-        // handler.
-        SubmitDisposition::Queue
-    }
-
-    /// Process an Enter keypress with double-tap steering detection.
-    ///
-    /// When the engine is busy, the first Enter queues the message. A second
-    /// Enter within 500 ms triggers Steer (interrupt the current turn to
-    /// inject the new instruction immediately). When idle, Enter submits
-    /// immediately.
-    #[must_use]
-    pub fn enter_with_double_tap(&mut self) -> Option<SubmitDisposition> {
-        let disposition = self.decide_submit_disposition();
-        match disposition {
-            SubmitDisposition::Queue => {
-                if let Some(instant) = self.last_enter_instant
-                    && instant.elapsed() < Duration::from_millis(500)
-                {
-                    self.last_enter_instant = None;
-                    return Some(SubmitDisposition::Steer);
-                }
-                self.last_enter_instant = Some(Instant::now());
-                Some(SubmitDisposition::Queue)
-            }
-            other => {
-                self.last_enter_instant = None;
-                Some(other)
-            }
-        }
-    }
-
-    /// Mark the in-flight streaming Assistant cell as interrupted: prepend
-    /// `[interrupted]` to whatever streamed so far (so the user can see what
-    /// was salvaged) and flip `streaming` off so the spinner halts. No-op if
-    /// no Assistant cell is currently streaming.
-    ///
-    /// Deliberate divergence from openai/codex which discards partial output
-    /// on abort — V4 thinking is expensive and the user usually wants to see
-    /// what the model produced before steering.
-    pub fn finalize_streaming_assistant_as_interrupted(&mut self) {
-        let Some(index) = self.streaming_message_index.take() else {
-            return;
-        };
-        if let Some(HistoryCell::Assistant { content, streaming }) = self.history.get_mut(index) {
-            *streaming = false;
-            if content.is_empty() {
-                *content = "[interrupted]".to_string();
-            } else if !content.starts_with("[interrupted]") {
-                content.insert_str(0, "[interrupted] ");
-            }
-        }
-        self.bump_history_cell(index);
     }
 
     pub fn history_up(&mut self) {

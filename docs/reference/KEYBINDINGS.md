@@ -11,7 +11,7 @@ Global key chords are not yet user-configurable — tracked for a future release
 | Chord                | Action                                                        |
 |----------------------|---------------------------------------------------------------|
 | `F1` or `Ctrl-/`     | Toggle the help overlay                                       |
-| `Ctrl-C`             | Cancel current turn / dismiss modal / arm-then-confirm quit    |
+| `Ctrl-C`             | Interrupt current turn / dismiss modal / quit when idle        |
 | `Ctrl-D`             | Quit (only when the composer is empty)                         |
 | `Tab`                | Cycle TUI mode: Plan ↔ Act; choose Operate preview explicitly with `/mode`  |
 | `Shift-Tab`          | Cycle permission posture: Ask → Auto-Review → Full Access                    |
@@ -29,9 +29,8 @@ Editing the message you're about to send.
 
 | Chord                       | Action                                                  |
 |-----------------------------|---------------------------------------------------------|
-| `Enter`                     | Send the message (or run the slash command)             |
-| `Alt-Enter` / `Ctrl-J`      | Insert a newline without sending (`Ctrl-J` force-steers while a turn is running) |
-| `Ctrl-Enter` / `Cmd-Enter`  | Force a live steer into the current turn when supported by the terminal |
+| `Enter`                     | Start a run, or submit a canonical steer to the active run |
+| `Shift-Enter` / `Alt-Enter` | Insert a newline without sending                         |
 | `Ctrl-U`                    | Delete to start of line                                 |
 | `Ctrl-W`                    | Delete previous word                                    |
 | `Ctrl-A` / `Home`           | Move to start of line                                   |

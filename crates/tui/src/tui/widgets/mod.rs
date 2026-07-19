@@ -1,6 +1,5 @@
 mod footer;
 mod header;
-pub mod pending_input_preview;
 mod renderable;
 pub mod tool_card;
 
@@ -1105,55 +1104,6 @@ impl Renderable for ComposerWidget<'_> {
                         .tr(crate::localization::MessageId::ComposerSlashMenuHint),
                     Style::default().fg(self.app.ui_theme.text_hint),
                 )))
-            } else if !input_text.trim().is_empty() {
-                // Live disambiguation for #345: when there's content in the
-                // composer, show what `Enter` will do RIGHT NOW so the user
-                // never has to guess between Immediate / Steer / QueueFollowUp /
-                // Queue. The disposition flips with engine state so this hint
-                // is the only reliable cue before pressing Enter.
-                use crate::tui::app::SubmitDisposition;
-                let queue_count = self.app.queued_message_count();
-                let (label, color) = match self.app.decide_submit_disposition() {
-                    SubmitDisposition::Immediate => {
-                        if queue_count > 0 {
-                            (
-                                Some(format!("↵ send ({queue_count} queued)")),
-                                palette::WHALE_INFO,
-                            )
-                        } else {
-                            (None, palette::TEXT_MUTED)
-                        }
-                    }
-                    SubmitDisposition::Queue => {
-                        if self.app.offline_mode {
-                            (Some("↵ offline queue".to_string()), palette::STATUS_WARNING)
-                        } else {
-                            let label = if queue_count > 0 {
-                                format!(
-                                    "↵ queue ({} waiting, double-↵ to steer)",
-                                    queue_count.saturating_add(1)
-                                )
-                            } else {
-                                "↵ queue (double-↵ to steer)".to_string()
-                            };
-                            (Some(label), palette::TEXT_MUTED)
-                        }
-                    }
-                    // Steer reached via double-tap Enter or Ctrl+Enter override.
-                    SubmitDisposition::Steer => {
-                        (Some("↵ steering".to_string()), palette::WHALE_INFO)
-                    }
-                    SubmitDisposition::QueueFollowUp => (
-                        Some("↵ queued (double-↵ to steer)".to_string()),
-                        palette::TEXT_MUTED,
-                    ),
-                };
-                label.map(|text| {
-                    Line::from(vec![Span::styled(
-                        format!(" {text} "),
-                        Style::default().fg(color),
-                    )])
-                })
             } else {
                 None
             };

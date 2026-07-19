@@ -68,7 +68,6 @@ use super::slash_menu::{
     apply_slash_menu_selection, try_autocomplete_slash_command, visible_slash_menu_entries,
 };
 use super::views::{ModalKind, ViewEvent};
-use super::widgets::pending_input_preview::PendingInputPreview;
 use super::widgets::{ChatWidget, ComposerWidget, HeaderData, HeaderWidget, Renderable};
 
 // === Constants ===
@@ -674,7 +673,6 @@ async fn run_deepseek_onboarding_loop(
                                     app.api_key_cursor = 0;
                                     app.onboarding_needs_api_key = false;
                                     app.api_key_env_only = false;
-                                    app.offline_mode = false;
                                     app.status_message = warning;
                                     onboarding::advance_onboarding_after_api_key(app);
                                 }
@@ -1344,39 +1342,6 @@ impl Drop for TerminalCleanupGuard {
     }
 }
 
-/// Build the pending-input preview widget from current `App` state.
-///
-/// v0.6.6 (#122) wires all three buckets:
-/// - `pending_steers` — typed during a running turn + Esc; held until the
-///   abort lands and gets resubmitted as a fresh merged turn.
-/// - `rejected_steers` — engine declined a mid-turn steer (scaffolding;
-///   no engine path produces these yet but the bucket renders with a distinct
-///   rejected-steer label).
-/// - `queued_messages` — Enter while busy (offline-mode FIFO); drained at
-///   end-of-turn.
-fn build_pending_input_preview(app: &App) -> PendingInputPreview {
-    let mut preview = PendingInputPreview::new();
-    preview.pending_steers = app
-        .pending_steers
-        .iter()
-        .map(|m| m.display.clone())
-        .collect();
-    preview.rejected_steers = app.rejected_steers.iter().cloned().collect();
-    preview.queued_messages = app
-        .queued_messages
-        .iter()
-        .map(|m| m.display.clone())
-        .collect();
-    preview.editing_queued_message = app.queued_draft.as_ref().map(|draft| {
-        if app.input.trim().is_empty() {
-            draft.display.clone()
-        } else {
-            app.input.clone()
-        }
-    });
-    preview
-}
-
 fn render_classic_header(area: Rect, buf: &mut Buffer, app: &App) {
     let context_usage = context_usage_snapshot(app);
     let context_window = context_usage.as_ref().map(|(_, max, _)| *max).or_else(|| {
@@ -1439,8 +1404,8 @@ fn render(f: &mut Frame, app: &mut App) {
         super::work_surface::height(app, size.width, size.height, classic_shell);
 
     // Defensive two-pass layout: pin the header to the absolute top row,
-    // then split the remaining body area for chat / preview / composer /
-    // footer. This guarantees the header is never vertically centered
+    // then split the remaining body area for chat / composer / footer. This
+    // guarantees the header is never vertically centered
     // regardless of ratatui Flex defaults or terminal size.
     // Fixes #1834 — macOS terminal title centering.
     let (header_area, body_area) = {
@@ -1466,24 +1431,6 @@ fn render(f: &mut Frame, app: &mut App) {
         composer_widget.desired_height(size.width)
     };
 
-    // Pending-input preview (queued / steered messages). Empty when nothing's
-    // queued, so zero height when idle. Phase 2 of #85 — solves the
-    // "messages typed during a running turn vanish" complaint by giving the
-    // user immediate visible feedback above the composer.
-    let pending_preview = build_pending_input_preview(app);
-    let desired_preview_height = pending_preview.desired_height(size.width);
-
-    let auxiliary_budget = body_height.saturating_sub(
-        top_work_strip_height
-            .saturating_add(MIN_CHAT_HEIGHT)
-            .saturating_add(composer_height)
-            .saturating_add(footer_height),
-    );
-    // Preserve the direct send-now hint when the terminal has breathing room,
-    // while keeping the release-floor layout to three compact rows.
-    let preview_cap = if size.height >= 20 { 4 } else { 3 };
-    let preview_height = desired_preview_height.min(auxiliary_budget.min(preview_cap));
-
     // Ocean live phases put the phase strip above the composer so activity
     // stays attached to the transcript and the prompt is the final bottom
     // object. Idle/typing keep a quiet phase under the prompt. Classic keeps
@@ -1493,8 +1440,8 @@ fn render(f: &mut Frame, app: &mut App) {
         && crate::tui::phase_strip::PhaseStripPlacement::for_phase(phase).is_above_composer();
     let (composer_slot, footer_slot, tail_constraints) = if phase_above {
         (
-            4,
             3,
+            2,
             [
                 Constraint::Length(footer_height),
                 Constraint::Length(composer_height),
@@ -1502,8 +1449,8 @@ fn render(f: &mut Frame, app: &mut App) {
         )
     } else {
         (
+            2,
             3,
-            4,
             [
                 Constraint::Length(composer_height),
                 Constraint::Length(footer_height),
@@ -1517,7 +1464,6 @@ fn render(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(top_work_strip_height), // Tasks + Runs above transcript
             Constraint::Min(1),                        // Chat area
-            Constraint::Length(preview_height),        // Pending input preview (0 if empty)
             tail_constraints[0],
             tail_constraints[1],
         ])
@@ -1589,12 +1535,6 @@ fn render(f: &mut Frame, app: &mut App) {
                     .style(Style::default().fg(palette::TEXT_MUTED));
             f.render_widget(divider, divider_area);
         }
-    }
-
-    // Render pending-input preview (queued/steered messages, if any).
-    if preview_height > 0 {
-        let buf = f.buffer_mut();
-        pending_preview.render(body_chunks[2], buf);
     }
 
     // Render composer

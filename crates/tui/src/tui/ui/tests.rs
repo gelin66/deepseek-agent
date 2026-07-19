@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::tui::app::QueuedMessage;
 use ratatui::backend::TestBackend;
 
 use std::sync::{Arc, atomic::AtomicBool};
@@ -606,19 +605,6 @@ fn canonical_start_command_uses_configured_subagent_limits() {
     let command = canonical_start_command(&app, &config, "并行审计".to_owned());
     assert_eq!(command.limits.max_depth, 2);
     assert_eq!(command.limits.max_concurrent_children, 4);
-}
-
-#[test]
-fn pending_input_preview_projects_all_live_buckets() {
-    let mut app = create_test_app();
-    app.push_pending_steer(QueuedMessage::new("steer-msg".to_string(), None));
-    app.rejected_steers.push_back("rejected-msg".to_string());
-    app.queue_message(QueuedMessage::new("queued-msg".to_string(), None));
-
-    let preview = build_pending_input_preview(&app);
-    assert_eq!(preview.pending_steers, ["steer-msg"]);
-    assert_eq!(preview.rejected_steers, ["rejected-msg"]);
-    assert_eq!(preview.queued_messages, ["queued-msg"]);
 }
 
 #[test]

@@ -725,10 +725,6 @@ pub(crate) fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Co
     if running_agent_count(app) > 0 {
         return ("working", app.ui_theme.status_working);
     }
-    if app.queued_draft.is_some() {
-        return ("draft", app.ui_theme.text_muted);
-    }
-
     if !app.view_stack.is_empty() {
         return ("overlay", app.ui_theme.text_muted);
     }
