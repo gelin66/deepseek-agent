@@ -6,7 +6,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::deepseek_theme::active_theme;
 use crate::localization::{MessageId, tr};
 use crate::palette;
 use crate::tui::app::TranscriptSpacing;
@@ -741,19 +740,25 @@ fn render_card_detail_line_single(
 }
 
 fn tool_title_style() -> Style {
-    active_theme().tool_title_style()
+    Style::default()
+        .fg(palette::TEXT_SOFT)
+        .add_modifier(Modifier::BOLD)
 }
 
 fn tool_status_style(status: ToolStatus) -> Style {
-    active_theme().tool_status_style(status)
+    Style::default().fg(tool_state_color(status))
 }
 
 fn tool_detail_label_style() -> Style {
-    active_theme().tool_label_style()
+    Style::default().fg(palette::TEXT_DIM)
 }
 
 fn tool_state_color(status: ToolStatus) -> Color {
-    active_theme().tool_status_color(status)
+    match status {
+        ToolStatus::Running => palette::ACCENT_TOOL_LIVE,
+        ToolStatus::Success => palette::TEXT_DIM,
+        ToolStatus::Failed => palette::ACCENT_TOOL_ISSUE,
+    }
 }
 
 fn tool_status_label(status: ToolStatus) -> &'static str {
@@ -765,7 +770,7 @@ fn tool_status_label(status: ToolStatus) -> &'static str {
 }
 
 fn tool_value_style() -> Style {
-    active_theme().tool_value_style()
+    Style::default().fg(palette::TEXT_MUTED)
 }
 
 /// Heuristic check whether a string looks like a file path (contains a

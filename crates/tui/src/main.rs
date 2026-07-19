@@ -30,7 +30,6 @@ mod audit;
 mod codex_model_cache;
 mod config;
 mod config_persistence;
-mod deepseek_theme;
 mod dependencies;
 mod error_taxonomy;
 mod eval;

@@ -3,7 +3,6 @@ use super::{
     REASONING_RAIL, ToolStatus, TranscriptRenderOptions, USER_GLYPH, assistant_label_style_for,
     render_thinking, running_status_label_with_elapsed,
 };
-use crate::deepseek_theme::Theme;
 use crate::palette;
 use ratatui::style::Modifier;
 
@@ -1013,16 +1012,8 @@ fn render_thinking_streaming_omits_cursor_when_low_motion() {
     );
 }
 
-// === Theme parity tests ===
-//
-// These lock the visible color/style choices for one plan cell and one
-// tool cell against `deepseek_theme::Theme::dark()`. The render path is
-// unchanged in shape; the assertions just guarantee a future skin swap
-// (or accidental drift) is caught here instead of at runtime.
-
 #[test]
-fn generic_exec_shell_failed_status_renders_with_dark_theme_tokens() {
-    let theme = Theme::dark();
+fn generic_exec_shell_failed_status_renders_with_palette_tokens() {
     let cell = GenericToolCell {
         name: "exec_shell".to_string(),
         status: ToolStatus::Failed,
@@ -1043,8 +1034,8 @@ fn generic_exec_shell_failed_status_renders_with_dark_theme_tokens() {
 
     assert_eq!(
         symbol_span.style.fg,
-        Some(theme.tool_failed_accent),
-        "failed exec_shell header symbol should use the dark theme failed accent"
+        Some(palette::ACCENT_TOOL_ISSUE),
+        "failed exec_shell header symbol should use the issue accent"
     );
     // exec_shell is family Run → glyph `▶ ` and verb `run`.
     assert!(
@@ -1057,10 +1048,10 @@ fn generic_exec_shell_failed_status_renders_with_dark_theme_tokens() {
         "run",
         "exec_shell routes to Run family → 'run' verb",
     );
-    assert_eq!(title_span.style.fg, Some(theme.tool_title_color));
+    assert_eq!(title_span.style.fg, Some(palette::TEXT_SOFT));
     assert!(title_span.style.add_modifier.contains(Modifier::BOLD));
     assert_eq!(state_span.content.as_ref(), "issue");
-    assert_eq!(state_span.style.fg, Some(theme.tool_failed_accent));
+    assert_eq!(state_span.style.fg, Some(palette::ACCENT_TOOL_ISSUE));
 }
 
 // === Canonical live history display ===
