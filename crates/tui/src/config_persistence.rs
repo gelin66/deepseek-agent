@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context;
 
-use crate::config::{ApiProvider, expand_path};
+use crate::config::expand_path;
 
 /// Parse the TOML document at `path` (an absent or empty file yields an empty
 /// document), apply `mutate`, and atomically persist the result.
@@ -286,191 +286,6 @@ pub(crate) fn persist_unset_root_key(
     Ok(path)
 }
 
-pub(crate) fn persist_root_bool_key(
-    config_path: Option<&Path>,
-    key: &str,
-    value: bool,
-) -> anyhow::Result<PathBuf> {
-    let path = config_toml_path(config_path)?;
-    mutate_config_document(&path, |doc| set_document_value(doc, &[key], value))?;
-    Ok(path)
-}
-
-pub(crate) fn persist_tui_integer_key(
-    config_path: Option<&Path>,
-    key: &str,
-    value: u64,
-) -> anyhow::Result<PathBuf> {
-    let value = i64::try_from(value).context("integer value is too large for TOML")?;
-    persist_table_value_key(config_path, "tui", key, value.into())
-}
-
-pub(crate) fn persist_subagents_bool_key(
-    config_path: Option<&Path>,
-    key: &str,
-    value: bool,
-) -> anyhow::Result<PathBuf> {
-    persist_table_value_key(config_path, "subagents", key, value.into())
-}
-
-pub(crate) fn persist_subagents_integer_key(
-    config_path: Option<&Path>,
-    key: &str,
-    value: u64,
-) -> anyhow::Result<PathBuf> {
-    let value = i64::try_from(value).context("integer value is too large for TOML")?;
-    persist_table_value_key(config_path, "subagents", key, value.into())
-}
-
-fn persist_table_value_key(
-    config_path: Option<&Path>,
-    table_name: &str,
-    key: &str,
-    value: toml_edit::Value,
-) -> anyhow::Result<PathBuf> {
-    let path = config_toml_path(config_path)?;
-    mutate_config_document(&path, |doc| {
-        set_document_value(doc, &[table_name, key], value)
-    })?;
-    Ok(path)
-}
-
-pub(crate) fn persist_provider_base_url_key(
-    config_path: Option<&Path>,
-    provider: ApiProvider,
-    value: &str,
-) -> anyhow::Result<PathBuf> {
-    let provider_key = provider_base_url_table_key(provider)?;
-    let path = config_toml_path(config_path)?;
-    mutate_config_document(&path, |doc| {
-        set_document_value(doc, &["providers", provider_key, "base_url"], value)
-    })?;
-    Ok(path)
-}
-
-fn provider_base_url_table_key(provider: ApiProvider) -> anyhow::Result<&'static str> {
-    match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN => {
-            anyhow::bail!("DeepSeek uses the root base_url setting")
-        }
-        ApiProvider::DeepseekAnthropic => Ok("deepseek_anthropic"),
-        ApiProvider::NvidiaNim => Ok("nvidia_nim"),
-        ApiProvider::Openai => Ok("openai"),
-        ApiProvider::Anthropic => Ok("anthropic"),
-        ApiProvider::Atlascloud => Ok("atlascloud"),
-        ApiProvider::WanjieArk => Ok("wanjie_ark"),
-        ApiProvider::Volcengine => Ok("volcengine"),
-        ApiProvider::Openrouter => Ok("openrouter"),
-        ApiProvider::XiaomiMimo => Ok("xiaomi_mimo"),
-        ApiProvider::Novita => Ok("novita"),
-        ApiProvider::Fireworks => Ok("fireworks"),
-        ApiProvider::Siliconflow | ApiProvider::SiliconflowCn => Ok("siliconflow"),
-        ApiProvider::Arcee => Ok("arcee"),
-        ApiProvider::Huggingface => Ok("huggingface"),
-        ApiProvider::Deepinfra => Ok("deepinfra"),
-        ApiProvider::Moonshot => Ok("moonshot"),
-        ApiProvider::Sglang => Ok("sglang"),
-        ApiProvider::Vllm => Ok("vllm"),
-        ApiProvider::Ollama => Ok("ollama"),
-        ApiProvider::Together => Ok("together"),
-        ApiProvider::Qianfan => Ok("qianfan"),
-        ApiProvider::OpenaiCodex => Ok("openai_codex"),
-        ApiProvider::Openmodel => Ok("openmodel"),
-        ApiProvider::Zai => Ok("zai"),
-        ApiProvider::Stepfun => Ok("stepfun"),
-        ApiProvider::Minimax => Ok("minimax"),
-        ApiProvider::MinimaxAnthropic => Ok("minimax_anthropic"),
-        ApiProvider::Sakana => Ok("sakana"),
-        ApiProvider::LongCat => Ok("longcat"),
-        ApiProvider::Meta => Ok("meta"),
-        ApiProvider::Xai => Ok("xai"),
-        // Custom providers live under a user-chosen `[providers.<name>]` table,
-        // not a fixed key. Persisting base_url through this static-key path is
-        // out of scope for the #1519 constrained slice; users edit the named
-        // table directly.
-        ApiProvider::Custom => {
-            anyhow::bail!("custom providers store base_url in their named [providers.<name>] table")
-        }
-    }
-}
-
-pub(crate) fn persist_custom_provider(
-    config_path: Option<&Path>,
-    provider_id: &str,
-    base_url: &str,
-    model: Option<&str>,
-    api_key_env: Option<&str>,
-) -> anyhow::Result<PathBuf> {
-    let provider_id = normalize_custom_provider_id(provider_id)?;
-    let base_url = normalize_custom_provider_base_url(base_url)?;
-    let model = model.and_then(normalize_optional_custom_provider_field);
-    let api_key_env = api_key_env.and_then(normalize_optional_custom_provider_field);
-
-    let path = config_toml_path(config_path)?;
-    mutate_config_document(&path, |doc| {
-        let entry = ["providers", provider_id.as_str()];
-        set_document_value(doc, &["provider"], provider_id.as_str())?;
-        set_document_value(doc, &[entry[0], entry[1], "kind"], "openai-compatible")?;
-        set_document_value(doc, &[entry[0], entry[1], "base_url"], base_url.as_str())?;
-        match model.as_deref() {
-            Some(model) => set_document_value(doc, &[entry[0], entry[1], "model"], model)?,
-            None => {
-                unset_document_value(doc, &[entry[0], entry[1], "model"])?;
-            }
-        }
-        match api_key_env.as_deref() {
-            Some(env) => set_document_value(doc, &[entry[0], entry[1], "api_key_env"], env)?,
-            None => {
-                unset_document_value(doc, &[entry[0], entry[1], "api_key_env"])?;
-            }
-        }
-        Ok(())
-    })?;
-    Ok(path)
-}
-
-fn normalize_custom_provider_id(raw: &str) -> anyhow::Result<String> {
-    use anyhow::bail;
-
-    let value = raw.trim();
-    if value.is_empty() {
-        bail!("custom provider name is required");
-    }
-    if value == "__custom__" {
-        bail!("custom provider name is reserved");
-    }
-    if crate::config::ApiProvider::parse(value).is_some() {
-        bail!("custom provider name must not shadow a built-in provider");
-    }
-    if !value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-    {
-        bail!("custom provider name may only use letters, numbers, '-' and '_'");
-    }
-    Ok(value.to_string())
-}
-
-fn normalize_custom_provider_base_url(raw: &str) -> anyhow::Result<String> {
-    use anyhow::bail;
-
-    let value = raw.trim().trim_end_matches('/');
-    if value.is_empty() {
-        bail!("custom provider base URL is required");
-    }
-    let parsed = reqwest::Url::parse(value)
-        .map_err(|err| anyhow::anyhow!("custom provider base URL is invalid: {err}"))?;
-    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
-        bail!("custom provider base URL must be an http(s) URL with a host");
-    }
-    Ok(value.to_string())
-}
-
-fn normalize_optional_custom_provider_field(raw: &str) -> Option<String> {
-    let value = raw.trim();
-    (!value.is_empty()).then(|| value.to_string())
-}
-
 pub(crate) fn config_toml_path(config_path: Option<&Path>) -> anyhow::Result<PathBuf> {
     if let Some(path) = config_path {
         return Ok(expand_path(path.to_string_lossy().as_ref()));
@@ -685,111 +500,6 @@ mod tests {
         assert!(!missing_env.exists());
     }
 
-    #[test]
-    fn persist_bool_key_preserves_comments() {
-        let temp_root = temp_root("codewhale-persist-comments");
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-
-        let path = temp_root.join(".deepseek").join("config.toml");
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(
-            &path,
-            "# my note\nmodel = \"deepseek-v4-flash\"\n# disabled = true\n",
-        )
-        .unwrap();
-
-        let written = persist_root_bool_key(Some(&path), "allow_shell", true)
-            .expect("persist should succeed");
-        let body = fs::read_to_string(&written).expect("written file should be readable");
-        assert!(body.contains("# my note"), "prefix comment lost: {body}");
-        assert!(
-            body.contains("# disabled = true"),
-            "disabled key lost: {body}"
-        );
-        assert!(
-            body.contains("allow_shell = true"),
-            "new key not written: {body}"
-        );
-    }
-
-    #[test]
-    fn persist_custom_provider_writes_named_openai_compatible_table() {
-        let temp_root = temp_root("codewhale-custom-provider-persist");
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-
-        let path = temp_root.join(".codewhale").join("config.toml");
-        let written = persist_custom_provider(
-            Some(&path),
-            "acme_ai",
-            "https://api.acme.example/v1/",
-            Some("acme/code-1"),
-            Some("ACME_API_KEY"),
-        )
-        .expect("custom provider should persist");
-        let body = fs::read_to_string(&written).expect("written file should be readable");
-
-        assert!(body.contains("provider = \"acme_ai\""), "{body}");
-        assert!(body.contains("[providers.acme_ai]"), "{body}");
-        assert!(body.contains("kind = \"openai-compatible\""), "{body}");
-        assert!(
-            body.contains("base_url = \"https://api.acme.example/v1\""),
-            "{body}"
-        );
-        assert!(body.contains("model = \"acme/code-1\""), "{body}");
-        assert!(body.contains("api_key_env = \"ACME_API_KEY\""), "{body}");
-        assert!(
-            !body.contains("sk-"),
-            "helper must not persist raw secret values: {body}"
-        );
-
-        let loaded =
-            crate::config::Config::load(Some(written.clone()), None).expect("config should load");
-        assert_eq!(loaded.provider.as_deref(), Some("acme_ai"));
-        assert_eq!(loaded.api_provider(), crate::config::ApiProvider::Custom);
-        let entry = loaded
-            .providers
-            .as_ref()
-            .and_then(|providers| providers.custom_provider_config("acme_ai"))
-            .expect("custom provider entry");
-        assert_eq!(entry.kind.as_deref(), Some("openai-compatible"));
-        assert_eq!(
-            entry.base_url.as_deref(),
-            Some("https://api.acme.example/v1")
-        );
-        assert_eq!(entry.model.as_deref(), Some("acme/code-1"));
-        assert_eq!(entry.api_key_env.as_deref(), Some("ACME_API_KEY"));
-    }
-
-    #[test]
-    fn persist_custom_provider_rejects_builtin_or_invalid_names() {
-        let temp_root = temp_root("codewhale-custom-provider-invalid");
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-        let path = temp_root.join(".codewhale").join("config.toml");
-
-        let builtin = persist_custom_provider(
-            Some(&path),
-            "openrouter",
-            "https://api.example.invalid/v1",
-            None,
-            None,
-        )
-        .expect_err("built-in names should be rejected");
-        assert!(builtin.to_string().contains("built-in provider"));
-
-        let bad_chars = persist_custom_provider(
-            Some(&path),
-            "my provider",
-            "https://api.example.invalid/v1",
-            None,
-            None,
-        )
-        .expect_err("space in name should be rejected");
-        assert!(bad_chars.to_string().contains("letters, numbers"));
-    }
-
     // ------------------------------------------------------------------
     // Golden-file coverage for the shared toml_edit mutation path
     // (findings #18/#19/#20): unrelated comments, ordering, and quoted
@@ -798,7 +508,7 @@ mod tests {
 
     const GOLDEN_CONFIG: &str = r#"# CodeWhale golden config fixture, top note.
 # api_key = "sk-placeholder" (uncomment to set the key by hand)
-model = "deepseek-v4-pro" # pinned for release QA
+provider = "openrouter" # pinned for release QA
 
 # workspace trust note
 [projects."/Users/example/work"]
@@ -825,33 +535,33 @@ base_url = "https://quoted.example/v1"
         let path = temp_root.join(".deepseek").join("config.toml");
         write_golden_config(&path);
 
-        persist_root_string_key(Some(&path), "model", "deepseek-v4-flash")
+        persist_root_string_key(Some(&path), "provider", "deepseek")
             .expect("persist should succeed");
 
         let body = fs::read_to_string(&path).unwrap();
         let expected = GOLDEN_CONFIG.replace(
-            "model = \"deepseek-v4-pro\" # pinned for release QA",
-            "model = \"deepseek-v4-flash\" # pinned for release QA",
+            "provider = \"openrouter\" # pinned for release QA",
+            "provider = \"deepseek\" # pinned for release QA",
         );
-        assert_eq!(body, expected, "only the model value may change");
+        assert_eq!(body, expected, "only the provider value may change");
     }
 
     #[test]
-    fn golden_mutations_preserve_unrelated_comments_order_and_quoted_tables() {
+    fn golden_production_mutation_preserves_unrelated_comments_order_and_quoted_tables() {
         let temp_root = temp_root("codewhale-golden-mutations");
         fs::create_dir_all(&temp_root).unwrap();
         let _guard = EnvGuard::new(&temp_root);
         let path = temp_root.join(".deepseek").join("config.toml");
         write_golden_config(&path);
 
-        persist_root_bool_key(Some(&path), "allow_shell", true).unwrap();
-        persist_tui_integer_key(Some(&path), "scrollback_lines", 4000).unwrap();
-        persist_subagents_bool_key(Some(&path), "enabled", true).unwrap();
-        persist_provider_base_url_key(
-            Some(&path),
-            crate::config::ApiProvider::Openrouter,
-            "https://openrouter.example/v2",
-        )
+        mutate_config_document(&path, |doc| {
+            set_document_value(doc, &["api_key"], "test-only-key")?;
+            set_document_value(
+                doc,
+                &["projects", "/Users/example/work", "trust_level"],
+                "trusted",
+            )
+        })
         .unwrap();
         let body = fs::read_to_string(&path).unwrap();
         for comment in [
@@ -865,40 +575,35 @@ base_url = "https://quoted.example/v1"
         ] {
             assert!(body.contains(comment), "comment lost: {comment}\n{body}");
         }
-        // Updated in place, keeping the trailing comment on the same line.
+        assert!(body.contains("api_key = \"test-only-key\""), "{body}");
+        // Updated in place, keeping the workspace trust trailing comment.
         assert!(
-            body.contains("base_url = \"https://openrouter.example/v2\" # keep in sync with docs"),
+            body.contains("trust_level = \"trusted\" # granted manually"),
             "{body}"
         );
         assert!(body.contains("[providers.\"quoted.provider\"]"), "{body}");
 
         // Original section order is intact.
-        let model_at = body.find("model = ").unwrap();
+        let root_provider_at = body.find("provider = ").unwrap();
         let projects_at = body.find("[projects.").unwrap();
         let providers_at = body.find("[providers.openrouter]").unwrap();
         assert!(
-            model_at < projects_at && projects_at < providers_at,
+            root_provider_at < projects_at && projects_at < providers_at,
             "{body}"
         );
 
         let parsed: toml::Value = toml::from_str(&body).unwrap();
         assert_eq!(
-            parsed.get("allow_shell").and_then(toml::Value::as_bool),
-            Some(true)
+            parsed.get("api_key").and_then(toml::Value::as_str),
+            Some("test-only-key")
         );
         assert_eq!(
             parsed
-                .get("tui")
-                .and_then(|t| t.get("scrollback_lines"))
-                .and_then(toml::Value::as_integer),
-            Some(4000)
-        );
-        assert_eq!(
-            parsed
-                .get("subagents")
-                .and_then(|t| t.get("enabled"))
-                .and_then(toml::Value::as_bool),
-            Some(true)
+                .get("projects")
+                .and_then(|projects| projects.get("/Users/example/work"))
+                .and_then(|project| project.get("trust_level"))
+                .and_then(toml::Value::as_str),
+            Some("trusted")
         );
     }
 
@@ -994,47 +699,6 @@ name = "keep"
         assert!(body.contains("[[unrelated]]"), "{body}");
     }
 
-    #[test]
-    fn persist_custom_provider_unsets_removed_optional_fields() {
-        let temp_root = temp_root("codewhale-custom-provider-unset");
-        fs::create_dir_all(&temp_root).unwrap();
-        let _guard = EnvGuard::new(&temp_root);
-        let path = temp_root.join(".codewhale").join("config.toml");
-
-        persist_custom_provider(
-            Some(&path),
-            "acme_ai",
-            "https://api.acme.example/v1",
-            Some("acme/code-1"),
-            Some("ACME_API_KEY"),
-        )
-        .expect("first persist should succeed");
-        persist_custom_provider(
-            Some(&path),
-            "acme_ai",
-            "https://api.acme.example/v2",
-            None,
-            None,
-        )
-        .expect("second persist should succeed");
-
-        let body = fs::read_to_string(&path).unwrap();
-        let parsed: toml::Value = toml::from_str(&body).unwrap();
-        let entry = parsed
-            .get("providers")
-            .and_then(|providers| providers.get("acme_ai"))
-            .expect("provider entry");
-        assert_eq!(
-            entry.get("base_url").and_then(toml::Value::as_str),
-            Some("https://api.acme.example/v2")
-        );
-        assert!(entry.get("model").is_none(), "model must be unset: {body}");
-        assert!(
-            entry.get("api_key_env").is_none(),
-            "api_key_env must be unset: {body}"
-        );
-    }
-
     #[cfg(unix)]
     #[test]
     fn config_writes_land_with_owner_only_permissions() {
@@ -1047,7 +711,8 @@ name = "keep"
         write_golden_config(&path);
         fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
 
-        persist_root_bool_key(Some(&path), "allow_shell", true).expect("persist should succeed");
+        persist_root_string_key(Some(&path), "provider", "deepseek")
+            .expect("persist should succeed");
 
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "config.toml can hold api keys");

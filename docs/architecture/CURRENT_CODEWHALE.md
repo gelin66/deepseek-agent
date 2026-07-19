@@ -676,6 +676,10 @@ M4-C foreground 切换后还已物理删除：
   wrapper、configured-provider 判定和 custom-kind convenience 方法没有生产调用方，仅由配置
   自测互相证明，现已物理删除。真实配置加载归一化、`route_runtime::resolve_route_candidate`、
   Fleet route receipt、DeepSeek official model fail-closed 与 custom provider schema 均保留。
+- 旧 provider setup UI 留下的通用 bool/integer/provider-base-url/custom-provider TOML writers
+  只有自身测试调用，现已连同私有 normalization 闭包物理删除。生产配置修改仍统一经过
+  `mutate_config_document` 和原子 `0o600` 写入；DeepSeek 首次配置、workspace trust、CLI
+  login/logout 与 legacy approval migration 的真实窄入口均保留。
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
   没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。

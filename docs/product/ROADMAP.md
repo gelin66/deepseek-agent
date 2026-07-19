@@ -830,6 +830,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   requested-model/route validator、wire-model wrapper、configured-provider 判定和 custom-kind
   convenience 方法及其自证测试。生产配置归一化、`resolve_route_candidate`、Fleet 路由回执、
   DeepSeek official model fail-closed 和 custom provider schema 保持原 owner。
+- M4-C 已删除旧 provider setup UI 遗留的通用 bool/integer/provider-base-url/custom-provider
+  TOML writers 及私有 normalization 闭包；这些函数只有自身测试调用。共享原子 TOML mutation、
+  DeepSeek 首次配置、workspace trust、CLI login/logout 与 legacy approval migration 的生产写入
+  路径继续保留并由原有验收覆盖。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接
