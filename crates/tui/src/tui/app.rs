@@ -398,15 +398,6 @@ impl ToolCollapseMode {
     }
 
     #[must_use]
-    pub fn as_setting(self) -> &'static str {
-        match self {
-            Self::Compact => "compact",
-            Self::Expanded => "expanded",
-            Self::Calm => "calm",
-        }
-    }
-
-    #[must_use]
     pub fn is_active(self, calm_mode: bool) -> bool {
         match self {
             Self::Compact => true,
@@ -1111,7 +1102,6 @@ pub struct ViewportState {
     pub transcript_scroll: TranscriptScroll,
     pub pending_scroll_delta: i32,
     pub transcript_cache: TranscriptViewCache,
-    pub transcript_scrollbar_dragging: bool,
     pub last_transcript_area: Option<Rect>,
     pub last_composer_area: Option<Rect>,
     pub last_transcript_top: usize,
@@ -1136,7 +1126,6 @@ impl Default for ViewportState {
             transcript_scroll: TranscriptScroll::to_bottom(),
             pending_scroll_delta: 0,
             transcript_cache: TranscriptViewCache::new(),
-            transcript_scrollbar_dragging: false,
             last_transcript_area: None,
             last_composer_area: None,
             last_transcript_top: 0,
@@ -1158,7 +1147,6 @@ pub struct SessionState {
     pub session_cost_cny: f64,
     pub subagent_cost: f64,
     pub subagent_cost_cny: f64,
-    pub subagent_cost_event_seqs: HashSet<u64>,
     pub displayed_cost_high_water: f64,
     pub displayed_cost_high_water_cny: f64,
     pub last_prompt_tokens: Option<u32>,
@@ -1182,7 +1170,6 @@ impl Default for SessionState {
             session_cost_cny: 0.0,
             subagent_cost: 0.0,
             subagent_cost_cny: 0.0,
-            subagent_cost_event_seqs: HashSet::new(),
             displayed_cost_high_water: 0.0,
             displayed_cost_high_water_cny: 0.0,
             last_prompt_tokens: None,
@@ -1197,16 +1184,6 @@ impl Default for SessionState {
             total_cache_miss_tokens: 0,
             total_output_tokens: 0,
         }
-    }
-}
-
-impl SessionState {
-    /// Reset the accumulated token breakdown fields to zero.
-    pub fn reset_token_breakdown(&mut self) {
-        self.total_input_tokens = 0;
-        self.total_cache_hit_tokens = 0;
-        self.total_cache_miss_tokens = 0;
-        self.total_output_tokens = 0;
     }
 }
 
