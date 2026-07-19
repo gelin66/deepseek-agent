@@ -28,7 +28,6 @@ i18n!("locales", fallback = ["zh-Hans"]);
 
 mod audit;
 mod codex_model_cache;
-mod composer_history;
 mod config;
 mod config_persistence;
 mod core;

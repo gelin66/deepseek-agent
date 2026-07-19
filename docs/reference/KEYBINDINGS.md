@@ -38,7 +38,6 @@ Editing the message you're about to send.
 | `Ctrl-←` / `Alt-←`          | Move backward one word                                  |
 | `Ctrl-→` / `Alt-→`          | Move forward one word                                   |
 | `Ctrl-V` / `Cmd-V`          | Terminal text paste (`Event::Paste` or normal text input)|
-| `Ctrl-P` / `Ctrl-N`         | Cycle composer history (alternative)                     |
 | `Tab`                       | Slash-command / `@`-mention completion (popup-aware)    |
 | `! command`                 | Run a shell command through normal approval, sandbox, and output surfaces |
 
@@ -126,6 +125,5 @@ selection step or runtime language shortcut.
 ## v0.8.13 audit notes
 
 - **Phantom `Alt+Up` removed.** The "Edit last queued message" binding was listed in README but never existed in the key dispatch code.
-- **Bare Up/Down arrows scroll transcript when composer empty (v0.8.13).** Previously the `should_scroll_with_arrows` gate was hardcoded to false, meaning bare arrows always navigated composer history even when the composer was empty. Users in virtual terminals (Ghostty, Codex, Kitty-protocol) were especially affected because they couldn't use Cmd+Up / Alt+Up shortcuts.
+- **Bare Up/Down only scroll the transcript when the composer is empty.** The current canonical input loop has no prompt-recall binding.
 - **Configurable keymap (#436) and `tui.toml` (#437) remain deferred.** The `TuiPrefs` struct and loader exist in `settings.rs` but are not wired at startup. The named-binding registry that would let `~/.codewhale/tui.toml` override individual entries is still pending.
-- **No other broken bindings found.** Every other chord listed above resolves to a live handler in `crates/tui/src/tui/ui.rs` (key-event dispatch) or `crates/tui/src/tui/app.rs` (mode + state transitions).

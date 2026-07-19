@@ -353,7 +353,7 @@ M4-C foreground 切换后还已物理删除：
 - 没有当前事件循环消费者的 TUI frame limiter、frame requester、motion policy 及其
   `constrained_frame_rate` 假设置；实际事件轮询、动画 cadence 和 `low_motion` 路径保留。
 - 无生产写入方的持久 composer stash、Doctor 假投影和不可达 Ctrl+S/`/stash` 产品声明；
-  `App::stash_current_input_for_recovery` 的进程内撤销草稿不属于该旧文件能力，继续保留。
+  只有清空 writer、没有 restore 入口的进程内撤销草稿也已删除，`Ctrl-C`/`Esc` 直接清空输入。
 - 唯一构造 helper 自身无调用方、且所有事件都没有 canonical handler 的 TUI Setup Wizard；
   CLI `setup`、Doctor setup 诊断、`SetupState`/`UserConstitution` 和提示词上下文消费继续保留。
 - 无生产按键入口的 Activity Detail/Turn Inspector、shell details 路由、composer 外部编辑器、
@@ -445,7 +445,8 @@ M4-C foreground 切换后还已物理删除：
 - 未注册且零执行调用方的旧 TUI `RequestUserInputTool`/parser 与 prompt shadow；保留的
   UserInput modal 直接消费 protocol request/response，提交仍落入 canonical RunStore。
 - 旧 `composer_ui` 键盘处理器岛；唯一真实使用的 slash-menu 选择已迁回 canonical 事件
-  owner `ui.rs`，其余 escape/history/word-motion/newline helpers 没有生产调用方。
+  owner `ui.rs`，其余 escape/history/word-motion/newline helpers 没有生产调用方。无 canonical
+  输入入口的 recall 与只写不可读的跨进程 history 文件线程也已物理删除。
 - TUI 私有 approval cache、exact/grouping key、永远未设置的 timeout/tick，以及没有
   canonical Runtime 消费者的“批准并保存询问规则”事件载荷和界面。当前审批事件只携带
   `interaction_id + decision`，由 `TuiRunClient` 调用 canonical `resolve_interaction` 或

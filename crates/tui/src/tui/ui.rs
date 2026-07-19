@@ -948,7 +948,7 @@ async fn handle_canonical_key(
             run_client.interrupt().await?;
             app.status_message = Some(app.tr(MessageId::CanonicalInterruptAccepted).into_owned());
         } else if !app.input.is_empty() {
-            app.clear_input_recoverable();
+            app.clear_input();
         } else if app.is_loading {
             app.status_message = Some(app.tr(MessageId::CanonicalWaitTerminal).into_owned());
         } else {
@@ -1094,7 +1094,7 @@ async fn handle_canonical_key(
         }
         KeyCode::Esc => {
             if !app.input.is_empty() {
-                app.clear_input_recoverable();
+                app.clear_input();
             } else if run_client.snapshot().await.current_active_root.is_some() {
                 run_client.interrupt().await?;
                 app.status_message =

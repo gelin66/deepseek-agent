@@ -610,8 +610,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   编译岛及其只写不读的 `constrained_frame_rate` 设置。现有 24ms 事件轮询、80ms 动画重绘、
   `low_motion` 和实际 spinner/ocean 渲染保持不变。
 - M4-C 已删除没有写入、弹出或清空调用方的持久 composer stash，以及 Doctor 对历史
-  `composer_stash.jsonl` 的假诊断、不可达 Ctrl+S/`/stash` 帮助和提示；清空输入前用于撤销的
-  进程内 recovery draft 仍由 `App` 保留。
+  `composer_stash.jsonl` 的假诊断、不可达 Ctrl+S/`/stash` 帮助和提示；后续调用图又确认
+  进程内 recovery draft 只有清空时的 writer、没有任何 restore 入口，因此也已物理删除。
 - M4-C 已删除唯一构造 helper 自身也无调用方的 TUI Setup Wizard、9 个无 canonical handler
   的 Setup 事件和 175 条专属文案。顶层 `codewhale setup`、Doctor setup 投影、
   `SetupState`/`UserConstitution` 及生产提示词加载语义保留；现有用户 sidecar 不自动删除。
@@ -768,8 +768,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `AgentRuntime` interaction 与 `RunStore` 提交或取消，不再经过第二套 TUI ToolSpec。
 - M4-C 已把仍在使用的 slash-menu 上下选择收回 canonical `ui.rs`，并删除其余全部零调用
   的旧 `composer_ui` 键盘处理器；随后又删除同样没有 canonical 键盘入口的 composer
-  history-search 状态、匹配器、renderer 和消息目录。输入历史、草稿恢复与磁盘 history
-  未混入该切片，继续按各自真实调用图独立处理。
+  history-search 状态、匹配器、renderer 和消息目录。下一独立切片又删除无键盘入口的
+  input-history recall、只写不可读的磁盘 history 线程及其设置，并把 `Ctrl-C`/`Esc` 清空输入
+  收缩为直接 clear；普通输入、paste、mention、slash、提交及 canonical Run 投影保持不变。
 - M4-C 已删除零生产消费者、仅由自身测试调用的 TUI `is_key_file`/`summarize_project`/
   `project_tree` 浅层 project-map helpers；当前生产上下文继续由 `crates/context`、显式文件
   工具和 canonical transcript 构造，M5 的 RepoGraph/ContextBroker 不通过保留旧 helper

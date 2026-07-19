@@ -501,8 +501,8 @@ async fn release_six_child_fanout_keeps_typing_render_and_esc_cancel_live() -> R
         "canonical fanout UI did not expose child activity:\n{before_cancel}"
     );
 
-    // In the canonical composer the first Esc clears a non-empty recoverable
-    // draft. A second Esc with an empty composer submits the durable
+    // In the canonical composer the first Esc clears a non-empty composer.
+    // A second Esc with an empty composer submits the durable
     // interrupt, so neither action is hidden behind legacy queue semantics.
     tui.send(b"\x1b")?;
     tui.wait_for_text(COMPOSER_READY_TEXT, Duration::from_secs(3))?;

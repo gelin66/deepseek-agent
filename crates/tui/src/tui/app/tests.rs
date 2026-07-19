@@ -554,7 +554,7 @@ fn slash_command_classifier_treats_absolute_path_as_message() {
 }
 
 #[test]
-fn submit_input_records_absolute_slash_path_as_message_history() {
+fn submit_input_accepts_absolute_slash_path_as_message() {
     let mut app = App::new(test_options(false), &Config::default());
     let input = "/usr/lib/x86_64-linux-gnu/ 是标准路径吗？";
     app.input = input.to_string();
@@ -563,32 +563,7 @@ fn submit_input_records_absolute_slash_path_as_message_history() {
     let submitted = app.submit_input().expect("expected submitted input");
 
     assert_eq!(submitted, input);
-    assert_eq!(app.input_history.last().map(String::as_str), Some(input));
-}
-
-#[test]
-fn restore_last_submitted_prompt_rehydrates_empty_composer() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.last_submitted_prompt = Some("fix the typo\nand retry".to_string());
-
-    assert!(app.restore_last_submitted_prompt_if_empty());
-
-    assert_eq!(app.input, "fix the typo\nand retry");
-    assert_eq!(app.cursor_position, app.input.chars().count());
-    assert!(app.needs_redraw);
-}
-
-#[test]
-fn restore_last_submitted_prompt_preserves_existing_draft() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.last_submitted_prompt = Some("previous prompt".to_string());
-    app.input = "new draft".to_string();
-    app.cursor_position = app.input.chars().count();
-
-    assert!(!app.restore_last_submitted_prompt_if_empty());
-
-    assert_eq!(app.input, "new draft");
-    assert_eq!(app.cursor_position, "new draft".chars().count());
+    assert!(app.input.is_empty());
 }
 
 #[test]
@@ -1496,9 +1471,15 @@ fn test_clear_input() {
     let mut app = App::new(test_options(false), &Config::default());
     app.input = "test input".to_string();
     app.cursor_position = app.input.len();
+    app.pending_paste_reference = Some("@.codewhale/pastes/input.md".to_string());
+    app.oversized_paste_full_text = Some("full input".to_string());
+    app.selection_anchor = Some(0);
     app.clear_input();
     assert!(app.input.is_empty());
     assert_eq!(app.cursor_position, 0);
+    assert!(app.pending_paste_reference.is_none());
+    assert!(app.oversized_paste_full_text.is_none());
+    assert!(app.selection_anchor.is_none());
 }
 
 #[test]
@@ -2054,66 +2035,6 @@ fn test_add_message() {
 }
 
 #[test]
-fn test_input_history_navigation() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.push("first".to_string());
-    app.input_history.push("second".to_string());
-
-    // Navigate up
-    app.history_up();
-    assert!(app.history_index.is_some());
-
-    // Navigate down
-    app.history_down();
-}
-
-#[test]
-fn input_history_down_restores_live_draft_after_accidental_up() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.push("previous prompt".to_string());
-    app.input = "careful current draft".to_string();
-    app.cursor_position = "careful".chars().count();
-
-    app.history_up();
-    assert_eq!(app.input, "previous prompt");
-
-    app.history_down();
-    assert_eq!(app.input, "careful current draft");
-    assert_eq!(app.cursor_position, "careful".chars().count());
-    assert!(app.history_index.is_none());
-}
-
-#[test]
-fn input_history_navigation_clears_stale_selection() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.push("previous input".to_string());
-    app.input = "hello world".to_string();
-    app.cursor_position = "hello ".chars().count();
-    app.selection_anchor = Some(app.input.chars().count());
-
-    app.history_up();
-    assert_eq!(app.input, "previous input");
-    assert!(app.selection_anchor.is_none());
-
-    app.insert_char('x');
-    assert_eq!(app.input, "previous inputx");
-}
-
-#[test]
-fn input_history_restores_empty_draft_at_end_of_navigation() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.push("previous prompt".to_string());
-
-    app.history_up();
-    assert_eq!(app.input, "previous prompt");
-
-    app.history_down();
-    assert!(app.input.is_empty());
-    assert_eq!(app.cursor_position, 0);
-    assert!(app.history_index.is_none());
-}
-
-#[test]
 fn word_cursor_helpers_move_by_whitespace_delimited_words() {
     let mut app = App::new(test_options(false), &Config::default());
     app.input = "alpha beta  gamma".to_string();
@@ -2127,80 +2048,6 @@ fn word_cursor_helpers_move_by_whitespace_delimited_words() {
 
     app.move_cursor_word_backward();
     assert_eq!(app.cursor_position, "alpha ".chars().count());
-}
-
-#[test]
-fn editing_history_entry_leaves_navigation_mode() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.push("previous prompt".to_string());
-    app.input = "current draft".to_string();
-    app.cursor_position = app.input.chars().count();
-
-    app.history_up();
-    app.insert_char('!');
-    app.history_down();
-
-    assert_eq!(app.input, "previous prompt!");
-    assert!(app.history_index.is_none());
-}
-
-#[test]
-fn recoverable_clear_stashes_nonempty_draft() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input_history.clear();
-    app.input = "recover this".to_string();
-    app.cursor_position = app.input.chars().count();
-
-    app.clear_input_recoverable();
-
-    assert_eq!(
-        app.draft_history.back().map(String::as_str),
-        Some("recover this")
-    );
-}
-
-#[test]
-fn clear_undo_buffer_is_set_on_clear_input_recoverable() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello".to_string();
-    app.cursor_position = 5;
-
-    app.clear_input_recoverable();
-
-    assert!(app.input.is_empty());
-    assert_eq!(app.clear_undo_buffer.as_deref(), Some("hello"));
-}
-
-#[test]
-fn clear_undo_buffer_is_none_when_clearing_empty_input() {
-    let mut app = App::new(test_options(false), &Config::default());
-    assert!(app.input.is_empty());
-
-    app.clear_input_recoverable();
-
-    assert!(app.clear_undo_buffer.is_none());
-}
-
-#[test]
-fn restore_last_cleared_input_restores_saved_draft() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "previous".to_string();
-    app.cursor_position = 8;
-    app.clear_input_recoverable();
-    assert!(app.input.is_empty());
-
-    let restored = app.restore_last_cleared_input_if_empty();
-    assert!(restored);
-    assert_eq!(app.input, "previous");
-    assert!(app.clear_undo_buffer.is_none());
-}
-
-#[test]
-fn restore_last_cleared_input_does_nothing_when_composer_not_empty() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.clear_undo_buffer = Some("old".to_string());
-    app.input = "current".to_string();
-    assert!(!app.restore_last_cleared_input_if_empty());
 }
 
 #[test]

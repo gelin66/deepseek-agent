@@ -277,8 +277,6 @@ pub struct Settings {
     pub context_panel: bool,
     /// Cost display currency: usd or cny.
     pub cost_currency: String,
-    /// Maximum number of input history entries to save
-    pub max_input_history: usize,
     /// Default provider override (e.g. "deepseek", "openai").
     pub default_provider: Option<String>,
     /// Default model to use
@@ -389,7 +387,6 @@ impl Default for Settings {
             sidebar_auto_collapse_opt_in: true,
             context_panel: false,
             cost_currency: "usd".to_string(),
-            max_input_history: 100,
             default_provider: None,
             default_model: None,
             reasoning_effort: None,
@@ -816,14 +813,6 @@ impl Settings {
                 }
                 .to_string();
             }
-            "max_history" | "history" => {
-                let max: usize = value.parse().map_err(|_| {
-                    anyhow::anyhow!(
-                        "Failed to update setting: invalid max history '{value}'. Expected a positive number."
-                    )
-                })?;
-                self.max_input_history = max;
-            }
             "default_model" | "model" => {
                 let trimmed = value.trim();
                 if trimmed.is_empty()
@@ -938,7 +927,6 @@ impl Settings {
         lines.push(format!("  sidebar_focus:      {}", self.sidebar_focus));
         lines.push(format!("  context_panel:      {}", self.context_panel));
         lines.push(format!("  cost_currency:      {}", self.cost_currency));
-        lines.push(format!("  max_history:        {}", self.max_input_history));
         lines.push(format!(
             "  default_model:      {}",
             self.default_model.as_deref().unwrap_or("(default)")
@@ -1055,7 +1043,6 @@ impl Settings {
                 "Show the session context sidebar panel: on/off",
             ),
             ("cost_currency", "Cost display currency: usd, cny"),
-            ("max_history", "Max input history entries"),
             (
                 "default_model",
                 "Default model: auto or any DeepSeek model ID (e.g. deepseek-v4-pro)",
@@ -1614,6 +1601,22 @@ mod tests {
             Settings::available_settings()
                 .into_iter()
                 .all(|(key, _)| key != "launch_screen")
+        );
+    }
+
+    #[test]
+    fn removed_input_history_is_not_a_configurable_setting() {
+        let mut settings = Settings::default();
+        for key in ["max_history", "history"] {
+            let err = settings
+                .set(key, "100")
+                .expect_err("removed input history settings must fail closed");
+            assert!(err.to_string().contains("unknown setting"));
+        }
+        assert!(
+            Settings::available_settings()
+                .into_iter()
+                .all(|(key, _)| key != "max_history")
         );
     }
 

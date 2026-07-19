@@ -354,12 +354,6 @@ impl StatusToast {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct InputHistoryDraft {
-    input: String,
-    cursor: usize,
-}
-
 pub(crate) fn char_count(text: &str) -> usize {
     text.chars().count()
 }
@@ -740,8 +734,6 @@ const MAX_SUBMITTED_INPUT_CHARS: usize = 16_000;
 /// Beyond this, the text is truncated for rendering but the full content
 /// is preserved for model submission (#3263).
 const MAX_COMPOSER_DISPLAY_CHARS: usize = 4_000;
-const MAX_DRAFT_HISTORY: usize = 50;
-
 impl AppMode {
     /// Productive keyboard cycle: Plan -> Act -> Plan.
     ///
@@ -969,11 +961,6 @@ pub struct ComposerState {
     /// while `self.input` shows a truncated preview. At submit time the
     /// full text is restored for model submission (#3263).
     pub(crate) oversized_paste_full_text: Option<String>,
-    pub input_history: Vec<String>,
-    pub draft_history: VecDeque<String>,
-    pub clear_undo_buffer: Option<String>,
-    pub history_index: Option<usize>,
-    pub(crate) history_navigation_draft: Option<InputHistoryDraft>,
     pub slash_menu_selected: usize,
     pub slash_menu_hidden: bool,
     pub mention_menu_selected: usize,
@@ -1191,7 +1178,6 @@ pub struct App {
     pub tool_collapse_threshold: usize,
     /// Current dense tool-run collapse behavior.
     pub tool_collapse_mode: ToolCollapseMode,
-    pub max_input_history: usize,
     pub allow_shell: bool,
     pub max_subagents: usize,
     /// Per-SSE-chunk idle timeout for streamed turns, in seconds.
@@ -1292,9 +1278,6 @@ pub struct App {
     pub user_scrolled_during_stream: bool,
     /// Timestamp of the last user message send (for brief visual feedback).
     pub last_send_at: Option<Instant>,
-    /// Most recent user prompt accepted for an active engine turn. Ctrl+C can
-    /// restore this into an empty composer after cancelling that turn.
-    pub last_submitted_prompt: Option<String>,
     /// Startup prompt should be submitted automatically after the engine is ready.
     pub auto_submit_initial_input: bool,
     // === Transcript filtering (#397) ===
@@ -1464,7 +1447,6 @@ impl App {
         let transcript_spacing = TranscriptSpacing::from_setting(&settings.transcript_spacing);
         let sidebar_width_percent = settings.sidebar_width_percent;
         let sidebar_focus = SidebarFocus::from_setting(&settings.sidebar_focus);
-        let max_input_history = settings.max_input_history;
         // Resolve the named theme from settings; unknown values were already
         // normalised to "system" in Settings::load. The background_color
         // setting still overlays on top.
@@ -1585,7 +1567,6 @@ impl App {
         let cached_skills =
             Self::discover_cached_skills(&workspace, &skills_dir, skills_scan_codewhale_only);
 
-        let input_history = crate::composer_history::load_history();
         let (initial_input_text, initial_input_cursor, auto_submit_initial_input) =
             match initial_input {
                 // #451: pre-populate the composer when invoked via
@@ -1613,11 +1594,6 @@ impl App {
                 cursor_position: initial_input_cursor,
                 pending_paste_reference: None,
                 oversized_paste_full_text: None,
-                input_history,
-                draft_history: VecDeque::new(),
-                clear_undo_buffer: None,
-                history_index: None,
-                history_navigation_draft: None,
                 slash_menu_selected: 0,
                 slash_menu_hidden: false,
                 mention_menu_selected: 0,
@@ -1673,7 +1649,6 @@ impl App {
             context_panel: settings.context_panel,
             tool_collapse_threshold: 3,
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
-            max_input_history,
             allow_shell,
             max_subagents,
             stream_chunk_timeout_secs: config.stream_chunk_timeout_secs(),
@@ -1728,7 +1703,6 @@ impl App {
             is_purging: false,
             user_scrolled_during_stream: false,
             last_send_at: None,
-            last_submitted_prompt: None,
             auto_submit_initial_input,
             collapsed_cells: HashSet::new(),
             collapsed_cell_map: Vec::new(),
@@ -2621,7 +2595,6 @@ impl App {
     }
 
     pub fn insert_char(&mut self, c: char) {
-        self.clear_input_history_navigation();
         self.auto_expand_oversized_paste();
         self.delete_selection();
         let cursor = self.cursor_position.min(char_count(&self.input));
@@ -2645,7 +2618,6 @@ impl App {
     }
 
     pub fn delete_char(&mut self) {
-        self.clear_input_history_navigation();
         self.auto_expand_oversized_paste();
         if self.delete_selection() {
             return;
@@ -2665,7 +2637,6 @@ impl App {
     }
 
     pub fn delete_char_forward(&mut self) {
-        self.clear_input_history_navigation();
         self.auto_expand_oversized_paste();
         if self.delete_selection() {
             return;
@@ -2686,7 +2657,6 @@ impl App {
 
     /// Delete the word before the cursor.
     pub fn delete_word_backward(&mut self) {
-        self.clear_input_history_navigation();
         if self.delete_selection() {
             return;
         }
@@ -2729,7 +2699,6 @@ impl App {
 
     /// Delete from the cursor to the start of the line.
     pub fn delete_to_start_of_line(&mut self) {
-        self.clear_input_history_navigation();
         if self.delete_selection() {
             return;
         }
@@ -2756,7 +2725,6 @@ impl App {
 
     /// Delete the word after the cursor.
     pub fn delete_word_forward(&mut self) {
-        self.clear_input_history_navigation();
         if self.delete_selection() {
             return;
         }
@@ -2947,7 +2915,6 @@ impl App {
         self.input.replace_range(sb..eb, "");
         self.cursor_position = start;
         self.selection_anchor = None;
-        self.clear_input_history_navigation();
         self.slash_menu_hidden = false;
         self.mention_menu_hidden = false;
         self.mention_menu_selected = 0;
@@ -2961,7 +2928,6 @@ impl App {
     }
 
     pub fn clear_input(&mut self) {
-        self.clear_input_history_navigation();
         self.input.clear();
         self.cursor_position = 0;
         // Prevent stale oversized-paste state from leaking when the user
@@ -2972,35 +2938,6 @@ impl App {
         self.slash_menu_selected = 0;
         self.slash_menu_hidden = false;
         self.needs_redraw = true;
-    }
-
-    pub fn clear_input_recoverable(&mut self) {
-        self.stash_current_input_for_recovery();
-        self.clear_input();
-    }
-
-    pub fn stash_current_input_for_recovery(&mut self) {
-        // Before stashing, expand any truncated paste so the saved draft
-        // contains the full text, not the truncated preview (#3263).
-        self.auto_expand_oversized_paste();
-        let draft = self.input.clone();
-        if draft.trim().is_empty() {
-            self.clear_undo_buffer = None;
-            return;
-        }
-        self.clear_undo_buffer = Some(draft.clone());
-        self.remember_draft_for_recovery(draft);
-    }
-
-    fn remember_draft_for_recovery(&mut self, draft: String) {
-        if draft.trim().is_empty() {
-            return;
-        }
-        self.draft_history.retain(|existing| existing != &draft);
-        self.draft_history.push_back(draft);
-        while self.draft_history.len() > MAX_DRAFT_HISTORY {
-            let _ = self.draft_history.pop_front();
-        }
     }
 
     pub fn submit_input(&mut self) -> Option<String> {
@@ -3025,64 +2962,8 @@ impl App {
             }
             input.push_str(&reference);
         }
-        if !super::canonical_commands::looks_like_command_input(&input) {
-            self.input_history.push(input.clone());
-            if self.max_input_history == 0 {
-                self.input_history.clear();
-            } else if self.input_history.len() > self.max_input_history {
-                let excess = self.input_history.len() - self.max_input_history;
-                self.input_history.drain(0..excess);
-            }
-            // Mirror to the persisted cross-session history (#366) so
-            // arrow-up recall works across restarts. Best-effort write —
-            // see `composer_history::append_history` for failure modes.
-            crate::composer_history::append_history(&input);
-        }
-        self.history_index = None;
-        self.history_navigation_draft = None;
         self.clear_input();
         Some(input)
-    }
-
-    pub fn restore_last_submitted_prompt_if_empty(&mut self) -> bool {
-        if !self.input.is_empty() {
-            return false;
-        }
-        let Some(prompt) = self
-            .last_submitted_prompt
-            .as_deref()
-            .filter(|prompt| !prompt.is_empty())
-        else {
-            return false;
-        };
-
-        self.input = prompt.to_string();
-        self.cursor_position = char_count(&self.input);
-        self.history_index = None;
-        self.history_navigation_draft = None;
-        self.needs_redraw = true;
-        true
-    }
-
-    /// Restore the last cleared input if the composer is empty.
-    /// Returns `true` if the input was restored.
-    pub fn restore_last_cleared_input_if_empty(&mut self) -> bool {
-        if !self.input.is_empty() {
-            return false;
-        }
-        let Some(saved) = self.clear_undo_buffer.take().filter(|s| !s.is_empty()) else {
-            return false;
-        };
-
-        self.input = saved;
-        self.cursor_position = char_count(&self.input);
-        self.history_index = None;
-        self.history_navigation_draft = None;
-        self.slash_menu_selected = 0;
-        self.slash_menu_hidden = false;
-        self.needs_redraw = true;
-        self.clear_undo_buffer = None;
-        true
     }
 
     /// Submit the current composer input when Enter is pressed.
@@ -3162,64 +3043,6 @@ impl App {
             StatusToastLevel::Info,
             Some(5_000),
         );
-    }
-
-    pub fn history_up(&mut self) {
-        if self.input_history.is_empty() {
-            return;
-        }
-        if self.history_index.is_none() {
-            // Expand truncated paste first so the saved draft contains the
-            // full text instead of the truncated preview (#3263).
-            self.auto_expand_oversized_paste();
-            self.history_navigation_draft = Some(InputHistoryDraft {
-                input: self.input.clone(),
-                cursor: self.cursor_position,
-            });
-        }
-        let new_index = match self.history_index {
-            None => self.input_history.len().saturating_sub(1),
-            Some(i) => i.saturating_sub(1),
-        };
-        self.history_index = Some(new_index);
-        self.input = self.input_history[new_index].clone();
-        self.cursor_position = char_count(&self.input);
-        self.selection_anchor = None;
-        self.slash_menu_hidden = false;
-    }
-
-    pub fn history_down(&mut self) {
-        if self.input_history.is_empty() {
-            return;
-        }
-        match self.history_index {
-            None => {}
-            Some(i) => {
-                if i + 1 < self.input_history.len() {
-                    self.history_index = Some(i + 1);
-                    self.input = self.input_history[i + 1].clone();
-                    self.cursor_position = char_count(&self.input);
-                    self.selection_anchor = None;
-                    self.slash_menu_hidden = false;
-                } else {
-                    self.history_index = None;
-                    if let Some(draft) = self.history_navigation_draft.take() {
-                        self.input = draft.input;
-                        self.cursor_position = draft.cursor.min(char_count(&self.input));
-                        self.selection_anchor = None;
-                        self.slash_menu_hidden = false;
-                        self.needs_redraw = true;
-                    } else {
-                        self.clear_input();
-                    }
-                }
-            }
-        }
-    }
-
-    fn clear_input_history_navigation(&mut self) {
-        self.history_index = None;
-        self.history_navigation_draft = None;
     }
 
     pub fn effective_model_for_budget(&self) -> &str {
