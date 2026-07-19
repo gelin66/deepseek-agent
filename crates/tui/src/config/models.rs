@@ -101,14 +101,6 @@ pub const OPENAI_CODEX_EFFECTIVE_CONTEXT_WINDOW_TOKENS: u32 = 128_000;
 /// DeepSeek's official API host is the same worldwide. Keep this alias for
 /// old configs, but route it through the normal beta-enabled DeepSeek default.
 pub const DEFAULT_DEEPSEEKCN_BASE_URL: &str = DEFAULT_DEEPSEEK_BASE_URL;
-pub const COMMON_DEEPSEEK_MODELS: &[&str] = &[
-    "deepseek-v4-pro",
-    "deepseek-v4-flash",
-    "deepseek-ai/deepseek-v4-pro",
-    "deepseek-ai/deepseek-v4-flash",
-    "deepseek/deepseek-v4-pro",
-    "deepseek/deepseek-v4-flash",
-];
 pub const DEFAULT_ZAI_MODEL: &str = "GLM-5.2";
 pub const ZAI_GLM_5_1_MODEL: &str = "GLM-5.1";
 pub const ZAI_GLM_5_TURBO_MODEL: &str = "GLM-5-Turbo";

@@ -672,6 +672,10 @@ M4-C foreground 切换后还已物理删除：
   provider picker 与 inventory 消费者均已删除；该函数、列表测试和仅服务该列表的聚合常量
   现已物理删除。真实默认模型、alias/capability 常量、Codex account roster、Fleet route、
   bundled pricing 与 DeepSeek 官方模型校验保持各自 owner。
+- 旧 provider/model picker 留下的 display sorting、requested-model/route validator、wire-model
+  wrapper、configured-provider 判定和 custom-kind convenience 方法没有生产调用方，仅由配置
+  自测互相证明，现已物理删除。真实配置加载归一化、`route_runtime::resolve_route_candidate`、
+  Fleet route receipt、DeepSeek official model fail-closed 与 custom provider schema 均保留。
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
   没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。

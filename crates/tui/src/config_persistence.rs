@@ -753,7 +753,7 @@ mod tests {
             .as_ref()
             .and_then(|providers| providers.custom_provider_config("acme_ai"))
             .expect("custom provider entry");
-        assert!(entry.is_openai_compatible_custom());
+        assert_eq!(entry.kind.as_deref(), Some("openai-compatible"));
         assert_eq!(
             entry.base_url.as_deref(),
             Some("https://api.acme.example/v1")

@@ -826,6 +826,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   11 个专属列表测试、一个混合测试中的列表尾断言，以及只服务该列表的聚合/别名常量。
   默认模型、模型 alias/capability、Codex account roster、Fleet route receipt、bundled pricing
   和 DeepSeek `official_model_capabilities` 均不经过该旧 inventory API。
+- M4-C 已继续删除旧 provider/model picker 的零生产消费者 adapter：display sorting、
+  requested-model/route validator、wire-model wrapper、configured-provider 判定和 custom-kind
+  convenience 方法及其自证测试。生产配置归一化、`resolve_route_candidate`、Fleet 路由回执、
+  DeepSeek official model fail-closed 和 custom provider schema 保持原 owner。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

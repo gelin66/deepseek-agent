@@ -18,8 +18,8 @@
 //! It encodes its OWN minimal direct/aggregator/local classification because
 //! the tui helpers (`provider_passes_model_through` /
 //! `accepts_custom_model_ids`) are not reachable from `crates/config`. The
-//! classification here is deliberately NARROWER than tui's `validate_route`:
-//! it only rejects [`RouteError::ForeignModelForDirectProvider`] for a small
+//! classification here is deliberately narrow: it only rejects
+//! [`RouteError::ForeignModelForDirectProvider`] for a small
 //! set of strict direct providers given a clearly-foreign selector;
 //! aggregators, local, and custom endpoints pass through `Ok` with
 //! `validation.ok == true`.
@@ -357,7 +357,7 @@ fn default_offerings() -> Vec<ProviderModelOffering> {
 
 /// The resolver's minimal route classification.
 ///
-/// Intentionally narrower than tui's `validate_route`.
+/// Intentionally limited to facts owned by the canonical route resolver.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProviderClass {
     /// Strict direct provider: rejects clearly-foreign (prefixed) selectors.

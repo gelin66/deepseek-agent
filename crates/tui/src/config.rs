@@ -151,15 +151,6 @@ impl ApiProvider {
         self.env_vars().join(" / ")
     }
 
-    /// Providers ordered for picker/browsing surfaces.
-    #[must_use]
-    pub fn sorted_for_display() -> Vec<Self> {
-        codewhale_config::provider::providers_sorted_for_display()
-            .iter()
-            .map(|provider| Self::from_kind(provider.kind()))
-            .collect()
-    }
-
     /// Default base URL for this provider.
     #[must_use]
     pub fn default_base_url(self) -> &'static str {
@@ -664,96 +655,6 @@ pub fn normalize_model_name(model: &str) -> Option<String> {
     None
 }
 
-#[must_use]
-pub(crate) fn normalize_custom_model_id(model: &str) -> Option<String> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() || trimmed.chars().any(char::is_control) {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
-}
-
-/// Validate a user-requested model id against the active provider (#3018).
-///
-/// DeepSeek providers use the strict `normalize_model_name` gate (official
-/// API only accepts DeepSeek IDs).  All other providers pass any non-empty,
-/// non-control-character string through — the provider API is the authority.
-#[must_use]
-pub fn requested_model_for_provider(provider: ApiProvider, model: &str) -> Option<String> {
-    match provider {
-        ApiProvider::Deepseek | ApiProvider::DeepseekCN | ApiProvider::DeepseekAnthropic => {
-            normalize_model_name(model)
-        }
-        _ => normalize_custom_model_id(model),
-    }
-}
-
-/// Reject a provider/model tuple that we can be confident is invalid *before*
-/// it reaches the network (#3227).
-///
-/// The route-isolation bug paired a model picked under one provider with a
-/// different provider's route (model chip `deepseek-v4-pro`, provider badge
-/// `Z.ai`), producing a `400 Unknown Model` from the upstream. This guard
-/// catches that locally and names the incompatible pair instead.
-///
-/// We only reject tuples that are *known* to be wrong so legitimate custom
-/// routing (self-hosted endpoints, OpenAI-compatible aggregators that proxy
-/// DeepSeek weights, etc.) keeps working:
-///
-/// 1. A DeepSeek-native provider (`deepseek` / `deepseek-cn`) accepts only
-///    DeepSeek model IDs or `auto` — same gate as [`normalize_model_name`].
-/// 2. A non-DeepSeek *native* provider (e.g. Z.ai, which serves GLM) must not
-///    be handed a DeepSeek-only model ID. This reuses the same
-///    "foreign to a direct provider" classification the model resolver uses,
-///    so DeepSeek aggregators (NVIDIA NIM, OpenRouter, Fireworks, …) stay
-///    permissive.
-///
-/// Returns `Ok(())` for any tuple we cannot confidently reject (the provider
-/// API remains the final authority for those).
-pub fn validate_route(provider: ApiProvider, model: &str) -> Result<(), String> {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return Err(format!(
-            "No model selected for provider '{}'.",
-            provider.as_str()
-        ));
-    }
-    if trimmed.eq_ignore_ascii_case("auto") {
-        return Ok(());
-    }
-
-    // Providers whose model id is passed through verbatim (OpenAI-compatible,
-    // Ollama tags, custom base URLs, …) are validated by the upstream service.
-    if provider_passes_model_through(provider) {
-        return Ok(());
-    }
-
-    if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
-        if normalize_model_name(trimmed).is_some() {
-            return Ok(());
-        }
-        return Err(format!(
-            "Model '{trimmed}' is not a DeepSeek model, but the active provider is '{}'. \
-             Use a DeepSeek model id (for example {}) or switch providers together with the model.",
-            provider.as_str(),
-            COMMON_DEEPSEEK_MODELS.join(", ")
-        ));
-    }
-
-    // A non-DeepSeek native provider was handed a DeepSeek-only model id: this
-    // is the exact contamination from #3227 (Z.ai + deepseek-v4-pro).
-    if root_deepseek_model_is_foreign_to_direct_provider(provider, trimmed) {
-        return Err(format!(
-            "Model '{trimmed}' is a DeepSeek model and is not compatible with provider '{}'. \
-             Switch the provider and model together, or pick a model this provider serves.",
-            provider.as_str()
-        ));
-    }
-
-    Ok(())
-}
-
 fn canonical_official_deepseek_model_id(model: &str) -> Option<&'static str> {
     match model.trim().to_ascii_lowercase().as_str() {
         "deepseek-v4-pro"
@@ -1085,22 +986,6 @@ pub fn normalize_model_name_for_provider(provider: ApiProvider, model: &str) -> 
     // `model_for_provider` is a no-op for providers without a wire-slug map, so
     // this is one uniform layer over the equal-treatment canonical resolver.
     Some(model_for_provider(provider, canonical))
-}
-
-#[must_use]
-pub fn wire_model_for_provider(provider: ApiProvider, model: &str) -> String {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    if matches!(provider, ApiProvider::XiaomiMimo) {
-        return normalize_model_name_for_provider(provider, trimmed)
-            .unwrap_or_else(|| trimmed.to_string());
-    }
-    if provider_passes_model_through(provider) {
-        return trimmed.to_string();
-    }
-    normalize_model_name_for_provider(provider, trimmed).unwrap_or_else(|| trimmed.to_string())
 }
 
 // === Types ===
@@ -1549,21 +1434,6 @@ pub struct ProviderConfig {
     /// never stored in config; only the env var name is.
     #[serde(default, alias = "apiKeyEnv")]
     pub api_key_env: Option<String>,
-}
-
-impl ProviderConfig {
-    /// True when this entry selects the OpenAI-compatible custom wire protocol.
-    ///
-    /// `kind` is matched case-insensitively against `openai-compatible` (and the
-    /// `openai_compatible` underscore spelling). Returns `false` when `kind` is
-    /// unset (built-in providers) or names any other value.
-    #[must_use]
-    pub fn is_openai_compatible_custom(&self) -> bool {
-        self.kind.as_deref().is_some_and(|kind| {
-            let normalized = kind.trim().to_ascii_lowercase().replace('_', "-");
-            normalized == "openai-compatible"
-        })
-    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -2615,12 +2485,6 @@ impl Config {
     fn active_provider_preserves_custom_base_url_model(&self) -> bool {
         let provider = self.api_provider();
         provider_preserves_custom_base_url_model(provider, &self.deepseek_base_url())
-    }
-
-    pub(crate) fn model_ids_pass_through(&self) -> bool {
-        let provider = self.api_provider();
-        provider_passes_model_through(provider)
-            || self.active_provider_preserves_custom_base_url_model()
     }
 
     /// Read the API key.
@@ -5327,93 +5191,6 @@ pub fn has_api_key_for(config: &Config, provider: ApiProvider) -> bool {
     }
 
     false
-}
-
-/// Whether a provider counts as "configured" for the default `/provider`
-/// and `/model` manager views (#3830). Shared by both pickers so "what shows
-/// up without browsing the full catalog" stays a single definition.
-/// Self-hosted providers (Ollama/Sglang/Vllm) report `has_key = true`
-/// unconditionally in [`has_api_key_for`] since they don't require auth to
-/// route to — that's correct for routing, but wrong for "did the user set
-/// this up," so a self-hosted provider only qualifies via an explicit
-/// `[providers.<name>]` entry or being active, never via `has_key` alone
-/// (otherwise every self-hosted provider type would always show up).
-#[must_use]
-pub(crate) fn provider_is_configured(
-    provider: ApiProvider,
-    is_active: bool,
-    has_key: bool,
-    configured: Option<&ProviderConfig>,
-    is_named_custom_entry: bool,
-) -> bool {
-    // A *named* custom provider entry (one the user actually added) always
-    // counts. The unconfigured `Custom` placeholder row that fills the slot
-    // when no custom provider exists yet is not itself "configured" — it's
-    // the catalog's invitation to add one.
-    if is_active || is_named_custom_entry {
-        return true;
-    }
-    if configured.is_some_and(provider_config_is_explicit) {
-        return true;
-    }
-    if provider.is_self_hosted() {
-        return false;
-    }
-    has_key
-}
-
-/// Convenience wrapper around [`provider_is_configured`] for callers that
-/// just want "is this provider configured given the active one," without
-/// the provider picker's multi-row named-custom-provider bookkeeping
-/// (`is_named_custom_entry`) — e.g. the `/model` picker (#3830), which only
-/// ever resolves the single, currently-selected `Custom` slot via
-/// [`Config::provider_config_for`], the same way model/route resolution
-/// does everywhere else.
-#[must_use]
-pub(crate) fn provider_is_configured_for_active(
-    config: &Config,
-    provider: ApiProvider,
-    active: ApiProvider,
-) -> bool {
-    provider_is_configured(
-        provider,
-        provider == active,
-        has_api_key_for(config, provider),
-        config.provider_config_for(provider),
-        false,
-    )
-}
-
-/// True when a `[providers.<name>]` table entry has any field the user would
-/// have had to set explicitly — base URL, model, auth, etc. Used by
-/// [`provider_is_configured`]: merely existing in the
-/// (always-`Some`-once-any-provider-is-configured) `ProvidersConfig` struct
-/// isn't enough, since untouched providers still resolve to a
-/// `ProviderConfig::default()` there.
-fn provider_config_is_explicit(entry: &ProviderConfig) -> bool {
-    let non_empty = |value: Option<&String>| value.is_some_and(|value| !value.trim().is_empty());
-
-    non_empty(entry.api_key.as_ref())
-        || non_empty(entry.base_url.as_ref())
-        || non_empty(entry.model.as_ref())
-        || non_empty(entry.auth_mode.as_ref())
-        || entry
-            .auth
-            .as_ref()
-            .is_some_and(|auth| auth.validate().is_ok())
-        || entry.context_window.is_some()
-        || non_empty(entry.mode.as_ref())
-        || entry.max_concurrency.is_some()
-        || entry.http_headers.as_ref().is_some_and(|headers| {
-            headers
-                .iter()
-                .any(|(name, value)| !name.trim().is_empty() && !value.trim().is_empty())
-        })
-        || non_empty(entry.path_suffix.as_ref())
-        || non_empty(entry.reasoning_stream_style.as_ref())
-        || entry.insecure_skip_tls_verify.is_some()
-        || non_empty(entry.kind.as_ref())
-        || non_empty(entry.api_key_env.as_ref())
 }
 
 /// Save an API key to the appropriate place for the given provider.

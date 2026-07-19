@@ -9,14 +9,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn api_provider_metadata_helpers_follow_config_provider_metadata() {
-    let sorted = ApiProvider::sorted_for_display();
-    let expected_sorted: Vec<ApiProvider> =
-        codewhale_config::provider::providers_sorted_for_display()
-            .iter()
-            .map(|provider| ApiProvider::from_kind(provider.kind()))
-            .collect();
-    assert_eq!(sorted, expected_sorted);
-
     for kind in codewhale_config::ProviderKind::ALL {
         let provider = ApiProvider::from_kind(kind);
         let metadata = provider.metadata().expect("metadata-backed provider");
@@ -2774,103 +2766,6 @@ fn deepseek_default_model_canonicalizes_provider_prefixed_ids() {
 }
 
 #[test]
-fn requested_model_for_provider_is_permissive_off_deepseek() {
-    // #3018: the provider API is the authority for non-DeepSeek routes.
-    assert_eq!(
-        requested_model_for_provider(ApiProvider::Moonshot, "kimi-k2.5").as_deref(),
-        Some("kimi-k2.5")
-    );
-    assert_eq!(
-        requested_model_for_provider(ApiProvider::Ollama, "qwen3:32b").as_deref(),
-        Some("qwen3:32b")
-    );
-    // The official DeepSeek API stays strict.
-    assert!(requested_model_for_provider(ApiProvider::Deepseek, "kimi-k2.5").is_none());
-    assert_eq!(
-        requested_model_for_provider(ApiProvider::Deepseek, "deepseek-v4-pro").as_deref(),
-        Some("deepseek-v4-pro")
-    );
-}
-
-#[test]
-fn validate_route_rejects_mismatched_provider_model_tuple() {
-    // #3227: the exact contamination — Z.ai provider paired with a
-    // DeepSeek model — is rejected locally with a diagnostic that names
-    // the incompatible pair, before any network call.
-    let err = validate_route(ApiProvider::Zai, "deepseek-v4-pro")
-        .expect_err("zai + deepseek model must be rejected");
-    assert!(err.contains("deepseek-v4-pro"), "names the model: {err}");
-    assert!(err.contains("zai"), "names the provider: {err}");
-
-    // A DeepSeek-native provider rejects a non-DeepSeek model id.
-    let err = validate_route(ApiProvider::Deepseek, "GLM-5.2")
-        .expect_err("deepseek + GLM must be rejected");
-    assert!(err.contains("GLM-5.2"), "names the model: {err}");
-
-    // Coherent routes pass.
-    assert!(validate_route(ApiProvider::Zai, "GLM-5.2").is_ok());
-    assert!(validate_route(ApiProvider::Deepseek, "deepseek-v4-pro").is_ok());
-    // `auto` is always acceptable; the per-turn router resolves it.
-    assert!(validate_route(ApiProvider::Zai, "auto").is_ok());
-    // Pass-through / aggregator providers stay permissive — the upstream
-    // API remains the authority for them.
-    assert!(validate_route(ApiProvider::Openai, "deepseek-v4-pro").is_ok());
-    assert!(validate_route(ApiProvider::Openai, "qwen-plus").is_ok());
-    assert!(validate_route(ApiProvider::Openrouter, "deepseek-v4-pro").is_ok());
-    assert!(validate_route(ApiProvider::NvidiaNim, "deepseek-v4-pro").is_ok());
-    assert!(validate_route(ApiProvider::Together, DEFAULT_TOGETHER_MODEL).is_ok());
-    assert!(validate_route(ApiProvider::Together, DEFAULT_TOGETHER_FLASH_MODEL).is_ok());
-    assert!(validate_route(ApiProvider::Together, "deepseek-v4-pro").is_ok());
-
-    // Sakana AI (Fugu) is a native provider — DeepSeek ids must not cross-wire.
-    let err = validate_route(ApiProvider::Sakana, "deepseek-v4-flash")
-        .expect_err("sakana + deepseek flash must be rejected");
-    assert!(err.contains("deepseek-v4-flash"), "names the model: {err}");
-    assert!(err.contains("sakana"), "names the provider: {err}");
-    assert!(validate_route(ApiProvider::Sakana, DEFAULT_SAKANA_MODEL).is_ok());
-}
-
-#[test]
-fn wire_model_for_provider_matches_active_provider_shape() {
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::Deepseek, DEFAULT_OPENROUTER_MODEL),
-        DEFAULT_TEXT_MODEL
-    );
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::Openrouter, DEFAULT_TEXT_MODEL),
-        DEFAULT_OPENROUTER_MODEL
-    );
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::NvidiaNim, DEFAULT_TEXT_MODEL),
-        DEFAULT_NVIDIA_NIM_MODEL
-    );
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::Together, DEFAULT_TEXT_MODEL),
-        DEFAULT_TOGETHER_MODEL
-    );
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::Together, "deepseek-v4-flash"),
-        DEFAULT_TOGETHER_FLASH_MODEL
-    );
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::Openai, DEFAULT_OPENROUTER_MODEL),
-        DEFAULT_OPENROUTER_MODEL
-    );
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::Openrouter, OPENROUTER_MINIMAX_M3_MODEL),
-        OPENROUTER_MINIMAX_M3_MODEL
-    );
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::SiliconflowCn, DEFAULT_SILICONFLOW_MODEL),
-        DEFAULT_SILICONFLOW_MODEL
-    );
-    assert_eq!(
-        wire_model_for_provider(ApiProvider::SiliconflowCn, "deepseek-v4-pro"),
-        DEFAULT_SILICONFLOW_MODEL
-    );
-}
-
-#[test]
 fn normalize_model_name_for_provider_keeps_provider_specific_ids() {
     assert_eq!(
         normalize_model_name_for_provider(ApiProvider::NvidiaNim, "deepseek-v4-pro").as_deref(),
@@ -4963,10 +4858,6 @@ model = "deepseek-ai/DeepSeek-V4-Pro"
     assert_eq!(config.deepseek_api_key()?, "sf-cn-table-key");
     assert_eq!(config.deepseek_base_url(), DEFAULT_SILICONFLOW_CN_BASE_URL);
     assert_eq!(config.default_model(), DEFAULT_SILICONFLOW_MODEL);
-    assert_eq!(
-        wire_model_for_provider(config.api_provider(), &config.default_model()),
-        DEFAULT_SILICONFLOW_MODEL
-    );
     Ok(())
 }
 
@@ -6056,21 +5947,6 @@ fn provider_capability_openai_codex_uses_responses_payload() {
 }
 
 #[test]
-fn invalid_provider_auth_source_is_not_explicit_configuration() {
-    let entry = ProviderConfig {
-        auth: Some(codewhale_config::ProviderAuthSourceToml {
-            source: codewhale_config::AuthSourceKind::Command,
-            command: Vec::new(),
-            timeout_ms: None,
-            secret_id: None,
-        }),
-        ..ProviderConfig::default()
-    };
-
-    assert!(!provider_config_is_explicit(&entry));
-}
-
-#[test]
 fn provider_capability_openrouter_recent_large_models_are_reasoning_aware() {
     for (model, expected_window, expected_output) in [
         (
@@ -6662,7 +6538,6 @@ api_key_env = "EXAMPLE_API_KEY"
     );
     assert_eq!(custom.model.as_deref(), Some("custom-model-v1"));
     assert_eq!(custom.api_key_env.as_deref(), Some("EXAMPLE_API_KEY"));
-    assert!(custom.is_openai_compatible_custom());
     // A built-in provider name never leaks into the custom map.
     assert!(providers.custom_provider_config("openai").is_none());
 }
@@ -6703,32 +6578,6 @@ fn api_provider_returns_custom_for_custom_name_and_deepseek_for_junk() {
         junk.validate().is_err(),
         "invalid provider names should still fail validation"
     );
-}
-
-#[test]
-fn custom_provider_kind_only_accepts_openai_compatible() {
-    let ok = ProviderConfig {
-        kind: Some("openai-compatible".to_string()),
-        ..Default::default()
-    };
-    assert!(ok.is_openai_compatible_custom());
-
-    // Underscore spelling and case are tolerated.
-    let underscore = ProviderConfig {
-        kind: Some("OpenAI_Compatible".to_string()),
-        ..Default::default()
-    };
-    assert!(underscore.is_openai_compatible_custom());
-
-    // Any other declared wire format is rejected (callers error on these).
-    let other = ProviderConfig {
-        kind: Some("anthropic-messages".to_string()),
-        ..Default::default()
-    };
-    assert!(!other.is_openai_compatible_custom());
-
-    // Built-in providers leave `kind` unset.
-    assert!(!ProviderConfig::default().is_openai_compatible_custom());
 }
 
 #[test]

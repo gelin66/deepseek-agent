@@ -821,37 +821,10 @@ static PROVIDER_REGISTRY: [&dyn Provider; 34] = [
 /// Return all built-in provider metadata entries in `ProviderKind::ALL` order.
 ///
 /// This insertion order is the stable order used for internal parsing and
-/// default selection. It is intentionally NOT the order user-facing UI should
-/// render; for browsing/picker surfaces use [`providers_sorted_for_display`].
+/// default selection. Do not reorder it for presentation concerns.
 #[must_use]
 pub fn all_providers() -> &'static [&'static dyn Provider] {
     &PROVIDER_REGISTRY
-}
-
-/// Return all built-in providers ordered for user-facing display.
-///
-/// Providers are sorted alphabetically (case-insensitively) by
-/// [`Provider::display_name`] so model/provider browsing surfaces present a
-/// neutral, predictable list rather than leading with whichever provider
-/// happens to sit first in [`ProviderKind::ALL`] (historically DeepSeek). The
-/// ordering policy intentionally differs from internal parsing/default order:
-///
-/// - [`all_providers`] / [`ProviderKind::ALL`] — stable order for internal
-///   matching, parsing, and default selection. Do not reorder.
-/// - [`providers_sorted_for_display`] — neutral alphabetical order for UI
-///   browsing. DeepSeek stays present and searchable but is not hard-coded
-///   first; a caller may still highlight/pin the active provider separately.
-///
-/// Returns an owned `Vec` because the sorted order is computed, not static.
-#[must_use]
-pub fn providers_sorted_for_display() -> Vec<&'static dyn Provider> {
-    let mut providers = all_providers().to_vec();
-    providers.sort_by(|a, b| {
-        a.display_name()
-            .to_ascii_lowercase()
-            .cmp(&b.display_name().to_ascii_lowercase())
-    });
-    providers
 }
 
 /// Find a provider by canonical id only.
@@ -878,87 +851,4 @@ pub fn provider_for_kind(kind: ProviderKind) -> &'static dyn Provider {
         .find(|p| p.kind() == kind)
         .copied()
         .expect("ProviderKind variant missing from PROVIDER_REGISTRY")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn display_order_is_alphabetical_by_display_name() {
-        let display = providers_sorted_for_display();
-        let names: Vec<String> = display
-            .iter()
-            .map(|p| p.display_name().to_ascii_lowercase())
-            .collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        assert_eq!(
-            names, sorted,
-            "providers_sorted_for_display must be alphabetical (case-insensitive) by display name"
-        );
-    }
-
-    #[test]
-    fn display_order_differs_from_internal_all_order() {
-        // The whole point of the helper is that UI ordering is NOT the
-        // internal ProviderKind::ALL / all_providers() insertion order.
-        let display_ids: Vec<&str> = providers_sorted_for_display()
-            .iter()
-            .map(|p| p.id())
-            .collect();
-        let internal_ids: Vec<&str> = all_providers().iter().map(|p| p.id()).collect();
-        assert_ne!(
-            display_ids, internal_ids,
-            "display order should not match internal ALL order"
-        );
-    }
-
-    #[test]
-    fn display_order_is_complete_and_unique() {
-        // No provider is dropped or duplicated by the sort.
-        let display = providers_sorted_for_display();
-        assert_eq!(
-            display.len(),
-            all_providers().len(),
-            "display order must include every built-in provider"
-        );
-        let mut ids: Vec<&str> = display.iter().map(|p| p.id()).collect();
-        ids.sort_unstable();
-        let before = ids.len();
-        ids.dedup();
-        assert_eq!(
-            before,
-            ids.len(),
-            "display order must not contain duplicates"
-        );
-    }
-
-    #[test]
-    fn deepseek_is_present_but_not_first_in_display_order() {
-        // Acceptance: DeepSeek stays searchable but is no longer hard-coded
-        // first in provider browsing UI. (It is first in internal ALL order.)
-        let display = providers_sorted_for_display();
-        assert_eq!(
-            all_providers()[0].kind(),
-            ProviderKind::Deepseek,
-            "DeepSeek is expected to remain first in the stable internal order"
-        );
-        assert!(
-            display.iter().any(|p| p.kind() == ProviderKind::Deepseek),
-            "DeepSeek must remain present in display order"
-        );
-        assert_ne!(
-            display[0].kind(),
-            ProviderKind::Deepseek,
-            "DeepSeek must not be hard-coded first in display order"
-        );
-        // Anthropic ('Anthropic') sorts before 'DeepSeek' alphabetically, so it
-        // is a stable check that the neutral ordering actually took effect.
-        assert_eq!(
-            display[0].display_name(),
-            "Anthropic",
-            "alphabetical display order should lead with Anthropic"
-        );
-    }
 }
