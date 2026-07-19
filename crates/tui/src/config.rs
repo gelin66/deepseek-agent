@@ -1266,12 +1266,6 @@ pub struct MemoryConfig {
     /// `# foo` typed in the composer to append to that file. Default `false`.
     #[serde(default)]
     pub enabled: Option<bool>,
-    /// When `true`, deprecate the in-repo `memory.rs` push/inject path
-    /// (`<user_memory>` block + `remember` tool + `# foo` quick-add) in
-    /// favor of Moraine pull/recall via its MCP tools. The old path is
-    /// skipped even when `enabled = true`. Default `false`.
-    #[serde(default)]
-    pub moraine_fallback: Option<bool>,
 }
 
 // Web-search `[search]` table types live in the `search` leaf module and are
@@ -1552,9 +1546,6 @@ pub struct Config {
     /// loading + injection happens only when `[memory] enabled = true` or
     /// `DEEPSEEK_MEMORY=on` is set.
     ///
-    /// v0.8.66 deprecates this in favour of Moraine MCP recall. Set
-    /// `[memory] moraine_fallback = true` to skip the legacy push/inject
-    /// path while keeping Moraine's pull/recall tools.
     #[serde(default)]
     pub memory: Option<MemoryConfig>,
 
@@ -2994,19 +2985,6 @@ impl Config {
         self.memory
             .as_ref()
             .and_then(|m| m.enabled)
-            .unwrap_or(false)
-    }
-
-    /// Whether the legacy `memory.rs` push/inject path is deprecated in
-    /// favor of Moraine MCP recall. When `true`, the `<user_memory>`
-    /// block is skipped, the `remember` tool is not registered, and
-    /// `# foo` quick-add falls through to normal turn submission, even
-    /// when `memory_enabled()` returns `true`. Default `false`.
-    #[must_use]
-    pub fn moraine_fallback(&self) -> bool {
-        self.memory
-            .as_ref()
-            .and_then(|m| m.moraine_fallback)
             .unwrap_or(false)
     }
 
