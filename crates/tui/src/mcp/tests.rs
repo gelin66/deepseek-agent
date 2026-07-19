@@ -8,8 +8,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tokio::io::AsyncBufReadExt;
 
 fn test_http_client() -> reqwest::Client {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-    crate::tls::reqwest_client()
+    crate::tls::reqwest_client_builder()
+        .build()
+        .expect("build MCP test HTTP client")
 }
 
 async fn lock_mcp_loopback_tests() -> tokio::sync::MutexGuard<'static, ()> {
