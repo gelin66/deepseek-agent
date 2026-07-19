@@ -12,6 +12,4 @@ pub mod project_context;
 pub mod prompts;
 pub mod skills;
 
-pub use prompts::{
-    InstructionSource, ProductionPromptRequest, PromptSessionContext, production_system_prompt,
-};
+pub use prompts::{InstructionSource, ProductionPromptRequest, production_system_prompt};

@@ -4055,31 +4055,6 @@ fn run_doctor_json(
 
     let plugins_dir = default_plugins_dir();
 
-    // Memory feature state (#489). Operators ask "is memory on?" and
-    // "where does it live?" — surface both here so the question can be
-    // answered without booting the TUI. Both inputs are checked: the
-    // config flag and the env-var override that the runtime would
-    // honour. (The dedicated `Config::memory_enabled()` accessor lives
-    // on the memory-MVP branch (#518); this duplicates the same logic
-    // until the two PRs land and it can be replaced with a single
-    // method call.)
-    let memory_path = config.memory_path();
-    let memory_enabled_env = std::env::var("DEEPSEEK_MEMORY")
-        .ok()
-        .map(|raw| {
-            matches!(
-                raw.trim().to_ascii_lowercase().as_str(),
-                "1" | "on" | "true" | "yes" | "y" | "enabled"
-            )
-        })
-        .unwrap_or(false);
-    let memory_summary = json!({
-        // The MVP feature is opt-in by default; this defaults to false
-        // on branches without the [memory] section in `Config`.
-        "enabled": memory_enabled_env,
-        "path": memory_path.display().to_string(),
-        "file_present": memory_path.exists(),
-    });
     let api_target = doctor_api_target(config);
     let strict_tool_mode = doctor_strict_tool_mode_status(config);
     let tls_status = doctor_tls_status(config);
@@ -4113,7 +4088,6 @@ fn run_doctor_json(
             "message": tls_status.message,
         },
         "search_provider": doctor_search_provider_json(config),
-        "memory": memory_summary,
         "mcp": mcp_summary,
         "skills": {
             "selected": selected_skills_dir.display().to_string(),

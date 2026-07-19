@@ -62,7 +62,6 @@ Each repo can carry two distinct, complementary files:
       "live code and tests",
       "GitHub issue/PR details",
       "AGENTS.md",
-      "memory",
       "old handoffs"
     ],
     "protected_invariants": [
@@ -89,7 +88,7 @@ Each repo can carry two distinct, complementary files:
   This is the **repo-local law** layer in CodeWhale's hierarchy: *bundled global
   Constitution* → *user-global constitution* (`$CODEWHALE_HOME/constitution.json`,
   rendered as prose) → *repo constitution* (`.codewhale/constitution.json`, this
-  file) → *AGENTS/project instructions* → *memory and handoffs* → *current
+  file) → *AGENTS/project instructions* → *verified handoffs* → *current
   request and live evidence for the active turn*. Runtime policy
   (permissions/sandbox/cost limits enforced in code) is separate from all of
   these prompt layers. The repo constitution gives project decision rules; it
@@ -614,8 +613,6 @@ Remaining variables:
 - `DEEPSEEK_LOG_LEVEL` or `RUST_LOG` (`info`/`debug`/`trace` enables lightweight verbose logs)
 - `DEEPSEEK_SKILLS_DIR`
 - `DEEPSEEK_MCP_CONFIG`
-- `DEEPSEEK_MEMORY` (`1|on|true|yes|y|enabled` turns user memory on)
-- `DEEPSEEK_MEMORY_PATH`
 - `DEEPSEEK_ALLOW_SHELL` (`1`/`true` enables)
 - `DEEPSEEK_APPROVAL_POLICY` (`on-request|auto`)
 - `DEEPSEEK_SANDBOX_MODE` (`read-only|workspace-write|danger-full-access|external-sandbox`)
@@ -872,17 +869,6 @@ If you are upgrading from older releases:
   applicable, but configuration writes never copy those additions into the
   global file. The canonical Agent does not currently advertise discovered
   MCP tools to the model.
-- `[memory].enabled` (bool, optional): defaults to `false`. When `true`,
-  the TUI loads the user memory file into a `<user_memory>` prompt block,
-  enables `# foo` quick-capture in the composer, surfaces the `/memory`
-  slash command, and registers the `remember` tool. The same toggle is
-  available via `DEEPSEEK_MEMORY=on`.
-- `memory_path` (string, optional): defaults to `~/.codewhale/memory.md`, with
-  legacy `~/.deepseek/memory.md` fallback when the CodeWhale path is absent.
-  Used by the user-memory feature when enabled — see
-  [`MEMORY.md`](MEMORY.md) for the full feature surface (`# foo`
-  composer prefix, `/memory` slash command, `remember` tool, opt-in
-  toggle).
 - `context.*` (optional): deterministic project context in the stable prompt:
   - `[context].project_pack` (bool, default `true`)
 - `retry.*` (optional): retry/backoff settings for API requests:
@@ -914,31 +900,6 @@ If you are upgrading from older releases:
 - `tui.stream_chunk_timeout_secs` (int, optional, default `900`): per-SSE-chunk idle timeout for streamed model responses. Set it in the configuration file; `0` maps to the default and explicit values must be `1..=3600`. The legacy `DEEPSEEK_STREAM_IDLE_TIMEOUT_SECS` env var is still honored when this key is omitted.
 - `tui.osc8_links` (bool, optional, default on for macOS/Linux, off for Windows): emit OSC 8 escape sequences around URLs in transcript output so supporting terminals (iTerm2, Terminal.app 13+, Ghostty, Kitty, WezTerm, Alacritty, recent gnome-terminal/konsole) can open them with the terminal's link gesture—usually Cmd-click on macOS and Ctrl-click on Linux/Windows. Terminals without OSC 8 support render the plain label and ignore the escape. The escapes are emitted out-of-band (not inside buffer cells), so column corruption is not a concern; set `false` only for terminals that misrender the OSC 8 terminator itself. Windows legacy consoles default off; opt in with `true`.
 - `features.*` (optional): feature flag overrides (see below).
-
-### User memory
-
-User memory is split across one top-level path setting and one opt-in
-toggle table:
-
-```toml
-memory_path = "~/.codewhale/memory.md"
-
-[memory]
-enabled = true
-```
-
-Notes:
-
-- `memory_path` stays at the top level beside `skills_dir`; it is not nested
-  under `[memory]`.
-- `DEEPSEEK_MEMORY_PATH` overrides the file path from the environment.
-- `DEEPSEEK_MEMORY=on` (also `1`, `true`, `yes`, `y`, or `enabled`)
-  flips the feature on without editing `config.toml`.
-- The feature is inert when disabled: no file is injected, `# foo`
-  falls through to normal message submission, and the model does not
-  see the `remember` tool.
-- See [`MEMORY.md`](MEMORY.md) for examples and the full `/memory`
-  command surface.
 
 ### Parsed but currently unused (reserved for future versions)
 

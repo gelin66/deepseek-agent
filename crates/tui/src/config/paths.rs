@@ -139,17 +139,3 @@ pub(crate) fn default_mcp_config_path() -> Option<PathBuf> {
         primary
     })
 }
-
-pub(crate) fn default_memory_path() -> Option<PathBuf> {
-    effective_home_dir().map(|home| {
-        let primary = home.join(".codewhale").join("memory.md");
-        if primary.exists() {
-            return primary;
-        }
-        let legacy = home.join(".deepseek").join("memory.md");
-        if legacy.exists() {
-            return legacy;
-        }
-        primary
-    })
-}

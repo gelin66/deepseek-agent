@@ -17,9 +17,6 @@ approval_policy = "on-request"
 sandbox_mode = "workspace-write"
 max_subagents = 6
 
-[memory]
-enabled = true
-
 [subagents]
 max_concurrent = 6
 max_depth = 2

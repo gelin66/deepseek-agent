@@ -1020,20 +1020,6 @@ pub struct TuiConfig {
     pub osc8_links: Option<bool>,
 }
 
-/// User-level memory configuration (#489).
-///
-/// Default is opt-in: when this table is absent or `enabled = false`, the
-/// memory file is neither read nor written, and `# foo` quick-adds in the
-/// composer fall through to the normal turn-submission path.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct MemoryConfig {
-    /// When `true`, load the user memory file at `Config::memory_path()`
-    /// into the system prompt as a `<user_memory>` block, and intercept
-    /// `# foo` typed in the composer to append to that file. Default `false`.
-    #[serde(default)]
-    pub enabled: Option<bool>,
-}
-
 // Web-search `[search]` table types live in the `search` leaf module and are
 // re-exported below so `crate::config::SearchProvider` (and siblings) resolve
 // unchanged (#3311).
@@ -1120,7 +1106,6 @@ pub struct Config {
     pub mcp_config_path: Option<String>,
     pub mcp_oauth_callback_port: Option<u16>,
     pub mcp_oauth_callback_url: Option<String>,
-    pub memory_path: Option<String>,
     /// When true, atomically opt a fully compatible function catalog into
     /// DeepSeek beta strict schema validation. This never forces a tool call;
     /// `tool_choice` remains automatic. If one schema is incompatible, the
@@ -1183,13 +1168,6 @@ pub struct Config {
     /// requires a trusted `base_url`.
     #[serde(default)]
     pub search: Option<SearchConfig>,
-
-    /// User-level memory file (#489). Default behaviour is **opt-in**:
-    /// loading + injection happens only when `[memory] enabled = true` or
-    /// `DEEPSEEK_MEMORY=on` is set.
-    ///
-    #[serde(default)]
-    pub memory: Option<MemoryConfig>,
 
     /// Stable project context included in the production prompt.
     #[serde(default)]
@@ -2316,16 +2294,6 @@ impl Config {
             .unwrap_or_else(|| PathBuf::from("./mcp.json"))
     }
 
-    /// Resolve the memory file path.
-    #[must_use]
-    pub fn memory_path(&self) -> PathBuf {
-        self.memory_path
-            .as_deref()
-            .map(expand_path)
-            .or_else(default_memory_path)
-            .unwrap_or_else(|| PathBuf::from("./memory.md"))
-    }
-
     /// Resolve the configured `instructions = [...]` array (#454)
     /// to absolute paths, in declared order. Empty when unset or
     /// when every entry is empty after trimming. Each entry runs
@@ -2341,18 +2309,6 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(expand_path)
             .collect()
-    }
-
-    /// Whether the user-memory feature is enabled. The default is **off**
-    /// to preserve zero-overhead behavior for users who haven't opted in.
-    /// Flips to `true` when `[memory] enabled = true` in `config.toml` or
-    /// `DEEPSEEK_MEMORY=on` is set in the environment.
-    #[must_use]
-    pub fn memory_enabled(&self) -> bool {
-        self.memory
-            .as_ref()
-            .and_then(|m| m.enabled)
-            .unwrap_or(false)
     }
 
     #[must_use]
@@ -2600,8 +2556,7 @@ fn root_deepseek_model_is_foreign_to_direct_provider(provider: ApiProvider, mode
 mod paths;
 use paths::{
     canonicalize_or_keep, codewhale_home_dir, default_config_path, default_mcp_config_path,
-    default_memory_path, default_skills_dir, env_config_path, expand_pathbuf, home_config_path,
-    workspace_config_key,
+    default_skills_dir, env_config_path, expand_pathbuf, home_config_path, workspace_config_key,
 };
 pub(crate) use paths::{effective_home_dir, expand_path};
 
@@ -3451,19 +3406,6 @@ fn apply_env_overrides(config: &mut Config) {
     if let Ok(value) = std::env::var("DEEPSEEK_MCP_CONFIG") {
         config.mcp_config_path = Some(value);
     }
-    if let Ok(value) = std::env::var("DEEPSEEK_MEMORY_PATH") {
-        config.memory_path = Some(value);
-    }
-    if let Ok(value) = std::env::var("DEEPSEEK_MEMORY") {
-        let on = matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "on" | "true" | "yes" | "y" | "enabled"
-        );
-        config
-            .memory
-            .get_or_insert_with(MemoryConfig::default)
-            .enabled = Some(on);
-    }
     if let Ok(value) = std::env::var("DEEPSEEK_ALLOW_SHELL") {
         config.allow_shell = Some(value == "1" || value.eq_ignore_ascii_case("true"));
     }
@@ -3972,7 +3914,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         mcp_oauth_callback_url: override_cfg
             .mcp_oauth_callback_url
             .or(base.mcp_oauth_callback_url),
-        memory_path: override_cfg.memory_path.or(base.memory_path),
         // #454: user-owned profiles may replace the instruction array.
         // Project-scope config is filtered in main.rs and cannot set
         // instruction paths.
@@ -3998,7 +3939,6 @@ fn merge_config(base: Config, override_cfg: Config) -> Config {
         features: merge_features(base.features, override_cfg.features),
         skills: merge_skills_config(base.skills, override_cfg.skills),
         search: override_cfg.search.or(base.search),
-        memory: override_cfg.memory.or(base.memory),
         context: ContextConfig {
             project_pack: override_cfg
                 .context

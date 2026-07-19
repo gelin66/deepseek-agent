@@ -2107,11 +2107,6 @@ fn default_user_paths_use_codewhale_home_for_fresh_installs() -> Result<()> {
         config.mcp_config_path(),
         temp_root.join(".codewhale").join("mcp.json")
     );
-    assert_eq!(
-        config.memory_path(),
-        temp_root.join(".codewhale").join("memory.md")
-    );
-
     Ok(())
 }
 
@@ -2129,7 +2124,7 @@ fn default_user_paths_preserve_existing_legacy_files() -> Result<()> {
     ));
     let legacy_home = temp_root.join(".deepseek");
     fs::create_dir_all(&legacy_home)?;
-    for name in ["config.toml", "mcp.json", "memory.md"] {
+    for name in ["config.toml", "mcp.json"] {
         fs::write(legacy_home.join(name), "")?;
     }
     let _guard = EnvGuard::new(&temp_root);
@@ -2144,7 +2139,6 @@ fn default_user_paths_preserve_existing_legacy_files() -> Result<()> {
         legacy_home.join("config.toml")
     );
     assert_eq!(config.mcp_config_path(), legacy_home.join("mcp.json"));
-    assert_eq!(config.memory_path(), legacy_home.join("memory.md"));
 
     Ok(())
 }
@@ -2738,7 +2732,6 @@ fn profile_skills_config_merges_scan_scope() {
         Config {
             skills: Some(SkillsConfig {
                 scan_codewhale_only: Some(true),
-                ..Default::default()
             }),
             ..Default::default()
         },

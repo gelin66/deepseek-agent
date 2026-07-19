@@ -43,10 +43,6 @@ changing the input. Completion uses deterministic workspace ranking. Accepting
 a candidate does not send a request; press `Enter` again to submit the exact
 `@path` text.
 
-### `#` quick-add (memory)
-
-When `[memory] enabled = true`, typing `# foo` and pressing `Enter` appends `foo` as a timestamped bullet to your memory file *without* sending a turn. See `docs/reference/MEMORY.md`.
-
 ## Transcript (when transcript has focus)
 
 | Chord                | Action                                              |

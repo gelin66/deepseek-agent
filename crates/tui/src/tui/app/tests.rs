@@ -807,7 +807,6 @@ fn cached_skills_respect_codewhale_only_scan_config() {
     let config = Config {
         skills: Some(crate::config::SkillsConfig {
             scan_codewhale_only: Some(true),
-            ..Default::default()
         }),
         ..Default::default()
     };
@@ -848,7 +847,6 @@ fn resolve_skills_dir_requires_codewhale_skills_to_be_directory() {
     let config = Config {
         skills: Some(crate::config::SkillsConfig {
             scan_codewhale_only: Some(true),
-            ..Default::default()
         }),
         ..Default::default()
     };
@@ -923,7 +921,6 @@ fn cached_skills_preserve_configured_directory_in_codewhale_only_scan() {
         skills_dir: Some(configured_dir.to_string_lossy().into_owned()),
         skills: Some(crate::config::SkillsConfig {
             scan_codewhale_only: Some(true),
-            ..Default::default()
         }),
         ..Default::default()
     };
@@ -975,7 +972,6 @@ fn cached_skills_reject_codewhale_only_workspace_symlink_escape() {
     let config = Config {
         skills: Some(crate::config::SkillsConfig {
             scan_codewhale_only: Some(true),
-            ..Default::default()
         }),
         ..Default::default()
     };

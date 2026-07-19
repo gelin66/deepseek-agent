@@ -134,8 +134,6 @@ skills_dir = "~/.codewhale/skills"
 mcp_config_path = "~/.codewhale/mcp.json"
 notes_path = "~/.codewhale/notes.txt"
 
-memory_path = "~/.codewhale/memory.md"
-
 # instructions = ["./AGENTS.md", "~/.codewhale/global.md"]
 #
 # Optional list of additional instruction files concatenated into the
@@ -148,17 +146,6 @@ memory_path = "~/.codewhale/memory.md"
 # the user-level array wholesale rather than merging — list `~/global.md`
 # inside the project array if you want both. An explicit empty array
 # (`instructions = []`) clears the user list for the current repo.
-
-# ─────────────────────────────────────────────────────────────────────────────────
-# User memory (#489) — opt-in. When enabled, the TUI reads memory_path on
-# startup and injects its contents into the system prompt as a
-# <user_memory> block, intercepts `# foo` typed in the composer to append
-# the line as a timestamped bullet, and registers a `remember` tool the
-# model can call to add durable notes itself.
-# ─────────────────────────────────────────────────────────────────────────────────
-[memory]
-# enabled = true            # turn the feature on (default: false)
-# Override the env-var equivalent: `DEEPSEEK_MEMORY=on`
 
 # ─────────────────────────────────────────────────────────────────────────────────
 # Security
