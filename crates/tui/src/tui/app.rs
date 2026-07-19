@@ -1076,8 +1076,6 @@ pub struct ComposerState {
     pub input: String,
     /// Cursor position within `input` (in characters).
     pub cursor_position: usize,
-    /// Single-entry kill buffer for emacs-style `Ctrl+K` cut / `Ctrl+Y` yank.
-    pub kill_buffer: String,
     /// When a large paste is consolidated at submit time, the file @mention
     /// is stored here so it can be appended to the submitted text without
     /// replacing the visible composer content (#3263).
@@ -1872,7 +1870,6 @@ impl App {
             composer: ComposerState {
                 input: initial_input_text,
                 cursor_position: initial_input_cursor,
-                kill_buffer: String::new(),
                 pending_paste_reference: None,
                 oversized_paste_full_text: None,
                 input_history,
@@ -3339,80 +3336,6 @@ impl App {
             self.mention_menu_selected = 0;
             self.needs_redraw = true;
         }
-    }
-
-    /// Cut from the cursor to the end of the current logical line into the
-    /// kill buffer. If the cursor is already at end-of-line and a trailing
-    /// newline exists, that newline is consumed so repeated invocations
-    /// continue to make progress (matching emacs/codex semantics).
-    ///
-    /// Returns `true` when bytes were moved into the kill buffer.
-    pub fn kill_to_end_of_line(&mut self) -> bool {
-        self.clear_input_history_navigation();
-        if let Some((start, end)) = self.selection_range() {
-            let sb = byte_index_at_char(&self.input, start);
-            let eb = byte_index_at_char(&self.input, end);
-            self.kill_buffer = self.input[sb..eb].to_string();
-            self.delete_selection();
-            return true;
-        }
-        let total_chars = char_count(&self.input);
-        let cursor = self.cursor_position.min(total_chars);
-        let start_byte = byte_index_at_char(&self.input, cursor);
-
-        // Find the byte offset of the next '\n' (relative to the whole string)
-        // or the end of the buffer if no newline exists at/after the cursor.
-        let eol_byte = self.input[start_byte..]
-            .find('\n')
-            .map(|rel| start_byte + rel)
-            .unwrap_or_else(|| self.input.len());
-
-        let end_byte = if start_byte == eol_byte {
-            // Cursor is at EOL — consume the newline itself if one is there.
-            if eol_byte < self.input.len() {
-                eol_byte + 1
-            } else {
-                return false;
-            }
-        } else {
-            eol_byte
-        };
-
-        let removed: String = self.input[start_byte..end_byte].to_string();
-        if removed.is_empty() {
-            return false;
-        }
-
-        self.kill_buffer = removed;
-        self.input.replace_range(start_byte..end_byte, "");
-        // Cursor stays at the same character index (start of removed range).
-        self.cursor_position = cursor;
-        self.slash_menu_hidden = false;
-        self.mention_menu_hidden = false;
-        self.mention_menu_selected = 0;
-        self.needs_redraw = true;
-        true
-    }
-
-    /// Insert the contents of the kill buffer at the cursor, advancing it.
-    /// The kill buffer is left intact so multiple yanks duplicate the text.
-    /// Returns `true` if any text was inserted.
-    pub fn yank(&mut self) -> bool {
-        if self.kill_buffer.is_empty() {
-            return false;
-        }
-        self.delete_selection();
-        self.clear_input_history_navigation();
-        let text = self.kill_buffer.clone();
-        let cursor = self.cursor_position.min(char_count(&self.input));
-        let byte_index = byte_index_at_char(&self.input, cursor);
-        self.input.insert_str(byte_index, &text);
-        self.cursor_position = cursor + char_count(&text);
-        self.slash_menu_hidden = false;
-        self.mention_menu_hidden = false;
-        self.mention_menu_selected = 0;
-        self.needs_redraw = true;
-        true
     }
 
     pub fn move_cursor_left(&mut self) {

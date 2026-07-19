@@ -2487,57 +2487,6 @@ fn composer_enter_submits_normally() {
     );
 }
 
-#[test]
-fn kill_to_end_of_line_cuts_from_middle_of_word() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "hello world".to_string();
-    app.cursor_position = 6; // before 'w'
-    assert!(app.kill_to_end_of_line());
-    assert_eq!(app.input, "hello ");
-    assert_eq!(app.cursor_position, 6);
-    assert_eq!(app.kill_buffer, "world");
-}
-
-#[test]
-fn kill_at_eol_consumes_following_newline() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "line one\nline two".to_string();
-    app.cursor_position = 8; // sitting on the '\n'
-    assert!(app.kill_to_end_of_line());
-    assert_eq!(app.input, "line oneline two");
-    assert_eq!(app.cursor_position, 8);
-    assert_eq!(app.kill_buffer, "\n");
-
-    // Empty input: kill is a no-op and the buffer is untouched.
-    let mut empty = App::new(test_options(false), &Config::default());
-    assert!(!empty.kill_to_end_of_line());
-    assert!(empty.input.is_empty());
-    assert!(empty.kill_buffer.is_empty());
-}
-
-#[test]
-fn yank_inserts_kill_buffer_and_preserves_it() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.input = "abc def".to_string();
-    app.cursor_position = 4; // before 'd'
-    assert!(app.kill_to_end_of_line());
-    assert_eq!(app.input, "abc ");
-    assert_eq!(app.kill_buffer, "def");
-
-    // Move cursor to the start and yank twice — kill_buffer must persist.
-    app.cursor_position = 0;
-    assert!(app.yank());
-    assert!(app.yank());
-    assert_eq!(app.input, "defdefabc ");
-    assert_eq!(app.cursor_position, 6);
-    assert_eq!(app.kill_buffer, "def");
-
-    // Yank with empty buffer is a no-op.
-    let mut empty = App::new(test_options(false), &Config::default());
-    assert!(!empty.yank());
-    assert!(empty.input.is_empty());
-}
-
 // ---- Issue #90: quit confirmation timeout ----
 
 #[test]
@@ -2989,23 +2938,6 @@ fn delete_to_start_of_line_respects_multiline_cursor() {
 
     assert_eq!(app.input, "first\n line");
     assert_eq!(app.cursor_position, char_count("first\n"));
-}
-
-#[test]
-fn kill_and_yank_handle_multibyte_utf8() {
-    let mut app = App::new(test_options(false), &Config::default());
-    // "café 你好" — char_count = 7 (c,a,f,é, ,你,好); UTF-8 bytes differ.
-    app.input = "café 你好".to_string();
-    app.cursor_position = 5; // before '你'
-    assert!(app.kill_to_end_of_line());
-    assert_eq!(app.input, "café ");
-    assert_eq!(app.cursor_position, 5);
-    assert_eq!(app.kill_buffer, "你好");
-
-    // Yank back at the same spot — must not panic on char boundaries.
-    assert!(app.yank());
-    assert_eq!(app.input, "café 你好");
-    assert_eq!(app.cursor_position, 7);
 }
 
 #[test]
