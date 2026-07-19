@@ -1081,6 +1081,7 @@ pub struct MentionCandidateCache {
 }
 
 /// Composer input state — grouped fields for the text input area.
+#[derive(Default)]
 pub struct ComposerState {
     /// Current composer text content.
     pub input: String,
@@ -1116,31 +1117,6 @@ pub struct ComposerState {
     /// `selection_anchor` is the fixed end.  Both are char-indexed.
     /// `None` means no selection is active.
     pub selection_anchor: Option<usize>,
-}
-
-impl Default for ComposerState {
-    fn default() -> Self {
-        Self {
-            input: String::new(),
-            cursor_position: 0,
-            kill_buffer: String::new(),
-            pending_paste_reference: None,
-            oversized_paste_full_text: None,
-            input_history: Vec::new(),
-            draft_history: VecDeque::new(),
-            clear_undo_buffer: None,
-            history_index: None,
-            history_navigation_draft: None,
-            composer_history_search: None,
-            slash_menu_selected: 0,
-            slash_menu_hidden: false,
-            mention_menu_selected: 0,
-            mention_menu_hidden: false,
-            mention_completion_cache: None,
-            mention_candidate_cache: None,
-            selection_anchor: None,
-        }
-    }
 }
 
 /// Viewport/scroll state — fields related to transcript scrolling and caching.

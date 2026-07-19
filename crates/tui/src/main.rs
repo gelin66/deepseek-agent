@@ -1402,10 +1402,8 @@ async fn run_async_main() -> Result<()> {
     // snapshots are preserved for explicit resume, but never auto-attached.
     let resume_session_id = if cli.continue_session {
         Some("latest".to_owned())
-    } else if let Some(id) = cli.resume.clone() {
-        Some(id)
     } else {
-        None
+        cli.resume.clone()
     };
 
     // Default: Interactive TUI

@@ -695,7 +695,6 @@ fn sidebar_subagent_summary(app: &App) -> SidebarSubagentSummary {
         cached_total: app.child_agents.rows().len(),
         cached_running: app.child_agents.active_count(),
         role_counts,
-        ..SidebarSubagentSummary::default()
     }
 }
 
