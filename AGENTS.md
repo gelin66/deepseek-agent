@@ -60,13 +60,14 @@ Changing one of these constraints requires evidence and a new ADR.
   and projects root/child facts through `CanonicalRunProjection`. Its old
   foreground Engine, private runtime-thread owners, `SessionManager`, child
   display cache, and registry-driven slash-command system have been deleted.
-- M4-C is not closed: hidden Workflow/ACP/direct-review model paths and the
-  formerly compiled TUI `SubAgentRuntime`/`SubAgentManager` island have been
-  physically deleted. Production root/child execution now only uses canonical
-  `AgentRuntime` and `RunStore`; M4 still requires the final integration gate
-  and review of other legacy TUI compile islands before it can close.
-- Current State schema is v10 and RuntimeEvent is v6. State v10 persists and
-  rebuilds the exact tool catalog advertised by the latest model request.
+- M4 is closed at code checkpoint `65fa88ba`: hidden
+  Workflow/ACP/direct-review model paths, the old TUI SubAgent runtime, Classic
+  shell, duplicate tool/state/model owners, and unwired Goal/Memory facades
+  have been physically deleted. Underwater is the sole interactive shell.
+  Production root/child execution uses canonical `AgentRuntime` and `RunStore`.
+- Current Run API is v4, State schema is v12, and RuntimeEvent is v6. State
+  v12 persists and rebuilds the exact tool catalog advertised by the latest
+  model request.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split

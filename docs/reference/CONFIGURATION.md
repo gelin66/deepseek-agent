@@ -985,15 +985,12 @@ configure reasoning effort.
 - `--all` scaffolds MCP + skills + plugins together.
 `--status` is mutually exclusive with the scaffold flags.
 
-## Why the engine strips XML/`[TOOL_CALL]` text
+## Tool-call protocol boundary
 
-codewhale sends and receives tool calls only over the API tool channel
-(structured `tool_use` / `tool_call` items). The streaming loop in
-`crates/tui/src/core/engine.rs` recognizes a fixed set of fake-wrapper start
-markers — `[TOOL_CALL]`, `<codewhale:tool_call`, `<tool_call`, `<invoke `,
-`<function_calls>` — and scrubs them from visible assistant text without ever
-turning them into structured tool calls. When a wrapper is stripped, the loop
-emits one compact `status` notice per turn so the user can see why their
-visible text shrank. Treat any change that re-enables text-based tool
-execution as a regression; the protocol-recovery tests in
-`crates/tui/tests/protocol_recovery.rs` lock the contract.
+CodeWhale only executes structured tool calls returned through the DeepSeek API
+tool channel. Text that resembles XML or `[TOOL_CALL]` is never converted into
+an executable call. A structured call is also rejected as
+`llm_invalid_output` before `ToolPrepared` or any side effect when its tool was
+not advertised by the persisted model request. The canonical Runtime
+conformance suite and `exec_terminal_acceptance` own this contract; the deleted
+TUI Engine has no compatibility role.

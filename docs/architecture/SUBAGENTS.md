@@ -3,7 +3,7 @@
 > 文档类别：当前能力说明。产品边界以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 快照日期：2026-07-18
+- 快照日期：2026-07-19
 - 执行 owner：`crates/runtime::AgentRuntime`
 - 持久事实 owner：canonical `RunStore`
 - 模型侧入口：一个 `agent` 工具
@@ -91,7 +91,7 @@ Orchestrator 把 task policy 真正传入并观测执行后，才能由 enforced
 
 - `CanonicalRunProjection`；
 - `run_presenter`；
-- `tui/child_agents.rs`；
+- `crates/tui/src/tui/child_agents.rs`；
 - sidebar 中的 child rows。
 
 旧 `/subagents` modal、legacy child DTO、mailbox cache 和刷新事件已经删除。TUI 不再

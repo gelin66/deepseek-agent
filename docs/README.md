@@ -36,10 +36,12 @@
 
 ## 3. 当前开发说明
 
-- `codewhale exec` 与 `codewhale app-server` 已共用
+- `codewhale exec`、`codewhale app-server` 与交互 TUI 已共用
   `crates/app::AgentApplication`、`AgentRuntime` 和 SQLite `RunStore`。
-- 交互 TUI 的旧 engine 与 `TaskManager` 状态路径仍待 M4-C 迁移；它不是
-  app-server 的执行或状态来源。
+- M4 已关闭：旧 TUI engine/Classic shell、私有状态路径和第二模型循环均已删除；
+  Underwater 是唯一交互外壳。当前 Run API v4、RuntimeEvent v6、State schema v12。
+- 下一开发切片是 M5-A：在 canonical protocol/runtime/state 中建立唯一
+  TaskContract、EvidenceReceipt 与 Host completion owner。
 - 本地 focused 检查脚本：`../scripts/dev-deepseek-agent.sh`。
 - M1 离线能力基线：`../eval/README.md`。
 - 当前配置样例：`../config.deepseek-agent.example.toml`。

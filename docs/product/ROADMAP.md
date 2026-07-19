@@ -3,20 +3,14 @@
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
 - 状态：执行中
-- 当前阶段：M4-C 收尾中。M4-B 被测代码提交为
-  `a534a824670b60c807c5abf399ea8674d4beb527`；C1 实现提交 `1d127b78` 已建立并冻结
-  canonical durable interaction/control contract。C2 的 Run API v3、RuntimeEvent writer
-  v5/read v4-v5、State schema v8、continuation 和最小 context projection 已通过本机完整
-  验收与费用受限的官方 DeepSeek sender canary，并冻结为提交 `4a3311ac`；后续
-  `35fc3cc4` 已把 durable creation delivery 提升为 Run API v4 / State schema v9。交互 TUI
-  foreground、canonical root/child Run 投影和旧前台状态删除已经完成；当前
-  RuntimeEvent v6、State schema v10。`workflow`/`workflow-tool` 的第二模型循环和
-  `serve --acp` 的独立模型/会话路径均已物理删除，未引入兼容桥；`83d9487f` 又删除了
-  direct `review` completion、模型内工具和私有 receipt 真相，canonical reviewer Agent
-  profile 保留。`528a72f2` 的 child eager join 已通过 24-run 精确 A/B 并保留。无生产
-  构造入口但仍参与编译的旧 TUI SubAgent runtime/manager/registry 岛也已删除；M4 仍待
-  完整集成门禁与其他旧编译岛复核，不提前标完成。M1 的导入基线 A/B 与 M2 的完整官方
-  surface canary 仍是独立证据债务
+- 当前阶段：M4 已关闭，下一执行切片为 M5-A canonical
+  `TaskContract`/`EvidenceReceipt`。M4 最终代码检查点为 `65fa88ba`；当前 Run API v4、
+  RuntimeEvent v6、State schema v12。CLI、TUI、本地 API 与根/子 Agent 已统一到
+  `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
+  旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
+  Goal/Memory 原型均已物理删除。focused、真实 PTY、进程级 crash/replay、严格 workspace
+  Clippy 与完整 workspace tests 已通过。M1 的导入基线 A/B 与 M2 的完整官方 surface
+  canary 仍是独立证据债务，不因 M4 关闭而自动完成
 - 上次更新：2026-07-19
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
@@ -120,8 +114,8 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M1 | 建立原始 DeepSeek 能力基准 | 进行中（硬预算本地门禁已通过，导入基线真实编码 A/B 待完成） | 真实编码 A/B 在硬请求预算下可重复测量成功率、假成功、Token、时间和成本 |
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
-| M4 | 统一工具、事件、RunStore 和产品入口 | 收尾中（第二模型循环已删，最终集成门禁待通过） | CLI/TUI/API 同事件，所有生产模型循环统一 |
-| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 待开始 | TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
+| M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
+| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 待开始（下一切片 M5-A：TaskContract/EvidenceReceipt） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 部分开始（canonical 根/子同 Runtime 已完成） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
@@ -550,7 +544,21 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   或修改正文，并在 M4-C 交互 Runtime 切换到 canonical protocol type 时随旧请求模型一起删除。
 - `ProductionPromptRequest` 已由 `exec` 与 app-server 通过真实 `crates/app` composition 复用。
 
-### M4 总体后续顺序
+### M4 收口记录
+
+- M4 最终代码检查点为 `65fa88ba`。State schema v11 删除无生产消费者的
+  `thread_goals`，v12 删除 retired thread/workflow 状态表和 `threads.current_leaf_id`；
+  canonical `agent_runs`、`agent_run_events`、`agent_run_snapshots`、
+  `agent_run_creations` 及必要 thread metadata 保留。
+- 最终调用图只有一个生产 `AgentRuntime` 类型；普通请求与 compaction 的两个
+  `ModelPort::stream` 调用点都位于该实现内。canonical Agent Run 的 terminal 只在同一
+  Runtime 提交；SQLite `RunStore` 的生产实现只有 `StateStore`，另一个
+  `InMemoryRunStore` 仅用于测试。Fleet ledger 是待 M6 收敛的编排状态，不是第二个 Agent
+  模型循环、RunStore 或 terminal owner。
+- M4 最终门禁：`./scripts/dev-deepseek-agent.sh focused`、canonical PTY 7/7、
+  State 进程级 crash/replay 14/14（1 个 helper 按设计忽略）、
+  `cargo clippy --workspace --all-targets --locked -- -D warnings` 和
+  `cargo test --workspace --locked` 全部通过。
 
 - M4-A 已完成 Headless CLI 的 canonical `ToolOutcome`、SQLite RunStore 和恢复闭环。
 - M4-B 已完成 app-server 纵切，并删除该入口的旧 core/bridge/私有状态路径。
@@ -1170,20 +1178,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `InvalidInput`，API Key 认证仍先于普通授权，timeout 仍先于 network，rate-limit 仍先于
   authentication，invalid-input 仍先于 tool。定向 taxonomy 18/18、session diagnostics 7/7
   通过，并通过 TUI check、fmt 和 diff-check。
-- M4-C 已删除没有任何生产 caller 的 `SidebarRenderState` 预判链、三项失效常量，以及只为该
-  预判链提供数据的 sidebar host/area 影子字段。真实 classic sidebar 仍在每一帧直接通过
-  `sidebar_width_for_chat_area` 应用 60 列可见门槛与用户宽度，`sidebar_auto_idle`、sidebar
-  renderer、一列视觉分隔线、canonical child/Fleet 投影和 work-surface 分栏均未改变。本切片
-  不把没有 reader 的旧面积缓存冒充鼠标命中能力。
-  定向 UI/sidebar 测试、PTY 7/7、TUI check、fmt 和 diff-check 通过。
-- M4-C 后续调用图确认 classic sidebar 从未存在鼠标按下、拖动、释放、分隔线命中或拖拽结果
-  持久化 route，因此已删除 `last_sidebar_handle_area`、`sidebar_resizing`、三项 resize anchor/
-  total 状态、`sidebar_width_dirty` 和零调用且并不持久化的 `Settings::update_sidebar_width`。
-  用户 `sidebar_width_percent` schema/校验/加载/保存、`SidebarFocus`、60 列门槛和真实 divider
-  均保留；M4 不新增一套拖拽功能。新增 Classic 整帧红线证明 59 列不占侧栏、60 列仍绘制
-  divider。定向 full-frame 1/1、sidebar 33/33、work-surface 5/5、chat/sidebar bleed 1/1、
-  presenter 14/14、footer 10/10、settings 58/58、PTY 7/7 通过，并通过 TUI all-target check、
-  fmt 和 diff-check。
+- M4-C 最终调用图证明 Classic header/footer/sidebar 整帧链没有生产 renderer consumer；
+  唯一仍需的状态标记已迁入 Underwater shell 后，Classic shell 与其 hover/resize/宽度设置、
+  专属测试和本地化消息一并删除。Underwater 是当前唯一交互外壳，canonical child/Fleet、
+  WorkSurface、modal、transcript、审批、工具卡和 PTY 输入链保持原 owner。该切片删除
+  6,384 行并把简体中文消息目录从 381 项收缩到 170 项，没有保留第二套 UI 兼容路径。
 - M4-C 已删除零 production caller 的 `semantic_truncate_with_affixes`、只被它和一条自测调用的
   `semantic_truncate_between_affixes`，以及该自证测试。真实 modal title 仍使用
   `semantic_truncate`；footer/sidebar/work-surface/thinking 仍使用 `truncate_line_to_width`，
@@ -1255,7 +1254,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   phase animation、低动态、工具结果和 terminal 状态均保持不变。ocean 10/10、underwater
   6/6、widgets 68/68、catalog sync 1/1、App 67/67 通过，并通过 TUI strict Clippy、fmt 和
   diff-check。
-- 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
+- M4 退出时，三个入口使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
   选择上下文、确定性保留 TaskContract/diff/evidence 及验证净收益仍属于 M5。真实工具只有在
@@ -1335,8 +1334,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - 机制：`8ab0e145` 为每个 root/child 预留一个可退还逻辑请求许可；descendant/child 先
   join，再发 `tools=[]` 的最终请求。无最终容量时不得先写 `ChildStarted`；恢复按该请求
   实际 advertised catalog 拒绝未授权工具；硬限制以内的自动 compaction 不得消耗最后许可。
-- 持久协议：RuntimeEvent 保持 v6；State schema v10 持久化并重建最近模型请求实际
-  advertised tool catalog。
+- 持久协议：RuntimeEvent 保持 v6；State schema v10 引入并由当前 v12 保留最近模型请求
+  实际 advertised tool catalog 的持久化与重建。
 - 离线证据：Runtime conformance 51/51、State `run_store` 18/18，并覆盖嵌套 join、tool-free
   final、prepared/replay、无容量零 lifecycle 和 compaction 不偷取许可。
 - 真实 A/B：相对 `0ae9cb7f` 的 exact-pair、single/multi、3/cell 官方 DeepSeek A/B 为
@@ -1404,11 +1403,29 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - CLI/API/交互 TUI foreground 对同一 canonical command/event contract 工作。
 - 内存 Store 与 SQLite Store 重放一致。（M4-A 行为门禁已通过）
 - crash/resume 和 exactly-once completion 通过。（`exec` 与 app-server 已通过）
-- exec/app-server/交互 foreground 不存在第二个生产 loop、可写 Store 或入口私有 completion
-  语义；已删除的 hidden workflow/ACP/direct `review` 不再构成生产例外。仍须通过 M4 完整
-  workspace 门禁、调用图复核并删除剩余旧编译岛后才能关闭里程碑。
+- exec/app-server/交互 foreground 不存在第二个生产 loop、可写 Agent Store 或入口私有
+  completion 语义；hidden workflow/ACP/direct `review` 不再构成生产例外。最终 workspace
+  门禁、调用图复核和旧编译岛删除已通过，M4 关闭。
 
 ## 9. M5：RepoGraph、ContextBroker 与 canonical 证据链
+
+### M5-A：canonical TaskContract 与 EvidenceReceipt（下一切片）
+
+- 真实问题：当前模型可以提出完成，Host 只有 terminal 机制，却没有绑定任务 generation、
+  最新 workspace revision 和确定性验收结果的产品级完成契约，因此仍可能“回答完成但没有
+  证据”。
+- 验收条件：每个 root generation 冻结 objective、constraints、non-goals 与 acceptance；
+  写操作使旧 evidence 失效；只有参数和 workspace revision 精确匹配的确定性 verifier
+  receipt 能满足对应 acceptance；Host 单点接受 terminal，模型自评只能是 advisory。
+- 单一 owner：wire contract 在 `crates/protocol`，状态机和完成接受在
+  `crates/runtime`，持久事实与重放在 `crates/state`；TUI、exec 和 app-server 只投影。
+- 替代和删除：不恢复已删 TUI Goal/Hunt/receipt prototype，不建立 adapter、镜像 Store 或
+  第二 completion loop。新链切换后删除任何仍重复推断“成功”的 presentation helper。
+- 测试与评测：先写 root/child 共用 conformance、SQLite crash/replay、revision invalidation、
+  false-success 反例和三入口 parity；再在冻结编码任务上比较 verified success、false-success、
+  Token、请求数、时间、费用与复杂度。
+- 本切片不先做 RepoGraph、LSP 或多 Agent DAG。先让“什么叫完成”只有一个可恢复真相，
+  后续 ContextBroker、RepoGraph 和 Orchestrator 才能复用同一证据闭环。
 
 ### 工作
 

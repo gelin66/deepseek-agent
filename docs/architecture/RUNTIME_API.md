@@ -3,11 +3,10 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M4-C C1、C2 已冻结；C2 实现提交为 `4a3311ac`，后续 durable creation delivery
-  为 `35fc3cc4`，交互 TUI 尚未切换
-- 更新日期：2026-07-18
+- 状态：M4 已关闭；exec、app-server 与交互 TUI 共用该接口
+- 更新日期：2026-07-19
 - schema：`Run API`（`schema_version = 4`）、`RuntimeEvent`（writer/reader v6）、
-  `State`（schema v9）
+  `State`（schema v12）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -106,7 +105,7 @@ POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "request_id": "client-request-42",
   "command": {
     "kind": "get",
@@ -157,7 +156,7 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "request_id": "start-1",
   "command": {
     "kind": "start",
@@ -194,7 +193,7 @@ Agent，也不是同 run 的 `resume`。
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "request_id": "continue-42",
   "command": {
     "kind": "continue",
@@ -226,7 +225,7 @@ prompt；过期、重复、错 ID 和错 response 均返回 typed error。
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "request_id": "approve-42",
   "command": {
     "kind": "resolve_interaction",
@@ -253,7 +252,7 @@ typed prompt。approval 必须在任何 `ToolExecutionStarted` 前提交并解�
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "request_id": "client-request-42",
   "result": {
     "kind": "run",
@@ -341,7 +340,7 @@ fail closed 为 `RecoveryRequired`，不能盲目重发摘要请求。
 
 - `start`、`continue` 和 `compact` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v9；
+  持久写入 State schema v12（该 creation intent 表由 v9 引入并保留）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation/compaction run 尚未创建，重试沿用同一 reserved
   run ID，不能再生成第二个 run。自动路由 start 的预运行请求可能已发出时则 fail closed，

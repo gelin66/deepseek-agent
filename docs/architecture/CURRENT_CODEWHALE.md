@@ -9,11 +9,9 @@
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
-- 当前阶段：M4-C 收尾；交互 TUI foreground 与 root/child projection 已迁移，当前
-  canonical RuntimeEvent 为 v6、State schema 为 v10；隐藏 `workflow-tool` 第二模型循环
-  及其私有状态/UI、ACP 独立模型/会话路径和 direct `review` 模型路径均已删除；
-  child eager join 已进入 canonical Runtime；无生产构造入口但仍参与编译的旧 TUI
-  SubAgent runtime/manager/registry 岛也已删除，最终完整门禁与其他旧编译岛复核仍待完成
+- M4 最终代码检查点：`65fa88ba`
+- 当前阶段：M4 已关闭，下一切片为 M5-A canonical TaskContract/EvidenceReceipt
+- 当前协议：Run API v4、RuntimeEvent v6、State schema v12
 
 ## 1. 当前结论
 
@@ -30,6 +28,11 @@ interactive TUI --------/          |                |
 
 这三条入口不再拥有各自的模型循环、工具目录、终态判断或持久状态。交互 TUI 只提交
 canonical Run command，并从 durable event 投影 root/child 状态。
+
+最终 HEAD 调用图只有一个 `AgentRuntime` 定义；普通模型请求与 compaction 的两个
+`ModelPort::stream` 调用点都位于该实现中。canonical Agent Run 的 terminal 也只在该
+Runtime 提交。`StateStore` 是唯一生产 SQLite `RunStore` 实现；`InMemoryRunStore` 只用于
+测试。Fleet ledger 仍是 M6 编排债务，但不拥有 Agent 模型循环、RunStore 或 terminal。
 
 旧生产例外 `workflow -> workflow-tool -> WorkflowTool -> SubAgentRuntime ->
 DeepSeekClient` 已物理删除；同时删除 Workflow/Workflow-JS crate、私有 JSON/JSONL
@@ -134,7 +137,7 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、compact、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
-- start/continue/compact 通过 State schema v10 的 durable creation reservation 先绑定
+- start/continue/compact 通过 State schema v12 中保留的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
@@ -559,21 +562,10 @@ M4-C foreground 切换后还已物理删除：
   保证精确 DeepSeek invalid/reasoning replay 错误先于泛化 tool 分类、API Key 认证先于授权、
   timeout 先于 network、rate-limit 先于 authentication、invalid-input 先于 tool。当前定向
   taxonomy 18/18、session diagnostics 7/7 通过，并通过 TUI check、fmt 和 diff-check。
-- `ui` 中没有 caller 的 `SidebarRenderState`、`sidebar_render_state`、
-  `sidebar_host_width_hint` 和三项失效常量已经删除；只由 renderer 写入、没有鼠标或其他
-  reader 的 App/Viewport sidebar host/area 缓存也随之删除。实际 classic sidebar 仍直接由
-  `sidebar_width_for_chat_area`、60 列门槛、用户宽度和 `sidebar_auto_idle` 决定，sidebar
-  renderer、一列视觉分隔线、canonical child/Fleet 投影与 work-surface 分栏不经过旧预判链。
-  定向 UI/sidebar 测试、TUI check、fmt 与
-  diff-check 通过，PTY 7/7 通过。
-- classic sidebar 的所谓 resize 状态也已完成调用图审计并删除。原实现没有鼠标按下、拖动、
-  释放、divider 命中或拖拽结果保存消费者；`last_sidebar_handle_area`、`sidebar_resizing`、resize
-  anchor/total、`sidebar_width_dirty` 与零调用的 `Settings::update_sidebar_width` 都只是 renderer
-  producer 或默认值。真实 `sidebar_width_percent` schema/校验/加载/保存、`SidebarFocus`、
-  `sidebar_width_for_chat_area` 和一列 `│` divider 保留。新增 Classic 整帧测试锁定 59/60 列
-  边界。当前证据为 full-frame 1/1、sidebar 33/33、work-surface 5/5、chat/sidebar bleed 1/1、
-  presenter 14/14、footer 10/10、settings 58/58、PTY 7/7，并通过 TUI all-target check、fmt 和
-  diff-check。
+- 最终调用图证明 Classic header/footer/sidebar 整帧链没有生产 renderer consumer。唯一仍
+  使用的状态标记迁入 Underwater 后，Classic shell、resize/hover/width shadow、专属测试与
+  211 条孤儿消息一起删除。Underwater 现在是唯一交互外壳；canonical child/Fleet、
+  WorkSurface、modal、transcript、审批和工具卡仍从同一 Run 投影读取。
 - `ui_text` 中没有 production caller 的 affix 截断入口及其只被内部调用的 helper、自证测试
   已删除。真实 modal title 继续使用 `semantic_truncate`，footer/sidebar/work-surface/thinking
   继续使用 `truncate_line_to_width`；`text_display_width` 对中文/CJK、组合字符、ZWJ、控制字符
@@ -792,13 +784,15 @@ DeepSeek production sender canary 以 6/6 请求覆盖 Standard、Thinking/tool-
 Beta Strict 与 FIM，完整 usage、无 transport retry，费用为 `USD 0.0000969904`；该 canary
 不包含 compaction on/off 收益对照，且 `product_metric_eligible=false`。
 
-此后交互 TUI foreground 与 child projection 已完成 canonical 切换：canonical Run 20/20、
-canonical PTY 5/5、run presenter 13/13、canonical commands 5/5。最终请求许可机制通过
-Runtime conformance/State replay；eager join 后 Runtime conformance 为 53/53，State
-`run_store` 为 18/18。focused 的 TUI 过滤器现只覆盖 canonical Run 投影、命令、本地
-approval、Fleet 和 DeepSeek Doctor，并继续对零匹配 fail closed；旧 memory/schema/client/
-stream 测试已退出该门禁。State schema 已升至 v10，RuntimeEvent 仍为 v6。严格 workspace
-clippy 当前仍被遗留 TUI 无消费者代码阻断，告警数量随构建目标不同；不得压制，应继续删除。
+此后交互 TUI foreground 与 child projection 已完成 canonical 切换，最终 State schema 为
+v12、RuntimeEvent 为 v6、Run API 为 v4。M4 最终验证结果：
+
+- focused 门禁退出码 0；
+- canonical PTY 7/7，exec terminal 24/24，Run surface parity 1/1；
+- Runtime conformance 53/53，State 进程级 crash/replay 14/14（1 个 helper 按设计忽略）；
+- `cargo clippy --workspace --all-targets --locked -- -D warnings` 退出码 0；
+- `cargo test --workspace --locked` 退出码 0；
+- app-server 依赖树不含 `core`/`tui`，TUI 依赖树不含 Lane。
 
 当前证据证明三个 foreground 入口已统一，也证明协议、lineage、持久恢复、accounting 与
 官方 surface 兼容；hidden workflow、ACP 和 direct review 模型路径已物理删除。最终请求
@@ -806,7 +800,7 @@ clippy 当前仍被遗留 TUI 无消费者代码阻断，告警数量随构建�
 后者在一个固定任务中降低请求且不回归 handoff。完整 eager-join 身份、四 cell 与 pair
 边界见
 [子 Agent eager join 精确 A/B](../../eval/summaries/eager-join-exact-ab-2026-07-18.md)。
-compaction on/off A/B、其他旧编译岛复核和 M4 完整门禁仍未完成。
+compaction on/off A/B 仍属于 M5 产品收益证据；M4 的结构与可靠性门禁不能替代它。
 
 ## 7. 明确非结论
 
