@@ -1226,6 +1226,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   `ToolDefinition`/`ToolInvocation`/`ToolOutcome`、`ProductionToolExecutor`、DeepSeek 工具
   调用和确定性 `run_verifiers` 均保持不变。tools 296/296、tools doctest 2/2（1 ignored）、
   protocol 71/71 通过，并通过两个 crate 的 all-target strict Clippy、fmt 和 diff-check。
+- M4-C 已删除零 production consumer 的 `protocol::runtime` 外部 Runtime/Tool Bridge：
+  `RuntimeEventEnvelope`、capability advertisement、dynamic external tool 和 turn environment
+  DTO 及其自证 parity。它们既不是 canonical `RuntimeEvent`，也从未接入 app-server Run API；
+  删除后唯一对外事件契约仍为持久化 `StoredRuntimeEvent`/Run API projection。protocol
+  57/57 通过，并通过 all-target strict Clippy、fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
