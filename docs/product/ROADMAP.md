@@ -820,7 +820,8 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - M4-C 已删除 provider-lake 中零生产消费者的 configured-provider、picker model-list 和
   dashboard count 查询面。保留的 `catalog_offering_for_model` 仍服务现有 pricing，Codex
   route metadata 与 canonical Fleet 不经过已删除 API；通用 Provider catalog 的最终物理
-  删除仍由 M7 完成。
+  删除仍由 M7 完成。后续调用图又确认 live snapshot 只有模块自测 writer、生产始终为
+  `None`，故同步删除其合并状态和自证测试；pricing 现在直接读取同一 bundled snapshot。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

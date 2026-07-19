@@ -32,18 +32,6 @@ pub(crate) enum CodexModelCacheFreshness {
     Invalid,
 }
 
-impl CodexModelCacheFreshness {
-    #[must_use]
-    pub(crate) const fn picker_label(self) -> &'static str {
-        match self {
-            Self::Fresh => "ChatGPT OAuth",
-            Self::Missing => "OAuth roster missing · fallback",
-            Self::Stale => "OAuth roster stale · fallback",
-            Self::Invalid => "OAuth roster invalid · fallback",
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodexModelRoster {
     pub(crate) models: Vec<CodexModelMetadata>,
@@ -69,11 +57,6 @@ impl CodexModelRoster {
             freshness,
             fetched_at,
         }
-    }
-
-    #[must_use]
-    pub(crate) fn model_ids(&self) -> Vec<String> {
-        self.models.iter().map(|model| model.id.clone()).collect()
     }
 
     #[must_use]
@@ -246,6 +229,14 @@ mod tests {
         std::fs::write(home.join(MODEL_CACHE_FILE), FIXTURE).expect("write fixture");
     }
 
+    fn roster_ids(roster: &CodexModelRoster) -> Vec<&str> {
+        roster
+            .models
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect()
+    }
+
     #[test]
     fn valid_cache_uses_priority_order_and_keeps_route_available_rows() {
         let home = tempfile::tempdir().expect("temp CODEX_HOME");
@@ -257,7 +248,7 @@ mod tests {
         assert_eq!(roster.freshness, CodexModelCacheFreshness::Fresh);
         assert_eq!(roster.fetched_at, Some(fixture_time()));
         assert_eq!(
-            roster.model_ids(),
+            roster_ids(&roster),
             [
                 "gpt-test-primary",
                 "gpt-test-secondary",
@@ -281,7 +272,7 @@ mod tests {
         let roster = load_model_roster_from_home_at(home.path(), fixture_time());
 
         assert_eq!(roster.freshness, CodexModelCacheFreshness::Missing);
-        assert_eq!(roster.model_ids(), [DEFAULT_OPENAI_CODEX_MODEL]);
+        assert_eq!(roster_ids(&roster), [DEFAULT_OPENAI_CODEX_MODEL]);
     }
 
     #[test]
@@ -293,7 +284,7 @@ mod tests {
         let roster = load_model_roster_from_home_at(home.path(), fixture_time());
 
         assert_eq!(roster.freshness, CodexModelCacheFreshness::Invalid);
-        assert_eq!(roster.model_ids(), [DEFAULT_OPENAI_CODEX_MODEL]);
+        assert_eq!(roster_ids(&roster), [DEFAULT_OPENAI_CODEX_MODEL]);
     }
 
     #[test]
@@ -331,7 +322,7 @@ mod tests {
             load_model_roster_from_home_at(home.path(), fixture_time() + Duration::hours(25));
 
         assert_eq!(roster.freshness, CodexModelCacheFreshness::Stale);
-        assert_eq!(roster.model_ids(), [DEFAULT_OPENAI_CODEX_MODEL]);
+        assert_eq!(roster_ids(&roster), [DEFAULT_OPENAI_CODEX_MODEL]);
         assert_eq!(roster.fetched_at, Some(fixture_time()));
     }
 
@@ -354,7 +345,7 @@ mod tests {
         let roster = load_model_roster_from_home_at(home.path(), fixture_time());
 
         assert_eq!(roster.freshness, CodexModelCacheFreshness::Fresh);
-        assert_eq!(roster.model_ids(), ["gpt-good"]);
+        assert_eq!(roster_ids(&roster), ["gpt-good"]);
     }
 
     #[test]
