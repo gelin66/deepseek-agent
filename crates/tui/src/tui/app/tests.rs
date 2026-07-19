@@ -1018,10 +1018,14 @@ fn new_caches_workspace_skills_for_slash_menu() {
 
     let mut options = test_options(false);
     options.workspace = workspace.clone();
-    options.skills_dir = tmp.path().join("global-skills");
+    let global_skills_dir = tmp.path().join("global-skills");
+    options.skills_dir = global_skills_dir.clone();
     let app = App::new(options, &Config::default());
 
-    assert_eq!(app.skills_dir, workspace.join(".agents").join("skills"));
+    assert_eq!(
+        resolve_skills_dir(&workspace, &global_skills_dir, &Config::default()),
+        workspace.join(".agents").join("skills")
+    );
     assert!(app.cached_skills.iter().any(|(name, description)| {
         name == "local-skill" && description == "Local workspace skill"
     }));
@@ -1090,19 +1094,21 @@ fn cached_skills_respect_codewhale_only_scan_config() {
 
     let mut options = test_options(false);
     options.workspace = workspace.clone();
-    options.skills_dir = tmp.path().join("global-skills");
-    let app = App::new(
-        options,
-        &Config {
-            skills: Some(crate::config::SkillsConfig {
-                scan_codewhale_only: Some(true),
-                ..Default::default()
-            }),
+    let global_skills_dir = tmp.path().join("global-skills");
+    options.skills_dir = global_skills_dir.clone();
+    let config = Config {
+        skills: Some(crate::config::SkillsConfig {
+            scan_codewhale_only: Some(true),
             ..Default::default()
-        },
-    );
+        }),
+        ..Default::default()
+    };
+    let app = App::new(options, &config);
 
-    assert_eq!(app.skills_dir, workspace.join(".codewhale").join("skills"));
+    assert_eq!(
+        resolve_skills_dir(&workspace, &global_skills_dir, &config),
+        workspace.join(".codewhale").join("skills")
+    );
     assert!(
         app.cached_skills
             .iter()
@@ -1215,7 +1221,10 @@ fn cached_skills_preserve_configured_directory_in_codewhale_only_scan() {
     };
     let app = App::new(options, &config);
 
-    assert_eq!(app.skills_dir, configured_dir);
+    assert_eq!(
+        resolve_skills_dir(&workspace, &configured_dir, &config),
+        configured_dir
+    );
     assert!(
         app.cached_skills
             .iter()
@@ -1264,7 +1273,10 @@ fn cached_skills_reject_codewhale_only_workspace_symlink_escape() {
     };
     let app = App::new(options, &config);
 
-    assert_eq!(app.skills_dir, global_skills_dir);
+    assert_eq!(
+        resolve_skills_dir(&workspace, &global_skills_dir, &config),
+        global_skills_dir
+    );
     assert!(
         !app.cached_skills
             .iter()

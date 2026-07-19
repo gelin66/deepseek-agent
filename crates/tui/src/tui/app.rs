@@ -1240,23 +1240,12 @@ pub struct App {
     pub reasoning_effort: ReasoningEffort,
     pub workspace: PathBuf,
     pub config_path: Option<PathBuf>,
-    pub config_profile: Option<String>,
-    pub mcp_config_path: PathBuf,
-    pub skills_dir: PathBuf,
-    pub skills_scan_codewhale_only: bool,
     /// Path to the user-memory file (#489). Always populated; only
     /// consulted when `use_memory` is `true`.
     pub memory_path: PathBuf,
     /// Whether the user-memory feature is enabled (#489). Mirrors
-    /// `Config::memory_enabled()` at app boot. Used by the `# foo`
-    /// composer interception (also gated by `moraine_fallback`),
-    /// the `/memory` slash command, and tool registration for
-    /// `remember`.
+    /// `Config::memory_enabled()` at app boot.
     pub use_memory: bool,
-    /// True when legacy memory push/inject behavior should stay disabled
-    /// because Moraine pull/recall is the configured memory backend.
-    pub moraine_fallback: bool,
-    pub use_alt_screen: bool,
     pub use_mouse_capture: bool,
     /// When true, plain Up/Down on an empty composer scroll the transcript
     /// instead of navigating input history.  Defaults to `true` when mouse
@@ -1277,7 +1266,6 @@ pub struct App {
     /// When `true`, symlinked directories are traversed, enabling
     /// multi-project workspaces.
     pub workspace_follow_symlinks: bool,
-    pub use_bracketed_paste: bool,
     pub calm_mode: bool,
     pub low_motion: bool,
     pub ocean_started_at: Instant,
@@ -1328,7 +1316,6 @@ pub struct App {
     pub tool_collapse_mode: ToolCollapseMode,
     pub max_input_history: usize,
     pub allow_shell: bool,
-    pub verbosity: Option<String>,
     pub max_subagents: usize,
     /// Per-SSE-chunk idle timeout for streamed turns, in seconds.
     pub stream_chunk_timeout_secs: u64,
@@ -1577,9 +1564,9 @@ impl App {
             config_path,
             config_profile,
             allow_shell,
-            use_alt_screen,
+            use_alt_screen: _,
             use_mouse_capture,
-            use_bracketed_paste,
+            use_bracketed_paste: _,
             max_subagents,
             skills_dir: global_skills_dir,
             memory_path,
@@ -1889,16 +1876,9 @@ impl App {
             reasoning_effort,
             workspace,
             config_path,
-            config_profile,
-            mcp_config_path: mcp_config_path.clone(),
-            skills_dir,
-            skills_scan_codewhale_only,
             memory_path,
             use_memory,
-            moraine_fallback: config.moraine_fallback(),
-            use_alt_screen,
             use_mouse_capture,
-            use_bracketed_paste,
             calm_mode,
             low_motion,
             ocean_started_at: Instant::now(),
@@ -1924,7 +1904,6 @@ impl App {
             tool_collapse_mode: ToolCollapseMode::from_setting(&settings.tool_collapse_mode),
             max_input_history,
             allow_shell,
-            verbosity: config.verbosity.clone(),
             max_subagents,
             stream_chunk_timeout_secs: config.stream_chunk_timeout_secs(),
             child_agents: ChildAgents::default(),
@@ -2022,15 +2001,6 @@ impl App {
         .iter()
         .map(|s| (s.name.clone(), s.description.clone()))
         .collect()
-    }
-
-    pub fn refresh_skill_cache(&mut self) {
-        let skills_dir = self.skills_dir.clone();
-        self.cached_skills = Self::discover_cached_skills(
-            &self.workspace,
-            &skills_dir,
-            self.skills_scan_codewhale_only,
-        );
     }
 
     pub fn submit_api_key(&mut self) -> Result<SavedCredential, ApiKeyError> {
