@@ -923,6 +923,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   authoring 流程的 strict/identity 公开包装，保留 `load_workspace_agent_profiles_tolerant ->
   FleetRoster -> FleetManager -> canonical exec worker` 真实链、Profile 身份/权限校验和多 Agent
   能力；不恢复模型草稿 UI，也不新增兼容包装。
+- M4-C 已把 Fleet executor 自测迁到真实生产入口，并删除无 Profile/Host 语义的
+  `build_worker_exec_command`、`start_worker`、`poll_terminal`、`all_terminal` 便利包装及其
+  prompt facade。生产与测试现共用 `build_worker_exec_command_with_profiles ->
+  start_worker_on_host -> poll_terminal_with_status -> forget_worker`，真实进程和并发 worker 回归
+  14/14、worker route/prompt 回归 7/7 通过；保留 Fleet Manager、Ledger、Local/SSH Host 和
+  `codewhale exec -> AgentApplication -> AgentRuntime` 的 canonical 多 Agent 链。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

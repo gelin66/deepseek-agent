@@ -137,10 +137,6 @@ fn fleet_model_route_label(model: &str, loadout: &codewhale_config::FleetLoadout
     }
 }
 
-pub(crate) fn fleet_task_prompt(task_spec: &FleetTaskSpec) -> String {
-    fleet_task_prompt_with_profile(task_spec, None)
-}
-
 pub(crate) fn fleet_task_prompt_with_profiles(
     task_spec: &FleetTaskSpec,
     agent_profiles: &[AgentProfile],

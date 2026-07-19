@@ -6,7 +6,7 @@
 //! fleet and sub-agents are one substrate (not two moving targets).
 //!
 //! This module is the bridge:
-//! - [`build_worker_exec_command`] turns a `FleetTaskSpec` + `FleetExecConfig`
+//! - [`build_worker_exec_command_with_profiles`] turns a `FleetTaskSpec` + `FleetExecConfig`
 //!   into the `codewhale exec --output-format stream-json …` argv that a host
 //!   adapter ([`super::host`]) launches locally or over SSH.
 //! - [`map_exec_stream_line`] maps one stream-json line emitted by that worker
@@ -18,8 +18,6 @@
 //! never render a child session, which is what keeps the orchestrator light at
 //! high fanout.
 
-#![allow(dead_code)]
-
 use anyhow::Result;
 use codewhale_config::FleetExecConfig;
 use codewhale_protocol::fleet::{FleetHostSpec, FleetTaskSpec, FleetWorkerEventPayload};
@@ -27,43 +25,17 @@ use codewhale_protocol::fleet::{FleetHostSpec, FleetTaskSpec, FleetWorkerEventPa
 use super::host::{FleetHostAdapter, FleetWorkerCommand};
 use super::profile::AgentProfile;
 use super::worker_runtime::{
-    fleet_task_prompt, fleet_task_prompt_with_profiles, fleet_worker_launch_reasoning_effort,
+    fleet_task_prompt_with_profiles, fleet_worker_launch_reasoning_effort,
     fleet_worker_launch_route,
 };
 
-/// Build the `codewhale exec` argv that runs a fleet task headlessly.
-///
-/// `--auto` is always passed: a headless worker has no human to approve tool
-/// calls, so it runs with automatic approval. `--auto` itself does not grant
-/// unrestricted external-path trust. `--output-format stream-json` makes the
-/// worker emit the NDJSON event stream this module parses. Fleet recursion
-/// depth is inherited from the worker's own config
-/// (`[fleet.exec] max_spawn_depth`, default [`codewhale_config::DEFAULT_SPAWN_DEPTH`]).
-///
-/// Secrets are NEVER placed on the argv: provider credentials are resolved by
-/// the worker process from its own config/keyring exactly like an interactive
-/// run. The host adapter additionally refuses secret-bearing env keys. The
-/// `--provider` flag threaded by [`build_worker_exec_command_with_profiles`] is
-/// a non-secret provider *identifier* only (#4093) — the worker still resolves
-/// that provider's credentials from its own env/config, so this invariant
-/// holds.
-pub fn build_worker_exec_command(
-    codewhale_binary: &str,
-    task_spec: &FleetTaskSpec,
-    exec_config: &FleetExecConfig,
-    model: Option<&str>,
-) -> FleetWorkerCommand {
-    build_worker_exec_command_from_prompt(
-        codewhale_binary,
-        fleet_task_prompt(task_spec),
-        exec_config,
-        model,
-        None,
-        None,
-    )
-}
-
 /// Build a worker command after resolving workspace Fleet profile input.
+///
+/// `--auto` is always passed because a headless worker cannot answer approval
+/// prompts; it does not grant unrestricted external-path trust. Credentials
+/// never enter argv: an optional `--provider` is only a non-secret identifier,
+/// and the worker resolves its own DeepSeek credentials through the normal
+/// configuration path.
 ///
 /// The launched subprocess runs on the worker's RESOLVED route, not blindly on
 /// the run-level session model (#4093 AC #4): the per-worker model+provider are
@@ -269,16 +241,6 @@ impl FleetExecutor {
         }
     }
 
-    /// Start a worker process and begin tracking its event stream.
-    pub fn start_worker(
-        &mut self,
-        worker_id: &str,
-        command: FleetWorkerCommand,
-        cwd: Option<std::path::PathBuf>,
-    ) -> super::host::FleetHostResult<super::host::FleetWorkerHandle> {
-        self.start_worker_on_host(worker_id, &FleetHostSpec::Local, command, cwd)
-    }
-
     /// Start a worker on the requested fleet host.
     pub fn start_worker_on_host(
         &mut self,
@@ -379,14 +341,6 @@ impl FleetExecutor {
         events
     }
 
-    /// Poll the worker process; once it exits, return the terminal event exactly
-    /// once. Returns `None` while the worker is still running or already
-    /// finalized.
-    pub fn poll_terminal(&mut self, worker_id: &str) -> Option<FleetWorkerEventPayload> {
-        self.poll_terminal_with_status(worker_id)
-            .map(|event| event.payload)
-    }
-
     /// Poll the worker process and include the raw exit code for receipt
     /// verification.
     pub fn poll_terminal_with_status(
@@ -421,11 +375,6 @@ impl FleetExecutor {
             payload: terminal,
             exit_code: status.exit_code,
         })
-    }
-
-    /// True once every started worker has reached a terminal state.
-    pub fn all_terminal(&self) -> bool {
-        !self.streams.is_empty() && self.streams.values().all(|s| s.terminal)
     }
 }
 
@@ -497,7 +446,14 @@ mod tests {
     #[test]
     fn worker_command_is_a_headless_codewhale_exec_run() {
         let exec = FleetExecConfig::default();
-        let cmd = build_worker_exec_command("codewhale", &task("read the file"), &exec, None);
+        let cmd = build_worker_exec_command_with_profiles(
+            "codewhale",
+            &task("read the file"),
+            &exec,
+            None,
+            &[],
+        )
+        .unwrap();
         assert_eq!(cmd.program, "codewhale");
         assert_eq!(cmd.args[0], "exec");
         assert!(cmd.args.contains(&"--auto".to_string()));
@@ -518,7 +474,14 @@ mod tests {
             append_system_prompt: "never push to main".to_string(),
             ..FleetExecConfig::default()
         };
-        let cmd = build_worker_exec_command("codewhale", &task("audit"), &exec, Some("glm-5.1"));
+        let cmd = build_worker_exec_command_with_profiles(
+            "codewhale",
+            &task("audit"),
+            &exec,
+            Some("glm-5.1"),
+            &[],
+        )
+        .unwrap();
         let joined = cmd.args.join(" ");
         assert!(joined.contains("--model glm-5.1"));
         assert!(joined.contains("--allowed-tools read_file,grep_files"));
@@ -702,7 +665,9 @@ mod tests {
     #[test]
     fn unbounded_max_turns_is_not_passed() {
         let exec = FleetExecConfig::default(); // max_turns == u32::MAX
-        let cmd = build_worker_exec_command("codewhale", &task("x"), &exec, None);
+        let cmd =
+            build_worker_exec_command_with_profiles("codewhale", &task("x"), &exec, None, &[])
+                .unwrap();
         assert!(!cmd.args.join(" ").contains("--max-turns"));
     }
 
@@ -783,15 +748,16 @@ mod tests {
         let mut exec = FleetExecutor::new(tmp.path());
         let script = r#"printf '{"type":"tool_use","name":"read_file","id":"c1","input":{}}\n'; printf '{"type":"done"}\n'"#;
         let command = FleetWorkerCommand::new("sh", vec!["-c".to_string(), script.to_string()]);
-        exec.start_worker("w1", command, None).unwrap();
+        exec.start_worker_on_host("w1", &FleetHostSpec::Local, command, None)
+            .unwrap();
 
         let mut events = Vec::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             events.extend(exec.drain_events("w1"));
-            if let Some(term) = exec.poll_terminal("w1") {
+            if let Some(term) = exec.poll_terminal_with_status("w1") {
                 events.extend(exec.drain_events("w1")); // final flush after exit
-                events.push(term);
+                events.push(term.payload);
                 break;
             }
             assert!(
@@ -814,7 +780,9 @@ mod tests {
                 .any(|e| matches!(e, FleetWorkerEventPayload::Completed { .. })),
             "expected a terminal Completed event, got {events:?}"
         );
-        assert!(exec.all_terminal());
+        assert!(exec.poll_terminal_with_status("w1").is_none());
+        exec.forget_worker("w1");
+        assert!(!exec.is_tracking("w1"));
     }
 
     /// Dogfood smoke (#3166): several concurrent exec-style workers with one
@@ -832,15 +800,17 @@ mod tests {
         let ok = r#"printf '{"type":"tool_use","name":"grep_files","id":"c","input":{}}\n{"type":"done"}\n'"#;
         let bad = r#"printf '{"type":"error","error":"injected failure"}\n'; exit 7"#;
         for id in ["w1", "w2", "w3"] {
-            exec.start_worker(
+            exec.start_worker_on_host(
                 id,
+                &FleetHostSpec::Local,
                 FleetWorkerCommand::new("sh", vec!["-c".to_string(), ok.to_string()]),
                 None,
             )
             .unwrap();
         }
-        exec.start_worker(
+        exec.start_worker_on_host(
             "w-fail",
+            &FleetHostSpec::Local,
             FleetWorkerCommand::new("sh", vec!["-c".to_string(), bad.to_string()]),
             None,
         )
@@ -853,8 +823,8 @@ mod tests {
         while terminals.len() < ids.len() {
             for id in ids {
                 let _ = exec.drain_events(id);
-                if let Some(term) = exec.poll_terminal(id) {
-                    terminals.insert(id, term);
+                if let Some(term) = exec.poll_terminal_with_status(id) {
+                    terminals.insert(id, term.payload);
                 }
             }
             assert!(
@@ -864,7 +834,11 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
 
-        assert!(exec.all_terminal());
+        for id in ids {
+            assert!(exec.poll_terminal_with_status(id).is_none());
+            exec.forget_worker(id);
+            assert!(!exec.is_tracking(id));
+        }
         for id in ["w1", "w2", "w3"] {
             assert!(
                 matches!(terminals[id], FleetWorkerEventPayload::Completed { .. }),
