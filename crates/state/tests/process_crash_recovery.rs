@@ -6,6 +6,7 @@
 //! process termination and dead-PID lease takeover rather than an in-process
 //! mock.
 
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -19,6 +20,11 @@ use codewhale_protocol::agent_runtime::{ReasoningEffort, RunLimits, ToolPolicy};
 use codewhale_protocol::run_api::{
     PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
 };
+use codewhale_protocol::task::{
+    AcceptanceId, TaskAcceptance, TaskContract, TaskDefinition, TaskGenerationId,
+    VerifierObservation, VerifierPlan, VerifierSpec, VerifierStep, VerifierVerdict,
+    WorkspaceRevision,
+};
 use codewhale_runtime::{
     ActorRequestAccounting, AgentControl, AgentRuntime, ApiSurface, ApprovalRisk,
     CancellationToken, CommandId, DurableActionState, ModelAccounting, ModelFinishReason,
@@ -26,8 +32,9 @@ use codewhale_runtime::{
     ModelStreamEvent, ModelToolCall, NullEventSink, PendingRuntimeEvent, RecoveryAmbiguityPhase,
     RunId, RunRequest, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeEventSink,
     StoredRuntimeEvent, SurfaceUsage, TerminalState, ToolApprovalPrompt, ToolArguments,
-    ToolDefinition, ToolExecutionError, ToolExecutor, ToolInvocation, ToolOutcome, Usage,
-    UserInteractionResponse, reduce_events,
+    ToolArtifact, ToolArtifactStatus, ToolDefinition, ToolEvidence, ToolEvidenceStatus,
+    ToolExecutionError, ToolExecutor, ToolInvocation, ToolOutcome, Usage, UserInteractionResponse,
+    reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -43,10 +50,13 @@ const RUN_ID: &str = "process-crash-run";
 const CREATE_COMMAND_ID: &str = "process-crash-create-command";
 const CREATE_COMMAND_SHA256: &str = "sha256:process-crash-create-payload";
 const TOOL_NAME: &str = "write_marker";
+const HOST_VERIFIER_ACCEPTANCE_ID: &str = "process-crash-verifier";
+const HOST_VERIFIER_REVISION: &str = "sha256:process-crash-workspace";
+const HOST_VERIFIER_ARTIFACT_ID: &str = "process-crash-verifier-artifact";
 
 fn creation_intent() -> codewhale_runtime::CreationIntent {
     let command = StartRunCommand {
-        input: "执行进程恢复测试".to_owned(),
+        task: TaskDefinition::host("执行进程恢复测试"),
         workspace: "/tmp/codewhale-process-crash-test".to_owned(),
         model: Some("deepseek-chat".to_owned()),
         reasoning_effort: ReasoningEffort::default(),
@@ -65,6 +75,32 @@ fn creation_intent() -> codewhale_runtime::CreationIntent {
     }
 }
 
+fn host_verifier_spec() -> VerifierSpec {
+    VerifierSpec {
+        verifier_id: TOOL_NAME.to_owned(),
+        parameters: json!({"mode": "process_crash"}),
+        plan: VerifierPlan {
+            steps: vec![VerifierStep {
+                id: "write-deterministic-marker".to_owned(),
+                program: "process-crash-verifier".to_owned(),
+                args: vec!["--mode".to_owned(), "process_crash".to_owned()],
+                cwd: String::new(),
+                env: BTreeMap::new(),
+                timeout_ms: 10_000,
+            }],
+        },
+    }
+}
+
+fn is_host_verification_scenario(scenario: CrashScenario) -> bool {
+    matches!(
+        scenario,
+        CrashScenario::HostVerificationPrepared
+            | CrashScenario::HostVerificationInFlight
+            | CrashScenario::HostVerificationCommitted
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CrashScenario {
     ModelPrepared,
@@ -80,6 +116,9 @@ enum CrashScenario {
     CompactionPrepared,
     CompactionInFlight,
     CompactionCommitted,
+    HostVerificationPrepared,
+    HostVerificationInFlight,
+    HostVerificationCommitted,
     CreationReserved,
     TerminalCommitted,
 }
@@ -100,6 +139,9 @@ impl CrashScenario {
             Self::CompactionPrepared => "compaction_prepared",
             Self::CompactionInFlight => "compaction_in_flight",
             Self::CompactionCommitted => "compaction_committed",
+            Self::HostVerificationPrepared => "host_verification_prepared",
+            Self::HostVerificationInFlight => "host_verification_in_flight",
+            Self::HostVerificationCommitted => "host_verification_committed",
             Self::CreationReserved => "creation_reserved",
             Self::TerminalCommitted => "terminal_committed",
         }
@@ -120,6 +162,9 @@ impl CrashScenario {
             "compaction_prepared" => Self::CompactionPrepared,
             "compaction_in_flight" => Self::CompactionInFlight,
             "compaction_committed" => Self::CompactionCommitted,
+            "host_verification_prepared" => Self::HostVerificationPrepared,
+            "host_verification_in_flight" => Self::HostVerificationInFlight,
+            "host_verification_committed" => Self::HostVerificationCommitted,
             "creation_reserved" => Self::CreationReserved,
             "terminal_committed" => Self::TerminalCommitted,
             other => panic!("unknown crash test scenario: {other}"),
@@ -263,6 +308,7 @@ impl CrashFixture {
                 false,
                 None,
                 None,
+                scenario,
             )),
             Arc::new(NullEventSink),
             store.clone(),
@@ -470,6 +516,7 @@ struct MarkerTools {
     abort_after_side_effect: bool,
     abort_marker: Option<PathBuf>,
     cancel_control: Option<Arc<Mutex<Option<AgentControl>>>>,
+    scenario: CrashScenario,
 }
 
 impl MarkerTools {
@@ -478,12 +525,14 @@ impl MarkerTools {
         abort_after_side_effect: bool,
         abort_marker: Option<PathBuf>,
         cancel_control: Option<Arc<Mutex<Option<AgentControl>>>>,
+        scenario: CrashScenario,
     ) -> Self {
         Self {
             marker,
             abort_after_side_effect,
             abort_marker,
             cancel_control,
+            scenario,
         }
     }
 }
@@ -512,11 +561,64 @@ impl ToolExecutor for MarkerTools {
         }))
     }
 
+    async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+        if is_host_verification_scenario(self.scenario) {
+            Ok(HOST_VERIFIER_REVISION.to_owned())
+        } else {
+            Err(ToolExecutionError::new(
+                "workspace_revision_unavailable",
+                "process crash fixture has no workspace revision",
+            ))
+        }
+    }
+
     async fn execute(
         &self,
-        _invocation: ToolInvocation,
+        invocation: ToolInvocation,
         _cancellation: CancellationToken,
     ) -> Result<ToolOutcome, ToolExecutionError> {
+        if is_host_verification_scenario(self.scenario) && invocation.call_id.starts_with("host:") {
+            append_marker(&self.marker, &invocation.call_id);
+            if self.scenario == CrashScenario::HostVerificationInFlight {
+                append_marker(
+                    self.abort_marker
+                        .as_ref()
+                        .expect("Host verifier crash requires abort marker"),
+                    self.scenario.as_str(),
+                );
+                wait_for_parent_kill().await;
+            }
+
+            let mut outcome = ToolOutcome::success("deterministic Host verifier passed");
+            outcome.workspace_revision = Some(HOST_VERIFIER_REVISION.to_owned());
+            outcome.evidence = ToolEvidence {
+                status: ToolEvidenceStatus::Produced,
+                references: vec![HOST_VERIFIER_ARTIFACT_ID.to_owned()],
+            };
+            outcome.artifacts = vec![ToolArtifact {
+                id: HOST_VERIFIER_ARTIFACT_ID.to_owned(),
+                status: ToolArtifactStatus::Available,
+                sha256: Some("sha256:process-crash-verifier-artifact".to_owned()),
+                media_type: Some("application/json".to_owned()),
+                byte_len: Some(2),
+            }];
+            outcome.verifier_observation = Some(VerifierObservation {
+                spec: VerifierSpec {
+                    parameters: invocation
+                        .arguments
+                        .parsed
+                        .expect("Host verifier arguments must remain canonical"),
+                    ..host_verifier_spec()
+                },
+                verdict: VerifierVerdict::Passed,
+                workspace_revision: WorkspaceRevision::Known {
+                    sha256: HOST_VERIFIER_REVISION.to_owned(),
+                },
+                artifact_ids: vec![HOST_VERIFIER_ARTIFACT_ID.to_owned()],
+            });
+            return Ok(outcome);
+        }
+
         append_marker(&self.marker, "side-effect");
         if self.abort_after_side_effect {
             append_marker(
@@ -625,6 +727,15 @@ impl RuntimeEventSink for CrashSink {
                 event.event,
                 RuntimeEventKind::ContextCompactionCommitted { .. }
             ),
+            CrashScenario::HostVerificationPrepared => matches!(
+                event.event,
+                RuntimeEventKind::HostVerificationPrepared { .. }
+            ),
+            CrashScenario::HostVerificationInFlight => false,
+            CrashScenario::HostVerificationCommitted => matches!(
+                event.event,
+                RuntimeEventKind::HostVerificationCommitted { .. }
+            ),
             CrashScenario::CreationReserved => false,
         };
         if should_abort {
@@ -666,7 +777,13 @@ fn two_usage() -> Usage {
 }
 
 fn runtime_request() -> RunRequest {
-    let mut request = RunRequest::new("执行进程恢复测试", "只执行测试脚本");
+    let mut request = RunRequest::new(
+        TaskContract {
+            generation_id: TaskGenerationId::from(RUN_ID),
+            definition: TaskDefinition::host("执行进程恢复测试"),
+        },
+        "只执行测试脚本",
+    );
     request.run_id = Some(RunId::from(RUN_ID));
     request.model = "deepseek-test".to_owned();
     request.environment.workspace = "/tmp/codewhale-process-crash-test".to_owned();
@@ -678,6 +795,18 @@ fn runtime_request() -> RunRequest {
 
 fn scenario_request(scenario: CrashScenario) -> RunRequest {
     let mut request = runtime_request();
+    if is_host_verification_scenario(scenario) {
+        request
+            .task_contract
+            .as_mut()
+            .expect("Agent task contract")
+            .definition
+            .acceptance = vec![TaskAcceptance::Verifier {
+            id: AcceptanceId::from(HOST_VERIFIER_ACCEPTANCE_ID),
+            description: "冻结的进程级 Host verifier 必须通过".to_owned(),
+            verifier: host_verifier_spec(),
+        }];
+    }
     if matches!(
         scenario,
         CrashScenario::ModelPrepared | CrashScenario::TerminalModelResponseCommitted
@@ -695,7 +824,12 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
             | CrashScenario::CompactionInFlight
             | CrashScenario::CompactionCommitted
     ) {
-        request.input = "继续完成当前编码任务".to_owned();
+        request
+            .task_contract
+            .as_mut()
+            .expect("Agent task contract")
+            .definition
+            .objective = "继续完成当前编码任务".to_owned();
         request
             .transcript
             .entries
@@ -974,6 +1108,7 @@ fn process_crash_helper() {
             Some(abort_marker.clone()),
             (scenario == CrashScenario::ToolInFlightControlRequested)
                 .then(|| control_slot.as_ref().expect("control slot").clone()),
+            scenario,
         ));
         let runtime = Arc::new(AgentRuntime::new(
             Arc::new(MarkerModel::new(
@@ -1545,6 +1680,320 @@ async fn committed_terminal_is_returned_after_reopen_without_second_terminal() {
     assert_eq!(event_count(&replay, RuntimeEventKind::is_terminal), 1);
     assert_eq!(replay.snapshot.usage, one_usage());
     assert_eq!(replay.snapshot.accounting.usage, one_usage());
+}
+
+#[tokio::test]
+async fn host_verification_prepared_sigkill_reuses_verification_id_and_executes_once() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::HostVerificationPrepared);
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+    assert!(marker_lines(&fixture.tool_marker).is_empty());
+
+    let (runtime, store, model) =
+        fixture.reopen_with_model(CrashScenario::HostVerificationPrepared);
+    let before = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load prepared Host verification")
+        .expect("prepared Host verification exists");
+    let pending = before
+        .snapshot
+        .pending_host_verification
+        .clone()
+        .expect("prepared Host verification remains durable");
+    assert_eq!(pending.state, DurableActionState::Prepared);
+    assert_eq!(
+        pending.acceptance_id,
+        AcceptanceId::from(HOST_VERIFIER_ACCEPTANCE_ID)
+    );
+    assert_eq!(pending.verifier, host_verifier_spec());
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationPrepared { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationStarted { .. }
+        )),
+        0
+    );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted { .. }
+        )),
+        0
+    );
+    assert!(before.snapshot.evidence_receipts.is_empty());
+    assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
+
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume prepared Host verification");
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert!(
+        model.observed_requests().is_empty(),
+        "prepared Host verification recovery must not issue another model request"
+    );
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+    assert_eq!(
+        marker_lines(&fixture.tool_marker),
+        vec![format!("host:{}", pending.verification_id.0)]
+    );
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load recovered Host verification")
+        .expect("recovered Host verification exists");
+    assert_replay_prefix_preserved(&before, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce recovered Host verification"),
+        after.snapshot
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationPrepared {
+                verification_id,
+                ..
+            } if verification_id == &pending.verification_id
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationStarted { verification_id }
+                if verification_id == &pending.verification_id
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted {
+                verification_id,
+                receipt: Some(receipt),
+                ..
+            } if verification_id == &pending.verification_id
+                && receipt.verification_id == pending.verification_id
+        )),
+        1
+    );
+    assert!(after.snapshot.pending_host_verification.is_none());
+    assert_eq!(after.snapshot.evidence_receipts.len(), 1);
+    assert_eq!(
+        after.snapshot.evidence_receipts[0].verification_id,
+        pending.verification_id
+    );
+    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
+async fn host_verification_in_flight_sigkill_requires_recovery_without_rerun() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::HostVerificationInFlight);
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+
+    let store_before =
+        StateStore::open(Some(fixture.db.clone())).expect("reopen in-flight Host verifier store");
+    let before = store_before
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load in-flight Host verification")
+        .expect("in-flight Host verification exists");
+    let pending = before
+        .snapshot
+        .pending_host_verification
+        .clone()
+        .expect("in-flight Host verification remains durable");
+    drop(store_before);
+    assert_eq!(pending.state, DurableActionState::InFlight);
+    assert_eq!(
+        marker_lines(&fixture.tool_marker),
+        vec![format!("host:{}", pending.verification_id.0)]
+    );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationPrepared { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationStarted {
+                verification_id
+            } if verification_id == &pending.verification_id
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted { .. }
+        )),
+        0
+    );
+    assert!(before.snapshot.evidence_receipts.is_empty());
+
+    let (runtime, store, model) =
+        fixture.reopen_with_model(CrashScenario::HostVerificationInFlight);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume in-flight Host verification");
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::RecoveryRequired {
+            ambiguity: codewhale_runtime::RecoveryAmbiguity {
+                phase: RecoveryAmbiguityPhase::HostVerification,
+                ref action_id,
+                ..
+            }
+        } if action_id == &pending.verification_id.0
+    ));
+    assert!(
+        model.observed_requests().is_empty(),
+        "ambiguous Host verification recovery must not issue another model request"
+    );
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+    assert_eq!(
+        marker_lines(&fixture.tool_marker),
+        vec![format!("host:{}", pending.verification_id.0)],
+        "an in-flight Host verifier must never be rerun"
+    );
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load failed-closed Host verification")
+        .expect("failed-closed Host verification exists");
+    assert_replay_prefix_preserved(&before, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce failed-closed Host verification"),
+        after.snapshot
+    );
+    assert_eq!(
+        after.snapshot.pending_host_verification.as_ref(),
+        Some(&pending)
+    );
+    assert!(after.snapshot.evidence_receipts.is_empty());
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted { .. }
+        )),
+        0
+    );
+    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+}
+
+#[tokio::test]
+async fn host_verification_committed_sigkill_replays_receipt_and_completes_exactly_once() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::HostVerificationCommitted);
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+
+    let (runtime, store, model) =
+        fixture.reopen_with_model(CrashScenario::HostVerificationCommitted);
+    let before = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load committed Host verification")
+        .expect("committed Host verification exists");
+    assert!(before.snapshot.pending_host_verification.is_none());
+    let receipt = before
+        .snapshot
+        .evidence_receipts
+        .first()
+        .cloned()
+        .expect("committed Host verification receipt");
+    assert_eq!(
+        receipt.acceptance_id,
+        AcceptanceId::from(HOST_VERIFIER_ACCEPTANCE_ID)
+    );
+    assert_eq!(receipt.verifier, host_verifier_spec());
+    assert_eq!(
+        marker_lines(&fixture.tool_marker),
+        vec![format!("host:{}", receipt.verification_id.0)]
+    );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationPrepared { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationStarted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted {
+                verification_id,
+                receipt: Some(committed),
+                ..
+            } if verification_id == &receipt.verification_id && committed == &receipt
+        )),
+        1
+    );
+    assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
+
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume committed Host verification");
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert!(
+        model.observed_requests().is_empty(),
+        "committed Host verification recovery must not issue another model request"
+    );
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
+    assert_eq!(
+        marker_lines(&fixture.tool_marker),
+        vec![format!("host:{}", receipt.verification_id.0)],
+        "a committed verifier receipt must be replayed without rerunning the verifier"
+    );
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load completed Host verification")
+        .expect("completed Host verification exists");
+    assert_replay_prefix_preserved(&before, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce completed Host verification"),
+        after.snapshot
+    );
+    assert_eq!(after.snapshot.evidence_receipts, vec![receipt]);
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::HostVerificationCommitted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&after, RuntimeEventKind::is_terminal),
+        1,
+        "receipt replay may produce exactly one canonical terminal"
+    );
 }
 
 #[tokio::test]

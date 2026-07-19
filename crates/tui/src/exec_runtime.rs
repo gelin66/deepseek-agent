@@ -22,6 +22,7 @@ use codewhale_protocol::run_api::{
     ContinueRunCommand, RUN_API_SCHEMA_VERSION, RunApiError, RunApiErrorCode, RunCommand,
     RunCommandEnvelope, RunCommandResult, RunProductControls, StartRunCommand,
 };
+use codewhale_protocol::task::TaskDefinition;
 use codewhale_runtime::{
     AgentOutcome, ApiSurface, CanonicalTranscript, ModelAccounting, ModelErrorCategory,
     ReasoningEffort, RunId, RunLimits, RuntimeEventKind, RuntimeFailure, RuntimeTimeoutPhase,
@@ -292,14 +293,14 @@ pub(crate) async fn run_exec_runtime(
             },
             ExecRunLaunch::Continue(run_id) => RunCommand::Continue(ContinueRunCommand {
                 run_id: RunId::from(run_id),
-                input: prompt.to_owned(),
+                task: TaskDefinition::host(prompt),
                 expected_workspace: Some(workspace.display().to_string()),
             }),
             ExecRunLaunch::ContinueLatest => {
                 unreachable!("latest continuation is resolved through AgentApplication")
             }
             ExecRunLaunch::Fresh => RunCommand::Start(StartRunCommand {
-                input: prompt.to_owned(),
+                task: TaskDefinition::host(prompt),
                 workspace: workspace.display().to_string(),
                 model: (!requested_auto_model).then(|| model.to_owned()),
                 reasoning_effort: config
@@ -531,14 +532,18 @@ pub(crate) async fn run_exec_runtime(
                 after_sequence = event.sequence;
                 if let RuntimeEventKind::RunCreated { request } = &event.event {
                     effective_model.clone_from(&request.model);
-                    effective_prompt.clone_from(&request.input);
+                    effective_prompt = request
+                        .task_contract
+                        .as_ref()
+                        .map(|contract| contract.definition.objective.clone())
+                        .unwrap_or_default();
                     effective_auto_approve = request.environment.auto_approve;
                     effective_sandbox.clone_from(&request.environment.sandbox);
                     run_provider.clone_from(&request.environment.provider);
                     run_workspace = PathBuf::from(&request.environment.workspace);
                     tool_catalog_sha256.clone_from(&request.environment.tool_catalog_sha256);
                     summary.model.clone_from(&request.model);
-                    summary.prompt.clone_from(&request.input);
+                    summary.prompt.clone_from(&effective_prompt);
                 }
                 if matches!(&event.event, RuntimeEventKind::Terminal { .. }) {
                     let committed_signal = commit_exec_terminal_signal(&signal_phase);
@@ -1172,9 +1177,9 @@ impl<'a> RuntimeEventProjection<'a> {
                         },
                     );
                 }
-                if !request.input.is_empty() {
+                if let Some(contract) = &request.task_contract {
                     transcript.entries.push(TranscriptEntry::User {
-                        content: request.input.clone(),
+                        content: contract.definition.model_message(),
                     });
                 }
                 None
@@ -1316,9 +1321,10 @@ impl<'a> RuntimeEventProjection<'a> {
                 });
                 if format == ExecOutputFormat::StreamJson {
                     let (status, terminal_result_present) = match &outcome.terminal {
-                        TerminalState::Completed { message } => {
+                        TerminalState::Completed { message, .. } => {
                             ("completed", !message.trim().is_empty())
                         }
+                        TerminalState::ContextCompactionCompleted => ("completed", false),
                         TerminalState::Blocked { .. } => ("blocked", false),
                         TerminalState::Failed { .. } => ("failed", false),
                         TerminalState::Cancelled => ("cancelled", false),
@@ -1340,6 +1346,12 @@ impl<'a> RuntimeEventProjection<'a> {
             }
             RuntimeEventKind::InteractionRequested { .. }
             | RuntimeEventKind::InteractionResolved { .. }
+            | RuntimeEventKind::WorkspaceObserved { .. }
+            | RuntimeEventKind::CompletionProposed { .. }
+            | RuntimeEventKind::HostVerificationPrepared { .. }
+            | RuntimeEventKind::HostVerificationStarted { .. }
+            | RuntimeEventKind::HostVerificationCommitted { .. }
+            | RuntimeEventKind::CompletionRejected { .. }
             | RuntimeEventKind::SteerQueued { .. }
             | RuntimeEventKind::ControlRequested { .. } => None,
             RuntimeEventKind::SteerApplied { content, .. } => {
@@ -1350,7 +1362,7 @@ impl<'a> RuntimeEventProjection<'a> {
             }
             RuntimeEventKind::Terminal { outcome } => {
                 if summary.output.is_empty()
-                    && let TerminalState::Completed { message } = &outcome.terminal
+                    && let TerminalState::Completed { message, .. } = &outcome.terminal
                 {
                     summary.output.push_str(message);
                     if format != ExecOutputFormat::StreamJson && !json_output {
@@ -1390,6 +1402,9 @@ struct TerminalProjection {
 fn project_terminal(terminal: &TerminalState) -> TerminalProjection {
     let (reason, error, code, category, recoverable) = match terminal {
         TerminalState::Completed { .. } => (RunTerminationReason::Resolved, None, "", "", false),
+        TerminalState::ContextCompactionCompleted => {
+            (RunTerminationReason::Resolved, None, "", "", false)
+        }
         TerminalState::Blocked { reason } => (
             RunTerminationReason::Unresolved,
             Some(reason.clone()),

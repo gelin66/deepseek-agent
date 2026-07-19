@@ -3,9 +3,9 @@
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
 - 状态：执行中
-- 当前阶段：M4 已关闭，下一执行切片为 M5-A canonical
-  `TaskContract`/`EvidenceReceipt`。M4 最终代码检查点为 `65fa88ba`；当前 Run API v4、
-  RuntimeEvent v6、State schema v12。CLI、TUI、本地 API 与根/子 Agent 已统一到
+- 当前阶段：M4 已关闭；M5-A canonical `TaskContract`/`EvidenceReceipt` 已完成代码与
+  完整本地门禁，正式 DeepSeek A/B 待记录。M4 最终代码检查点为 `65fa88ba`；当前
+  Run API v5、RuntimeEvent v7、State schema v12。CLI、TUI、本地 API 与根/子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
   Goal/Memory 原型均已物理删除。focused、真实 PTY、进程级 crash/replay、严格 workspace
@@ -115,7 +115,7 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
-| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 待开始（下一切片 M5-A：TaskContract/EvidenceReceipt） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
+| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 进行中（M5-A 代码/本地门禁完成，live A/B 待记录） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定，成功率或 Token 优于基线且假成功下降 |
 | M6 | 统一多 Agent 与 worktree 生命周期 | 部分开始（canonical 根/子同 Runtime 已完成） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
@@ -1409,7 +1409,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 ## 9. M5：RepoGraph、ContextBroker 与 canonical 证据链
 
-### M5-A：canonical TaskContract 与 EvidenceReceipt（下一切片）
+### M5-A：canonical TaskContract 与 EvidenceReceipt（代码/本地门禁完成，live A/B 待记录）
 
 - 真实问题：当前模型可以提出完成，Host 只有 terminal 机制，却没有绑定任务 generation、
   最新 workspace revision 和确定性验收结果的产品级完成契约，因此仍可能“回答完成但没有
@@ -1426,6 +1426,23 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   Token、请求数、时间、费用与复杂度。
 - 本切片不先做 RepoGraph、LSP 或多 Agent DAG。先让“什么叫完成”只有一个可恢复真相，
   后续 ContextBroker、RepoGraph 和 Orchestrator 才能复用同一证据闭环。
+
+#### 当前完成事实
+
+- Run API v5 用结构化 `TaskDefinition` 替代自由 `input`；`RunCreated` 冻结唯一
+  `TaskContract`，结构化 constraints/non-goals/acceptance 进入唯一确定性中文 transcript，
+  root/child 共用同一 Runtime completion gate。
+- RuntimeEvent v7 新增 workspace observation、completion proposal/rejection 和
+  Host verifier prepared/started/committed 事实；模型 `Stop` 不再直接制造 `Completed`。
+- `run_tests.args` 已断代改为 `Vec<String>`；`run_verifiers` receipt 只接受冻结的 exact
+  resolved plan。工具只生产 typed observation，只有 Runtime 能签 EvidenceReceipt。
+- 任意 `MayWrite` 执行都会推进单调 workspace generation；same-hash 写入、缺失实际
+  artifact、伪造 Completed、错 generation/revision/parameters 均 fail closed。
+- SQLite 没有增加 receipt 私表；现有 canonical event/snapshot/reducer 是唯一持久真相。
+  Prepared/InFlight/Committed 三个 Host verifier 窗口均通过真实子进程 `SIGKILL` 后重开。
+- focused、严格 workspace Clippy、完整 workspace tests、真实 PTY/exec 和
+  exec/HTTP/stdio 逐事件 parity 已通过。该证据证明机制正确且入口未回归；在正式
+  DeepSeek A/B 完成前，不声称成功率、Token、时间或费用得到提升。
 
 ### 工作
 

@@ -40,8 +40,8 @@ FIXTURE_ROOT = ROOT / "eval" / "fixtures" / "deepseek-exec"
 FIXTURE_WORKSPACE = FIXTURE_ROOT / "workspace"
 VERIFIER = FIXTURE_ROOT / "verifier.py"
 AGGREGATE_FIXTURE = FIXTURE_ROOT / "aggregate-runs.json"
-RUNTIME_EVENT_V6_PROMPT_LEDGER_FIXTURE = (
-    FIXTURE_ROOT / "runtime-event-v6-prompt-ledger.json"
+RUNTIME_EVENT_V7_PROMPT_LEDGER_FIXTURE = (
+    FIXTURE_ROOT / "runtime-event-v7-prompt-ledger.json"
 )
 
 SCHEMA = "codewhale.eval.deepseek-exec.v2"
@@ -74,7 +74,9 @@ SCHEDULE_POLICY = "deterministic_pair_order_balance_v1"
 SYSTEM_PROMPT_EVIDENCE_SCHEMA = "codewhale.eval.system-prompt-evidence.v1"
 SYSTEM_PROMPT_FINGERPRINT_SCHEMA = "codewhale.eval.system-prompt-fingerprint.v1"
 SUPPORTED_STATE_SCHEMA_VERSIONS = frozenset({9, 10, 11, 12})
-SUPPORTED_RUNTIME_EVENT_SCHEMA_VERSIONS = {6}
+# This evaluator intentionally reads the frozen M4 baseline and M5 candidate.
+# Product code itself keeps no old RuntimeEvent compatibility path.
+SUPPORTED_RUNTIME_EVENT_SCHEMA_VERSIONS = {6, 7}
 PROMPT_HASH_DOMAIN = b"codewhale.eval.system-prompt/v1\0"
 PROMPT_BLOCK_HASH_DOMAIN = b"codewhale.eval.system-prompt-block/v1\0"
 PROMPT_STABLE_PREFIX_HASH_DOMAIN = (
@@ -4556,16 +4558,16 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertFalse(temporary_path.exists())
         self.assertTrue(evidence["complete"])
 
-    def test_prompt_evidence_consumes_rust_v6_contract_fixture_in_supported_state_versions(
+    def test_prompt_evidence_consumes_rust_v7_contract_fixture_in_supported_state_versions(
         self,
     ) -> None:
         # crates/protocol/tests/prompt_ledger_fixture.rs proves every record in
-        # this same file deserializes and round-trips as StoredRuntimeEvent v6.
+        # this same file deserializes and round-trips as StoredRuntimeEvent v7.
         # Later State schemas only rematerialize projections or delete retired
         # tables around this canonical ledger, so prompt identity must remain
         # byte-for-byte equivalent while the version whitelist stays fail-closed.
         stored_events = json.loads(
-            RUNTIME_EVENT_V6_PROMPT_LEDGER_FIXTURE.read_text(
+            RUNTIME_EVENT_V7_PROMPT_LEDGER_FIXTURE.read_text(
                 encoding="utf-8"
             )
         )
@@ -4670,7 +4672,7 @@ class HarnessSelfTests(unittest.TestCase):
 
         evidence = evidence_by_state_schema[12]
         self.assertTrue(evidence["complete"], evidence["error_codes"])
-        self.assertEqual(evidence["runtime_event_schema_versions"], [6])
+        self.assertEqual(evidence["runtime_event_schema_versions"], [7])
         self.assertEqual(evidence["canonical_run_count"], 2)
         self.assertEqual(evidence["prepared_request_count"], 4)
         self.assertEqual(evidence["in_flight_request_count"], 4)

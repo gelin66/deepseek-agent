@@ -10,6 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 pub use codewhale_protocol::agent_runtime::*;
+pub use codewhale_protocol::task::*;
 use tokio::sync::Notify;
 
 mod agent;
@@ -21,10 +22,10 @@ pub use agent::{
 pub use store::{
     AcquiredRun, CommandReceipt, CommittedContextCompaction, CreatedRun, CreationIntent,
     CreationReservation, DurableActionState, DurableCommand, InMemoryRunStore,
-    PendingContextCompaction, PendingControl, PendingModelAction, PendingSteer, PendingToolAction,
-    PendingUserInteraction, ReservedCreation, RootRunRecord, RunLease, RunReplay, RunSnapshot,
-    StoppedContextCompactionFailure, StoppedModelFailure, apply_event, reduce_events,
-    validate_continuation_request,
+    PendingContextCompaction, PendingControl, PendingHostVerification, PendingModelAction,
+    PendingSteer, PendingToolAction, PendingUserInteraction, ReservedCreation, RootRunRecord,
+    RunLease, RunReplay, RunSnapshot, StoppedContextCompactionFailure, StoppedModelFailure,
+    apply_event, reduce_events, validate_continuation_request,
 };
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -183,6 +184,22 @@ impl CancellationToken {
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     fn definitions(&self) -> Vec<ToolDefinition>;
+
+    /// Classify whether this invocation can mutate the workspace. The
+    /// conservative default protects embedders until they provide a narrower
+    /// classification.
+    fn workspace_access(&self, _invocation: &ToolInvocation) -> WorkspaceAccess {
+        WorkspaceAccess::MayWrite
+    }
+
+    /// Observe the current canonical workspace revision. Runtime owns the
+    /// monotonic workspace generation and never trusts a tool-supplied epoch.
+    async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+        Err(ToolExecutionError::new(
+            "workspace_revision_unavailable",
+            "tool executor cannot observe the workspace revision",
+        ))
+    }
 
     /// Return a host-owned approval prompt for this exact invocation.
     /// Concrete tool implementations remain the only owner of their risk and

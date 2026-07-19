@@ -131,6 +131,7 @@ pub struct CommittedContextCompaction {
 pub struct PendingToolAction {
     pub operation_id: OperationId,
     pub invocation: ToolInvocation,
+    pub workspace_access: WorkspaceAccess,
     pub state: DurableActionState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interaction: Option<PendingUserInteraction>,
@@ -141,6 +142,16 @@ pub struct PendingUserInteraction {
     pub request: UserInteractionRequest,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response: Option<UserInteractionResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PendingHostVerification {
+    pub verification_id: VerificationId,
+    pub candidate: CompletionCandidate,
+    pub acceptance_id: AcceptanceId,
+    pub verifier: VerifierSpec,
+    pub workspace_state_before: WorkspaceState,
+    pub state: DurableActionState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +197,11 @@ pub struct RunSnapshot {
     pub usage: Usage,
     pub accounting: ModelAccounting,
     pub terminal: Option<AgentOutcome>,
+    pub workspace_state: WorkspaceState,
+    pub evidence_receipts: Vec<EvidenceReceipt>,
+    pub pending_completion: Option<CompletionCandidate>,
+    pub pending_host_verification: Option<PendingHostVerification>,
+    pub last_completion_rejection: Option<CompletionRejection>,
     pub runtime_model_requests: u32,
     pub runtime_retries: u32,
     pub tool_calls: u32,
@@ -314,17 +330,31 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
         ));
     }
     match request.purpose {
-        RunPurpose::Agent => {}
+        RunPurpose::Agent => {
+            let contract = request
+                .task_contract
+                .as_ref()
+                .ok_or_else(|| corrupt(&run_id, "Agent run has no frozen task contract"))?;
+            contract
+                .validate()
+                .map_err(|message| corrupt(&run_id, message))?;
+            if contract.generation_id.0 != run_id.0 {
+                return Err(corrupt(
+                    &run_id,
+                    "task generation id does not match the run id",
+                ));
+            }
+        }
         RunPurpose::ContextCompaction => {
             if request.parent_run_id.is_some()
                 || request.continued_from_run_id.is_none()
                 || request.actor.kind != AgentActorKind::Root
                 || request.actor.depth != 0
-                || !request.input.is_empty()
+                || request.task_contract.is_some()
             {
                 return Err(corrupt(
                     &run_id,
-                    "context-compaction run must be an input-free root continuation",
+                    "context-compaction run must be a contract-free root continuation",
                 ));
             }
         }
@@ -339,6 +369,16 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
         usage: Usage::default(),
         accounting,
         terminal: None,
+        workspace_state: WorkspaceState {
+            generation: 0,
+            revision: WorkspaceRevision::Unknown {
+                reason: "workspace has not been observed".to_owned(),
+            },
+        },
+        evidence_receipts: Vec::new(),
+        pending_completion: None,
+        pending_host_verification: None,
+        last_completion_rejection: None,
         runtime_model_requests: 0,
         runtime_retries: 0,
         tool_calls: 0,
@@ -890,6 +930,7 @@ pub fn apply_event(
         RuntimeEventKind::ToolPrepared {
             operation_id,
             invocation,
+            workspace_access,
         } => {
             if snapshot.request.purpose != RunPurpose::Agent {
                 return Err(corrupt(
@@ -907,6 +948,7 @@ pub fn apply_event(
             snapshot.pending_tool = Some(PendingToolAction {
                 operation_id: operation_id.clone(),
                 invocation: invocation.clone(),
+                workspace_access: *workspace_access,
                 state: DurableActionState::Prepared,
                 interaction: None,
             });
@@ -1054,6 +1096,7 @@ pub fn apply_event(
             call_id,
             name,
             outcome,
+            workspace_state,
         } => {
             outcome
                 .validate()
@@ -1103,12 +1146,250 @@ pub fn apply_event(
                     _ => {}
                 }
             }
+            match (pending.workspace_access, workspace_state) {
+                (WorkspaceAccess::ReadOnly, None) => {}
+                (WorkspaceAccess::ReadOnly, Some(_)) => {
+                    return Err(corrupt(
+                        &run_id,
+                        "read-only tool outcome cannot advance workspace state",
+                    ));
+                }
+                (WorkspaceAccess::MayWrite, None)
+                    if pending.state == DurableActionState::Prepared
+                        && outcome.side_effect == ToolSideEffectStatus::NotApplied => {}
+                (WorkspaceAccess::MayWrite, None) => {
+                    return Err(corrupt(
+                        &run_id,
+                        "workspace-mutating tool outcome must settle workspace state",
+                    ));
+                }
+                (WorkspaceAccess::MayWrite, Some(state)) => {
+                    state
+                        .validate()
+                        .map_err(|message| corrupt(&run_id, message))?;
+                    if state.generation != snapshot.workspace_state.generation.saturating_add(1) {
+                        return Err(corrupt(
+                            &run_id,
+                            "workspace-mutating tool outcome did not advance one generation",
+                        ));
+                    }
+                    snapshot.workspace_state = state.clone();
+                }
+            }
             snapshot.pending_tool = None;
             snapshot.transcript.entries.push(TranscriptEntry::Tool {
                 call_id: call_id.clone(),
                 name: name.clone(),
                 outcome: outcome.clone(),
             });
+        }
+        RuntimeEventKind::WorkspaceObserved { workspace_state } => {
+            workspace_state
+                .validate()
+                .map_err(|message| corrupt(&run_id, message))?;
+            let expected_generation = match (
+                &snapshot.workspace_state.revision,
+                &workspace_state.revision,
+            ) {
+                (
+                    WorkspaceRevision::Known { sha256: previous },
+                    WorkspaceRevision::Known { sha256: current },
+                ) if previous == current => snapshot.workspace_state.generation,
+                _ => snapshot.workspace_state.generation.saturating_add(1),
+            };
+            if workspace_state.generation != expected_generation {
+                return Err(corrupt(
+                    &run_id,
+                    "workspace observation carries an invalid generation",
+                ));
+            }
+            snapshot.workspace_state = workspace_state.clone();
+        }
+        RuntimeEventKind::CompletionProposed { candidate } => {
+            if snapshot.request.purpose != RunPurpose::Agent {
+                return Err(corrupt(
+                    &run_id,
+                    "context-compaction run cannot propose task completion",
+                ));
+            }
+            candidate
+                .validate()
+                .map_err(|message| corrupt(&run_id, message))?;
+            let generation = &snapshot
+                .request
+                .task_contract
+                .as_ref()
+                .expect("Agent contract validated at run creation")
+                .generation_id;
+            if &candidate.generation_id != generation {
+                return Err(corrupt(
+                    &run_id,
+                    "completion candidate belongs to another task generation",
+                ));
+            }
+            snapshot.pending_completion = Some(candidate.clone());
+        }
+        RuntimeEventKind::HostVerificationPrepared {
+            verification_id,
+            candidate,
+            acceptance_id,
+            verifier,
+            workspace_state_before,
+        } => {
+            if snapshot.pending_host_verification.is_some() {
+                return Err(corrupt(&run_id, "Host verification prepared twice"));
+            }
+            if snapshot.pending_completion.as_ref() != Some(candidate) {
+                return Err(corrupt(
+                    &run_id,
+                    "Host verification does not match the pending completion candidate",
+                ));
+            }
+            let contract = snapshot
+                .request
+                .task_contract
+                .as_ref()
+                .expect("Agent contract validated at run creation");
+            let matches_acceptance = contract.definition.acceptance.iter().any(|acceptance| {
+                matches!(
+                    acceptance,
+                    TaskAcceptance::Verifier {
+                        id,
+                        verifier: expected,
+                        ..
+                    } if id == acceptance_id && expected == verifier
+                )
+            });
+            if !matches_acceptance || workspace_state_before != &snapshot.workspace_state {
+                return Err(corrupt(
+                    &run_id,
+                    "Host verification does not match the contract or current workspace",
+                ));
+            }
+            snapshot.pending_host_verification = Some(PendingHostVerification {
+                verification_id: verification_id.clone(),
+                candidate: candidate.clone(),
+                acceptance_id: acceptance_id.clone(),
+                verifier: verifier.clone(),
+                workspace_state_before: workspace_state_before.clone(),
+                state: DurableActionState::Prepared,
+            });
+        }
+        RuntimeEventKind::HostVerificationStarted { verification_id } => {
+            let pending = snapshot
+                .pending_host_verification
+                .as_mut()
+                .ok_or_else(|| corrupt(&run_id, "Host verification started before preparation"))?;
+            if pending.verification_id != *verification_id
+                || pending.state != DurableActionState::Prepared
+                || pending.workspace_state_before != snapshot.workspace_state
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "Host verification start does not match the prepared action",
+                ));
+            }
+            pending.state = DurableActionState::InFlight;
+        }
+        RuntimeEventKind::HostVerificationCommitted {
+            verification_id,
+            outcome,
+            receipt,
+            workspace_state_after,
+        } => {
+            outcome
+                .validate()
+                .map_err(|message| corrupt(&run_id, message))?;
+            let pending = snapshot.pending_host_verification.as_ref().ok_or_else(|| {
+                corrupt(&run_id, "Host verification committed before preparation")
+            })?;
+            if pending.verification_id != *verification_id
+                || pending.state != DurableActionState::InFlight
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "Host verification outcome does not match the in-flight action",
+                ));
+            }
+            if workspace_state_after.generation
+                != pending.workspace_state_before.generation.saturating_add(1)
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "Host verification did not advance the workspace generation",
+                ));
+            }
+            workspace_state_after
+                .validate()
+                .map_err(|message| corrupt(&run_id, message))?;
+            if let Some(receipt) = receipt {
+                receipt
+                    .validate()
+                    .map_err(|message| corrupt(&run_id, message))?;
+                let observation = outcome.verifier_observation.as_ref().ok_or_else(|| {
+                    corrupt(
+                        &run_id,
+                        "Host verification receipt has no typed verifier observation",
+                    )
+                })?;
+                let known_revision_matches = matches!(
+                    (&observation.workspace_revision, &workspace_state_after.revision),
+                    (
+                        WorkspaceRevision::Known { sha256: observed },
+                        WorkspaceRevision::Known { sha256: settled }
+                    ) if observed == settled
+                );
+                let contract = snapshot
+                    .request
+                    .task_contract
+                    .as_ref()
+                    .expect("Agent contract validated at run creation");
+                if !outcome.is_success()
+                    || observation.verdict != VerifierVerdict::Passed
+                    || observation.spec != pending.verifier
+                    || !verifier_artifacts_are_available(outcome, observation)
+                    || !known_revision_matches
+                    || receipt.id
+                        != EvidenceReceiptId::from(format!("receipt:{}", verification_id.0))
+                    || receipt.generation_id != contract.generation_id
+                    || receipt.acceptance_id != pending.acceptance_id
+                    || receipt.verification_id != *verification_id
+                    || receipt.verifier != pending.verifier
+                    || receipt.workspace_state != *workspace_state_after
+                    || receipt.artifact_ids != observation.artifact_ids
+                {
+                    return Err(corrupt(
+                        &run_id,
+                        "Host verification receipt does not match the exact observation",
+                    ));
+                }
+                if snapshot
+                    .evidence_receipts
+                    .iter()
+                    .any(|existing| existing.id == receipt.id)
+                {
+                    return Err(corrupt(&run_id, "evidence receipt id was committed twice"));
+                }
+                snapshot.evidence_receipts.push(receipt.clone());
+            }
+            snapshot.workspace_state = workspace_state_after.clone();
+            snapshot.pending_host_verification = None;
+        }
+        RuntimeEventKind::CompletionRejected { rejection } => {
+            rejection
+                .validate()
+                .map_err(|message| corrupt(&run_id, message))?;
+            if snapshot
+                .pending_completion
+                .as_ref()
+                .is_none_or(|candidate| candidate.id != rejection.candidate_id)
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "completion rejection does not match the pending candidate",
+                ));
+            }
+            snapshot.last_completion_rejection = Some(rejection.clone());
         }
         RuntimeEventKind::ChildStarted { child_run_id, .. } => {
             if snapshot.request.purpose != RunPurpose::Agent {
@@ -1238,6 +1519,20 @@ pub fn apply_event(
                     ));
                 }
             }
+            match (&snapshot.request.purpose, &outcome.terminal) {
+                (RunPurpose::ContextCompaction, TerminalState::ContextCompactionCompleted) => {}
+                (RunPurpose::ContextCompaction, _) => {}
+                (RunPurpose::Agent, TerminalState::ContextCompactionCompleted) => {
+                    return Err(corrupt(
+                        &run_id,
+                        "Agent run cannot use the context-compaction terminal",
+                    ));
+                }
+                (RunPurpose::Agent, TerminalState::Completed { decision, .. }) => {
+                    validate_completion_decision(snapshot, &run_id, decision)?;
+                }
+                (RunPurpose::Agent, _) => {}
+            }
             snapshot.terminal = Some((**outcome).clone());
         }
     }
@@ -1287,12 +1582,104 @@ fn initial_transcript(request: &RunRequest) -> CanonicalTranscript {
             },
         );
     }
-    if !request.input.is_empty() {
+    if let Some(contract) = &request.task_contract {
         transcript.entries.push(TranscriptEntry::User {
-            content: request.input.clone(),
+            content: contract.definition.model_message(),
         });
     }
     transcript
+}
+
+fn validate_completion_decision(
+    snapshot: &RunSnapshot,
+    run_id: &RunId,
+    decision: &CompletionDecision,
+) -> Result<(), RunStoreError> {
+    decision
+        .validate()
+        .map_err(|message| corrupt(run_id, message))?;
+    let candidate = snapshot
+        .pending_completion
+        .as_ref()
+        .ok_or_else(|| corrupt(run_id, "completed terminal has no completion candidate"))?;
+    let contract = snapshot
+        .request
+        .task_contract
+        .as_ref()
+        .ok_or_else(|| corrupt(run_id, "completed Agent has no task contract"))?;
+    if decision.candidate_id != candidate.id
+        || decision.generation_id != contract.generation_id
+        || decision.workspace_state != snapshot.workspace_state
+    {
+        return Err(corrupt(
+            run_id,
+            "completion decision does not match the current candidate, generation, or workspace",
+        ));
+    }
+    if decision.satisfied.len() != contract.definition.acceptance.len() {
+        return Err(corrupt(
+            run_id,
+            "completion decision does not satisfy the whole task contract",
+        ));
+    }
+    for acceptance in &contract.definition.acceptance {
+        let Some(satisfaction) = decision
+            .satisfied
+            .iter()
+            .find(|item| item.acceptance_id() == acceptance.id())
+        else {
+            return Err(corrupt(
+                run_id,
+                format!("acceptance '{}' is not satisfied", acceptance.id().0),
+            ));
+        };
+        match (acceptance, satisfaction) {
+            (TaskAcceptance::Host { .. }, AcceptanceSatisfaction::Host { .. }) => {}
+            (
+                TaskAcceptance::Verifier { verifier, .. },
+                AcceptanceSatisfaction::Evidence { receipt_id, .. },
+            ) => {
+                let receipt = snapshot
+                    .evidence_receipts
+                    .iter()
+                    .find(|receipt| &receipt.id == receipt_id)
+                    .ok_or_else(|| corrupt(run_id, "completion references an unknown receipt"))?;
+                if receipt.generation_id != contract.generation_id
+                    || receipt.acceptance_id != *acceptance.id()
+                    || receipt.verifier != *verifier
+                    || receipt.workspace_state != snapshot.workspace_state
+                {
+                    return Err(corrupt(
+                        run_id,
+                        "completion receipt does not match the current contract or workspace",
+                    ));
+                }
+            }
+            _ => {
+                return Err(corrupt(
+                    run_id,
+                    "completion satisfaction kind does not match task acceptance",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn verifier_artifacts_are_available(
+    outcome: &ToolOutcome,
+    observation: &VerifierObservation,
+) -> bool {
+    !observation.artifact_ids.is_empty()
+        && outcome.evidence.status == ToolEvidenceStatus::Produced
+        && outcome.evidence.references == observation.artifact_ids
+        && observation.artifact_ids.iter().all(|artifact_id| {
+            outcome.artifacts.iter().any(|artifact| {
+                artifact.id == *artifact_id
+                    && artifact.status == ToolArtifactStatus::Available
+                    && artifact.sha256.is_some()
+            })
+        })
 }
 
 fn retry_policy_stop_reason(

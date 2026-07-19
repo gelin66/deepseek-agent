@@ -10,7 +10,7 @@ use std::sync::{Arc, OnceLock};
 use async_trait::async_trait;
 use codewhale_protocol::agent_runtime::{
     ApprovalRisk, ToolApprovalPrompt, ToolDefinition, ToolOperationStatus, ToolRetryDisposition,
-    ToolSideEffectStatus,
+    ToolSideEffectStatus, WorkspaceAccess,
 };
 use codewhale_runtime::{CancellationToken, ToolExecutionError, ToolExecutor, ToolInvocation};
 use serde::{Deserialize, Serialize};
@@ -26,9 +26,10 @@ use crate::shell::{
     exec_shell_input_is_parallel_readonly, execute_exec_shell, new_shared_shell_manager,
 };
 use crate::{
-    ProductionToolContext, ToolError, ToolOutcome, execute_apply_patch, execute_edit_file,
-    execute_file_search, execute_git_diff, execute_git_status, execute_grep_files,
-    execute_list_dir, execute_read_file, execute_run_tests, execute_run_verifiers,
+    ProductionToolContext, ToolError, ToolOutcome, capture_workspace_revision, execute_apply_patch,
+    execute_edit_file, execute_file_search, execute_git_diff, execute_git_status,
+    execute_grep_files, execute_list_dir, execute_read_file, execute_run_tests,
+    execute_run_verifiers,
 };
 
 pub const PRODUCTION_TOOL_NAMES: [&str; 11] = [
@@ -448,6 +449,30 @@ impl ToolExecutor for ProductionToolExecutor {
         production_tool_definitions()
     }
 
+    fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
+        match invocation.name.as_str() {
+            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file" => {
+                WorkspaceAccess::ReadOnly
+            }
+            "exec_shell"
+                if invocation
+                    .arguments
+                    .parsed
+                    .as_ref()
+                    .is_some_and(exec_shell_input_is_parallel_readonly) =>
+            {
+                WorkspaceAccess::ReadOnly
+            }
+            _ => WorkspaceAccess::MayWrite,
+        }
+    }
+
+    async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+        capture_workspace_revision(self.context.workspace())
+            .await
+            .map_err(|message| ToolExecutionError::new("workspace_revision_unavailable", message))
+    }
+
     fn approval_prompt(
         &self,
         invocation: &ToolInvocation,
@@ -713,11 +738,11 @@ fn read_file_schema() -> Value {
 }
 
 fn run_tests_schema() -> Value {
-    json!({"type":"object","properties":{"args":{"type":"string"},"all_features":{"type":"boolean"}},"additionalProperties":false})
+    json!({"type":"object","properties":{"args":{"type":"array","items":{"type":"string"},"default":[]},"all_features":{"type":"boolean"}},"additionalProperties":false})
 }
 
 fn run_verifiers_schema() -> Value {
-    json!({"type":"object","properties":{"profile":{"type":"string","enum":["auto","rust","node","python","go"],"default":"auto"},"level":{"type":"string","enum":["quick","full"],"default":"quick"},"max_python_files":{"type":"integer","minimum":1,"maximum":1000,"default":200},"commands":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"},"default":[]},"cwd":{"type":"string"}},"required":["name","program"],"additionalProperties":false},"default":[]}},"additionalProperties":false})
+    json!({"type":"object","properties":{"profile":{"type":"string","enum":["auto","rust","node","python","go","exact"],"default":"auto"},"level":{"type":"string","enum":["quick","full"],"default":"quick"},"max_python_files":{"type":"integer","minimum":1,"maximum":1000,"default":200},"commands":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"},"default":[]},"cwd":{"type":"string"}},"required":["name","program"],"additionalProperties":false},"default":[]}},"additionalProperties":false})
 }
 
 #[cfg(test)]
@@ -786,7 +811,7 @@ mod tests {
         // Update only when the reviewed fixed catalog intentionally changes.
         assert_eq!(
             production_tool_catalog_sha256(),
-            "sha256:eefa831960fb97eaab72d6fcf7c1d7f264ad8c942984066f402587e519a87b19"
+            "sha256:c65dd2c509bf9dd478c49c7e4f6e96c4b1fb468f6a48c8f525ff1554cd0b2b10"
         );
     }
 

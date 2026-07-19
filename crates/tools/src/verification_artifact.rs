@@ -14,7 +14,9 @@ use std::time::Duration;
 use codewhale_protocol::agent_runtime::{
     ToolArtifact, ToolArtifactStatus, ToolEvidence, ToolEvidenceStatus,
 };
-use serde::{Deserialize, Serialize};
+use codewhale_protocol::task::{
+    VerifierObservation, VerifierSpec, VerifierVerdict, WorkspaceRevision, canonical_json,
+};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use wait_timeout::ChildExt;
@@ -22,8 +24,6 @@ use wait_timeout::ChildExt;
 use crate::ToolOutcome;
 use crate::shell::{ProcessTreeOwner, configure_process_tree};
 
-const ARTIFACT_METADATA_KEY: &str = "verification_artifact";
-const ARTIFACT_REJECTION_METADATA_KEY: &str = "verification_artifact_rejected";
 const ARTIFACT_ID_PREFIX: &str = "verification-evidence:";
 const ARTIFACT_MEDIA_TYPE: &str = "application/vnd.codewhale.verification+json";
 const MAX_GIT_DIFF_BYTES: usize = 256 * 1024 * 1024;
@@ -33,16 +33,6 @@ const MAX_UNTRACKED_FILE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_UNTRACKED_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const GIT_READER_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct VerificationArtifact {
-    pub tool: String,
-    pub check: String,
-    pub summary: String,
-    pub workspace_revision: String,
-    pub verifier_id: String,
-    pub verifier_params_sha256: String,
-}
 
 /// Capture Git HEAD, staged/unstaged binary diffs and every non-ignored
 /// untracked file in a bounded digest.
@@ -55,29 +45,15 @@ pub async fn capture_workspace_revision(workspace: &Path) -> Result<String, Stri
 
 /// Attach evidence only when the checker succeeded and the workspace stayed
 /// unchanged for its entire execution.
-pub fn attach_verification_artifact(
+pub fn attach_verifier_observation(
     result: &mut ToolOutcome,
-    tool: &str,
-    verifier_params: &Value,
-    check: String,
+    verifier: VerifierSpec,
     summary: String,
     revision_before: Result<String, String>,
     revision_after: Result<String, String>,
 ) {
     let observation = match (revision_before, revision_after) {
-        (Ok(before), Ok(after)) if before == after && result.is_success() => {
-            Ok(VerificationArtifact {
-                tool: tool.to_string(),
-                check,
-                summary,
-                workspace_revision: after,
-                verifier_id: tool.to_string(),
-                verifier_params_sha256: structured_value_hash(
-                    "verification-params-v1",
-                    verifier_params,
-                ),
-            })
-        }
+        (Ok(before), Ok(after)) if before == after && result.is_success() => Ok((after, verifier)),
         (Ok(_), Ok(_)) if result.is_success() => Err((
             ToolEvidenceStatus::Stale,
             "workspace changed while the evidence command was running; rerun it in the final workspace"
@@ -93,14 +69,25 @@ pub fn attach_verification_artifact(
         }
     };
 
-    let metadata_entry = match observation {
-        Ok(artifact) => {
-            let artifact_value =
-                serde_json::to_value(&artifact).expect("verification artifact is serializable");
-            let artifact_bytes = serde_json::to_vec(&canonical_json(&artifact_value))
-                .expect("verification artifact JSON is serializable");
+    match observation {
+        Ok((workspace_revision, verifier)) => {
+            let evidence_value = json!({
+                "summary": summary,
+                "verifier": verifier,
+                "workspace_revision": workspace_revision,
+            });
+            let artifact_bytes = serde_json::to_vec(&canonical_json(&evidence_value))
+                .expect("verification evidence JSON is serializable");
             let artifact_sha256 = format_sha256(Sha256::digest(&artifact_bytes).as_slice());
             let artifact_id = format!("{ARTIFACT_ID_PREFIX}{artifact_sha256}");
+            result.verifier_observation = Some(VerifierObservation {
+                spec: verifier,
+                verdict: VerifierVerdict::Passed,
+                workspace_revision: WorkspaceRevision::Known {
+                    sha256: workspace_revision.clone(),
+                },
+                artifact_ids: vec![artifact_id.clone()],
+            });
             result.evidence = ToolEvidence {
                 status: ToolEvidenceStatus::Produced,
                 references: vec![artifact_id.clone()],
@@ -115,25 +102,20 @@ pub fn attach_verification_artifact(
                         .expect("verification artifact length fits in u64"),
                 ),
             }];
-            result.workspace_revision = Some(artifact.workspace_revision.clone());
-            (ARTIFACT_METADATA_KEY.to_string(), artifact_value)
+            result.workspace_revision = Some(workspace_revision);
         }
         Err((status, reason)) => {
             set_verification_status(result, status);
-            (
-                ARTIFACT_REJECTION_METADATA_KEY.to_string(),
-                Value::String(reason),
-            )
+            let metadata = result.metadata.get_or_insert_with(|| json!({}));
+            if !metadata.is_object() {
+                *metadata = json!({"tool_metadata": metadata.take()});
+            }
+            metadata
+                .as_object_mut()
+                .expect("metadata was normalized to an object")
+                .insert("verification_rejected".to_owned(), Value::String(reason));
         }
-    };
-    let metadata = result.metadata.get_or_insert_with(|| json!({}));
-    if !metadata.is_object() {
-        *metadata = json!({"tool_metadata": metadata.take()});
     }
-    metadata
-        .as_object_mut()
-        .expect("metadata was normalized to an object")
-        .insert(metadata_entry.0, metadata_entry.1);
 }
 
 /// Mark a checker result as unusable evidence without manufacturing a
@@ -149,6 +131,7 @@ fn set_verification_status(result: &mut ToolOutcome, status: ToolEvidenceStatus)
     };
     result.artifacts.clear();
     result.workspace_revision = None;
+    result.verifier_observation = None;
 }
 
 fn capture_workspace_revision_sync(workspace: &Path) -> Result<String, String> {
@@ -293,30 +276,6 @@ fn hash_segment(hasher: &mut Sha256, label: &[u8], value: &[u8]) {
     hasher.update(label);
     hasher.update((value.len() as u64).to_le_bytes());
     hasher.update(value);
-}
-
-fn structured_value_hash(domain: &str, value: &Value) -> String {
-    let canonical = canonical_json(value);
-    let encoded = serde_json::to_vec(&canonical).expect("JSON value is serializable");
-    let mut hasher = Sha256::new();
-    hash_segment(&mut hasher, domain.as_bytes(), &encoded);
-    format_sha256(hasher.finalize().as_slice())
-}
-
-fn canonical_json(value: &Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.iter().map(canonical_json).collect()),
-        Value::Object(object) => {
-            let mut keys = object.keys().collect::<Vec<_>>();
-            keys.sort_unstable();
-            let mut canonical = serde_json::Map::new();
-            for key in keys {
-                canonical.insert(key.clone(), canonical_json(&object[key]));
-            }
-            Value::Object(canonical)
-        }
-        primitive => primitive.clone(),
-    }
 }
 
 fn format_sha256(digest: &[u8]) -> String {
@@ -475,7 +434,29 @@ fn read_capped(mut reader: impl Read, cap: usize) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use codewhale_protocol::task::{VerifierPlan, VerifierStep};
+
     use super::*;
+
+    fn test_spec(args: Vec<&str>) -> VerifierSpec {
+        let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+        VerifierSpec {
+            verifier_id: "run_tests".to_owned(),
+            parameters: json!({"all_features": false, "args": args}),
+            plan: VerifierPlan {
+                steps: vec![VerifierStep {
+                    id: "cargo-test".to_owned(),
+                    program: "cargo".to_owned(),
+                    args: std::iter::once("test".to_owned()).chain(args).collect(),
+                    cwd: String::new(),
+                    env: BTreeMap::new(),
+                    timeout_ms: 600_000,
+                }],
+            },
+        }
+    }
 
     #[tokio::test]
     async fn workspace_mutation_changes_revision() {
@@ -494,38 +475,36 @@ mod tests {
     }
 
     #[test]
-    fn artifact_binds_exact_canonical_parameters() {
+    fn observation_binds_exact_parameters_and_plan() {
         let revision = Ok("sha256:revision".to_string());
         let mut first = ToolOutcome::success("ok");
-        attach_verification_artifact(
+        attach_verifier_observation(
             &mut first,
-            "run_tests",
-            &json!({"all_features": false, "args": ""}),
-            "cargo test".to_string(),
+            test_spec(Vec::new()),
             "passed".to_string(),
             revision.clone(),
             revision.clone(),
         );
-        let first_hash =
-            first.metadata.as_ref().unwrap()[ARTIFACT_METADATA_KEY]["verifier_params_sha256"]
-                .as_str()
-                .unwrap()
-                .to_string();
         let mut second = ToolOutcome::success("ok");
-        attach_verification_artifact(
+        attach_verifier_observation(
             &mut second,
-            "run_tests",
-            &json!({"args": "--lib", "all_features": false}),
-            "cargo test --lib".to_string(),
+            test_spec(vec!["--lib"]),
             "passed".to_string(),
             revision.clone(),
             revision,
         );
-        let second_hash =
-            second.metadata.as_ref().unwrap()[ARTIFACT_METADATA_KEY]["verifier_params_sha256"]
-                .as_str()
-                .unwrap();
-        assert_ne!(first_hash, second_hash);
+        assert_ne!(
+            first
+                .verifier_observation
+                .as_ref()
+                .expect("first observation")
+                .spec,
+            second
+                .verifier_observation
+                .as_ref()
+                .expect("second observation")
+                .spec
+        );
         assert_eq!(first.evidence.status, ToolEvidenceStatus::Produced);
         assert_eq!(first.artifacts.len(), 1);
         assert_eq!(first.workspace_revision.as_deref(), Some("sha256:revision"));

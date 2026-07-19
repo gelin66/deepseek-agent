@@ -309,6 +309,25 @@ impl AgentRuntime {
                     )
                     .await;
             }
+            if let Some(candidate) = state.snapshot.pending_completion.clone() {
+                return match self
+                    .accept_completion_candidate(&mut state, candidate)
+                    .await
+                {
+                    Ok((message, decision)) => {
+                        self.finalize(
+                            &mut state,
+                            TerminalState::Completed { message, decision },
+                            &budget,
+                        )
+                        .await
+                    }
+                    Err(reason) => {
+                        self.finalize(&mut state, TerminalState::Blocked { reason }, &budget)
+                            .await
+                    }
+                };
+            }
         }
 
         loop {
@@ -336,6 +355,7 @@ impl AgentRuntime {
                 && state.recovery_tool.is_none()
                 && state.snapshot.pending_model.is_none()
                 && state.snapshot.pending_tool.is_none()
+                && state.snapshot.pending_host_verification.is_none()
                 && state.snapshot.pending_children.is_empty();
             if safe_fresh_boundary
                 && !state.snapshot.pending_steers.is_empty()
@@ -350,9 +370,7 @@ impl AgentRuntime {
                     return self
                         .finalize(
                             &mut state,
-                            TerminalState::Completed {
-                                message: "上下文压缩已完成。".to_owned(),
-                            },
+                            TerminalState::ContextCompactionCompleted,
                             &budget,
                         )
                         .await;
@@ -377,9 +395,7 @@ impl AgentRuntime {
                         return self
                             .finalize(
                                 &mut state,
-                                TerminalState::Completed {
-                                    message: "上下文压缩已完成。".to_owned(),
-                                },
+                                TerminalState::ContextCompactionCompleted,
                                 &budget,
                             )
                             .await;
@@ -556,15 +572,53 @@ impl AgentRuntime {
                         )
                         .await;
                 }
-                return self
-                    .finalize(
+                let contract = state
+                    .snapshot
+                    .request
+                    .task_contract
+                    .clone()
+                    .expect("Agent run contract is validated at creation");
+                let candidate = CompletionCandidate {
+                    id: CompletionCandidateId::from(format!(
+                        "completion-{}",
+                        state
+                            .snapshot
+                            .last_model_response_sequence
+                            .unwrap_or_default()
+                    )),
+                    generation_id: contract.generation_id.clone(),
+                    message: turn.content,
+                };
+                if let Err(failure) = self
+                    .publish(
                         &mut state,
-                        TerminalState::Completed {
-                            message: turn.content,
+                        RuntimeEventKind::CompletionProposed {
+                            candidate: candidate.clone(),
                         },
-                        &budget,
                     )
-                    .await;
+                    .await
+                {
+                    return self
+                        .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                        .await;
+                }
+                return match self
+                    .accept_completion_candidate(&mut state, candidate)
+                    .await
+                {
+                    Ok((message, decision)) => {
+                        self.finalize(
+                            &mut state,
+                            TerminalState::Completed { message, decision },
+                            &budget,
+                        )
+                        .await
+                    }
+                    Err(reason) => {
+                        self.finalize(&mut state, TerminalState::Blocked { reason }, &budget)
+                            .await
+                    }
+                };
             }
 
             if turn.finish_reason != ModelFinishReason::ToolCalls {
@@ -1580,6 +1634,14 @@ impl AgentRuntime {
                     RuntimeEventKind::ToolPrepared {
                         operation_id: operation_id.clone(),
                         invocation: invocation.clone(),
+                        workspace_access: if matches!(
+                            call.name.as_str(),
+                            AGENT_TOOL_NAME | REQUEST_USER_INPUT_TOOL_NAME
+                        ) {
+                            WorkspaceAccess::ReadOnly
+                        } else {
+                            self.tools.workspace_access(&invocation)
+                        },
                     },
                 )
                 .await
@@ -1807,13 +1869,24 @@ impl AgentRuntime {
             }
         };
 
+        let workspace_state = if state
+            .snapshot
+            .pending_tool
+            .as_ref()
+            .is_some_and(|pending| pending.workspace_access == WorkspaceAccess::MayWrite)
+        {
+            Some(self.observe_workspace_state(state, true).await)
+        } else {
+            None
+        };
         self.publish(
             state,
             RuntimeEventKind::ToolOutcomeCommitted {
                 operation_id,
                 call_id: call.id.clone(),
                 name: call.name.clone(),
-                outcome: outcome.clone(),
+                outcome: Box::new(outcome.clone()),
+                workspace_state,
             },
         )
         .await
@@ -1837,7 +1910,8 @@ impl AgentRuntime {
                 operation_id,
                 call_id: call.id.clone(),
                 name: call.name.clone(),
-                outcome,
+                outcome: Box::new(outcome),
+                workspace_state: None,
             },
         )
         .await
@@ -2075,7 +2149,10 @@ impl AgentRuntime {
             continued_from_run_id: None,
             purpose: RunPurpose::Agent,
             model: state.snapshot.request.model.clone(),
-            input: child_input,
+            task_contract: Some(TaskContract {
+                generation_id: TaskGenerationId::from(child_run_id.0.clone()),
+                definition: TaskDefinition::host(child_input),
+            }),
             system_prompt,
             transcript,
             reasoning_effort: state.snapshot.request.reasoning_effort,
@@ -2570,6 +2647,232 @@ impl AgentRuntime {
         }
         state.snapshot.terminal.clone().unwrap_or(outcome)
     }
+
+    async fn observe_workspace_state(
+        &self,
+        state: &RunState,
+        force_advance: bool,
+    ) -> WorkspaceState {
+        let revision = match self.tools.observe_workspace_revision().await {
+            Ok(sha256) => WorkspaceRevision::Known { sha256 },
+            Err(error) => WorkspaceRevision::Unknown {
+                reason: format!("{}：{}", error.code, error.message),
+            },
+        };
+        let unchanged = matches!(
+            (&state.snapshot.workspace_state.revision, &revision),
+            (
+                WorkspaceRevision::Known { sha256: previous },
+                WorkspaceRevision::Known { sha256: current }
+            ) if previous == current
+        );
+        WorkspaceState {
+            generation: if force_advance || !unchanged {
+                state.snapshot.workspace_state.generation.saturating_add(1)
+            } else {
+                state.snapshot.workspace_state.generation
+            },
+            revision,
+        }
+    }
+
+    async fn accept_completion_candidate(
+        &self,
+        state: &mut RunState,
+        candidate: CompletionCandidate,
+    ) -> Result<(String, CompletionDecision), String> {
+        let contract = state
+            .snapshot
+            .request
+            .task_contract
+            .clone()
+            .ok_or_else(|| "Agent 运行没有冻结 TaskContract".to_owned())?;
+        if candidate.generation_id != contract.generation_id {
+            return Err("完成候选不属于当前任务 generation".to_owned());
+        }
+        if let Some(rejection) = &state.snapshot.last_completion_rejection
+            && rejection.candidate_id == candidate.id
+        {
+            return Err(rejection.reason.clone());
+        }
+
+        let has_verifier_acceptance = contract
+            .definition
+            .acceptance
+            .iter()
+            .any(|acceptance| matches!(acceptance, TaskAcceptance::Verifier { .. }));
+        self.reconcile_workspace(state).await?;
+        let mut satisfied = Vec::with_capacity(contract.definition.acceptance.len());
+        for acceptance in &contract.definition.acceptance {
+            match acceptance {
+                TaskAcceptance::Host { id, .. } => {
+                    satisfied.push(AcceptanceSatisfaction::Host {
+                        acceptance_id: id.clone(),
+                    });
+                }
+                TaskAcceptance::Verifier { id, verifier, .. } => {
+                    let receipt = if let Some(receipt) = state
+                        .snapshot
+                        .evidence_receipts
+                        .iter()
+                        .find(|receipt| {
+                            receipt.generation_id == contract.generation_id
+                                && receipt.acceptance_id == *id
+                                && receipt.verifier == *verifier
+                                && receipt.workspace_state == state.snapshot.workspace_state
+                        })
+                        .cloned()
+                    {
+                        receipt
+                    } else {
+                        self.run_host_verifier(state, &candidate, id, verifier)
+                            .await?
+                    };
+                    satisfied.push(AcceptanceSatisfaction::Evidence {
+                        acceptance_id: id.clone(),
+                        receipt_id: receipt.id,
+                    });
+                }
+            }
+        }
+
+        if has_verifier_acceptance {
+            self.reconcile_workspace(state).await?;
+        }
+        let decision = CompletionDecision {
+            candidate_id: candidate.id,
+            generation_id: contract.generation_id,
+            workspace_state: state.snapshot.workspace_state.clone(),
+            satisfied,
+        };
+        decision.validate()?;
+        Ok((candidate.message, decision))
+    }
+
+    async fn reconcile_workspace(&self, state: &mut RunState) -> Result<(), String> {
+        let observed = self.observe_workspace_state(state, false).await;
+        if observed != state.snapshot.workspace_state {
+            self.publish(
+                state,
+                RuntimeEventKind::WorkspaceObserved {
+                    workspace_state: observed,
+                },
+            )
+            .await
+            .map_err(|failure| format!("无法提交工作区观察：{failure:?}"))?;
+        }
+        Ok(())
+    }
+
+    async fn run_host_verifier(
+        &self,
+        state: &mut RunState,
+        candidate: &CompletionCandidate,
+        acceptance_id: &AcceptanceId,
+        verifier: &VerifierSpec,
+    ) -> Result<EvidenceReceipt, String> {
+        let verification_id = state
+            .snapshot
+            .pending_host_verification
+            .as_ref()
+            .map(|pending| pending.verification_id.clone())
+            .unwrap_or_else(|| {
+                VerificationId::from(format!(
+                    "host-verification:{}:{}",
+                    candidate.id.0, acceptance_id.0
+                ))
+            });
+        if state.snapshot.pending_host_verification.is_none() {
+            self.publish(
+                state,
+                RuntimeEventKind::HostVerificationPrepared {
+                    verification_id: verification_id.clone(),
+                    candidate: candidate.clone(),
+                    acceptance_id: acceptance_id.clone(),
+                    verifier: verifier.clone(),
+                    workspace_state_before: state.snapshot.workspace_state.clone(),
+                },
+            )
+            .await
+            .map_err(|failure| format!("无法准备 Host verifier：{failure:?}"))?;
+        }
+        let pending = state
+            .snapshot
+            .pending_host_verification
+            .clone()
+            .ok_or_else(|| "Host verifier preparation was not persisted".to_owned())?;
+        if pending.candidate != *candidate
+            || pending.acceptance_id != *acceptance_id
+            || pending.verifier != *verifier
+            || pending.workspace_state_before != state.snapshot.workspace_state
+        {
+            return Err("持久化 Host verifier 与当前完成候选不匹配".to_owned());
+        }
+        if pending.state == DurableActionState::Prepared {
+            self.publish(
+                state,
+                RuntimeEventKind::HostVerificationStarted {
+                    verification_id: verification_id.clone(),
+                },
+            )
+            .await
+            .map_err(|failure| format!("无法启动 Host verifier：{failure:?}"))?;
+        }
+
+        let invocation = ToolInvocation {
+            run_id: state.run_id().clone(),
+            call_id: format!("host:{}", verification_id.0),
+            name: verifier.verifier_id.clone(),
+            arguments: ToolArguments::from_value(verifier.parameters.clone()),
+        };
+        let outcome = self
+            .tools
+            .execute(invocation, CancellationToken::default())
+            .await
+            .unwrap_or_else(|error| {
+                ToolOutcome::transport_failure(format!("{}：{}", error.code, error.message))
+            });
+        let workspace_state_after = self.observe_workspace_state(state, true).await;
+        let receipt = seal_evidence_receipt(
+            state,
+            &verification_id,
+            acceptance_id,
+            verifier,
+            &outcome,
+            &workspace_state_after,
+        );
+        self.publish(
+            state,
+            RuntimeEventKind::HostVerificationCommitted {
+                verification_id: verification_id.clone(),
+                outcome: Box::new(outcome.clone()),
+                receipt: receipt.clone(),
+                workspace_state_after,
+            },
+        )
+        .await
+        .map_err(|failure| format!("无法提交 Host verifier 结果：{failure:?}"))?;
+        let Some(receipt) = receipt else {
+            let rejection = CompletionRejection {
+                candidate_id: candidate.id.clone(),
+                unmet_acceptance_ids: vec![acceptance_id.clone()],
+                reason: format!(
+                    "Host verifier '{}' 未产生与当前任务和工作区精确匹配的通过证据",
+                    verifier.verifier_id
+                ),
+            };
+            self.publish(
+                state,
+                RuntimeEventKind::CompletionRejected {
+                    rejection: rejection.clone(),
+                },
+            )
+            .await
+            .map_err(|failure| format!("无法提交完成拒绝：{failure:?}"))?;
+            return Err(rejection.reason);
+        };
+        Ok(receipt)
+    }
 }
 
 #[derive(Debug)]
@@ -2636,6 +2939,18 @@ impl RunState {
                     "进程在工具 '{}' 开始后、结果原子提交前停止；无法证明副作用是否已发生，因此未自动重跑。",
                     pending.invocation.name
                 ),
+            });
+        }
+        if let Some(pending) = self
+            .snapshot
+            .pending_host_verification
+            .as_ref()
+            .filter(|pending| pending.state == DurableActionState::InFlight)
+        {
+            return Some(RecoveryAmbiguity {
+                phase: RecoveryAmbiguityPhase::HostVerification,
+                action_id: pending.verification_id.0.clone(),
+                message: "进程在 Host verifier 开始后、结果与证据回执原子提交前停止；验证命令可能有副作用，因此未自动重跑。".to_owned(),
             });
         }
         self.recovered_child_ids
@@ -3165,6 +3480,49 @@ fn latched_model_failure(primary: &Option<ModelPortError>) -> RuntimeFailure {
         .unwrap_or_else(|| RuntimeFailure::InvalidModelOutput {
             message: "model failed without a typed primary error".to_owned(),
         })
+}
+
+fn seal_evidence_receipt(
+    state: &RunState,
+    verification_id: &VerificationId,
+    acceptance_id: &AcceptanceId,
+    verifier: &VerifierSpec,
+    outcome: &ToolOutcome,
+    workspace_state: &WorkspaceState,
+) -> Option<EvidenceReceipt> {
+    let observation = outcome.verifier_observation.as_ref()?;
+    let revision_matches = matches!(
+        (&observation.workspace_revision, &workspace_state.revision),
+        (
+            WorkspaceRevision::Known { sha256: observed },
+            WorkspaceRevision::Known { sha256: settled }
+        ) if observed == settled
+    );
+    if !outcome.is_success()
+        || observation.verdict != VerifierVerdict::Passed
+        || observation.spec != *verifier
+        || !crate::store::verifier_artifacts_are_available(outcome, observation)
+        || !revision_matches
+    {
+        return None;
+    }
+    let generation_id = state
+        .snapshot
+        .request
+        .task_contract
+        .as_ref()?
+        .generation_id
+        .clone();
+    let receipt = EvidenceReceipt {
+        id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
+        generation_id,
+        acceptance_id: acceptance_id.clone(),
+        verification_id: verification_id.clone(),
+        verifier: verifier.clone(),
+        workspace_state: workspace_state.clone(),
+        artifact_ids: observation.artifact_ids.clone(),
+    };
+    receipt.validate().ok().map(|()| receipt)
 }
 
 fn invalid_model(message: impl Into<String>) -> TerminalState {

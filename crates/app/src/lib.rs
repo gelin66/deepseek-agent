@@ -19,6 +19,7 @@ use codewhale_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope, RunCommandResponse,
     RunCommandResult, RunView, StartRunCommand,
 };
+use codewhale_protocol::task::TaskDefinition;
 use codewhale_runtime::{
     AgentControl, ContinuationError, ControlError, CreationIntent, CreationReservation,
     DurableActionState, DurableCommand, ModelAccounting, ModelErrorCategory, ModelPort,
@@ -76,12 +77,13 @@ impl ModelPort for ReplayOnlyModelPort {
 }
 
 /// Whether an unfinished persisted run may safely issue another live model
-/// request. Terminal/failed/in-flight actions and pending children replay
-/// without touching the credential or network.
+/// request. Terminal/failed/in-flight actions, pending completion evaluation,
+/// and pending children replay without touching the credential or network.
 #[must_use]
 pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
     if replay.snapshot.terminal.is_some()
         || replay.snapshot.last_model_failure.is_some()
+        || replay.snapshot.pending_completion.is_some()
         || !replay.snapshot.pending_children.is_empty()
         || (replay.snapshot.request.purpose == RunPurpose::ContextCompaction
             && (replay.snapshot.last_context_compaction.is_some()
@@ -183,7 +185,7 @@ trait RunComposition: Send + Sync {
         &self,
         run_id: RunId,
         source: RunReplay,
-        input: String,
+        task: Option<TaskDefinition>,
         purpose: RunPurpose,
         store: Arc<dyn RunStore>,
         sink: Arc<dyn RuntimeEventSink>,
@@ -466,10 +468,10 @@ impl AgentApplication {
         command_sha256: String,
         command: ContinueRunCommand,
     ) -> RunCommandResult {
-        if command.input.trim().is_empty() {
+        if let Err(message) = command.task.validate() {
             return error_result(api_error(
                 RunApiErrorCode::InvalidRequest,
-                "continuation input must not be empty",
+                format!("continuation task is invalid: {message}"),
                 Some(command.run_id),
                 None,
             ));
@@ -546,7 +548,7 @@ impl AgentApplication {
             .continue_run(
                 reservation.reservation.run_id.clone(),
                 source,
-                command.input,
+                Some(command.task),
                 RunPurpose::Agent,
                 self.store.clone(),
                 sink,
@@ -644,7 +646,7 @@ impl AgentApplication {
             .continue_run(
                 reservation.reservation.run_id.clone(),
                 source,
-                String::new(),
+                None,
                 RunPurpose::ContextCompaction,
                 self.store.clone(),
                 sink,
@@ -1125,10 +1127,10 @@ fn spawn_monitor(
 }
 
 fn validate_start(command: &StartRunCommand) -> Result<(), RunApiError> {
-    if command.input.trim().is_empty() {
+    if let Err(message) = command.task.validate() {
         return Err(api_error(
             RunApiErrorCode::InvalidRequest,
-            "run input must not be empty",
+            format!("run task is invalid: {message}"),
             None,
             None,
         ));
@@ -1162,6 +1164,7 @@ fn project_run(replay: &RunReplay) -> RunView {
         parent_run_id: request.parent_run_id.clone(),
         continued_from_run_id: request.continued_from_run_id.clone(),
         model: request.model.clone(),
+        task_contract: request.task_contract.clone(),
         workspace: request.environment.workspace.clone(),
         last_sequence: snapshot.last_sequence,
         terminal: snapshot
@@ -1339,7 +1342,7 @@ fn api_error(
         code,
         message: message.into().into_boxed_str(),
         run_id,
-        terminal,
+        terminal: terminal.map(Box::new),
         creation: None,
     }
 }
@@ -1391,6 +1394,9 @@ mod tests {
         ToolDefinition, ToolInvocation, ToolOutcome, ToolPolicy, TranscriptEntry, Usage,
     };
     use codewhale_protocol::run_api::{CompactRunCommand, RunProductControls};
+    use codewhale_protocol::task::{
+        CompletionCandidate, CompletionCandidateId, TaskContract, TaskGenerationId,
+    };
     use codewhale_runtime::{
         AgentRuntime, CancellationToken, InMemoryRunStore, ModelPort, ModelPortError, ModelStream,
         ToolExecutionError, ToolExecutor,
@@ -1600,7 +1606,12 @@ mod tests {
                 pending::<()>().await;
             }
             let mut request = request_from(command);
-            request.run_id = Some(run_id);
+            request.run_id = Some(run_id.clone());
+            request
+                .task_contract
+                .as_mut()
+                .expect("Agent fixture has a task contract")
+                .generation_id = TaskGenerationId::from(run_id.0);
             request.environment.provider = "deepseek".to_owned();
             request.environment.tool_catalog_sha256 = Some("fixture-catalog".to_owned());
             request.environment.execution_fingerprint_sha256 = Some("fixture-execution".to_owned());
@@ -1624,18 +1635,21 @@ mod tests {
             &self,
             run_id: RunId,
             source: RunReplay,
-            input: String,
+            task: Option<TaskDefinition>,
             purpose: RunPurpose,
             store: Arc<dyn RunStore>,
             sink: Arc<dyn RuntimeEventSink>,
         ) -> Result<RuntimeRun, RunApiError> {
             let source_run_id = source.snapshot.request.run_id.clone().unwrap_or_default();
             let mut request = source.snapshot.request.clone();
-            request.run_id = Some(run_id);
+            request.run_id = Some(run_id.clone());
             request.parent_run_id = None;
             request.continued_from_run_id = Some(source_run_id);
             request.purpose = purpose;
-            request.input = input;
+            request.task_contract = task.map(|definition| TaskContract {
+                generation_id: TaskGenerationId::from(run_id.0.clone()),
+                definition,
+            });
             request.transcript = source.snapshot.transcript;
             request.context_projection = source.snapshot.context_projection;
             request.deadline_unix_ms = None;
@@ -1645,7 +1659,15 @@ mod tests {
     }
 
     fn request_from(command: StartRunCommand) -> RunRequest {
-        let mut request = RunRequest::new(command.input, "你是 CodeWhale 编码 Agent");
+        let run_id = RunId::new();
+        let mut request = RunRequest::new(
+            TaskContract {
+                generation_id: TaskGenerationId::from(run_id.0.clone()),
+                definition: command.task,
+            },
+            "你是 CodeWhale 编码 Agent",
+        );
+        request.run_id = Some(run_id);
         request.model = command
             .model
             .unwrap_or_else(|| "deepseek-v4-flash".to_owned());
@@ -1677,7 +1699,7 @@ mod tests {
 
     fn start_command(input: &str) -> StartRunCommand {
         StartRunCommand {
-            input: input.to_owned(),
+            task: TaskDefinition::host(input),
             workspace: "/workspace/project".to_owned(),
             model: Some("deepseek-v4-flash".to_owned()),
             reasoning_effort: ReasoningEffort::High,
@@ -1801,6 +1823,11 @@ mod tests {
         let run_id = RunId::from(run_id);
         let mut request = request_from(start_command("恢复测试"));
         request.run_id = Some(run_id.clone());
+        request
+            .task_contract
+            .as_mut()
+            .expect("Agent fixture has a task contract")
+            .generation_id = TaskGenerationId::from(run_id.0.clone());
         request.environment.provider = "deepseek".to_owned();
         request.environment.tool_catalog_sha256 = Some("fixture-catalog".to_owned());
         request.environment.execution_fingerprint_sha256 = Some("fixture-execution".to_owned());
@@ -1835,6 +1862,14 @@ mod tests {
             .snapshot
             .pending_children
             .push(RunId::from("pending-child"));
+        assert!(!resume_needs_live_model(&replay));
+
+        replay.snapshot.pending_children.clear();
+        replay.snapshot.pending_completion = Some(CompletionCandidate {
+            id: CompletionCandidateId::from("pending-completion"),
+            generation_id: TaskGenerationId::from(run_id.0),
+            message: "等待 Host 完成裁决".to_owned(),
+        });
         assert!(!resume_needs_live_model(&replay));
     }
 
@@ -1953,7 +1988,7 @@ mod tests {
                 "continue-source",
                 RunCommand::Continue(ContinueRunCommand {
                     run_id: source.run_id.clone(),
-                    input: "第二轮".to_owned(),
+                    task: TaskDefinition::host("第二轮"),
                     expected_workspace: Some("/workspace/project".to_owned()),
                 }),
             ))
@@ -2054,7 +2089,7 @@ mod tests {
                 "continue-after-compact",
                 RunCommand::Continue(ContinueRunCommand {
                     run_id: compact.run_id.clone(),
-                    input: "第二轮".to_owned(),
+                    task: TaskDefinition::host("第二轮"),
                     expected_workspace: Some("/workspace/project".to_owned()),
                 }),
             ))
@@ -2099,7 +2134,7 @@ mod tests {
                 "continue-active",
                 RunCommand::Continue(ContinueRunCommand {
                     run_id: active.run_id.clone(),
-                    input: "错误续跑".to_owned(),
+                    task: TaskDefinition::host("错误续跑"),
                     expected_workspace: None,
                 }),
             ))
@@ -2111,7 +2146,7 @@ mod tests {
                 "continue-empty",
                 RunCommand::Continue(ContinueRunCommand {
                     run_id: active.run_id.clone(),
-                    input: "   ".to_owned(),
+                    task: TaskDefinition::host("   "),
                     expected_workspace: None,
                 }),
             ))
@@ -2123,7 +2158,7 @@ mod tests {
                 "continue-wrong-workspace",
                 RunCommand::Continue(ContinueRunCommand {
                     run_id: active.run_id.clone(),
-                    input: "错误工作区".to_owned(),
+                    task: TaskDefinition::host("错误工作区"),
                     expected_workspace: Some("/workspace/other".to_owned()),
                 }),
             ))
@@ -2163,7 +2198,7 @@ mod tests {
         wait_terminal(store.as_ref(), &first.run_id).await;
         let continuation = RunCommand::Continue(ContinueRunCommand {
             run_id: first.run_id.clone(),
-            input: "下一轮".to_owned(),
+            task: TaskDefinition::host("下一轮"),
             expected_workspace: Some("/workspace/project".to_owned()),
         });
         let continued = run_result(
@@ -2492,7 +2527,7 @@ mod tests {
         let continue_request_id = "recover-continue";
         let continue_command = RunCommand::Continue(ContinueRunCommand {
             run_id: source.run_id,
-            input: "恢复 continuation".to_owned(),
+            task: TaskDefinition::host("恢复 continuation"),
             expected_workspace: Some("/workspace/project".to_owned()),
         });
         let continued_run_id = RunId::from("reserved-continue");

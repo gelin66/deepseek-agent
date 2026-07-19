@@ -3,6 +3,7 @@ use std::process::{Command, Output};
 
 use codewhale_protocol::agent_runtime::{RunId, RunPurpose, RunRequest};
 use codewhale_protocol::run_api::{RUN_API_SCHEMA_VERSION, RunCommandResponse, RunCommandResult};
+use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
     AgentOutcome, ModelAccounting, PendingRuntimeEvent, RunStore, TerminalState,
 };
@@ -22,8 +23,14 @@ async fn seed_root(
     purpose: RunPurpose,
     parent_run_id: Option<RunId>,
 ) {
-    let mut request = RunRequest::new("fixture", "fixture system prompt");
-    request.run_id = Some(RunId::from(run_id));
+    let run_id = RunId::from(run_id);
+    let mut request = RunRequest::new(
+        TaskContract {
+            generation_id: TaskGenerationId::from(run_id.0.clone()),
+            definition: TaskDefinition::host("fixture"),
+        },
+        "fixture system prompt",
+    );
     request.purpose = purpose;
     request.parent_run_id = parent_run_id;
     request.environment.workspace = workspace.display().to_string();
@@ -44,8 +51,8 @@ async fn complete_root(store: &StateStore, run_id: &str) {
             PendingRuntimeEvent::terminal(AgentOutcome {
                 run_id: run_id.clone(),
                 parent_run_id: None,
-                terminal: TerminalState::Completed {
-                    message: "fixture complete".to_owned(),
+                terminal: TerminalState::Blocked {
+                    reason: "fixture terminal".to_owned(),
                 },
                 accounting: ModelAccounting::default(),
                 runtime_model_requests: 0,
@@ -69,7 +76,7 @@ async fn seed_compaction(store: &StateStore, run_id: &str, source_run_id: &str) 
     request.parent_run_id = None;
     request.continued_from_run_id = Some(source_run_id);
     request.purpose = RunPurpose::ContextCompaction;
-    request.input.clear();
+    request.task_contract = None;
     request.transcript = source.snapshot.transcript;
     let created = store
         .create(request)

@@ -80,7 +80,7 @@ impl TuiRunClientState {
         if let Some(run_id) = &self.latest_terminal_root {
             return Ok(RunCommand::Continue(ContinueRunCommand {
                 run_id: run_id.clone(),
-                input: fresh.input,
+                task: fresh.task,
                 expected_workspace: Some(fresh.workspace),
             }));
         }
@@ -590,6 +590,7 @@ mod tests {
         RuntimeEventKind, TerminalState, ToolPolicy,
     };
     use codewhale_protocol::run_api::{PendingCreationKind, RunApiErrorCode, RunProductControls};
+    use codewhale_protocol::task::TaskDefinition;
     use codewhale_runtime::{CreationIntent, RunStore};
     use codewhale_state::StateStore;
     use sha2::{Digest, Sha256};
@@ -600,7 +601,7 @@ mod tests {
 
     fn start_command(input: &str) -> StartRunCommand {
         StartRunCommand {
-            input: input.to_owned(),
+            task: TaskDefinition::host(input),
             workspace: "/workspace/project".to_owned(),
             model: Some("deepseek-v4-flash".to_owned()),
             reasoning_effort: ReasoningEffort::High,
@@ -620,6 +621,7 @@ mod tests {
             parent_run_id: None,
             continued_from_run_id: None,
             model: "deepseek-v4-flash".to_owned(),
+            task_contract: None,
             workspace: "/workspace/project".to_owned(),
             last_sequence,
             terminal,
@@ -644,8 +646,8 @@ mod tests {
                 outcome: Box::new(AgentOutcome {
                     run_id: run_id.clone(),
                     parent_run_id: None,
-                    terminal: TerminalState::Completed {
-                        message: "完成".to_owned(),
+                    terminal: TerminalState::Blocked {
+                        reason: "fixture terminal".to_owned(),
                     },
                     accounting: ModelAccounting::default(),
                     runtime_model_requests: 0,
@@ -792,7 +794,7 @@ mod tests {
             panic!("initial submit must start a root")
         };
         assert!(command.controls.interactive);
-        assert_eq!(command.input, "第一轮");
+        assert_eq!(command.task.objective, "第一轮");
     }
 
     #[test]
@@ -808,7 +810,7 @@ mod tests {
             panic!("terminal follow-up must continue the terminal root")
         };
         assert_eq!(command.run_id, RunId::from("terminal-root"));
-        assert_eq!(command.input, "继续任务");
+        assert_eq!(command.task.objective, "继续任务");
         assert_eq!(
             command.expected_workspace.as_deref(),
             Some("/workspace/project")
@@ -848,8 +850,8 @@ mod tests {
         let active = run_view("active", None, 2);
         let terminal = run_view(
             "terminal",
-            Some(TerminalState::Completed {
-                message: "完成".to_owned(),
+            Some(TerminalState::Blocked {
+                reason: "fixture terminal".to_owned(),
             }),
             7,
         );

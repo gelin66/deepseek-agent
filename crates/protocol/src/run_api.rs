@@ -13,9 +13,10 @@ use crate::agent_runtime::{
     InteractionId, ModelAccounting, ReasoningEffort, RunId, RunLimits, RunPurpose,
     StoredRuntimeEvent, TerminalState, ToolPolicy, Usage, UserInteractionResponse,
 };
+use crate::task::{TaskContract, TaskDefinition};
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 4;
+pub const RUN_API_SCHEMA_VERSION: u32 = 5;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -47,7 +48,7 @@ pub struct RunProductControls {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct StartRunCommand {
-    pub input: String,
+    pub task: TaskDefinition,
     pub workspace: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -76,11 +77,11 @@ pub struct StartRunCommand {
 /// Model, prompt, tools, execution posture, and limits are inherited from the
 /// source run and revalidated by the application. A continuation is never a
 /// resume and never a child Agent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ContinueRunCommand {
     pub run_id: RunId,
-    pub input: String,
+    pub task: TaskDefinition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_workspace: Option<String>,
 }
@@ -195,6 +196,8 @@ pub struct RunView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continued_from_run_id: Option<RunId>,
     pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_contract: Option<TaskContract>,
     pub workspace: String,
     pub last_sequence: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -257,7 +260,7 @@ pub struct RunApiError {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub terminal: Option<TerminalState>,
+    pub terminal: Option<Box<TerminalState>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub creation: Option<Box<CreationRecoveryContext>>,
 }
@@ -329,7 +332,7 @@ mod tests {
 
     fn start_command() -> StartRunCommand {
         StartRunCommand {
-            input: "修复边界错误".to_owned(),
+            task: TaskDefinition::host("修复边界错误"),
             workspace: "/workspace/project".to_owned(),
             model: Some("deepseek-v4-flash".to_owned()),
             reasoning_effort: ReasoningEffort::High,
@@ -368,6 +371,7 @@ mod tests {
             parent_run_id: None,
             continued_from_run_id: None,
             model: "deepseek-v4-flash".to_owned(),
+            task_contract: None,
             workspace: "/workspace/project".to_owned(),
             last_sequence: 2,
             terminal: None,
@@ -399,11 +403,20 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 4,
+                "schema_version": 5,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
-                    "input": "修复边界错误",
+                    "task": {
+                        "objective": "修复边界错误",
+                        "constraints": [],
+                        "non_goals": [],
+                        "acceptance": [{
+                            "kind": "host",
+                            "id": "host",
+                            "description": "由 Host 明确接受完成候选"
+                        }]
+                    },
                     "workspace": "/workspace/project",
                     "model": "deepseek-v4-flash",
                     "reasoning_effort": "high",
@@ -469,7 +482,7 @@ mod tests {
             RunCommand::Start(start_command()),
             RunCommand::Continue(ContinueRunCommand {
                 run_id: RunId::from("run-1"),
-                input: "继续修复".to_owned(),
+                task: TaskDefinition::host("继续修复"),
                 expected_workspace: Some("/workspace/project".to_owned()),
             }),
             RunCommand::Compact(CompactRunCommand {
@@ -541,10 +554,10 @@ mod tests {
     }
 
     #[test]
-    fn continue_command_exposes_only_source_input_and_workspace_guard() {
+    fn continue_command_exposes_only_source_task_and_workspace_guard() {
         let command = RunCommand::Continue(ContinueRunCommand {
             run_id: RunId::from("source-1"),
-            input: "继续完成测试".to_owned(),
+            task: TaskDefinition::host("继续完成测试"),
             expected_workspace: Some("/workspace/project".to_owned()),
         });
         assert_eq!(
@@ -552,7 +565,16 @@ mod tests {
             json!({
                 "kind": "continue",
                 "run_id": "source-1",
-                "input": "继续完成测试",
+                "task": {
+                    "objective": "继续完成测试",
+                    "constraints": [],
+                    "non_goals": [],
+                    "acceptance": [{
+                        "kind": "host",
+                        "id": "host",
+                        "description": "由 Host 明确接受完成候选"
+                    }]
+                },
                 "expected_workspace": "/workspace/project"
             })
         );

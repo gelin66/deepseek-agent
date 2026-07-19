@@ -82,7 +82,12 @@ impl CanonicalRunProjection {
             RuntimeEventKind::RunCreated { request }
                 if request.purpose == codewhale_protocol::agent_runtime::RunPurpose::Agent =>
             {
-                Some((UserTranscriptSource::RunCreated, request.input.clone()))
+                request.task_contract.as_ref().map(|contract| {
+                    (
+                        UserTranscriptSource::RunCreated,
+                        contract.definition.model_message(),
+                    )
+                })
             }
             RuntimeEventKind::SteerApplied {
                 command_id,
@@ -348,11 +353,13 @@ impl Error for ProjectionError {}
 #[cfg(test)]
 mod tests {
     use codewhale_protocol::agent_runtime::{
-        AgentOutcome, ApprovalRisk, AttemptId, DurableControlAction, ModelAccounting,
-        ModelFinishReason, ModelOutput, OperationId, RunRequest, TerminalState, ToolApprovalPrompt,
-        ToolArguments, ToolInvocation, ToolOutcome, Usage, UserInteractionPrompt,
-        UserInteractionRequest, UserInteractionResponse,
+        AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentOutcome, ApprovalRisk, AttemptId,
+        DurableControlAction, ModelAccounting, ModelFinishReason, ModelOutput, OperationId,
+        RunRequest, TerminalState, ToolApprovalPrompt, ToolArguments, ToolInvocation, ToolOutcome,
+        Usage, UserInteractionPrompt, UserInteractionRequest, UserInteractionResponse,
+        WorkspaceAccess,
     };
+    use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 
     use super::*;
 
@@ -363,7 +370,7 @@ mod tests {
         event: RuntimeEventKind,
     ) -> StoredRuntimeEvent {
         StoredRuntimeEvent {
-            schema_version: 5,
+            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
             run_id: run_id.clone(),
             parent_run_id: None,
             event_id: RuntimeEventId(event_id.to_owned()),
@@ -374,8 +381,13 @@ mod tests {
     }
 
     fn created(run_id: &RunId, input: &str) -> StoredRuntimeEvent {
-        let mut request = RunRequest::new(input, "系统提示");
-        request.run_id = Some(run_id.clone());
+        let request = RunRequest::new(
+            TaskContract {
+                generation_id: TaskGenerationId::from(run_id.0.clone()),
+                definition: TaskDefinition::host(input),
+            },
+            "系统提示",
+        );
         stored(
             run_id,
             1,
@@ -658,14 +670,15 @@ mod tests {
         };
         let child_outcome = outcome(
             &child_run_id,
-            TerminalState::Completed {
-                message: "完成".to_owned(),
+            TerminalState::Blocked {
+                reason: "fixture terminal".to_owned(),
             },
         );
         let events = vec![
             RuntimeEventKind::ToolPrepared {
                 operation_id: OperationId::from("operation"),
                 invocation,
+                workspace_access: WorkspaceAccess::ReadOnly,
             },
             RuntimeEventKind::ToolExecutionStarted {
                 operation_id: OperationId::from("operation"),
@@ -674,7 +687,8 @@ mod tests {
                 operation_id: OperationId::from("operation"),
                 call_id: "tool-call".to_owned(),
                 name: "read_file".to_owned(),
-                outcome: ToolOutcome::success("内容"),
+                outcome: Box::new(ToolOutcome::success("内容")),
+                workspace_state: None,
             },
             RuntimeEventKind::ChildStarted {
                 call_id: "agent-call".to_owned(),

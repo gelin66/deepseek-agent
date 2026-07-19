@@ -45,8 +45,7 @@ pub(crate) use run_verifiers::execute_run_verifiers;
 pub use run_verifiers::{GateResult, GateStatus, RunVerifiersOutput, VerifierVerdict};
 pub use unified_diff::make_unified_diff;
 pub use verification_artifact::{
-    VerificationArtifact, attach_verification_artifact, capture_workspace_revision,
-    reject_verification_artifact,
+    attach_verifier_observation, capture_workspace_revision, reject_verification_artifact,
 };
 
 #[cfg(test)]

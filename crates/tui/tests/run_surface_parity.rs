@@ -32,6 +32,7 @@ use codewhale_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
     RunProductControls, RunView, StartRunCommand,
 };
+use codewhale_protocol::task::TaskDefinition;
 use codewhale_runtime::{RunReplay, RunStore};
 use codewhale_state::StateStore;
 use serde_json::{Map, Value, json};
@@ -328,7 +329,7 @@ fn production_application(
 
 fn equivalent_start_command(exec: &RunRequest) -> StartRunCommand {
     StartRunCommand {
-        input: TEST_PROMPT.to_owned(),
+        task: TaskDefinition::host(TEST_PROMPT),
         workspace: exec.environment.workspace.clone(),
         model: Some(TEST_MODEL.to_owned()),
         reasoning_effort: exec.reasoning_effort,
@@ -349,7 +350,15 @@ fn equivalent_start_command(exec: &RunRequest) -> StartRunCommand {
 
 fn assert_exec_command_contract(request: &RunRequest, workspace: &Path) {
     assert_eq!(request.model, TEST_MODEL);
-    assert_eq!(request.input, TEST_PROMPT);
+    assert_eq!(
+        request
+            .task_contract
+            .as_ref()
+            .expect("Agent task contract")
+            .definition
+            .objective,
+        TEST_PROMPT
+    );
     assert_eq!(
         request.environment.workspace,
         workspace
@@ -590,6 +599,7 @@ fn view_from_replay(replay: &RunReplay) -> RunView {
         parent_run_id: request.parent_run_id.clone(),
         continued_from_run_id: request.continued_from_run_id.clone(),
         model: request.model.clone(),
+        task_contract: request.task_contract.clone(),
         workspace: request.environment.workspace.clone(),
         last_sequence: snapshot.last_sequence,
         terminal: snapshot
@@ -606,12 +616,10 @@ fn view_from_replay(replay: &RunReplay) -> RunView {
 }
 
 fn assert_terminal_accounting(view: &RunView) {
-    assert_eq!(
-        view.terminal,
-        Some(TerminalState::Completed {
-            message: FINAL_MESSAGE.to_owned(),
-        })
-    );
+    assert!(matches!(
+        view.terminal.as_ref(),
+        Some(TerminalState::Completed { message, .. }) if message == FINAL_MESSAGE
+    ));
     assert_eq!(view.runtime_model_requests, 2);
     assert_eq!(view.runtime_retries, 0);
     assert_eq!(view.tool_calls, 1);
@@ -657,6 +665,12 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             RuntimeEventKind::SteerQueued { .. } => "steer_queued",
             RuntimeEventKind::SteerApplied { .. } => "steer_applied",
             RuntimeEventKind::ControlRequested { .. } => "control_requested",
+            RuntimeEventKind::WorkspaceObserved { .. } => "workspace_observed",
+            RuntimeEventKind::CompletionProposed { .. } => "completion_proposed",
+            RuntimeEventKind::HostVerificationPrepared { .. } => "host_verification_prepared",
+            RuntimeEventKind::HostVerificationStarted { .. } => "host_verification_started",
+            RuntimeEventKind::HostVerificationCommitted { .. } => "host_verification_committed",
+            RuntimeEventKind::CompletionRejected { .. } => "completion_rejected",
             RuntimeEventKind::Terminal { .. } => "terminal",
         })
         .collect::<Vec<_>>();
@@ -674,6 +688,8 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             "model_request_in_flight",
             "content_delta",
             "model_response_committed",
+            "completion_proposed",
+            "workspace_observed",
             "terminal",
         ]
     );
@@ -717,6 +733,7 @@ fn normalize_object(values: &mut Map<String, Value>) {
     for (key, value) in values {
         let placeholder = match key.as_str() {
             "run_id" | "parent_run_id" | "child_run_id" => Some("<run-id>"),
+            "generation_id" => Some("<generation-id>"),
             "event_id" => Some("<event-id>"),
             "attempt_id" => Some("<attempt-id>"),
             "operation_id" => Some("<operation-id>"),

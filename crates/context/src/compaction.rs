@@ -607,9 +607,9 @@ mod tests {
             entries.push(TranscriptEntry::Tool {
                 call_id: format!("call-{index}"),
                 name: "read_file".to_owned(),
-                outcome: codewhale_protocol::agent_runtime::ToolOutcome::success(
+                outcome: Box::new(codewhale_protocol::agent_runtime::ToolOutcome::success(
                     "结果".repeat(tool_chars / 2),
-                ),
+                )),
             });
         }
         CanonicalTranscript { entries }
@@ -704,8 +704,8 @@ mod tests {
                 outcome: Box::new(AgentOutcome {
                     run_id: RunId::from(format!("child-run-{index}")),
                     parent_run_id: Some(RunId::from("run-1")),
-                    terminal: TerminalState::Completed {
-                        message: "完成".to_owned(),
+                    terminal: TerminalState::Blocked {
+                        reason: "夹具子 Agent 已结束".to_owned(),
                     },
                     accounting: ModelAccounting::default(),
                     runtime_model_requests: 0,

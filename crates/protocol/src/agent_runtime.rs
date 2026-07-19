@@ -10,8 +10,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 6;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 6;
+use crate::task::{
+    AcceptanceId, CompletionCandidate, CompletionDecision, CompletionRejection, EvidenceReceipt,
+    TaskContract, VerificationId, VerifierObservation, VerifierSpec, WorkspaceState,
+};
+
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 7;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 7;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -232,7 +237,10 @@ pub struct RunRequest {
     #[serde(default)]
     pub purpose: RunPurpose,
     pub model: String,
-    pub input: String,
+    /// Frozen Host task boundary. Agent runs require one; internal context
+    /// compaction runs must not manufacture a task contract.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task_contract: Option<TaskContract>,
     pub system_prompt: SystemPrompt,
     #[serde(default)]
     pub transcript: CanonicalTranscript,
@@ -265,14 +273,15 @@ pub struct RunRequest {
 
 impl RunRequest {
     #[must_use]
-    pub fn new(input: impl Into<String>, system_prompt: impl Into<SystemPrompt>) -> Self {
+    pub fn new(task_contract: TaskContract, system_prompt: impl Into<SystemPrompt>) -> Self {
+        let run_id = RunId::from(task_contract.generation_id.0.clone());
         Self {
-            run_id: None,
+            run_id: Some(run_id),
             parent_run_id: None,
             continued_from_run_id: None,
             purpose: RunPurpose::Agent,
             model: "deepseek-v4-flash".to_owned(),
-            input: input.into(),
+            task_contract: Some(task_contract),
             system_prompt: system_prompt.into(),
             transcript: CanonicalTranscript::default(),
             reasoning_effort: ReasoningEffort::Auto,
@@ -565,7 +574,6 @@ pub enum ToolEvidenceStatus {
     NotApplicable,
     Missing,
     Produced,
-    Verified,
     Rejected,
     Stale,
 }
@@ -624,6 +632,10 @@ pub struct ToolOutcome {
     pub artifacts: Vec<ToolArtifact>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_revision: Option<String>,
+    /// Verifier implementations may report a typed observation. Only the
+    /// Host runtime can match it to a frozen contract and seal a receipt.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verifier_observation: Option<VerifierObservation>,
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
@@ -641,6 +653,7 @@ impl ToolOutcome {
             evidence: ToolEvidence::default(),
             artifacts: Vec::new(),
             workspace_revision: None,
+            verifier_observation: None,
             content: content.into(),
             metadata: None,
         }
@@ -657,6 +670,7 @@ impl ToolOutcome {
             evidence: ToolEvidence::default(),
             artifacts: Vec::new(),
             workspace_revision: None,
+            verifier_observation: None,
             content: content.into(),
             metadata: None,
         }
@@ -673,6 +687,7 @@ impl ToolOutcome {
             evidence: ToolEvidence::default(),
             artifacts: Vec::new(),
             workspace_revision: None,
+            verifier_observation: None,
             content: content.into(),
             metadata: None,
         }
@@ -689,6 +704,7 @@ impl ToolOutcome {
             evidence: ToolEvidence::default(),
             artifacts: Vec::new(),
             workspace_revision: None,
+            verifier_observation: None,
             content: content.into(),
             metadata: None,
         }
@@ -705,6 +721,7 @@ impl ToolOutcome {
             evidence: ToolEvidence::default(),
             artifacts: Vec::new(),
             workspace_revision: None,
+            verifier_observation: None,
             content: content.into(),
             metadata: None,
         }
@@ -756,6 +773,9 @@ impl ToolOutcome {
                 ));
             }
         }
+        if let Some(observation) = &self.verifier_observation {
+            observation.validate()?;
+        }
         Ok(())
     }
 
@@ -802,7 +822,7 @@ pub enum TranscriptEntry {
     Tool {
         call_id: String,
         name: String,
-        outcome: ToolOutcome,
+        outcome: Box<ToolOutcome>,
     },
     ChildOutcome {
         call_id: String,
@@ -1028,6 +1048,7 @@ pub enum RecoveryAmbiguityPhase {
     ModelRequest,
     ContextCompactionModelRequest,
     ToolExecution,
+    HostVerification,
     ChildRun,
 }
 
@@ -1095,12 +1116,22 @@ pub enum RuntimeFailure {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum TerminalState {
-    Completed { message: String },
-    Blocked { reason: String },
-    Failed { failure: RuntimeFailure },
+    Completed {
+        message: String,
+        decision: CompletionDecision,
+    },
+    ContextCompactionCompleted,
+    Blocked {
+        reason: String,
+    },
+    Failed {
+        failure: RuntimeFailure,
+    },
     Cancelled,
     Interrupted,
-    RecoveryRequired { ambiguity: RecoveryAmbiguity },
+    RecoveryRequired {
+        ambiguity: RecoveryAmbiguity,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1505,6 +1536,13 @@ pub enum DurableControlAction {
     Cancel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceAccess {
+    ReadOnly,
+    MayWrite,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelAttemptFailure {
     pub code: String,
@@ -1635,6 +1673,7 @@ pub enum RuntimeEventKind {
     ToolPrepared {
         operation_id: OperationId,
         invocation: ToolInvocation,
+        workspace_access: WorkspaceAccess,
     },
     ToolExecutionStarted {
         operation_id: OperationId,
@@ -1651,7 +1690,35 @@ pub enum RuntimeEventKind {
         operation_id: OperationId,
         call_id: String,
         name: String,
-        outcome: ToolOutcome,
+        outcome: Box<ToolOutcome>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        workspace_state: Option<WorkspaceState>,
+    },
+    WorkspaceObserved {
+        workspace_state: WorkspaceState,
+    },
+    CompletionProposed {
+        candidate: CompletionCandidate,
+    },
+    HostVerificationPrepared {
+        verification_id: VerificationId,
+        candidate: CompletionCandidate,
+        acceptance_id: AcceptanceId,
+        verifier: VerifierSpec,
+        workspace_state_before: WorkspaceState,
+    },
+    HostVerificationStarted {
+        verification_id: VerificationId,
+    },
+    HostVerificationCommitted {
+        verification_id: VerificationId,
+        outcome: Box<ToolOutcome>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        receipt: Option<EvidenceReceipt>,
+        workspace_state_after: WorkspaceState,
+    },
+    CompletionRejected {
+        rejection: CompletionRejection,
     },
     ChildStarted {
         call_id: String,
@@ -1871,6 +1938,7 @@ mod tests {
                 byte_len: Some(7),
             }],
             workspace_revision: Some("revision-7".into()),
+            verifier_observation: None,
             content: "operation failed after applying a side effect".into(),
             metadata: Some(serde_json::json!({"tool_specific": true})),
         };

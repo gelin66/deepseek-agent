@@ -15,6 +15,7 @@ use codewhale_protocol::agent_runtime::{
     UserInteractionPrompt, UserInteractionResponse,
 };
 use codewhale_protocol::run_api::{RunProductControls, StartRunCommand};
+use codewhale_protocol::task::TaskDefinition;
 // On Windows the push/pop helpers write the escapes directly; crossterm's
 // PushKeyboardEnhancementFlags / PopKeyboardEnhancementFlags commands are
 // never referenced, so the imports are gated to avoid -D warnings failures.
@@ -721,7 +722,7 @@ fn canonical_start_command(app: &App, config: &Config, input: String) -> StartRu
     limits.max_depth = subagents.max_depth;
     limits.max_concurrent_children = subagents.max_concurrent_children;
     StartRunCommand {
-        input,
+        task: TaskDefinition::host(input),
         workspace: app.workspace.display().to_string(),
         model: (!app.auto_model).then(|| app.model.clone()),
         reasoning_effort,

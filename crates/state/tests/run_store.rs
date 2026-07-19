@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 
@@ -7,6 +8,12 @@ use codewhale_protocol::agent_runtime::{
 use codewhale_protocol::run_api::{
     PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
 };
+use codewhale_protocol::task::{
+    AcceptanceId, AcceptanceSatisfaction, CompletionCandidate, CompletionCandidateId,
+    CompletionDecision, EvidenceReceipt, EvidenceReceiptId, TaskAcceptance, TaskContract,
+    TaskDefinition, TaskGenerationId, VerificationId, VerifierObservation, VerifierPlan,
+    VerifierSpec, VerifierStep, VerifierVerdict, WorkspaceRevision, WorkspaceState,
+};
 use codewhale_runtime::{
     ActorRequestAccounting, AgentOutcome, AttemptId, CommandId, CreatedRun, DurableActionState,
     InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall,
@@ -15,7 +22,7 @@ use codewhale_runtime::{
     StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus,
     ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus,
     ToolOperationStatus, ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus,
-    ToolTransportStatus, Usage, reduce_events,
+    ToolTransportStatus, Usage, WorkspaceAccess, reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -29,7 +36,13 @@ fn temp_state_path(label: &str) -> PathBuf {
 }
 
 fn request(run_id: &str, workspace: &str) -> RunRequest {
-    let mut request = RunRequest::new("实现功能", "你是编码 Agent");
+    let mut request = RunRequest::new(
+        TaskContract {
+            generation_id: TaskGenerationId::from(run_id),
+            definition: TaskDefinition::host("实现功能"),
+        },
+        "你是编码 Agent",
+    );
     request.run_id = Some(RunId::from(run_id));
     request.environment.workspace = workspace.to_owned();
     request
@@ -37,7 +50,7 @@ fn request(run_id: &str, workspace: &str) -> RunRequest {
 
 fn creation_intent(workspace: &str) -> codewhale_runtime::CreationIntent {
     let command = StartRunCommand {
-        input: "实现功能".to_owned(),
+        task: TaskDefinition::host("实现功能"),
         workspace: workspace.to_owned(),
         model: Some("deepseek-chat".to_owned()),
         reasoning_effort: ReasoningEffort::default(),
@@ -99,8 +112,8 @@ fn terminal_event(run_id: &RunId) -> PendingRuntimeEvent {
     PendingRuntimeEvent::terminal(AgentOutcome {
         run_id: run_id.clone(),
         parent_run_id: None,
-        terminal: TerminalState::Completed {
-            message: "完成".to_owned(),
+        terminal: TerminalState::Blocked {
+            reason: "测试终态".to_owned(),
         },
         accounting: ModelAccounting::default(),
         runtime_model_requests: 0,
@@ -182,11 +195,11 @@ fn v5_model_request(request: &RunRequest) -> ModelRequest {
             },
         );
     }
-    if !request.input.is_empty() {
+    if let Some(contract) = &request.task_contract {
         transcript
             .entries
             .push(codewhale_runtime::TranscriptEntry::User {
-                content: request.input.clone(),
+                content: contract.definition.model_message(),
             });
     }
     ModelRequest {
@@ -574,6 +587,7 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
             event: RuntimeEventKind::ToolPrepared {
                 operation_id: operation_id.clone(),
                 invocation,
+                workspace_access: codewhale_runtime::WorkspaceAccess::MayWrite,
             },
         },
     )
@@ -599,7 +613,7 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
         side_effect: ToolSideEffectStatus::Applied,
         retry: ToolRetryDisposition::NotNeeded,
         evidence: ToolEvidence {
-            status: ToolEvidenceStatus::Verified,
+            status: ToolEvidenceStatus::Produced,
             references: vec!["test://cargo/state-run-store".to_owned()],
         },
         artifacts: vec![ToolArtifact {
@@ -610,6 +624,7 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
             byte_len: Some(256),
         }],
         workspace_revision: Some("workspace-revision-after-patch".to_owned()),
+        verifier_observation: None,
         content: "补丁已应用并通过确定性验证".to_owned(),
         metadata: Some(serde_json::json!({"changed_files": 1})),
     };
@@ -624,7 +639,13 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
                 operation_id,
                 call_id: tool_call.id,
                 name: tool_call.name,
-                outcome: tool_outcome.clone(),
+                outcome: Box::new(tool_outcome.clone()),
+                workspace_state: Some(codewhale_runtime::WorkspaceState {
+                    generation: 1,
+                    revision: codewhale_runtime::WorkspaceRevision::Known {
+                        sha256: "workspace-revision-after-patch".to_owned(),
+                    },
+                }),
             },
         },
     )
@@ -633,8 +654,8 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
     let terminal = PendingRuntimeEvent::terminal(AgentOutcome {
         run_id: sqlite_created.lease.run_id.clone(),
         parent_run_id: None,
-        terminal: TerminalState::Completed {
-            message: "编码任务完成".to_owned(),
+        terminal: TerminalState::Blocked {
+            reason: "测试终态".to_owned(),
         },
         accounting: accounting.clone(),
         runtime_model_requests: 1,
@@ -675,7 +696,7 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
         Some(&codewhale_runtime::TranscriptEntry::Tool {
             call_id: "call-apply-patch".to_owned(),
             name: "apply_patch".to_owned(),
-            outcome: tool_outcome,
+            outcome: Box::new(tool_outcome),
         })
     );
     assert!(sqlite_replay.snapshot.terminal.is_some());
@@ -1157,6 +1178,11 @@ async fn creation_reservation_is_durable_idempotent_and_rejects_payload_reuse() 
 
     let mut reserved_request = request("ignored", "/tmp/creation");
     reserved_request.run_id = Some(reopened_retry.reservation.run_id.clone());
+    reserved_request
+        .task_contract
+        .as_mut()
+        .expect("Agent task contract")
+        .generation_id = TaskGenerationId::from(reopened_retry.reservation.run_id.0.clone());
     reopened
         .create(reserved_request)
         .await
@@ -1255,7 +1281,12 @@ async fn root_list_semantics_match_memory_for_purpose_lineage_order_limit_and_st
 
     let mut continuation = request("root-list-02-agent-continuation", workspace);
     continuation.continued_from_run_id = Some(sqlite_source.lease.run_id.clone());
-    continuation.input = "继续完成列表验收".to_owned();
+    continuation
+        .task_contract
+        .as_mut()
+        .expect("Agent task contract")
+        .definition
+        .objective = "继续完成列表验收".to_owned();
     continuation.transcript = source.snapshot.transcript.clone();
     let sqlite_continuation = sqlite
         .create(continuation.clone())
@@ -1277,7 +1308,7 @@ async fn root_list_semantics_match_memory_for_purpose_lineage_order_limit_and_st
     let mut compaction = request("root-list-03-context-compaction", workspace);
     compaction.continued_from_run_id = Some(sqlite_source.lease.run_id.clone());
     compaction.purpose = RunPurpose::ContextCompaction;
-    compaction.input.clear();
+    compaction.task_contract = None;
     compaction.transcript = source.snapshot.transcript.clone();
     sqlite
         .create(compaction.clone())
@@ -1412,7 +1443,24 @@ async fn continuation_create_is_atomic_and_matches_memory_store() {
 
     let mut continuation = request("continued-root", "/tmp/workspace");
     continuation.continued_from_run_id = Some(sqlite_source.lease.run_id.clone());
-    continuation.input = "继续完成验收".to_owned();
+    continuation
+        .task_contract
+        .as_mut()
+        .expect("Agent task contract")
+        .definition
+        .objective = "继续完成验收".to_owned();
+    continuation
+        .task_contract
+        .as_mut()
+        .expect("Agent task contract")
+        .definition
+        .constraints = vec!["只修改 canonical 路径".to_owned()];
+    continuation
+        .task_contract
+        .as_mut()
+        .expect("Agent task contract")
+        .definition
+        .non_goals = vec!["不恢复旧兼容层".to_owned()];
     continuation.transcript = source_before.snapshot.transcript.clone();
     let sqlite_continued = sqlite
         .create(continuation.clone())
@@ -1440,7 +1488,12 @@ async fn continuation_create_is_atomic_and_matches_memory_store() {
     assert!(matches!(
         sqlite_continued.replay.snapshot.transcript.entries.last(),
         Some(codewhale_runtime::TranscriptEntry::User { content })
-            if content == "继续完成验收"
+            if content == concat!(
+                "任务目标：\n继续完成验收",
+                "\n\n约束：\n- 只修改 canonical 路径",
+                "\n\n非目标：\n- 不恢复旧兼容层",
+                "\n\n验收条件：\n- 由 Host 明确接受完成候选"
+            )
     ));
     assert_eq!(
         sqlite
@@ -1494,8 +1547,8 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
             PendingRuntimeEvent::terminal(AgentOutcome {
                 run_id: child.lease.run_id.clone(),
                 parent_run_id: Some(RunId::from("parent")),
-                terminal: TerminalState::Completed {
-                    message: "child completed".to_owned(),
+                terminal: TerminalState::Blocked {
+                    reason: "child completed".to_owned(),
                 },
                 accounting: ModelAccounting::default(),
                 runtime_model_requests: 0,
@@ -1891,6 +1944,285 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
             .expect("read concurrent journal mode");
         assert_eq!(journal_mode.to_ascii_lowercase(), "wal");
     }
+}
+
+#[tokio::test]
+async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
+    let path = temp_state_path("stale_receipt_epoch");
+    let sqlite = StateStore::open(Some(path.clone())).expect("open SQLite store");
+    let memory = InMemoryRunStore::default();
+    let verifier = VerifierSpec {
+        verifier_id: "run_tests".to_owned(),
+        parameters: serde_json::json!({"all_features": false, "args": ["--locked"]}),
+        plan: VerifierPlan {
+            steps: vec![VerifierStep {
+                id: "cargo-test".to_owned(),
+                program: "cargo".to_owned(),
+                args: vec!["test".to_owned(), "--locked".to_owned()],
+                cwd: String::new(),
+                env: BTreeMap::new(),
+                timeout_ms: 600_000,
+            }],
+        },
+    };
+    let mut run_request = request("stale-receipt-run", "/tmp/stale-receipt");
+    run_request
+        .task_contract
+        .as_mut()
+        .expect("Agent task contract")
+        .definition
+        .acceptance = vec![TaskAcceptance::Verifier {
+        id: AcceptanceId::from("tests"),
+        description: "冻结测试必须通过".to_owned(),
+        verifier: verifier.clone(),
+    }];
+    let sqlite_created = sqlite
+        .create(run_request.clone())
+        .await
+        .expect("create SQLite run");
+    let memory_created = memory.create(run_request).await.expect("create memory run");
+    let run_id = sqlite_created.lease.run_id.clone();
+    let generation_id = TaskGenerationId::from(run_id.0.clone());
+    let revision = WorkspaceRevision::Known {
+        sha256: "sha256:workspace-a".to_owned(),
+    };
+    let candidate = CompletionCandidate {
+        id: CompletionCandidateId::from("candidate-stale-receipt"),
+        generation_id: generation_id.clone(),
+        message: "任务完成".to_owned(),
+    };
+    let observed = WorkspaceState {
+        generation: 1,
+        revision: revision.clone(),
+    };
+    let pending = |id: &str, event: RuntimeEventKind| PendingRuntimeEvent {
+        event_id: RuntimeEventId(id.to_owned()),
+        event,
+    };
+
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "workspace-observed",
+            RuntimeEventKind::WorkspaceObserved {
+                workspace_state: observed.clone(),
+            },
+        ),
+    )
+    .await;
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "completion-proposed",
+            RuntimeEventKind::CompletionProposed {
+                candidate: candidate.clone(),
+            },
+        ),
+    )
+    .await;
+    let verification_id = VerificationId::from("host-verification-stale-receipt");
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "host-verification-prepared",
+            RuntimeEventKind::HostVerificationPrepared {
+                verification_id: verification_id.clone(),
+                candidate: candidate.clone(),
+                acceptance_id: AcceptanceId::from("tests"),
+                verifier: verifier.clone(),
+                workspace_state_before: observed,
+            },
+        ),
+    )
+    .await;
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "host-verification-started",
+            RuntimeEventKind::HostVerificationStarted {
+                verification_id: verification_id.clone(),
+            },
+        ),
+    )
+    .await;
+    let verified_state = WorkspaceState {
+        generation: 2,
+        revision: revision.clone(),
+    };
+    let receipt = EvidenceReceipt {
+        id: EvidenceReceiptId::from(format!("receipt:{}", verification_id.0)),
+        generation_id: generation_id.clone(),
+        acceptance_id: AcceptanceId::from("tests"),
+        verification_id: verification_id.clone(),
+        verifier: verifier.clone(),
+        workspace_state: verified_state.clone(),
+        artifact_ids: vec!["artifact-1".to_owned()],
+    };
+    let mut verifier_outcome = ToolOutcome::success("deterministic verifier passed");
+    verifier_outcome.workspace_revision = Some("sha256:workspace-a".to_owned());
+    verifier_outcome.evidence = ToolEvidence {
+        status: ToolEvidenceStatus::Produced,
+        references: vec!["artifact-1".to_owned()],
+    };
+    verifier_outcome.artifacts = vec![ToolArtifact {
+        id: "artifact-1".to_owned(),
+        status: ToolArtifactStatus::Available,
+        sha256: Some("sha256:artifact".to_owned()),
+        media_type: Some("application/json".to_owned()),
+        byte_len: Some(2),
+    }];
+    verifier_outcome.verifier_observation = Some(VerifierObservation {
+        spec: verifier.clone(),
+        verdict: VerifierVerdict::Passed,
+        workspace_revision: revision.clone(),
+        artifact_ids: vec!["artifact-1".to_owned()],
+    });
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "host-verification-committed",
+            RuntimeEventKind::HostVerificationCommitted {
+                verification_id,
+                outcome: Box::new(verifier_outcome),
+                receipt: Some(receipt.clone()),
+                workspace_state_after: verified_state,
+            },
+        ),
+    )
+    .await;
+
+    let operation_id = OperationId::from("write-after-receipt");
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "write-prepared",
+            RuntimeEventKind::ToolPrepared {
+                operation_id: operation_id.clone(),
+                invocation: ToolInvocation {
+                    run_id: run_id.clone(),
+                    call_id: "write-after-receipt".to_owned(),
+                    name: "write_file".to_owned(),
+                    arguments: ToolArguments::parse(r#"{"path":"same.txt"}"#),
+                },
+                workspace_access: WorkspaceAccess::MayWrite,
+            },
+        ),
+    )
+    .await;
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "write-started",
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: operation_id.clone(),
+            },
+        ),
+    )
+    .await;
+    let mut write_outcome = ToolOutcome::success("same bytes restored");
+    write_outcome.side_effect = ToolSideEffectStatus::Applied;
+    let current_state = WorkspaceState {
+        generation: 3,
+        revision,
+    };
+    append_to_both(
+        &sqlite,
+        &sqlite_created.lease,
+        &memory,
+        &memory_created.lease,
+        pending(
+            "write-committed",
+            RuntimeEventKind::ToolOutcomeCommitted {
+                operation_id,
+                call_id: "write-after-receipt".to_owned(),
+                name: "write_file".to_owned(),
+                outcome: Box::new(write_outcome),
+                workspace_state: Some(current_state.clone()),
+            },
+        ),
+    )
+    .await;
+
+    let terminal = PendingRuntimeEvent::terminal(AgentOutcome {
+        run_id: run_id.clone(),
+        parent_run_id: None,
+        terminal: TerminalState::Completed {
+            message: candidate.message,
+            decision: CompletionDecision {
+                candidate_id: candidate.id,
+                generation_id,
+                workspace_state: current_state,
+                satisfied: vec![AcceptanceSatisfaction::Evidence {
+                    acceptance_id: AcceptanceId::from("tests"),
+                    receipt_id: receipt.id,
+                }],
+            },
+        },
+        accounting: ModelAccounting::default(),
+        runtime_model_requests: 0,
+        runtime_retries: 0,
+        tool_calls: 1,
+    });
+    for error in [
+        sqlite
+            .append(&sqlite_created.lease, terminal.clone())
+            .await
+            .expect_err("SQLite must reject stale evidence"),
+        memory
+            .append(&memory_created.lease, terminal)
+            .await
+            .expect_err("memory must reject stale evidence"),
+    ] {
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { ref message, .. }
+                if message.contains("current contract or workspace")
+        ));
+    }
+
+    let sqlite_before_reopen = sqlite
+        .load(&run_id)
+        .await
+        .expect("load SQLite run")
+        .expect("SQLite run exists");
+    let memory_replay = memory
+        .load(&run_id)
+        .await
+        .expect("load memory run")
+        .expect("memory run exists");
+    assert_canonical_replay_eq(&sqlite_before_reopen, &memory_replay);
+    assert!(sqlite_before_reopen.snapshot.terminal.is_none());
+    assert_eq!(sqlite_before_reopen.snapshot.workspace_state.generation, 3);
+    assert_eq!(sqlite_before_reopen.snapshot.evidence_receipts.len(), 1);
+    drop(sqlite);
+    let reopened = StateStore::open(Some(path)).expect("reopen SQLite store");
+    let reopened_replay = reopened
+        .load(&run_id)
+        .await
+        .expect("reload SQLite run")
+        .expect("reopened SQLite run exists");
+    assert_eq!(reopened_replay, sqlite_before_reopen);
 }
 
 #[test]

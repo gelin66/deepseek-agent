@@ -26,6 +26,7 @@ use codewhale_protocol::agent_runtime::{
 use codewhale_protocol::run_api::{
     PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
 };
+use codewhale_protocol::task::TaskDefinition;
 use codewhale_runtime::{CreationIntent, RunStore};
 use codewhale_state::StateStore;
 use qa_harness::harness::{Harness, make_sealed_workspace};
@@ -626,7 +627,15 @@ fn assert_canonical_sqlite_truth(
 
     match &replay.events.first().expect("RunCreated event").event {
         RuntimeEventKind::RunCreated { request } => {
-            assert_eq!(request.input, expected_input);
+            assert_eq!(
+                request
+                    .task_contract
+                    .as_ref()
+                    .expect("Agent task contract")
+                    .definition
+                    .objective,
+                expected_input
+            );
             assert_eq!(request.environment.workspace, workspace);
             assert!(request.parent_run_id.is_none());
         }
@@ -660,7 +669,7 @@ fn seed_pending_start(
         std::fs::create_dir_all(parent)?;
     }
     let command = RunCommand::Start(StartRunCommand {
-        input: input.to_owned(),
+        task: TaskDefinition::host(input),
         workspace: workspace.to_owned(),
         model: model.map(str::to_owned),
         reasoning_effort: ReasoningEffort::default(),
@@ -734,7 +743,15 @@ fn assert_recovered_creation_sqlite_truth(
     match &replay.events.first().expect("RunCreated event").event {
         RuntimeEventKind::RunCreated { request } => {
             assert_eq!(request.run_id.as_ref(), Some(&RunId::from(reserved_run_id)));
-            assert_eq!(request.input, RECOVERY_PROMPT);
+            assert_eq!(
+                request
+                    .task_contract
+                    .as_ref()
+                    .expect("Agent task contract")
+                    .definition
+                    .objective,
+                RECOVERY_PROMPT
+            );
             assert_eq!(request.environment.workspace, workspace);
         }
         event => panic!("first recovered event was not RunCreated: {event:?}"),

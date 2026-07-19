@@ -3,19 +3,20 @@
 //! This module owns Cargo process execution, cancellation and result parsing.
 //! Goal completion remains a host concern and is deliberately absent here.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use codewhale_protocol::agent_runtime::{
     ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
 };
+use codewhale_protocol::task::{VerifierPlan, VerifierSpec, VerifierStep};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::shell::cargo_failure_summary::summarize_cargo_failure;
 use crate::shell::{ExecShellOptions, ShellResult, ShellStatus, execute_managed_program};
 use crate::verification_artifact::{
-    attach_verification_artifact, capture_workspace_revision, reject_verification_artifact,
+    attach_verifier_observation, capture_workspace_revision, reject_verification_artifact,
 };
 use crate::{ProductionToolContext, ToolError, ToolOutcome};
 
@@ -25,7 +26,7 @@ const RUN_TESTS_TIMEOUT_MS: u64 = 600_000;
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct RunTestsInput {
-    args: Option<String>,
+    args: Vec<String>,
     all_features: bool,
 }
 
@@ -66,22 +67,11 @@ pub(crate) async fn execute_run_tests(
 ) -> Result<ToolOutcome, ToolError> {
     let input: RunTestsInput = serde_json::from_value(input)
         .map_err(|error| ToolError::invalid_input(error.to_string()))?;
-    let extra_args = input
-        .args
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty());
-
     let mut args = vec!["test".to_string()];
     if input.all_features {
         args.push("--all-features".to_string());
     }
-    if let Some(extra) = extra_args {
-        let split = shlex::split(extra).ok_or_else(|| {
-            ToolError::invalid_input("Failed to parse 'args' as shell-style tokens")
-        })?;
-        args.extend(split);
-    }
+    args.extend(input.args.iter().cloned());
 
     let command = format_command(context.workspace(), &args);
     let revision_before = capture_workspace_revision(context.workspace()).await;
@@ -121,7 +111,7 @@ pub(crate) async fn execute_run_tests(
         "process_status": shell_status_name(&output.status),
         "canceled": canceled,
         "verification_usable": verification_usable,
-        "focused_args": extra_args.is_some(),
+        "focused_args": !input.args.is_empty(),
         "all_features": input.all_features,
     }));
     if let Some(summary) = summarize_cargo_failure(
@@ -137,14 +127,25 @@ pub(crate) async fn execute_run_tests(
     }
     if outcome.is_success() && verification_usable {
         let revision_after = capture_workspace_revision(context.workspace()).await;
-        attach_verification_artifact(
+        attach_verifier_observation(
             &mut outcome,
-            "run_tests",
-            &json!({
-                "all_features": input.all_features,
-                "args": extra_args.unwrap_or_default(),
-            }),
-            result.command.clone(),
+            VerifierSpec {
+                verifier_id: "run_tests".to_owned(),
+                parameters: json!({
+                    "all_features": input.all_features,
+                    "args": input.args,
+                }),
+                plan: VerifierPlan {
+                    steps: vec![VerifierStep {
+                        id: "cargo-test".to_owned(),
+                        program: "cargo".to_owned(),
+                        args,
+                        cwd: String::new(),
+                        env: BTreeMap::new(),
+                        timeout_ms: RUN_TESTS_TIMEOUT_MS,
+                    }],
+                },
+            },
             format!(
                 "cargo test passed {} test(s) with exit code {}",
                 evidence.passed, result.exit_code
@@ -364,7 +365,7 @@ mod tests {
         let workspace = rust_workspace(true);
         let context = ProductionToolContext::new(workspace.path());
         let outcome = execute_run_tests(
-            json!({"args": "--locked"}),
+            json!({"args": ["--locked"]}),
             &context,
             &shell(workspace.path()),
         )
@@ -374,10 +375,19 @@ mod tests {
         assert_eq!(outcome.evidence.status, ToolEvidenceStatus::Produced);
         assert_eq!(outcome.artifacts.len(), 1);
         assert!(outcome.workspace_revision.is_some());
-        let artifact = &outcome.metadata.as_ref().unwrap()["verification_artifact"];
-        assert_eq!(artifact["tool"], "run_tests");
-        assert_eq!(artifact["verifier_id"], "run_tests");
-        assert!(artifact["check"].as_str().unwrap().contains("cargo test"));
+        let observation = outcome
+            .verifier_observation
+            .as_ref()
+            .expect("typed verifier observation");
+        assert_eq!(observation.spec.verifier_id, "run_tests");
+        assert_eq!(
+            observation.spec.parameters,
+            json!({"all_features": false, "args": ["--locked"]})
+        );
+        assert_eq!(
+            observation.spec.plan.steps[0].args,
+            vec!["test", "--locked"]
+        );
     }
 
     #[tokio::test]

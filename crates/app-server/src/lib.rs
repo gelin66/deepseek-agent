@@ -855,6 +855,7 @@ mod tests {
         CompactRunCommand, ContinueRunCommand, PendingCreationKind, RunProductControls, RunView,
         StartRunCommand,
     };
+    use codewhale_protocol::task::TaskDefinition;
     use serde_json::json;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::sync::{Notify, Semaphore};
@@ -877,7 +878,7 @@ mod tests {
 
     fn start_command() -> StartRunCommand {
         StartRunCommand {
-            input: "修复问题".to_owned(),
+            task: TaskDefinition::host("修复问题"),
             workspace: "/workspace".to_owned(),
             model: Some("deepseek-v4-pro".to_owned()),
             reasoning_effort: ReasoningEffort::High,
@@ -1049,7 +1050,7 @@ mod tests {
 
     fn production_start(workspace: &Path, input: &str) -> StartRunCommand {
         StartRunCommand {
-            input: input.to_owned(),
+            task: TaskDefinition::host(input),
             workspace: workspace
                 .canonicalize()
                 .expect("canonical workspace")
@@ -1207,7 +1208,7 @@ mod tests {
                 PostRoute::Continue,
                 RunCommand::Continue(ContinueRunCommand {
                     run_id: run_id.clone(),
-                    input: "下一轮".to_owned(),
+                    task: TaskDefinition::host("下一轮"),
                     expected_workspace: None,
                 }),
             ),
@@ -1466,7 +1467,7 @@ mod tests {
             RunCommand::Start(start_command()),
             RunCommand::Continue(ContinueRunCommand {
                 run_id: run_id.clone(),
-                input: "下一轮".to_owned(),
+                task: TaskDefinition::host("下一轮"),
                 expected_workspace: None,
             }),
             RunCommand::Compact(CompactRunCommand {
@@ -1654,7 +1655,7 @@ mod tests {
 
         let continuation = envelope(RunCommand::Continue(ContinueRunCommand {
             run_id: source.run_id.clone(),
-            input: "第二轮".to_owned(),
+            task: TaskDefinition::host("第二轮"),
             expected_workspace: Some(
                 temp.path()
                     .canonicalize()
@@ -1681,7 +1682,7 @@ mod tests {
             let previous_run_id = continued.run_id.clone();
             let continuation = envelope(RunCommand::Continue(ContinueRunCommand {
                 run_id: previous_run_id.clone(),
-                input: format!("第{turn}轮"),
+                task: TaskDefinition::host(format!("第{turn}轮")),
                 expected_workspace: Some(
                     temp.path()
                         .canonicalize()
@@ -1732,7 +1733,7 @@ mod tests {
         let compacted = wait_http_terminal(&app, &compacted.run_id, None).await;
         assert!(matches!(
             compacted.terminal,
-            Some(TerminalState::Completed { .. })
+            Some(TerminalState::ContextCompactionCompleted)
         ));
 
         let workspace = temp

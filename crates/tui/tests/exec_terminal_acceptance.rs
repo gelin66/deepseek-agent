@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
     RunEnvironment, RunId, RunRequest, RunStore, RuntimeEventKind, StoredRuntimeEvent,
     TerminalState,
@@ -443,7 +444,15 @@ async fn sequential_fresh_runs_and_continue_share_one_store_without_creation_con
     );
     match &continued_replay.events[0].event {
         RuntimeEventKind::RunCreated { request } => {
-            assert_eq!(request.input, continue_prompt);
+            assert_eq!(
+                request
+                    .task_contract
+                    .as_ref()
+                    .expect("continued Agent task contract")
+                    .definition
+                    .objective,
+                continue_prompt
+            );
             assert_eq!(request.transcript, second_after.snapshot.transcript);
         }
         event => panic!("continued run must start with RunCreated, got {event:?}"),
@@ -2022,7 +2031,14 @@ fn prepare_existing_exec(
 }
 
 async fn create_released_run(store: &StateStore, environment: RunEnvironment) -> RunId {
-    let mut request = RunRequest::new("resume mismatch fixture", "fixture system prompt");
+    let run_id = RunId::new();
+    let mut request = RunRequest::new(
+        TaskContract {
+            generation_id: TaskGenerationId::from(run_id.0.clone()),
+            definition: TaskDefinition::host("resume mismatch fixture"),
+        },
+        "fixture system prompt",
+    );
     request.model = TEST_MODEL.to_owned();
     request.environment = environment;
     let created = store.create(request).await.expect("create mismatch run");

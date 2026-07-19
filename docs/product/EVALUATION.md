@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
 - 状态：V1 评测契约
-- 上次更新：2026-07-18
+- 上次更新：2026-07-19
 
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
@@ -332,6 +332,22 @@ artifact 的状态同样不能越级推断。`Produced` 只表示工具产出了
 后续 verifier 的输入，但不等于 `Host Verified`。只有与当前 TaskContract generation、
 最新 `workspace_revision` 和预定义验收器同时匹配的成功 receipt，才能把对应证据判为
 `Host Verified`。
+
+#### 2026-07-19 M5-A 本地机制证据
+
+当前候选已实现上述 canonical 边界：Run API v5、RuntimeEvent v7、State schema v12；
+TaskContract 在 `RunCreated` 冻结，模型 `Stop` 只产生 completion candidate，Runtime 是
+唯一 EvidenceReceipt 与 Completed owner。结构化 task 的 constraints、non-goals 和
+acceptance description 已进入确定性的 model-visible canonical transcript。显式 verifier
+receipt 必须精确匹配 generation、acceptance、parameters、resolved plan、当前 workspace
+generation/revision 和实际 Available artifact。任何 `MayWrite` 执行都使旧 receipt 失效，
+即使内容 hash 返回旧值。
+
+本地证据包括 root/child 同门禁 conformance、伪完成/缺 artifact/same-hash write 反例、
+Memory/SQLite parity、Host verifier Prepared/InFlight/Committed 的真实子进程 `SIGKILL`
+恢复、三入口逐事件 parity、focused、严格 workspace Clippy 和完整 workspace tests。
+这些结果只证明机制与恢复正确、现有入口无回归；正式 DeepSeek baseline/candidate A/B
+记录完成前，`product_metric_eligible=false`，不得声称成功率、Token、时间或费用提升。
 
 ### 5.3 持久化、进程中断与恢复证据契约
 

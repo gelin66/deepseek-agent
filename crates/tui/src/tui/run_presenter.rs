@@ -221,6 +221,33 @@ fn present_canonical_event(
             });
             None
         }
+        RuntimeEventKind::WorkspaceObserved { .. } => None,
+        RuntimeEventKind::CompletionProposed { .. } => {
+            app.status_message = Some("DeepSeek 已提交完成候选，等待 Host 验收…".to_owned());
+            None
+        }
+        RuntimeEventKind::HostVerificationPrepared { verifier, .. } => {
+            app.status_message = Some(format!("Host 正在准备验收：{}", verifier.verifier_id));
+            None
+        }
+        RuntimeEventKind::HostVerificationStarted { .. } => {
+            app.status_message = Some("Host 正在执行确定性验收…".to_owned());
+            None
+        }
+        RuntimeEventKind::HostVerificationCommitted {
+            receipt, outcome, ..
+        } => {
+            app.status_message = Some(if receipt.is_some() {
+                "Host 验收通过，证据回执已提交".to_owned()
+            } else {
+                format!("Host 验收未通过：{}", outcome.content)
+            });
+            None
+        }
+        RuntimeEventKind::CompletionRejected { rejection } => {
+            app.status_message = Some(format!("完成候选被拒绝：{}", rejection.reason));
+            None
+        }
         RuntimeEventKind::ChildStarted {
             call_id,
             child_run_id,
@@ -530,6 +557,7 @@ fn narrow_u64(value: u64) -> u32 {
 fn terminal_runtime_status(terminal: &TerminalState) -> &'static str {
     match terminal {
         TerminalState::Completed { .. } => "completed",
+        TerminalState::ContextCompactionCompleted => "completed",
         TerminalState::Blocked { .. } => "blocked",
         TerminalState::Failed { .. } => "failed",
         TerminalState::Cancelled => "cancelled",
@@ -541,6 +569,7 @@ fn terminal_runtime_status(terminal: &TerminalState) -> &'static str {
 fn terminal_label(terminal: &TerminalState) -> &'static str {
     match terminal {
         TerminalState::Completed { .. } => "已完成",
+        TerminalState::ContextCompactionCompleted => "压缩完成",
         TerminalState::Blocked { .. } => "已阻塞",
         TerminalState::Failed { .. } => "失败",
         TerminalState::Cancelled => "已取消",
@@ -605,11 +634,16 @@ mod tests {
     use std::path::PathBuf;
 
     use codewhale_protocol::agent_runtime::{
-        AgentActor, AgentOutcome, AttemptId, CommandId, DurableControlAction, ModelAccounting,
-        ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall, OperationId,
-        PreparedModelRetry, ReasoningEffort, RecoveryAmbiguity, RecoveryAmbiguityPhase, RunId,
-        RunRequest, RuntimeEventId, RuntimeFailure, StoredRuntimeEvent, SystemPrompt,
-        TerminalState, ToolInvocation, TranscriptEntry, Usage,
+        AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentActor, AgentOutcome, AttemptId, CommandId,
+        DurableControlAction, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest,
+        ModelToolCall, OperationId, PreparedModelRetry, ReasoningEffort, RecoveryAmbiguity,
+        RecoveryAmbiguityPhase, RunId, RunRequest, RuntimeEventId, RuntimeFailure,
+        StoredRuntimeEvent, SystemPrompt, TerminalState, ToolInvocation, TranscriptEntry, Usage,
+        WorkspaceAccess,
+    };
+    use codewhale_protocol::task::{
+        AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
+        TaskContract, TaskDefinition, TaskGenerationId, WorkspaceRevision, WorkspaceState,
     };
 
     use super::*;
@@ -641,7 +675,7 @@ mod tests {
 
     fn stored(run_id: &RunId, sequence: u64, event: RuntimeEventKind) -> StoredRuntimeEvent {
         StoredRuntimeEvent {
-            schema_version: 5,
+            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
             run_id: run_id.clone(),
             parent_run_id: None,
             event_id: RuntimeEventId(format!("event-{sequence}")),
@@ -651,9 +685,34 @@ mod tests {
         }
     }
 
+    fn request(run_id: &RunId, objective: &str, system_prompt: &str) -> RunRequest {
+        RunRequest::new(
+            TaskContract {
+                generation_id: TaskGenerationId::from(run_id.0.clone()),
+                definition: TaskDefinition::host(objective),
+            },
+            system_prompt,
+        )
+    }
+
+    fn completion_decision(run_id: &RunId) -> CompletionDecision {
+        CompletionDecision {
+            candidate_id: CompletionCandidateId::from(format!("candidate-{}", run_id.0)),
+            generation_id: TaskGenerationId::from(run_id.0.clone()),
+            workspace_state: WorkspaceState {
+                generation: 0,
+                revision: WorkspaceRevision::Unknown {
+                    reason: "presentation fixture".to_owned(),
+                },
+            },
+            satisfied: vec![AcceptanceSatisfaction::Host {
+                acceptance_id: AcceptanceId::from("host"),
+            }],
+        }
+    }
+
     fn created(run_id: &RunId, transcript: Vec<TranscriptEntry>) -> StoredRuntimeEvent {
-        let mut request = RunRequest::new("本轮输入", "系统");
-        request.run_id = Some(run_id.clone());
+        let mut request = request(run_id, "本轮输入", "系统");
         request.transcript.entries = transcript;
         stored(
             run_id,
@@ -688,6 +747,7 @@ mod tests {
             sequence,
             TerminalState::Completed {
                 message: "完成".to_owned(),
+                decision: completion_decision(run_id),
             },
         )
     }
@@ -760,8 +820,7 @@ mod tests {
     #[test]
     fn root_run_created_is_the_single_source_for_resolved_auto_route_display() {
         let run_id = RunId::from("auto-route");
-        let mut request = RunRequest::new("实现功能", "系统");
-        request.run_id = Some(run_id.clone());
+        let mut request = request(&run_id, "实现功能", "系统");
         request.model = "deepseek-v4-pro".to_owned();
         request.reasoning_effort = CanonicalReasoningEffort::Max;
         let event = stored(
@@ -852,6 +911,7 @@ mod tests {
                         name: name.clone(),
                         arguments: arguments.clone(),
                     },
+                    workspace_access: WorkspaceAccess::ReadOnly,
                 },
             ),
             stored(
@@ -861,7 +921,8 @@ mod tests {
                     operation_id,
                     call_id: call_id.clone(),
                     name: name.clone(),
-                    outcome: outcome.clone(),
+                    outcome: Box::new(outcome.clone()),
+                    workspace_state: None,
                 },
             ),
         ];
@@ -871,8 +932,8 @@ mod tests {
         let mut replay = app();
         apply_events(&mut replay, events);
 
-        let mut rebuilt_request = RunRequest::new("继续处理", "系统");
-        rebuilt_request.run_id = Some(RunId::from("continued-run"));
+        let continued_run_id = RunId::from("continued-run");
+        let mut rebuilt_request = request(&continued_run_id, "继续处理", "系统");
         rebuilt_request.transcript.entries = vec![
             TranscriptEntry::Assistant {
                 content: None,
@@ -886,7 +947,7 @@ mod tests {
             TranscriptEntry::Tool {
                 call_id: call_id.clone(),
                 name: name.clone(),
-                outcome,
+                outcome: Box::new(outcome),
             },
         ];
         let rebuilt_event = stored(
@@ -952,7 +1013,7 @@ mod tests {
         assert_eq!(
             transcript(&app),
             vec!["user:历史输入"],
-            "RunCreated must not append request.input"
+            "RunCreated must not duplicate the task objective"
         );
         let _ = present_effect(&mut app, effects[1].clone());
         assert_eq!(transcript(&app), vec!["user:历史输入", "user:本轮输入"]);
@@ -961,9 +1022,9 @@ mod tests {
     #[test]
     fn context_compaction_rebuilds_canonical_transcript_without_internal_input() {
         let run_id = RunId::from("compaction");
-        let mut request = RunRequest::new("压缩内部输入", "压缩系统提示");
-        request.run_id = Some(run_id.clone());
+        let mut request = request(&run_id, "压缩内部输入", "压缩系统提示");
         request.purpose = RunPurpose::ContextCompaction;
+        request.task_contract = None;
         request.transcript.entries.push(TranscriptEntry::User {
             content: "压缩请求内部历史".to_owned(),
         });
@@ -1197,6 +1258,7 @@ mod tests {
                 "completed",
                 TerminalState::Completed {
                     message: "完成".to_owned(),
+                    decision: completion_decision(&run_id),
                 },
             ),
             (
@@ -1245,6 +1307,7 @@ mod tests {
                                 name: "read_file".to_owned(),
                                 arguments: ToolArguments::parse(r#"{"path":"src/lib.rs"}"#),
                             },
+                            workspace_access: WorkspaceAccess::ReadOnly,
                         },
                     ),
                     terminal_with_state(&run_id, 3, terminal_state),
@@ -1448,6 +1511,7 @@ mod tests {
                             &child_b,
                             TerminalState::Completed {
                                 message: "B 完成".to_owned(),
+                                decision: completion_decision(&child_b),
                             },
                         )),
                         accounting: Box::new(ModelAccounting::default()),
@@ -1508,6 +1572,7 @@ mod tests {
                 &child,
                 TerminalState::Completed {
                     message: "历史完成".to_owned(),
+                    decision: completion_decision(&child),
                 },
             )),
             handoff_content: "历史证据".to_owned(),

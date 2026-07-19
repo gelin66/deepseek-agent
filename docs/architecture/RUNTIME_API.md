@@ -3,9 +3,9 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M4 已关闭；exec、app-server 与交互 TUI 共用该接口
+- 状态：M4 已关闭；M5-A canonical completion 已进入该接口
 - 更新日期：2026-07-19
-- schema：`Run API`（`schema_version = 4`）、`RuntimeEvent`（writer/reader v6）、
+- schema：`Run API`（`schema_version = 5`）、`RuntimeEvent`（writer/reader v7）、
   `State`（schema v12）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
@@ -17,7 +17,7 @@ HTTP / SSE / stdio
         |
 crates/app-server        认证、限流、framing
         |
-AgentApplication         start/continue/compact/list_roots/get/events/resume/control
+AgentApplication         start/continue/compact/list/recover/get/events/resume/control
         |
 AgentRuntime             唯一根/子 Agent 执行内核
         |
@@ -83,6 +83,8 @@ CodeWhale 仍可作为 MCP client 消费外部工具服务，但不再提供自�
 | `GET` | `/healthz` | 公开进程健康检查 |
 | `POST` | `/v1/runs` | start |
 | `GET` | `/v1/runs?workspace=...&limit=...` | list_roots；精确 workspace，默认 50、范围 1-200 |
+| `GET` | `/v1/runs/pending-creations?workspace=...&limit=...` | list_pending_creations |
+| `POST` | `/v1/runs/pending-creations/{creation_request_id}/recover` | recover_creation |
 | `GET` | `/v1/runs/{run_id}` | get |
 | `GET` | `/v1/runs/{run_id}/events?after_sequence=N` | events 或 SSE replay |
 | `POST` | `/v1/runs/{run_id}/continue` | 从终态 root 创建新的 root run |
@@ -99,13 +101,14 @@ loopback-only 的 `--insecure-no-auth` 启动。query token、备用 header 和�
 
 POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配。route 中的
 `run_id` 必须与 envelope 中完全一致；交互响应 route 的 `interaction_id` 也必须与 envelope
-一致。未知字段、错 route、空输入和 schema drift 都返回 typed error，而不是猜测意图。
+一致。未知字段、错 route、空 task objective 和 schema drift 都返回 typed error，而不是
+猜测意图。
 
 ## 3. Command envelope
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "request_id": "client-request-42",
   "command": {
     "kind": "get",
@@ -114,13 +117,15 @@ POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配
 }
 ```
 
-支持且只支持十一种 command：
+支持且只支持十三种 command：
 
 ```text
 start
 continue
 compact
 list_roots
+list_pending_creations
+recover_creation
 get
 events
 resume
@@ -137,7 +142,7 @@ resolve_interaction
 
 客户端可控制：
 
-- `input`、`workspace`；
+- 结构化 `task`、`workspace`；
 - 官方模型或 auto route；
 - reasoning、streaming、输出和请求预算；
 - `ToolPolicy`、`RunLimits`；
@@ -156,11 +161,22 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "request_id": "start-1",
   "command": {
     "kind": "start",
-    "input": "读取 src/lib.rs，解释当前入口。",
+    "task": {
+      "objective": "读取 src/lib.rs，解释当前入口。",
+      "constraints": [],
+      "non_goals": [],
+      "acceptance": [
+        {
+          "kind": "host",
+          "id": "host",
+          "description": "由 Host 明确接受完成候选"
+        }
+      ]
+    },
     "workspace": "/absolute/project",
     "model": "deepseek-v4-flash",
     "reasoning_effort": "high",
@@ -182,10 +198,20 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 }
 ```
 
-### continue、compact 与 list_roots
+`task` 在创建 run 时被 Host 冻结为带 generation ID 的 `TaskContract`。acceptance 可由
+Host policy 接受，也可以要求一个精确的 deterministic verifier plan；同一任务至多有一个
+verifier acceptance，多项命令门禁放进该 plan 的多个 step。verifier 的参数、program、
+argv、workspace 内 cwd、environment 和 timeout 都是契约的一部分，不能由模型在验收时
+改写。非默认结构化 task 的 objective、constraints、non-goals 和人类可读 acceptance
+description 会以确定性的中文 user turn 进入 canonical transcript；精确 verifier 参数仍是
+Host typed fact，不复制进 prompt。默认 Host acceptance 只表示 Runtime policy 接受完成
+候选，不等于评测意义上的 `verified_success`。
 
-`continue` 只接受终态 root run 和非空新输入，并可用 `expected_workspace` 做精确 workspace
-校验。它创建独立的新 root：新 run 的 `parent_run_id` 为空，
+### continue、compact 与 list
+
+`continue` 只接受终态 root run 和有效的新 `TaskDefinition`，并可用
+`expected_workspace` 做精确 workspace 校验。它创建独立的新 root：新 run 的
+`parent_run_id` 为空，
 `continued_from_run_id` 指向 source；source transcript、event、terminal 和 accounting
 保持不变。新 run 继承并由 Host 重新校验 model、提示词、工具策略、执行姿态和
 model-visible context projection，同时重新开始本 run 的请求与用量记账。它不是 child
@@ -193,21 +219,36 @@ Agent，也不是同 run 的 `resume`。
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "request_id": "continue-42",
   "command": {
     "kind": "continue",
     "run_id": "...",
-    "input": "继续实现下一项验收条件。",
+    "task": {
+      "objective": "继续实现下一项验收条件。",
+      "constraints": [],
+      "non_goals": [],
+      "acceptance": [
+        {
+          "kind": "host",
+          "id": "host",
+          "description": "由 Host 明确接受完成候选"
+        }
+      ]
+    },
     "expected_workspace": "/absolute/project"
   }
 }
 ```
 
-`compact` 同样只接受非 `RecoveryRequired` 的终态 root，但不接收新任务输入。它创建
+`compact` 同样只接受非 `RecoveryRequired` 的终态 root，但不接收新
+`TaskDefinition`。它创建
 `purpose = context_compaction` 的独立 root，并把成功提交的 projection 留给后续
 continuation 继承；source 仍不可变。`list_roots` 按精确 workspace 返回最近更新优先的
 root 摘要，包含普通 Agent root 与内部 context-compaction root，不返回 child run。
+`list_pending_creations` 返回创建事实尚未送达 `RunCreated` 的 durable intent；
+`recover_creation` 只按原 `creation_request_id` 恢复该 intent，不接受客户端重建或修改
+原命令。
 
 完整 canonical transcript 始终 append-only；compaction 只改变下一次模型请求使用的
 projection。Runtime 可因手动命令、threshold 或 preflight limit 触发：先本地裁剪较老的大型
@@ -225,7 +266,7 @@ prompt；过期、重复、错 ID 和错 response 均返回 typed error。
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "request_id": "approve-42",
   "command": {
     "kind": "resolve_interaction",
@@ -252,7 +293,7 @@ typed prompt。approval 必须在任何 `ToolExecutionStarted` 前提交并解�
 
 ```json
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "request_id": "client-request-42",
   "result": {
     "kind": "run",
@@ -261,11 +302,12 @@ typed prompt。approval 必须在任何 `ToolExecutionStarted` 前提交并解�
 }
 ```
 
-result 只有五类：
+result 只有六类：
 
 - `run`：当前 Store projection；
 - `events`：严格位于 cursor 之后的 `StoredRuntimeEvent`；
 - `runs`：精确 workspace 下的 root-run 轻量列表；
+- `pending_creations`：精确 workspace 下尚未完成投递的创建 intent；
 - `accepted`：control command 对应的 canonical event 已提交，`last_sequence` 是该 event 的
   Store sequence；
 - `error`：typed `RunApiError`。
@@ -331,10 +373,27 @@ RuntimeEvent v6 删除泛化的 `request_budget_exceeded` failure kind，改为�
   必须有 `api_request_rejected_exhausted > 0`，并投影
   `api_request_budget_exhausted=true`。
 
-达到物理 `started == limit` 本身不代表耗尽。当前 writer 和 reducer/Store reader 只接受
-v6，不保留旧 failure alias。RunStore 原样持久化这两个 kind，不根据计数重新猜测终态。
+达到物理 `started == limit` 本身不代表耗尽。RunStore 原样持久化这两个 kind，不根据计数
+重新猜测终态。
 prepared 尚未进入 in-flight 时可恢复一次；in-flight 后无法证明请求未发送或账单完整时必须
 fail closed 为 `RecoveryRequired`，不能盲目重发摘要请求。
+
+RuntimeEvent v7 建立唯一任务完成与证据链：
+
+- `RunCreated` 冻结带 generation ID 的 `TaskContract`；
+- `ToolOutcomeCommitted.workspace_state` 与 `WorkspaceObserved` 持久化 Host 观测的单调
+  workspace generation 和 revision；
+- 模型 `Stop` 只产生 `CompletionProposed`，不能直接制造 terminal；
+- 显式 verifier 依次提交 `HostVerificationPrepared / Started / Committed`；
+- 只有 verifier spec、task generation、acceptance、当前 workspace generation/revision
+  和实际可用 artifact 全部精确匹配时，Runtime 才签发 `EvidenceReceipt`；
+- 不满足契约时提交 `CompletionRejected`；满足全部 acceptance 时，`Completed` terminal
+  携带 Host 的 `CompletionDecision`。
+
+任何 `MayWrite` 操作一旦可能开始就推进 workspace generation，即使最终内容 hash 与旧
+revision 相同，旧 receipt 也不会复活。verifier Started 后进程死亡无法证明副作用边界时
+fail closed 为 `RecoveryRequired`；Committed 后恢复只重放已提交事实，不重复 verifier 或
+terminal。当前 writer 和 reducer/Store reader 只接受 v7，不保留旧 event schema 兼容路径。
 
 ## 6. 并发、控制与恢复
 

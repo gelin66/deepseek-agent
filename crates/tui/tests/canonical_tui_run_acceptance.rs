@@ -19,6 +19,7 @@ use codewhale_protocol::agent_runtime::{
     ReasoningEffort, RunId, RunLimits, RuntimeEventKind, StoredRuntimeEvent, ToolPolicy,
 };
 use codewhale_protocol::run_api::{RunProductControls, StartRunCommand};
+use codewhale_protocol::task::TaskDefinition;
 use codewhale_runtime::{RunReplay, RunStore};
 use codewhale_state::StateStore;
 use serde_json::{Value, json};
@@ -154,7 +155,15 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
     assert_eq!(continuation.snapshot.request.parent_run_id, None);
     match &continuation.events[0].event {
         RuntimeEventKind::RunCreated { request } => {
-            assert_eq!(request.input, CONTINUE_INPUT);
+            assert_eq!(
+                request
+                    .task_contract
+                    .as_ref()
+                    .expect("continued Agent task contract")
+                    .definition
+                    .objective,
+                CONTINUE_INPUT
+            );
             assert_eq!(request.transcript, source_before.snapshot.transcript);
         }
         event => panic!("continuation must start with RunCreated, got {event:?}"),
@@ -215,7 +224,7 @@ fn production_application(
 
 fn start_command(input: &str, workspace: &str) -> StartRunCommand {
     StartRunCommand {
-        input: input.to_owned(),
+        task: TaskDefinition::host(input),
         workspace: workspace.to_owned(),
         model: Some(TEST_MODEL.to_owned()),
         reasoning_effort: ReasoningEffort::Off,

@@ -10,8 +10,9 @@
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - M4 最终代码检查点：`65fa88ba`
-- 当前阶段：M4 已关闭，下一切片为 M5-A canonical TaskContract/EvidenceReceipt
-- 当前协议：Run API v4、RuntimeEvent v6、State schema v12
+- 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 已完成代码与本地门禁，
+  正式 DeepSeek A/B 待记录
+- 当前协议：Run API v5、RuntimeEvent v7、State schema v12
 
 ## 1. 当前结论
 
@@ -53,10 +54,9 @@ Fleet 的真实执行仍是 `FleetExecutor -> codewhale exec`。只有 route、r
 `FleetWorkerRuntimeSpec` 已删除，`effective_permissions` 在 M6 enforced policy 接管前留空。
 
 旧 TUI Goal/Hunt loop、私有 TaskContract/receipt/Goal completion store、Slop ledger 和
-custom-command allowed-tools/pause 假状态也已物理删除。它们没有 canonical production
-consumer，不能作为 M5 已有 evidence owner。M5 必须在 `protocol/runtime/state` 中新建唯一
-TaskContract/EvidenceReceipt/Host completion 链路；历史测试只能作为反例参考，不能通过
-adapter 恢复旧状态机。
+custom-command allowed-tools/pause 假状态也已物理删除。M5-A 没有恢复这些状态，而是在
+`protocol/runtime/state` 中建立唯一 TaskContract/EvidenceReceipt/Host completion 链路；
+历史测试只作为反例，仓库不存在旧类型 adapter、镜像 Store 或第二 completion loop。
 
 WorkSurface 现在只投影 canonical child Agent，并保留 top/left/right 布局。旧键盘/鼠标
 handler 从未接入生产事件循环，却生成不存在的 `/task` 与 `/jobs` 命令；该交互岛及其焦点、
@@ -161,12 +161,23 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-当前 RuntimeEvent v6 将逻辑模型请求预算和物理 API 请求预算分开：Runtime 在进入
+RuntimeEvent v7 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
+在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
 `exhausted_denied > 0` 时才持久化 `api_request_budget_exceeded`。`started == limit`
 不等于物理耗尽，Runtime 不为证明耗尽而故意发送额外请求。旧泛化
 `request_budget_exceeded` 不再接受。
+
+M5-A 还把模型 `Stop` 从任务成功降为 `CompletionProposed`。每个 Agent run 在
+`RunCreated` 冻结 `TaskContract`；非默认结构化 task 的 objective、constraints、non-goals
+和 acceptance description 以唯一确定性中文格式进入 canonical transcript，因此
+DeepSeek 能看到 Host 将执行的任务语义。Runtime 在接受候选前重新观测 workspace。显式
+verifier acceptance 只接受匹配 generation、精确 parameters/plan、最新单调 workspace
+generation 和已知 revision 的 Host-sealed `EvidenceReceipt`。任何 `MayWrite` 工具一旦
+执行都会推进 workspace generation，即使内容 hash 恢复原值；旧 receipt 因而不能复活。默认
+`TaskDefinition::host` 仍由 Host Runtime policy 接受候选，它不是确定性验证成功，也不能
+自动计为评测的 `verified_success`。
 
 Runtime 还为每个 root/child 从共享逻辑预算预留一个可退还的最终请求许可。descendant 与
 child 必须先 join，随后各自以 `tools=[]` 发出最后请求；没有最终容量时不得先提交假的
@@ -186,7 +197,7 @@ C2 把 continuation 与 recovery 分开：`resume` 继续同一个 run，`contin
 root 创建新的 root，并用 `continued_from_run_id` 记录 lineage；source 不被改写。完整
 canonical transcript 仍 append-only，compaction 只替换每次请求的 model-visible projection。
 当前会先本地裁剪旧的大型工具结果，必要时才发出计入预算和 accounting 的 tool-free 摘要
-请求；prepared/in-flight/failed/committed 由 RuntimeEvent v5 引入，并继续由当前 v6
+请求；prepared/in-flight/failed/committed 由 RuntimeEvent v5 引入，并继续由当前 v7
 持久化。
 
 ### DeepSeek backend
@@ -233,8 +244,9 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 canonical RunStore schema 为 v10；
-- 当前 canonical RuntimeEvent writer/reader 为 v6；
+- 当前 State 物理 schema 为 v12；RunStore 继续复用同一 event/snapshot 表，不增加
+  EvidenceReceipt 私表；
+- 当前 canonical RuntimeEvent writer/reader 为 v7；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
@@ -245,6 +257,8 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
 - execution lease 与 epoch；
 - pending model attempt 与 unknown billing；
 - pending interaction、steer、terminal control 与携带规范化 payload 的 command receipt；
+- frozen TaskContract、workspace state、completion candidate、Host verifier durable action
+  与 EvidenceReceipt；
 - terminal exactly-once；
 - no-key terminal replay。
 
@@ -273,8 +287,9 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v4 在 v3 的 continuation、manual compact 和 root list 上增加 durable
-  creation-intent list/recover；当前 RuntimeEvent writer/reader 为 v6；
+- 当前 Run API v5 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+  completion decision、durable creation-intent list/recover；当前 RuntimeEvent
+  writer/reader 为 v7；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -306,8 +321,8 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 
 | Crate | 当前生产职责 | 当前迁移债务 |
 |---|---|---|
-| `protocol` | canonical request、command、event、outcome、terminal | 后续 TaskContract/EvidenceReceipt 扩展 |
-| `runtime` | 唯一根/子 Agent loop 与 reducer | completion/evidence 的 M5 强化 |
+| `protocol` | canonical task、request、command、event、evidence、terminal | M5 后续 compaction/RepoGraph 契约 |
+| `runtime` | 唯一根/子 Agent loop、completion gate 与 reducer | ContextBroker 与 Orchestrator 强化 |
 | `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | FIM 调优与定期官方复核 |
 | `context` | production prompt/context 构建与最小 compaction projection | RepoGraph、evidence-aware compaction 与 A/B 在 M5 |
 | `tools` | 固定 production tool catalog 与执行 | 编辑/FIM 协议 A/B |
@@ -812,7 +827,9 @@ compaction on/off A/B 仍属于 M5 产品收益证据；M4 的结构与可靠性
   v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
   [正式 A/B](../../eval/summaries/prompt-chinese-ab-2026-07-18.md) 和
   [收敛 canary](../../eval/summaries/prompt-convergence-canaries-2026-07-18.md)；
-- RepoGraph、EvidenceReceipt、writer-worktree Orchestrator 已完成；
+- RepoGraph、writer-worktree Orchestrator 已完成；
+- M5-A EvidenceReceipt 已在本地机制门禁中完成，但尚未用真正触发显式 verifier
+  acceptance 的正式 DeepSeek canary 证明产品收益；
 - eager join 已在广泛任务上提高 multi verified success、降低 Token/费用或缩短时间；
 - transport 迁移本身提升了真实编码成功率；
 - 单次 live canary 可以成为产品指标。

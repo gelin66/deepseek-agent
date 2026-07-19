@@ -5,7 +5,7 @@
 //! parallel and returns one deterministic verdict. Background jobs and Goal
 //! completion receipts remain outside this module.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -14,12 +14,13 @@ use std::sync::OnceLock;
 use codewhale_protocol::agent_runtime::{
     ToolOperationStatus, ToolRetryDisposition, ToolSideEffectStatus,
 };
+use codewhale_protocol::task::{VerifierPlan, VerifierSpec, VerifierStep};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::shell::{ExecShellOptions, ShellStatus, execute_managed_program};
 use crate::verification_artifact::{
-    attach_verification_artifact, capture_workspace_revision, reject_verification_artifact,
+    attach_verifier_observation, capture_workspace_revision, reject_verification_artifact,
 };
 use crate::{ProductionToolContext, ToolError, ToolOutcome};
 
@@ -36,6 +37,7 @@ enum VerifierProfile {
     Node,
     Python,
     Go,
+    Exact,
 }
 
 impl VerifierProfile {
@@ -46,8 +48,9 @@ impl VerifierProfile {
             "node" => Ok(Self::Node),
             "python" => Ok(Self::Python),
             "go" => Ok(Self::Go),
+            "exact" => Ok(Self::Exact),
             other => Err(ToolError::invalid_input(format!(
-                "Unsupported profile '{other}'. Expected one of: auto, rust, node, python, go"
+                "Unsupported profile '{other}'. Expected one of: auto, rust, node, python, go, exact"
             ))),
         }
     }
@@ -59,6 +62,7 @@ impl VerifierProfile {
             Self::Node => "node",
             Self::Python => "python",
             Self::Go => "go",
+            Self::Exact => "exact",
         }
     }
 }
@@ -209,6 +213,20 @@ pub(crate) async fn execute_run_verifiers(
             "commands may contain at most {MAX_CUSTOM_GATES} custom gates"
         )));
     }
+    let mut command_names = BTreeSet::new();
+    for command in &input.commands {
+        if !command_names.insert(command.name.as_str()) {
+            return Err(ToolError::invalid_input(format!(
+                "Custom verifier command name '{}' appears more than once",
+                command.name
+            )));
+        }
+    }
+    if profile == VerifierProfile::Exact && input.commands.is_empty() {
+        return Err(ToolError::invalid_input(
+            "exact verifier profile requires at least one custom command",
+        ));
+    }
 
     let gates = build_gate_plan(
         context,
@@ -235,6 +253,7 @@ pub(crate) async fn execute_run_verifiers(
         return Ok(outcome);
     }
 
+    let gates_for_spec = gates.clone();
     let revision_before = capture_workspace_revision(context.workspace()).await;
     let mut results = futures_util::future::join_all(
         gates
@@ -276,20 +295,12 @@ pub(crate) async fn execute_run_verifiers(
     };
     let mut outcome = verifier_tool_result(&output)?;
     if outcome.is_success() {
+        let verifier =
+            exact_verifier_spec(context.workspace(), &input, profile, level, &gates_for_spec)?;
         let revision_after = capture_workspace_revision(context.workspace()).await;
-        attach_verification_artifact(
+        attach_verifier_observation(
             &mut outcome,
-            "run_verifiers",
-            &json!({
-                "commands": input.commands,
-                "level": level.as_str(),
-                "max_python_files": input.max_python_files,
-                "profile": profile.as_str(),
-            }),
-            format!(
-                "run_verifiers profile={} level={} gates={}",
-                output.profile, output.level, output.gate_count
-            ),
+            verifier,
             output.summary.clone(),
             revision_before,
             revision_after,
@@ -357,7 +368,53 @@ fn build_gate_plan(
 }
 
 fn profile_matches(selected: VerifierProfile, candidate: VerifierProfile) -> bool {
-    selected == VerifierProfile::Auto || selected == candidate
+    selected != VerifierProfile::Exact
+        && (selected == VerifierProfile::Auto || selected == candidate)
+}
+
+fn exact_verifier_spec(
+    workspace: &Path,
+    input: &RunVerifiersInput,
+    profile: VerifierProfile,
+    level: VerifierLevel,
+    gates: &[VerifierGate],
+) -> Result<VerifierSpec, ToolError> {
+    let mut steps = Vec::with_capacity(gates.len());
+    for gate in gates {
+        if gate.skipped_reason.is_some() {
+            continue;
+        }
+        let program = gate.program.clone().ok_or_else(|| {
+            ToolError::invalid_input(format!("verifier gate '{}' has no program", gate.name))
+        })?;
+        let cwd = gate.cwd.strip_prefix(workspace).map_err(|_| {
+            ToolError::invalid_input(format!(
+                "verifier gate '{}' cwd escapes the workspace",
+                gate.name
+            ))
+        })?;
+        steps.push(VerifierStep {
+            id: gate.name.clone(),
+            program,
+            args: gate.args.clone(),
+            cwd: cwd.to_string_lossy().to_string(),
+            env: gate.env.iter().cloned().collect::<BTreeMap<_, _>>(),
+            timeout_ms: VERIFIER_GATE_TIMEOUT_MS,
+        });
+    }
+    let spec = VerifierSpec {
+        verifier_id: "run_verifiers".to_owned(),
+        parameters: json!({
+            "commands": input.commands,
+            "level": level.as_str(),
+            "max_python_files": input.max_python_files,
+            "profile": profile.as_str(),
+        }),
+        plan: VerifierPlan { steps },
+    }
+    .canonicalized();
+    spec.validate().map_err(ToolError::invalid_input)?;
+    Ok(spec)
 }
 
 fn add_rust_gates(gates: &mut Vec<VerifierGate>, workspace: &Path, level: VerifierLevel) {
@@ -535,6 +592,12 @@ fn custom_gate(
         Some(raw) if !raw.trim().is_empty() => context.resolve_path(raw)?,
         _ => context.workspace().to_path_buf(),
     };
+    if cwd.strip_prefix(context.workspace()).is_err() {
+        return Err(ToolError::invalid_input(format!(
+            "Custom verifier '{}' cwd must stay inside the workspace",
+            custom.name
+        )));
+    }
     Ok(VerifierGate {
         name: custom.name.clone(),
         ecosystem: "custom".to_string(),

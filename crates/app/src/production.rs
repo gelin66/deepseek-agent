@@ -21,6 +21,7 @@ use codewhale_protocol::agent_runtime::{
 use codewhale_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunProductControls, StartRunCommand,
 };
+use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
     AgentRuntime, ModelPort, RunReplay, RunStore, RuntimeEventSink, RuntimeRun, ToolExecutor,
 };
@@ -273,13 +274,13 @@ impl RunComposition for ProductionComposition {
             (capability.model.to_owned(), command.reasoning_effort)
         } else {
             let fallback = DeepSeekAutoRouteFallback::for_request(
-                &command.input,
+                &command.task.objective,
                 Some(command.reasoning_effort),
             );
             let selected = resolve_deepseek_auto_route(
                 &transport,
                 DeepSeekAutoRouteInput {
-                    latest_request: &command.input,
+                    latest_request: &command.task.objective,
                     recent_context: "",
                     session_mode: "agent",
                     selected_model_mode: "auto",
@@ -320,12 +321,15 @@ impl RunComposition for ProductionComposition {
         let system_prompt = self.system_prompt(&workspace, &model, !tool_catalog.is_empty());
         let accounting_baseline = model_accounting_snapshot(&request_budget);
         let request = RunRequest {
-            run_id: Some(run_id),
+            run_id: Some(run_id.clone()),
             parent_run_id: None,
             continued_from_run_id: None,
             purpose: RunPurpose::Agent,
             model,
-            input: command.input,
+            task_contract: Some(TaskContract {
+                generation_id: TaskGenerationId::from(run_id.0.clone()),
+                definition: command.task,
+            }),
             system_prompt,
             transcript: CanonicalTranscript::default(),
             reasoning_effort,
@@ -454,7 +458,7 @@ impl RunComposition for ProductionComposition {
         &self,
         run_id: RunId,
         source: RunReplay,
-        input: String,
+        task: Option<TaskDefinition>,
         purpose: RunPurpose,
         store: Arc<dyn RunStore>,
         sink: Arc<dyn RuntimeEventSink>,
@@ -535,12 +539,15 @@ impl RunComposition for ProductionComposition {
             .wall_time_ms
             .map(|duration| unix_ms_now().saturating_add(duration));
         let request = RunRequest {
-            run_id: Some(run_id),
+            run_id: Some(run_id.clone()),
             parent_run_id: None,
             continued_from_run_id: Some(source_run_id),
             purpose,
             model,
-            input,
+            task_contract: task.map(|definition| TaskContract {
+                generation_id: TaskGenerationId::from(run_id.0.clone()),
+                definition,
+            }),
             system_prompt,
             transcript,
             reasoning_effort: source_request.reasoning_effort,
@@ -1009,7 +1016,7 @@ mod tests {
 
     fn start_command(workspace: &Path, model: Option<&str>) -> StartRunCommand {
         StartRunCommand {
-            input: "修复真实边界问题".to_owned(),
+            task: TaskDefinition::host("修复真实边界问题"),
             workspace: workspace.display().to_string(),
             model: model.map(str::to_owned),
             reasoning_effort: ReasoningEffort::High,
@@ -1030,6 +1037,22 @@ mod tests {
                 sandbox: Some("workspace-write".to_owned()),
             },
         }
+    }
+
+    fn test_run_request(
+        run_id: RunId,
+        objective: impl Into<String>,
+        system_prompt: &str,
+    ) -> RunRequest {
+        let mut request = RunRequest::new(
+            TaskContract {
+                generation_id: TaskGenerationId::from(run_id.0.clone()),
+                definition: TaskDefinition::host(objective),
+            },
+            system_prompt,
+        );
+        request.run_id = Some(run_id);
+        request
     }
 
     #[cfg(unix)]
@@ -1258,7 +1281,7 @@ mod tests {
             Arc::new(NullEventSink),
             store.clone(),
         ));
-        let mut request = RunRequest::new("本地终态", "本地测试 prompt");
+        let mut request = test_run_request(RunId::new(), "本地终态", "本地测试 prompt");
         request.model = "deepseek-v4-flash".to_owned();
         request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
         request.tool_policy.enabled = false;
@@ -1442,7 +1465,14 @@ mod tests {
 
         let persisted = &replay.snapshot.request;
         assert_eq!(persisted.model, "deepseek-v4-pro");
-        assert_eq!(persisted.input, command.input);
+        assert_eq!(
+            persisted
+                .task_contract
+                .as_ref()
+                .expect("persisted task contract")
+                .definition,
+            command.task
+        );
         assert_eq!(persisted.reasoning_effort, ReasoningEffort::Max);
         assert_eq!(
             persisted.max_output_tokens,
@@ -1533,9 +1563,9 @@ mod tests {
         fingerprint: Option<String>,
         suffix: &str,
     ) -> RunId {
-        let mut request = RunRequest::new(format!("恢复 {suffix}"), "persisted prompt");
         let run_id = RunId::from(format!("mismatch-{suffix}"));
-        request.run_id = Some(run_id.clone());
+        let mut request =
+            test_run_request(run_id.clone(), format!("恢复 {suffix}"), "persisted prompt");
         request.model = "deepseek-v4-pro".to_owned();
         request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
         request.limits.max_depth = 0;
@@ -1713,9 +1743,9 @@ mod tests {
             &tool_identity,
             &catalog_sha256,
         );
-        let mut request = RunRequest::new("恢复陈旧上下文策略", "persisted prompt");
         let run_id = RunId::from("stale-context-policy");
-        request.run_id = Some(run_id.clone());
+        let mut request =
+            test_run_request(run_id.clone(), "恢复陈旧上下文策略", "persisted prompt");
         request.model = "deepseek-v4-pro".to_owned();
         request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
         request.limits.max_depth = 0;

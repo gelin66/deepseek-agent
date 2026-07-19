@@ -36,6 +36,7 @@ use codewhale_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunApiErrorCode, RunCommand, RunCommandEnvelope, RunCommandResponse,
     RunCommandResult, RunProductControls, RunView, StartRunCommand,
 };
+use codewhale_protocol::task::TaskDefinition;
 use rusqlite::{Connection, OpenFlags, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -692,7 +693,7 @@ fn envelope(request_id: &str, command: RunCommand) -> RunCommandEnvelope {
 
 fn start_command(workspace: &Path) -> StartRunCommand {
     StartRunCommand {
-        input: "完成外部进程恢复契约".to_owned(),
+        task: TaskDefinition::host("完成外部进程恢复契约"),
         workspace: workspace
             .canonicalize()
             .expect("canonical fixture workspace")
