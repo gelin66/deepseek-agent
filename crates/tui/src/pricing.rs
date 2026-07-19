@@ -695,38 +695,6 @@ pub fn calculate_cache_savings(model: &str, cache_hit_tokens: u32) -> Option<Cos
     })
 }
 
-/// Estimate cache savings from the exact provider route by comparing the same
-/// tokens as cache hits and ordinary input. Unknown or costless routes remain
-/// unavailable instead of inheriting a model-only rate.
-#[must_use]
-pub fn calculate_cache_savings_for_provider(
-    provider: ApiProvider,
-    model: &str,
-    cache_hit_tokens: u32,
-) -> Option<CostEstimate> {
-    if cache_hit_tokens == 0 {
-        return None;
-    }
-    let cached = Usage {
-        input_tokens: cache_hit_tokens,
-        prompt_cache_hit_tokens: Some(cache_hit_tokens),
-        prompt_cache_miss_tokens: Some(0),
-        ..Usage::default()
-    };
-    let uncached = Usage {
-        input_tokens: cache_hit_tokens,
-        prompt_cache_hit_tokens: Some(0),
-        prompt_cache_miss_tokens: Some(cache_hit_tokens),
-        ..Usage::default()
-    };
-    let cached = calculate_turn_cost_estimate_for_provider(provider, model, &cached)?;
-    let uncached = calculate_turn_cost_estimate_for_provider(provider, model, &uncached)?;
-    Some(CostEstimate {
-        usd: uncached.usd - cached.usd,
-        cny: uncached.cny - cached.cny,
-    })
-}
-
 /// Format a cost amount for compact display in the chosen currency.
 #[must_use]
 pub fn format_cost_amount(cost: f64, currency: CostCurrency) -> String {
@@ -835,14 +803,6 @@ mod tests {
             )
             .is_none()
         );
-        assert!(
-            calculate_cache_savings_for_provider(
-                ApiProvider::Stepfun,
-                DEFAULT_STEPFUN_MODEL,
-                250_000,
-            )
-            .is_none()
-        );
         assert!(!has_pricing_for_provider(
             ApiProvider::Stepfun,
             DEFAULT_STEPFUN_MODEL
@@ -896,11 +856,6 @@ mod tests {
                     Utc::now(),
                 )
                 .is_none(),
-                "{provider:?}"
-            );
-            assert!(
-                calculate_cache_savings_for_provider(provider, DEFAULT_STEPFUN_MODEL, 250_000,)
-                    .is_none(),
                 "{provider:?}"
             );
             assert!(
@@ -1255,14 +1210,6 @@ mod tests {
             ApiProvider::Openai,
             "deepseek-v4-pro"
         ));
-        assert!(
-            calculate_cache_savings_for_provider(
-                ApiProvider::Openai,
-                "deepseek-v4-pro",
-                1_000_000,
-            )
-            .is_none()
-        );
     }
 
     #[test]
@@ -1326,10 +1273,6 @@ mod tests {
         ));
         assert!(
             calculate_turn_cost_estimate_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5", &usage)
-                .is_none()
-        );
-        assert!(
-            calculate_cache_savings_for_provider(ApiProvider::OpenaiCodex, "gpt-5.5", 250)
                 .is_none()
         );
     }

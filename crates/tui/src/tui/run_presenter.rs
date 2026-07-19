@@ -40,7 +40,6 @@ pub enum PresenterAction {
 /// invokes a model, tool, hook, persistence writer, or workspace probe.
 pub fn present_effect(app: &mut App, effect: ProjectionEffect) -> Option<PresenterAction> {
     let source_run_id = effect.run_id;
-    app.runtime_turn_id = Some(source_run_id.0.clone());
 
     match effect.kind {
         ProjectionEffectKind::UserTranscript {
@@ -81,8 +80,6 @@ fn present_canonical_event(
         RuntimeEventKind::RunCreated { request } => {
             app.is_loading = true;
             app.turn_started_at = Some(Instant::now());
-            app.turn_last_activity_at = app.turn_started_at;
-            app.turn_counter = app.turn_counter.saturating_add(1);
             match request.purpose {
                 RunPurpose::ContextCompaction => {
                     // A fresh TUI process may attach directly to the newest
@@ -168,13 +165,6 @@ fn present_canonical_event(
             output, accounting, ..
         } => {
             app.session.last_prompt_tokens = Some(narrow_u64(output.usage.input_tokens));
-            app.session.last_completion_tokens = Some(narrow_u64(output.usage.output_tokens));
-            app.session.last_prompt_cache_hit_tokens =
-                Some(narrow_u64(output.usage.cache_hit_tokens));
-            app.session.last_prompt_cache_miss_tokens =
-                Some(narrow_u64(output.usage.cache_miss_tokens));
-            app.session.last_reasoning_replay_tokens =
-                Some(narrow_u64(output.usage.reasoning_replay_tokens));
             project_accounting(app, &accounting);
             reconcile_model_output(app, &output);
             app.status_message = Some("DeepSeek 响应已确认".to_owned());
@@ -502,7 +492,6 @@ fn finish_terminal(app: &mut App, terminal: &TerminalState, accounting: &ModelAc
     app.is_loading = false;
     app.is_compacting = false;
     app.turn_started_at = None;
-    app.turn_last_activity_at = None;
     app.runtime_turn_status = Some(terminal_runtime_status(terminal).to_owned());
     app.status_message = Some(format!("运行已结束：{}", terminal_label(terminal)));
 }
@@ -530,13 +519,6 @@ fn finalize_streaming_cells(app: &mut App) {
 }
 
 fn project_accounting(app: &mut App, accounting: &ModelAccounting) {
-    let usage = accounting.usage;
-    app.session.total_input_tokens = narrow_u64(usage.input_tokens);
-    app.session.total_output_tokens = narrow_u64(usage.output_tokens);
-    app.session.total_cache_hit_tokens = narrow_u64(usage.cache_hit_tokens);
-    app.session.total_cache_miss_tokens = narrow_u64(usage.cache_miss_tokens);
-    app.session.total_tokens = narrow_u64(usage.total_tokens());
-    app.session.total_conversation_tokens = app.session.total_tokens;
     app.session.total_cost_usd = accounting.cost_nanousd as f64 / 1_000_000_000.0;
     app.session.total_cost_cny = accounting.cost_nanocny as f64 / 1_000_000_000.0;
 }
@@ -1017,7 +999,7 @@ mod tests {
     }
 
     #[test]
-    fn model_response_projects_per_response_and_aggregate_usage() {
+    fn model_response_projects_context_size_and_aggregate_cost() {
         let run_id = RunId::from("run");
         let response_usage = Usage {
             input_tokens: 12_345,
@@ -1065,14 +1047,6 @@ mod tests {
         }
 
         assert_eq!(app.session.last_prompt_tokens, Some(12_345));
-        assert_eq!(app.session.last_completion_tokens, Some(678));
-        assert_eq!(app.session.last_prompt_cache_hit_tokens, Some(10_000));
-        assert_eq!(app.session.last_prompt_cache_miss_tokens, Some(2_345));
-        assert_eq!(app.session.last_reasoning_replay_tokens, Some(321));
-        assert_eq!(app.session.total_input_tokens, 20_000);
-        assert_eq!(app.session.total_output_tokens, 1_000);
-        assert_eq!(app.session.total_cache_hit_tokens, 15_000);
-        assert_eq!(app.session.total_cache_miss_tokens, 5_000);
         assert_eq!(app.session.total_cost_usd, 0.42);
         assert_eq!(app.session.total_cost_cny, 2.5);
     }

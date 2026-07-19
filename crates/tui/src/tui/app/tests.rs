@@ -346,19 +346,6 @@ fn cny_display_keeps_cny_when_costs_have_cny_rates() {
 }
 
 #[test]
-fn cny_cache_savings_falls_back_to_usd_for_usd_only_models() {
-    let mut app = App::new(test_options(false), &Config::default());
-    app.cost_currency = CostCurrency::Cny;
-    app.api_provider = ApiProvider::Moonshot;
-    app.model = "kimi-k2.6".to_string();
-    app.session.last_prompt_cache_hit_tokens = Some(1_000_000);
-
-    // 1M cache-hit tokens save (input 0.95 - cache-read 0.16) = $0.79.
-    let savings = app.last_turn_cache_savings().expect("kimi-k2.6 is priced");
-    assert!((savings - 0.79).abs() < 1e-9, "got {savings}");
-}
-
-#[test]
 fn slash_command_classifier_treats_absolute_path_as_message() {
     use crate::tui::canonical_commands::looks_like_command_input;
 

@@ -806,24 +806,17 @@ impl Default for ViewportState {
     }
 }
 
-/// Session cost and token telemetry state.
+/// Session facts consumed by the TUI.
+///
+/// The canonical RunStore owns the full token and accounting ledger. The TUI
+/// keeps only the latest prompt size needed by the context meter and the
+/// aggregate costs it actually renders.
 #[derive(Debug, Clone)]
 pub struct SessionState {
     /// Canonical aggregate cost for all root and child model responses.
     pub total_cost_usd: f64,
     pub total_cost_cny: f64,
     pub last_prompt_tokens: Option<u32>,
-    pub last_completion_tokens: Option<u32>,
-    pub last_prompt_cache_hit_tokens: Option<u32>,
-    pub last_prompt_cache_miss_tokens: Option<u32>,
-    pub last_reasoning_replay_tokens: Option<u32>,
-    pub total_tokens: u32,
-    pub total_conversation_tokens: u32,
-    /// Accumulated token breakdown for the session.
-    pub total_input_tokens: u32,
-    pub total_cache_hit_tokens: u32,
-    pub total_cache_miss_tokens: u32,
-    pub total_output_tokens: u32,
 }
 
 impl Default for SessionState {
@@ -832,16 +825,6 @@ impl Default for SessionState {
             total_cost_usd: 0.0,
             total_cost_cny: 0.0,
             last_prompt_tokens: None,
-            last_completion_tokens: None,
-            last_prompt_cache_hit_tokens: None,
-            last_prompt_cache_miss_tokens: None,
-            last_reasoning_replay_tokens: None,
-            total_tokens: 0,
-            total_conversation_tokens: 0,
-            total_input_tokens: 0,
-            total_cache_hit_tokens: 0,
-            total_cache_miss_tokens: 0,
-            total_output_tokens: 0,
         }
     }
 }
@@ -981,23 +964,8 @@ pub struct App {
     pub streaming_message_index: Option<usize>,
     /// Start time for current turn
     pub turn_started_at: Option<Instant>,
-    /// Most recent engine event observed for the current turn. This is
-    /// separate from `turn_started_at` because the latter drives elapsed-time
-    /// UI and must not be reset during long but healthy turns.
-    pub turn_last_activity_at: Option<Instant>,
-    /// Sum of completed turn durations for this `App` instance (#448
-    /// follow-up). Drives the footer's `worked Nh Mm` chip so the
-    /// label reflects actual model work, not wall-clock since launch.
-    /// Incremented on `TurnComplete` from the elapsed time of the
-    /// just-finished turn. Resets per launch.
-    pub cumulative_turn_duration: std::time::Duration,
-    /// Current runtime turn id (if known).
-    pub runtime_turn_id: Option<String>,
     /// Current runtime turn status (if known).
     pub runtime_turn_status: Option<String>,
-    /// Monotonic turn counter for stable user-facing labels (#3030).
-    /// Incremented each time a new turn starts; displayed as "Turn N".
-    pub turn_counter: u64,
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
     /// Whether context compaction is currently in progress.
@@ -1283,11 +1251,7 @@ impl App {
             tool_cells: HashMap::new(),
             streaming_message_index: None,
             turn_started_at: None,
-            turn_last_activity_at: None,
-            cumulative_turn_duration: std::time::Duration::ZERO,
-            runtime_turn_id: None,
             runtime_turn_status: None,
-            turn_counter: 0,
             needs_redraw: true,
             is_compacting: false,
             user_scrolled_during_stream: false,
@@ -1386,25 +1350,6 @@ impl App {
         } else {
             currency
         }
-    }
-
-    /// Estimated cost saved by the last turn's cache-hit tokens in the
-    /// configured display currency.  Returns `None` when the model's pricing
-    /// is unknown or there were no cache hits.
-    pub fn last_turn_cache_savings(&self) -> Option<f64> {
-        let hit_tokens = self.session.last_prompt_cache_hit_tokens?;
-        let estimate = crate::pricing::calculate_cache_savings_for_provider(
-            self.api_provider,
-            &self.model,
-            hit_tokens,
-        )?;
-        Some(match self.cost_currency {
-            crate::pricing::CostCurrency::Usd => estimate.usd,
-            crate::pricing::CostCurrency::Cny if estimate.cny == 0.0 && estimate.usd > 0.0 => {
-                estimate.usd
-            }
-            crate::pricing::CostCurrency::Cny => estimate.cny,
-        })
     }
 
     /// Fold the oldest [`Self::HISTORY_FOLD_BATCH`] cells into a single
@@ -1653,51 +1598,6 @@ impl App {
             }
             self.push_status_toast(message, level, ttl_ms);
         }
-    }
-
-    /// Up to `limit` currently-active toasts, most recent last (so a stacked
-    /// renderer iterating top-to-bottom shows the freshest message at the
-    /// bottom, like a chat log). Drains expired toasts off the front as a
-    /// side effect — same cleanup as `active_status_toast` so callers see a
-    /// consistent queue. Whalescale#439.
-    pub fn active_status_toasts(&mut self, limit: usize) -> Vec<StatusToast> {
-        self.sync_status_message_to_toasts();
-        let now = Instant::now();
-        while self
-            .status_toasts
-            .front()
-            .is_some_and(|toast| toast.is_expired(now))
-        {
-            self.status_toasts.pop_front();
-            self.needs_redraw = true;
-        }
-        if self
-            .sticky_status
-            .as_ref()
-            .is_some_and(|toast| toast.is_expired(now))
-        {
-            self.sticky_status = None;
-            self.needs_redraw = true;
-        }
-
-        let mut out: Vec<StatusToast> = Vec::with_capacity(limit);
-        if let Some(sticky) = self.sticky_status.clone() {
-            out.push(sticky);
-        }
-        let take = limit.saturating_sub(out.len());
-        let queued: Vec<StatusToast> = self
-            .status_toasts
-            .iter()
-            .rev()
-            .take(take)
-            .cloned()
-            .collect();
-        // Iterate in queue order (oldest of the visible window first) so the
-        // stacked renderer feels chronological — most recent at the bottom.
-        for toast in queued.into_iter().rev() {
-            out.push(toast);
-        }
-        out
     }
 
     pub fn active_status_toast(&mut self) -> Option<StatusToast> {
