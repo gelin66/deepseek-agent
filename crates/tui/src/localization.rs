@@ -342,7 +342,6 @@ pub enum MessageId {
     PhaseWaitingOnYou,
     PhaseDone,
     PhaseFailed,
-    PhaseFinishing,
     // Underwater header chips: mode and permission words.
     ChipPermissionAsk,
     ChipPermissionAutoApprove,
@@ -741,7 +740,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::PhaseWaitingOnYou,
     MessageId::PhaseDone,
     MessageId::PhaseFailed,
-    MessageId::PhaseFinishing,
     MessageId::ChipPermissionAsk,
     MessageId::ChipPermissionAutoApprove,
     MessageId::FooterHintKeys,

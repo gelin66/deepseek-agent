@@ -78,11 +78,6 @@ impl ChatWidget {
             .supports_ambient_life()
             .then(|| crate::tui::ocean::ambient_inks(&app.ui_theme));
         let ocean_elapsed_ms = app.ocean_started_at.elapsed().as_millis();
-        let completion_elapsed_ms = (!app.low_motion && app.fancy_animations)
-            .then_some(())
-            .and(app.ocean_completion_started_at)
-            .map(|started| started.elapsed().as_millis())
-            .filter(|elapsed| *elapsed < 800);
         let render_empty_state = should_render_empty_state(app);
         let phase = ShellPhase::from_app(app);
         // Keep the water alive while a turn is doing work, even after the
@@ -99,7 +94,6 @@ impl ChatWidget {
                 ramp,
                 content_area,
                 ocean_elapsed_ms,
-                completion_elapsed_ms,
                 phase,
                 ocean_animated,
             )

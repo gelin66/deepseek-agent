@@ -98,7 +98,6 @@ pub struct OceanColumn {
     top: u16,
     height: u16,
     elapsed_ms: u128,
-    completion_elapsed_ms: Option<u128>,
     phase: ShellPhase,
     animated: bool,
 }
@@ -109,7 +108,6 @@ impl OceanColumn {
         ramp: OceanRamp,
         viewport: Rect,
         elapsed_ms: u128,
-        completion_elapsed_ms: Option<u128>,
         phase: ShellPhase,
         animated: bool,
     ) -> Self {
@@ -118,7 +116,6 @@ impl OceanColumn {
             top: viewport.y,
             height: viewport.height.max(1),
             elapsed_ms,
-            completion_elapsed_ms,
             phase,
             animated,
         }
@@ -127,9 +124,7 @@ impl OceanColumn {
     #[must_use]
     pub fn color_at_y(self, y: u16) -> Color {
         let row = y.saturating_sub(self.top).min(self.height - 1);
-        if let Some(elapsed) = self.completion_elapsed_ms {
-            self.ramp.color_at_completion(row, self.height, elapsed)
-        } else if self.animated {
+        if self.animated {
             self.ramp
                 .color_at_phase(row, self.height, self.elapsed_ms, self.phase)
         } else {
@@ -227,18 +222,6 @@ impl OceanRamp {
         };
         mix_colors(base, self.ambient, breath * phase_bias * phase_depth)
     }
-
-    #[must_use]
-    pub fn color_at_completion(self, row: u16, height: u16, elapsed_ms: u128) -> Color {
-        let base = self.color_at(row, height);
-        let elapsed = elapsed_ms.min(800) as f32 / 800.0;
-        let brightness = if elapsed <= 0.4 {
-            0.88 + (1.12 - 0.88) * (elapsed / 0.4)
-        } else {
-            1.12 + (1.0 - 1.12) * ((elapsed - 0.4) / 0.6)
-        };
-        scale_color(base, brightness)
-    }
 }
 
 #[must_use]
@@ -260,18 +243,6 @@ fn mix_colors(from: Color, to: Color, amount: f32) -> Color {
         (Some(from), Some(to)) => color(mix(from, to, amount)),
         _ => from,
     }
-}
-
-#[must_use]
-fn scale_color(value: Color, brightness: f32) -> Color {
-    let Some((r, g, b)) = rgb(value) else {
-        return value;
-    };
-    color((
-        (f32::from(r) * brightness).round().clamp(0.0, 255.0) as u8,
-        (f32::from(g) * brightness).round().clamp(0.0, 255.0) as u8,
-        (f32::from(b) * brightness).round().clamp(0.0, 255.0) as u8,
-    ))
 }
 
 #[must_use]
@@ -407,17 +378,6 @@ mod tests {
     }
 
     #[test]
-    fn completion_breath_peaks_once_then_settles() {
-        let ramp = OceanRamp::for_theme(&crate::palette::UI_THEME).expect("RGB theme");
-        let start = ramp.color_at_completion(0, 20, 0);
-        let peak = ramp.color_at_completion(0, 20, 320);
-        let settled = ramp.color_at_completion(0, 20, 800);
-        assert_ne!(start, peak);
-        assert_ne!(peak, settled);
-        assert_eq!(settled, ramp.color_at(0, 20));
-    }
-
-    #[test]
     fn split_shell_surfaces_share_one_absolute_row_column() {
         let theme = crate::palette::UI_THEME;
         let ramp = OceanRamp::for_theme(&theme).expect("RGB theme");
@@ -437,7 +397,7 @@ mod tests {
         }
         buf[(4, 10)].set_bg(theme.selection_bg);
 
-        let column = OceanColumn::new(ramp, viewport, 0, None, ShellPhase::Idle, false);
+        let column = OceanColumn::new(ramp, viewport, 0, ShellPhase::Idle, false);
         column.paint_matching(header, &mut buf, theme.header_bg);
         column.paint_matching(composer, &mut buf, theme.composer_bg);
 

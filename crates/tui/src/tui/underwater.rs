@@ -66,8 +66,6 @@ pub enum ShellPhase {
 }
 
 const WORKING_BUBBLE_FRAMES: [&str; 8] = ["⠀", "⢀", "⣀", "⣄", "⣤", "⣦", "⣶", "⣿"];
-const COMPLETION_BREATH_MS: u128 = 800;
-const COMPLETION_RELEASE_MS: u128 = 560;
 
 impl ShellPhase {
     #[must_use]
@@ -118,15 +116,6 @@ impl ShellPhase {
     }
 }
 
-fn completion_elapsed_ms(app: &App) -> Option<u128> {
-    if app.low_motion || !app.fancy_animations {
-        return None;
-    }
-    app.ocean_completion_started_at
-        .map(|started| started.elapsed().as_millis())
-        .filter(|elapsed| *elapsed < COMPLETION_BREATH_MS)
-}
-
 pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'static, str>) {
     match phase {
         ShellPhase::Idle => ("·", phase.label()),
@@ -145,13 +134,7 @@ pub(crate) fn phase_marker(app: &App, phase: ShellPhase) -> (&'static str, Cow<'
             (frame, phase.label())
         }
         ShellPhase::Approval => ("◆", phase.label()),
-        ShellPhase::Done => match completion_elapsed_ms(app) {
-            Some(elapsed) if elapsed < COMPLETION_RELEASE_MS => {
-                let index = ((elapsed / 140) as usize + 4).min(WORKING_BUBBLE_FRAMES.len() - 1);
-                (WORKING_BUBBLE_FRAMES[index], tr(MessageId::PhaseFinishing))
-            }
-            _ => ("✓", phase.label()),
-        },
+        ShellPhase::Done => ("✓", phase.label()),
         ShellPhase::Failed => ("✕", phase.label()),
     }
 }
@@ -539,30 +522,6 @@ mod tests {
             ShellPhase::Approval.color(&app),
             ShellPhase::Failed.color(&app)
         );
-    }
-
-    #[test]
-    fn completion_releases_once_then_settles_to_checkmark() {
-        let mut app = test_app();
-        app.runtime_turn_status = Some("completed".to_string());
-        app.low_motion = false;
-        app.fancy_animations = true;
-        app.ocean_completion_started_at = Some(Instant::now() - Duration::from_millis(120));
-
-        let (marker, label) = phase_marker(&app, ShellPhase::from_app(&app));
-        assert_ne!(marker, "✓");
-        assert_eq!(label, "收尾中");
-
-        app.ocean_completion_started_at = Some(Instant::now() - Duration::from_millis(700));
-        let (marker, label) = phase_marker(&app, ShellPhase::Done);
-        assert_eq!(marker, "✓");
-        assert_eq!(label, "完成");
-
-        app.low_motion = true;
-        app.ocean_completion_started_at = Some(Instant::now());
-        let (marker, label) = phase_marker(&app, ShellPhase::Done);
-        assert_eq!(marker, "✓");
-        assert_eq!(label, "完成");
     }
 
     #[test]

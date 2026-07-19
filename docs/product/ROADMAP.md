@@ -1249,6 +1249,12 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   消费者的 `TranscriptLineMeta::cell_line` 薄 helper 也同步删除。真实工具结果、canonical
   transcript metadata、collapse mapping 和 completion 状态投影均保持不变。widgets 68/68、
   App 67/67 通过，并通过 TUI strict Clippy、fmt 和 diff-check。
+- M4-C 已删除旧 Engine completion path 留下且只有测试能写成 `Some` 的
+  `ocean_completion_started_at`，连同 finishing phase、completion breath/brightness 分支和
+  专用测试。canonical `runtime_turn_status=completed` 现在直接投影为“✓ 完成”；正常 Ocean
+  phase animation、低动态、工具结果和 terminal 状态均保持不变。ocean 10/10、underwater
+  6/6、widgets 68/68、catalog sync 1/1、App 67/67 通过，并通过 TUI strict Clippy、fmt 和
+  diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度

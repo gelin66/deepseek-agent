@@ -938,10 +938,6 @@ pub struct App {
     pub calm_mode: bool,
     pub low_motion: bool,
     pub ocean_started_at: Instant,
-    /// Start of the underwater shell's one-shot successful-turn exhale.
-    /// Kept separate from the ambient ocean clock so completion can settle
-    /// once without restarting or repainting the transcript field.
-    pub ocean_completion_started_at: Option<Instant>,
     /// Enables the authored underwater phase and ambient motion system.
     pub fancy_animations: bool,
     /// Typed appearance treatment; appearance is independent from motion
@@ -1285,7 +1281,6 @@ impl App {
             calm_mode,
             low_motion,
             ocean_started_at: Instant::now(),
-            ocean_completion_started_at: None,
             fancy_animations,
             ocean_treatment,
             synchronized_output_enabled,
