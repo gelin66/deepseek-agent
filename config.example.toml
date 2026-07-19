@@ -101,30 +101,6 @@ check_for_updates = false
 # update_uri = "https://internal.mirror.example/codewhale/releases/latest"
 
 # ─────────────────────────────────────────────────────────────────────────────────
-# Hotbar slots (#2061 / #2064)
-# ─────────────────────────────────────────────────────────────────────────────────
-# Optional 1-8 sidebar hotbar bindings. When no [[hotbar]] tables are present,
-# the TUI uses built-in defaults:
-#   1 voice.toggle      2 session.compact   3 palette.open     4 sidebar.toggle
-#
-# Invalid slots are skipped with a warning, duplicate slots use the last entry,
-# and unknown actions are preserved so the UI can show a disabled entry.
-# Slash commands can be bound as slash.<name>. Commands
-# that require arguments pre-fill the composer instead of running incomplete.
-#
-# [[hotbar]]
-# slot = 1
-# label = "voice"
-# action = "voice.toggle"
-#
-# [[hotbar]]
-# slot = 2
-# action = "session.compact"
-#
-# [[hotbar]]
-# slot = 3
-
-# ─────────────────────────────────────────────────────────────────────────────────
 # Paths
 # ─────────────────────────────────────────────────────────────────────────────────
 # New installs write product state under ~/.codewhale/. Existing ~/.deepseek/
@@ -609,18 +585,6 @@ mouse_capture = true        # true copies only transcript user/assistant text; f
 terminal_probe_timeout_ms = 500 # optional startup terminal-mode timeout (100-5000ms)
 stream_chunk_timeout_secs = 900 # optional SSE idle timeout per chunk (0 = default, 1-3600)
 osc8_links = true            # emit OSC 8 escapes around URLs (Cmd+click in iTerm2/Ghostty/Kitty/WezTerm/Terminal.app 13+); set false for terminals that misrender
-# Ordered footer chips shown in the TUI status line. Omit the key to use the
-# built-in default; set [] to hide all configurable chips.
-# Supported keys: model, cost, balance (DeepSeek / DeepSeekCN only),
-# status, agents,
-# reasoning_replay, prefix_stability, cache, context_percent, workspace,
-# last_tool_elapsed (reserved), rate_limit (reserved), tokens.
-# status_items = ["model", "status", "workspace", "tokens", "cache"]
-# locale = "auto"           # UI chrome language: auto | en | ja | zh-Hans | pt-BR
-#                           # "auto" reads LC_ALL → LC_MESSAGES → LANG; falls back to English.
-#                           # Override: `locale = "zh-Hans"` for Simplified Chinese regardless of OS locale.
-#                           # Also settable at runtime: /config locale zh-Hans
-#                           # Note: this only affects TUI labels/chrome — it does NOT change model output language.
 # mention_menu_behavior = "fuzzy" # fuzzy | browser; browser lists immediate directory children for @-mentions.
 
 # ─────────────────────────────────────────────────────────────────────────────────

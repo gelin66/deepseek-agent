@@ -179,19 +179,11 @@ fn codex_startup_threads_fresh_roster_context_into_active_route_limits() {
 }
 
 #[test]
-fn stale_settings_cannot_override_the_validated_deepseek_route() {
+fn validated_config_owns_the_deepseek_route() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
-    std::fs::write(
-        tmp.path().join("settings.toml"),
-        concat!(
-            "default_provider = \"openai\"\n",
-            "default_model = \"deepseek-v4-pro\"\n",
-            "provider_models = { deepseek = \"deepseek-chat\", openai = \"gpt-5.5\" }\n",
-        ),
-    )
-    .expect("settings");
+    std::fs::write(tmp.path().join("settings.toml"), "theme = \"dracula\"\n").expect("settings");
     let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
     let _deepseek_key = EnvVarGuard::remove("DEEPSEEK_API_KEY");
 
@@ -234,11 +226,7 @@ fn explicit_config_provider_defines_app_projection() {
     let _lock = lock_test_env();
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let config_path = tmp.path().join("config.toml");
-    std::fs::write(
-        tmp.path().join("settings.toml"),
-        "default_provider = \"deepseek\"\ndefault_model = \"deepseek-v4-pro\"\n",
-    )
-    .expect("settings");
+    std::fs::write(tmp.path().join("settings.toml"), "theme = \"dracula\"\n").expect("settings");
     let _config_path = EnvVarGuard::set("DEEPSEEK_CONFIG_PATH", &config_path);
 
     let config = Config {

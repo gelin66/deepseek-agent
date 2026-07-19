@@ -726,8 +726,6 @@ Common settings keys:
 - `cost_currency` (`usd`, `cny`; default `usd`): currency used by the footer,
   `/cost`, and long-turn notification summaries. The
   aliases `rmb` and `yuan` normalize to `cny`.
-- `default_model` (model name override)
-
 The composer has one direct-editing path. `composer_vim_mode`, `vim_mode`, and
 `vim` are not settings; printable characters, including `v`, remain ordinary
 composer input. Vim-style `j`/`k`/`g`/`G`/`y`/`q` bindings belong only to the

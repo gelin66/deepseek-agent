@@ -4,14 +4,13 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use anyhow::Result;
+use serde::Deserialize;
 
-use crate::config::{ApiProvider, normalize_model_name};
 use crate::palette::{normalize_hex_rgb_color, normalize_theme_name};
 
 /// User settings with defaults
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Reduce status noise and collapse details more aggressively
@@ -64,16 +63,9 @@ pub struct Settings {
     pub transcript_spacing: String,
     /// Cost display currency: usd or cny.
     pub cost_currency: String,
-    /// Default provider override (e.g. "deepseek", "openai").
-    pub default_provider: Option<String>,
-    /// Default model to use
-    pub default_model: Option<String>,
     /// Default reasoning effort selected from the TUI model picker.
     /// `None` falls back to `config.toml` and then the runtime default.
     pub reasoning_effort: Option<String>,
-    /// Per-provider model overrides. Key is provider name (e.g. "openai"),
-    /// value is the model id. Takes precedence over `default_model`.
-    pub provider_models: Option<std::collections::HashMap<String, String>>,
     /// Header status indicator next to the effort chip. Cycles through a
     /// per-turn animation keyed off `App::turn_started_at`:
     /// - `"cw"` (default): static typographic CodeWhale mark.
@@ -151,10 +143,7 @@ impl Default for Settings {
             composer_border: true,
             transcript_spacing: "comfortable".to_string(),
             cost_currency: "usd".to_string(),
-            default_provider: None,
-            default_model: None,
             reasoning_effort: None,
-            provider_models: None,
             status_indicator: "cw".to_string(),
             synchronized_output: "auto".to_string(),
             prefer_external_pdftotext: false,
@@ -225,7 +214,6 @@ impl Settings {
                 s.background_color =
                     normalize_optional_background_color(s.background_color.as_deref());
                 s.theme = normalize_settings_theme(&s.theme).to_string();
-                s.default_model = s.default_model.as_deref().and_then(normalize_default_model);
                 s.reasoning_effort = s
                     .reasoning_effort
                     .as_deref()
@@ -304,115 +292,6 @@ impl Settings {
         }
     }
 
-    /// Save settings to disk
-    pub fn save(&self) -> Result<()> {
-        let path = Self::path()?;
-
-        // Create config directory if it doesn't exist
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).with_context(|| {
-                format!("Failed to create config directory {}", parent.display())
-            })?;
-        }
-
-        let serialized = toml::to_string_pretty(self).context("Failed to serialize settings")?;
-        let body = if path.exists() {
-            let raw = std::fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read settings at {}", path.display()))?;
-            codewhale_config::merge_and_preserve_comments(&serialized, &raw).unwrap_or_else(|e| {
-                tracing::warn!("failed to merge settings comments, saving without them: {e:#}");
-                serialized
-            })
-        } else {
-            serialized
-        };
-        std::fs::write(&path, body)
-            .with_context(|| format!("Failed to write settings to {}", path.display()))?;
-        Ok(())
-    }
-
-    /// Persist the model for a specific provider.
-    pub fn set_model_for_provider(&mut self, provider: &str, model: &str) {
-        self.provider_models
-            .get_or_insert_with(std::collections::HashMap::new)
-            .insert(provider.to_string(), model.to_string());
-    }
-
-    fn set_default_model(&mut self, value: &str) -> Result<()> {
-        let trimmed = value.trim();
-        if trimmed.is_empty()
-            || matches!(
-                trimmed.to_ascii_lowercase().as_str(),
-                "none" | "default" | "(default)"
-            )
-        {
-            self.default_model = None;
-            return Ok(());
-        }
-
-        let Some(model) = normalize_default_model(trimmed) else {
-            anyhow::bail!(
-                "Failed to update setting: invalid model '{value}'. Expected: auto, a DeepSeek model ID (for example deepseek-v4-pro, deepseek-v4-flash), or none/default."
-            );
-        };
-        self.default_model = Some(model);
-        Ok(())
-    }
-
-    /// Persist a provider's model selection.
-    ///
-    /// `persist_as_default` controls the blast radius (#3227):
-    ///
-    /// - `false` (session-local, the default for `/model` and the model
-    ///   picker): record the model only under that provider's scoped entry in
-    ///   [`Self::provider_models`]. The shared `default_provider` and global
-    ///   `default_model` are left untouched, so a model change in one terminal
-    ///   no longer rewrites the global default that a second terminal reads on
-    ///   startup. This is what stopped a GLM/Z.ai session from being dragged
-    ///   onto a DeepSeek model (and vice-versa).
-    /// - `true` (explicit "save as default"): also pin `default_provider`, and
-    ///   for DeepSeek providers the global `default_model`, to this tuple.
-    pub fn set_provider_model_selection(
-        &mut self,
-        provider: ApiProvider,
-        model: &str,
-        persist_as_default: bool,
-    ) -> Result<()> {
-        let model = model.trim();
-        if model.is_empty() {
-            anyhow::bail!("model cannot be empty");
-        }
-        self.set_model_for_provider(provider.as_str(), model);
-        if persist_as_default {
-            self.default_provider = Some(provider.as_str().to_string());
-            if matches!(provider, ApiProvider::Deepseek | ApiProvider::DeepseekCN) {
-                self.set_default_model(model)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Load, update, and save a provider's model selection *without* touching
-    /// the shared global default (the session-local path; see
-    /// [`Self::set_provider_model_selection`]).
-    pub fn persist_provider_model_selection(provider: ApiProvider, model: &str) -> Result<()> {
-        let mut settings = Self::load()?;
-        settings.set_provider_model_selection(provider, model, false)?;
-        settings.save()
-    }
-
-    /// Load, update, and save a provider/model tuple as the global default
-    /// (the explicit "save as default" path).
-    #[allow(dead_code)] // wired to an explicit save-as-default action in a later UX pass (#3227).
-    pub fn persist_provider_model_selection_as_default(
-        provider: ApiProvider,
-        model: &str,
-    ) -> Result<()> {
-        let mut settings = Self::load()?;
-        settings.set_provider_model_selection(provider, model, true)?;
-        settings.save()
-    }
-
     /// Resolved boolean for whether the renderer should wrap each frame in
     /// DEC mode 2026 synchronized output. `auto` and `on` enable; `off`
     /// disables. The `auto` → `off` flip for known-bad terminals happens
@@ -433,15 +312,6 @@ impl Settings {
     #[must_use]
     pub fn effective_bracketed_paste(&self) -> bool {
         self.bracketed_paste && !detected_legacy_windows_console_host()
-    }
-}
-
-fn normalize_default_model(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.eq_ignore_ascii_case("auto") {
-        Some("auto".to_string())
-    } else {
-        normalize_model_name(trimmed)
     }
 }
 
@@ -1322,41 +1192,5 @@ mod tests {
             !explicit_home.join("settings.toml").exists(),
             "ambient legacy settings must not be migrated into explicit CODEWHALE_HOME"
         );
-    }
-
-    #[test]
-    fn settings_save_preserves_comments() {
-        let _g = config_path_test_guard();
-        let tmp = std::env::temp_dir().join("dst_settings_comment_test");
-        std::fs::create_dir_all(&tmp).unwrap();
-        let config_file = tmp.join("config.toml");
-        // SAFETY: test-only env mutation guarded by config_path_test_guard.
-        unsafe {
-            std::env::set_var("DEEPSEEK_CONFIG_PATH", config_file.to_str().unwrap());
-        }
-
-        // settings.toml lives next to config.toml
-        let settings_path = tmp.join("settings.toml");
-        std::fs::write(
-            &settings_path,
-            "# my setting\ncost_currency = \"usd\"\n# trailing\n",
-        )
-        .unwrap();
-
-        // Load the existing file so we have a real struct to modify.
-        let mut settings = Settings::load().expect("load settings");
-        settings.cost_currency = "cny".to_string();
-        settings.save().expect("save should succeed");
-
-        let body = std::fs::read_to_string(&settings_path).expect("read settings.toml");
-        assert!(body.contains("# my setting"), "comment lost: {body}");
-        assert!(body.contains("# trailing"), "trailing lost: {body}");
-        assert!(body.contains("cny"), "new value not written: {body}");
-
-        // SAFETY: cleanup under the guard.
-        unsafe {
-            std::env::remove_var("DEEPSEEK_CONFIG_PATH");
-        }
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
