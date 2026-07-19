@@ -1212,13 +1212,6 @@ impl SessionState {
     }
 }
 
-/// Evidence collected during a turn for the post-turn receipt.
-#[derive(Debug, Clone)]
-pub struct ToolEvidence {
-    pub tool_name: String,
-    pub summary: String,
-}
-
 /// Global UI state for the TUI.
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
@@ -1317,10 +1310,6 @@ pub struct App {
     /// Kept separate from the ambient ocean clock so completion can settle
     /// once without restarting or repainting the transcript field.
     pub ocean_completion_started_at: Option<Instant>,
-    /// History length at the current turn boundary. Successful completion
-    /// uses this stable index to settle only the receipts produced by that
-    /// turn, never old transcript rows.
-    pub ocean_turn_history_start: usize,
     /// First committed history cell participating in the current one-shot
     /// receipt-settle cascade.
     pub ocean_receipt_settle_start: Option<usize>,
@@ -1349,19 +1338,9 @@ pub struct App {
     pub billing_presentation: crate::route_billing::BillingPresentation,
     pub composer_density: ComposerDensity,
     pub composer_border: bool,
-    /// Voice input state toggled by `/voice`.
-    pub voice_enabled: bool,
-    /// Auto-send after transcription when the transcript ends with an
-    /// explicit send instruction ("send it" / "发送"). Toggled by `/voice-send`.
-    pub voice_send_enabled: bool,
-    /// AI-assisted dictation that sees the current composer text.
-    /// Toggled by `/voice-control`.
-    pub voice_control_enabled: bool,
     pub transcript_spacing: TranscriptSpacing,
     pub sidebar_width_percent: u16,
     pub sidebar_focus: SidebarFocus,
-    /// Last known mouse position for tooltip placement.
-    pub last_mouse_pos: Option<(u16, u16)>,
     /// Sidebar focus/hidden state changed and needs persistence.
     pub sidebar_focus_dirty: bool,
     /// Whether the session-context panel is enabled (#504).
@@ -1426,10 +1405,6 @@ pub struct App {
     /// Number of MCP servers declared in the user's config at app boot.
     /// Used by passive UI projections; `0` hides the MCP status.
     pub mcp_configured_count: usize,
-    /// Tool execution log
-    pub tool_log: Vec<String>,
-    /// Active skill to apply to next user message
-    pub active_skill: Option<String>,
     /// Cached (name, description) pairs from the skill registry.
     /// Populated once at startup and refreshed on install/uninstall so
     /// the slash menu can show skills without filesystem I/O on every keystroke.
@@ -1441,11 +1416,6 @@ pub struct App {
     pub ignored_tool_calls: HashSet<String>,
     /// Current streaming assistant cell
     pub streaming_message_index: Option<usize>,
-    /// True after a local cancel key has been handled and before the engine's
-    /// authoritative TurnComplete arrives. Stream events already queued for
-    /// the cancelled turn are ignored so text does not keep appearing after
-    /// Ctrl+C/Esc returns focus to the composer.
-    pub suppress_stream_events_until_turn_complete: bool,
     /// Tool calls captured for the pending assistant message
     pub pending_tool_uses: Vec<(String, String, Value)>,
     /// User messages queued while a turn is running
@@ -1480,10 +1450,6 @@ pub struct App {
     /// DeepSeek account balance, refreshed once per turn completion.
     /// Shared cell updated by background fetch tasks; read lock in the UI thread.
     pub balance_cell: std::sync::Arc<std::sync::Mutex<Option<crate::pricing::BalanceInfo>>>,
-    /// Tracks whether the initial balance fetch has been attempted for this session.
-    pub balance_initiated: bool,
-    /// Timestamp of the last balance fetch, used to debounce rapid requests.
-    pub last_balance_fetch: Option<std::time::Instant>,
     /// Current runtime turn id (if known).
     pub runtime_turn_id: Option<String>,
     /// Current runtime turn status (if known).
@@ -1496,11 +1462,6 @@ pub struct App {
 
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
-    /// When true, the next draw will be a full repaint (terminal clear +
-    /// all cells redrawn) instead of a ratatui incremental diff. Used by
-    /// theme switches where the diff engine may miss color-only changes
-    /// in sidebar cells that were previously rendered with palette constants.
-    pub force_next_full_repaint: bool,
     /// Whether context compaction is currently in progress.
     pub is_compacting: bool,
     /// Whether context purge is currently in progress.
@@ -1541,8 +1502,6 @@ pub struct App {
     /// Set when a turn completes; cleared when a new turn starts or after expiry.
     pub receipt_text: Option<String>,
     pub receipt_started_at: Option<Instant>,
-    /// Tool evidence collected during the current turn for the receipt.
-    pub tool_evidence: Vec<ToolEvidence>,
 }
 
 /// Message queued while the engine is busy.
@@ -1970,7 +1929,6 @@ impl App {
             low_motion,
             ocean_started_at: Instant::now(),
             ocean_completion_started_at: None,
-            ocean_turn_history_start: 0,
             ocean_receipt_settle_start: None,
             fancy_animations,
             ocean_treatment,
@@ -1982,13 +1940,9 @@ impl App {
             billing_presentation: crate::route_billing::for_route(config, provider),
             composer_density,
             composer_border,
-            voice_enabled: false,
-            voice_send_enabled: false,
-            voice_control_enabled: false,
             transcript_spacing,
             sidebar_width_percent,
             sidebar_focus,
-            last_mouse_pos: None,
             sidebar_focus_dirty: false,
             context_panel: settings.context_panel,
             tool_collapse_threshold: 3,
@@ -2033,13 +1987,10 @@ impl App {
             // user declared. Errors fall through to zero so a missing or
             // malformed config simply hides the passive UI projections.
             mcp_configured_count,
-            tool_log: Vec::new(),
-            active_skill: None,
             cached_skills,
             tool_cells: HashMap::new(),
             ignored_tool_calls: HashSet::new(),
             streaming_message_index: None,
-            suppress_stream_events_until_turn_complete: false,
             pending_tool_uses: Vec::new(),
             queued_messages: VecDeque::new(),
             queued_draft: None,
@@ -2050,14 +2001,11 @@ impl App {
             turn_last_activity_at: None,
             cumulative_turn_duration: std::time::Duration::ZERO,
             balance_cell: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            balance_initiated: false,
-            last_balance_fetch: None,
             runtime_turn_id: None,
             runtime_turn_status: None,
             turn_counter: 0,
             dispatch_started_at: None,
             needs_redraw: true,
-            force_next_full_repaint: false,
             is_compacting: false,
             is_purging: false,
             user_scrolled_during_stream: false,
@@ -2079,7 +2027,6 @@ impl App {
             session_title: None,
             receipt_text: None,
             receipt_started_at: None,
-            tool_evidence: Vec::new(),
         };
         if yolo_compat {
             app.notify_yolo_compat_once();
