@@ -3323,7 +3323,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(rendered.contains("codewhale · /tmp/codewhale-test-workspace · 无 git · mcp 2"));
+        assert!(rendered.contains("codewhale · 工作区：/tmp/codewhale-test-workspace · mcp 2"));
         assert!(!rendered.contains("/fleet"));
         assert!(!rendered.contains("Model  /model"));
         assert!(!rendered.contains("Rules  /constitution"));
@@ -3344,7 +3344,7 @@ mod tests {
                     .collect::<String>()
             })
             .collect::<Vec<_>>();
-        let context = "codewhale · /tmp/codewhale-test-workspace · 无 git · mcp 0";
+        let context = "codewhale · 工作区：/tmp/codewhale-test-workspace · mcp 0";
         let context_line = text_lines
             .iter()
             .find(|line| line.trim_start() == context)
@@ -3374,7 +3374,7 @@ mod tests {
             "wide idle water should contain three fish:\n{rendered}"
         );
 
-        let context = "codewhale · /tmp/codewhale-test-workspace · 无 git · mcp 0";
+        let context = "codewhale · 工作区：/tmp/codewhale-test-workspace · mcp 0";
         let context_x = ((100usize - UnicodeWidthStr::width(context)) / 2) as u16;
         let context_cell = (0..area.height)
             .find_map(|y| (buf[(context_x, y)].symbol() == "c").then_some((context_x, y)))
