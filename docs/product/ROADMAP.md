@@ -842,6 +842,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   profile limits 保持各自生产 owner，不与该配置黑洞混淆。
 - M4-C 已删除无调用方的 TUI retry-delay 与 search-provider convenience facade；DeepSeek
   transport retry projection 和 Doctor 使用的 typed search-provider resolution 保持原 owner。
+- M4-C 已删除无调用方的 test-support prefix-diff 与 footer test-only parity helpers；回归测试
+  改为直接验证生产 `render_footer_from -> FooterProps` 的 context-percent/session-cost 路由，
+  不再由一套测试 helper 模拟真实 widget 布局。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

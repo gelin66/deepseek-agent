@@ -1,6 +1,4 @@
 use ratatui::{Frame, layout::Rect, style::Style, text::Span};
-#[cfg(test)]
-use unicode_width::UnicodeWidthStr;
 
 use crate::localization::MessageId;
 use crate::palette;
@@ -187,7 +185,7 @@ mod tests {
         active_subagent_status_label, footer_state_label, footer_working_label_frame,
         footer_workspace_spans, render_footer_from,
     };
-    use crate::config::Config;
+    use crate::config::{Config, StatusItem};
     use crate::tui::app::{App, TuiOptions};
     use std::path::PathBuf;
 
@@ -261,6 +259,39 @@ mod tests {
         assert!(props.model.is_empty());
         assert!(props.mode_label.is_empty());
         assert_eq!(props.state_label, "idle");
+    }
+
+    #[test]
+    fn context_percent_routes_through_the_production_footer_props() {
+        let mut app = create_test_app();
+        app.session.last_prompt_tokens = Some(4_096);
+
+        let props = render_footer_from(&app, &[StatusItem::ContextPercent], None);
+        let cache = props
+            .cache
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(cache.contains("active ctx"), "{cache}");
+        assert!(props.cost.is_empty());
+    }
+
+    #[test]
+    fn canonical_session_cost_routes_through_the_production_footer_props() {
+        let mut app = create_test_app();
+        app.session.session_cost = 0.25;
+        app.billing_presentation = crate::route_billing::BillingPresentation::Metered;
+
+        let props = render_footer_from(&app, &[StatusItem::Cost], None);
+        let cost = props
+            .cost
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+
+        assert!(!cost.is_empty());
+        assert!(props.cache.is_empty());
     }
 
     #[test]
@@ -567,42 +598,6 @@ pub(crate) fn footer_session_tokens_spans(app: &App) -> Vec<Span<'static>> {
     vec![Span::styled(text, Style::default().fg(palette::TEXT_MUTED))]
 }
 
-/// Test-only helper retained as a parity reference for `FooterWidget`'s
-/// auxiliary-span composition. Production rendering is performed by the
-/// widget itself; the existing footer parity tests still exercise this
-/// function directly to guard against drift.
-#[cfg(test)]
-pub(crate) fn footer_auxiliary_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
-    // Context % is already shown in the header signal bar — don't
-    // duplicate it in the footer. The footer carries unique info only:
-    // in-flight sub-agents, reasoning replay tokens, cache hit rate, and
-    // session cost.
-    let agents_spans = crate::tui::widgets::footer_agents_chip(running_agent_count(app));
-    let replay_spans = footer_reasoning_replay_spans(app);
-    let cache_spans = footer_cache_spans(app);
-    let cost_spans = footer_cost_spans(app);
-    let parts: Vec<&Vec<Span<'static>>> = [&agents_spans, &replay_spans, &cache_spans, &cost_spans]
-        .iter()
-        .filter(|spans| !spans.is_empty())
-        .copied()
-        .collect();
-
-    // Try to fit as many parts as possible, dropping from the end.
-    for end in (0..=parts.len()).rev() {
-        let mut combined = Vec::new();
-        for (i, part) in parts[..end].iter().enumerate() {
-            if i > 0 {
-                combined.push(Span::raw("  "));
-            }
-            combined.extend(part.iter().cloned());
-        }
-        if spans_width(&combined) <= max_width {
-            return combined;
-        }
-    }
-    Vec::new()
-}
-
 pub(crate) fn footer_cache_spans(app: &App) -> Vec<Span<'static>> {
     if app.session.last_prompt_tokens.is_none() && app.session.last_completion_tokens.is_none() {
         return Vec::new();
@@ -669,44 +664,6 @@ pub(crate) fn footer_reasoning_replay_spans(app: &App) -> Vec<Span<'static>> {
     vec![Span::styled(label, Style::default().fg(color))]
 }
 
-#[cfg(test)]
-pub(crate) fn footer_status_line_spans(app: &App, max_width: usize) -> Vec<Span<'static>> {
-    if max_width == 0 {
-        return Vec::new();
-    }
-
-    let (status_label, status_color) = footer_state_label(app);
-    let sep = " \u{00B7} ";
-    let show_status = status_label != "ready";
-
-    let fixed_width = if show_status {
-        sep.width() + status_label.width()
-    } else {
-        0
-    };
-
-    let model_budget = max_width.saturating_sub(fixed_width).max(1);
-    let model_label = truncate_line_to_width(&app.model, model_budget);
-
-    let mut spans = vec![Span::styled(
-        model_label,
-        Style::default().fg(app.ui_theme.text_hint),
-    )];
-
-    if show_status {
-        spans.push(Span::styled(
-            sep.to_string(),
-            Style::default().fg(app.ui_theme.text_dim),
-        ));
-        spans.push(Span::styled(
-            status_label.to_string(),
-            Style::default().fg(status_color),
-        ));
-    }
-
-    spans
-}
-
 pub(crate) fn footer_state_label(app: &App) -> (&'static str, ratatui::style::Color) {
     if app.is_compacting {
         return ("compacting \u{238B}", app.ui_theme.status_warning);
@@ -744,30 +701,4 @@ pub(crate) fn format_token_count_compact(tokens: u64) -> String {
     } else {
         tokens.to_string()
     }
-}
-
-#[cfg(test)]
-pub(crate) fn format_context_budget(used: i64, max: u32) -> String {
-    let max_u64 = u64::from(max);
-    let max_i64 = i64::from(max);
-
-    if used > max_i64 {
-        return format!(
-            ">{}/{}",
-            format_token_count_compact(max_u64),
-            format_token_count_compact(max_u64)
-        );
-    }
-
-    let used_u64 = u64::try_from(used.max(0)).unwrap_or(0);
-    format!(
-        "{}/{}",
-        format_token_count_compact(used_u64),
-        format_token_count_compact(max_u64)
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn spans_width(spans: &[Span<'_>]) -> usize {
-    spans.iter().map(|span| span.content.width()).sum()
 }

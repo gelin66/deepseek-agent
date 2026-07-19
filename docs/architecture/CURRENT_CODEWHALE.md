@@ -688,6 +688,9 @@ M4-C foreground 切换后还已物理删除：
   的 worker limits 与 subagent profile limits 是独立的真实执行链，均未改动。
 - 旧 TUI `RetryPolicy::delay_for_attempt` 和 `Config::search_provider` facade 没有 caller，现已
   删除；生产 DeepSeek retry projection 与 Doctor 的 typed search-provider resolution 保留。
+- test-support 的未使用 prefix-diff helpers 与 footer 的四个 test-only parity helpers 没有
+  真实测试 caller，现已删除；新增断言直接经过 `render_footer_from -> FooterProps` 保护
+  canonical context-percent 与 session-cost 路由，生产 `FooterWidget`/phase strip 未改动。
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
   没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。
