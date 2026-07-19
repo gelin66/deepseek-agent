@@ -27,70 +27,36 @@ fn sleep_command(seconds: u64) -> String {
 }
 
 #[test]
-fn running_job_snapshot_marks_no_output_stale_after_threshold() {
+fn managed_foreground_releases_process_owner_after_completion() {
     let workspace = tempdir().expect("workspace");
     let mut manager = ShellManager::new(workspace.path().to_path_buf());
     let started = manager
-        .execute(&sleep_command(5), None, 5_000, true)
-        .expect("execute");
-    let task_id = started.task_id.expect("task id");
-
-    manager
-        .processes
-        .get_mut(&task_id)
-        .expect("live shell")
-        .last_output_at = Instant::now() - STALE_NO_OUTPUT_AFTER - Duration::from_millis(1);
-
-    let job = manager
-        .list_jobs()
-        .into_iter()
-        .find(|job| job.id == task_id)
-        .expect("running job");
-    assert_eq!(job.status, ShellStatus::Running);
-    assert!(job.stale, "silent running job should be marked stale");
-    assert!(
-        job.elapsed_since_output_ms
-            .is_some_and(|elapsed| elapsed >= STALE_NO_OUTPUT_AFTER.as_millis() as u64),
-        "elapsed no-output time should be exposed: {job:?}"
-    );
-    manager.kill(&task_id).expect("cleanup");
-}
-
-#[test]
-fn completed_background_shell_releases_process_handles() {
-    let workspace = tempdir().expect("workspace");
-    let mut manager = ShellManager::new(workspace.path().to_path_buf());
-    let started = manager
-        .execute(&echo_command("done"), None, 5_000, true)
-        .expect("execute");
-    let task_id = started.task_id.expect("task id");
-    let result = manager
-        .get_output(&task_id, true, 5_000)
-        .expect("wait for completion");
+        .spawn_shell(&echo_command("done"), None, 5_000, None, HashMap::new())
+        .expect("spawn");
+    let process_id = started;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let result = loop {
+        let snapshot = manager.poll(&process_id).expect("poll");
+        if snapshot.status != ShellStatus::Running {
+            break snapshot;
+        }
+        assert!(Instant::now() < deadline, "managed process did not finish");
+        std::thread::sleep(Duration::from_millis(20));
+    };
     assert_eq!(result.status, ShellStatus::Completed);
-
-    let shell = manager.processes.get_mut(&task_id).expect("tracked shell");
-    shell.poll();
-    assert_eq!(shell.status, ShellStatus::Completed);
-    assert!(shell.stdin.is_none());
-    assert!(shell.child.is_none());
-    assert!(shell.stdout_thread.is_none());
-    assert!(shell.stderr_thread.is_none());
+    assert!(manager.processes.is_empty());
 }
 
 #[test]
-fn cleanup_removes_completed_process_owners() {
+fn killing_managed_foreground_releases_process_owner() {
     let workspace = tempdir().expect("workspace");
     let mut manager = ShellManager::new(workspace.path().to_path_buf());
     let started = manager
-        .execute(&echo_command("done"), None, 5_000, true)
-        .expect("execute");
-    let task_id = started.task_id.expect("task id");
-    manager
-        .get_output(&task_id, true, 3_000)
-        .expect("completed output");
-    assert!(!manager.processes.is_empty());
-    manager.cleanup(Duration::ZERO);
+        .spawn_shell(&sleep_command(5), None, 5_000, None, HashMap::new())
+        .expect("spawn");
+    let process_id = started;
+    let killed = manager.kill(&process_id).expect("kill");
+    assert_eq!(killed.status, ShellStatus::Killed);
     assert!(manager.processes.is_empty());
 }
 
@@ -233,33 +199,40 @@ mod windows_tests {
     }
 
     #[test]
-    fn kill_on_close_releases_background_reader_threads_when_terminate_denied() {
+    fn kill_on_close_releases_managed_reader_threads_when_terminate_denied() {
         let workspace = tempdir().expect("workspace");
         let mut manager = ShellManager::new(workspace.path().to_path_buf());
         let result = manager
-            .execute(
+            .spawn_shell(
                 r#"cmd /c start "" /b ping 127.0.0.1 -n 8"#,
                 None,
                 5_000,
-                true,
+                None,
+                HashMap::new(),
             )
-            .expect("execute");
-        let task_id = result.task_id.expect("task id");
+            .expect("spawn");
+        let process_id = result;
         {
-            let shell = manager
+            let process = manager
                 .processes
-                .get_mut(&task_id)
-                .expect("background shell");
-            let job = shell.windows_job.take().expect("windows job attached");
+                .get_mut(&process_id)
+                .expect("managed process");
+            let job = process.windows_job.take().expect("windows job attached");
             let limited_job = duplicate_job_without_terminate_access(job);
             assert!(limited_job.terminate().is_err());
-            shell.windows_job = Some(limited_job);
+            process.windows_job = Some(limited_job);
         }
         let started = Instant::now();
-        let done = manager
-            .get_output(&task_id, true, 3_000)
-            .expect("get_output");
+        let done = loop {
+            let snapshot = manager.poll(&process_id).expect("poll");
+            if snapshot.status != ShellStatus::Running {
+                break snapshot;
+            }
+            assert!(started.elapsed() < Duration::from_secs(4));
+            std::thread::sleep(Duration::from_millis(20));
+        };
         assert!(started.elapsed() < Duration::from_secs(4));
         assert_eq!(done.status, ShellStatus::Completed);
+        assert!(manager.processes.is_empty());
     }
 }

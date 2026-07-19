@@ -190,7 +190,7 @@ pub struct RunVerifiersOutput {
 
 /// Run the complete foreground verifier ensemble. Unknown fields (including
 /// the legacy `background` flag) are rejected before any process starts.
-pub async fn execute_run_verifiers(
+pub(crate) async fn execute_run_verifiers(
     input: Value,
     context: &ProductionToolContext,
     shell: &ExecShellOptions,
@@ -804,7 +804,6 @@ async fn run_gate_with_timeout(
     let output = match execute_managed_program(
         context,
         &shell.shell_manager,
-        shell.owner.clone(),
         &command,
         &program,
         &gate.args,

@@ -78,19 +78,6 @@ where
     }
 }
 
-#[cfg(not(target_env = "ohos"))]
-pub fn apply_to_pty_command<I, K, V>(cmd: &mut portable_pty::CommandBuilder, overrides: I)
-where
-    I: IntoIterator<Item = (K, V)>,
-    K: AsRef<OsStr>,
-    V: AsRef<OsStr>,
-{
-    cmd.env_clear();
-    for (key, value) in sanitized_child_env(overrides) {
-        cmd.env(key, value);
-    }
-}
-
 /// Build the sanitized child environment used for MCP stdio servers.
 ///
 /// MCP stdio servers are user-configured integrations declared in

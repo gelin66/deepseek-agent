@@ -59,7 +59,7 @@ impl CargoTestEvidence {
 /// Run `cargo test` in the context workspace through the shared managed
 /// process owner. The outcome contains deterministic process/test evidence,
 /// but never decides whether a product Goal is complete.
-pub async fn execute_run_tests(
+pub(crate) async fn execute_run_tests(
     input: Value,
     context: &ProductionToolContext,
     shell: &ExecShellOptions,
@@ -168,7 +168,6 @@ async fn run_cargo(
     execute_managed_program(
         context,
         &shell.shell_manager,
-        shell.owner.clone(),
         display,
         "cargo",
         args,

@@ -11,9 +11,8 @@
 //!    bash via WSL / Git Bash, cmd.exe fallback on Windows, /bin/sh on Unix).
 //! 2. **Quoting correctness** — each shell's argument-passing convention is
 //!    respected so quoted strings survive the spawn boundary intact.
-//! 3. **Terminal state** — foreground shell execution saves and restores
-//!    crossterm raw-mode so the TUI input pipeline is not broken after a
-//!    child process exits (issue #1690).
+//! 3. **Single spawn contract** — shell and verifier processes use the same
+//!    sanitized environment and process-tree lifecycle.
 
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -30,7 +29,6 @@ static LOG_MUTEX: Mutex<()> = Mutex::new(());
 // ---------------------------------------------------------------------------
 
 /// The concrete shell that the dispatcher will use.
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellKind {
     /// PowerShell 7+ (`pwsh.exe`).
@@ -107,7 +105,6 @@ pub struct ShellDispatcher {
     kind: ShellKind,
 }
 
-#[allow(dead_code)]
 impl ShellDispatcher {
     /// Detect the user's shell from the environment.
     ///

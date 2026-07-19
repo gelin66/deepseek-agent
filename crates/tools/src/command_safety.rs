@@ -675,7 +675,6 @@ pub fn analyze_command(command: &str) -> SafetyAnalysis {
             vec![
                 "Run one command at a time".to_string(),
                 "Write multiline scripts to a file first, then execute the script".to_string(),
-                "Use task_shell_start or background shell for long interactive flows".to_string(),
             ],
         );
     }
@@ -1307,14 +1306,6 @@ mod tests {
                 .suggestions
                 .iter()
                 .any(|suggestion| suggestion.contains("Write multiline scripts to a file first")),
-            "{:?}",
-            analysis.suggestions
-        );
-        assert!(
-            analysis
-                .suggestions
-                .iter()
-                .any(|suggestion| suggestion.contains("task_shell_start")),
             "{:?}",
             analysis.suggestions
         );

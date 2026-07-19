@@ -929,6 +929,7 @@ mod tests {
             ("exec_shell", "stdin"),
             ("exec_shell", "input"),
             ("exec_shell", "data"),
+            ("exec_shell", "working_dir"),
             ("run_verifiers", "background"),
         ] {
             let outcome = executor

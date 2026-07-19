@@ -16,7 +16,6 @@ async-trait.workspace = true
 chrono.workspace = true
 codewhale-protocol = { path = "../protocol", version = "0.8.68" }
 codewhale-runtime = { path = "../runtime", version = "0.8.68" }
-crossterm = "0.29"
 futures-util = "0.3.31"
 ignore = "0.4"
 pdf-extract = { version = "0.12", optional = true }
@@ -36,9 +35,6 @@ wait-timeout = "0.2"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-[target.'cfg(not(target_env = "ohos"))'.dependencies]
-portable-pty = "0.9"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading"] }
