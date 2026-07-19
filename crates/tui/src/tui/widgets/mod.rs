@@ -17,7 +17,6 @@ use crate::palette;
 use crate::tui::app::{App, ComposerDensity};
 use crate::tui::approval::{ApprovalRequest, ApprovalStakes, ApprovalView, ToolCategory};
 use crate::tui::history::{GenericToolCell, HistoryCell, ToolRun, ToolStatus};
-use crate::tui::scrolling::TranscriptLineMeta;
 use crate::tui::underwater::ShellPhase;
 use ratatui::{
     buffer::Buffer,
@@ -312,24 +311,6 @@ impl ChatWidget {
             app.viewport.transcript_cache.line_links()[top..end].to_vec()
         };
 
-        if !app.low_motion
-            && app.fancy_animations
-            && let (Some(start), Some(started)) = (
-                app.ocean_receipt_settle_start,
-                app.ocean_completion_started_at,
-            )
-        {
-            apply_receipt_settle_cascade(
-                &mut lines,
-                top,
-                line_meta,
-                &app.collapsed_cell_map,
-                &app.history,
-                start,
-                started.elapsed().as_millis(),
-            );
-        }
-
         // The HTML contract is a top-first ledger. Bottom-padding the short
         // transcript made every newly wrapped stream line shift all prior
         // rows upward, producing repeated thousand-cell repaints and the
@@ -400,44 +381,6 @@ impl ChatWidget {
     pub(crate) fn ocean_column(&self) -> Option<crate::tui::ocean::OceanColumn> {
         self.ocean_column
     }
-}
-
-fn apply_receipt_settle_cascade(
-    lines: &mut [Line<'static>],
-    top: usize,
-    line_meta: &[TranscriptLineMeta],
-    filtered_to_original: &[usize],
-    history: &[HistoryCell],
-    start: usize,
-    elapsed_ms: u128,
-) {
-    for (visible_index, line) in lines.iter_mut().enumerate() {
-        let Some((filtered_cell, _)) = line_meta
-            .get(top + visible_index)
-            .and_then(TranscriptLineMeta::cell_line)
-        else {
-            continue;
-        };
-        let original_cell = filtered_to_original
-            .get(filtered_cell)
-            .copied()
-            .unwrap_or(filtered_cell);
-        if original_cell < start
-            || !matches!(history.get(original_cell), Some(HistoryCell::Tool(_)))
-            || !receipt_is_settling(original_cell - start, elapsed_ms)
-        {
-            continue;
-        }
-        for span in &mut line.spans {
-            span.style = span.style.add_modifier(Modifier::DIM);
-        }
-    }
-}
-
-#[must_use]
-fn receipt_is_settling(receipt_order: usize, elapsed_ms: u128) -> bool {
-    let delay = u128::try_from(receipt_order.min(6)).unwrap_or(6) * 70;
-    elapsed_ms < delay + 140
 }
 
 fn tool_run_summary_cell(run: &ToolRun) -> HistoryCell {
@@ -2384,8 +2327,8 @@ mod tests {
         composer_content_geometry, composer_empty_hint_text, composer_height, composer_max_height,
         composer_min_input_rows, composer_top_padding, cursor_row_col, empty_composer_visual_rows,
         fish_flee_offset, fish_heading, fish_mark, layout_input, layout_input_with_scroll,
-        pad_lines_to_bottom, placeholder_visual_lines, receipt_is_settling,
-        should_render_empty_state, wrap_input_lines, wrap_text,
+        pad_lines_to_bottom, placeholder_visual_lines, should_render_empty_state, wrap_input_lines,
+        wrap_text,
     };
     use crate::config::Config;
     use crate::palette;
@@ -4177,15 +4120,6 @@ mod tests {
             narrow_total_lines > wide_total_lines,
             "narrow render should produce more wrapped lines (got {narrow_total_lines}, wide={wide_total_lines})"
         );
-    }
-
-    #[test]
-    fn receipt_settle_cascade_is_bounded_and_ordered() {
-        assert!(receipt_is_settling(0, 0));
-        assert!(!receipt_is_settling(0, 140));
-        assert!(receipt_is_settling(1, 140));
-        assert!(!receipt_is_settling(6, 560));
-        assert!(!receipt_is_settling(60, 560));
     }
 
     #[test]

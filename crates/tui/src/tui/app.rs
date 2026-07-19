@@ -942,9 +942,6 @@ pub struct App {
     /// Kept separate from the ambient ocean clock so completion can settle
     /// once without restarting or repainting the transcript field.
     pub ocean_completion_started_at: Option<Instant>,
-    /// First committed history cell participating in the current one-shot
-    /// receipt-settle cascade.
-    pub ocean_receipt_settle_start: Option<usize>,
     /// Enables the authored underwater phase and ambient motion system.
     pub fancy_animations: bool,
     /// Typed appearance treatment; appearance is independent from motion
@@ -1289,7 +1286,6 @@ impl App {
             low_motion,
             ocean_started_at: Instant::now(),
             ocean_completion_started_at: None,
-            ocean_receipt_settle_start: None,
             fancy_animations,
             ocean_treatment,
             synchronized_output_enabled,

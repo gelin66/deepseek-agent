@@ -20,9 +20,8 @@
 /// Metadata describing how rendered transcript lines map to history cells.
 ///
 /// The scroll state itself does not consult this — it only stores a flat
-/// line offset — but other render-time helpers (send-flash, jump-to-tool,
-/// scrollbar percent) still need the
-/// line→cell mapping the cache exposes.
+/// line offset — but transcript filtering and cache invalidation still need
+/// the line→cell mapping the cache exposes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptLineMeta {
     CellLine {
@@ -30,21 +29,6 @@ pub enum TranscriptLineMeta {
         line_in_cell: usize,
     },
     Spacer,
-}
-
-impl TranscriptLineMeta {
-    /// Return cell/line indices if this entry is a cell line.
-    #[must_use]
-    pub fn cell_line(&self) -> Option<(usize, usize)> {
-        match *self {
-            TranscriptLineMeta::CellLine {
-                cell_index,
-                line_in_cell,
-                ..
-            } => Some((cell_index, line_in_cell)),
-            TranscriptLineMeta::Spacer => None,
-        }
-    }
 }
 
 // === Transcript Scroll State ===

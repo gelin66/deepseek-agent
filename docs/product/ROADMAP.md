@@ -1244,6 +1244,11 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   timer、renderer tint helper 和唯一手工测试。canonical submit、transcript history、collapse
   index mapping 与低动态设置不依赖该假时间戳。widgets 69/69、App 67/67 通过，并通过 TUI
   strict Clippy、fmt 和 diff-check。
+- M4-C 已删除旧 Engine completion path 留下且生产永远为 `None` 的
+  `ocean_receipt_settle_start`，连同 receipt cascade renderer/helper 和唯一手工测试；由此失去
+  消费者的 `TranscriptLineMeta::cell_line` 薄 helper 也同步删除。真实工具结果、canonical
+  transcript metadata、collapse mapping 和 completion 状态投影均保持不变。widgets 68/68、
+  App 67/67 通过，并通过 TUI strict Clippy、fmt 和 diff-check。
 - 到 M4 退出前，三个入口必须使用同一 `AgentRuntime`、`RuntimeEvent` 和 `RunStore`，并统一
   steer、resume、request-user-input、现有 compaction 与 completion 的 canonical
   command/event 投影。C2 只建立最小、可恢复的 projection；按任务相关性和 evidence 新鲜度
