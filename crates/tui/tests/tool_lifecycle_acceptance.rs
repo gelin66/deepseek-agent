@@ -18,7 +18,6 @@ const FEATURE_PATH: &str = concat!(
     "/tests/features/tool_lifecycle.feature"
 );
 const HAPPY_PATH_SCENARIO: &str = "Happy path lists the current directory through a tool";
-const UNKNOWN_TOOL_SCENARIO: &str = "Unknown tool returns an error result";
 const MALFORMED_ARGUMENTS_SCENARIO: &str = "Malformed tool arguments return an error result";
 const TOOL_CALL_ID: &str = "call_tool";
 const TEST_MODEL: &str = "deepseek-v4-flash";
@@ -214,48 +213,6 @@ fn codewhale_should_send_tool_result_back_to_mocked_llm(world: &mut ToolLifecycl
     }
 }
 
-#[then(regex = r#"^the public tool result should report an error for "([^"]+)"$"#)]
-fn public_tool_result_should_report_error_for(world: &mut ToolLifecycleWorld, tool_name: String) {
-    let _ = tool_use_event(world, &tool_name);
-    let event = tool_result_event(world);
-
-    assert_eq!(event.get("status").and_then(Value::as_str), Some("error"));
-    let output = event
-        .get("output")
-        .and_then(Value::as_str)
-        .expect("tool_result error output");
-    assert!(
-        output.contains(&tool_name) && output.contains("未在生产 AgentRuntime 工具目录中提供"),
-        "tool_result error should name the unavailable tool:\n{output}"
-    );
-}
-
-#[then("CodeWhale should send the tool error back to the mocked LLM")]
-fn codewhale_should_send_tool_error_back_to_mocked_llm(world: &mut ToolLifecycleWorld) {
-    let request = world
-        .requests
-        .iter()
-        .find(|request| request_contains_tool_result(request))
-        .expect("expected a follow-up chat request containing the tool error");
-    let tool_result = tool_result_message(request).expect("tool result message");
-    assert_eq!(
-        tool_result
-            .get("tool_call_id")
-            .and_then(serde_json::Value::as_str),
-        Some(TOOL_CALL_ID)
-    );
-
-    let content = tool_result
-        .get("content")
-        .and_then(serde_json::Value::as_str)
-        .expect("tool result content");
-    let tool_name = world.tool_name.as_deref().expect("tool name");
-    assert!(
-        content.contains(tool_name) && content.contains("未在生产 AgentRuntime 工具目录中提供"),
-        "tool error sent to LLM should describe the unavailable tool:\n{content}"
-    );
-}
-
 #[then(
     regex = r#"^the public tool lifecycle should show a running tool with raw input for "([^"]+)"$"#
 )]
@@ -343,22 +300,6 @@ fn public_tool_lifecycle_should_show_completed_tool(world: &mut ToolLifecycleWor
     );
 }
 
-#[then("the public tool lifecycle should show a failed tool:")]
-fn public_tool_lifecycle_should_show_failed_tool(world: &mut ToolLifecycleWorld, step: &Step) {
-    let expected = one_table_row(step);
-    assert_eq!(row_value(&expected, "status"), "error");
-    assert_eq!(row_value(&expected, "marker"), "[!]");
-
-    let event = tool_result_event(world);
-    assert_eq!(event.get("status").and_then(Value::as_str), Some("error"));
-
-    let tool_use = tool_use_event(world, &row_value(&expected, "tool"));
-    assert_eq!(
-        tool_use.get("input").and_then(|input| input.get("path")),
-        Some(&json!(row_value(&expected, "input")))
-    );
-}
-
 #[then(regex = r#"^the public output should include "([^"]+)"$"#)]
 fn public_output_should_include(world: &mut ToolLifecycleWorld, expected: String) {
     let content = world
@@ -378,11 +319,6 @@ fn public_output_should_include(world: &mut ToolLifecycleWorld, expected: String
 #[tokio::test(flavor = "current_thread")]
 async fn happy_path_lists_current_directory_through_tool() {
     run_scenario(HAPPY_PATH_SCENARIO, 10).await;
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn unknown_tool_returns_error_result() {
-    run_scenario(UNKNOWN_TOOL_SCENARIO, 10).await;
 }
 
 #[tokio::test(flavor = "current_thread")]

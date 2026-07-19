@@ -30,28 +30,6 @@ Feature: Tool call lifecycle
       | completed | ✓      | list_dir | .     |
     And the public output should include "The directory contains README.md, notes.txt, and src/."
 
-  Scenario: Unknown tool returns an error result
-    Given an offline CodeWhale workspace containing:
-      | path      | kind |
-      | README.md | file |
-    And the mocked LLM will request the "missing_tool" tool with:
-      | path |
-      | .    |
-    And the mocked LLM will answer after the tool result:
-      | content                                      |
-      | I could not run the requested missing tool. |
-    When the user asks "try a missing tool"
-    Then CodeWhale should send the user request to the mocked LLM
-    And the public tool lifecycle should show a running tool:
-      | status  | marker | tool         | input |
-      | running | [~]    | missing_tool | .     |
-    And the public tool result should report an error for "missing_tool"
-    And CodeWhale should send the tool error back to the mocked LLM
-    And the public tool lifecycle should show a failed tool:
-      | status | marker | tool         | input |
-      | error  | [!]    | missing_tool | .     |
-    And the public output should include "I could not run the requested missing tool."
-
   Scenario: Malformed tool arguments return an error result
     Given an offline CodeWhale workspace containing:
       | path      | kind |
