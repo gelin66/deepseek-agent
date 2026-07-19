@@ -1252,12 +1252,6 @@ pub struct TuiConfig {
     /// (e.g. for a terminal that misrenders the sequence). OSC 8 escapes are
     /// emitted out-of-band, so buffer-column corruption is not a concern.
     pub osc8_links: Option<bool>,
-    /// When `true`, plain Up/Down on an empty composer scroll the
-    /// transcript instead of recalling input history. Useful for
-    /// terminals that map mouse-wheel gestures to arrow keys. Default:
-    /// `true` only when mouse capture is off; otherwise `false`.
-    #[serde(default)]
-    pub composer_arrows_scroll: Option<bool>,
 }
 
 /// User-level memory configuration (#489).

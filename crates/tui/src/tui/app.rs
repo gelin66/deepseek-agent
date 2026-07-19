@@ -1247,12 +1247,6 @@ pub struct App {
     /// `Config::memory_enabled()` at app boot.
     pub use_memory: bool,
     pub use_mouse_capture: bool,
-    /// When true, plain Up/Down on an empty composer scroll the transcript
-    /// instead of navigating input history.  Defaults to `true` when mouse
-    /// capture is off: terminals that convert mouse-wheel events to arrow-key
-    /// sequences (e.g. Windows CMD without `WT_SESSION`) get page-scrolling
-    /// without any explicit config (#1443).
-    pub composer_arrows_scroll: bool,
     /// Data-side cap for the `@`-mention popup. The renderer still limits the
     /// visible rows to available terminal height.
     pub mention_menu_limit: usize,
@@ -1542,14 +1536,6 @@ impl std::ops::DerefMut for App {
 }
 
 // === App State ===
-
-fn default_composer_arrows_scroll(use_mouse_capture: bool) -> bool {
-    default_composer_arrows_scroll_for_platform(use_mouse_capture, cfg!(windows))
-}
-
-fn default_composer_arrows_scroll_for_platform(use_mouse_capture: bool, _is_windows: bool) -> bool {
-    !use_mouse_capture
-}
 
 impl App {
     pub fn tr(&self, id: MessageId) -> Cow<'static, str> {
@@ -1968,11 +1954,6 @@ impl App {
             quit_armed_until: None,
             collapsed_cells: HashSet::new(),
             collapsed_cell_map: Vec::new(),
-            composer_arrows_scroll: config
-                .tui
-                .as_ref()
-                .and_then(|tui| tui.composer_arrows_scroll)
-                .unwrap_or_else(|| default_composer_arrows_scroll(use_mouse_capture)),
             mention_menu_limit: settings.mention_menu_limit,
             mention_walk_depth: settings.mention_walk_depth,
             mention_menu_behavior: settings.mention_menu_behavior.clone(),

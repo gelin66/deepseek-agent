@@ -143,26 +143,6 @@ fn initial_input_submit_marks_startup_dispatch() {
 }
 
 #[test]
-fn composer_arrows_scroll_default_is_true_without_mouse_capture() {
-    assert!(default_composer_arrows_scroll_for_platform(false, false));
-}
-
-#[test]
-fn composer_arrows_scroll_default_is_false_with_mouse_capture_on_non_windows() {
-    assert!(!default_composer_arrows_scroll_for_platform(true, false));
-}
-
-#[test]
-fn composer_arrows_scroll_default_is_false_with_mouse_capture_on_windows() {
-    assert!(!default_composer_arrows_scroll_for_platform(true, true));
-}
-
-#[test]
-fn composer_arrows_scroll_default_is_true_without_mouse_capture_on_windows() {
-    assert!(default_composer_arrows_scroll_for_platform(false, true));
-}
-
-#[test]
 fn move_cursor_line_start_multiline() {
     let mut app = App::new(test_options(false), &Config::default());
     app.input = "abc\ndef\nghi".to_string();

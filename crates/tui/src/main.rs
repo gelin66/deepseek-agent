@@ -7802,7 +7802,6 @@ mod terminal_mode_tests {
                 stream_chunk_timeout_secs: None,
                 status_items: None,
                 osc8_links: None,
-                composer_arrows_scroll: None,
             }),
             ..Config::default()
         };
@@ -7895,7 +7894,6 @@ mod terminal_mode_tests {
                 stream_chunk_timeout_secs: None,
                 status_items: None,
                 osc8_links: None,
-                composer_arrows_scroll: None,
             }),
             ..Config::default()
         };
@@ -7926,7 +7924,6 @@ mod terminal_mode_tests {
                 stream_chunk_timeout_secs: None,
                 status_items: None,
                 osc8_links: None,
-                composer_arrows_scroll: None,
             }),
             ..Config::default()
         };
@@ -8011,7 +8008,6 @@ mod terminal_mode_tests {
                 stream_chunk_timeout_secs: None,
                 status_items: None,
                 osc8_links: None,
-                composer_arrows_scroll: None,
             }),
             ..Config::default()
         };
