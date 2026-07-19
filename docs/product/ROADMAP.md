@@ -822,6 +822,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   route metadata 与 canonical Fleet 不经过已删除 API；通用 Provider catalog 的最终物理
   删除仍由 M7 完成。后续调用图又确认 live snapshot 只有模块自测 writer、生产始终为
   `None`，故同步删除其合并状态和自证测试；pricing 现在直接读取同一 bundled snapshot。
+- M4-C 已删除零生产消费者的 `config::model_completion_names_for_provider` 硬编码模型列表、
+  11 个专属列表测试、一个混合测试中的列表尾断言，以及只服务该列表的聚合/别名常量。
+  默认模型、模型 alias/capability、Codex account roster、Fleet route receipt、bundled pricing
+  和 DeepSeek `official_model_capabilities` 均不经过该旧 inventory API。
 - M4-C 已删除没有任何生产 writer 的 MCP manager snapshot DTO、formatter、App 缓存、
   restart hint 与伪连接健康配色；footer/sidebar 只投影启动时真实加载的配置数量。保留的
   顶层 `codewhale mcp` CLI 继续承担配置、OAuth、stdio/Streamable HTTP/legacy SSE、连接

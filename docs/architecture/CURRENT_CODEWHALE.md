@@ -668,6 +668,10 @@ M4-C foreground 切换后还已物理删除：
   `None` 的 live snapshot/merge 状态；保留的 bundled catalog lookup 仍服务现有 pricing 与
   尚待 M7 收敛的 route metadata，canonical Fleet 和 DeepSeek transport 不读取已删除的
   configured-provider/model-list API。
+- `config::model_completion_names_for_provider` 的硬编码 Provider 模型列表只有专属自测，
+  provider picker 与 inventory 消费者均已删除；该函数、列表测试和仅服务该列表的聚合常量
+  现已物理删除。真实默认模型、alias/capability 常量、Codex account roster、Fleet route、
+  bundled pricing 与 DeepSeek 官方模型校验保持各自 owner。
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
   没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。

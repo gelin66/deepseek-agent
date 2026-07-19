@@ -3018,102 +3018,6 @@ fn normalize_xiaomi_mimo_chat_aliases_for_provider() {
 }
 
 #[test]
-fn model_completion_names_for_xiaomi_mimo_include_chat_models() {
-    let models = model_completion_names_for_provider(ApiProvider::XiaomiMimo);
-    for expected in ["mimo-v2.5-pro", "mimo-v2.5"] {
-        assert!(models.contains(&expected), "missing {expected}");
-    }
-    for deprecated in ["mimo-v2-pro", "mimo-v2-omni", "mimo-v2-flash"] {
-        assert!(
-            !models.contains(&deprecated),
-            "{deprecated} is deprecated and should not be promoted"
-        );
-    }
-}
-
-#[test]
-fn model_completion_names_for_deepseek_api_are_deduplicated_bare_ids() {
-    assert_eq!(
-        model_completion_names_for_provider(ApiProvider::Deepseek),
-        vec!["deepseek-v4-pro", "deepseek-v4-flash"]
-    );
-}
-
-#[test]
-fn model_completion_names_for_together_include_provider_owned_models() {
-    assert_eq!(
-        model_completion_names_for_provider(ApiProvider::Together),
-        vec![DEFAULT_TOGETHER_MODEL, DEFAULT_TOGETHER_FLASH_MODEL]
-    );
-}
-
-#[test]
-fn model_completion_names_for_wanjie_keep_legacy_default_and_v4_ids() {
-    let models = model_completion_names_for_provider(ApiProvider::WanjieArk);
-
-    assert_eq!(models.first().copied(), Some(DEFAULT_WANJIE_ARK_MODEL));
-    assert!(models.contains(&"deepseek-v4-pro"));
-    assert!(models.contains(&"deepseek-v4-flash"));
-}
-
-#[test]
-fn model_completion_names_for_ollama_do_not_promote_static_remote_models() {
-    let models = model_completion_names_for_provider(ApiProvider::Ollama);
-
-    assert!(models.is_empty());
-}
-
-#[test]
-fn model_completion_names_for_openrouter_include_recent_large_models() {
-    let models = model_completion_names_for_provider(ApiProvider::Openrouter);
-
-    for expected in [
-        DEFAULT_OPENROUTER_MODEL,
-        DEFAULT_OPENROUTER_FLASH_MODEL,
-        OPENROUTER_ARCEE_TRINITY_LARGE_THINKING_MODEL,
-        OPENROUTER_XIAOMI_MIMO_V2_5_PRO_MODEL,
-        OPENROUTER_MINIMAX_M3_MODEL,
-        OPENROUTER_MINIMAX_M2_7_MODEL,
-        OPENROUTER_QWEN_3_6_FLASH_MODEL,
-        OPENROUTER_QWEN_3_6_35B_A3B_MODEL,
-        OPENROUTER_QWEN_3_6_MAX_PREVIEW_MODEL,
-        OPENROUTER_QWEN_3_6_27B_MODEL,
-        OPENROUTER_QWEN_3_6_PLUS_MODEL,
-        OPENROUTER_GLM_5_1_MODEL,
-        OPENROUTER_GLM_5_2_MODEL,
-        OPENROUTER_GEMMA_4_31B_MODEL,
-    ] {
-        assert!(models.contains(&expected), "missing {expected}");
-    }
-}
-
-#[test]
-fn model_completion_names_for_moonshot_uses_latest_platform_model() {
-    assert_eq!(
-        model_completion_names_for_provider(ApiProvider::Moonshot),
-        vec![DEFAULT_MOONSHOT_MODEL]
-    );
-}
-
-#[test]
-fn model_completion_names_for_zai_lists_default_5_1_and_turbo() {
-    let models = model_completion_names_for_provider(ApiProvider::Zai);
-
-    // GLM-5.2 is the default and must be first; GLM-5.1 stays available,
-    // and GLM-5-Turbo is the faster sub-agent sibling.
-    assert_eq!(models.first().copied(), Some(DEFAULT_ZAI_MODEL));
-    assert_eq!(DEFAULT_ZAI_MODEL, ZAI_GLM_5_2_MODEL);
-    assert!(models.contains(&ZAI_GLM_5_1_MODEL));
-    assert!(models.contains(&ZAI_GLM_5_TURBO_MODEL));
-    // No accidental duplicate entries.
-    let mut sorted = models.to_vec();
-    sorted.sort_unstable();
-    let mut deduped = sorted.clone();
-    deduped.dedup();
-    assert_eq!(sorted, deduped);
-}
-
-#[test]
 fn normalize_model_name_for_zai_canonicalizes_current_glm_models() {
     for (alias, expected) in [
         ("glm-5.1", ZAI_GLM_5_1_MODEL),
@@ -3131,44 +3035,6 @@ fn normalize_model_name_for_zai_canonicalizes_current_glm_models() {
     assert_eq!(
         normalize_model_name_for_provider(ApiProvider::Zai, "glm-next-preview").as_deref(),
         Some("glm-next-preview")
-    );
-}
-
-#[test]
-fn model_completion_names_for_minimax_include_direct_chat_models() {
-    let models = model_completion_names_for_provider(ApiProvider::Minimax);
-
-    for expected in [
-        DEFAULT_MINIMAX_MODEL,
-        MINIMAX_M2_7_MODEL,
-        MINIMAX_M2_7_HIGHSPEED_MODEL,
-        MINIMAX_M2_5_MODEL,
-        MINIMAX_M2_5_HIGHSPEED_MODEL,
-        MINIMAX_M2_1_MODEL,
-        MINIMAX_M2_1_HIGHSPEED_MODEL,
-        MINIMAX_M2_MODEL,
-    ] {
-        assert!(models.contains(&expected), "missing {expected}");
-    }
-    assert!(
-        !models.contains(&OPENROUTER_MINIMAX_M3_MODEL),
-        "direct MiniMax picker must not expose OpenRouter namespaced IDs"
-    );
-}
-
-#[test]
-fn model_completion_names_for_minimax_anthropic_include_target_models() {
-    let models = model_completion_names_for_provider(ApiProvider::MinimaxAnthropic);
-
-    assert!(models.contains(&DEFAULT_MINIMAX_MODEL));
-    assert!(models.contains(&MINIMAX_M2_7_MODEL));
-}
-
-#[test]
-fn model_completion_names_for_sakana_include_fugu_models() {
-    assert_eq!(
-        model_completion_names_for_provider(ApiProvider::Sakana),
-        vec![DEFAULT_SAKANA_MODEL, SAKANA_FUGU_ULTRA_MODEL]
     );
 }
 
@@ -4493,10 +4359,6 @@ fn siliconflow_provider_uses_canonical_defaults() -> Result<()> {
     assert_eq!(config.api_provider(), ApiProvider::Siliconflow);
     assert_eq!(config.default_model(), DEFAULT_SILICONFLOW_MODEL);
     assert_eq!(config.deepseek_base_url(), DEFAULT_SILICONFLOW_BASE_URL);
-    assert_eq!(
-        model_completion_names_for_provider(ApiProvider::Siliconflow),
-        vec![DEFAULT_SILICONFLOW_MODEL, DEFAULT_SILICONFLOW_FLASH_MODEL]
-    );
     Ok(())
 }
 
@@ -6422,7 +6284,6 @@ fn provider_capability_zai_defaults_to_5_2_and_tracks_5_1_and_turbo() {
     // GLM-5.2 is now the default direct Z.AI model (1M context window).
     let default = provider_capability(ApiProvider::Zai, DEFAULT_ZAI_MODEL);
     assert_eq!(default.resolved_model, DEFAULT_ZAI_MODEL);
-    assert_eq!(default.resolved_model, ZAI_GLM_5_2_MODEL);
     assert_eq!(default.context_window, 1_000_000);
     assert_eq!(default.max_output, 131_072);
     assert!(default.thinking_supported);
