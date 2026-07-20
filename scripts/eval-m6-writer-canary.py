@@ -29,7 +29,7 @@ MAX_REQUESTS, RUNTIME_SECONDS = 10, 420
 HARNESS_SECONDS = RUNTIME_SECONDS + 15
 MAX_POLLS, MAX_STDIO_FRAME = 2_200, 4 * 1024 * 1024
 ROOT_BRANCH_REF = "refs/heads/main"
-ROOT_TOOLS = ["agent"]
+ROOT_TOOLS = ["agent", "read_file", "apply_patch", "edit_file"]
 WRITER_TOOLS = ["read_file", "apply_patch", "edit_file"]
 EXPECTED_ARTIFACT = "Host seal 的单文件提交和冻结验证证据"
 ENV_ALLOWLIST = "PATH TMPDIR LANG LC_ALL LC_CTYPE".split()
@@ -48,7 +48,7 @@ VERIFY_CODE = (
 )
 OBJECTIVE = f"""完成一个最小隔离写入任务。
 
-第一轮必须且只能调用一次 agent 工具；根 Agent 不得直接读写文件。调用参数必须是：
+第一轮必须调用一次且全程只能调用一次 agent 工具；根 Agent 不得直接写文件，集成后可只读复核。调用参数必须是：
 type=implementer、workspace_access=isolated_write、allowed_paths=["{FILE}"]、
 fork_context=false、allowed_tools=["read_file","apply_patch","edit_file"]、
 max_steps=4、max_depth=0、wall_time_secs=180、
@@ -278,7 +278,7 @@ def task(python: Path) -> dict[str, Any]:
     }
     return {
         "objective": OBJECTIVE,
-        "constraints": [f"根 Agent 只能调用一次 agent；writer 只允许修改 {FILE}", "必须由 Host seal、确定性验证和 fast-forward 完成集成"],
+        "constraints": [f"根 Agent 只能调用一次 agent 且不得直接写；writer 只允许修改 {FILE}", "必须由 Host seal、确定性验证和 fast-forward 完成集成"],
         "non_goals": ["根 Agent 直接编辑", "第二个子 Agent", "修改 Git 元数据"],
         "acceptance": [verify],
     }
@@ -640,15 +640,32 @@ def audit(
         event.get("invocation", {}).get("name")
         for event in prepared_tools
     ]
-    if len(prepared_tools) != 1 or prepared_tool_names != ["agent"]:
+    agent_tools = [
+        event
+        for event in prepared_tools
+        if event.get("invocation", {}).get("name") == "agent"
+    ]
+    direct_writes = [
+        name
+        for name in prepared_tool_names
+        if name in {"apply_patch", "edit_file"}
+    ]
+    if (
+        len(agent_tools) != 1
+        or not prepared_tool_names
+        or prepared_tool_names[0] != "agent"
+        or direct_writes
+    ):
         raise Failure(
             "root_agent_call_invalid",
             {
+                "agent_tool_count": len(agent_tools),
+                "direct_write_tools": direct_writes,
                 "prepared_tool_count": len(prepared_tools),
                 "prepared_tool_names": prepared_tool_names,
             },
         )
-    agent_call = prepared_tools[0]
+    agent_call = agent_tools[0]
     args = agent_call.get("invocation", {}).get("arguments", {}).get("parsed", {})
     expected_args = {
         "type": "implementer",
@@ -748,7 +765,14 @@ def audit(
         "integration_invalid",
     )
     integrated_state = integration.get("root_workspace_state_after")
-    agent_outcome = one(root, "tool_outcome_committed")
+    agent_outcomes = [
+        stored["event"]
+        for stored in root
+        if kind(stored) == "tool_outcome_committed"
+        and stored.get("event", {}).get("name") == "agent"
+    ]
+    check(len(agent_outcomes) == 1, "integrated_result_invalid")
+    agent_outcome = agent_outcomes[0]
     finished = one(root, "child_finished").get("outcome", {}).get("details", {}).get("integration", {})
     if (
         agent_outcome.get("name") != "agent"
