@@ -56,9 +56,10 @@ expected_artifact="{EXPECTED_ARTIFACT}"。
 """
 
 class Failure(RuntimeError):
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.details = details or {}
 
 def digest(value: bytes) -> str:
     return "sha256:" + hashlib.sha256(value).hexdigest()
@@ -802,6 +803,11 @@ def live(args: argparse.Namespace, disclosure: dict[str, Any]) -> dict[str, Any]
         shutil.copy2(source, binary)
         binary.chmod(0o700)
         binary_sha = digest(binary.read_bytes())
+        disclosure.update(
+            candidate_revision=revision,
+            candidate_binary_sha256=binary_sha,
+            model=args.model,
+        )
         state = root / "state"
         home = state / "home"
         codewhale_home = state / "codewhale"
@@ -821,18 +827,25 @@ def live(args: argparse.Namespace, disclosure: dict[str, Any]) -> dict[str, Any]
         env = {**credentialless_env, "DEEPSEEK_API_KEY": key}
         check(not any(name in env for name in NETWORK_OVERRIDE_ENV), "network_override_present")
         key = ""
+        stderr_path = state / "app-server.stderr"
         try:
-            process = subprocess.Popen(
-                [str(binary), "--provider", "deepseek", "app-server", "--stdio"],
-                cwd=workspace, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL, start_new_session=True,
-            )
+            with stderr_path.open("wb") as stderr_stream:
+                process = subprocess.Popen(
+                    [str(binary), "--provider", "deepseek", "app-server", "--stdio"],
+                    cwd=workspace,
+                    env=env,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=stderr_stream,
+                    start_new_session=True,
+                )
         except OSError as error:
             env["DEEPSEEK_API_KEY"] = ""
             raise Failure("app_server_launch_failed") from error
         env["DEEPSEEK_API_KEY"] = ""
         disclosure["paid_request_started"] = None
         client: Stdio | None = None
+        failure: Failure | None = None
         try:
             client = Stdio(process, secret)
             expected_task = task(Path(sys.executable))
@@ -841,6 +854,7 @@ def live(args: argparse.Namespace, disclosure: dict[str, Any]) -> dict[str, Any]
             )
             if result.get("kind") != "run":
                 raise Failure("start_run_missing")
+            disclosure["paid_request_started"] = True
             run = result["run"]
             check(run.get("model") == args.model, "root_model_projection_invalid")
             root_id = run.get("run_id")
@@ -850,12 +864,37 @@ def live(args: argparse.Namespace, disclosure: dict[str, Any]) -> dict[str, Any]
             poll = 0
             while run.get("terminal") is None:
                 poll += 1
-                if (
-                    process.poll() is not None
-                    or time.monotonic() >= deadline
-                    or poll > MAX_POLLS
-                ):
-                    raise Failure("run_interrupted")
+                returncode = process.poll()
+                if returncode is not None:
+                    stderr = stderr_path.read_bytes()
+                    if secret in stderr:
+                        raise Failure("key_in_stderr")
+                    raise Failure(
+                        "app_server_exited",
+                        {
+                            "process_returncode": returncode,
+                            "stderr_sha256": digest(stderr),
+                            "stderr_tail": stderr[-8192:].decode(errors="replace"),
+                            "poll_count": poll,
+                            "wall_time_ms": int((time.monotonic() - started) * 1000),
+                        },
+                    )
+                if time.monotonic() >= deadline:
+                    raise Failure(
+                        "run_deadline_exceeded",
+                        {
+                            "poll_count": poll,
+                            "wall_time_ms": int((time.monotonic() - started) * 1000),
+                        },
+                    )
+                if poll > MAX_POLLS:
+                    raise Failure(
+                        "run_poll_limit_exceeded",
+                        {
+                            "poll_count": poll,
+                            "wall_time_ms": int((time.monotonic() - started) * 1000),
+                        },
+                    )
                 time.sleep(0.2)
                 result = client.call(query("get", root_id, f"m6-get-{poll}"))
                 if result.get("kind") != "run":
@@ -930,6 +969,8 @@ def live(args: argparse.Namespace, disclosure: dict[str, Any]) -> dict[str, Any]
                 "key_accessed": True,
                 "note": "单次 M6 机制 canary，不具备产品指标资格",
             }
+        except Failure as error:
+            failure = error
         finally:
             if client is not None:
                 client.close()
@@ -938,6 +979,8 @@ def live(args: argparse.Namespace, disclosure: dict[str, Any]) -> dict[str, Any]
         check(not any(secret in value.encode() for value in runtime_argv), "key_in_argv")
         check(not tree_contains(workspace, secret), "key_in_git")
         check(not tree_contains(state, secret), "key_in_local_state")
+        if failure is not None:
+            raise failure
         record.update(
             key_in_argv=False,
             key_in_protocol=False,
@@ -1078,7 +1121,10 @@ def main() -> int:
     except Failure as error:
         record = {
             "schema": SCHEMA, "record_type": "canary_result", "status": "failed",
-            "product_metric_eligible": False, "error_code": error.code, **disclosure,
+            "product_metric_eligible": False,
+            "error_code": error.code,
+            "error_details": error.details,
+            **disclosure,
         }
         emit(record, args.output)
         return 1
