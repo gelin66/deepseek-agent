@@ -25,7 +25,8 @@ from typing import Any
 SCHEMA, RUN_API, EVENT_API = "codewhale.eval.m6-writer-canary.v1", 7, 10
 MODEL, MODELS = "deepseek-v4-flash", ("deepseek-v4-flash", "deepseek-v4-pro")
 FILE, BEFORE, AFTER = "answer.txt", b"before\n", b"after\n"
-MAX_REQUESTS, MAX_SECONDS = 10, 420
+MAX_REQUESTS, RUNTIME_SECONDS = 10, 420
+HARNESS_SECONDS = RUNTIME_SECONDS + 15
 MAX_POLLS, MAX_STDIO_FRAME = 2_200, 4 * 1024 * 1024
 ROOT_BRANCH_REF = "refs/heads/main"
 ROOT_TOOLS = ["agent", "read_file", "apply_patch", "edit_file"]
@@ -286,7 +287,7 @@ def start_command(workspace: Path, python: Path, model: str, request_id: str) ->
     limits = {
         "max_turns": 8, "max_model_requests": 8, "max_model_retries": 1,
         "max_tool_calls": 8, "max_depth": 1, "max_concurrent_children": 1,
-        "model_event_idle_ms": 120_000, "wall_time_ms": MAX_SECONDS * 1000,
+        "model_event_idle_ms": 120_000, "wall_time_ms": RUNTIME_SECONDS * 1000,
     }
     return {
         "schema_version": RUN_API,
@@ -403,6 +404,7 @@ def event_summary(stream: list[dict[str, Any]]) -> dict[str, Any]:
                 "sequence": stored.get("sequence"),
                 "code": failure.get("code"),
                 "category": failure.get("category"),
+                "message": " ".join(str(failure.get("message", "")).split())[:512],
                 "retryable": failure.get("retryable"),
                 "actionable_output": failure.get("actionable_output"),
                 "retry_decision": retry.get("decision"),
@@ -958,7 +960,7 @@ def live(args: argparse.Namespace, disclosure: dict[str, Any]) -> dict[str, Any]
             root_id = run.get("run_id")
             if not isinstance(root_id, str):
                 raise Failure("root_run_id_missing")
-            deadline = time.monotonic() + MAX_SECONDS
+            deadline = time.monotonic() + HARNESS_SECONDS
             poll = 0
             while run.get("terminal") is None:
                 poll += 1
@@ -1117,7 +1119,7 @@ def self_test() -> None:
         envelope["schema_version"] == RUN_API
         and envelope["command"]["max_api_requests"] == MAX_REQUESTS
         and envelope["command"]["tool_policy"]["allowed"] == ROOT_TOOLS
-        and MAX_POLLS * 0.2 >= MAX_SECONDS
+        and MAX_POLLS * 0.2 >= HARNESS_SECONDS
         and not any(name in safe_env() for name in NETWORK_OVERRIDE_ENV)
     )
     revision = "a" * 40
@@ -1186,13 +1188,13 @@ def self_test() -> None:
             "sequence": 1,
             "code": "stream_stall",
             "category": "stream_stall",
+            "message": "must not be copied",
             "retryable": True,
             "actionable_output": True,
             "retry_decision": "stop",
             "stop_reason": "actionable_output",
         }
     ]
-    assert "message" not in json.dumps(failed_summary)
     rejects(
         "run_identity_invalid",
         lambda: audit_run_identity(
@@ -1243,7 +1245,7 @@ def dry_run(args: argparse.Namespace) -> dict[str, Any]:
         "schema": SCHEMA, "record_type": "dry_run", "status": "ready",
         "product_metric_eligible": False, "run_api_schema_version": RUN_API,
         "runtime_event_schema_version": EVENT_API, "model": args.model,
-        "max_api_requests": MAX_REQUESTS, "max_runtime_seconds": MAX_SECONDS,
+        "max_api_requests": MAX_REQUESTS, "max_runtime_seconds": RUNTIME_SECONDS,
         "task_definition_sha256": json_digest(expected_task),
         "verifier_spec_sha256": json_digest(verifier(Path(sys.executable))),
         "root_allowed_tools": ROOT_TOOLS, "writer_allowed_tools": WRITER_TOOLS,
