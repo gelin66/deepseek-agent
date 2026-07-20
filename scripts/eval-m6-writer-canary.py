@@ -48,7 +48,7 @@ VERIFY_CODE = (
 )
 OBJECTIVE = f"""完成一个最小隔离写入任务。
 
-第一轮必须调用一次且全程只能调用一次 agent 工具；根 Agent 不得直接写文件，集成后可只读复核。调用参数必须是：
+全程必须且只能调用一次 agent 工具；根 Agent 不得直接写文件，可在委派前后只读核对。调用参数必须是：
 type=implementer、workspace_access=isolated_write、allowed_paths=["{FILE}"]、
 fork_context=false、allowed_tools=["read_file","apply_patch","edit_file"]、
 max_steps=4、max_depth=0、wall_time_secs=180、
@@ -652,8 +652,6 @@ def audit(
     ]
     if (
         len(agent_tools) != 1
-        or not prepared_tool_names
-        or prepared_tool_names[0] != "agent"
         or direct_writes
     ):
         raise Failure(
