@@ -441,9 +441,38 @@ def terminal_accounting_projection_valid(
     )
 
 
+def run_usage_projection_valid(run: dict[str, Any]) -> bool:
+    accounting = run.get("accounting")
+    physical = accounting.get("usage") if isinstance(accounting, dict) else None
+    logical = run.get("usage")
+    if not isinstance(physical, dict) or not isinstance(logical, dict):
+        return False
+    if set(physical) != set(logical):
+        return False
+    if not all(
+        isinstance(physical[field], int)
+        and not isinstance(physical[field], bool)
+        and physical[field] >= 0
+        and isinstance(logical[field], int)
+        and not isinstance(logical[field], bool)
+        and logical[field] >= 0
+        and physical[field] >= logical[field]
+        for field in physical
+    ):
+        return False
+    retry_exercised = (
+        int(run.get("runtime_retries", 0)) > 0
+        or int(accounting.get("transport_retries", 0)) > 0
+    )
+    return retry_exercised or physical == logical
+
+
 def accounting_metrics(run: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
     HELPER.MAX_API_REQUESTS = MAX_API_REQUESTS
-    metrics = HELPER.accounting_metrics(run)
+    accounting = run.get("accounting")
+    physical_usage = accounting.get("usage") if isinstance(accounting, dict) else None
+    projected = {**run, "usage": physical_usage}
+    metrics = HELPER.accounting_metrics(projected)
     terminal_state(events)
     terminal_outcome = next(
         stored["event"].get("outcome")
@@ -458,6 +487,7 @@ def accounting_metrics(run: dict[str, Any], events: list[dict[str, Any]]) -> dic
         (
             metrics["valid"],
             terminal_accounting_projection_valid(terminal_outcome, run),
+            run_usage_projection_valid(run),
             int(run.get("runtime_model_requests", 0)) <= MAX_MODEL_REQUESTS,
         )
     )
@@ -720,6 +750,84 @@ def failure_fact_projection_audit(
     }
 
 
+def baseline_compaction_retry_lifecycle_valid(
+    events: list[dict[str, Any]],
+    run: dict[str, Any],
+    committed: dict[str, Any],
+) -> bool:
+    kinds = [event_kind(stored) for stored in events]
+    prepared = [
+        stored["event"]
+        for stored in events
+        if event_kind(stored) == "context_compaction_prepared"
+    ]
+    inflight = [
+        stored["event"]
+        for stored in events
+        if event_kind(stored) == "context_compaction_in_flight"
+    ]
+    failures = [
+        stored["event"]
+        for stored in events
+        if event_kind(stored) == "context_compaction_attempt_failed"
+    ]
+    if len(prepared) != 1 or len(inflight) != len(failures) + 1:
+        return False
+    compaction_id = committed.get("compaction_id")
+    initial = prepared[0]
+    retry_prepared = [
+        failure.get("retry", {}).get("prepared")
+        for failure in failures
+    ]
+    if not all(
+        isinstance(item, dict)
+        and isinstance(item.get("request"), dict)
+        and failure.get("retry", {}).get("decision") == "retry"
+        for failure, item in zip(failures, retry_prepared)
+    ):
+        return False
+    attempts = [
+        {
+            "attempt_id": initial.get("attempt_id"),
+            "request": initial.get("request"),
+        },
+        *retry_prepared,
+    ]
+    expected_order = ["run_created", "context_compaction_prepared"]
+    for _ in failures:
+        expected_order.extend(
+            ["context_compaction_in_flight", "context_compaction_attempt_failed"]
+        )
+    expected_order.extend(
+        [
+            "context_compaction_in_flight",
+            "context_compaction_committed",
+            "terminal",
+        ]
+    )
+    return all(
+        (
+            kinds == expected_order,
+            isinstance(initial.get("request"), dict),
+            initial.get("compaction_id") == compaction_id,
+            initial.get("trigger") == committed.get("trigger"),
+            all(item.get("compaction_id") == compaction_id for item in inflight),
+            all(item.get("compaction_id") == compaction_id for item in failures),
+            [item.get("attempt_id") for item in inflight]
+            == [item.get("attempt_id") for item in attempts],
+            [item.get("attempt_id") for item in failures]
+            == [item.get("attempt_id") for item in attempts[:-1]],
+            [
+                (item.get("request") or {}).get("attempt")
+                for item in attempts
+            ]
+            == list(range(len(attempts))),
+            run.get("runtime_model_requests") == len(attempts),
+            run.get("runtime_retries") == len(failures),
+        )
+    )
+
+
 def compact_audit(
     variant: str,
     events: list[dict[str, Any]],
@@ -762,40 +870,28 @@ def compact_audit(
         and before > after > 0
     )
     if variant == "baseline":
-        prepared = [
-            stored["event"]
-            for stored in events
-            if event_kind(stored) == "context_compaction_prepared"
-        ]
-        inflight = [
-            stored["event"]
-            for stored in events
-            if event_kind(stored) == "context_compaction_in_flight"
-        ]
-        identity = (
-            len(prepared) == len(inflight) == 1
-            and prepared[0].get("compaction_id") == event.get("compaction_id")
-            and inflight[0].get("compaction_id") == event.get("compaction_id")
-            and prepared[0].get("attempt_id") == inflight[0].get("attempt_id")
+        retry_lifecycle = baseline_compaction_retry_lifecycle_valid(
+            events, run, event
         )
         valid = all(
             (
                 transcript_valid,
                 token_valid,
-                identity,
+                retry_lifecycle,
                 event.get("output") is not None,
                 isinstance(projection, dict),
                 projection.get("summary_prompt") is not None
                 if isinstance(projection, dict)
                 else False,
-                run.get("runtime_model_requests") == 1,
-                kinds.index("context_compaction_prepared")
-                < kinds.index("context_compaction_in_flight")
-                < kinds.index("context_compaction_committed"),
-                "context_compaction_attempt_failed" not in kinds,
             )
         )
-        return {**base, "valid": valid, "local": False}
+        return {
+            **base,
+            "valid": valid,
+            "local": False,
+            "attempts": run.get("runtime_model_requests"),
+            "retries": run.get("runtime_retries"),
+        }
 
     old_kinds = {
         "context_compaction_prepared",
@@ -1846,6 +1942,74 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertTrue(terminal_accounting_projection_valid(terminal, run))
         terminal["accounting"]["runtime_retries"] = 2
         self.assertFalse(terminal_accounting_projection_valid(terminal, run))
+
+    def test_physical_usage_contains_retry_usage_without_hiding_regression(self) -> None:
+        fields = {field: 0 for field in USAGE_FIELDS}
+        logical = {**fields, "input_tokens": 100, "output_tokens": 20}
+        physical = {**logical, "input_tokens": 150, "output_tokens": 30}
+        run = {
+            "accounting": {"usage": physical, "transport_retries": 0},
+            "usage": logical,
+            "runtime_retries": 1,
+        }
+        self.assertTrue(run_usage_projection_valid(run))
+        run["runtime_retries"] = 0
+        self.assertFalse(run_usage_projection_valid(run))
+        run["runtime_retries"] = 1
+        run["accounting"]["usage"]["input_tokens"] = 99
+        self.assertFalse(run_usage_projection_valid(run))
+
+    def test_baseline_compaction_retry_lifecycle_is_exact(self) -> None:
+        def stored(kind: str, **payload: Any) -> dict[str, Any]:
+            return {"event": {"kind": kind, **payload}}
+
+        committed = {
+            "kind": "context_compaction_committed",
+            "compaction_id": "compaction-1",
+            "trigger": "manual",
+        }
+        events = [
+            stored("run_created"),
+            stored(
+                "context_compaction_prepared",
+                compaction_id="compaction-1",
+                attempt_id="attempt-0",
+                trigger="manual",
+                request={"attempt": 0},
+            ),
+            stored(
+                "context_compaction_in_flight",
+                compaction_id="compaction-1",
+                attempt_id="attempt-0",
+            ),
+            stored(
+                "context_compaction_attempt_failed",
+                compaction_id="compaction-1",
+                attempt_id="attempt-0",
+                retry={
+                    "decision": "retry",
+                    "prepared": {
+                        "attempt_id": "attempt-1",
+                        "request": {"attempt": 1},
+                    },
+                },
+            ),
+            stored(
+                "context_compaction_in_flight",
+                compaction_id="compaction-1",
+                attempt_id="attempt-1",
+            ),
+            {"event": committed},
+            stored("terminal"),
+        ]
+        run = {"runtime_model_requests": 2, "runtime_retries": 1}
+        self.assertTrue(
+            baseline_compaction_retry_lifecycle_valid(events, run, committed)
+        )
+        events[4]["event"]["attempt_id"] = "wrong-attempt"
+        self.assertFalse(
+            baseline_compaction_retry_lifecycle_valid(events, run, committed)
+        )
 
     def test_schedule_has_twelve_pairs_and_twenty_four_arms(self) -> None:
         planned = schedule(3)
