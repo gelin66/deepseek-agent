@@ -26,9 +26,19 @@ impl ModelStream for OneEventStream {
     }
 }
 
+struct PendingStream;
+
+#[async_trait]
+impl ModelStream for PendingStream {
+    async fn next(&mut self) -> Option<Result<ModelStreamEvent, ModelPortError>> {
+        std::future::pending().await
+    }
+}
+
 #[derive(Clone, Copy)]
 enum ModelScript {
     Writer,
+    SlowWriter,
     ReadOnlyRole,
     RejectWriter,
     ResumeWriter,
@@ -73,7 +83,20 @@ impl DeterministicModel {
                         "type": "implementer",
                         "workspace_access": "isolated_write",
                         "allowed_paths": ["src/lib.rs"],
+                        "wall_time_secs": 180,
                         "expected_artifact": "一个 Host seal 的提交"
+                    }),
+                )],
+                (ModelScript::SlowWriter, AgentActorKind::Root, 0) => vec![tool_call(
+                    "slow-writer-call",
+                    AGENT_TOOL_NAME,
+                    json!({
+                        "prompt": "在自身期限内修改 src/lib.rs",
+                        "type": "implementer",
+                        "workspace_access": "isolated_write",
+                        "allowed_paths": ["src/lib.rs"],
+                        "wall_time_secs": 1,
+                        "expected_artifact": "一个有界 Writer 结果"
                     }),
                 )],
                 (ModelScript::ReadOnlyRole, AgentActorKind::Root, 0) => vec![tool_call(
@@ -152,7 +175,12 @@ impl ModelPort for DeterministicModel {
         self.requests
             .lock()
             .expect("request log lock")
-            .push(request);
+            .push(request.clone());
+        if matches!(self.script, ModelScript::SlowWriter)
+            && request.actor.kind == AgentActorKind::Child
+        {
+            return Ok(Box::new(PendingStream));
+        }
         Ok(Box::new(OneEventStream {
             event: Some(Ok(ModelStreamEvent::Completed { output })),
         }))
@@ -1291,11 +1319,9 @@ async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_
         sink,
         store,
     } = runtime_fixture(ModelScript::Writer);
-    let outcome = runtime
-        .start(root_request(true, true))
-        .wait()
-        .await
-        .unwrap();
+    let mut request = root_request(true, true);
+    request.limits.wall_time_ms = Some(225_000);
+    let outcome = runtime.start(request).wait().await.unwrap();
     assert!(
         matches!(outcome.terminal, TerminalState::Completed { .. }),
         "unexpected root terminal: {:?}",
@@ -1311,6 +1337,20 @@ async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_
     assert_eq!(
         lifecycle.task.workspace.execution_workspace(),
         WRITER_WORKSPACE
+    );
+    let child_replay = store
+        .load(&lifecycle.task.child_run_id)
+        .await
+        .unwrap()
+        .expect("writer child replay");
+    assert_eq!(
+        lifecycle.task.deadline_unix_ms, child_replay.snapshot.request.deadline_unix_ms,
+        "frozen AgentTask and child RunRequest must share one deadline"
+    );
+    assert_eq!(lifecycle.task.limits.wall_time_ms, Some(180_000));
+    assert!(
+        lifecycle.task.deadline_unix_ms < replay.snapshot.request.deadline_unix_ms,
+        "writer child wall-time must shorten the parent deadline"
     );
     assert_eq!(
         root_tools.calls.lock().expect("root call lock").as_slice(),
@@ -1419,6 +1459,49 @@ async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_
             < position(&timeline, "event:host-verification-committed"),
         "root exact verifier must run only after integration is durable"
     );
+}
+
+#[tokio::test]
+async fn writer_child_times_out_at_its_shorter_frozen_deadline() {
+    let RuntimeFixture { runtime, store, .. } = runtime_fixture(ModelScript::SlowWriter);
+    let mut request = root_request(true, true);
+    request.limits.wall_time_ms = Some(5_000);
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        runtime.start(request).wait(),
+    )
+    .await
+    .expect("root must converge after the child deadline")
+    .expect("root runtime joins");
+    let root_replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    let lifecycle = root_replay
+        .snapshot
+        .agent_tasks
+        .first()
+        .expect("slow writer task");
+    let child_replay = store
+        .load(&lifecycle.task.child_run_id)
+        .await
+        .unwrap()
+        .expect("slow writer child replay");
+    assert_eq!(lifecycle.task.limits.wall_time_ms, Some(1_000));
+    assert_eq!(
+        lifecycle.task.deadline_unix_ms,
+        child_replay.snapshot.request.deadline_unix_ms
+    );
+    assert!(lifecycle.task.deadline_unix_ms < root_replay.snapshot.request.deadline_unix_ms);
+    assert!(matches!(
+        child_replay.snapshot.terminal,
+        Some(AgentOutcome {
+            terminal: TerminalState::Failed {
+                failure: RuntimeFailure::Timeout {
+                    phase: RuntimeTimeoutPhase::Run,
+                    timeout_ms: 1_000,
+                },
+            },
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
