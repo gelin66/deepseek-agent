@@ -11,10 +11,12 @@
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - M4 最终代码检查点：`65fa88ba`
 - M6-A 代码与真实 DeepSeek Writer canary 检查点：`a982a9a8`
+- M6-B1 正式 A/B candidate：`5d72ae94`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
-  safety；M6-A 单 Writer isolated worktree 闭环已完成，下一切片为 M6-B 冻结任务 A/B
-- 当前协议：Run API v7、RuntimeEvent v10、State schema v14
+  safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 正式 A/B 已判定
+  `reject_and_rework`，M6-B2 不准入
+- 当前协议：Run API v7、RuntimeEvent v10、State schema v15
 
 ## 1. 当前结论
 
@@ -148,7 +150,7 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
-- start/continue 通过 State schema v14 中保留的 durable creation reservation 先绑定
+- start/continue 通过 State schema v15 中保留的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
@@ -228,7 +230,7 @@ before/after Token 重算，仍超限则 typed fail closed。该路径没有摘�
   `.git`、`.codewhale`、`.deepseek` 保护。
 
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是 RuntimeEvent v10 / State v14 的 canonical facts。
+post-integration verification 都是 RuntimeEvent v10 / State v15 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -281,7 +283,7 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v14；RunStore 继续复用同一 event/snapshot 表，不增加
+- 当前 State 物理 schema 为 v15；RunStore 继续复用同一 event/snapshot 表，不增加
   EvidenceReceipt 私表；
 - 当前 canonical RuntimeEvent writer/reader 为 v10；
 - append-only canonical event；
@@ -299,6 +301,9 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
 - AgentTask/workspace assignment、Host-observed AgentOutcome、Writer integration、
   post-integration verification 与 cleanup/recovery；
 - terminal exactly-once；
+- Terminal reducer 原子投影 `AgentOutcome.accounting`；root terminal accounting
+  `sealed=true`，Writer child terminal 保持共享 ledger 的 `sealed=false`；v15 只允许从
+  canonical event log 确定性重建旧物化 snapshot，其他差异 fail closed；
 - no-key terminal replay。
 
 旧 thread/message/goal tables 仍被 legacy `thread` CLI 等外围路径消费，不再服务交互 TUI
@@ -360,12 +365,12 @@ M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。
 
 | Crate | 当前生产职责 | 当前迁移债务 |
 |---|---|---|
-| `protocol` | canonical task、request、command、event、evidence、AgentTask/outcome、terminal | M6-B 并行范围与评测契约 |
-| `runtime` | 唯一根/只读子/Writer Agent loop、completion gate 与 reducer | M6-B 同任务 A/B 与有证据的并行扩展 |
-| `orchestrator` | 单 Writer worktree、Host diff/verify/integrate/cleanup | M6-B 先评测；通过后才做最多双 Writer |
+| `protocol` | canonical task、request、command、event、evidence、AgentTask/outcome、terminal | named verifier 与有序 EvidenceReceipt |
+| `runtime` | 唯一根/只读子/Writer Agent loop、completion gate 与 reducer | Host actor capability、Writer 默认关闭 cutover 与时序 completion gate |
+| `orchestrator` | 单 Writer worktree、Host diff/verify/integrate/cleanup | seal/blocked 可诊断恢复；M6-B1 重评前不扩双 Writer |
 | `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | FIM 调优与定期官方复核 |
 | `context` | production prompt、evidence-aware projection 与 hard-limit compaction | RepoGraph 仅在缺失检索证据出现后启动 |
-| `tools` | 固定 production tool catalog 与执行 | 编辑/FIM 协议 A/B |
+| `tools` | 固定 production tool catalog 与执行 | verifier 无 workspace 副作用；编辑/FIM 协议 A/B |
 | `state` | SQLite RunStore、lease、replay | legacy thread tables 删除 |
 | `app` | 唯一 production composition、Run command 与 Orchestrator wiring | M6-B 策略 admission |
 | `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
@@ -865,6 +870,13 @@ M6-A 又在 `a982a9a8` 完成离线 lifecycle/crash/parity 门禁和一次真实
 通过，临时 worktree/branch 清理。它只证明生产机制可用，
 `product_metric_eligible=false`；完整身份与限制见
 [M6-A isolated Writer 机制 canary](../../eval/summaries/m6-a-isolated-writer-canary-2026-07-21.md)。
+M6-B1 随后在候选 `5d72ae94` 完成 18 对 / 36 arms 正式同二进制 A/B：计量和
+canonical terminal 全部闭合，但 single/Writer 仅 `2/18` / `4/18` verified，Writer
+仍有 7 false-success、1 次 root may-write 调用和 7 次 retained recovery；Token 与费用
+分别增加 35.5% / 52.5%。正式决策为 `reject_and_rework`，要求 Writer 只通过显式
+opt-in admission 使用，也不准入双 Writer；当前默认 `RunLimits` / tool policy 尚未
+完成默认关闭 cutover，不能把决策要求误写成已实现。完整结果见
+[M6-B1 Writer 收益 A/B](../../eval/summaries/m6-b1-writer-benefit-ab-2026-07-21.md)。
 
 ## 7. 明确非结论
 
@@ -881,7 +893,8 @@ M6-A 又在 `a982a9a8` 完成离线 lifecycle/crash/parity 门禁和一次真实
 - M5-A 只在一个固定 Python 编码任务和一个伪完成反例上证明 false-success 下降，尚未证明
   所有真实项目的假成功归零或获得通用 Token/时间收益；
 - eager join 已在广泛任务上提高 multi verified success、降低 Token/费用或缩短时间；
-- M6-A 单 Writer 相对当前 single-agent 已证明成功率、Token、费用或时间净收益；
+- M6-A 单 Writer 相对当前 single-agent 已证明净收益；M6-B1 只观察到 verified
+  `2/18 -> 4/18`，但 false-success、安全和开销硬门槛失败；
 - transport 迁移本身提升了真实编码成功率；
 - 单次 live canary 可以成为产品指标。
 

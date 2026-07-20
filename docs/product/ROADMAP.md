@@ -6,10 +6,14 @@
 - 当前阶段：M4 已关闭；M5-A canonical `TaskContract`/`EvidenceReceipt` 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 结论为 `shrink`：
   保留硬上限安全压缩，删除手动和提前阈值压缩。M6-A 单 Writer isolated worktree
-  垂直闭环已完成，下一步是 M6-B 冻结任务 single-agent / writer-agent 正式 A/B；
+  垂直闭环已完成。M6-B1 的 18 对 / 36 arms 正式 A/B 已完成并判定
+  `reject_and_rework`：保留单 Writer 隔离机制，决策要求关闭默认 admission，且不准入
+  M6-B2；当前默认关闭 cutover 尚未实现。下一步只修 verifier 卫生、actor 权限、时序
+  EvidenceReceipt 和 admission，再重新冻结 M6-B1；
   M5-C RepoGraph 因无缺失检索证据继续延后。M4 最终代码检查点为 `65fa88ba`；
   M5-B 收缩检查点为 `e2c870b0`；M6-A 代码与真实 canary 检查点为 `a982a9a8`。
-  当前 Run API v7、RuntimeEvent v10、State schema v14。CLI、TUI、本地 API 与
+  M6-B1 正式 A/B candidate 为 `5d72ae94`，结果为 `reject_and_rework`。
+  当前 Run API v7、RuntimeEvent v10、State schema v15。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
@@ -1522,7 +1526,7 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   lifecycle 和幂等 cleanup。
 - Writer 的 Linux bubblewrap / macOS seatbelt 工具执行只允许其 worktree，显式保护
   `.git`、`.codewhale` 和 `.deepseek`；只读 child 行为和后续只读委派保持不变。
-- Run API v7、RuntimeEvent v10 与 State v14 持久化 `AgentTask`、workspace assignment、
+- Run API v7、RuntimeEvent v10 与 State v15 持久化 `AgentTask`、workspace assignment、
   Host-observed `AgentOutcome`、integration、post-integration verification 和 cleanup/recovery。
   exec、TUI、HTTP/SSE/stdio 只投影这些 canonical facts。
 - Lane 的第二份 worktree create/remove 与重复字段/CLI 参数已物理删除；Lane/Fleet 仍有
@@ -1552,6 +1556,33 @@ M6-A 明确没有实现完整 DAG、多 Writer 并发、脏工作区快照、自
 - 只有预注册门槛通过，才进入独立的 M6-B2：最多两个 allowed paths 不重叠的 Writer、
   有界并发 2、同一个 Orchestrator/Runtime/Store，范围重叠或集成歧义一律 fail closed。
   不开发通用 DAG、自由聊天 swarm、新工具族或另一套 scheduler。
+
+M6-B1 已在候选 `5d72ae94` 上完成正式同二进制 A/B：
+
+- `deepseek-v4-flash` Standard Chat，3 个任务 × 2 treatments × 6 次，共 18 对 /
+  36 arms；0 invalid attempt、0 unknown billing、0 transport/runtime retry；
+- single 为 `2/18` verified、15 false-success；Writer 为 `4/18` verified、
+  7 false-success；
+- Writer 总 Token `+35.5%`、费用 `+52.5%`、时间 `+39.8%`；仅 1 对双方成功；
+- 出现 1 次 Writer root 调用 treatment 禁止的 may-write 工具和 7 次
+  `recovery_required` / retained Git 状态；
+- T3 single/Writer 12/12 最终 verifier 虽绿，却都没有形成冻结的
+  “失败 -> 修改 -> 通过”时序 evidence；
+- 正式决策为 `reject_and_rework`，`hard_gate_met=false`，M6-B2 不准入。完整身份、
+  cell/pair、费用和归因见
+  [M6-B1 Writer 收益 A/B](../../eval/summaries/m6-b1-writer-benefit-ab-2026-07-21.md)。
+
+下一执行切片仍属于 M6-B1 rework，不是新架构层：
+
+1. `crates/tools` 消除 verifier 生成 `__pycache__` 等 workspace 副作用；
+2. `app` / Runtime 完成 Writer 默认关闭、显式 opt-in 的 admission cutover；当前默认
+   `RunLimits` / tool policy 尚未完成这项决策；
+3. Runtime/Orchestrator 以 Host actor policy 强制 Writer root 只读，不依赖提示词；
+4. TaskContract 绑定 named frozen verifier，EvidenceReceipt 表达最小有序失败/通过事实；
+5. seal/blocked 恢复产生可诊断 reason，只在 artifact 状态确实不确定时 retained；
+6. Harness 冻结完整 tool definition hash，并保存 seal 未提交时的脱敏 scope 摘要；
+7. 离线回归通过后重新冻结同三任务；完成第 2 项前不得宣称“不默认 admission”，正式
+   A/B 重新通过前不开发双 Writer。
 
 ### 工作
 

@@ -615,6 +615,40 @@ single-agent / writer-agent 冻结任务 A/B，不能证明成功率、Token、�
 支持直接开发通用 DAG 或多 Writer swarm。可提交事实、身份与归因限制见
 [M6-A isolated Writer 机制 canary](../../eval/summaries/m6-a-isolated-writer-canary-2026-07-21.md)。
 
+### 9.3 M6-B1 Writer 产品收益证据（2026-07-21）
+
+候选 `5d72ae94b794b022a916151e1741c5b52de60edb` 使用同一个生产二进制、
+`deepseek-v4-flash` Standard Chat 和平衡交错 schedule，完成 3 tasks × 2 treatments ×
+6 runs：
+
+- 18/18 accepted pairs、36/36 arms、每 cell 6 次；
+- 0 invalid attempt、0 measurement-invalid、0 unknown billing、0 retry；
+- canonical root/child Terminal、RunView、sealed accounting、actor usage、surface cost
+  与请求数全部闭合；
+- 总计 285 请求、1,489,265 input、120,501 output，费用 USD `0.105379831`。
+
+产品结果：
+
+- single `2/18` verified、15 false-success；
+- Writer `4/18` verified、7 false-success；
+- Writer 总 Token `+35.5%`、费用 `+52.5%`、时间 `+39.8%`；
+- Writer 有 1 次 root 调用 treatment 禁止的 may-write 工具、7 次 retained recovery；
+  只有 1 对双方成功；
+- T3 的 12 个 arms 全部未满足预先冻结的失败后恢复时序，即使最终 verifier 为绿。
+
+因此该结果 `product_metric_eligible=true`，但 `hard_gate_met=false`；正式决策为
+`reject_and_rework`，不是 `hold` 或 `shrink`，M6-B2 不准入。`product_metric_eligible`
+只说明失败证据可正式计入，不表示产品成功。完整 identity、逐 cell/pair、诊断费用与归因见
+[M6-B1 Writer 收益 A/B](../../eval/summaries/m6-b1-writer-benefit-ab-2026-07-21.md)。
+
+本轮还冻结了后续评测纪律：
+
+- verifier 自身不得在任务 workspace 生成缓存或其他 artifact；
+- actor capability 必须由 Host admission 强制，不能只靠模型提示；
+- 需要时序证据的任务必须由 TaskContract/EvidenceReceipt 表达，不能用最终绿替代；
+- unknown billing、unsealed 或 canonical measurement 不一致立即停套，不得重采样；
+- 重新评测前不得修改任务、预算来掩盖失败，也不得先实现双 Writer。
+
 ## 10. 结果与决策记录
 
 建议结果格式：

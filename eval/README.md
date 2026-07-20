@@ -48,7 +48,11 @@ Harness、候选 revision 和 binary-pair SHA，且始终标记 `product_metric_
 `codewhale app-server --stdio` 二进制、相同 TaskDefinition、模型、工具 policy 输入与总预算，
 比较 single（子 Agent 深度/并发为零）和 M6-A isolated Writer（深度/并发各一）。冻结计划、
 三个 clean-Git fixture、任务、路径、verifier、顺序和决策门槛见
-[`m6-b1-writer-benefit-ab-v1.json`](manifests/m6-b1-writer-benefit-ab-v1.json)。
+[`m6-b1-writer-benefit-ab-v2.json`](manifests/m6-b1-writer-benefit-ab-v2.json)。
+
+正式 18 对 / 36 arms 已完成，决策为 `reject_and_rework`，M6-B2 不准入。结果身份、
+逐 cell/pair、开销与失败归因见
+[`m6-b1-writer-benefit-ab-2026-07-21.md`](summaries/m6-b1-writer-benefit-ab-2026-07-21.md)。
 
 先执行不会读取 Key 或联网的自测与计划检查：
 

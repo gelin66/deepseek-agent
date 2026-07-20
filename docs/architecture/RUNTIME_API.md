@@ -6,7 +6,7 @@
 - 状态：M6-A 单 Writer isolated worktree canonical lifecycle 已接入
 - 更新日期：2026-07-21
 - schema：`Run API`（`schema_version = 7`）、`RuntimeEvent`（writer/reader v10）、
-  `State`（schema v14）
+  `State`（schema v15）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -420,14 +420,14 @@ RuntimeEvent v10 建立唯一 Writer lifecycle：
   EvidenceReceipt 可以满足 root TaskContract。
 
 Run API v7 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio；没有新增
-presentation-local worktree command、第二事件总线或兼容 alias。State schema v14 继续复用
+presentation-local worktree command、第二事件总线或兼容 alias。State schema v15 继续复用
 canonical event/snapshot/lease，而不是增加 Orchestrator 私有 ledger。
 
 ## 6. 并发、控制与恢复
 
 - `start` 和 `continue` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v14（该 creation intent 表由 State schema v9 引入并保留；v13
+  持久写入 State schema v15（该 creation intent 表由 State schema v9 引入并保留；v13
   迁移会删除旧 `creation_kind = compact` 的 pending intent）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation run 尚未创建，重试沿用同一 reserved

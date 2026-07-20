@@ -130,12 +130,22 @@ Orchestrator 并被 Host 观测后，才能由 enforced policy owner 填写该�
 
 ## 未完成能力
 
-以下属于 M6-B，不应从旧实现恢复：
+以下能力不得从旧实现恢复，也没有被 M6-B1 准入：
 
 - 唯一 Orchestrator 的 task graph、mailbox 和控制动作；
 - 多 Writer 有界并发与可恢复冲突收敛；
-- 多 Agent 相对单 Agent 的广泛真实任务净收益评测。
+- 更广任务上的多 Agent 净收益证明。
 
 M6-A 已完成单 Writer 的 `AgentTask`、结构化 Host-observed `AgentOutcome`、worktree
 create/diff/verify/integrate/root verify/cleanup 和 crash/reopen。它只通过一次生产机制
-canary；是否默认使用、是否值得扩到双 Writer，必须由 M6-B 同任务 A/B 决定。
+canary。M6-B1 的 18 对 / 36 arms 同任务 A/B 已判定 `reject_and_rework`：Writer
+`4/18` verified、7 false-success，且 Token/费用分别比 single 高 35.5% / 52.5%。
+正式决策要求 isolated Writer 只通过显式 opt-in admission 使用，不扩到双 Writer；但
+当前默认 `RunLimits` / tool policy 仍会暴露 `agent` 路径，这个默认关闭 cutover 尚未
+实现，不能把决策要求写成已交付事实。
+
+下一步仍是同一 Runtime/Store/Orchestrator 内的 M6-B1 rework：verifier 不得污染
+workspace，Host 必须按 actor 强制 root/Writer capability，TaskContract/EvidenceReceipt
+必须表达冻结 verifier 与必要的失败后恢复时序，并完成 Writer 默认关闭、显式 opt-in
+的 admission cutover。重新通过正式 A/B 前，多 Writer、通用 DAG 和第二 scheduler
+均不进入开发。
