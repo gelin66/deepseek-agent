@@ -764,13 +764,14 @@ def audit(
     )
     integrated_state = integration.get("root_workspace_state_after")
     agent_outcomes = [
-        stored["event"]
+        stored
         for stored in root
         if kind(stored) == "tool_outcome_committed"
         and stored.get("event", {}).get("name") == "agent"
     ]
     check(len(agent_outcomes) == 1, "integrated_result_invalid")
-    agent_outcome = agent_outcomes[0]
+    agent_outcome_stored = agent_outcomes[0]
+    agent_outcome = agent_outcome_stored["event"]
     finished = one(root, "child_finished").get("outcome", {}).get("details", {}).get("integration", {})
     if (
         agent_outcome.get("name") != "agent"
@@ -811,12 +812,24 @@ def audit(
             "agent_integration_started",
             "agent_integration_committed",
             "child_finished",
-            "tool_outcome_committed",
             "host_verification_committed",
             "agent_cleanup_prepared",
             "agent_cleanup_committed",
             "terminal",
         ],
+    )
+    child_finished_position = next(
+        index for index, stored in enumerate(root) if kind(stored) == "child_finished"
+    )
+    agent_outcome_position = root.index(agent_outcome_stored)
+    host_verification_position = next(
+        index
+        for index, stored in enumerate(root)
+        if kind(stored) == "host_verification_committed"
+    )
+    check(
+        child_finished_position < agent_outcome_position < host_verification_position,
+        "agent_outcome_order_invalid",
     )
     if kind(root[-1]) != "terminal" or kind(child[-1]) != "terminal":
         raise Failure("terminal_not_last")
