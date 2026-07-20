@@ -401,6 +401,46 @@ def terminal_failure_kind(events: list[dict[str, Any]]) -> str | None:
     return failure.get("kind") if isinstance(failure, dict) else None
 
 
+def terminal_accounting_projection_valid(
+    terminal_outcome: Any, run: dict[str, Any]
+) -> bool:
+    terminal_accounting = (
+        terminal_outcome.get("accounting")
+        if isinstance(terminal_outcome, dict)
+        else None
+    )
+    projected_accounting = run.get("accounting")
+    if not isinstance(terminal_accounting, dict) or not isinstance(
+        projected_accounting, dict
+    ):
+        return False
+    excluded = {"sealed", "runtime_retries"}
+    terminal_comparable = {
+        key: value
+        for key, value in terminal_accounting.items()
+        if key not in excluded
+    }
+    projected_comparable = {
+        key: value
+        for key, value in projected_accounting.items()
+        if key not in excluded
+    }
+    return all(
+        (
+            terminal_comparable == projected_comparable,
+            terminal_accounting.get("sealed") is True,
+            projected_accounting.get("sealed") is False,
+            int(terminal_accounting.get("runtime_retries", 0))
+            == int(projected_accounting.get("runtime_retries", 0))
+            + int(run.get("runtime_retries", 0)),
+            terminal_outcome.get("runtime_model_requests")
+            == run.get("runtime_model_requests"),
+            terminal_outcome.get("runtime_retries") == run.get("runtime_retries"),
+            terminal_outcome.get("tool_calls") == run.get("tool_calls"),
+        )
+    )
+
+
 def accounting_metrics(run: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
     HELPER.MAX_API_REQUESTS = MAX_API_REQUESTS
     metrics = HELPER.accounting_metrics(run)
@@ -410,38 +450,6 @@ def accounting_metrics(run: dict[str, Any], events: list[dict[str, Any]]) -> dic
         for stored in events
         if event_kind(stored) == "terminal"
     )
-    terminal_accounting = (
-        terminal_outcome.get("accounting")
-        if isinstance(terminal_outcome, dict)
-        else None
-    )
-    projected_accounting = run.get("accounting")
-    terminal_comparable = (
-        {key: value for key, value in terminal_accounting.items() if key != "sealed"}
-        if isinstance(terminal_accounting, dict)
-        else None
-    )
-    projected_comparable = (
-        {key: value for key, value in projected_accounting.items() if key != "sealed"}
-        if isinstance(projected_accounting, dict)
-        else None
-    )
-    terminal_projection_valid = all(
-        (
-            terminal_comparable == projected_comparable,
-            isinstance(terminal_accounting, dict)
-            and terminal_accounting.get("sealed") is True,
-            isinstance(projected_accounting, dict)
-            and projected_accounting.get("sealed") is False,
-            isinstance(terminal_outcome, dict)
-            and terminal_outcome.get("runtime_model_requests")
-            == run.get("runtime_model_requests"),
-            isinstance(terminal_outcome, dict)
-            and terminal_outcome.get("runtime_retries") == run.get("runtime_retries"),
-            isinstance(terminal_outcome, dict)
-            and terminal_outcome.get("tool_calls") == run.get("tool_calls"),
-        )
-    )
     usage = {
         field: int(metrics["usage"].get(field, 0)) for field in USAGE_FIELDS
     }
@@ -449,7 +457,7 @@ def accounting_metrics(run: dict[str, Any], events: list[dict[str, Any]]) -> dic
     metrics["valid"] = all(
         (
             metrics["valid"],
-            terminal_projection_valid,
+            terminal_accounting_projection_valid(terminal_outcome, run),
             int(run.get("runtime_model_requests", 0)) <= MAX_MODEL_REQUESTS,
         )
     )
@@ -1812,6 +1820,33 @@ def dry_plan(args: argparse.Namespace) -> dict[str, Any]:
 
 
 class HarnessSelfTests(unittest.TestCase):
+    def test_terminal_accounting_projects_seal_and_runtime_retry(self) -> None:
+        projected = {
+            "sealed": False,
+            "runtime_retries": 2,
+            "usage": {"input_tokens": 10},
+            "cost_nanousd": 7,
+        }
+        run = {
+            "accounting": projected,
+            "runtime_model_requests": 3,
+            "runtime_retries": 1,
+            "tool_calls": 2,
+        }
+        terminal = {
+            "accounting": {
+                **projected,
+                "sealed": True,
+                "runtime_retries": 3,
+            },
+            "runtime_model_requests": 3,
+            "runtime_retries": 1,
+            "tool_calls": 2,
+        }
+        self.assertTrue(terminal_accounting_projection_valid(terminal, run))
+        terminal["accounting"]["runtime_retries"] = 2
+        self.assertFalse(terminal_accounting_projection_valid(terminal, run))
+
     def test_schedule_has_twelve_pairs_and_twenty_four_arms(self) -> None:
         planned = schedule(3)
         self.assertEqual(len(planned), 12)
