@@ -2707,6 +2707,19 @@ def dry_plan(binary: Path | None, revision: str | None) -> dict[str, Any]:
 
 
 class HarnessSelfTests(unittest.TestCase):
+    def test_fixture_git_identities_are_reproducible(self) -> None:
+        for task_id in TASK_IDS:
+            with self.subTest(task=task_id), tempfile.TemporaryDirectory() as raw:
+                _, base_commit, initial_tree = initialize_workspace(
+                    task_id,
+                    Path(raw),
+                )
+                self.assertEqual(
+                    base_commit,
+                    MANIFEST["tasks"][task_id]["fixture_base_commit"],
+                )
+                self.assertEqual(initial_tree, fixture_hash(task_id))
+
     def test_fixtures_start_failing_and_known_fixes_pass(self) -> None:
         fixes = {
             "t1": {

@@ -157,7 +157,7 @@
     "t2": {
       "name": "跨文件实现：递归 Agent profile 合并与测试",
       "fixture": "eval/fixtures/m6-writer-benefit/t2-cross-file",
-      "fixture_base_commit": "4aeea8df10cc1e7cfd17ce38e73937d22124336b",
+      "fixture_base_commit": "3e7e2225171b25d54f115a334615e6177fa64c72",
       "allowed_paths": ["agent_profile.py", "test_agent_profile.py"],
       "expected_changed_files": ["agent_profile.py", "test_agent_profile.py"],
       "expected_artifact": "生产实现与新增回归测试的完整双文件 diff、冻结验证证据",
@@ -194,7 +194,7 @@
     }
   },
   "frozen_hashes": {
-    "manifest_sha256_excluding_this_field": "sha256:7542b8cb0837065ae509dd04adb0766f29097d8f8c96e1fb6e739e6a78a7638a",
+    "manifest_sha256_excluding_this_field": "sha256:c16d689c755414793510c02245cb9514083adfbcbb4b2e69cc2db5786cd077ef",
     "fixture_tree_sha256": {
       "t1": "sha256:0e7ff64a80159f7fff149fba3c0a24af5836a7c8697f32e3ad7c242d1bc87733",
       "t2": "sha256:1fc1e191d26c0ae486a3108ca96351b2e7d28b9dafbe6b55fb0691ab85b24922",
