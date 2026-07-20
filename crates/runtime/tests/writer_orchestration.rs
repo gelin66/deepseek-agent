@@ -1726,6 +1726,15 @@ async fn failed_turn_limited_writer_with_retained_cleanup_is_recovery_required()
     assert_eq!(orchestrator.cleanup_calls.load(Ordering::Acquire), 1);
     assert_eq!(orchestrator.seal_calls.load(Ordering::Acquire), 0);
     assert_eq!(orchestrator.integrate_calls.load(Ordering::Acquire), 0);
+    assert!(outcome.accounting.complete);
+    assert!(outcome.accounting.usage_complete);
+    assert!(!outcome.accounting.billing_unknown);
+    assert_eq!(outcome.accounting.root.started, 1);
+    assert_eq!(outcome.accounting.root.completed, 1);
+    assert_eq!(outcome.accounting.root.in_flight, 0);
+    assert_eq!(outcome.accounting.child.started, 7);
+    assert_eq!(outcome.accounting.child.completed, 7);
+    assert_eq!(outcome.accounting.child.in_flight, 0);
     let requests = model.requests.lock().expect("request log");
     assert_eq!(
         requests
@@ -2006,6 +2015,15 @@ async fn uncreated_writer_recovery_does_not_advance_the_root_workspace() {
     assert_eq!(orchestrator.bind_calls.load(Ordering::Acquire), 1);
     assert_eq!(orchestrator.bind_side_effects.load(Ordering::Acquire), 0);
     assert_eq!(orchestrator.cleanup_calls.load(Ordering::Acquire), 0);
+    assert!(outcome.accounting.complete);
+    assert!(outcome.accounting.usage_complete);
+    assert!(!outcome.accounting.billing_unknown);
+    assert_eq!(outcome.accounting.root.started, 1);
+    assert_eq!(outcome.accounting.root.completed, 1);
+    assert_eq!(outcome.accounting.root.in_flight, 0);
+    assert_eq!(outcome.accounting.child.started, 0);
+    assert_eq!(outcome.accounting.child.completed, 0);
+    assert_eq!(outcome.accounting.child.in_flight, 0);
     let requests = model.requests.lock().expect("request log");
     assert_eq!(
         requests

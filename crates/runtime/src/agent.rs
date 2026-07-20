@@ -3524,7 +3524,7 @@ impl AgentRuntime {
             &terminal,
             TerminalState::RecoveryRequired {
                 ambiguity: RecoveryAmbiguity {
-                    phase: RecoveryAmbiguityPhase::ModelRequest | RecoveryAmbiguityPhase::ChildRun,
+                    phase: RecoveryAmbiguityPhase::ModelRequest,
                     ..
                 }
             }
