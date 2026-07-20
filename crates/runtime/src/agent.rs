@@ -1771,6 +1771,11 @@ impl AgentRuntime {
                     .map_or(requested, |parent| parent.min(requested)),
             );
         }
+        let child_deadline_unix_ms = bounded_child_deadline(
+            state.snapshot.request.deadline_unix_ms,
+            child_limits.wall_time_ms,
+            now_unix_ms(),
+        );
         let fork_context = arguments
             .get("fork_context")
             .and_then(Value::as_bool)
@@ -1875,7 +1880,7 @@ impl AgentRuntime {
             workspace: workspace.clone(),
             tool_policy: child_policy.clone(),
             limits: child_limits,
-            deadline_unix_ms: state.snapshot.request.deadline_unix_ms,
+            deadline_unix_ms: child_deadline_unix_ms,
             expected_artifact: launch.expected_artifact.clone(),
         };
         task.validate()
@@ -1978,7 +1983,7 @@ impl AgentRuntime {
                 depth: child_depth,
             },
             agent_task: Some(task.clone()),
-            deadline_unix_ms: state.snapshot.request.deadline_unix_ms,
+            deadline_unix_ms: child_deadline_unix_ms,
             tool_policy: child_policy,
             limits: child_limits,
             environment: child_environment,
@@ -5281,6 +5286,21 @@ fn effective_deadline(request: &RunRequest) -> Option<u64> {
     request.deadline_unix_ms
 }
 
+fn bounded_child_deadline(
+    parent_deadline_unix_ms: Option<u64>,
+    child_wall_time_ms: Option<u64>,
+    child_started_unix_ms: u64,
+) -> Option<u64> {
+    let child_deadline =
+        child_wall_time_ms.map(|wall_time| child_started_unix_ms.saturating_add(wall_time));
+    match (parent_deadline_unix_ms, child_deadline) {
+        (Some(parent), Some(child)) => Some(parent.min(child)),
+        (Some(parent), None) => Some(parent),
+        (None, Some(child)) => Some(child),
+        (None, None) => None,
+    }
+}
+
 fn deadline_expired(deadline: Option<u64>) -> bool {
     deadline.is_some_and(|deadline| now_unix_ms() >= deadline)
 }
@@ -5344,4 +5364,27 @@ fn validate_tool_calls(calls: &[ModelToolCall]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::bounded_child_deadline;
+
+    #[test]
+    fn child_deadline_honors_its_wall_time_and_parent_cap() {
+        let now = 1_000_000;
+        assert_eq!(
+            bounded_child_deadline(Some(now + 225_000), Some(180_000), now),
+            Some(now + 180_000)
+        );
+        assert_eq!(
+            bounded_child_deadline(Some(now + 30_000), Some(180_000), now),
+            Some(now + 30_000)
+        );
+        assert_eq!(
+            bounded_child_deadline(None, Some(180_000), now),
+            Some(now + 180_000)
+        );
+        assert_eq!(bounded_child_deadline(None, None, now), None);
+    }
 }
