@@ -540,6 +540,10 @@ fn request(input: &str) -> RunRequest {
     request.context_policy = ContextPolicy {
         hard_input_tokens: 900_000,
     };
+    // Canonical child orchestration requires an explicit workspace identity.
+    // The fixture has no real filesystem, so it uses one stable synthetic
+    // absolute path while its ToolExecutor supplies synthetic revisions.
+    request.environment.workspace = "/workspace".to_owned();
     request.limits.max_model_requests = 128;
     request.limits.max_turns = 16;
     request
@@ -814,7 +818,11 @@ async fn final_is_store_first_and_terminal_is_exactly_once() {
     }));
     let (runtime, _, sink, store) = fixture(model);
     let outcome = runtime.start(request("任务")).wait().await.unwrap();
-    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert!(
+        matches!(outcome.terminal, TerminalState::Completed { .. }),
+        "unexpected terminal: {:?}",
+        outcome.terminal
+    );
 
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
     let stored = replay.events;
@@ -1902,7 +1910,7 @@ fn agent_catalog_exposes_only_the_implemented_chinese_contract() {
         .into_iter()
         .find(|definition| definition.name == "agent")
         .expect("agent definition");
-    assert!(agent.description.contains("只读后台子 Agent"));
+    assert!(agent.description.contains("默认只读"));
 
     let properties = agent.input_schema["properties"]
         .as_object()
@@ -1910,6 +1918,8 @@ fn agent_catalog_exposes_only_the_implemented_chinese_contract() {
     for expected in [
         "prompt",
         "type",
+        "workspace_access",
+        "allowed_paths",
         "fork_context",
         "allowed_tools",
         "max_steps",
@@ -1930,7 +1940,7 @@ fn agent_catalog_exposes_only_the_implemented_chinese_contract() {
             "field description must be Chinese: {expected}"
         );
     }
-    assert_eq!(properties.len(), 8);
+    assert_eq!(properties.len(), 10);
     for removed in [
         "name",
         "task",
@@ -2035,7 +2045,11 @@ async fn async_child_handoff_precedes_the_next_root_request() {
     let model_for_assertion = model.clone();
     let (runtime, _, sink, store) = fixture(model);
     let outcome = runtime.start(request("多Agent")).wait().await.unwrap();
-    assert_eq!(root_calls.load(Ordering::Acquire), 2);
+    assert_eq!(
+        root_calls.load(Ordering::Acquire),
+        2,
+        "unexpected root outcome: {outcome:?}"
+    );
     assert_eq!(child_calls.load(Ordering::Acquire), 1);
     assert_eq!(outcome.runtime_model_requests, 3);
     assert_eq!(outcome.accounting.total_started(), 3);
@@ -2172,7 +2186,11 @@ async fn a_real_child_uses_the_same_broker_and_compacts_without_a_summary_reques
 
     let outcome = runtime.start(run_request).wait().await.unwrap();
 
-    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert!(
+        matches!(outcome.terminal, TerminalState::Completed { .. }),
+        "unexpected terminal: {:?}",
+        outcome.terminal
+    );
     assert_eq!(root_calls.load(Ordering::Acquire), 2);
     assert_eq!(child_calls.load(Ordering::Acquire), 2);
     assert_eq!(outcome.runtime_model_requests, 4);
@@ -2896,6 +2914,7 @@ async fn completed_terminal_without_a_host_completion_candidate_is_rejected() {
                 runtime_model_requests: 0,
                 runtime_retries: 0,
                 tool_calls: 0,
+                details: AgentResultDetails::default(),
             }),
         )
         .await
@@ -3074,6 +3093,7 @@ async fn may_write_epoch_invalidates_a_receipt_even_when_content_hash_returns_to
                 runtime_model_requests: 0,
                 runtime_retries: 0,
                 tool_calls: 1,
+                details: AgentResultDetails::default(),
             }),
         )
         .await
@@ -4257,6 +4277,7 @@ async fn reducer_enforces_steer_fifo_approval_identity_and_control_terminal_cons
                         runtime_model_requests: 0,
                         runtime_retries: 0,
                         tool_calls: 0,
+                        details: AgentResultDetails::default(),
                     }),
                 },
             },

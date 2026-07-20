@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use codewhale_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentActor, AgentActorKind,
-    AgentOutcome, AttemptId, ContextProjection, ModelAccounting, ModelAttemptFailure,
+    AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId, AgentWorkspaceAccess,
+    AgentWorkspaceAssignment, AttemptId, ContextProjection, ModelAccounting, ModelAttemptFailure,
     ModelErrorCategory, ModelMessage, ModelRequest, ModelRetryDecision, ModelRetryStopReason,
     PreparedModelRetry, PromptCacheControl, ReasoningEffort, RunId, RunRequest, RuntimeEventId,
     RuntimeEventKind, RuntimeFailure, StoredRuntimeEvent, SystemPrompt, SystemPromptBlock,
@@ -49,6 +50,39 @@ fn request(
     request.actor = actor;
     request.reasoning_effort = ReasoningEffort::High;
     request.max_output_tokens = Some(256);
+    request.environment.workspace = "/fixture/workspace".to_owned();
+    if actor.kind == AgentActorKind::Child {
+        let parent_run_id = request
+            .parent_run_id
+            .clone()
+            .expect("child fixture parent run id");
+        request.agent_task = Some(AgentTask {
+            task_id: AgentTaskId::from(format!("task:{}", run_id.0)),
+            root_run_id: parent_run_id.clone(),
+            parent_run_id,
+            child_run_id: run_id.clone(),
+            call_id: format!("call:{}", run_id.0),
+            role: "explorer".to_owned(),
+            task_contract: request
+                .task_contract
+                .clone()
+                .expect("child fixture task contract"),
+            workspace: AgentWorkspaceAssignment {
+                access: AgentWorkspaceAccess::ReadOnly,
+                root_workspace: request.environment.workspace.clone(),
+                base_commit: "a".repeat(40),
+                worktree_path: None,
+                root_branch: None,
+                branch: None,
+                allowed_paths: Vec::new(),
+                owner_token: None,
+            },
+            tool_policy: request.tool_policy.clone(),
+            limits: request.limits,
+            deadline_unix_ms: request.deadline_unix_ms,
+            expected_artifact: "fixture result".to_owned(),
+        });
+    }
     request
 }
 
@@ -248,6 +282,7 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
                     runtime_model_requests: 2,
                     runtime_retries: 1,
                     tool_calls: 0,
+                    details: AgentResultDetails::default(),
                 }),
             },
         ),
@@ -311,6 +346,7 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
                     runtime_model_requests: 0,
                     runtime_retries: 0,
                     tool_calls: 0,
+                    details: AgentResultDetails::default(),
                 }),
             },
         ),
@@ -327,10 +363,10 @@ fn assert_retry_only_advances_attempt(initial: &ModelRequest, retry: &ModelReque
 }
 
 #[test]
-fn runtime_event_v9_prompt_ledger_fixture_matches_rust_contract() {
+fn runtime_event_v10_prompt_ledger_fixture_matches_rust_contract() {
     let fixture = prompt_ledger_fixture();
     let fixture_json =
-        serde_json::to_vec(&fixture).expect("RuntimeEvent v9 fixture must serialize");
+        serde_json::to_vec(&fixture).expect("RuntimeEvent v10 fixture must serialize");
     let fixture_wire = std::str::from_utf8(&fixture_json).expect("fixture JSON must be UTF-8");
     for deleted_kind in [
         "context_compaction_prepared",
@@ -339,11 +375,11 @@ fn runtime_event_v9_prompt_ledger_fixture_matches_rust_contract() {
     ] {
         assert!(
             !fixture_wire.contains(deleted_kind),
-            "v9 fixture must not retain deleted event kind {deleted_kind}"
+            "v10 fixture must not retain deleted event kind {deleted_kind}"
         );
     }
     let events: Vec<StoredRuntimeEvent> = serde_json::from_slice(&fixture_json)
-        .expect("fixture must use the Rust RuntimeEvent v9 schema");
+        .expect("fixture must use the Rust RuntimeEvent v10 schema");
     assert!(!events.is_empty());
 
     for event in &events {
@@ -511,13 +547,16 @@ fn runtime_event_v9_prompt_ledger_fixture_matches_rust_contract() {
         })
         .expect("fixture must contain a committed deterministic compaction");
     let encoded = serde_json::to_value(compaction).expect("compaction event must serialize");
-    assert_eq!(encoded["schema_version"], 9);
+    assert_eq!(
+        encoded["schema_version"],
+        AGENT_RUNTIME_EVENT_SCHEMA_VERSION
+    );
     assert_eq!(encoded["event"]["kind"], "context_compaction_committed");
     assert!(
         encoded["event"].get("attempt_id").is_none()
             && encoded["event"].get("request").is_none()
             && encoded["event"].get("output").is_none(),
-        "v9 compaction must not retain the deleted model-summary protocol"
+        "v10 compaction must not retain the deleted model-summary protocol"
     );
     match &compaction.event {
         RuntimeEventKind::ContextCompactionCommitted {

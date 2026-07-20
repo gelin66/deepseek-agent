@@ -401,7 +401,7 @@ enum LaneCommand {
         #[arg(long, default_value_t = 50)]
         tail: usize,
     },
-    /// Stop a running lane and run worktree TTL cleanup.
+    /// Stop a running lane.
     Stop { lane_id: String },
     /// Start a lane under a Runtime backend (tmux|inline|vm|ci).
     Start {
@@ -420,18 +420,6 @@ enum LaneCommand {
         /// Runtime backend: tmux, inline, vm, or ci.
         #[arg(long, default_value = "tmux")]
         runtime: String,
-        /// Create an isolated worktree under this repo root.
-        #[arg(long, value_name = "DIR")]
-        worktree_repo: Option<PathBuf>,
-        /// Branch name for the worktree (requires `--worktree-repo`).
-        #[arg(long)]
-        branch: Option<String>,
-        /// Worktree path (defaults to `<repo>/.codewhale/lanes/<lane-id>`).
-        #[arg(long, value_name = "DIR")]
-        worktree_path: Option<PathBuf>,
-        /// Worktree cleanup TTL seconds after stop (0 = immediate on stop).
-        #[arg(long)]
-        worktree_ttl_secs: Option<u64>,
         /// Command to run in the runtime (after `--`).
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
@@ -444,19 +432,13 @@ struct LaneStartRequest {
     issue: Option<String>,
     goal: Option<String>,
     runtime: String,
-    worktree_repo: Option<PathBuf>,
-    branch: Option<String>,
-    worktree_path: Option<PathBuf>,
-    worktree_ttl_secs: Option<u64>,
     command: Vec<String>,
     environment: Vec<(String, String)>,
     cwd: Option<PathBuf>,
 }
 
 fn start_lane(request: LaneStartRequest) -> Result<()> {
-    use codewhale_lane::{
-        LaneRegistry, LaneStartSpec, RuntimeBackendKind, WorktreeProvision, resolve_backend,
-    };
+    use codewhale_lane::{LaneRegistry, LaneStartSpec, RuntimeBackendKind, resolve_backend};
 
     let LaneStartRequest {
         workflow,
@@ -464,31 +446,13 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
         issue,
         goal,
         runtime,
-        worktree_repo,
-        branch,
-        worktree_path,
-        worktree_ttl_secs,
         command,
         environment,
         cwd,
     } = request;
     let kind = RuntimeBackendKind::parse(&runtime)?;
     let reg = LaneRegistry::open_default()?;
-    let mut record = reg.create_pending(workflow, fleet, issue, goal, kind, worktree_ttl_secs)?;
-    let worktree = match (worktree_repo, branch) {
-        (Some(repo_root), Some(branch_name)) => {
-            let path = worktree_path
-                .unwrap_or_else(|| repo_root.join(".codewhale").join("lanes").join(&record.id));
-            Some(WorktreeProvision {
-                repo_root,
-                branch: branch_name,
-                path,
-                base_ref: None,
-            })
-        }
-        (None, None) => None,
-        _ => bail!("--worktree-repo and --branch must be provided together"),
-    };
+    let mut record = reg.create_pending(workflow, fleet, issue, goal, kind)?;
     let cmd = if command.is_empty() {
         vec![
             "sh".into(),
@@ -506,7 +470,6 @@ fn start_lane(request: LaneStartRequest) -> Result<()> {
             .then(std::env::current_exe)
             .transpose()
             .context("resolve current Codewhale executable for tmux log proxy")?,
-        worktree,
     };
     let backend = resolve_backend(kind);
     backend.start(&reg, &mut record, &spec)?;
@@ -575,14 +538,6 @@ fn run_lane_command(args: LaneArgs) -> Result<()> {
                 println!("goal:     {}", lane.goal.as_deref().unwrap_or("-"));
                 println!("started:  {}", lane.started_at);
                 println!("stopped:  {}", lane.stopped_at.as_deref().unwrap_or("-"));
-                println!(
-                    "worktree: {}",
-                    lane.worktree_path
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "-".into())
-                );
-                println!("branch:   {}", lane.branch.as_deref().unwrap_or("-"));
                 println!("tmux:     {}", lane.tmux_session.as_deref().unwrap_or("-"));
                 println!(
                     "socket:   {}",
@@ -700,10 +655,6 @@ fn run_lane_command(args: LaneArgs) -> Result<()> {
             issue,
             goal,
             runtime,
-            worktree_repo,
-            branch,
-            worktree_path,
-            worktree_ttl_secs,
             command,
         } => start_lane(LaneStartRequest {
             workflow,
@@ -711,10 +662,6 @@ fn run_lane_command(args: LaneArgs) -> Result<()> {
             issue,
             goal,
             runtime,
-            worktree_repo,
-            branch,
-            worktree_path,
-            worktree_ttl_secs,
             command,
             environment: Vec::new(),
             cwd: None,
@@ -997,7 +944,7 @@ fn reject_retired_command(cli: &Cli) -> Result<()> {
                 "命令 `codewhale update` 已删除；本项目不再内置自更新器，请通过当前安装渠道重新安装或升级"
             ),
             Some("workflow") => bail!(
-                "命令 `codewhale workflow` 已删除；多 Agent 请使用 canonical `agent` 能力，写 Agent 的 worktree 收敛将在统一 Orchestrator 中实现"
+                "命令 `codewhale workflow` 已删除；多 Agent 请使用 canonical `agent` 能力，写 Agent 的 worktree 由唯一 Orchestrator 管理"
             ),
             Some("workflow-tool") => {
                 bail!("命令 `codewhale workflow-tool` 已删除；旧 Workflow 第二运行时不再提供")
@@ -3095,6 +3042,38 @@ mod tests {
                 command: LaneCommand::List { json: true }
             }))
         ));
+    }
+
+    #[test]
+    fn lane_start_keeps_plain_runtime_path_and_has_no_worktree_flags() {
+        let cli = parse_ok(&[
+            "codewhale",
+            "lane",
+            "start",
+            "--workflow",
+            "demo",
+            "--runtime",
+            "inline",
+            "--",
+            "/bin/true",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Lane(LaneArgs {
+                command: LaneCommand::Start {
+                    workflow: Some(ref workflow),
+                    ref runtime,
+                    ref command,
+                    ..
+                }
+            })) if workflow == "demo" && runtime == "inline" && command == &["/bin/true"]
+        ));
+
+        let help = Cli::try_parse_from(["codewhale", "lane", "start", "--help"])
+            .expect_err("help should short-circuit parsing")
+            .to_string();
+        assert!(!help.contains("--worktree"));
+        assert!(!help.contains("--branch"));
     }
 
     #[test]

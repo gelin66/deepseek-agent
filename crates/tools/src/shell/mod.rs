@@ -774,7 +774,7 @@ impl ShellManager {
         let spec = CommandSpec::shell(command, work_dir.clone(), Duration::from_millis(timeout_ms))
             .with_policy(policy)
             .with_env(extra_env);
-        let exec_env = self.sandbox_manager.prepare(&spec);
+        let exec_env = self.sandbox_manager.prepare_enforced(&spec)?;
         self.spawn_prepared(command, &work_dir, &exec_env)
     }
 
@@ -801,7 +801,7 @@ impl ShellManager {
         )
         .with_policy(policy)
         .with_env(extra_env);
-        let exec_env = self.sandbox_manager.prepare(&spec);
+        let exec_env = self.sandbox_manager.prepare_enforced(&spec)?;
         self.spawn_prepared(display_command, working_dir, &exec_env)
     }
 

@@ -17,6 +17,7 @@ use crate::{
 const MAX_OUTPUT_CHARS: usize = 40_000;
 const DEFAULT_UNIFIED: u64 = 3;
 const MAX_UNIFIED: u64 = 50;
+const NO_OPTIONAL_LOCKS: &str = "--no-optional-locks";
 
 /// Execute the production `git_status` operation against a workspace context.
 pub fn execute_git_status(
@@ -25,13 +26,8 @@ pub fn execute_git_status(
 ) -> Result<ToolOutcome, ToolError> {
     let git_ctx = resolve_git_context(context, optional_str(&input, "path"))?;
 
-    let mut args = vec![
-        "-c".to_string(),
-        "core.quotepath=false".to_string(),
-        "status".to_string(),
-        "--porcelain=v1".to_string(),
-        "-b".to_string(),
-    ];
+    let mut args = read_only_git_args("status");
+    args.extend(["--porcelain=v1".to_string(), "-b".to_string()]);
     if let Some(pathspec) = &git_ctx.pathspec {
         args.push("--".to_string());
         args.push(pathspec.display().to_string());
@@ -71,14 +67,12 @@ pub fn execute_git_diff(
     let cached = optional_bool(&input, "cached", false);
     let unified = optional_u64(&input, "unified", DEFAULT_UNIFIED).min(MAX_UNIFIED);
 
-    let mut args = vec![
-        "-c".to_string(),
-        "core.quotepath=false".to_string(),
-        "diff".to_string(),
+    let mut args = read_only_git_args("diff");
+    args.extend([
         "--no-color".to_string(),
         "--no-ext-diff".to_string(),
         format!("--unified={unified}"),
-    ];
+    ]);
     if cached {
         args.push("--cached".to_string());
     }
@@ -119,6 +113,12 @@ pub fn execute_git_diff(
 struct GitContext {
     working_dir: PathBuf,
     pathspec: Option<PathBuf>,
+}
+
+fn read_only_git_args(subcommand: &str) -> Vec<String> {
+    [NO_OPTIONAL_LOCKS, "-c", "core.quotepath=false", subcommand]
+        .map(str::to_owned)
+        .to_vec()
 }
 
 fn resolve_git_context(
@@ -426,6 +426,7 @@ mod tests {
         // allocation: joining the `&[String]` slice directly must be byte-for-byte
         // identical to the previous `.map(String::as_str).collect().join(" ")`.
         let args = vec![
+            "--no-optional-locks".to_string(),
             "-c".to_string(),
             "core.quotepath=false".to_string(),
             "status".to_string(),
@@ -435,7 +436,7 @@ mod tests {
         let rendered = format_command(Path::new("/tmp/repo"), &args);
         assert_eq!(
             rendered,
-            "git -C /tmp/repo -c core.quotepath=false status --porcelain=v1 -b"
+            "git -C /tmp/repo --no-optional-locks -c core.quotepath=false status --porcelain=v1 -b"
         );
 
         // Empty args still render cleanly (trailing space, matching prior behavior).
@@ -443,6 +444,64 @@ mod tests {
             format_command(Path::new("/tmp/repo"), &[]),
             "git -C /tmp/repo "
         );
+    }
+
+    #[test]
+    fn readonly_git_tools_do_not_refresh_linked_worktree_index() {
+        if !git_available() {
+            return;
+        }
+
+        let fixture = tempdir().expect("fixture");
+        let root = fixture.path().join("root");
+        let writer = fixture.path().join("writer");
+        fs::create_dir_all(&root).expect("root");
+        init_git_repo(&root);
+        fs::write(root.join("file.txt"), "before\n").expect("root file");
+        commit_all(&root, "init");
+        let writer_arg = writer.to_str().expect("utf-8 writer path");
+        let status = run_git(
+            &["worktree", "add", "-q", "-b", "writer-test", writer_arg],
+            &root,
+        )
+        .expect("git worktree add");
+        assert!(status.success(), "git worktree add failed");
+
+        let pointer = fs::read_to_string(writer.join(".git")).expect("worktree .git pointer");
+        let git_dir = PathBuf::from(
+            pointer
+                .trim()
+                .strip_prefix("gitdir: ")
+                .expect("gitdir pointer"),
+        );
+        let index = git_dir.join("index");
+        let index_before = fs::read(&index).expect("worktree index");
+        fs::write(writer.join("file.txt"), "after\n").expect("modify writer");
+
+        let context = ProductionToolContext::new(&writer);
+        for result in [
+            execute_git_status(json!({}), &context).expect("status"),
+            execute_git_diff(json!({}), &context).expect("diff"),
+        ] {
+            assert!(result.is_success(), "{}", result.content);
+            let command = result
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("command"))
+                .and_then(Value::as_str)
+                .expect("recorded command");
+            assert!(
+                command.contains("git -C ")
+                    && command.contains("--no-optional-locks -c core.quotepath=false"),
+                "{command}"
+            );
+            assert_eq!(
+                fs::read(&index).expect("index after inspection"),
+                index_before,
+                "read-only Git tool refreshed {}",
+                index.display()
+            );
+        }
     }
 
     #[test]

@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 13;
+const STATE_SCHEMA_VERSION: u32 = 14;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -294,6 +294,23 @@ impl StateStore {
             .context("failed to initialize AgentRuntime run store schema")?;
             user_version = 5;
         }
+        if user_version < 14 {
+            // State v14 is a direct RuntimeEvent v10 cutover. Retire the
+            // incompatible run rows before any historical projection
+            // backfill tries to deserialize them. This remains part of the
+            // same IMMEDIATE transaction as every following schema change, so
+            // a later migration failure restores both the version and all
+            // pre-cutover rows.
+            //
+            // `agent_run_creations` only exists from state v8 onward. Runs
+            // exist from v5 and own events/snapshots through ON DELETE CASCADE.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                tx.execute("DELETE FROM agent_run_creations", [])
+                    .context("failed to retire pre-Orchestrator run creation state")?;
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-Orchestrator canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -417,7 +434,18 @@ impl StateStore {
             .context("failed to delete retired manual compaction creation intents")?;
             tx.pragma_update(None, "user_version", 13)
                 .context("failed to commit manual compaction state deletion")?;
+            user_version = 13;
         }
+        if user_version < 14 {
+            // RuntimeEvent v10 replaces the old child-only lifecycle with the
+            // canonical AgentTask/worktree lifecycle. The cutover block above
+            // already retired incompatible runs before historical migrations
+            // could deserialize them; only advance the schema here.
+            tx.pragma_update(None, "user_version", 14)
+                .context("failed to commit canonical AgentTask state cutover")?;
+            user_version = 14;
+        }
+        debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()
             .context("failed to commit state schema migration")?;
         Ok(())
@@ -859,6 +887,15 @@ fn agent_runs_has_continuation_column(conn: &Connection) -> Result<bool> {
         |row| row.get(0),
     )
     .context("failed to inspect AgentRuntime continuation projection schema")
+}
+
+fn sqlite_table_exists(conn: &Connection, table: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        [table],
+        |row| row.get(0),
+    )
+    .with_context(|| format!("failed to inspect SQLite table {table}"))
 }
 
 fn threads_has_current_leaf_column(conn: &Connection) -> Result<bool> {

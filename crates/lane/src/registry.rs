@@ -53,10 +53,6 @@ pub struct LaneRecord {
     pub goal: Option<String>,
     pub runtime: RuntimeBackendKind,
     pub status: LaneStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<PathBuf>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
     /// tmux session name when `runtime == tmux`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_session: Option<String>,
@@ -73,9 +69,6 @@ pub struct LaneRecord {
     /// Optional human-readable attach target (e.g. `tmux attach -t …`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attach_target: Option<String>,
-    /// Worktree cleanup TTL in seconds (None = no auto-cleanup).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_ttl_secs: Option<u64>,
 }
 
 impl LaneRecord {
@@ -186,7 +179,6 @@ impl LaneRegistry {
         issue: Option<String>,
         goal: Option<String>,
         runtime: RuntimeBackendKind,
-        worktree_ttl_secs: Option<u64>,
     ) -> Result<LaneRecord> {
         let id = LaneRecord::new_id();
         let log_path = self.log_path_for(&id);
@@ -200,15 +192,12 @@ impl LaneRegistry {
             goal,
             runtime,
             status: LaneStatus::Pending,
-            worktree_path: None,
-            branch: None,
             tmux_session: None,
             tmux_socket: None,
             log_path,
             started_at: LaneRecord::now_rfc3339(),
             stopped_at: None,
             attach_target: None,
-            worktree_ttl_secs,
         };
         self.save(&record)?;
         Ok(record)
@@ -260,8 +249,8 @@ impl LaneRegistry {
             return Ok(false);
         }
 
-        // `record` carries backend metadata (tmux session, worktree, attach
-        // target) populated during launch. Persist it while still Pending so
+        // `record` carries backend metadata (tmux session and attach target)
+        // populated during launch. Persist it while still Pending so
         // a failed launch/final save remains discoverable and stoppable.
         record.status = LaneStatus::Pending;
         record.stopped_at = None;
@@ -361,7 +350,6 @@ mod tests {
                 Some("4090".into()),
                 None,
                 RuntimeBackendKind::Tmux,
-                Some(3600),
             )
             .unwrap();
         let id = record.id.clone();
@@ -385,7 +373,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let reg = LaneRegistry::open(dir.path()).unwrap();
         let mut record = reg
-            .create_pending(None, None, None, None, RuntimeBackendKind::Tmux, None)
+            .create_pending(None, None, None, None, RuntimeBackendKind::Tmux)
             .unwrap();
         assert!(
             reg.mark_terminal_if_active(&mut record, LaneStatus::Stopped)
@@ -413,7 +401,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let reg = LaneRegistry::open(dir.path()).unwrap();
         let record = reg
-            .create_pending(None, None, None, None, RuntimeBackendKind::Tmux, None)
+            .create_pending(None, None, None, None, RuntimeBackendKind::Tmux)
             .unwrap();
         let id = record.id.clone();
         let starts = Arc::new(AtomicUsize::new(0));
@@ -474,7 +462,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let reg = LaneRegistry::open(dir.path()).unwrap();
         let mut record = reg
-            .create_pending(None, None, None, None, RuntimeBackendKind::Tmux, None)
+            .create_pending(None, None, None, None, RuntimeBackendKind::Tmux)
             .unwrap();
         assert!(reg.mark_running_if_pending(&mut record).unwrap());
         let error = reg

@@ -5,6 +5,7 @@
 
 use std::collections::HashSet;
 use std::fmt;
+use std::path::{Component, Path};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -12,11 +13,12 @@ use uuid::Uuid;
 
 use crate::task::{
     AcceptanceId, CompletionCandidate, CompletionDecision, CompletionRejection, EvidenceReceipt,
-    TaskContract, VerificationId, VerifierObservation, VerifierSpec, WorkspaceState,
+    TaskContract, VerificationId, VerifierObservation, VerifierSpec, WorkspaceRevision,
+    WorkspaceState,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 9;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 9;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 10;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 10;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -139,6 +141,28 @@ impl From<String> for RunId {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AgentTaskId(pub String);
+
+impl fmt::Display for AgentTaskId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl From<&str> for AgentTaskId {
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
+}
+
+impl From<String> for AgentTaskId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolDefinition {
     pub name: String,
@@ -223,6 +247,162 @@ impl Default for RunLimits {
     }
 }
 
+/// Host-assigned filesystem authority for one child Agent.
+///
+/// A role profile never implies this authority. Only an
+/// [`AgentWorkspaceAssignment`] created and validated by the Host can grant an
+/// isolated writer worktree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspaceAccess {
+    ReadOnly,
+    IsolatedWrite,
+}
+
+/// Exact workspace identity owned by one canonical [`AgentTask`].
+///
+/// `base_commit` is the immutable Git object from which the task view was
+/// created. Writer-only fields are all-or-nothing so replay can distinguish an
+/// owned worktree from an unrelated directory or branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AgentWorkspaceAssignment {
+    pub access: AgentWorkspaceAccess,
+    pub root_workspace: String,
+    pub base_commit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+    /// Exact root branch that the Host may fast-forward after verification.
+    ///
+    /// This must survive restart independently from the writer branch:
+    /// another root branch may point at the same base commit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_paths: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner_token: Option<String>,
+}
+
+impl AgentWorkspaceAssignment {
+    #[must_use]
+    pub fn execution_workspace(&self) -> &str {
+        self.worktree_path
+            .as_deref()
+            .unwrap_or(self.root_workspace.as_str())
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        require_agent_text("root workspace", &self.root_workspace)?;
+        validate_git_object_id("base commit", &self.base_commit)?;
+        validate_relative_path_list("allowed path", &self.allowed_paths)?;
+        match self.access {
+            AgentWorkspaceAccess::ReadOnly => {
+                if self.worktree_path.is_some()
+                    || self.root_branch.is_some()
+                    || self.branch.is_some()
+                    || !self.allowed_paths.is_empty()
+                    || self.owner_token.is_some()
+                {
+                    return Err(
+                        "read-only Agent workspace cannot own a worktree, root branch, writer branch, allowed write paths, or owner token".to_owned(),
+                    );
+                }
+            }
+            AgentWorkspaceAccess::IsolatedWrite => {
+                let worktree = self.worktree_path.as_deref().ok_or_else(|| {
+                    "isolated writer workspace requires a worktree path".to_owned()
+                })?;
+                require_agent_text("worktree path", worktree)?;
+                if worktree == self.root_workspace {
+                    return Err(
+                        "isolated writer worktree must differ from the root workspace".to_owned(),
+                    );
+                }
+                require_agent_text(
+                    "root worktree branch",
+                    self.root_branch.as_deref().ok_or_else(|| {
+                        "isolated writer workspace requires the exact root branch".to_owned()
+                    })?,
+                )?;
+                require_agent_text(
+                    "worktree branch",
+                    self.branch
+                        .as_deref()
+                        .ok_or_else(|| "isolated writer workspace requires a branch".to_owned())?,
+                )?;
+                require_agent_text(
+                    "worktree owner token",
+                    self.owner_token.as_deref().ok_or_else(|| {
+                        "isolated writer workspace requires an owner token".to_owned()
+                    })?,
+                )?;
+                if self.allowed_paths.is_empty() {
+                    return Err(
+                        "isolated writer workspace requires at least one allowed path".to_owned(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Frozen Host contract for one canonical child Agent.
+///
+/// Model-supplied intent is resolved into this type before any child run or
+/// worktree side effect begins. Every field is persisted so recovery never
+/// needs to reconstruct authority from a prompt or role name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AgentTask {
+    pub task_id: AgentTaskId,
+    pub root_run_id: RunId,
+    pub parent_run_id: RunId,
+    pub child_run_id: RunId,
+    pub call_id: String,
+    pub role: String,
+    pub task_contract: TaskContract,
+    pub workspace: AgentWorkspaceAssignment,
+    pub tool_policy: ToolPolicy,
+    pub limits: RunLimits,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deadline_unix_ms: Option<u64>,
+    pub expected_artifact: String,
+}
+
+impl AgentTask {
+    pub fn validate(&self) -> Result<(), String> {
+        require_agent_text("Agent task id", &self.task_id.0)?;
+        require_agent_text("root run id", &self.root_run_id.0)?;
+        require_agent_text("parent run id", &self.parent_run_id.0)?;
+        require_agent_text("child run id", &self.child_run_id.0)?;
+        require_agent_text("Agent call id", &self.call_id)?;
+        require_agent_text("Agent role", &self.role)?;
+        require_agent_text("expected artifact", &self.expected_artifact)?;
+        if self.child_run_id == self.root_run_id || self.child_run_id == self.parent_run_id {
+            return Err("child run id must differ from root and parent run ids".to_owned());
+        }
+        self.task_contract.validate()?;
+        if self.task_contract.generation_id.0 != self.child_run_id.0 {
+            return Err("Agent task generation id must equal the child run id".to_owned());
+        }
+        self.workspace.validate()?;
+        if self.limits.max_turns == 0
+            || self.limits.max_model_requests == 0
+            || self.limits.max_tool_calls == 0
+        {
+            return Err("Agent task limits must admit turns, model requests, and tools".to_owned());
+        }
+        if self.deadline_unix_ms == Some(0) {
+            return Err("Agent task deadline must be a positive Unix timestamp".to_owned());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -248,6 +428,10 @@ pub struct RunRequest {
     pub streaming: bool,
     #[serde(default)]
     pub actor: AgentActor,
+    /// Frozen orchestration contract for a child Agent. Root runs must not
+    /// carry this field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_task: Option<AgentTask>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub deadline_unix_ms: Option<u64>,
     #[serde(default)]
@@ -289,6 +473,7 @@ impl RunRequest {
             max_output_tokens: None,
             streaming: true,
             actor: AgentActor::default(),
+            agent_task: None,
             deadline_unix_ms: None,
             tool_policy: ToolPolicy::default(),
             limits: RunLimits::default(),
@@ -298,6 +483,38 @@ impl RunRequest {
             inherited_facts: None,
             accounting_baseline: ModelAccounting::default(),
         }
+    }
+
+    /// Validate the exact relationship between a persisted run and its
+    /// orchestration task. Reducers call this when accepting `RunCreated`.
+    pub fn validate_agent_task_binding(&self) -> Result<(), String> {
+        match self.actor.kind {
+            AgentActorKind::Root => {
+                if self.parent_run_id.is_some() || self.agent_task.is_some() {
+                    return Err("root Agent run cannot carry a parent run or AgentTask".to_owned());
+                }
+            }
+            AgentActorKind::Child => {
+                let task = self
+                    .agent_task
+                    .as_ref()
+                    .ok_or_else(|| "child Agent run requires an AgentTask".to_owned())?;
+                task.validate()?;
+                if self.run_id.as_ref() != Some(&task.child_run_id)
+                    || self.parent_run_id.as_ref() != Some(&task.parent_run_id)
+                    || self.task_contract.as_ref() != Some(&task.task_contract)
+                    || self.tool_policy != task.tool_policy
+                    || self.limits != task.limits
+                    || self.deadline_unix_ms != task.deadline_unix_ms
+                    || self.environment.workspace != task.workspace.execution_workspace()
+                {
+                    return Err(
+                        "child RunRequest does not exactly match its frozen AgentTask".to_owned(),
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -785,6 +1002,242 @@ impl ToolOutcome {
     }
 }
 
+/// One Host-observed deterministic check attached to an Agent result.
+///
+/// The outcome remains an observation. Only the canonical Runtime may convert
+/// an exactly matching successful observation into an [`EvidenceReceipt`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AgentCheck {
+    pub check_id: String,
+    pub verifier: VerifierSpec,
+    pub workspace_state: WorkspaceState,
+    pub outcome: ToolOutcome,
+}
+
+impl AgentCheck {
+    pub fn validate(&self) -> Result<(), String> {
+        require_agent_text("Agent check id", &self.check_id)?;
+        self.verifier.validate()?;
+        self.workspace_state.validate()?;
+        self.outcome.validate()?;
+        if let Some(observation) = &self.outcome.verifier_observation {
+            if observation.spec != self.verifier {
+                return Err("Agent check verifier does not match its observation".to_owned());
+            }
+            if observation.workspace_revision != self.workspace_state.revision {
+                return Err(
+                    "Agent check workspace does not match its verifier observation".to_owned(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Parent-side integration disposition for a writer result.
+///
+/// A child terminal can only report `awaiting_host`; `integrated` is a Host
+/// fact produced after the guarded root-workspace operation commits.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WriterIntegrationStatus {
+    #[default]
+    NotApplicable,
+    AwaitingHost,
+    Rejected {
+        reason: String,
+    },
+    Conflict {
+        reason: String,
+    },
+    RecoveryRequired {
+        reason: String,
+    },
+    Integrated {
+        integration_id: OperationId,
+        writer_commit: String,
+        root_workspace_state: WorkspaceState,
+    },
+}
+
+impl WriterIntegrationStatus {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::NotApplicable | Self::AwaitingHost => Ok(()),
+            Self::Rejected { reason }
+            | Self::Conflict { reason }
+            | Self::RecoveryRequired { reason } => {
+                require_agent_text("writer integration reason", reason)
+            }
+            Self::Integrated {
+                integration_id,
+                writer_commit,
+                root_workspace_state,
+            } => {
+                require_agent_text("writer integration id", &integration_id.0)?;
+                validate_git_object_id("writer commit", writer_commit)?;
+                require_known_workspace_state("integrated root workspace", root_workspace_state)
+            }
+        }
+    }
+}
+
+/// Structured result shared by root and child Agent outcomes.
+///
+/// Human summary and unresolved notes are advisory. Files, checks, evidence,
+/// artifacts, workspace identity, and integration status are Host-observed
+/// facts and must survive event replay unchanged.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct AgentResultDetails {
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<EvidenceReceipt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub changed_files: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<AgentCheck>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<ToolArtifact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<AgentWorkspaceAssignment>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_state: Option<WorkspaceState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_sha256: Option<String>,
+    #[serde(default)]
+    pub integration: WriterIntegrationStatus,
+}
+
+impl AgentResultDetails {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_relative_path_list("changed file", &self.changed_files)?;
+        validate_unique_non_empty_text("unresolved item", &self.unresolved)?;
+        validate_unique_non_empty_text(
+            "evidence receipt id",
+            &self
+                .evidence
+                .iter()
+                .map(|receipt| receipt.id.0.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        for receipt in &self.evidence {
+            receipt.validate()?;
+        }
+        validate_unique_non_empty_text(
+            "Agent check id",
+            &self
+                .checks
+                .iter()
+                .map(|check| check.check_id.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        for check in &self.checks {
+            check.validate()?;
+        }
+        validate_unique_non_empty_text(
+            "Agent artifact id",
+            &self
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.id.clone())
+                .collect::<Vec<_>>(),
+        )?;
+        for artifact in &self.artifacts {
+            require_agent_text("Agent artifact id", &artifact.id)?;
+            if artifact.status == ToolArtifactStatus::Available && artifact.sha256.is_none() {
+                return Err(format!(
+                    "available Agent artifact '{}' requires a sha256 digest",
+                    artifact.id
+                ));
+            }
+        }
+        if let Some(workspace) = &self.workspace {
+            workspace.validate()?;
+        }
+        if let Some(workspace_state) = &self.workspace_state {
+            workspace_state.validate()?;
+        }
+        self.integration.validate()?;
+        let workspace_access = self.workspace.as_ref().map(|workspace| workspace.access);
+        match (workspace_access, &self.integration) {
+            (
+                Some(AgentWorkspaceAccess::ReadOnly) | None,
+                WriterIntegrationStatus::AwaitingHost
+                | WriterIntegrationStatus::Rejected { .. }
+                | WriterIntegrationStatus::Conflict { .. }
+                | WriterIntegrationStatus::RecoveryRequired { .. }
+                | WriterIntegrationStatus::Integrated { .. },
+            ) => {
+                return Err(
+                    "only an isolated writer workspace may carry writer integration state"
+                        .to_owned(),
+                );
+            }
+            (Some(AgentWorkspaceAccess::IsolatedWrite), WriterIntegrationStatus::NotApplicable) => {
+                return Err(
+                    "isolated writer result must report an explicit integration state".to_owned(),
+                );
+            }
+            _ => {}
+        }
+        match workspace_access {
+            Some(AgentWorkspaceAccess::IsolatedWrite) => {
+                let workspace = self
+                    .workspace
+                    .as_ref()
+                    .expect("isolated writer access came from a workspace");
+                let workspace_state = self.workspace_state.as_ref().ok_or_else(|| {
+                    "isolated writer result requires its sealed workspace state".to_owned()
+                })?;
+                require_known_workspace_state("sealed writer workspace", workspace_state)?;
+                let base_commit = self
+                    .base_commit
+                    .as_deref()
+                    .ok_or_else(|| "isolated writer result requires its base commit".to_owned())?;
+                let final_commit = self.final_commit.as_deref().ok_or_else(|| {
+                    "isolated writer result requires its sealed final commit".to_owned()
+                })?;
+                let diff_sha256 = self.diff_sha256.as_deref().ok_or_else(|| {
+                    "isolated writer result requires its sealed diff digest".to_owned()
+                })?;
+                validate_git_object_id("writer result base commit", base_commit)?;
+                validate_git_object_id("writer result final commit", final_commit)?;
+                validate_sha256("writer result diff sha256", diff_sha256)?;
+                if workspace.base_commit != base_commit {
+                    return Err(
+                        "writer result base commit must match its workspace assignment".to_owned(),
+                    );
+                }
+                if base_commit == final_commit {
+                    return Err(
+                        "writer result final commit must differ from its base commit".to_owned(),
+                    );
+                }
+            }
+            Some(AgentWorkspaceAccess::ReadOnly) | None => {
+                if self.base_commit.is_some()
+                    || self.final_commit.is_some()
+                    || self.diff_sha256.is_some()
+                {
+                    return Err(
+                        "non-writer Agent result cannot carry writer commit or diff fields"
+                            .to_owned(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TranscriptEntry {
@@ -1112,7 +1565,7 @@ pub enum TerminalState {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentOutcome {
     pub run_id: RunId,
     pub parent_run_id: Option<RunId>,
@@ -1121,6 +1574,21 @@ pub struct AgentOutcome {
     pub runtime_model_requests: u32,
     pub runtime_retries: u32,
     pub tool_calls: u32,
+    pub details: AgentResultDetails,
+}
+
+impl AgentOutcome {
+    pub fn validate(&self) -> Result<(), String> {
+        require_agent_text("Agent outcome run id", &self.run_id.0)?;
+        if self
+            .parent_run_id
+            .as_ref()
+            .is_some_and(|parent| parent == &self.run_id)
+        {
+            return Err("Agent outcome cannot be its own parent".to_owned());
+        }
+        self.details.validate()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1640,10 +2108,76 @@ pub enum RuntimeEventKind {
     CompletionRejected {
         rejection: CompletionRejection,
     },
+    AgentTaskPrepared {
+        task: Box<AgentTask>,
+    },
+    AgentWorkspaceCreated {
+        task_id: AgentTaskId,
+        assignment: AgentWorkspaceAssignment,
+        writer_workspace_state: WorkspaceState,
+    },
+    AgentSealPrepared {
+        task_id: AgentTaskId,
+        base_commit: String,
+        writer_workspace_state_before: WorkspaceState,
+    },
+    AgentSealCommitted {
+        task_id: AgentTaskId,
+        final_commit: String,
+        diff_sha256: String,
+        changed_files: Vec<String>,
+        writer_workspace_state_after: WorkspaceState,
+    },
     ChildStarted {
+        task_id: AgentTaskId,
         call_id: String,
         child_run_id: RunId,
         depth: u8,
+    },
+    AgentResultCollected {
+        task_id: AgentTaskId,
+        outcome: Box<AgentOutcome>,
+    },
+    AgentIntegrationPrepared {
+        task_id: AgentTaskId,
+        integration_id: OperationId,
+        base_commit: String,
+        writer_commit: String,
+        diff_sha256: String,
+        expected_root_workspace_state: WorkspaceState,
+    },
+    AgentIntegrationStarted {
+        task_id: AgentTaskId,
+        integration_id: OperationId,
+    },
+    AgentIntegrationFailed {
+        task_id: AgentTaskId,
+        integration_id: OperationId,
+        status: WriterIntegrationStatus,
+        root_workspace_state: WorkspaceState,
+    },
+    AgentIntegrationCommitted {
+        task_id: AgentTaskId,
+        integration_id: OperationId,
+        root_head_commit: String,
+        root_workspace_state_after: WorkspaceState,
+    },
+    AgentCleanupPrepared {
+        task_id: AgentTaskId,
+        worktree_path: String,
+        branch: String,
+        owner_token: String,
+    },
+    AgentCleanupCommitted {
+        task_id: AgentTaskId,
+        worktree_path: String,
+        branch: String,
+        owner_token: String,
+        worktree_removed: bool,
+        branch_removed: bool,
+        retained_for_recovery: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     ChildFinished {
         call_id: String,
@@ -1673,6 +2207,267 @@ impl RuntimeEventKind {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Terminal { .. })
     }
+
+    /// Validate fields whose exact identity is required by the M6-A
+    /// orchestration reducer. Cross-event ordering and equality are reducer
+    /// responsibilities; this method rejects malformed individual facts.
+    pub fn validate_agent_lifecycle_payload(&self) -> Result<(), String> {
+        match self {
+            Self::AgentTaskPrepared { task } => task.validate(),
+            Self::AgentWorkspaceCreated {
+                task_id,
+                assignment,
+                writer_workspace_state,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                assignment.validate()?;
+                if assignment.access != AgentWorkspaceAccess::IsolatedWrite {
+                    return Err(
+                        "Agent workspace creation requires an isolated writer assignment"
+                            .to_owned(),
+                    );
+                }
+                require_known_workspace_state("created writer workspace", writer_workspace_state)
+            }
+            Self::AgentSealPrepared {
+                task_id,
+                base_commit,
+                writer_workspace_state_before,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                validate_git_object_id("writer base commit", base_commit)?;
+                require_known_workspace_state(
+                    "writer workspace before seal",
+                    writer_workspace_state_before,
+                )
+            }
+            Self::AgentSealCommitted {
+                task_id,
+                final_commit,
+                diff_sha256,
+                changed_files,
+                writer_workspace_state_after,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                validate_git_object_id("writer final commit", final_commit)?;
+                validate_sha256("writer diff sha256", diff_sha256)?;
+                validate_relative_path_list("changed file", changed_files)?;
+                if changed_files.is_empty() {
+                    return Err("writer seal requires at least one changed file".to_owned());
+                }
+                require_known_workspace_state(
+                    "writer workspace after seal",
+                    writer_workspace_state_after,
+                )
+            }
+            Self::ChildStarted {
+                task_id,
+                call_id,
+                child_run_id,
+                depth,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                require_agent_text("Agent call id", call_id)?;
+                require_agent_text("child run id", &child_run_id.0)?;
+                if *depth == 0 {
+                    return Err("child Agent depth must be greater than zero".to_owned());
+                }
+                Ok(())
+            }
+            Self::AgentResultCollected { task_id, outcome } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                outcome.validate()
+            }
+            Self::AgentIntegrationPrepared {
+                task_id,
+                integration_id,
+                base_commit,
+                writer_commit,
+                diff_sha256,
+                expected_root_workspace_state,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                require_agent_text("writer integration id", &integration_id.0)?;
+                validate_git_object_id("integration base commit", base_commit)?;
+                validate_git_object_id("integration writer commit", writer_commit)?;
+                if base_commit == writer_commit {
+                    return Err(
+                        "writer integration commit must differ from its base commit".to_owned()
+                    );
+                }
+                validate_sha256("integration diff sha256", diff_sha256)?;
+                require_known_workspace_state(
+                    "expected root workspace",
+                    expected_root_workspace_state,
+                )
+            }
+            Self::AgentIntegrationStarted {
+                task_id,
+                integration_id,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                require_agent_text("writer integration id", &integration_id.0)
+            }
+            Self::AgentIntegrationFailed {
+                task_id,
+                integration_id,
+                status,
+                root_workspace_state,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                require_agent_text("writer integration id", &integration_id.0)?;
+                match status {
+                    WriterIntegrationStatus::Rejected { .. }
+                    | WriterIntegrationStatus::Conflict { .. }
+                    | WriterIntegrationStatus::RecoveryRequired { .. } => status.validate()?,
+                    WriterIntegrationStatus::NotApplicable
+                    | WriterIntegrationStatus::AwaitingHost
+                    | WriterIntegrationStatus::Integrated { .. } => {
+                        return Err(
+                            "failed writer integration requires rejected, conflict, or recovery-required status"
+                                .to_owned(),
+                        );
+                    }
+                }
+                require_known_workspace_state(
+                    "root workspace after failed integration",
+                    root_workspace_state,
+                )
+            }
+            Self::AgentIntegrationCommitted {
+                task_id,
+                integration_id,
+                root_head_commit,
+                root_workspace_state_after,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                require_agent_text("writer integration id", &integration_id.0)?;
+                validate_git_object_id("integrated root commit", root_head_commit)?;
+                require_known_workspace_state(
+                    "root workspace after integration",
+                    root_workspace_state_after,
+                )
+            }
+            Self::AgentCleanupPrepared {
+                task_id,
+                worktree_path,
+                branch,
+                owner_token,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                require_agent_text("worktree path", worktree_path)?;
+                require_agent_text("worktree branch", branch)?;
+                require_agent_text("worktree owner token", owner_token)
+            }
+            Self::AgentCleanupCommitted {
+                task_id,
+                worktree_path,
+                branch,
+                owner_token,
+                worktree_removed,
+                branch_removed,
+                retained_for_recovery,
+                reason,
+            } => {
+                require_agent_text("Agent task id", &task_id.0)?;
+                require_agent_text("worktree path", worktree_path)?;
+                require_agent_text("worktree branch", branch)?;
+                require_agent_text("worktree owner token", owner_token)?;
+                if *retained_for_recovery {
+                    require_agent_text(
+                        "worktree retention reason",
+                        reason.as_deref().ok_or_else(|| {
+                            "retained writer cleanup requires a reason".to_owned()
+                        })?,
+                    )?;
+                    if *worktree_removed || *branch_removed {
+                        return Err(
+                            "retained writer cleanup cannot report removed owned resources"
+                                .to_owned(),
+                        );
+                    }
+                } else if !*worktree_removed || !*branch_removed || reason.is_some() {
+                    return Err(
+                        "completed writer cleanup must remove worktree and branch without a retention reason"
+                            .to_owned(),
+                    );
+                }
+                Ok(())
+            }
+            Self::ChildFinished { outcome, .. } | Self::Terminal { outcome } => outcome.validate(),
+            _ => Ok(()),
+        }
+    }
+}
+
+fn require_agent_text(label: &str, value: &str) -> Result<(), String> {
+    if value.trim().is_empty() {
+        return Err(format!("{label} must not be empty"));
+    }
+    if value.contains('\0') {
+        return Err(format!("{label} must not contain NUL"));
+    }
+    Ok(())
+}
+
+fn validate_git_object_id(label: &str, value: &str) -> Result<(), String> {
+    require_agent_text(label, value)?;
+    if !matches!(value.len(), 40 | 64) || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{label} must be a 40- or 64-character Git object id"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sha256(label: &str, value: &str) -> Result<(), String> {
+    require_agent_text(label, value)?;
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(format!("{label} must be a 64-character hexadecimal digest"));
+    }
+    Ok(())
+}
+
+fn validate_unique_non_empty_text(label: &str, values: &[String]) -> Result<(), String> {
+    let mut unique = HashSet::new();
+    for value in values {
+        require_agent_text(label, value)?;
+        if !unique.insert(value.as_str()) {
+            return Err(format!("{label} '{value}' appears more than once"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_relative_path_list(label: &str, values: &[String]) -> Result<(), String> {
+    validate_unique_non_empty_text(label, values)?;
+    for value in values {
+        let path = Path::new(value);
+        if path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(format!(
+                "{label} '{value}' must stay relative to its workspace"
+            ));
+        }
+    }
+    if values.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(format!("{label} values must be sorted in canonical order"));
+    }
+    Ok(())
+}
+
+fn require_known_workspace_state(label: &str, state: &WorkspaceState) -> Result<(), String> {
+    state.validate()?;
+    if matches!(&state.revision, WorkspaceRevision::Unknown { .. }) {
+        return Err(format!("{label} requires a known workspace revision"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1690,6 +2485,255 @@ pub struct StoredRuntimeEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task::{TaskDefinition, TaskGenerationId};
+
+    fn known_workspace(generation: u64, digest: char) -> WorkspaceState {
+        WorkspaceState {
+            generation,
+            revision: WorkspaceRevision::Known {
+                sha256: digest.to_string().repeat(64),
+            },
+        }
+    }
+
+    fn child_contract(child_run_id: &RunId) -> TaskContract {
+        TaskContract {
+            generation_id: TaskGenerationId::from(child_run_id.0.clone()),
+            definition: TaskDefinition::host("审计协议边界"),
+        }
+    }
+
+    fn writer_assignment() -> AgentWorkspaceAssignment {
+        AgentWorkspaceAssignment {
+            access: AgentWorkspaceAccess::IsolatedWrite,
+            root_workspace: "/workspace/root".to_owned(),
+            base_commit: "a".repeat(40),
+            worktree_path: Some("/workspace/worktrees/task-1".to_owned()),
+            root_branch: Some("refs/heads/main".to_owned()),
+            branch: Some("codex/task-1".to_owned()),
+            allowed_paths: vec![
+                "crates/protocol".to_owned(),
+                "docs/product/ROADMAP.md".to_owned(),
+            ],
+            owner_token: Some("owner-task-1".to_owned()),
+        }
+    }
+
+    fn child_task() -> AgentTask {
+        let root_run_id = RunId::from("root-run");
+        let child_run_id = RunId::from("child-run");
+        AgentTask {
+            task_id: AgentTaskId::from("task-1"),
+            root_run_id: root_run_id.clone(),
+            parent_run_id: root_run_id,
+            child_run_id: child_run_id.clone(),
+            call_id: "call-1".to_owned(),
+            role: "协议审计".to_owned(),
+            task_contract: child_contract(&child_run_id),
+            workspace: AgentWorkspaceAssignment {
+                access: AgentWorkspaceAccess::ReadOnly,
+                root_workspace: "/workspace/root".to_owned(),
+                base_commit: "a".repeat(40),
+                worktree_path: None,
+                root_branch: None,
+                branch: None,
+                allowed_paths: Vec::new(),
+                owner_token: None,
+            },
+            tool_policy: ToolPolicy {
+                enabled: true,
+                allowed: Some(vec!["read".to_owned()]),
+                denied: Vec::new(),
+            },
+            limits: RunLimits {
+                max_turns: 8,
+                max_model_requests: 8,
+                max_tool_calls: 16,
+                max_depth: 2,
+                ..RunLimits::default()
+            },
+            deadline_unix_ms: Some(1_800_000_000_000),
+            expected_artifact: "结构化协议审计结果".to_owned(),
+        }
+    }
+
+    #[test]
+    fn m6_agent_protocol_schema_versions_are_explicit_cutovers() {
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 10);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 10);
+    }
+
+    #[test]
+    fn workspace_assignment_separates_read_only_and_isolated_writer_authority() {
+        let writer = writer_assignment();
+        assert!(writer.validate().is_ok());
+        assert_eq!(writer.execution_workspace(), "/workspace/worktrees/task-1");
+
+        let mut unsafe_scope = writer.clone();
+        unsafe_scope.allowed_paths = vec!["../outside".to_owned()];
+        assert!(unsafe_scope.validate().is_err());
+
+        let mut missing_owner = writer.clone();
+        missing_owner.owner_token = None;
+        assert!(missing_owner.validate().is_err());
+
+        let mut read_only = writer;
+        read_only.access = AgentWorkspaceAccess::ReadOnly;
+        assert!(read_only.validate().is_err());
+
+        read_only.worktree_path = None;
+        read_only.root_branch = None;
+        read_only.branch = None;
+        read_only.owner_token = None;
+        assert!(read_only.validate().is_err());
+        read_only.allowed_paths.clear();
+        assert!(read_only.validate().is_ok());
+        assert_eq!(read_only.execution_workspace(), "/workspace/root");
+    }
+
+    #[test]
+    fn child_run_request_must_exactly_match_its_frozen_agent_task() {
+        let task = child_task();
+        assert!(task.validate().is_ok());
+        let mut request = RunRequest::new(task.task_contract.clone(), "system");
+        request.run_id = Some(task.child_run_id.clone());
+        request.parent_run_id = Some(task.parent_run_id.clone());
+        request.actor = AgentActor {
+            kind: AgentActorKind::Child,
+            depth: 1,
+        };
+        request.tool_policy = task.tool_policy.clone();
+        request.limits = task.limits;
+        request.deadline_unix_ms = task.deadline_unix_ms;
+        request.environment.workspace = task.workspace.execution_workspace().to_owned();
+        request.agent_task = Some(task.clone());
+        assert!(request.validate_agent_task_binding().is_ok());
+
+        let mut mismatched = request.clone();
+        mismatched.environment.workspace = "/workspace/other".to_owned();
+        assert!(mismatched.validate_agent_task_binding().is_err());
+
+        let mut root = request;
+        root.actor = AgentActor::default();
+        root.parent_run_id = None;
+        assert!(root.validate_agent_task_binding().is_err());
+    }
+
+    #[test]
+    fn writer_result_requires_host_observed_seal_and_integration_state() {
+        let details = AgentResultDetails {
+            summary: "协议变更完成".to_owned(),
+            changed_files: vec!["crates/protocol/src/agent_runtime.rs".to_owned()],
+            workspace: Some(writer_assignment()),
+            workspace_state: Some(known_workspace(2, 'c')),
+            base_commit: Some("a".repeat(40)),
+            final_commit: Some("b".repeat(40)),
+            diff_sha256: Some("d".repeat(64)),
+            integration: WriterIntegrationStatus::AwaitingHost,
+            ..AgentResultDetails::default()
+        };
+        assert!(details.validate().is_ok());
+
+        let encoded = serde_json::to_value(&details).unwrap();
+        assert_eq!(encoded["integration"]["state"], "awaiting_host");
+        assert_eq!(
+            serde_json::from_value::<AgentResultDetails>(encoded).unwrap(),
+            details
+        );
+
+        let mut missing_seal = details.clone();
+        missing_seal.diff_sha256 = None;
+        assert!(missing_seal.validate().is_err());
+
+        let mut read_only_with_writer_state = details;
+        read_only_with_writer_state.workspace = Some(child_task().workspace);
+        assert!(read_only_with_writer_state.validate().is_err());
+    }
+
+    #[test]
+    fn m6_agent_lifecycle_events_round_trip_and_reject_ambiguous_cleanup() {
+        let task = child_task();
+        let prepared = RuntimeEventKind::AgentTaskPrepared {
+            task: Box::new(task.clone()),
+        };
+        assert!(prepared.validate_agent_lifecycle_payload().is_ok());
+        let encoded = serde_json::to_value(&prepared).unwrap();
+        assert_eq!(encoded["kind"], "agent_task_prepared");
+        assert_eq!(
+            serde_json::from_value::<RuntimeEventKind>(encoded).unwrap(),
+            prepared
+        );
+
+        let started = RuntimeEventKind::ChildStarted {
+            task_id: task.task_id.clone(),
+            call_id: task.call_id.clone(),
+            child_run_id: task.child_run_id.clone(),
+            depth: 1,
+        };
+        assert!(started.validate_agent_lifecycle_payload().is_ok());
+        assert_eq!(
+            serde_json::to_value(&started).unwrap()["task_id"],
+            task.task_id.0
+        );
+
+        let seal = RuntimeEventKind::AgentSealCommitted {
+            task_id: task.task_id.clone(),
+            final_commit: "b".repeat(40),
+            diff_sha256: "d".repeat(64),
+            changed_files: vec!["crates/protocol/src/agent_runtime.rs".to_owned()],
+            writer_workspace_state_after: known_workspace(2, 'e'),
+        };
+        assert!(seal.validate_agent_lifecycle_payload().is_ok());
+
+        let failed = RuntimeEventKind::AgentIntegrationFailed {
+            task_id: task.task_id.clone(),
+            integration_id: OperationId::from("integration-1"),
+            status: WriterIntegrationStatus::RecoveryRequired {
+                reason: "集成操作结果不确定".to_owned(),
+            },
+            root_workspace_state: known_workspace(3, 'f'),
+        };
+        assert!(failed.validate_agent_lifecycle_payload().is_ok());
+        let encoded = serde_json::to_value(&failed).unwrap();
+        assert_eq!(encoded["kind"], "agent_integration_failed");
+        assert_eq!(encoded["status"]["state"], "recovery_required");
+        assert_eq!(
+            serde_json::from_value::<RuntimeEventKind>(encoded).unwrap(),
+            failed
+        );
+
+        let invalid_failed = RuntimeEventKind::AgentIntegrationFailed {
+            task_id: task.task_id.clone(),
+            integration_id: OperationId::from("integration-1"),
+            status: WriterIntegrationStatus::AwaitingHost,
+            root_workspace_state: known_workspace(3, 'f'),
+        };
+        assert!(invalid_failed.validate_agent_lifecycle_payload().is_err());
+
+        let retained = RuntimeEventKind::AgentCleanupCommitted {
+            task_id: task.task_id.clone(),
+            worktree_path: "/workspace/worktrees/task-1".to_owned(),
+            branch: "codex/task-1".to_owned(),
+            owner_token: "owner-task-1".to_owned(),
+            worktree_removed: false,
+            branch_removed: false,
+            retained_for_recovery: true,
+            reason: Some("集成冲突，保留现场".to_owned()),
+        };
+        assert!(retained.validate_agent_lifecycle_payload().is_ok());
+
+        let ambiguous = RuntimeEventKind::AgentCleanupCommitted {
+            task_id: task.task_id,
+            worktree_path: "/workspace/worktrees/task-1".to_owned(),
+            branch: "codex/task-1".to_owned(),
+            owner_token: "owner-task-1".to_owned(),
+            worktree_removed: true,
+            branch_removed: false,
+            retained_for_recovery: false,
+            reason: None,
+        };
+        assert!(ambiguous.validate_agent_lifecycle_payload().is_err());
+    }
 
     #[test]
     fn canonical_reasoning_and_tool_call_project_exactly() {

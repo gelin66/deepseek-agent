@@ -1,7 +1,10 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use codewhale_protocol::agent_runtime::{RunId, RunRequest};
+use codewhale_protocol::agent_runtime::{
+    AgentActor, AgentActorKind, AgentTask, AgentTaskId, AgentWorkspaceAccess,
+    AgentWorkspaceAssignment, RunId, RunRequest,
+};
 use codewhale_protocol::run_api::{RUN_API_SCHEMA_VERSION, RunCommandResponse, RunCommandResult};
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
@@ -16,12 +19,7 @@ fn codewhale_binary() -> PathBuf {
         .expect("Cargo must provide the codewhale dispatcher binary")
 }
 
-async fn seed_root(
-    store: &StateStore,
-    run_id: &str,
-    workspace: &Path,
-    parent_run_id: Option<RunId>,
-) {
+async fn seed_root(store: &StateStore, run_id: &str, workspace: &Path) {
     let run_id = RunId::from(run_id);
     let mut request = RunRequest::new(
         TaskContract {
@@ -30,13 +28,57 @@ async fn seed_root(
         },
         "fixture system prompt",
     );
-    request.parent_run_id = parent_run_id;
     request.environment.workspace = workspace.display().to_string();
     let created = store.create(request).await.expect("create canonical run");
     store
         .release(&created.lease)
         .await
         .expect("release canonical run");
+}
+
+async fn seed_child(store: &StateStore, run_id: &str, parent_run_id: &str, workspace: &Path) {
+    let child_run_id = RunId::from(run_id);
+    let parent_run_id = RunId::from(parent_run_id);
+    let task_contract = TaskContract {
+        generation_id: TaskGenerationId::from(child_run_id.0.clone()),
+        definition: TaskDefinition::host("fixture child"),
+    };
+    let mut request = RunRequest::new(task_contract.clone(), "fixture child system prompt");
+    let task = AgentTask {
+        task_id: AgentTaskId::from("reader-child-agent"),
+        root_run_id: parent_run_id.clone(),
+        parent_run_id: parent_run_id.clone(),
+        child_run_id: child_run_id.clone(),
+        call_id: "fixture-child-call".to_owned(),
+        role: "explorer".to_owned(),
+        task_contract,
+        workspace: AgentWorkspaceAssignment {
+            access: AgentWorkspaceAccess::ReadOnly,
+            root_workspace: workspace.display().to_string(),
+            base_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            worktree_path: None,
+            root_branch: None,
+            branch: None,
+            allowed_paths: Vec::new(),
+            owner_token: None,
+        },
+        tool_policy: request.tool_policy.clone(),
+        limits: request.limits,
+        deadline_unix_ms: request.deadline_unix_ms,
+        expected_artifact: "fixture child result".to_owned(),
+    };
+    request.parent_run_id = Some(parent_run_id);
+    request.actor = AgentActor {
+        kind: AgentActorKind::Child,
+        depth: 1,
+    };
+    request.agent_task = Some(task);
+    request.environment.workspace = workspace.display().to_string();
+    let created = store.create(request).await.expect("create canonical child");
+    store
+        .release(&created.lease)
+        .await
+        .expect("release canonical child");
 }
 
 async fn complete_root(store: &StateStore, run_id: &str) {
@@ -56,6 +98,7 @@ async fn complete_root(store: &StateStore, run_id: &str) {
                 runtime_model_requests: 0,
                 runtime_retries: 0,
                 tool_calls: 0,
+                details: Default::default(),
             }),
         )
         .await
@@ -152,17 +195,11 @@ async fn dispatcher_lists_workspace_scoped_agent_roots_without_credentials() {
 
     let store =
         StateStore::open(Some(home.path().join("state.db"))).expect("open canonical State DB");
-    seed_root(&store, "aa-agent-old", &workspace, None).await;
+    seed_root(&store, "aa-agent-old", &workspace).await;
     complete_root(&store, "aa-agent-old").await;
-    seed_root(&store, "other-agent", &other_workspace, None).await;
-    seed_root(
-        &store,
-        "child-agent",
-        &workspace,
-        Some(RunId::from("aa-agent-old")),
-    )
-    .await;
-    seed_root(&store, "yy-agent-new", &workspace, None).await;
+    seed_root(&store, "other-agent", &other_workspace).await;
+    seed_child(&store, "child-agent", "aa-agent-old", &workspace).await;
+    seed_root(&store, "yy-agent-new", &workspace).await;
     drop(store);
 
     let all = parse_response(&run_dispatcher(
@@ -297,7 +334,7 @@ async fn canonical_runs_bypasses_malformed_config_without_tui_or_credentials() {
         .expect("canonical temporary workspace");
     let store =
         StateStore::open(Some(home.path().join("state.db"))).expect("open canonical State DB");
-    seed_root(&store, "agent-with-bad-config", &workspace, None).await;
+    seed_root(&store, "agent-with-bad-config", &workspace).await;
     let before_events = store
         .load(&RunId::from("agent-with-bad-config"))
         .await

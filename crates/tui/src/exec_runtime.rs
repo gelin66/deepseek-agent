@@ -32,6 +32,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::config::{Config, MAX_SUBAGENTS};
+use crate::exec_lifecycle_stream::{agent_lifecycle_stream_line, is_agent_lifecycle_event};
 use crate::exec_output::{ExecTerminalReceipt, RunTerminationReason};
 use crate::localization::{MessageId, tr};
 
@@ -434,6 +435,7 @@ pub(crate) async fn run_exec_runtime(
         let mut terminal: Option<AgentOutcome> = None;
         let mut after_sequence = 0_u64;
         let mut drain_events = false;
+        let mut output_writable = true;
         let mut ignore_signals = false;
         let mut drain_deadline = None;
         let mut output_failure = None;
@@ -557,7 +559,7 @@ pub(crate) async fn run_exec_runtime(
                     output: &output,
                     format: output_format,
                     json_output,
-                    render: !drain_events,
+                    render: output_writable,
                 }
                 .project(&event)
                 .await;
@@ -565,6 +567,7 @@ pub(crate) async fn run_exec_runtime(
                     if ignore_signals {
                         if let Err(error) = wait.await {
                             output_failure.get_or_insert_with(|| error.to_string());
+                            output_writable = false;
                         }
                     } else {
                         match wait_exec_output_until(wait, deadline, &mut signal_rx).await {
@@ -606,6 +609,7 @@ pub(crate) async fn run_exec_runtime(
                         }
                         ExecOutputWait::Failed(error) => {
                             output_failure.get_or_insert(error);
+                            output_writable = false;
                             let _ = application
                                 .execute(run_envelope(
                                     "exec-output-failure-cancel",
@@ -651,7 +655,7 @@ pub(crate) async fn run_exec_runtime(
             .as_ref()
             .map(|_| terminal_projection.category.to_owned());
 
-        if !drain_events {
+        if output_writable {
             emit_terminal_output(
                 &output,
                 &summary,
@@ -686,7 +690,7 @@ pub(crate) async fn run_exec_runtime(
             });
         }
 
-        if json_output && output_format != ExecOutputFormat::StreamJson && !drain_events {
+        if json_output && output_format != ExecOutputFormat::StreamJson && output_writable {
             let mut bytes = serde_json::to_vec_pretty(&summary)?;
             bytes.push(b'\n');
             if let Err(error) = wait_terminal_output(output.enqueue_stdout(bytes)).await {
@@ -1290,19 +1294,9 @@ impl<'a> RuntimeEventProjection<'a> {
                     None
                 }
             }
-            RuntimeEventKind::ChildStarted {
-                call_id,
-                child_run_id,
-                depth,
-            } => {
+            RuntimeEventKind::ChildStarted { .. } => {
                 if format == ExecOutputFormat::StreamJson {
-                    exec_stream_line(&ExecStreamEvent::ChildStarted {
-                        call_id: call_id.clone(),
-                        child_run_id: child_run_id.0.clone(),
-                        depth: *depth,
-                        started_at: timestamp(event.occurred_at_unix_ms),
-                    })
-                    .ok()
+                    agent_lifecycle_stream_line(event).ok()
                 } else {
                     None
                 }
@@ -1320,25 +1314,7 @@ impl<'a> RuntimeEventProjection<'a> {
                     handoff_content: handoff_content.clone(),
                 });
                 if format == ExecOutputFormat::StreamJson {
-                    let (status, terminal_result_present) = match &outcome.terminal {
-                        TerminalState::Completed { message, .. } => {
-                            ("completed", !message.trim().is_empty())
-                        }
-                        TerminalState::Blocked { .. } => ("blocked", false),
-                        TerminalState::Failed { .. } => ("failed", false),
-                        TerminalState::Cancelled => ("cancelled", false),
-                        TerminalState::Interrupted => ("interrupted", false),
-                        TerminalState::RecoveryRequired { .. } => ("recovery_required", false),
-                    };
-                    exec_stream_line(&ExecStreamEvent::ChildFinished {
-                        call_id: call_id.clone(),
-                        child_run_id: outcome.run_id.0.clone(),
-                        status: status.to_owned(),
-                        result_present: terminal_result_present
-                            && !handoff_content.trim().is_empty(),
-                        completed_at: timestamp(event.occurred_at_unix_ms),
-                    })
-                    .ok()
+                    agent_lifecycle_stream_line(event).ok()
                 } else {
                     None
                 }
@@ -1353,6 +1329,24 @@ impl<'a> RuntimeEventProjection<'a> {
             | RuntimeEventKind::CompletionRejected { .. }
             | RuntimeEventKind::SteerQueued { .. }
             | RuntimeEventKind::ControlRequested { .. } => None,
+            RuntimeEventKind::AgentTaskPrepared { .. }
+            | RuntimeEventKind::AgentWorkspaceCreated { .. }
+            | RuntimeEventKind::AgentSealPrepared { .. }
+            | RuntimeEventKind::AgentSealCommitted { .. }
+            | RuntimeEventKind::AgentResultCollected { .. }
+            | RuntimeEventKind::AgentIntegrationPrepared { .. }
+            | RuntimeEventKind::AgentIntegrationStarted { .. }
+            | RuntimeEventKind::AgentIntegrationFailed { .. }
+            | RuntimeEventKind::AgentIntegrationCommitted { .. }
+            | RuntimeEventKind::AgentCleanupPrepared { .. }
+            | RuntimeEventKind::AgentCleanupCommitted { .. } => {
+                if format == ExecOutputFormat::StreamJson {
+                    debug_assert!(is_agent_lifecycle_event(&event.event));
+                    agent_lifecycle_stream_line(event).ok()
+                } else {
+                    None
+                }
+            }
             RuntimeEventKind::SteerApplied { content, .. } => {
                 transcript.entries.push(TranscriptEntry::User {
                     content: content.clone(),

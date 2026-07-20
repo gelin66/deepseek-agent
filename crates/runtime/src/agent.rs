@@ -1,4 +1,5 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
+use std::path::Component;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
@@ -17,12 +18,25 @@ enum RunLaunch {
     Resume(RunId),
 }
 
+struct ResumeAccountingBootstrap {
+    expected_sequence: u64,
+    accounting: ModelAccounting,
+}
+
+struct RunLaunchOptions {
+    budget: Option<Arc<RuntimeBudget>>,
+    terminal_model_request: Option<ModelRequestPermit>,
+    model_accounting_includes_baseline: bool,
+    resume_accounting: Option<ResumeAccountingBootstrap>,
+}
+
 #[derive(Clone)]
 pub struct AgentRuntime {
     model: Arc<dyn ModelPort>,
     tools: Arc<dyn ToolExecutor>,
     sink: Arc<dyn RuntimeEventSink>,
     store: Arc<dyn RunStore>,
+    orchestrator: Option<Arc<dyn AgentOrchestrator>>,
 }
 
 impl AgentRuntime {
@@ -38,12 +52,29 @@ impl AgentRuntime {
             tools,
             sink,
             store,
+            orchestrator: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_orchestrator(mut self, orchestrator: Arc<dyn AgentOrchestrator>) -> Self {
+        self.orchestrator = Some(orchestrator);
+        self
     }
 
     #[must_use]
     pub fn store(&self) -> Arc<dyn RunStore> {
         self.store.clone()
+    }
+
+    fn with_tools(&self, tools: Arc<dyn ToolExecutor>) -> Arc<Self> {
+        Arc::new(Self {
+            model: self.model.clone(),
+            tools,
+            sink: self.sink.clone(),
+            store: self.store.clone(),
+            orchestrator: self.orchestrator.clone(),
+        })
     }
 
     /// The exact, deterministic catalog sent to the model. The built-in
@@ -84,29 +115,68 @@ impl AgentRuntime {
         request.parent_run_id = None;
         request.actor = AgentActor::default();
         let budget = Arc::new(RuntimeBudget::new(request.limits, 0, 0));
-        self.start_inner(request, budget, None)
+        self.start_inner(request, budget, None, true)
     }
 
     /// Reopen one canonical run. The persisted request, transcript, counters,
     /// and terminal state win over all caller-local state.
     #[must_use]
     pub fn resume(self: &Arc<Self>, run_id: RunId) -> RuntimeRun {
+        self.resume_inner(run_id, None)
+    }
+
+    /// Resume one root from a newer cumulative physical-accounting checkpoint.
+    ///
+    /// A writer child can persist the shared DeepSeek ledger after the root's
+    /// latest event. This override affects only the acquired live root epoch;
+    /// the next ordinary accounting event remains the sole durable Store write.
+    #[must_use]
+    pub fn resume_with_accounting_baseline(
+        self: &Arc<Self>,
+        run_id: RunId,
+        expected_sequence: u64,
+        accounting: ModelAccounting,
+    ) -> RuntimeRun {
+        self.resume_inner_with_accounting(
+            run_id,
+            None,
+            Some(ResumeAccountingBootstrap {
+                expected_sequence,
+                accounting,
+            }),
+        )
+    }
+
+    fn resume_inner(
+        self: &Arc<Self>,
+        run_id: RunId,
+        budget: Option<Arc<RuntimeBudget>>,
+    ) -> RuntimeRun {
+        self.resume_inner_with_accounting(run_id, budget, None)
+    }
+
+    fn resume_inner_with_accounting(
+        self: &Arc<Self>,
+        run_id: RunId,
+        budget: Option<Arc<RuntimeBudget>>,
+        accounting: Option<ResumeAccountingBootstrap>,
+    ) -> RuntimeRun {
         let (sender, receiver) = mpsc::unbounded_channel();
         let (ready_sender, ready_receiver) = oneshot::channel();
         let control = AgentControl { sender };
         let runtime = self.clone();
         let task_run_id = run_id.clone();
-        let join = tokio::spawn(async move {
-            runtime
-                .run_launch(
-                    RunLaunch::Resume(task_run_id),
-                    None,
-                    None,
-                    receiver,
-                    ready_sender,
-                )
-                .await
-        });
+        let join = tokio::spawn(Box::pin(runtime.run_launch(
+            RunLaunch::Resume(task_run_id),
+            RunLaunchOptions {
+                budget,
+                terminal_model_request: None,
+                model_accounting_includes_baseline: false,
+                resume_accounting: accounting,
+            },
+            receiver,
+            ready_sender,
+        )));
         RuntimeRun {
             run_id,
             control,
@@ -120,6 +190,7 @@ impl AgentRuntime {
         mut request: RunRequest,
         budget: Arc<RuntimeBudget>,
         terminal_model_request: Option<ModelRequestPermit>,
+        model_accounting_includes_baseline: bool,
     ) -> RuntimeRun {
         if request.deadline_unix_ms.is_none() {
             request.deadline_unix_ms = request
@@ -133,17 +204,17 @@ impl AgentRuntime {
         let (ready_sender, ready_receiver) = oneshot::channel();
         let control = AgentControl { sender };
         let runtime = self.clone();
-        let join = tokio::spawn(async move {
-            runtime
-                .run_launch(
-                    RunLaunch::Create(Box::new(request)),
-                    Some(budget),
-                    terminal_model_request,
-                    receiver,
-                    ready_sender,
-                )
-                .await
-        });
+        let join = tokio::spawn(Box::pin(runtime.run_launch(
+            RunLaunch::Create(Box::new(request)),
+            RunLaunchOptions {
+                budget: Some(budget),
+                terminal_model_request,
+                model_accounting_includes_baseline,
+                resume_accounting: None,
+            },
+            receiver,
+            ready_sender,
+        )));
         RuntimeRun {
             run_id,
             control,
@@ -155,11 +226,16 @@ impl AgentRuntime {
     async fn run_launch(
         self: Arc<Self>,
         launch: RunLaunch,
-        budget: Option<Arc<RuntimeBudget>>,
-        terminal_model_request: Option<ModelRequestPermit>,
+        options: RunLaunchOptions,
         mut control: mpsc::UnboundedReceiver<ControlCommand>,
         ready: oneshot::Sender<Result<(), RunStoreError>>,
     ) -> AgentOutcome {
+        let RunLaunchOptions {
+            budget,
+            terminal_model_request,
+            model_accounting_includes_baseline,
+            resume_accounting,
+        } = options;
         let mut ready = Some(ready);
         let resumed = matches!(&launch, RunLaunch::Resume(_));
         let (lease, replay) = match launch {
@@ -194,6 +270,36 @@ impl AgentRuntime {
                         signal_ready(&mut ready, Err(error.clone()));
                         return store_start_failure(error, run_id, None);
                     };
+                    if let Some(bootstrap) = resume_accounting.as_ref() {
+                        let error = if acquired.replay.snapshot.request.actor.kind
+                            != AgentActorKind::Root
+                        {
+                            Some(RunStoreError::Corrupt {
+                                run_id: run_id.clone(),
+                                message:
+                                    "accounting baseline override is only valid for a root resume"
+                                        .to_owned(),
+                            })
+                        } else if acquired.replay.snapshot.last_sequence
+                            != bootstrap.expected_sequence
+                        {
+                            Some(RunStoreError::Backend {
+                                message: format!(
+                                    "run_resume_replay_advanced：run {} advanced from sequence {} to {} before accounting recovery acquired it",
+                                    run_id,
+                                    bootstrap.expected_sequence,
+                                    acquired.replay.snapshot.last_sequence,
+                                ),
+                            })
+                        } else {
+                            None
+                        };
+                        if let Some(error) = error {
+                            let _ = self.store.release(&lease).await;
+                            signal_ready(&mut ready, Err(error.clone()));
+                            return store_start_failure(error, run_id, None);
+                        }
+                    }
                     (lease, acquired.replay)
                 }
                 Err(error) => {
@@ -214,7 +320,9 @@ impl AgentRuntime {
         });
         let response_is_current = snapshot.last_model_response_sequence.is_some()
             && snapshot.last_model_response_sequence == snapshot.last_model_activity_sequence;
-        let accounting_epoch_baseline = snapshot.accounting.clone();
+        let accounting_epoch_baseline = resume_accounting
+            .map(|bootstrap| bootstrap.accounting)
+            .unwrap_or_else(|| snapshot.accounting.clone());
         let recovery_model = snapshot.pending_model.clone();
         let recovery_tool = snapshot.pending_tool.clone();
         let recovery_output = response_is_current
@@ -223,7 +331,7 @@ impl AgentRuntime {
         let recovery_failure = resumed
             .then_some(snapshot.last_model_failure.clone())
             .flatten();
-        let recovered_child_ids = snapshot.pending_children.clone();
+        let recovered_child_ids = snapshot.pending_child_run_ids();
         let terminal_request_is_already_admitted = recovery_model
             .as_ref()
             .is_some_and(|pending| pending.request.tools.is_empty())
@@ -237,7 +345,7 @@ impl AgentRuntime {
             snapshot,
             lease,
             accounting_epoch_baseline,
-            model_accounting_includes_baseline: !resumed,
+            model_accounting_includes_baseline,
             started_unix_ms: replay
                 .events
                 .first()
@@ -251,23 +359,30 @@ impl AgentRuntime {
             terminal_model_request,
         };
 
+        let terminal =
+            Box::pin(self.run_until_terminal(&mut state, &budget, &mut control, deadline, resumed))
+                .await;
+        self.finalize(&mut state, terminal, &budget).await
+    }
+
+    async fn run_until_terminal(
+        self: &Arc<Self>,
+        state: &mut RunState,
+        budget: &Arc<RuntimeBudget>,
+        control: &mut mpsc::UnboundedReceiver<ControlCommand>,
+        deadline: Option<u64>,
+        resumed: bool,
+    ) -> TerminalState {
         if resumed {
             if let Some(ambiguity) = state.recovery_ambiguity() {
-                return self
-                    .finalize(
-                        &mut state,
-                        TerminalState::RecoveryRequired { ambiguity },
-                        &budget,
-                    )
-                    .await;
+                return TerminalState::RecoveryRequired { ambiguity };
             }
-            if let Some(control) = state.snapshot.pending_control.clone() {
-                let terminal = match control.action {
+            if let Some(pending_control) = state.snapshot.pending_control.clone() {
+                let terminal = match pending_control.action {
                     DurableControlAction::Interrupt => TerminalState::Interrupted,
                     DurableControlAction::Cancel => TerminalState::Cancelled,
                 };
-                self.settle_children_for(&mut state, &terminal).await;
-                return self.finalize(&mut state, terminal, &budget).await;
+                return self.settled_terminal(state, terminal).await;
             }
             if let Some(stopped) = state.recovery_failure.take() {
                 let failure = match stopped.reason {
@@ -283,55 +398,39 @@ impl AgentRuntime {
                         retryable: stopped.failure.retryable,
                     },
                 };
-                return self
-                    .finalize(&mut state, TerminalState::Failed { failure }, &budget)
-                    .await;
+                return TerminalState::Failed { failure };
             }
             if let Some(candidate) = state.snapshot.pending_completion.clone() {
-                match self
-                    .accept_completion_candidate(&mut state, candidate)
-                    .await
-                {
+                match self.accept_completion_candidate(state, candidate).await {
                     Ok((message, decision)) => {
-                        return self
-                            .finalize(
-                                &mut state,
-                                TerminalState::Completed { message, decision },
-                                &budget,
-                            )
-                            .await;
+                        return TerminalState::Completed { message, decision };
                     }
                     Err(CompletionReviewError::Retry(_))
                         if budget.has_unreserved_model_request() => {}
                     Err(CompletionReviewError::Retry(reason))
                     | Err(CompletionReviewError::Blocked(reason)) => {
-                        return self
-                            .finalize(&mut state, TerminalState::Blocked { reason }, &budget)
-                            .await;
+                        return TerminalState::Blocked { reason };
                     }
                 }
             }
         }
-
         loop {
-            match self.drain_controls(&mut state, &mut control).await {
+            match self.drain_controls(state, control).await {
                 Ok(Some(terminal)) => {
-                    self.settle_children_for(&mut state, &terminal).await;
-                    return self.finalize(&mut state, terminal, &budget).await;
+                    return self.settled_terminal(state, terminal).await;
                 }
                 Ok(None) => {}
                 Err(failure) => {
-                    self.cancel_children(&mut state).await;
-                    return self
-                        .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                    let terminal = self
+                        .settled_terminal(state, TerminalState::Failed { failure })
                         .await;
+                    return terminal;
                 }
             }
 
             if deadline_expired(deadline) {
-                self.cancel_children(&mut state).await;
-                let terminal = timeout_terminal(&state, deadline);
-                return self.finalize(&mut state, terminal, &budget).await;
+                let terminal = timeout_terminal(state, deadline);
+                return self.settled_terminal(state, terminal).await;
             }
             let safe_fresh_boundary = state.recovery_model.is_none()
                 && state.recovery_output.is_none()
@@ -340,26 +439,17 @@ impl AgentRuntime {
                 && state.snapshot.pending_tool.is_none()
                 && state.snapshot.pending_completion.is_none()
                 && state.snapshot.pending_host_verification.is_none()
-                && state.snapshot.pending_children.is_empty();
+                && state.snapshot.pending_child_run_ids().is_empty();
             if safe_fresh_boundary
                 && !state.snapshot.pending_steers.is_empty()
-                && let Err(failure) = self.flush_pending_steers(&mut state).await
+                && let Err(failure) = self.flush_pending_steers(state).await
             {
-                return self
-                    .finalize(&mut state, TerminalState::Failed { failure }, &budget)
-                    .await;
+                return TerminalState::Failed { failure };
             }
-            if safe_fresh_boundary && let Err(message) = self.reconcile_workspace(&mut state).await
-            {
-                return self
-                    .finalize(
-                        &mut state,
-                        TerminalState::Failed {
-                            failure: RuntimeFailure::Store { message },
-                        },
-                        &budget,
-                    )
-                    .await;
+            if safe_fresh_boundary && let Err(message) = self.reconcile_workspace(state).await {
+                return TerminalState::Failed {
+                    failure: RuntimeFailure::Store { message },
+                };
             }
             let context_tools = self.tool_definitions(
                 &state.snapshot.request.tool_policy,
@@ -372,31 +462,23 @@ impl AgentRuntime {
                     match effective_context(context_input(&state.snapshot, &context_tools)) {
                         Ok(context) => context.estimated_tokens,
                         Err(error) => {
-                            return self
-                                .finalize(
-                                    &mut state,
-                                    TerminalState::Failed {
-                                        failure: RuntimeFailure::Store {
-                                            message: error.to_string(),
-                                        },
-                                    },
-                                    &budget,
-                                )
-                                .await;
+                            return TerminalState::Failed {
+                                failure: RuntimeFailure::Store {
+                                    message: error.to_string(),
+                                },
+                            };
                         }
                     };
                 let hard_input_tokens =
                     u64::from(state.snapshot.request.context_policy.hard_input_tokens);
                 if estimated > hard_input_tokens {
-                    match self.compact_context(&mut state, &context_tools).await {
+                    match self.compact_context(state, &context_tools).await {
                         Ok(
                             ContextCompactionControl::Committed
                             | ContextCompactionControl::NotNeeded,
                         ) => {}
                         Err(failure) => {
-                            return self
-                                .finalize(&mut state, TerminalState::Failed { failure }, &budget)
-                                .await;
+                            return TerminalState::Failed { failure };
                         }
                     }
                 }
@@ -407,23 +489,22 @@ impl AgentRuntime {
                     state.snapshot.last_model_advertised_tool_names.clone(),
                 )))
             } else if let Some(pending) = state.recovery_model.take() {
-                self.model_turn(&mut state, &budget, &mut control, deadline, Some(pending))
+                self.model_turn(state, budget, control, deadline, Some(pending))
                     .await
             } else {
-                self.model_turn(&mut state, &budget, &mut control, deadline, None)
+                self.model_turn(state, budget, control, deadline, None)
                     .await
             };
             let turn = match turn {
                 Ok(ModelTurnControl::Terminal(terminal)) => {
-                    self.settle_children_for(&mut state, &terminal).await;
-                    return self.finalize(&mut state, terminal, &budget).await;
+                    return self.settled_terminal(state, terminal).await;
                 }
                 Ok(ModelTurnControl::Output(output)) => output,
                 Err(failure) => {
-                    self.cancel_children(&mut state).await;
-                    return self
-                        .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                    let terminal = self
+                        .settled_terminal(state, TerminalState::Failed { failure })
                         .await;
+                    return terminal;
                 }
             };
 
@@ -436,17 +517,15 @@ impl AgentRuntime {
                 _ => None,
             };
             if let Some(failure) = terminal_failure {
-                self.cancel_children(&mut state).await;
-                return self
-                    .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                let terminal = self
+                    .settled_terminal(state, TerminalState::Failed { failure })
                     .await;
+                return terminal;
             }
 
             if let Err(message) = validate_tool_calls(&turn.tool_calls) {
-                self.cancel_children(&mut state).await;
-                return self
-                    .finalize(&mut state, invalid_model(message), &budget)
-                    .await;
+                let terminal = self.settled_terminal(state, invalid_model(message)).await;
+                return terminal;
             }
             if let Some(call) = turn.tool_calls.iter().find(|call| {
                 !turn
@@ -454,47 +533,37 @@ impl AgentRuntime {
                     .iter()
                     .any(|advertised| advertised == &call.name)
             }) {
-                self.cancel_children(&mut state).await;
-                return self
-                    .finalize(
-                        &mut state,
+                let terminal = self
+                    .settled_terminal(
+                        state,
                         invalid_model(format!(
                             "tool '{}' was not advertised by this model request",
                             call.name
                         )),
-                        &budget,
                     )
                     .await;
+                return terminal;
             }
             if turn.tool_calls.is_empty() {
                 if turn.finish_reason != ModelFinishReason::Stop {
-                    self.cancel_children(&mut state).await;
-                    return self
-                        .finalize(
-                            &mut state,
+                    let terminal = self
+                        .settled_terminal(
+                            state,
                             invalid_model("finish_reason=tool_calls without tool calls"),
-                            &budget,
                         )
                         .await;
+                    return terminal;
                 }
                 if !state.snapshot.pending_steers.is_empty() {
-                    if let Err(failure) = self.flush_pending_steers(&mut state).await {
-                        return self
-                            .finalize(&mut state, TerminalState::Failed { failure }, &budget)
-                            .await;
+                    if let Err(failure) = self.flush_pending_steers(state).await {
+                        return TerminalState::Failed { failure };
                     }
                     continue;
                 }
                 if turn.content.trim().is_empty() {
-                    return self
-                        .finalize(
-                            &mut state,
-                            TerminalState::Failed {
-                                failure: RuntimeFailure::EmptyModelOutput,
-                            },
-                            &budget,
-                        )
-                        .await;
+                    return TerminalState::Failed {
+                        failure: RuntimeFailure::EmptyModelOutput,
+                    };
                 }
                 let contract = state
                     .snapshot
@@ -515,29 +584,18 @@ impl AgentRuntime {
                 };
                 if let Err(failure) = self
                     .publish(
-                        &mut state,
+                        state,
                         RuntimeEventKind::CompletionProposed {
                             candidate: candidate.clone(),
                         },
                     )
                     .await
                 {
-                    return self
-                        .finalize(&mut state, TerminalState::Failed { failure }, &budget)
-                        .await;
+                    return TerminalState::Failed { failure };
                 }
-                match self
-                    .accept_completion_candidate(&mut state, candidate)
-                    .await
-                {
+                match self.accept_completion_candidate(state, candidate).await {
                     Ok((message, decision)) => {
-                        return self
-                            .finalize(
-                                &mut state,
-                                TerminalState::Completed { message, decision },
-                                &budget,
-                            )
-                            .await;
+                        return TerminalState::Completed { message, decision };
                     }
                     Err(CompletionReviewError::Retry(_))
                         if budget.has_unreserved_model_request() =>
@@ -546,22 +604,19 @@ impl AgentRuntime {
                     }
                     Err(CompletionReviewError::Retry(reason))
                     | Err(CompletionReviewError::Blocked(reason)) => {
-                        return self
-                            .finalize(&mut state, TerminalState::Blocked { reason }, &budget)
-                            .await;
+                        return TerminalState::Blocked { reason };
                     }
                 }
             }
 
             if turn.finish_reason != ModelFinishReason::ToolCalls {
-                self.cancel_children(&mut state).await;
-                return self
-                    .finalize(
-                        &mut state,
+                let terminal = self
+                    .settled_terminal(
+                        state,
                         invalid_model("tool calls require finish_reason=tool_calls"),
-                        &budget,
                     )
                     .await;
+                return terminal;
             }
 
             for call in turn.tool_calls {
@@ -573,40 +628,34 @@ impl AgentRuntime {
                     .as_ref()
                     .is_some_and(|pending| pending.invocation.call_id == call.id);
                 if !recovering_prepared && !budget.reserve_tool() {
-                    self.cancel_children(&mut state).await;
                     let limit = state.snapshot.request.limits.max_tool_calls;
-                    return self
-                        .finalize(
-                            &mut state,
+                    let terminal = self
+                        .settled_terminal(
+                            state,
                             TerminalState::Failed {
                                 failure: RuntimeFailure::ToolBudgetExceeded { limit },
                             },
-                            &budget,
                         )
                         .await;
+                    return terminal;
                 }
-                match self
-                    .execute_call(&mut state, call, &budget, &mut control, deadline)
-                    .await
-                {
+                match Box::pin(self.execute_call(state, call, budget, control, deadline)).await {
                     Ok(()) => {}
                     Err(terminal) => {
-                        self.settle_children_for(&mut state, &terminal).await;
-                        return self.finalize(&mut state, terminal, &budget).await;
+                        return self.settled_terminal(state, terminal).await;
                     }
                 }
             }
             if !state.pending_children.is_empty()
-                && let Err(terminal) = self.join_children(&mut state, &mut control, deadline).await
+                && let Err(terminal) = self.join_children(state, control, deadline).await
             {
-                self.cancel_children(&mut state).await;
-                return self.finalize(&mut state, terminal, &budget).await;
+                return self.settled_terminal(state, terminal).await;
             }
-            if let Err(failure) = self.flush_pending_steers(&mut state).await {
-                self.cancel_children(&mut state).await;
-                return self
-                    .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+            if let Err(failure) = self.flush_pending_steers(state).await {
+                let terminal = self
+                    .settled_terminal(state, TerminalState::Failed { failure })
                     .await;
+                return terminal;
             }
         }
     }
@@ -1098,10 +1147,18 @@ impl AgentRuntime {
             name: call.name.clone(),
             arguments: call.arguments.clone(),
         };
-        let operation_id = match state.recovery_tool.take() {
+        let (operation_id, operation_started) = match state.recovery_tool.take() {
             Some(pending) if pending.invocation.call_id == call.id => {
-                debug_assert_eq!(pending.state, DurableActionState::Prepared);
-                pending.operation_id
+                let started = pending.state == DurableActionState::InFlight;
+                debug_assert!(
+                    !started
+                        || (pending.invocation.name == AGENT_TOOL_NAME
+                            && state.snapshot.agent_tasks.iter().any(|lifecycle| {
+                                lifecycle.task.call_id == call.id
+                                    && writer_tool_recovery_is_safe(lifecycle)
+                            }))
+                );
+                (pending.operation_id, started)
             }
             Some(pending) => {
                 state.recovery_tool = Some(pending);
@@ -1119,10 +1176,9 @@ impl AgentRuntime {
                     RuntimeEventKind::ToolPrepared {
                         operation_id: operation_id.clone(),
                         invocation: invocation.clone(),
-                        workspace_access: if matches!(
-                            call.name.as_str(),
-                            AGENT_TOOL_NAME | REQUEST_USER_INPUT_TOOL_NAME
-                        ) {
+                        workspace_access: if call.name == AGENT_TOOL_NAME {
+                            agent_tool_workspace_access(&call)
+                        } else if call.name == REQUEST_USER_INPUT_TOOL_NAME {
                             WorkspaceAccess::ReadOnly
                         } else {
                             self.tools.workspace_access(&invocation)
@@ -1131,7 +1187,7 @@ impl AgentRuntime {
                 )
                 .await
                 .map_err(store_terminal)?;
-                operation_id
+                (operation_id, false)
             }
         };
 
@@ -1150,17 +1206,37 @@ impl AgentRuntime {
                 ToolRetryDisposition::AfterCorrection,
             )
         } else if call.name == AGENT_TOOL_NAME {
-            self.publish(
-                state,
-                RuntimeEventKind::ToolExecutionStarted {
-                    operation_id: operation_id.clone(),
-                },
-            )
-            .await
-            .map_err(store_terminal)?;
-            self.launch_child(state, &call, budget)
+            if !operation_started {
+                self.publish(
+                    state,
+                    RuntimeEventKind::ToolExecutionStarted {
+                        operation_id: operation_id.clone(),
+                    },
+                )
                 .await
-                .map_err(store_terminal)?
+                .map_err(store_terminal)?;
+            }
+            match Box::pin(self.launch_child(state, &call, budget, control, deadline)).await {
+                Ok(outcome) => outcome,
+                Err(terminal) => {
+                    terminal_after_result = Some(terminal);
+                    if state
+                        .snapshot
+                        .agent_tasks
+                        .iter()
+                        .any(|lifecycle| lifecycle.task.call_id == call.id)
+                    {
+                        cancelled_tool_outcome(
+                            "agent_lifecycle_stopped：子 Agent 生命周期未能安全完成",
+                        )
+                    } else {
+                        ToolOutcome::rejected(
+                            "agent_preflight_failed：子 Agent 在产生生命周期副作用前被 Host 拒绝",
+                            ToolRetryDisposition::NotRetryable,
+                        )
+                    }
+                }
+            }
         } else if call.name == REQUEST_USER_INPUT_TOOL_NAME {
             if !state.snapshot.request.environment.interactive
                 || state.snapshot.request.actor.kind != AgentActorKind::Root
@@ -1307,14 +1383,16 @@ impl AgentRuntime {
             if let Some(outcome) = rejected {
                 outcome
             } else {
-                self.publish(
-                    state,
-                    RuntimeEventKind::ToolExecutionStarted {
-                        operation_id: operation_id.clone(),
-                    },
-                )
-                .await
-                .map_err(store_terminal)?;
+                if !operation_started {
+                    self.publish(
+                        state,
+                        RuntimeEventKind::ToolExecutionStarted {
+                            operation_id: operation_id.clone(),
+                        },
+                    )
+                    .await
+                    .map_err(store_terminal)?;
+                }
                 let cancellation = CancellationToken::default();
                 let execution = self.tools.execute(invocation, cancellation.clone());
                 tokio::pin!(execution);
@@ -1354,12 +1432,11 @@ impl AgentRuntime {
             }
         };
 
-        let workspace_state = if state
-            .snapshot
-            .pending_tool
-            .as_ref()
-            .is_some_and(|pending| pending.workspace_access == WorkspaceAccess::MayWrite)
-        {
+        let workspace_state = if state.snapshot.pending_tool.as_ref().is_some_and(|pending| {
+            pending.workspace_access == WorkspaceAccess::MayWrite
+                && !(pending.invocation.name == AGENT_TOOL_NAME
+                    && outcome.side_effect == ToolSideEffectStatus::NotApplied)
+        }) {
             Some(self.observe_workspace_state(state, true).await)
         } else {
             None
@@ -1473,12 +1550,17 @@ impl AgentRuntime {
         state: &mut RunState,
         call: &ModelToolCall,
         budget: &Arc<RuntimeBudget>,
-    ) -> Result<ToolOutcome, RuntimeFailure> {
+        control: &mut mpsc::UnboundedReceiver<ControlCommand>,
+        deadline: Option<u64>,
+    ) -> Result<ToolOutcome, TerminalState> {
         if state.snapshot.request.actor.depth >= state.snapshot.request.limits.max_depth {
-            return Ok(ToolOutcome::error(format!(
-                "child_depth_limit：已达到子 Agent 深度上限 {}",
-                state.snapshot.request.limits.max_depth
-            )));
+            return Ok(ToolOutcome::rejected(
+                format!(
+                    "child_depth_limit：已达到子 Agent 深度上限 {}",
+                    state.snapshot.request.limits.max_depth
+                ),
+                ToolRetryDisposition::NotRetryable,
+            ));
         }
         let Some(arguments) = call.arguments.parsed.as_ref() else {
             return Ok(ToolOutcome::rejected(
@@ -1488,6 +1570,63 @@ impl AgentRuntime {
                 ),
                 ToolRetryDisposition::AfterCorrection,
             ));
+        };
+        let launch = match AgentLaunchRequest::parse(arguments) {
+            Ok(launch) => launch,
+            Err(message) => {
+                return Ok(ToolOutcome::rejected(
+                    format!("invalid_arguments：{message}"),
+                    ToolRetryDisposition::AfterCorrection,
+                ));
+            }
+        };
+        let writer = launch.workspace_access == AgentWorkspaceAccess::IsolatedWrite;
+        if writer && state.snapshot.request.actor.depth != 0 {
+            return Ok(ToolOutcome::rejected(
+                "writer_root_only：M6-A 隔离写入只允许由 root Agent 启动",
+                ToolRetryDisposition::NotRetryable,
+            ));
+        }
+        if writer
+            && state.snapshot.agent_tasks.iter().any(|lifecycle| {
+                lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                    && lifecycle.task.call_id != call.id
+            })
+        {
+            return Ok(ToolOutcome::rejected(
+                "writer_single_root_limit：M6-A 每个 root run 只允许冻结一个隔离 writer 任务",
+                ToolRetryDisposition::NotRetryable,
+            ));
+        }
+        if writer && !state.snapshot.request.environment.auto_approve {
+            return Ok(ToolOutcome::rejected(
+                "writer_requires_auto_approve：隔离写入子 Agent 只接受 Host 已显式启用的自动批准运行",
+                ToolRetryDisposition::NotRetryable,
+            ));
+        }
+        let writer_acceptance = if writer {
+            let Some(contract) = state.snapshot.request.task_contract.as_ref() else {
+                return Ok(ToolOutcome::rejected(
+                    "writer_requires_exact_verifier：父任务没有冻结 TaskContract",
+                    ToolRetryDisposition::NotRetryable,
+                ));
+            };
+            let verifier = contract
+                .definition
+                .acceptance
+                .iter()
+                .filter(|acceptance| matches!(acceptance, TaskAcceptance::Verifier { .. }))
+                .cloned()
+                .collect::<Vec<_>>();
+            if verifier.len() != 1 {
+                return Ok(ToolOutcome::rejected(
+                    "writer_requires_exact_verifier：隔离写入子 Agent 要求父任务恰好冻结一个 exact Verifier acceptance",
+                    ToolRetryDisposition::NotRetryable,
+                ));
+            }
+            Some(verifier.into_iter().next().expect("one verifier"))
+        } else {
+            None
         };
         let prompt = arguments
             .get("prompt")
@@ -1500,11 +1639,27 @@ impl AgentRuntime {
                 ToolRetryDisposition::AfterCorrection,
             ));
         };
+        if writer
+            && let Some(existing) = state
+                .snapshot
+                .agent_tasks
+                .iter()
+                .find(|lifecycle| lifecycle.task.call_id == call.id)
+                .cloned()
+        {
+            return Box::pin(self.recover_writer_lifecycle(
+                state, call, existing, budget, control, deadline, arguments,
+            ))
+            .await;
+        }
         let Some(child_lease) = budget.reserve_child() else {
-            return Ok(ToolOutcome::error(format!(
-                "child_concurrency_limit：已达到子 Agent 并发上限 {}",
-                state.snapshot.request.limits.max_concurrent_children
-            )));
+            return Ok(ToolOutcome::rejected(
+                format!(
+                    "child_concurrency_limit：已达到子 Agent 并发上限 {}",
+                    state.snapshot.request.limits.max_concurrent_children
+                ),
+                ToolRetryDisposition::AfterCorrection,
+            ));
         };
         let Some(child_terminal_model_request) = budget.reserve_terminal_model_request() else {
             return Ok(ToolOutcome::rejected(
@@ -1516,16 +1671,12 @@ impl AgentRuntime {
             ));
         };
         let child_run_id = RunId::new();
+        let task_id = AgentTaskId::from(format!(
+            "{}-{}",
+            if writer { "writer" } else { "reader" },
+            child_run_id.0
+        ));
         let child_depth = state.snapshot.request.actor.depth.saturating_add(1);
-        self.publish(
-            state,
-            RuntimeEventKind::ChildStarted {
-                call_id: call.id.clone(),
-                child_run_id: child_run_id.clone(),
-                depth: child_depth,
-            },
-        )
-        .await?;
 
         let mut child_policy = state.snapshot.request.tool_policy.clone();
         if let Some(requested) = arguments.get("allowed_tools").and_then(Value::as_array) {
@@ -1546,30 +1697,39 @@ impl AgentRuntime {
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("general");
-        // Until WorkspaceLane is the owner of child worktrees, every child is
-        // read-only. Profiles change instructions, never the safety boundary.
-        for denied in [
-            "apply_patch",
-            "edit_file",
-            "write_file",
-            "delete_file",
-            "exec_shell",
-            "run_tests",
-            "run_verifiers",
-            "shell",
-            "git",
-            "write",
-        ] {
-            if !child_policy.denied.iter().any(|name| name == denied) {
-                child_policy.denied.push(denied.to_owned());
+        if writer {
+            // M6-A admits one isolated writer. A role never grants authority,
+            // and the writer cannot recursively create another writer.
+            if !child_policy
+                .denied
+                .iter()
+                .any(|name| name == AGENT_TOOL_NAME)
+            {
+                child_policy.denied.push(AGENT_TOOL_NAME.to_owned());
+            }
+        } else {
+            for denied in [
+                "apply_patch",
+                "edit_file",
+                "write_file",
+                "delete_file",
+                "exec_shell",
+                "run_tests",
+                "run_verifiers",
+                "shell",
+                "git",
+                "write",
+            ] {
+                if !child_policy.denied.iter().any(|name| name == denied) {
+                    child_policy.denied.push(denied.to_owned());
+                }
             }
         }
-        let expected_artifact = arguments
-            .get("expected_artifact")
-            .and_then(Value::as_str)
-            .map(|value| format!("\n期望产物：{value}"))
-            .unwrap_or_default();
-        let child_input = format!("{prompt}{expected_artifact}");
+        let child_input = if launch.expected_artifact.is_empty() {
+            prompt.to_owned()
+        } else {
+            format!("{prompt}\n期望产物：{}", launch.expected_artifact)
+        };
         let mut system_prompt = state
             .snapshot
             .transcript
@@ -1580,10 +1740,17 @@ impl AgentRuntime {
                 _ => None,
             })
             .unwrap_or_else(|| state.snapshot.request.system_prompt.clone());
-        system_prompt.blocks.push(SystemPromptBlock {
-            text: format!(
+        let access_prompt = if writer {
+            format!(
+                "你是在同一 AgentRuntime 中运行的隔离写入子 Agent。角色：{role}。只在分配的 worktree 内修改允许路径；不要访问主工作区或 Git 元数据；完成前让 Host 使用冻结的 exact verifier 验收。"
+            )
+        } else {
+            format!(
                 "你是在同一 AgentRuntime 中运行的只读后台子 Agent。角色：{role}。只使用本次实际提供的工具，不要尝试修改文件或调用不可用工具；向父 Agent 返回简洁、具体、可验证的结果。"
-            ),
+            )
+        };
+        system_prompt.blocks.push(SystemPromptBlock {
+            text: access_prompt,
             cache_control: PromptCacheControl::Volatile,
         });
         let mut child_limits = state.snapshot.request.limits;
@@ -1626,17 +1793,181 @@ impl AgentRuntime {
         let context_projection = fork_context
             .then(|| state.snapshot.context_projection.clone())
             .flatten();
+
+        let root_run_id = state
+            .snapshot
+            .request
+            .agent_task
+            .as_ref()
+            .map_or_else(|| state.run_id().clone(), |task| task.root_run_id.clone());
+        let root_workspace = state.snapshot.request.agent_task.as_ref().map_or_else(
+            || state.snapshot.request.environment.workspace.clone(),
+            |task| task.workspace.root_workspace.clone(),
+        );
+        let workspace = if writer {
+            let Some(orchestrator) = self.orchestrator.as_ref() else {
+                return Ok(ToolOutcome::rejected(
+                    "writer_orchestrator_unavailable：当前 composition 未配置隔离写入 Orchestrator",
+                    ToolRetryDisposition::NotRetryable,
+                ));
+            };
+            let plan = orchestrator
+                .prepare_writer(WriterPreparation {
+                    task_id: task_id.clone(),
+                    root_workspace: root_workspace.clone(),
+                    allowed_paths: launch.allowed_paths.clone(),
+                })
+                .await
+                .map_err(orchestration_terminal)?;
+            if plan.assignment.access != AgentWorkspaceAccess::IsolatedWrite
+                || plan.assignment.root_workspace != root_workspace
+                || plan.assignment.allowed_paths != launch.allowed_paths
+            {
+                return Err(orchestration_recovery(
+                    &task_id,
+                    "writer_plan_mismatch",
+                    "Orchestrator 返回的 writer assignment 与 Host 冻结请求不一致",
+                ));
+            }
+            plan.assignment
+        } else {
+            AgentWorkspaceAssignment {
+                access: AgentWorkspaceAccess::ReadOnly,
+                root_workspace: root_workspace.clone(),
+                base_commit: read_only_workspace_identity(
+                    self.tools
+                        .observe_workspace_revision()
+                        .await
+                        .ok()
+                        .as_deref(),
+                ),
+                root_branch: None,
+                worktree_path: None,
+                branch: None,
+                allowed_paths: Vec::new(),
+                owner_token: None,
+            }
+        };
+        let task_contract = TaskContract {
+            generation_id: TaskGenerationId::from(child_run_id.0.clone()),
+            definition: if let Some(acceptance) = writer_acceptance {
+                TaskDefinition {
+                    objective: child_input,
+                    constraints: vec![format!(
+                        "只允许修改这些相对路径：{}",
+                        launch.allowed_paths.join(", ")
+                    )],
+                    non_goals: vec!["不得修改主工作区、其他 worktree 或 Git 元数据".to_owned()],
+                    acceptance: vec![acceptance],
+                }
+            } else {
+                TaskDefinition::host(child_input)
+            },
+        };
+        let task = AgentTask {
+            task_id: task_id.clone(),
+            root_run_id,
+            parent_run_id: state.run_id().clone(),
+            child_run_id: child_run_id.clone(),
+            call_id: call.id.clone(),
+            role: role.to_owned(),
+            task_contract: task_contract.clone(),
+            workspace: workspace.clone(),
+            tool_policy: child_policy.clone(),
+            limits: child_limits,
+            deadline_unix_ms: state.snapshot.request.deadline_unix_ms,
+            expected_artifact: launch.expected_artifact.clone(),
+        };
+        task.validate()
+            .map_err(|message| orchestration_recovery(&task_id, "invalid_agent_task", message))?;
+        self.publish(
+            state,
+            RuntimeEventKind::AgentTaskPrepared {
+                task: Box::new(task.clone()),
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+
+        let writer_binding = if writer {
+            let orchestrator = self
+                .orchestrator
+                .as_ref()
+                .expect("writer availability checked before task preparation");
+            let binding = match orchestrator.bind_writer(&task, None).await {
+                Ok(binding) => binding,
+                Err(error) => {
+                    let finished = self
+                        .finish_uncreated_writer(
+                            state,
+                            &task,
+                            orchestration_child_outcome(&task, &error),
+                        )
+                        .await?;
+                    return match error.kind {
+                        AgentOrchestrationErrorKind::RecoveryRequired => Err(finished.terminal),
+                        AgentOrchestrationErrorKind::Rejected
+                        | AgentOrchestrationErrorKind::Conflict => {
+                            Ok(writer_failure_tool_outcome(&task, &finished))
+                        }
+                    };
+                }
+            };
+            if binding.assignment != task.workspace {
+                let error = AgentOrchestrationError::new(
+                    AgentOrchestrationErrorKind::RecoveryRequired,
+                    "writer_binding_mismatch",
+                    "创建后的 writer assignment 与已持久化 AgentTask 不一致",
+                );
+                let finished = self
+                    .finish_uncreated_writer(
+                        state,
+                        &task,
+                        orchestration_child_outcome(&task, &error),
+                    )
+                    .await?;
+                return Err(finished.terminal);
+            }
+            self.publish(
+                state,
+                RuntimeEventKind::AgentWorkspaceCreated {
+                    task_id: task_id.clone(),
+                    assignment: binding.assignment.clone(),
+                    writer_workspace_state: binding.writer_workspace_state.clone(),
+                },
+            )
+            .await
+            .map_err(store_terminal)?;
+            Some(binding)
+        } else {
+            None
+        };
+        self.publish(
+            state,
+            RuntimeEventKind::ChildStarted {
+                task_id: task_id.clone(),
+                call_id: call.id.clone(),
+                child_run_id: child_run_id.clone(),
+                depth: child_depth,
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+
         let mut child_environment = state.snapshot.request.environment.clone();
         child_environment.interactive = false;
+        child_environment.workspace = workspace.execution_workspace().to_owned();
+        if writer {
+            child_environment.trust_mode = false;
+            child_environment.allow_sandbox_elevation = false;
+            child_environment.sandbox = Some("isolated_writer".to_owned());
+        }
         let child_request = RunRequest {
             run_id: Some(child_run_id.clone()),
             parent_run_id: Some(state.run_id().clone()),
             continued_from_run_id: None,
             model: state.snapshot.request.model.clone(),
-            task_contract: Some(TaskContract {
-                generation_id: TaskGenerationId::from(child_run_id.0.clone()),
-                definition: TaskDefinition::host(child_input),
-            }),
+            task_contract: Some(task_contract),
             system_prompt,
             transcript,
             reasoning_effort: state.snapshot.request.reasoning_effort,
@@ -1646,6 +1977,7 @@ impl AgentRuntime {
                 kind: AgentActorKind::Child,
                 depth: child_depth,
             },
+            agent_task: Some(task.clone()),
             deadline_unix_ms: state.snapshot.request.deadline_unix_ms,
             tool_policy: child_policy,
             limits: child_limits,
@@ -1653,14 +1985,31 @@ impl AgentRuntime {
             context_policy: state.snapshot.request.context_policy,
             context_projection,
             inherited_facts: None,
-            accounting_baseline: ModelAccounting::default(),
+            accounting_baseline: state.accounting_epoch_baseline.clone(),
         };
-        let child = self.start_inner(
+        let child_runtime = writer_binding.as_ref().map_or_else(
+            || self.clone(),
+            |binding| self.with_tools(binding.tools.clone()),
+        );
+        let child = child_runtime.start_inner(
             child_request,
             budget.clone(),
             Some(child_terminal_model_request),
+            state.model_accounting_includes_baseline,
         );
+        if writer {
+            return Box::pin(self.finish_writer_child(
+                state,
+                task,
+                child,
+                control,
+                deadline,
+                child_lease,
+            ))
+            .await;
+        }
         state.pending_children.push(PendingChild {
+            task_id,
             call_id: call.id.clone(),
             run_id: child_run_id.clone(),
             control: child.control.clone(),
@@ -1677,6 +2026,1013 @@ impl AgentRuntime {
         )
         .with_metadata(json!({"child_run_id": child_run_id}))
         .with_side_effect(ToolSideEffectStatus::Applied))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn recover_writer_lifecycle(
+        self: &Arc<Self>,
+        state: &mut RunState,
+        call: &ModelToolCall,
+        lifecycle: AgentTaskLifecycle,
+        budget: &Arc<RuntimeBudget>,
+        control: &mut mpsc::UnboundedReceiver<ControlCommand>,
+        deadline: Option<u64>,
+        arguments: &Value,
+    ) -> Result<ToolOutcome, TerminalState> {
+        let task = lifecycle.task.clone();
+        if task.workspace.access != AgentWorkspaceAccess::IsolatedWrite || task.call_id != call.id {
+            return Err(orchestration_recovery(
+                &task.task_id,
+                "writer_recovery_identity",
+                "持久 AgentTask 与待恢复的 agent tool call 不一致",
+            ));
+        }
+        if lifecycle.finished.is_some() {
+            return Box::pin(self.finish_writer_lifecycle(state, task, None, None, None)).await;
+        }
+        let orchestrator = self.orchestrator.as_ref().ok_or_else(|| {
+            orchestration_recovery(
+                &task.task_id,
+                "writer_orchestrator_unavailable",
+                "恢复 writer lifecycle 时未配置 Orchestrator",
+            )
+        })?;
+        let seal = writer_seal_from_lifecycle(&lifecycle);
+        let cleanup_settled = lifecycle
+            .cleanup
+            .as_ref()
+            .and_then(|cleanup| cleanup.committed.as_ref())
+            .is_some();
+        let binding = if cleanup_settled || lifecycle.seal.is_some() || lifecycle.result.is_some() {
+            None
+        } else {
+            match orchestrator.bind_writer(&task, seal.as_ref()).await {
+                Ok(binding) => Some(binding),
+                Err(error) => {
+                    if lifecycle.workspace_created.is_some() {
+                        let outcome = orchestration_child_outcome(&task, &error);
+                        if error.kind == AgentOrchestrationErrorKind::RecoveryRequired {
+                            self.collect_failed_writer_retained(
+                                state,
+                                &task,
+                                outcome,
+                                format!("{}：{}", error.code, error.message),
+                            )
+                            .await?;
+                        } else {
+                            self.collect_failed_writer(state, &task, outcome).await?;
+                        }
+                        let finished = current_agent_lifecycle(state, &task.task_id)?
+                            .finished
+                            .expect("failed recovered writer was finished")
+                            .outcome;
+                        return if matches!(
+                            finished.terminal,
+                            TerminalState::RecoveryRequired { .. }
+                        ) {
+                            Err(finished.terminal)
+                        } else {
+                            Ok(writer_failure_tool_outcome(&task, &finished))
+                        };
+                    }
+                    let finished = self
+                        .finish_uncreated_writer(
+                            state,
+                            &task,
+                            orchestration_child_outcome(&task, &error),
+                        )
+                        .await?;
+                    return match error.kind {
+                        AgentOrchestrationErrorKind::RecoveryRequired => Err(finished.terminal),
+                        AgentOrchestrationErrorKind::Rejected
+                        | AgentOrchestrationErrorKind::Conflict => {
+                            Ok(writer_failure_tool_outcome(&task, &finished))
+                        }
+                    };
+                }
+            }
+        };
+        if let Some(binding) = &binding {
+            if binding.assignment != task.workspace {
+                let error = AgentOrchestrationError::new(
+                    AgentOrchestrationErrorKind::RecoveryRequired,
+                    "writer_recovery_binding",
+                    "恢复得到的 writer workspace 与持久 AgentTask 不一致",
+                );
+                let finished = self
+                    .finish_uncreated_writer(
+                        state,
+                        &task,
+                        orchestration_child_outcome(&task, &error),
+                    )
+                    .await?;
+                return Err(finished.terminal);
+            }
+            if lifecycle.workspace_created.is_none() {
+                self.publish(
+                    state,
+                    RuntimeEventKind::AgentWorkspaceCreated {
+                        task_id: task.task_id.clone(),
+                        assignment: binding.assignment.clone(),
+                        writer_workspace_state: binding.writer_workspace_state.clone(),
+                    },
+                )
+                .await
+                .map_err(store_terminal)?;
+            }
+        }
+
+        let recovered_child = Box::pin(self.recover_writer_child(
+            state,
+            &task,
+            lifecycle,
+            binding,
+            cleanup_settled,
+            budget,
+            control,
+            deadline,
+            arguments,
+        ))
+        .await?;
+        Box::pin(self.finish_writer_lifecycle(
+            state,
+            task,
+            recovered_child.child_outcome,
+            recovered_child.child_replay.as_ref(),
+            recovered_child.parent_terminal,
+        ))
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn recover_writer_child(
+        self: &Arc<Self>,
+        state: &mut RunState,
+        task: &AgentTask,
+        lifecycle: AgentTaskLifecycle,
+        binding: Option<WriterBinding>,
+        cleanup_settled: bool,
+        budget: &Arc<RuntimeBudget>,
+        control: &mut mpsc::UnboundedReceiver<ControlCommand>,
+        deadline: Option<u64>,
+        arguments: &Value,
+    ) -> Result<RecoveredWriterChild, TerminalState> {
+        let mut parent_terminal = None;
+        let mut child_replay = self.store.load(&task.child_run_id).await.map_err(|error| {
+            store_terminal(RuntimeFailure::Store {
+                message: error.to_string(),
+            })
+        })?;
+        if let Some(replay) = child_replay.as_ref()
+            && !budget.absorb_recovered(
+                replay.snapshot.runtime_model_requests,
+                replay.snapshot.tool_calls,
+            )
+        {
+            parent_terminal = Some(orchestration_recovery(
+                &task.task_id,
+                "writer_recovery_budget",
+                "writer child 已消费的模型或工具额度超过 root 共享预算",
+            ));
+        }
+        let child_outcome = if let Some(result) = lifecycle.result.clone() {
+            Some(result)
+        } else if let Some(terminal) = child_replay
+            .as_ref()
+            .and_then(|replay| replay.snapshot.terminal.clone())
+        {
+            Some(terminal)
+        } else if cleanup_settled {
+            None
+        } else {
+            let binding = binding
+                .as_ref()
+                .expect("unsettled writer recovery has an exact binding");
+            if lifecycle.child_started.is_none() {
+                self.publish(
+                    state,
+                    RuntimeEventKind::ChildStarted {
+                        task_id: task.task_id.clone(),
+                        call_id: task.call_id.clone(),
+                        child_run_id: task.child_run_id.clone(),
+                        depth: state.snapshot.request.actor.depth.saturating_add(1),
+                    },
+                )
+                .await
+                .map_err(store_terminal)?;
+            }
+            let child_runtime = self.with_tools(binding.tools.clone());
+            let _child_lease = budget.reserve_child().ok_or_else(|| {
+                orchestration_recovery(
+                    &task.task_id,
+                    "writer_recovery_concurrency",
+                    "恢复 writer child 时没有可用并发额度",
+                )
+            })?;
+            let mut child = if let Some(replay) = child_replay.as_ref() {
+                debug_assert!(replay.snapshot.terminal.is_none());
+                child_runtime.resume_inner(task.child_run_id.clone(), Some(budget.clone()))
+            } else {
+                let terminal_permit = budget.reserve_terminal_model_request().ok_or_else(|| {
+                    orchestration_recovery(
+                        &task.task_id,
+                        "writer_recovery_capacity",
+                        "恢复尚未创建的 writer child 时无法保留最终模型请求",
+                    )
+                })?;
+                child_runtime.start_inner(
+                    recovered_writer_request(state, task, arguments),
+                    budget.clone(),
+                    Some(terminal_permit),
+                    state.model_accounting_includes_baseline,
+                )
+            };
+            let outcome = loop {
+                tokio::select! {
+                    joined = &mut child.join => {
+                        break joined.unwrap_or_else(|error| failed_child_outcome(
+                            task,
+                            RuntimeFailure::Join { message: error.to_string() },
+                        ));
+                    }
+                    command = control.recv() => if let Some(command) = command {
+                        match self.handle_control(state, command).await.map_err(store_terminal)? {
+                            ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                            ControlEffect::Terminal(terminal) => {
+                                if matches!(terminal, TerminalState::Interrupted) {
+                                    child.control.interrupt().ok();
+                                } else {
+                                    child.control.cancel().ok();
+                                }
+                                parent_terminal = Some(terminal);
+                            }
+                        }
+                    },
+                    () = wait_for_deadline(deadline) => {
+                        child.control.cancel().ok();
+                        parent_terminal = Some(timeout_terminal(state, deadline));
+                    }
+                }
+            };
+            child_replay = self.store.load(&task.child_run_id).await.map_err(|error| {
+                store_terminal(RuntimeFailure::Store {
+                    message: error.to_string(),
+                })
+            })?;
+            Some(outcome)
+        };
+        Ok(RecoveredWriterChild {
+            child_replay,
+            child_outcome,
+            parent_terminal,
+        })
+    }
+
+    async fn finish_writer_lifecycle(
+        &self,
+        state: &mut RunState,
+        task: AgentTask,
+        child_outcome: Option<AgentOutcome>,
+        child_replay: Option<&RunReplay>,
+        parent_terminal: Option<TerminalState>,
+    ) -> Result<ToolOutcome, TerminalState> {
+        let mut lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+        if let Some(finished) = lifecycle.finished.clone() {
+            if let Some(terminal) = parent_terminal {
+                return Err(terminal);
+            }
+            if matches!(
+                finished.outcome.terminal,
+                TerminalState::RecoveryRequired { .. }
+            ) {
+                return Err(finished.outcome.terminal);
+            }
+            return Ok(writer_tool_outcome(&task, &finished.outcome));
+        }
+        if lifecycle.result.is_none() {
+            let child_outcome = child_outcome.ok_or_else(|| {
+                orchestration_recovery(
+                    &task.task_id,
+                    "writer_recovery_child_result",
+                    "writer lifecycle 缺少可汇聚的 child result",
+                )
+            })?;
+            if !matches!(child_outcome.terminal, TerminalState::Completed { .. }) {
+                self.collect_failed_writer(state, &task, child_outcome)
+                    .await?;
+                let finished = current_agent_lifecycle(state, &task.task_id)?
+                    .finished
+                    .expect("failed writer was finished")
+                    .outcome;
+                if let Some(terminal) = parent_terminal {
+                    return Err(terminal);
+                }
+                return Ok(writer_failure_tool_outcome(&task, &finished));
+            }
+            if let Err(message) = validate_writer_receipts(&task, &child_outcome.details.evidence) {
+                return self
+                    .finish_bound_writer_failure(
+                        state,
+                        &task,
+                        child_outcome,
+                        AgentOrchestrationError::new(
+                            AgentOrchestrationErrorKind::Rejected,
+                            "writer_receipt_mismatch",
+                            message,
+                        ),
+                    )
+                    .await;
+            }
+            let replay = match child_replay {
+                Some(replay) => replay,
+                None => {
+                    return self
+                        .finish_bound_writer_failure(
+                            state,
+                            &task,
+                            child_outcome,
+                            AgentOrchestrationError::new(
+                                AgentOrchestrationErrorKind::RecoveryRequired,
+                                "writer_child_missing",
+                                "完成的 writer child 没有 canonical replay",
+                            ),
+                        )
+                        .await;
+                }
+            };
+            if lifecycle.seal.is_none() {
+                self.publish(
+                    state,
+                    RuntimeEventKind::AgentSealPrepared {
+                        task_id: task.task_id.clone(),
+                        base_commit: task.workspace.base_commit.clone(),
+                        writer_workspace_state_before: replay.snapshot.workspace_state.clone(),
+                    },
+                )
+                .await
+                .map_err(store_terminal)?;
+                lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+            }
+            let seal = if let Some(seal) = writer_seal_from_lifecycle(&lifecycle) {
+                seal
+            } else {
+                let mut seal = match self
+                    .orchestrator
+                    .as_ref()
+                    .expect("writer lifecycle requires orchestrator")
+                    .seal_writer(&task)
+                    .await
+                {
+                    Ok(seal) => seal,
+                    Err(error) => {
+                        return self
+                            .finish_bound_writer_failure(state, &task, child_outcome, error)
+                            .await;
+                    }
+                };
+                let before = lifecycle
+                    .seal
+                    .as_ref()
+                    .expect("seal was prepared above")
+                    .writer_workspace_state_before
+                    .clone();
+                seal.writer_workspace_state.generation = before.generation.saturating_add(1);
+                if let Err(message) = validate_writer_seal(&task, &seal) {
+                    return self
+                        .finish_bound_writer_failure(
+                            state,
+                            &task,
+                            child_outcome,
+                            AgentOrchestrationError::new(
+                                AgentOrchestrationErrorKind::RecoveryRequired,
+                                "writer_seal_mismatch",
+                                message,
+                            ),
+                        )
+                        .await;
+                }
+                self.publish(
+                    state,
+                    RuntimeEventKind::AgentSealCommitted {
+                        task_id: task.task_id.clone(),
+                        final_commit: seal.final_commit.clone(),
+                        diff_sha256: seal.diff_sha256.clone(),
+                        changed_files: seal.changed_files.clone(),
+                        writer_workspace_state_after: seal.writer_workspace_state.clone(),
+                    },
+                )
+                .await
+                .map_err(store_terminal)?;
+                seal
+            };
+            let (checks, artifacts) = agent_checks_from_replay(replay);
+            let mut collected = child_outcome;
+            collected.details.workspace = Some(task.workspace.clone());
+            collected.details.workspace_state = Some(seal.writer_workspace_state.clone());
+            collected.details.base_commit = Some(seal.base_commit.clone());
+            collected.details.final_commit = Some(seal.final_commit.clone());
+            collected.details.diff_sha256 = Some(seal.diff_sha256.clone());
+            collected.details.changed_files = seal.changed_files;
+            collected.details.checks = checks;
+            collected.details.artifacts = artifacts;
+            collected.details.integration = WriterIntegrationStatus::AwaitingHost;
+            collected.validate().map_err(|message| {
+                orchestration_recovery(&task.task_id, "writer_result_invalid", message)
+            })?;
+            self.publish(
+                state,
+                RuntimeEventKind::AgentResultCollected {
+                    task_id: task.task_id.clone(),
+                    outcome: Box::new(collected),
+                },
+            )
+            .await
+            .map_err(store_terminal)?;
+            lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+        }
+        let seal = writer_seal_from_lifecycle(&lifecycle);
+        let result = lifecycle
+            .result
+            .clone()
+            .expect("writer result was recovered or collected");
+        if !matches!(result.terminal, TerminalState::Completed { .. }) {
+            if lifecycle.cleanup.is_none()
+                || lifecycle
+                    .cleanup
+                    .as_ref()
+                    .and_then(|cleanup| cleanup.committed.as_ref())
+                    .is_none()
+            {
+                self.resume_writer_cleanup(state, &task, seal.as_ref())
+                    .await?;
+                lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+            }
+        } else {
+            let seal = seal
+                .or_else(|| writer_seal_from_lifecycle(&lifecycle))
+                .ok_or_else(|| {
+                    orchestration_recovery(
+                        &task.task_id,
+                        "writer_recovery_seal",
+                        "成功 writer result 缺少 committed seal",
+                    )
+                })?;
+            if lifecycle.integration.is_none() {
+                let integration_id = OperationId::new();
+                self.publish(
+                    state,
+                    RuntimeEventKind::AgentIntegrationPrepared {
+                        task_id: task.task_id.clone(),
+                        integration_id,
+                        base_commit: seal.base_commit.clone(),
+                        writer_commit: seal.final_commit.clone(),
+                        diff_sha256: seal.diff_sha256.clone(),
+                        expected_root_workspace_state: state.snapshot.workspace_state.clone(),
+                    },
+                )
+                .await
+                .map_err(store_terminal)?;
+                lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+            }
+            let integration = lifecycle
+                .integration
+                .clone()
+                .expect("integration was prepared");
+            if !integration.started {
+                self.publish(
+                    state,
+                    RuntimeEventKind::AgentIntegrationStarted {
+                        task_id: task.task_id.clone(),
+                        integration_id: integration.integration_id.clone(),
+                    },
+                )
+                .await
+                .map_err(store_terminal)?;
+                lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+            }
+            let integration = lifecycle
+                .integration
+                .clone()
+                .expect("started integration remains present");
+            if integration.committed.is_none() && integration.failure.is_none() {
+                match self
+                    .orchestrator
+                    .as_ref()
+                    .expect("writer recovery requires orchestrator")
+                    .integrate_writer(&task, &seal, &integration.expected_root_workspace_state)
+                    .await
+                {
+                    Ok(mut integrated) => {
+                        integrated.root_workspace_state.generation = integration
+                            .expected_root_workspace_state
+                            .generation
+                            .saturating_add(1);
+                        if integrated.root_head_commit == seal.final_commit {
+                            self.publish(
+                                state,
+                                RuntimeEventKind::AgentIntegrationCommitted {
+                                    task_id: task.task_id.clone(),
+                                    integration_id: integration.integration_id.clone(),
+                                    root_head_commit: integrated.root_head_commit,
+                                    root_workspace_state_after: integrated.root_workspace_state,
+                                },
+                            )
+                            .await
+                            .map_err(store_terminal)?;
+                        } else {
+                            self.publish(
+                                state,
+                                RuntimeEventKind::AgentIntegrationFailed {
+                                    task_id: task.task_id.clone(),
+                                    integration_id: integration.integration_id.clone(),
+                                    status: WriterIntegrationStatus::RecoveryRequired {
+                                        reason: "集成后的 root HEAD 不是 Host-sealed writer commit"
+                                            .to_owned(),
+                                    },
+                                    root_workspace_state: integration
+                                        .expected_root_workspace_state
+                                        .clone(),
+                                },
+                            )
+                            .await
+                            .map_err(store_terminal)?;
+                        }
+                    }
+                    Err(error) => {
+                        self.publish(
+                            state,
+                            RuntimeEventKind::AgentIntegrationFailed {
+                                task_id: task.task_id.clone(),
+                                integration_id: integration.integration_id.clone(),
+                                status: writer_integration_failure_status(&error),
+                                root_workspace_state: integration
+                                    .expected_root_workspace_state
+                                    .clone(),
+                            },
+                        )
+                        .await
+                        .map_err(store_terminal)?;
+                    }
+                }
+                lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+            }
+            if let Some(failure) = lifecycle
+                .integration
+                .as_ref()
+                .and_then(|integration| integration.failure.as_ref())
+                .cloned()
+                && lifecycle
+                    .cleanup
+                    .as_ref()
+                    .and_then(|cleanup| cleanup.committed.as_ref())
+                    .is_none()
+            {
+                if matches!(
+                    failure.status,
+                    WriterIntegrationStatus::RecoveryRequired { .. }
+                ) {
+                    let reason = writer_integration_failure_reason(&failure.status)
+                        .unwrap_or("writer integration 需要人工恢复")
+                        .to_owned();
+                    self.retain_writer_for_recovery(state, &task, reason)
+                        .await?;
+                } else {
+                    self.resume_writer_cleanup(state, &task, Some(&seal))
+                        .await?;
+                }
+                lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+            }
+        }
+        if lifecycle.finished.is_none() {
+            let finished = recovered_finished_outcome(&lifecycle).map_err(|message| {
+                orchestration_recovery(&task.task_id, "writer_recovery_finish", message)
+            })?;
+            let handoff = child_handoff(state, &finished);
+            let accounting = self.cumulative_accounting(state, false).await;
+            self.publish(
+                state,
+                RuntimeEventKind::ChildFinished {
+                    call_id: task.call_id.clone(),
+                    outcome: Box::new(finished),
+                    accounting: Box::new(accounting),
+                    handoff_content: handoff,
+                },
+            )
+            .await
+            .map_err(store_terminal)?;
+            lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+        }
+        let finished = lifecycle
+            .finished
+            .expect("writer lifecycle was finished above")
+            .outcome;
+        if let Some(terminal) = parent_terminal {
+            return Err(terminal);
+        }
+        if matches!(finished.terminal, TerminalState::RecoveryRequired { .. }) {
+            return Err(finished.terminal);
+        }
+        Ok(writer_tool_outcome(&task, &finished))
+    }
+
+    async fn resume_writer_cleanup(
+        &self,
+        state: &mut RunState,
+        task: &AgentTask,
+        seal: Option<&WriterSeal>,
+    ) -> Result<WriterCleanup, TerminalState> {
+        let lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+        if lifecycle.cleanup.is_none() {
+            return self.cleanup_writer(state, task, seal).await;
+        }
+        let cleanup = lifecycle.cleanup.expect("cleanup presence checked");
+        if let Some(committed) = cleanup.committed {
+            return Ok(WriterCleanup {
+                worktree_removed: committed.worktree_removed,
+                branch_removed: committed.branch_removed,
+                retained_for_recovery: committed.retained_for_recovery,
+                reason: committed.reason,
+            });
+        }
+        let result = match self
+            .orchestrator
+            .as_ref()
+            .expect("writer recovery requires orchestrator")
+            .cleanup_writer(task, seal)
+            .await
+        {
+            Ok(cleanup) => cleanup,
+            Err(error) => WriterCleanup {
+                worktree_removed: false,
+                branch_removed: false,
+                retained_for_recovery: true,
+                reason: Some(format!("{}：{}", error.code, error.message)),
+            },
+        };
+        self.publish(
+            state,
+            RuntimeEventKind::AgentCleanupCommitted {
+                task_id: task.task_id.clone(),
+                worktree_path: cleanup.worktree_path,
+                branch: cleanup.branch,
+                owner_token: cleanup.owner_token,
+                worktree_removed: result.worktree_removed,
+                branch_removed: result.branch_removed,
+                retained_for_recovery: result.retained_for_recovery,
+                reason: result.reason.clone(),
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        Ok(result)
+    }
+
+    async fn finish_writer_child(
+        self: &Arc<Self>,
+        state: &mut RunState,
+        task: AgentTask,
+        mut child: RuntimeRun,
+        control: &mut mpsc::UnboundedReceiver<ControlCommand>,
+        deadline: Option<u64>,
+        _child_lease: ChildLease,
+    ) -> Result<ToolOutcome, TerminalState> {
+        let mut parent_terminal = None;
+        let outcome = loop {
+            tokio::select! {
+                joined = &mut child.join => {
+                    break joined.unwrap_or_else(|error| failed_child_outcome(
+                        &task,
+                        RuntimeFailure::Join { message: error.to_string() },
+                    ));
+                }
+                command = control.recv() => if let Some(command) = command {
+                    match self.handle_control(state, command).await.map_err(store_terminal)? {
+                        ControlEffect::Continue | ControlEffect::InteractionResolved(_) => {}
+                        ControlEffect::Terminal(terminal) => {
+                            if matches!(terminal, TerminalState::Interrupted) {
+                                child.control.interrupt().ok();
+                            } else {
+                                child.control.cancel().ok();
+                            }
+                            parent_terminal = Some(terminal);
+                            break child.join.await.unwrap_or_else(|error| failed_child_outcome(
+                                &task,
+                                RuntimeFailure::Join { message: error.to_string() },
+                            ));
+                        }
+                    }
+                },
+                () = wait_for_deadline(deadline) => {
+                    child.control.cancel().ok();
+                    parent_terminal = Some(timeout_terminal(state, deadline));
+                    break child.join.await.unwrap_or_else(|error| failed_child_outcome(
+                        &task,
+                        RuntimeFailure::Join { message: error.to_string() },
+                    ));
+                }
+            }
+        };
+
+        let child_replay = self.store.load(&task.child_run_id).await.map_err(|error| {
+            store_terminal(RuntimeFailure::Store {
+                message: error.to_string(),
+            })
+        })?;
+        Box::pin(self.finish_writer_lifecycle(
+            state,
+            task,
+            Some(outcome),
+            child_replay.as_ref(),
+            parent_terminal,
+        ))
+        .await
+    }
+
+    async fn retain_writer_for_recovery(
+        &self,
+        state: &mut RunState,
+        task: &AgentTask,
+        reason: String,
+    ) -> Result<WriterCleanup, TerminalState> {
+        let worktree_path = task
+            .workspace
+            .worktree_path
+            .clone()
+            .expect("validated writer task has a worktree path");
+        let branch = task
+            .workspace
+            .branch
+            .clone()
+            .expect("validated writer task has a branch");
+        let owner_token = task
+            .workspace
+            .owner_token
+            .clone()
+            .expect("validated writer task has an owner token");
+        self.publish(
+            state,
+            RuntimeEventKind::AgentCleanupPrepared {
+                task_id: task.task_id.clone(),
+                worktree_path: worktree_path.clone(),
+                branch: branch.clone(),
+                owner_token: owner_token.clone(),
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        self.publish(
+            state,
+            RuntimeEventKind::AgentCleanupCommitted {
+                task_id: task.task_id.clone(),
+                worktree_path,
+                branch,
+                owner_token,
+                worktree_removed: false,
+                branch_removed: false,
+                retained_for_recovery: true,
+                reason: Some(reason.clone()),
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        Ok(WriterCleanup {
+            worktree_removed: false,
+            branch_removed: false,
+            retained_for_recovery: true,
+            reason: Some(reason),
+        })
+    }
+
+    async fn finish_uncreated_writer(
+        &self,
+        state: &mut RunState,
+        task: &AgentTask,
+        mut outcome: AgentOutcome,
+    ) -> Result<AgentOutcome, TerminalState> {
+        outcome.details = AgentResultDetails {
+            summary: terminal_state_label(&outcome.terminal).to_owned(),
+            ..AgentResultDetails::default()
+        };
+        self.publish(
+            state,
+            RuntimeEventKind::AgentResultCollected {
+                task_id: task.task_id.clone(),
+                outcome: Box::new(outcome.clone()),
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        let handoff = child_handoff(state, &outcome);
+        let accounting = self.cumulative_accounting(state, false).await;
+        self.publish(
+            state,
+            RuntimeEventKind::ChildFinished {
+                call_id: task.call_id.clone(),
+                outcome: Box::new(outcome.clone()),
+                accounting: Box::new(accounting),
+                handoff_content: handoff,
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        Ok(outcome)
+    }
+
+    async fn finish_bound_writer_failure(
+        &self,
+        state: &mut RunState,
+        task: &AgentTask,
+        mut outcome: AgentOutcome,
+        error: AgentOrchestrationError,
+    ) -> Result<ToolOutcome, TerminalState> {
+        outcome.terminal = orchestration_terminal(error.clone());
+        outcome.details = AgentResultDetails {
+            summary: format!("{}：{}", error.code, error.message),
+            ..AgentResultDetails::default()
+        };
+        if error.kind == AgentOrchestrationErrorKind::RecoveryRequired {
+            self.collect_failed_writer_retained(
+                state,
+                task,
+                outcome,
+                format!("{}：{}", error.code, error.message),
+            )
+            .await?;
+        } else {
+            self.collect_failed_writer(state, task, outcome).await?;
+        }
+        let finished = current_agent_lifecycle(state, &task.task_id)?
+            .finished
+            .expect("failed bound writer was finished")
+            .outcome;
+        if matches!(finished.terminal, TerminalState::RecoveryRequired { .. }) {
+            Err(finished.terminal)
+        } else {
+            Ok(writer_failure_tool_outcome(task, &finished))
+        }
+    }
+
+    async fn collect_failed_writer(
+        &self,
+        state: &mut RunState,
+        task: &AgentTask,
+        outcome: AgentOutcome,
+    ) -> Result<(), TerminalState> {
+        self.collect_failed_writer_with_retention(state, task, outcome, None)
+            .await
+    }
+
+    async fn collect_failed_writer_retained(
+        &self,
+        state: &mut RunState,
+        task: &AgentTask,
+        outcome: AgentOutcome,
+        reason: String,
+    ) -> Result<(), TerminalState> {
+        self.collect_failed_writer_with_retention(state, task, outcome, Some(reason))
+            .await
+    }
+
+    async fn collect_failed_writer_with_retention(
+        &self,
+        state: &mut RunState,
+        task: &AgentTask,
+        mut outcome: AgentOutcome,
+        retain_reason: Option<String>,
+    ) -> Result<(), TerminalState> {
+        outcome.details.workspace = None;
+        outcome.details.workspace_state = None;
+        outcome.details.base_commit = None;
+        outcome.details.final_commit = None;
+        outcome.details.diff_sha256 = None;
+        outcome.details.changed_files.clear();
+        outcome.details.integration = WriterIntegrationStatus::NotApplicable;
+        self.publish(
+            state,
+            RuntimeEventKind::AgentResultCollected {
+                task_id: task.task_id.clone(),
+                outcome: Box::new(outcome.clone()),
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        let cleanup = match retain_reason {
+            Some(reason) => self.retain_writer_for_recovery(state, task, reason).await?,
+            None => self.cleanup_writer(state, task, None).await?,
+        };
+        let cleanup_recovery =
+            cleanup.retained_for_recovery || !cleanup.worktree_removed || !cleanup.branch_removed;
+        if cleanup_recovery {
+            outcome.terminal = writer_cleanup_recovery_terminal(
+                task,
+                cleanup
+                    .reason
+                    .as_deref()
+                    .unwrap_or("writer cleanup 未完整删除 worktree 与 branch"),
+            );
+        }
+        let handoff = child_handoff(state, &outcome);
+        let terminal_after_cleanup = outcome.terminal.clone();
+        let accounting = self.cumulative_accounting(state, false).await;
+        self.publish(
+            state,
+            RuntimeEventKind::ChildFinished {
+                call_id: task.call_id.clone(),
+                outcome: Box::new(outcome),
+                accounting: Box::new(accounting),
+                handoff_content: handoff,
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        if cleanup_recovery {
+            return Err(terminal_after_cleanup);
+        }
+        Ok(())
+    }
+
+    async fn cleanup_writer(
+        &self,
+        state: &mut RunState,
+        task: &AgentTask,
+        seal: Option<&WriterSeal>,
+    ) -> Result<WriterCleanup, TerminalState> {
+        let worktree_path = task
+            .workspace
+            .worktree_path
+            .clone()
+            .expect("validated writer task has a worktree path");
+        let branch = task
+            .workspace
+            .branch
+            .clone()
+            .expect("validated writer task has a branch");
+        let owner_token = task
+            .workspace
+            .owner_token
+            .clone()
+            .expect("validated writer task has an owner token");
+        self.publish(
+            state,
+            RuntimeEventKind::AgentCleanupPrepared {
+                task_id: task.task_id.clone(),
+                worktree_path: worktree_path.clone(),
+                branch: branch.clone(),
+                owner_token: owner_token.clone(),
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        let cleanup = match self
+            .orchestrator
+            .as_ref()
+            .expect("writer cannot start without an orchestrator")
+            .cleanup_writer(task, seal)
+            .await
+        {
+            Ok(cleanup) => cleanup,
+            Err(error) => {
+                let reason = format!("{}：{}", error.code, error.message);
+                let cleanup = WriterCleanup {
+                    worktree_removed: false,
+                    branch_removed: false,
+                    retained_for_recovery: true,
+                    reason: Some(reason.clone()),
+                };
+                self.publish(
+                    state,
+                    RuntimeEventKind::AgentCleanupCommitted {
+                        task_id: task.task_id.clone(),
+                        worktree_path,
+                        branch,
+                        owner_token,
+                        worktree_removed: false,
+                        branch_removed: false,
+                        retained_for_recovery: true,
+                        reason: Some(reason.clone()),
+                    },
+                )
+                .await
+                .map_err(store_terminal)?;
+                return Ok(cleanup);
+            }
+        };
+        self.publish(
+            state,
+            RuntimeEventKind::AgentCleanupCommitted {
+                task_id: task.task_id.clone(),
+                worktree_path,
+                branch,
+                owner_token,
+                worktree_removed: cleanup.worktree_removed,
+                branch_removed: cleanup.branch_removed,
+                retained_for_recovery: cleanup.retained_for_recovery,
+                reason: cleanup.reason.clone(),
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
+        Ok(cleanup)
     }
 
     async fn join_children(
@@ -1699,6 +3055,7 @@ impl AgentRuntime {
                         runtime_model_requests: 0,
                         runtime_retries: 0,
                         tool_calls: 0,
+                        details: AgentResultDetails::default(),
                     }),
                     command = control.recv() => if let Some(command) = command {
                         match self.handle_control(state, command).await.map_err(store_terminal)? {
@@ -1711,8 +3068,22 @@ impl AgentRuntime {
                                     child.control.cancel().ok();
                                     for pending in &state.pending_children { pending.control.cancel().ok(); }
                                 }
-                                let _ = child.join.await;
-                                self.join_remaining_children(state).await;
+                                let task_id = child.task_id.clone();
+                                let call_id = child.call_id.clone();
+                                let run_id = child.run_id.clone();
+                                let outcome = child.join.await.unwrap_or_else(|error| {
+                                    failed_child_outcome(
+                                        &current_agent_lifecycle(state, &task_id)
+                                            .expect("pending read-only child has a durable task")
+                                            .task,
+                                        RuntimeFailure::Join { message: error.to_string() },
+                                    )
+                                });
+                                self.settle_readonly_child(
+                                    state, task_id, call_id, run_id, outcome,
+                                )
+                                .await?;
+                                self.join_remaining_children(state).await?;
                                 return Err(terminal);
                             }
                         }
@@ -1720,64 +3091,144 @@ impl AgentRuntime {
                     () = wait_for_deadline(deadline) => {
                         child.control.cancel().ok();
                         for pending in &state.pending_children { pending.control.cancel().ok(); }
-                        let _ = child.join.await;
-                        self.join_remaining_children(state).await;
+                        let task_id = child.task_id.clone();
+                        let call_id = child.call_id.clone();
+                        let run_id = child.run_id.clone();
+                        let outcome = child.join.await.unwrap_or_else(|error| {
+                            failed_child_outcome(
+                                &current_agent_lifecycle(state, &task_id)
+                                    .expect("pending read-only child has a durable task")
+                                    .task,
+                                RuntimeFailure::Join { message: error.to_string() },
+                            )
+                        });
+                        self.settle_readonly_child(state, task_id, call_id, run_id, outcome)
+                            .await?;
+                        self.join_remaining_children(state).await?;
                         return Err(timeout_terminal(state, deadline));
                     }
                 }
             };
-            let marker_kind = if state.snapshot.request.actor.depth == 0 {
-                "subagent_completion"
-            } else {
-                "child_subagent_completion"
-            };
-            let receipt = json!({
-                "run_id": outcome.run_id,
-                "terminal": outcome.terminal,
-            })
-            .to_string();
-            let handoff = format!(
-                "<codewhale:runtime_event kind=\"{marker_kind}\" agent_id=\"{}\">\n{receipt}\n</codewhale:runtime_event>",
-                outcome.run_id
-            );
-            let accounting = self.cumulative_accounting(state, false).await;
+            self.settle_readonly_child(state, child.task_id, child.call_id, child.run_id, outcome)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn cancel_children(&self, state: &mut RunState) -> Result<(), TerminalState> {
+        for child in &state.pending_children {
+            child.control.cancel().ok();
+        }
+        self.join_remaining_children(state).await
+    }
+
+    async fn settled_terminal(
+        &self,
+        state: &mut RunState,
+        terminal: TerminalState,
+    ) -> TerminalState {
+        self.settle_children_for(state, &terminal)
+            .await
+            .err()
+            .unwrap_or(terminal)
+    }
+
+    async fn settle_children_for(
+        &self,
+        state: &mut RunState,
+        terminal: &TerminalState,
+    ) -> Result<(), TerminalState> {
+        if matches!(terminal, TerminalState::Interrupted) {
+            for child in &state.pending_children {
+                child.control.interrupt().ok();
+            }
+            self.join_remaining_children(state).await
+        } else {
+            self.cancel_children(state).await
+        }
+    }
+
+    async fn join_remaining_children(&self, state: &mut RunState) -> Result<(), TerminalState> {
+        while !state.pending_children.is_empty() {
+            let child = state.pending_children.remove(0);
+            let task_id = child.task_id;
+            let call_id = child.call_id;
+            let run_id = child.run_id;
+            let outcome = child.join.await.unwrap_or_else(|error| {
+                failed_child_outcome(
+                    &current_agent_lifecycle(state, &task_id)
+                        .expect("pending read-only child has a durable task")
+                        .task,
+                    RuntimeFailure::Join {
+                        message: error.to_string(),
+                    },
+                )
+            });
+            self.settle_readonly_child(state, task_id, call_id, run_id, outcome)
+                .await?;
+        }
+        Ok(())
+    }
+
+    async fn settle_readonly_child(
+        &self,
+        state: &mut RunState,
+        task_id: AgentTaskId,
+        call_id: String,
+        run_id: RunId,
+        mut outcome: AgentOutcome,
+    ) -> Result<(), TerminalState> {
+        let lifecycle = current_agent_lifecycle(state, &task_id)?;
+        if lifecycle.task.workspace.access != AgentWorkspaceAccess::ReadOnly
+            || lifecycle.task.call_id != call_id
+            || lifecycle.task.child_run_id != run_id
+        {
+            return Err(orchestration_recovery(
+                &task_id,
+                "readonly_child_identity",
+                "待汇聚的只读子 Agent 与持久任务身份不一致",
+            ));
+        }
+        if lifecycle.finished.is_some() {
+            return Ok(());
+        }
+        outcome.details.workspace = Some(lifecycle.task.workspace.clone());
+        outcome.details.base_commit = None;
+        outcome.details.final_commit = None;
+        outcome.details.diff_sha256 = None;
+        outcome.details.changed_files.clear();
+        outcome.details.integration = WriterIntegrationStatus::NotApplicable;
+        if outcome.details.summary.trim().is_empty() {
+            outcome.details.summary = terminal_state_label(&outcome.terminal).to_owned();
+        }
+        outcome.validate().map_err(|message| {
+            orchestration_recovery(&task_id, "readonly_child_result_invalid", message)
+        })?;
+        if lifecycle.result.is_none() {
             self.publish(
                 state,
-                RuntimeEventKind::ChildFinished {
-                    call_id: child.call_id.clone(),
+                RuntimeEventKind::AgentResultCollected {
+                    task_id: task_id.clone(),
                     outcome: Box::new(outcome.clone()),
-                    accounting: Box::new(accounting),
-                    handoff_content: handoff.clone(),
                 },
             )
             .await
             .map_err(store_terminal)?;
         }
+        let handoff = readonly_child_handoff(state, &outcome);
+        let accounting = self.cumulative_accounting(state, false).await;
+        self.publish(
+            state,
+            RuntimeEventKind::ChildFinished {
+                call_id,
+                outcome: Box::new(outcome),
+                accounting: Box::new(accounting),
+                handoff_content: handoff,
+            },
+        )
+        .await
+        .map_err(store_terminal)?;
         Ok(())
-    }
-
-    async fn cancel_children(&self, state: &mut RunState) {
-        for child in &state.pending_children {
-            child.control.cancel().ok();
-        }
-        self.join_remaining_children(state).await;
-    }
-
-    async fn settle_children_for(&self, state: &mut RunState, terminal: &TerminalState) {
-        if matches!(terminal, TerminalState::Interrupted) {
-            for child in &state.pending_children {
-                child.control.interrupt().ok();
-            }
-            self.join_remaining_children(state).await;
-        } else {
-            self.cancel_children(state).await;
-        }
-    }
-
-    async fn join_remaining_children(&self, state: &mut RunState) {
-        for child in state.pending_children.drain(..) {
-            let _ = child.join.await;
-        }
     }
 
     async fn drain_controls(
@@ -2039,6 +3490,12 @@ impl AgentRuntime {
         _budget: &RuntimeBudget,
     ) -> AgentOutcome {
         let root = state.snapshot.request.actor.kind == AgentActorKind::Root;
+        if root {
+            terminal = match self.cleanup_integrated_writers(state).await {
+                Ok(Some(cleanup_terminal)) | Err(cleanup_terminal) => cleanup_terminal,
+                Ok(None) => terminal,
+            };
+        }
         let mut accounting = self.cumulative_accounting(state, root).await;
         let model_request_unsettled = state
             .snapshot
@@ -2089,6 +3546,26 @@ impl AgentRuntime {
                 },
             };
         }
+        let summary = match &terminal {
+            TerminalState::Completed { message, .. } => message.clone(),
+            other => terminal_state_label(other).to_owned(),
+        };
+        let read_only_workspace = state
+            .snapshot
+            .request
+            .agent_task
+            .as_ref()
+            .filter(|task| task.workspace.access == AgentWorkspaceAccess::ReadOnly)
+            .map(|task| task.workspace.clone());
+        let details = AgentResultDetails {
+            summary,
+            evidence: state.snapshot.evidence_receipts.clone(),
+            workspace_state: read_only_workspace
+                .as_ref()
+                .map(|_| state.snapshot.workspace_state.clone()),
+            workspace: read_only_workspace,
+            ..AgentResultDetails::default()
+        };
         let outcome = AgentOutcome {
             run_id: state.run_id().clone(),
             parent_run_id: state.snapshot.request.parent_run_id.clone(),
@@ -2097,6 +3574,7 @@ impl AgentRuntime {
             runtime_model_requests: state.snapshot.runtime_model_requests,
             runtime_retries: state.snapshot.runtime_retries,
             tool_calls: state.snapshot.tool_calls,
+            details,
         };
         if self
             .publish(
@@ -2124,6 +3602,63 @@ impl AgentRuntime {
             };
         }
         state.snapshot.terminal.clone().unwrap_or(outcome)
+    }
+
+    async fn cleanup_integrated_writers(
+        &self,
+        state: &mut RunState,
+    ) -> Result<Option<TerminalState>, TerminalState> {
+        let tasks = state
+            .snapshot
+            .agent_tasks
+            .iter()
+            .filter(|lifecycle| {
+                lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                    && lifecycle
+                        .integration
+                        .as_ref()
+                        .and_then(|integration| integration.committed.as_ref())
+                        .is_some()
+                    && lifecycle
+                        .cleanup
+                        .as_ref()
+                        .and_then(|cleanup| cleanup.committed.as_ref())
+                        .is_none()
+            })
+            .map(|lifecycle| lifecycle.task.clone())
+            .collect::<Vec<_>>();
+        if !tasks.is_empty() && self.orchestrator.is_none() {
+            let task = &tasks[0];
+            return Err(orchestration_recovery(
+                &task.task_id,
+                "writer_cleanup_orchestrator_unavailable",
+                "root 终态前无法清理已集成 writer：Orchestrator 不可用",
+            ));
+        }
+        for task in tasks {
+            let lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+            let seal = writer_seal_from_lifecycle(&lifecycle).ok_or_else(|| {
+                orchestration_recovery(
+                    &task.task_id,
+                    "writer_cleanup_missing_seal",
+                    "root 终态前清理已集成 writer 时缺少 Host seal",
+                )
+            })?;
+            let cleanup = self
+                .resume_writer_cleanup(state, &task, Some(&seal))
+                .await?;
+            if cleanup.retained_for_recovery || !cleanup.worktree_removed || !cleanup.branch_removed
+            {
+                return Ok(Some(writer_cleanup_recovery_terminal(
+                    &task,
+                    cleanup
+                        .reason
+                        .as_deref()
+                        .unwrap_or("root 终态前 writer cleanup 未完整完成"),
+                )));
+            }
+        }
+        Ok(None)
     }
 
     async fn observe_workspace_state(
@@ -2428,6 +3963,13 @@ impl RunState {
             .recovery_tool
             .as_ref()
             .filter(|pending| pending.state == DurableActionState::InFlight)
+            .filter(|pending| {
+                pending.invocation.name != AGENT_TOOL_NAME
+                    || !self.snapshot.agent_tasks.iter().any(|lifecycle| {
+                        lifecycle.task.call_id == pending.invocation.call_id
+                            && writer_tool_recovery_is_safe(lifecycle)
+                    })
+            })
         {
             return Some(RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::ToolExecution,
@@ -2451,7 +3993,14 @@ impl RunState {
             });
         }
         self.recovered_child_ids
-            .first()
+            .iter()
+            .find(|child| {
+                !self.snapshot.agent_tasks.iter().any(|lifecycle| {
+                    &lifecycle.task.child_run_id == *child
+                        && lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                        && lifecycle.finished.is_none()
+                })
+            })
             .map(|child| RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::ChildRun,
                 action_id: child.0.clone(),
@@ -2463,11 +4012,25 @@ impl RunState {
 
 #[derive(Debug)]
 struct PendingChild {
+    task_id: AgentTaskId,
     call_id: String,
     run_id: RunId,
     control: AgentControl,
     join: JoinHandle<AgentOutcome>,
     _lease: ChildLease,
+}
+
+struct RecoveredWriterChild {
+    child_replay: Option<RunReplay>,
+    child_outcome: Option<AgentOutcome>,
+    parent_terminal: Option<TerminalState>,
+}
+
+fn writer_tool_recovery_is_safe(lifecycle: &AgentTaskLifecycle) -> bool {
+    lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+        && lifecycle.finished.as_ref().is_none_or(|finished| {
+            matches!(finished.outcome.terminal, TerminalState::Completed { .. })
+        })
 }
 
 #[derive(Debug)]
@@ -2566,6 +4129,25 @@ impl RuntimeBudget {
         reserve(&self.tools, self.limits.max_tool_calls)
     }
 
+    fn absorb_recovered(&self, model_requests: u32, tools: u32) -> bool {
+        if !add_with_limit(
+            &self.model_requests,
+            model_requests,
+            self.limits.max_model_requests,
+        ) {
+            return false;
+        }
+        if add_with_limit(&self.tools, tools, self.limits.max_tool_calls) {
+            true
+        } else {
+            let previous = self
+                .model_requests
+                .fetch_sub(model_requests, Ordering::AcqRel);
+            debug_assert!(previous >= model_requests);
+            false
+        }
+    }
+
     fn reserve_child(self: &Arc<Self>) -> Option<ChildLease> {
         reserve(&self.children, self.limits.max_concurrent_children).then(|| ChildLease {
             budget: self.clone(),
@@ -2610,6 +4192,14 @@ fn reserve(counter: &AtomicU32, limit: u32) -> bool {
     counter
         .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
             (current < limit).then_some(current + 1)
+        })
+        .is_ok()
+}
+
+fn add_with_limit(counter: &AtomicU32, amount: u32, limit: u32) -> bool {
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(amount).filter(|next| *next <= limit)
         })
         .is_ok()
 }
@@ -2834,9 +4424,7 @@ pub struct RuntimeJoinError {
 fn agent_tool_definition() -> ToolDefinition {
     ToolDefinition {
         name: AGENT_TOOL_NAME.to_owned(),
-        description:
-            "启动一个使用相同 AgentRuntime 的只读后台子 Agent；结果会由运行时自动回注父 Agent。"
-                .to_owned(),
+        description: "启动一个使用相同 AgentRuntime 的后台子 Agent。默认只读；只有显式 isolated_write、Host exact verifier、auto-approve 与 Orchestrator clean-Git 预检同时成立时，才分配隔离 worktree 并由 Host seal/ff-only 集成。".to_owned(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -2846,7 +4434,19 @@ fn agent_tool_definition() -> ToolDefinition {
                 },
                 "type": {
                     "type": "string",
-                    "description": "子 Agent 的角色标签，仅影响任务侧重点。"
+                    "description": "子 Agent 的角色标签，仅影响任务侧重点，不授予写权限。"
+                },
+                "workspace_access": {
+                    "type": "string",
+                    "enum": ["read_only", "isolated_write"],
+                    "description": "工作区权限。默认 read_only；isolated_write 必须同时提供 allowed_paths。"
+                },
+                "allowed_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "description": "isolated_write 唯一允许修改的工作区相对路径；只读任务不得提供。"
                 },
                 "fork_context": {
                     "type": "boolean",
@@ -2880,6 +4480,575 @@ fn agent_tool_definition() -> ToolDefinition {
             "required": ["prompt"],
             "additionalProperties": false
         }),
+    }
+}
+
+#[derive(Debug)]
+struct AgentLaunchRequest {
+    workspace_access: AgentWorkspaceAccess,
+    allowed_paths: Vec<String>,
+    expected_artifact: String,
+}
+
+impl AgentLaunchRequest {
+    fn parse(arguments: &Value) -> Result<Self, String> {
+        let workspace_access = match arguments
+            .get("workspace_access")
+            .and_then(Value::as_str)
+            .unwrap_or("read_only")
+        {
+            "read_only" => AgentWorkspaceAccess::ReadOnly,
+            "isolated_write" => AgentWorkspaceAccess::IsolatedWrite,
+            other => {
+                return Err(format!(
+                    "workspace_access '{other}' 无效，只接受 read_only 或 isolated_write"
+                ));
+            }
+        };
+        let requested_paths = arguments
+            .get("allowed_paths")
+            .map(|paths| {
+                paths
+                    .as_array()
+                    .ok_or_else(|| "allowed_paths 必须是字符串数组".to_owned())?
+                    .iter()
+                    .map(|path| {
+                        path.as_str()
+                            .map(str::trim)
+                            .filter(|path| !path.is_empty())
+                            .map(str::to_owned)
+                            .ok_or_else(|| "allowed_paths 只能包含非空字符串".to_owned())
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?
+            .unwrap_or_default();
+        let mut canonical_paths = BTreeSet::new();
+        for requested in requested_paths {
+            let mut parts = Vec::new();
+            for component in std::path::Path::new(&requested).components() {
+                match component {
+                    Component::Normal(part) => {
+                        let part = part.to_str().ok_or_else(|| {
+                            "allowed_paths 必须使用有效 UTF-8 相对路径".to_owned()
+                        })?;
+                        parts.push(part);
+                    }
+                    Component::CurDir => {}
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                        return Err(format!(
+                            "allowed_paths 中的 '{requested}' 必须保持工作区相对且不能包含 .."
+                        ));
+                    }
+                }
+            }
+            if parts.is_empty() {
+                return Err("allowed_paths 不能包含空路径或工作区根目录".to_owned());
+            }
+            canonical_paths.insert(parts.join("/"));
+        }
+        let allowed_paths = canonical_paths.into_iter().collect::<Vec<_>>();
+        match workspace_access {
+            AgentWorkspaceAccess::ReadOnly if !allowed_paths.is_empty() => {
+                return Err("read_only 子 Agent 不得提供 allowed_paths".to_owned());
+            }
+            AgentWorkspaceAccess::IsolatedWrite if allowed_paths.is_empty() => {
+                return Err("isolated_write 子 Agent 必须提供非空 allowed_paths".to_owned());
+            }
+            _ => {}
+        }
+        let expected_artifact = arguments
+            .get("expected_artifact")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(if workspace_access == AgentWorkspaceAccess::IsolatedWrite {
+                "通过冻结验收器的隔离代码变更"
+            } else {
+                "结构化调查结果"
+            })
+            .to_owned();
+        Ok(Self {
+            workspace_access,
+            allowed_paths,
+            expected_artifact,
+        })
+    }
+}
+
+fn agent_tool_workspace_access(call: &ModelToolCall) -> WorkspaceAccess {
+    call.arguments
+        .parsed
+        .as_ref()
+        .and_then(|arguments| arguments.get("workspace_access"))
+        .and_then(Value::as_str)
+        .filter(|access| *access == "isolated_write")
+        .map_or(WorkspaceAccess::ReadOnly, |_| WorkspaceAccess::MayWrite)
+}
+
+#[derive(Debug)]
+struct MissingAgentLifecycle {
+    task_id: AgentTaskId,
+}
+
+impl From<MissingAgentLifecycle> for TerminalState {
+    fn from(error: MissingAgentLifecycle) -> Self {
+        TerminalState::Failed {
+            failure: RuntimeFailure::Store {
+                message: format!(
+                    "canonical AgentTask '{}' disappeared from replay",
+                    error.task_id.0
+                ),
+            },
+        }
+    }
+}
+
+fn current_agent_lifecycle(
+    state: &RunState,
+    task_id: &AgentTaskId,
+) -> Result<AgentTaskLifecycle, MissingAgentLifecycle> {
+    state
+        .snapshot
+        .agent_tasks
+        .iter()
+        .find(|lifecycle| &lifecycle.task.task_id == task_id)
+        .cloned()
+        .ok_or_else(|| MissingAgentLifecycle {
+            task_id: task_id.clone(),
+        })
+}
+
+fn writer_seal_from_lifecycle(lifecycle: &AgentTaskLifecycle) -> Option<WriterSeal> {
+    let seal = lifecycle.seal.as_ref()?;
+    let committed = seal.committed.as_ref()?;
+    Some(WriterSeal {
+        base_commit: seal.base_commit.clone(),
+        final_commit: committed.final_commit.clone(),
+        diff_sha256: committed.diff_sha256.clone(),
+        changed_files: committed.changed_files.clone(),
+        writer_workspace_state: committed.writer_workspace_state_after.clone(),
+    })
+}
+
+fn recovered_writer_request(state: &RunState, task: &AgentTask, arguments: &Value) -> RunRequest {
+    let mut system_prompt = state
+        .snapshot
+        .transcript
+        .entries
+        .iter()
+        .find_map(|entry| match entry {
+            TranscriptEntry::System { prompt } => Some(prompt.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| state.snapshot.request.system_prompt.clone());
+    system_prompt.blocks.push(SystemPromptBlock {
+        text: format!(
+            "你是在同一 AgentRuntime 中运行的隔离写入子 Agent。角色：{}。只在分配的 worktree 内修改允许路径；不要访问主工作区或 Git 元数据；完成前让 Host 使用冻结的 exact verifier 验收。",
+            task.role
+        ),
+        cache_control: PromptCacheControl::Volatile,
+    });
+    let fork_context = arguments
+        .get("fork_context")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let transcript = if fork_context {
+        let mut transcript = state.snapshot.transcript.clone();
+        if matches!(
+            transcript.entries.last(),
+            Some(TranscriptEntry::Assistant { .. })
+        ) {
+            transcript.entries.pop();
+        }
+        if let Some(TranscriptEntry::System { prompt }) = transcript.entries.first_mut() {
+            *prompt = system_prompt.clone();
+        }
+        transcript
+    } else {
+        CanonicalTranscript::default()
+    };
+    let mut environment = state.snapshot.request.environment.clone();
+    environment.workspace = task.workspace.execution_workspace().to_owned();
+    environment.interactive = false;
+    environment.trust_mode = false;
+    environment.allow_sandbox_elevation = false;
+    environment.sandbox = Some("isolated_writer".to_owned());
+    RunRequest {
+        run_id: Some(task.child_run_id.clone()),
+        parent_run_id: Some(task.parent_run_id.clone()),
+        continued_from_run_id: None,
+        model: state.snapshot.request.model.clone(),
+        task_contract: Some(task.task_contract.clone()),
+        system_prompt,
+        transcript,
+        reasoning_effort: state.snapshot.request.reasoning_effort,
+        max_output_tokens: state.snapshot.request.max_output_tokens,
+        streaming: false,
+        actor: AgentActor {
+            kind: AgentActorKind::Child,
+            depth: state.snapshot.request.actor.depth.saturating_add(1),
+        },
+        agent_task: Some(task.clone()),
+        deadline_unix_ms: task.deadline_unix_ms,
+        tool_policy: task.tool_policy.clone(),
+        limits: task.limits,
+        environment,
+        context_policy: state.snapshot.request.context_policy,
+        context_projection: fork_context
+            .then(|| state.snapshot.context_projection.clone())
+            .flatten(),
+        inherited_facts: None,
+        accounting_baseline: state.accounting_epoch_baseline.clone(),
+    }
+}
+
+fn agent_checks_from_replay(replay: &RunReplay) -> (Vec<AgentCheck>, Vec<ToolArtifact>) {
+    let mut checks = Vec::new();
+    let mut artifacts = Vec::new();
+    for event in &replay.events {
+        if let RuntimeEventKind::HostVerificationCommitted {
+            verification_id,
+            outcome,
+            workspace_state_after,
+            ..
+        } = &event.event
+            && let Some(observation) = &outcome.verifier_observation
+        {
+            checks.push(AgentCheck {
+                check_id: verification_id.0.clone(),
+                verifier: observation.spec.clone(),
+                workspace_state: workspace_state_after.clone(),
+                outcome: (**outcome).clone(),
+            });
+            artifacts.extend(outcome.artifacts.clone());
+        }
+    }
+    artifacts.sort_by(|left, right| left.id.cmp(&right.id));
+    artifacts.dedup_by(|left, right| left.id == right.id);
+    (checks, artifacts)
+}
+
+fn recovered_finished_outcome(lifecycle: &AgentTaskLifecycle) -> Result<AgentOutcome, String> {
+    let mut outcome = lifecycle
+        .result
+        .clone()
+        .ok_or_else(|| "writer ChildFinished 缺少 collected result".to_owned())?;
+    if matches!(outcome.terminal, TerminalState::Completed { .. }) {
+        let integration = lifecycle
+            .integration
+            .as_ref()
+            .ok_or_else(|| "成功 writer 缺少 integration lifecycle".to_owned())?;
+        match (&integration.committed, &integration.failure) {
+            (Some(committed), None) => {
+                outcome.details.integration = WriterIntegrationStatus::Integrated {
+                    integration_id: integration.integration_id.clone(),
+                    writer_commit: integration.writer_commit.clone(),
+                    root_workspace_state: committed.root_workspace_state_after.clone(),
+                };
+            }
+            (None, Some(failure)) => {
+                outcome.details.integration = failure.status.clone();
+                let reason = writer_integration_failure_reason(&failure.status)
+                    .ok_or_else(|| "writer integration failure 状态无效".to_owned())?
+                    .to_owned();
+                outcome.terminal = match failure.status {
+                    WriterIntegrationStatus::RecoveryRequired { .. } => {
+                        TerminalState::RecoveryRequired {
+                            ambiguity: RecoveryAmbiguity {
+                                phase: RecoveryAmbiguityPhase::ChildRun,
+                                action_id: format!(
+                                    "agent-integration:{}",
+                                    integration.integration_id.0
+                                ),
+                                message: reason,
+                            },
+                        }
+                    }
+                    WriterIntegrationStatus::Rejected { .. }
+                    | WriterIntegrationStatus::Conflict { .. } => TerminalState::Blocked { reason },
+                    WriterIntegrationStatus::NotApplicable
+                    | WriterIntegrationStatus::AwaitingHost
+                    | WriterIntegrationStatus::Integrated { .. } => {
+                        return Err("writer integration failure 状态无效".to_owned());
+                    }
+                };
+            }
+            (Some(_), Some(_)) => {
+                return Err("writer integration 同时 committed 与 failed".to_owned());
+            }
+            (None, None) => {
+                return Err("成功 writer integration 尚未形成持久结果".to_owned());
+            }
+        }
+    }
+    if let Some(cleanup) = lifecycle
+        .cleanup
+        .as_ref()
+        .and_then(|cleanup| cleanup.committed.as_ref())
+        && cleanup.retained_for_recovery
+    {
+        outcome.terminal = writer_cleanup_recovery_terminal(
+            &lifecycle.task,
+            cleanup
+                .reason
+                .as_deref()
+                .unwrap_or("writer cleanup ownership is ambiguous"),
+        );
+    }
+    Ok(outcome)
+}
+
+fn writer_failure_tool_outcome(task: &AgentTask, outcome: &AgentOutcome) -> ToolOutcome {
+    ToolOutcome::rejected(
+        format!(
+            "writer_child_not_completed：writer child {} 以 {} 结束，未集成",
+            task.child_run_id,
+            terminal_state_label(&outcome.terminal)
+        ),
+        ToolRetryDisposition::AfterCorrection,
+    )
+}
+
+fn writer_tool_outcome(task: &AgentTask, outcome: &AgentOutcome) -> ToolOutcome {
+    if !matches!(outcome.terminal, TerminalState::Completed { .. }) {
+        return writer_failure_tool_outcome(task, outcome);
+    }
+    let (
+        WriterIntegrationStatus::Integrated {
+            writer_commit,
+            root_workspace_state,
+            ..
+        },
+        Some(diff_sha256),
+    ) = (&outcome.details.integration, &outcome.details.diff_sha256)
+    else {
+        return ToolOutcome::recovery_ambiguous(
+            "writer_integration_missing：writer 完成结果缺少 Host integration facts",
+        );
+    };
+    let mut tool_outcome = ToolOutcome::success(format!(
+        "writer_integrated：Host 已集成 writer commit {writer_commit}"
+    ))
+    .with_side_effect(ToolSideEffectStatus::Applied)
+    .with_evidence(ToolEvidence {
+        status: ToolEvidenceStatus::Produced,
+        references: outcome
+            .details
+            .evidence
+            .iter()
+            .map(|receipt| receipt.id.0.clone())
+            .collect(),
+    })
+    .with_metadata(json!({
+        "task_id": task.task_id,
+        "child_run_id": task.child_run_id,
+        "writer_commit": writer_commit,
+        "diff_sha256": diff_sha256,
+        "changed_files": outcome.details.changed_files,
+    }));
+    if let WorkspaceRevision::Known { sha256 } = &root_workspace_state.revision {
+        tool_outcome.workspace_revision = Some(sha256.clone());
+    }
+    tool_outcome
+}
+
+fn read_only_workspace_identity(observed: Option<&str>) -> String {
+    observed
+        .filter(|identity| {
+            matches!(identity.len(), 40 | 64)
+                && identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000")
+        .to_owned()
+}
+
+fn orchestration_terminal(error: AgentOrchestrationError) -> TerminalState {
+    match error.kind {
+        AgentOrchestrationErrorKind::Rejected | AgentOrchestrationErrorKind::Conflict => {
+            TerminalState::Blocked {
+                reason: format!("{}：{}", error.code, error.message),
+            }
+        }
+        AgentOrchestrationErrorKind::RecoveryRequired => TerminalState::RecoveryRequired {
+            ambiguity: RecoveryAmbiguity {
+                phase: RecoveryAmbiguityPhase::ChildRun,
+                action_id: error.code,
+                message: error.message,
+            },
+        },
+    }
+}
+
+fn orchestration_child_outcome(task: &AgentTask, error: &AgentOrchestrationError) -> AgentOutcome {
+    AgentOutcome {
+        run_id: task.child_run_id.clone(),
+        parent_run_id: Some(task.parent_run_id.clone()),
+        terminal: orchestration_terminal(error.clone()),
+        accounting: incomplete_accounting(),
+        runtime_model_requests: 0,
+        runtime_retries: 0,
+        tool_calls: 0,
+        details: AgentResultDetails {
+            summary: format!("{}：{}", error.code, error.message),
+            ..AgentResultDetails::default()
+        },
+    }
+}
+
+fn writer_integration_failure_status(error: &AgentOrchestrationError) -> WriterIntegrationStatus {
+    let reason = format!("{}：{}", error.code, error.message);
+    match error.kind {
+        AgentOrchestrationErrorKind::Rejected => WriterIntegrationStatus::Rejected { reason },
+        AgentOrchestrationErrorKind::Conflict => WriterIntegrationStatus::Conflict { reason },
+        AgentOrchestrationErrorKind::RecoveryRequired => {
+            WriterIntegrationStatus::RecoveryRequired { reason }
+        }
+    }
+}
+
+fn writer_integration_failure_reason(status: &WriterIntegrationStatus) -> Option<&str> {
+    match status {
+        WriterIntegrationStatus::Rejected { reason }
+        | WriterIntegrationStatus::Conflict { reason }
+        | WriterIntegrationStatus::RecoveryRequired { reason } => Some(reason),
+        WriterIntegrationStatus::NotApplicable
+        | WriterIntegrationStatus::AwaitingHost
+        | WriterIntegrationStatus::Integrated { .. } => None,
+    }
+}
+
+fn orchestration_recovery(
+    task_id: &AgentTaskId,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> TerminalState {
+    let code = code.into();
+    TerminalState::RecoveryRequired {
+        ambiguity: RecoveryAmbiguity {
+            phase: RecoveryAmbiguityPhase::ChildRun,
+            action_id: format!("{}:{code}", task_id.0),
+            message: message.into(),
+        },
+    }
+}
+
+fn validate_writer_seal(task: &AgentTask, seal: &WriterSeal) -> Result<(), String> {
+    if seal.base_commit != task.workspace.base_commit {
+        return Err("Host seal 的 base commit 与 AgentTask 不一致".to_owned());
+    }
+    if seal.final_commit == seal.base_commit {
+        return Err("Host seal 没有产生新的 writer commit".to_owned());
+    }
+    if seal.changed_files.is_empty() {
+        return Err("Host seal 不接受空 diff".to_owned());
+    }
+    let event = RuntimeEventKind::AgentSealCommitted {
+        task_id: task.task_id.clone(),
+        final_commit: seal.final_commit.clone(),
+        diff_sha256: seal.diff_sha256.clone(),
+        changed_files: seal.changed_files.clone(),
+        writer_workspace_state_after: seal.writer_workspace_state.clone(),
+    };
+    event.validate_agent_lifecycle_payload()
+}
+
+fn validate_writer_receipts(task: &AgentTask, receipts: &[EvidenceReceipt]) -> Result<(), String> {
+    let Some((acceptance_id, verifier)) =
+        task.task_contract
+            .definition
+            .acceptance
+            .iter()
+            .find_map(|acceptance| match acceptance {
+                TaskAcceptance::Verifier { id, verifier, .. } => Some((id, verifier)),
+                TaskAcceptance::Host { .. } => None,
+            })
+    else {
+        return Err("writer AgentTask 没有冻结 exact verifier".to_owned());
+    };
+    if receipts.len() != 1
+        || receipts.iter().any(|receipt| {
+            receipt.generation_id != task.task_contract.generation_id
+                || receipt.acceptance_id != *acceptance_id
+                || receipt.verifier != *verifier
+        })
+    {
+        return Err(
+            "writer EvidenceReceipt 与 child generation、acceptance 或 exact verifier 不一致"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn failed_child_outcome(task: &AgentTask, failure: RuntimeFailure) -> AgentOutcome {
+    AgentOutcome {
+        run_id: task.child_run_id.clone(),
+        parent_run_id: Some(task.parent_run_id.clone()),
+        terminal: TerminalState::Failed { failure },
+        accounting: incomplete_accounting(),
+        runtime_model_requests: 0,
+        runtime_retries: 0,
+        tool_calls: 0,
+        details: AgentResultDetails::default(),
+    }
+}
+
+fn child_handoff(state: &RunState, outcome: &AgentOutcome) -> String {
+    let marker_kind = if state.snapshot.request.actor.depth == 0 {
+        "subagent_completion"
+    } else {
+        "child_subagent_completion"
+    };
+    let receipt = serde_json::to_string(outcome).unwrap_or_else(|error| {
+        json!({
+            "run_id": outcome.run_id,
+            "terminal": "encoding_failed",
+            "error": error.to_string(),
+        })
+        .to_string()
+    });
+    format!(
+        "<codewhale:runtime_event kind=\"{marker_kind}\" agent_id=\"{}\">\n{receipt}\n</codewhale:runtime_event>",
+        outcome.run_id
+    )
+}
+
+fn readonly_child_handoff(state: &RunState, outcome: &AgentOutcome) -> String {
+    let marker_kind = if state.snapshot.request.actor.depth == 0 {
+        "subagent_completion"
+    } else {
+        "child_subagent_completion"
+    };
+    let receipt = json!({
+        "run_id": outcome.run_id,
+        "terminal": outcome.terminal,
+        "summary": outcome.details.summary,
+    });
+    format!(
+        "<codewhale:runtime_event kind=\"{marker_kind}\" agent_id=\"{}\">\n{receipt}\n</codewhale:runtime_event>",
+        outcome.run_id
+    )
+}
+
+fn terminal_state_label(terminal: &TerminalState) -> &'static str {
+    match terminal {
+        TerminalState::Completed { .. } => "completed",
+        TerminalState::Blocked { .. } => "blocked",
+        TerminalState::Failed { .. } => "failed",
+        TerminalState::Cancelled => "cancelled",
+        TerminalState::Interrupted => "interrupted",
+        TerminalState::RecoveryRequired { .. } => "recovery_required",
+    }
+}
+
+fn writer_cleanup_recovery_terminal(task: &AgentTask, message: &str) -> TerminalState {
+    TerminalState::RecoveryRequired {
+        ambiguity: RecoveryAmbiguity {
+            phase: RecoveryAmbiguityPhase::ChildRun,
+            action_id: format!("agent-cleanup:{}", task.task_id.0),
+            message: message.to_owned(),
+        },
     }
 }
 
@@ -3065,6 +5234,7 @@ fn store_start_failure(
         runtime_model_requests: 0,
         runtime_retries: 0,
         tool_calls: 0,
+        details: AgentResultDetails::default(),
     }
 }
 

@@ -40,7 +40,6 @@ pub mod landlock;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub mod seccomp;
 
-#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub mod bwrap;
 
 #[cfg(target_os = "windows")]
@@ -406,6 +405,21 @@ impl SandboxManager {
             return forced;
         }
 
+        // Linux Landlock is not wired into the spawned child process yet.
+        // An isolated writer therefore requires bubblewrap there instead of
+        // accepting the ordinary marker-only fallback.
+        if policy.requires_enforced_sandbox() {
+            #[cfg(target_os = "macos")]
+            if seatbelt::is_available() {
+                return SandboxType::MacosSeatbelt;
+            }
+            #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+            if bwrap::is_available() {
+                return SandboxType::LinuxLandlock;
+            }
+            return SandboxType::None;
+        }
+
         // Use platform default
         get_platform_sandbox().unwrap_or(SandboxType::None)
     }
@@ -430,6 +444,26 @@ impl SandboxManager {
             #[cfg(target_os = "windows")]
             SandboxType::Windows => Self::prepare_windows(spec),
         }
+    }
+
+    /// Prepare a command and reject mandatory policies that would otherwise
+    /// silently degrade to unrestricted local execution.
+    pub fn prepare_enforced(&self, spec: &CommandSpec) -> std::io::Result<ExecEnv> {
+        #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+        if spec.sandbox_policy.requires_enforced_sandbox()
+            && self.select_sandbox(&spec.sandbox_policy) == SandboxType::LinuxLandlock
+            && bwrap::is_available()
+        {
+            bwrap::prepare_isolated_writer_protected_paths(&spec.sandbox_policy)?;
+        }
+        let prepared = self.prepare(spec);
+        if spec.sandbox_policy.requires_enforced_sandbox() && !prepared.is_sandboxed() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "isolated writer requires an enforcing local sandbox",
+            ));
+        }
+        Ok(prepared)
     }
 
     /// Prepare an unsandboxed execution environment.
@@ -484,8 +518,19 @@ impl SandboxManager {
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     fn prepare_landlock(&self, spec: &CommandSpec) -> ExecEnv {
         // Check if bwrap passthrough should be used (#2184).
-        if self.prefer_bwrap && bwrap::is_available() {
-            let command = bwrap::build_bwrap_command(&spec.cwd, &spec.program, &spec.args);
+        if (self.prefer_bwrap || spec.sandbox_policy.requires_enforced_sandbox())
+            && bwrap::is_available()
+        {
+            let command = if spec.sandbox_policy.requires_enforced_sandbox() {
+                bwrap::build_bwrap_command_for_policy(
+                    &spec.sandbox_policy,
+                    &spec.cwd,
+                    &spec.program,
+                    &spec.args,
+                )
+            } else {
+                bwrap::build_bwrap_command(&spec.cwd, &spec.program, &spec.args)
+            };
 
             let mut env = spec.env.clone();
             env.insert("DEEPSEEK_SANDBOX".to_string(), "bwrap".to_string());
@@ -761,6 +806,25 @@ mod tests {
             network_access: true,
         });
         assert_eq!(external, SandboxType::None);
+    }
+
+    #[test]
+    fn isolated_writer_never_falls_back_to_unsandboxed_execution() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let manager = SandboxManager {
+            forced_sandbox: Some(SandboxType::None),
+            ..SandboxManager::default()
+        };
+        let spec = CommandSpec::shell(
+            "touch blocked",
+            workspace.path().to_path_buf(),
+            Duration::from_secs(5),
+        )
+        .with_policy(SandboxPolicy::isolated_writer(workspace.path()));
+        let error = manager
+            .prepare_enforced(&spec)
+            .expect_err("mandatory writer sandbox must fail closed");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
 
     #[test]

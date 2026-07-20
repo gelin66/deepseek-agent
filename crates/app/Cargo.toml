@@ -12,6 +12,7 @@ codewhale-config = { path = "../config" }
 codewhale-context = { path = "../context" }
 codewhale-protocol = { path = "../protocol" }
 codewhale-deepseek = { path = "../deepseek" }
+codewhale-orchestrator = { path = "../orchestrator" }
 codewhale-runtime = { path = "../runtime" }
 codewhale-state = { path = "../state" }
 codewhale-tools = { path = "../tools" }

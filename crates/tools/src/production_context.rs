@@ -21,6 +21,15 @@ struct FileReadTracker {
 
 type SharedFileReadTracker = Arc<Mutex<FileReadTracker>>;
 
+#[derive(Debug, Clone, Default)]
+enum WritePathGuard {
+    #[default]
+    Ordinary,
+    IsolatedWriter {
+        workspace: PathBuf,
+    },
+}
+
 /// Workspace-bound state shared by the production tool implementations.
 ///
 /// This context deliberately contains only state that is independent from
@@ -40,6 +49,8 @@ pub struct ProductionToolContext {
     cancel_token: Option<CancellationToken>,
     /// Whether approval checks may be skipped for eligible tool operations.
     auto_approve: bool,
+    /// Additional boundary for built-in filesystem mutations.
+    write_path_guard: WritePathGuard,
     file_read_tracker: SharedFileReadTracker,
 }
 
@@ -54,6 +65,7 @@ impl ProductionToolContext {
             follow_symlinks: false,
             cancel_token: None,
             auto_approve: false,
+            write_path_guard: WritePathGuard::Ordinary,
             file_read_tracker: Arc::new(Mutex::new(FileReadTracker::default())),
         }
     }
@@ -119,6 +131,25 @@ impl ProductionToolContext {
     #[must_use]
     pub fn with_auto_approve(mut self, auto_approve: bool) -> Self {
         self.auto_approve = auto_approve;
+        self
+    }
+
+    /// Restrict built-in write tools to ordinary files in one writer worktree.
+    ///
+    /// Shell commands are separately confined by the OS sandbox. This guard
+    /// closes the equivalent boundary for in-process tools such as
+    /// `apply_patch` and `edit_file`.
+    #[must_use]
+    pub(crate) fn with_isolated_writer_write_guard(
+        mut self,
+        workspace: impl Into<PathBuf>,
+    ) -> Self {
+        let workspace = workspace.into();
+        self.write_path_guard = WritePathGuard::IsolatedWriter {
+            workspace: workspace
+                .canonicalize()
+                .unwrap_or_else(|_| normalize_path(&workspace)),
+        };
         self
     }
 
@@ -271,6 +302,45 @@ impl ProductionToolContext {
         self.resolve_nonexistent_path(candidate, &workspace_canonical)
     }
 
+    /// Resolve a built-in tool mutation target and enforce its write boundary.
+    ///
+    /// Ordinary root runs preserve the historical `resolve_path` behavior.
+    /// Isolated writers may mutate only ordinary files in their own worktree;
+    /// Git control paths and CodeWhale/DeepSeek local state remain protected.
+    pub fn resolve_write_path(&self, raw: &str) -> Result<PathBuf, ToolError> {
+        let resolved = self.resolve_path(raw).map_err(|error| {
+            if matches!(
+                &self.write_path_guard,
+                WritePathGuard::IsolatedWriter { .. }
+            ) && matches!(&error, ToolError::PathEscape { .. })
+            {
+                isolated_writer_write_denied(Path::new(raw))
+            } else {
+                error
+            }
+        })?;
+
+        let WritePathGuard::IsolatedWriter { workspace } = &self.write_path_guard else {
+            return Ok(resolved);
+        };
+        let resolved = normalize_path(&resolved);
+        if !resolved.starts_with(workspace) {
+            return Err(isolated_writer_write_denied(&resolved));
+        }
+
+        let relative = resolved
+            .strip_prefix(workspace)
+            .expect("path prefix checked above");
+        let protected = relative.components().any(|component| {
+            matches!(component, Component::Normal(name) if name == ".git" || name == ".codewhale" || name == ".deepseek")
+        });
+        if protected {
+            return Err(isolated_writer_write_denied(&resolved));
+        }
+
+        Ok(resolved)
+    }
+
     fn resolve_nonexistent_path(
         &self,
         candidate: PathBuf,
@@ -330,6 +400,13 @@ impl ProductionToolContext {
             .iter()
             .any(|trusted| path.starts_with(trusted))
     }
+}
+
+fn isolated_writer_write_denied(path: &Path) -> ToolError {
+    ToolError::permission_denied(format!(
+        "isolated_writer_write_denied：隔离 Writer 只能修改其 worktree 内的普通文件，拒绝路径 {}",
+        path.display()
+    ))
 }
 
 fn file_read_snapshot(path: &Path) -> Result<FileReadSnapshot, ToolError> {

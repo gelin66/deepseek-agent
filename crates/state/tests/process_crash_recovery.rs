@@ -27,15 +27,17 @@ use codewhale_protocol::task::{
     WorkspaceRevision,
 };
 use codewhale_runtime::{
-    ActorRequestAccounting, AgentControl, AgentRuntime, ApiSurface, ApprovalRisk,
-    CancellationToken, CommandId, DurableActionState, ModelAccounting, ModelFinishReason,
-    ModelMessage, ModelOutput, ModelPort, ModelPortError, ModelRequest, ModelStream,
-    ModelStreamEvent, ModelToolCall, NullEventSink, PendingRuntimeEvent, RecoveryAmbiguityPhase,
-    RunId, RunRequest, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeEventSink,
-    StoredRuntimeEvent, SurfaceUsage, TerminalState, ToolApprovalPrompt, ToolArguments,
-    ToolArtifact, ToolArtifactStatus, ToolDefinition, ToolEvidence, ToolEvidenceStatus,
-    ToolExecutionError, ToolExecutor, ToolInvocation, ToolOutcome, Usage, UserInteractionResponse,
-    reduce_events,
+    AGENT_TOOL_NAME, ActorRequestAccounting, AgentActorKind, AgentControl, AgentOrchestrationError,
+    AgentOrchestrationErrorKind, AgentOrchestrator, AgentRuntime, AgentTask, AgentWorkspaceAccess,
+    AgentWorkspaceAssignment, ApiSurface, ApprovalRisk, CancellationToken, CommandId,
+    DurableActionState, ModelAccounting, ModelFinishReason, ModelMessage, ModelOutput, ModelPort,
+    ModelPortError, ModelRequest, ModelStream, ModelStreamEvent, ModelToolCall, NullEventSink,
+    PendingRuntimeEvent, RecoveryAmbiguityPhase, RunId, RunRequest, RunStore, RunStoreError,
+    RuntimeEventId, RuntimeEventKind, RuntimeEventSink, StoredRuntimeEvent, SurfaceUsage,
+    TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact, ToolArtifactStatus,
+    ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolExecutionError, ToolExecutor,
+    ToolInvocation, ToolOutcome, Usage, UserInteractionResponse, WorkspaceState, WriterBinding,
+    WriterCleanup, WriterIntegration, WriterPlan, WriterPreparation, WriterSeal, reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -47,6 +49,7 @@ const CHILD_DB: &str = "CODEWHALE_CRASH_TEST_DB";
 const CHILD_MODEL_MARKER: &str = "CODEWHALE_CRASH_TEST_MODEL_MARKER";
 const CHILD_TOOL_MARKER: &str = "CODEWHALE_CRASH_TEST_TOOL_MARKER";
 const CHILD_ABORT_MARKER: &str = "CODEWHALE_CRASH_TEST_ABORT_MARKER";
+const CHILD_WRITER_MARKER: &str = "CODEWHALE_CRASH_TEST_WRITER_MARKER";
 const RUN_ID: &str = "process-crash-run";
 const CREATE_COMMAND_ID: &str = "process-crash-create-command";
 const CREATE_COMMAND_SHA256: &str = "sha256:process-crash-create-payload";
@@ -54,6 +57,19 @@ const TOOL_NAME: &str = "write_marker";
 const HOST_VERIFIER_ACCEPTANCE_ID: &str = "process-crash-verifier";
 const HOST_VERIFIER_REVISION: &str = "sha256:process-crash-workspace";
 const HOST_VERIFIER_ARTIFACT_ID: &str = "process-crash-verifier-artifact";
+const WRITER_BASE_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const WRITER_FINAL_COMMIT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const WRITER_DIRTY_REVISION: &str =
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const WRITER_ARTIFACT_SHA256: &str =
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+const WRITER_DIFF_SHA256: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+const WRITER_ROOT_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-root";
+const WRITER_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-owned";
+const WRITER_BRANCH: &str = "codewhale/writer/process-crash";
+const WRITER_OWNER: &str = "process-crash-writer-owner";
+const WRITER_WRITE_TOOL: &str = "writer_write";
+const WRITER_VERIFY_TOOL: &str = "run_tests";
 
 fn creation_intent() -> codewhale_runtime::CreationIntent {
     let command = StartRunCommand {
@@ -93,12 +109,46 @@ fn host_verifier_spec() -> VerifierSpec {
     }
 }
 
+fn writer_verifier_spec() -> VerifierSpec {
+    VerifierSpec {
+        verifier_id: WRITER_VERIFY_TOOL.to_owned(),
+        parameters: json!({"suite": "writer-process-crash"}),
+        plan: VerifierPlan {
+            steps: vec![VerifierStep {
+                id: "writer-process-crash".to_owned(),
+                program: "fixture-verifier".to_owned(),
+                args: vec!["--exact".to_owned()],
+                cwd: String::new(),
+                env: BTreeMap::new(),
+                timeout_ms: 10_000,
+            }],
+        },
+    }
+}
+
 fn is_host_verification_scenario(scenario: CrashScenario) -> bool {
     matches!(
         scenario,
         CrashScenario::HostVerificationPrepared
             | CrashScenario::HostVerificationInFlight
             | CrashScenario::HostVerificationCommitted
+    )
+}
+
+fn is_writer_scenario(scenario: CrashScenario) -> bool {
+    matches!(
+        scenario,
+        CrashScenario::WriterTaskPrepared
+            | CrashScenario::WriterCreateSideEffect
+            | CrashScenario::WriterRunning
+            | CrashScenario::WriterSealSideEffect
+            | CrashScenario::WriterSealCommitted
+            | CrashScenario::WriterIntegrationPrepared
+            | CrashScenario::WriterIntegrationStarted
+            | CrashScenario::WriterIntegrationSideEffect
+            | CrashScenario::WriterIntegrationCommitted
+            | CrashScenario::WriterCleanupPrepared
+            | CrashScenario::WriterCleanupSideEffect
     )
 }
 
@@ -118,6 +168,17 @@ enum CrashScenario {
     HostVerificationPrepared,
     HostVerificationInFlight,
     HostVerificationCommitted,
+    WriterTaskPrepared,
+    WriterCreateSideEffect,
+    WriterRunning,
+    WriterSealSideEffect,
+    WriterSealCommitted,
+    WriterIntegrationPrepared,
+    WriterIntegrationStarted,
+    WriterIntegrationSideEffect,
+    WriterIntegrationCommitted,
+    WriterCleanupPrepared,
+    WriterCleanupSideEffect,
     CreationReserved,
     TerminalCommitted,
 }
@@ -139,6 +200,17 @@ impl CrashScenario {
             Self::HostVerificationPrepared => "host_verification_prepared",
             Self::HostVerificationInFlight => "host_verification_in_flight",
             Self::HostVerificationCommitted => "host_verification_committed",
+            Self::WriterTaskPrepared => "writer_task_prepared",
+            Self::WriterCreateSideEffect => "writer_create_side_effect",
+            Self::WriterRunning => "writer_running",
+            Self::WriterSealSideEffect => "writer_seal_side_effect",
+            Self::WriterSealCommitted => "writer_seal_committed",
+            Self::WriterIntegrationPrepared => "writer_integration_prepared",
+            Self::WriterIntegrationStarted => "writer_integration_started",
+            Self::WriterIntegrationSideEffect => "writer_integration_side_effect",
+            Self::WriterIntegrationCommitted => "writer_integration_committed",
+            Self::WriterCleanupPrepared => "writer_cleanup_prepared",
+            Self::WriterCleanupSideEffect => "writer_cleanup_side_effect",
             Self::CreationReserved => "creation_reserved",
             Self::TerminalCommitted => "terminal_committed",
         }
@@ -160,6 +232,17 @@ impl CrashScenario {
             "host_verification_prepared" => Self::HostVerificationPrepared,
             "host_verification_in_flight" => Self::HostVerificationInFlight,
             "host_verification_committed" => Self::HostVerificationCommitted,
+            "writer_task_prepared" => Self::WriterTaskPrepared,
+            "writer_create_side_effect" => Self::WriterCreateSideEffect,
+            "writer_running" => Self::WriterRunning,
+            "writer_seal_side_effect" => Self::WriterSealSideEffect,
+            "writer_seal_committed" => Self::WriterSealCommitted,
+            "writer_integration_prepared" => Self::WriterIntegrationPrepared,
+            "writer_integration_started" => Self::WriterIntegrationStarted,
+            "writer_integration_side_effect" => Self::WriterIntegrationSideEffect,
+            "writer_integration_committed" => Self::WriterIntegrationCommitted,
+            "writer_cleanup_prepared" => Self::WriterCleanupPrepared,
+            "writer_cleanup_side_effect" => Self::WriterCleanupSideEffect,
             "creation_reserved" => Self::CreationReserved,
             "terminal_committed" => Self::TerminalCommitted,
             other => panic!("unknown crash test scenario: {other}"),
@@ -172,6 +255,7 @@ struct CrashFixture {
     db: PathBuf,
     model_marker: PathBuf,
     tool_marker: PathBuf,
+    writer_marker: PathBuf,
     abort_marker: PathBuf,
 }
 
@@ -182,6 +266,7 @@ impl CrashFixture {
             db: temp.path().join("state.db"),
             model_marker: temp.path().join("model-requests.log"),
             tool_marker: temp.path().join("tool-side-effects.log"),
+            writer_marker: temp.path().join("writer-side-effects.log"),
             abort_marker: temp.path().join("abort.log"),
             _temp: temp,
         }
@@ -198,6 +283,7 @@ impl CrashFixture {
                 .env(CHILD_DB, &self.db)
                 .env(CHILD_MODEL_MARKER, &self.model_marker)
                 .env(CHILD_TOOL_MARKER, &self.tool_marker)
+                .env(CHILD_WRITER_MARKER, &self.writer_marker)
                 .env(CHILD_ABORT_MARKER, &self.abort_marker)
                 .spawn()
                 .expect("launch crash helper");
@@ -308,6 +394,34 @@ impl CrashFixture {
             Arc::new(NullEventSink),
             store.clone(),
         ));
+        (runtime, store, model)
+    }
+
+    fn reopen_writer(
+        &self,
+        scenario: CrashScenario,
+    ) -> (Arc<AgentRuntime>, Arc<StateStore>, Arc<WriterMarkerModel>) {
+        let store = Arc::new(StateStore::open(Some(self.db.clone())).expect("reopen SQLite store"));
+        let model = Arc::new(WriterMarkerModel::new(self.model_marker.clone()));
+        let root_tools = Arc::new(ProcessWriterTools::root(
+            self.tool_marker.clone(),
+            self.writer_marker.clone(),
+        ));
+        let orchestrator = Arc::new(ProcessWriterOrchestrator::new(
+            scenario,
+            self.writer_marker.clone(),
+            self.tool_marker.clone(),
+            self.abort_marker.clone(),
+        ));
+        let runtime = Arc::new(
+            AgentRuntime::new(
+                model.clone(),
+                root_tools,
+                Arc::new(NullEventSink),
+                store.clone(),
+            )
+            .with_orchestrator(orchestrator),
+        );
         (runtime, store, model)
     }
 }
@@ -475,6 +589,421 @@ impl ModelStream for OneShotStream {
             .expect("usage ledger lock")
             .add_assign(output.usage);
         Some(Ok(ModelStreamEvent::Completed { output }))
+    }
+}
+
+struct WriterMarkerModel {
+    marker: PathBuf,
+    ledger: Arc<ModelLedger>,
+    observed_requests: Mutex<Vec<ModelRequest>>,
+}
+
+impl WriterMarkerModel {
+    fn new(marker: PathBuf) -> Self {
+        Self {
+            marker,
+            ledger: Arc::new(ModelLedger::default()),
+            observed_requests: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn observed_requests(&self) -> Vec<ModelRequest> {
+        self.observed_requests
+            .lock()
+            .expect("writer model request lock")
+            .clone()
+    }
+}
+
+#[async_trait]
+impl ModelPort for WriterMarkerModel {
+    async fn stream(&self, request: ModelRequest) -> Result<Box<dyn ModelStream>, ModelPortError> {
+        self.observed_requests
+            .lock()
+            .expect("writer model request lock")
+            .push(request.clone());
+        append_marker(
+            &self.marker,
+            match request.actor.kind {
+                AgentActorKind::Root => "writer-root-model",
+                AgentActorKind::Child => "writer-child-model",
+            },
+        );
+        self.ledger.started.fetch_add(1, Ordering::AcqRel);
+        let tool_calls = match (request.actor.kind, request.request_number) {
+            (AgentActorKind::Root, 1) => vec![ModelToolCall {
+                id: "writer-agent-call".to_owned(),
+                name: AGENT_TOOL_NAME.to_owned(),
+                arguments: ToolArguments::from_value(json!({
+                    "prompt": "只修改 src/lib.rs 并通过冻结验证",
+                    "type": "implementer",
+                    "workspace_access": "isolated_write",
+                    "allowed_paths": ["src/lib.rs"],
+                    "expected_artifact": "一个 Host seal 的提交"
+                })),
+            }],
+            (AgentActorKind::Child, 1) => vec![ModelToolCall {
+                id: "writer-edit-call".to_owned(),
+                name: WRITER_WRITE_TOOL.to_owned(),
+                arguments: ToolArguments::from_value(json!({"path": "src/lib.rs"})),
+            }],
+            _ => Vec::new(),
+        };
+        let output = ModelOutput {
+            content: if tool_calls.is_empty() {
+                match request.actor.kind {
+                    AgentActorKind::Root => "根任务完成".to_owned(),
+                    AgentActorKind::Child => "writer 子任务完成".to_owned(),
+                }
+            } else {
+                String::new()
+            },
+            reasoning_content: None,
+            finish_reason: if tool_calls.is_empty() {
+                ModelFinishReason::Stop
+            } else {
+                ModelFinishReason::ToolCalls
+            },
+            tool_calls,
+            usage: one_usage(),
+        };
+        Ok(Box::new(OneShotStream {
+            output: Some(output),
+            ledger: self.ledger.clone(),
+        }))
+    }
+
+    async fn accounting_snapshot(&self, seal: bool) -> Result<ModelAccounting, ModelPortError> {
+        let started = self.ledger.started.load(Ordering::Acquire);
+        let completed = self.ledger.completed.load(Ordering::Acquire);
+        Ok(ModelAccounting {
+            hard_request_limit: Some(32),
+            root: ActorRequestAccounting {
+                started,
+                completed,
+                in_flight: started.saturating_sub(completed),
+                retries: 0,
+            },
+            complete: started == completed,
+            usage_complete: started == completed,
+            sealed: seal,
+            usage: *self.ledger.usage.lock().expect("writer usage lock"),
+            ..ModelAccounting::default()
+        })
+    }
+}
+
+struct ProcessWriterTools {
+    root: bool,
+    scenario: CrashScenario,
+    tool_marker: PathBuf,
+    writer_marker: PathBuf,
+    abort_marker: Option<PathBuf>,
+}
+
+impl ProcessWriterTools {
+    fn root(tool_marker: PathBuf, writer_marker: PathBuf) -> Self {
+        Self {
+            root: true,
+            scenario: CrashScenario::WriterTaskPrepared,
+            tool_marker,
+            writer_marker,
+            abort_marker: None,
+        }
+    }
+
+    fn writer(
+        scenario: CrashScenario,
+        tool_marker: PathBuf,
+        writer_marker: PathBuf,
+        abort_marker: PathBuf,
+    ) -> Self {
+        Self {
+            root: false,
+            scenario,
+            tool_marker,
+            writer_marker,
+            abort_marker: Some(abort_marker),
+        }
+    }
+
+    fn revision(&self) -> &'static str {
+        if self.root {
+            if marker_line_count(&self.writer_marker, "integration") > 0 {
+                WRITER_FINAL_COMMIT
+            } else {
+                WRITER_BASE_COMMIT
+            }
+        } else if marker_line_count(&self.writer_marker, "seal") > 0 {
+            WRITER_FINAL_COMMIT
+        } else if marker_line_count(&self.writer_marker, "write") > 0 {
+            WRITER_DIRTY_REVISION
+        } else {
+            WRITER_BASE_COMMIT
+        }
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for ProcessWriterTools {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        let mut definitions = vec![ToolDefinition {
+            name: WRITER_VERIFY_TOOL.to_owned(),
+            description: "deterministic writer verifier".to_owned(),
+            input_schema: json!({"type": "object"}),
+        }];
+        if !self.root {
+            definitions.push(ToolDefinition {
+                name: WRITER_WRITE_TOOL.to_owned(),
+                description: "write the isolated fixture".to_owned(),
+                input_schema: json!({"type": "object"}),
+            });
+        }
+        definitions
+    }
+
+    fn workspace_access(&self, invocation: &ToolInvocation) -> codewhale_runtime::WorkspaceAccess {
+        if invocation.name == WRITER_WRITE_TOOL {
+            codewhale_runtime::WorkspaceAccess::MayWrite
+        } else {
+            codewhale_runtime::WorkspaceAccess::ReadOnly
+        }
+    }
+
+    async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+        Ok(self.revision().to_owned())
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolOutcome, ToolExecutionError> {
+        match invocation.name.as_str() {
+            WRITER_WRITE_TOOL if !self.root => {
+                append_marker_once(&self.writer_marker, "write");
+                append_marker(&self.tool_marker, "writer-write");
+                if self.scenario == CrashScenario::WriterRunning {
+                    append_marker(
+                        self.abort_marker
+                            .as_ref()
+                            .expect("writer running crash marker"),
+                        self.scenario.as_str(),
+                    );
+                    wait_for_parent_kill().await;
+                }
+                Ok(ToolOutcome::success("writer fixture modified")
+                    .with_side_effect(codewhale_runtime::ToolSideEffectStatus::Applied))
+            }
+            WRITER_VERIFY_TOOL => {
+                append_marker(
+                    &self.tool_marker,
+                    if self.root {
+                        "root-verifier"
+                    } else {
+                        "writer-verifier"
+                    },
+                );
+                let revision = self.revision().to_owned();
+                if self.root && revision != WRITER_FINAL_COMMIT {
+                    return Ok(ToolOutcome::error(
+                        "root exact verifier rejected an unintegrated writer revision",
+                    ));
+                }
+                let artifact_id = format!("writer-artifact:{}:{}", invocation.run_id, revision);
+                let mut outcome = ToolOutcome::success("exact writer verifier passed");
+                outcome.workspace_revision = Some(revision.clone());
+                outcome.evidence = ToolEvidence {
+                    status: ToolEvidenceStatus::Produced,
+                    references: vec![artifact_id.clone()],
+                };
+                outcome.artifacts = vec![ToolArtifact {
+                    id: artifact_id.clone(),
+                    status: ToolArtifactStatus::Available,
+                    sha256: Some(WRITER_ARTIFACT_SHA256.to_owned()),
+                    media_type: Some("application/json".to_owned()),
+                    byte_len: Some(2),
+                }];
+                outcome.verifier_observation = Some(VerifierObservation {
+                    spec: VerifierSpec {
+                        parameters: invocation
+                            .arguments
+                            .parsed
+                            .expect("writer verifier arguments"),
+                        ..writer_verifier_spec()
+                    },
+                    verdict: VerifierVerdict::Passed,
+                    workspace_revision: WorkspaceRevision::Known { sha256: revision },
+                    artifact_ids: vec![artifact_id],
+                });
+                Ok(outcome)
+            }
+            other => Err(ToolExecutionError::new(
+                "unexpected_writer_tool",
+                other.to_owned(),
+            )),
+        }
+    }
+}
+
+struct ProcessWriterOrchestrator {
+    scenario: CrashScenario,
+    writer_marker: PathBuf,
+    tool_marker: PathBuf,
+    abort_marker: PathBuf,
+}
+
+impl ProcessWriterOrchestrator {
+    fn new(
+        scenario: CrashScenario,
+        writer_marker: PathBuf,
+        tool_marker: PathBuf,
+        abort_marker: PathBuf,
+    ) -> Self {
+        Self {
+            scenario,
+            writer_marker,
+            tool_marker,
+            abort_marker,
+        }
+    }
+
+    fn assignment(&self) -> AgentWorkspaceAssignment {
+        AgentWorkspaceAssignment {
+            access: AgentWorkspaceAccess::IsolatedWrite,
+            root_workspace: WRITER_ROOT_WORKSPACE.to_owned(),
+            base_commit: WRITER_BASE_COMMIT.to_owned(),
+            worktree_path: Some(WRITER_WORKSPACE.to_owned()),
+            root_branch: Some("deepseek-agent".to_owned()),
+            branch: Some(WRITER_BRANCH.to_owned()),
+            allowed_paths: vec!["src/lib.rs".to_owned()],
+            owner_token: Some(WRITER_OWNER.to_owned()),
+        }
+    }
+
+    async fn crash_after_side_effect(&self) -> ! {
+        append_marker(&self.abort_marker, self.scenario.as_str());
+        wait_for_parent_kill().await
+    }
+}
+
+#[async_trait]
+impl AgentOrchestrator for ProcessWriterOrchestrator {
+    async fn prepare_writer(
+        &self,
+        request: WriterPreparation,
+    ) -> Result<WriterPlan, AgentOrchestrationError> {
+        if request.root_workspace != WRITER_ROOT_WORKSPACE
+            || request.allowed_paths != ["src/lib.rs"]
+        {
+            return Err(AgentOrchestrationError::new(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_fixture_plan_mismatch",
+                "writer fixture received an unexpected plan",
+            ));
+        }
+        Ok(WriterPlan {
+            assignment: self.assignment(),
+        })
+    }
+
+    async fn bind_writer(
+        &self,
+        task: &AgentTask,
+        _sealed: Option<&WriterSeal>,
+    ) -> Result<WriterBinding, AgentOrchestrationError> {
+        if task.workspace != self.assignment() {
+            return Err(AgentOrchestrationError::new(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_fixture_binding_mismatch",
+                "writer fixture task changed across recovery",
+            ));
+        }
+        let created = append_marker_once(&self.writer_marker, "create");
+        if created && self.scenario == CrashScenario::WriterCreateSideEffect {
+            self.crash_after_side_effect().await;
+        }
+        Ok(WriterBinding {
+            assignment: self.assignment(),
+            writer_workspace_state: known_workspace(0, WRITER_BASE_COMMIT),
+            tools: Arc::new(ProcessWriterTools::writer(
+                self.scenario,
+                self.tool_marker.clone(),
+                self.writer_marker.clone(),
+                self.abort_marker.clone(),
+            )),
+        })
+    }
+
+    async fn seal_writer(&self, task: &AgentTask) -> Result<WriterSeal, AgentOrchestrationError> {
+        if task.workspace != self.assignment() {
+            return Err(AgentOrchestrationError::new(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_fixture_seal_mismatch",
+                "writer fixture seal task changed",
+            ));
+        }
+        let sealed = append_marker_once(&self.writer_marker, "seal");
+        if sealed && self.scenario == CrashScenario::WriterSealSideEffect {
+            self.crash_after_side_effect().await;
+        }
+        Ok(WriterSeal {
+            base_commit: WRITER_BASE_COMMIT.to_owned(),
+            final_commit: WRITER_FINAL_COMMIT.to_owned(),
+            diff_sha256: WRITER_DIFF_SHA256.to_owned(),
+            changed_files: vec!["src/lib.rs".to_owned()],
+            writer_workspace_state: known_workspace(0, WRITER_FINAL_COMMIT),
+        })
+    }
+
+    async fn integrate_writer(
+        &self,
+        task: &AgentTask,
+        seal: &WriterSeal,
+        expected_root: &WorkspaceState,
+    ) -> Result<WriterIntegration, AgentOrchestrationError> {
+        if task.workspace != self.assignment() || seal.final_commit != WRITER_FINAL_COMMIT {
+            return Err(AgentOrchestrationError::new(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_fixture_integration_mismatch",
+                "writer fixture integration identity changed",
+            ));
+        }
+        let integrated = append_marker_once(&self.writer_marker, "integration");
+        if integrated && self.scenario == CrashScenario::WriterIntegrationSideEffect {
+            self.crash_after_side_effect().await;
+        }
+        Ok(WriterIntegration {
+            root_head_commit: WRITER_FINAL_COMMIT.to_owned(),
+            root_workspace_state: known_workspace(
+                expected_root.generation.saturating_add(1),
+                WRITER_FINAL_COMMIT,
+            ),
+        })
+    }
+
+    async fn cleanup_writer(
+        &self,
+        task: &AgentTask,
+        _seal: Option<&WriterSeal>,
+    ) -> Result<WriterCleanup, AgentOrchestrationError> {
+        if task.workspace != self.assignment() {
+            return Err(AgentOrchestrationError::new(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_fixture_cleanup_mismatch",
+                "writer fixture cleanup identity changed",
+            ));
+        }
+        let cleaned = append_marker_once(&self.writer_marker, "cleanup");
+        if cleaned && self.scenario == CrashScenario::WriterCleanupSideEffect {
+            self.crash_after_side_effect().await;
+        }
+        Ok(WriterCleanup {
+            worktree_removed: true,
+            branch_removed: true,
+            retained_for_recovery: false,
+            reason: None,
+        })
     }
 }
 
@@ -698,6 +1227,32 @@ impl RuntimeEventSink for CrashSink {
                 event.event,
                 RuntimeEventKind::HostVerificationCommitted { .. }
             ),
+            CrashScenario::WriterTaskPrepared => {
+                matches!(event.event, RuntimeEventKind::AgentTaskPrepared { .. })
+            }
+            CrashScenario::WriterCreateSideEffect
+            | CrashScenario::WriterRunning
+            | CrashScenario::WriterSealSideEffect => false,
+            CrashScenario::WriterSealCommitted => {
+                matches!(event.event, RuntimeEventKind::AgentSealCommitted { .. })
+            }
+            CrashScenario::WriterIntegrationPrepared => matches!(
+                event.event,
+                RuntimeEventKind::AgentIntegrationPrepared { .. }
+            ),
+            CrashScenario::WriterIntegrationStarted => matches!(
+                event.event,
+                RuntimeEventKind::AgentIntegrationStarted { .. }
+            ),
+            CrashScenario::WriterIntegrationSideEffect => false,
+            CrashScenario::WriterIntegrationCommitted => matches!(
+                event.event,
+                RuntimeEventKind::AgentIntegrationCommitted { .. }
+            ),
+            CrashScenario::WriterCleanupPrepared => {
+                matches!(event.event, RuntimeEventKind::AgentCleanupPrepared { .. })
+            }
+            CrashScenario::WriterCleanupSideEffect => false,
             CrashScenario::CreationReserved => false,
         };
         if should_abort {
@@ -813,6 +1368,37 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
     request
 }
 
+fn writer_request() -> RunRequest {
+    let mut request = RunRequest::new(
+        TaskContract {
+            generation_id: TaskGenerationId::from(RUN_ID),
+            definition: TaskDefinition {
+                objective: "让隔离 writer 修改一个文件".to_owned(),
+                constraints: vec!["只修改 src/lib.rs".to_owned()],
+                non_goals: vec!["不得修改 root 工作区中的其他文件".to_owned()],
+                acceptance: vec![TaskAcceptance::Verifier {
+                    id: AcceptanceId::from("writer-tests"),
+                    description: "冻结的 writer 验证必须通过".to_owned(),
+                    verifier: writer_verifier_spec(),
+                }],
+            },
+        },
+        "只执行 canonical writer crash fixture",
+    );
+    request.run_id = Some(RunId::from(RUN_ID));
+    request.model = "deepseek-test".to_owned();
+    request.environment.workspace = WRITER_ROOT_WORKSPACE.to_owned();
+    request.environment.auto_approve = true;
+    request.limits.max_turns = 12;
+    request.limits.max_model_requests = 16;
+    request.limits.max_tool_calls = 16;
+    request.limits.max_concurrent_children = 1;
+    request.context_policy = codewhale_runtime::ContextPolicy {
+        hard_input_tokens: 90_000,
+    };
+    request
+}
+
 fn append_marker(path: &Path, value: &str) {
     let mut file = OpenOptions::new()
         .create(true)
@@ -823,10 +1409,25 @@ fn append_marker(path: &Path, value: &str) {
     file.sync_all().expect("sync process marker");
 }
 
+fn append_marker_once(path: &Path, value: &str) -> bool {
+    if marker_line_count(path, value) > 0 {
+        return false;
+    }
+    append_marker(path, value);
+    true
+}
+
 fn marker_count(path: &Path) -> usize {
     fs::read_to_string(path)
         .map(|content| content.lines().filter(|line| !line.is_empty()).count())
         .unwrap_or(0)
+}
+
+fn marker_line_count(path: &Path, expected: &str) -> usize {
+    marker_lines(path)
+        .iter()
+        .filter(|line| line.as_str() == expected)
+        .count()
 }
 
 fn marker_lines(path: &Path) -> Vec<String> {
@@ -839,6 +1440,15 @@ fn marker_lines(path: &Path) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn known_workspace(generation: u64, sha256: &str) -> WorkspaceState {
+    WorkspaceState {
+        generation,
+        revision: WorkspaceRevision::Known {
+            sha256: sha256.to_owned(),
+        },
+    }
 }
 
 fn event_count(
@@ -1041,6 +1651,8 @@ fn process_crash_helper() {
         PathBuf::from(std::env::var_os(CHILD_MODEL_MARKER).expect("child model marker"));
     let tool_marker =
         PathBuf::from(std::env::var_os(CHILD_TOOL_MARKER).expect("child tool marker"));
+    let writer_marker =
+        PathBuf::from(std::env::var_os(CHILD_WRITER_MARKER).expect("child writer marker"));
     let abort_marker =
         PathBuf::from(std::env::var_os(CHILD_ABORT_MARKER).expect("child abort marker"));
     let tokio = tokio::runtime::Builder::new_current_thread()
@@ -1056,6 +1668,38 @@ fn process_crash_helper() {
         if scenario == CrashScenario::SteerApplied {
             commit_steer_applied_prefix(&store, &model_marker, &abort_marker).await;
             unreachable!("steer-applied helper aborts");
+        }
+        if is_writer_scenario(scenario) {
+            let model = Arc::new(WriterMarkerModel::new(model_marker));
+            let root_tools = Arc::new(ProcessWriterTools::root(
+                tool_marker.clone(),
+                writer_marker.clone(),
+            ));
+            let orchestrator = Arc::new(ProcessWriterOrchestrator::new(
+                scenario,
+                writer_marker,
+                tool_marker,
+                abort_marker.clone(),
+            ));
+            let runtime = Arc::new(
+                AgentRuntime::new(
+                    model,
+                    root_tools,
+                    Arc::new(CrashSink {
+                        scenario,
+                        abort_marker,
+                        control: None,
+                    }),
+                    store,
+                )
+                .with_orchestrator(orchestrator),
+            );
+            let outcome = runtime
+                .start(writer_request())
+                .wait()
+                .await
+                .expect("writer crash helper join");
+            panic!("writer crash helper unexpectedly completed: {outcome:?}");
         }
         let control_slot = matches!(
             scenario,
@@ -1638,6 +2282,464 @@ async fn committed_terminal_is_returned_after_reopen_without_second_terminal() {
     assert_eq!(event_count(&replay, RuntimeEventKind::is_terminal), 1);
     assert_eq!(replay.snapshot.usage, one_usage());
     assert_eq!(replay.snapshot.accounting.usage, one_usage());
+}
+
+fn assert_writer_lifecycle_is_single(
+    replay: &codewhale_runtime::RunReplay,
+    fixture: &CrashFixture,
+) {
+    assert_eq!(
+        replay.snapshot.agent_tasks.len(),
+        1,
+        "one root agent tool call must own exactly one writer lifecycle"
+    );
+    let task = &replay.snapshot.agent_tasks[0].task;
+    assert_eq!(
+        task.workspace.worktree_path.as_deref(),
+        Some(WRITER_WORKSPACE)
+    );
+    assert_eq!(task.workspace.branch.as_deref(), Some(WRITER_BRANCH));
+    assert_eq!(task.workspace.owner_token.as_deref(), Some(WRITER_OWNER));
+    for (label, count) in [
+        (
+            "AgentTaskPrepared",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentTaskPrepared { .. })
+            }),
+        ),
+        (
+            "AgentWorkspaceCreated",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentWorkspaceCreated { .. })
+            }),
+        ),
+        (
+            "AgentSealPrepared",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentSealPrepared { .. })
+            }),
+        ),
+        (
+            "AgentSealCommitted",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentSealCommitted { .. })
+            }),
+        ),
+        (
+            "AgentIntegrationPrepared",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentIntegrationPrepared { .. })
+            }),
+        ),
+        (
+            "AgentIntegrationStarted",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentIntegrationStarted { .. })
+            }),
+        ),
+        (
+            "AgentIntegrationCommitted",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentIntegrationCommitted { .. })
+            }),
+        ),
+        (
+            "AgentCleanupPrepared",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentCleanupPrepared { .. })
+            }),
+        ),
+        (
+            "AgentCleanupCommitted",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentCleanupCommitted { .. })
+            }),
+        ),
+    ] {
+        assert!(
+            count <= 1,
+            "{label} must not be committed more than once, observed {count}"
+        );
+    }
+    for side_effect in ["create", "write", "seal", "integration", "cleanup"] {
+        assert!(
+            marker_line_count(&fixture.writer_marker, side_effect) <= 1,
+            "writer side effect '{side_effect}' must not run twice"
+        );
+    }
+}
+
+async fn assert_writer_sigkill_recovery(scenario: CrashScenario, expect_completed: bool) {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(scenario);
+    let store_before =
+        StateStore::open(Some(fixture.db.clone())).expect("open writer crash SQLite prefix");
+    let before = store_before
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load writer crash prefix")
+        .expect("writer crash root exists");
+    drop(store_before);
+    assert_writer_lifecycle_is_single(&before, &fixture);
+    assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
+
+    match scenario {
+        CrashScenario::WriterTaskPrepared => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "create"), 0);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentWorkspaceCreated { .. }
+                )),
+                0
+            );
+        }
+        CrashScenario::WriterCreateSideEffect => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "create"), 1);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentWorkspaceCreated { .. }
+                )),
+                0,
+                "create side effect must precede its durable publication"
+            );
+        }
+        CrashScenario::WriterRunning => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentSealPrepared { .. }
+                )),
+                0
+            );
+        }
+        CrashScenario::WriterSealSideEffect => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "seal"), 1);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentSealPrepared { .. }
+                )),
+                1,
+                "seal preparation must be durable before the side effect"
+            );
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentSealCommitted { .. }
+                )),
+                0,
+                "seal side effect must precede its durable commit"
+            );
+        }
+        CrashScenario::WriterSealCommitted => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "seal"), 1);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentSealCommitted { .. }
+                )),
+                1
+            );
+        }
+        CrashScenario::WriterIntegrationPrepared => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "integration"), 0);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentIntegrationPrepared { .. }
+                )),
+                1
+            );
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentIntegrationStarted { .. }
+                )),
+                0
+            );
+        }
+        CrashScenario::WriterIntegrationStarted => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "integration"), 0);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentIntegrationStarted { .. }
+                )),
+                1
+            );
+        }
+        CrashScenario::WriterIntegrationSideEffect => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "integration"), 1);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentIntegrationCommitted { .. }
+                )),
+                0,
+                "integration side effect must precede its durable commit"
+            );
+        }
+        CrashScenario::WriterIntegrationCommitted => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "integration"), 1);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentIntegrationCommitted { .. }
+                )),
+                1
+            );
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::ToolOutcomeCommitted { name, .. }
+                        if name == AGENT_TOOL_NAME
+                )),
+                0,
+                "the agent tool outcome must still be unpublished at this crash point"
+            );
+        }
+        CrashScenario::WriterCleanupPrepared => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "cleanup"), 0);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentCleanupPrepared { .. }
+                )),
+                1
+            );
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentCleanupCommitted { .. }
+                )),
+                0
+            );
+        }
+        CrashScenario::WriterCleanupSideEffect => {
+            assert_eq!(marker_line_count(&fixture.writer_marker, "cleanup"), 1);
+            assert_eq!(
+                event_count(&before, |event| matches!(
+                    event,
+                    RuntimeEventKind::AgentCleanupCommitted { .. }
+                )),
+                0,
+                "cleanup side effect must precede its durable commit"
+            );
+        }
+        _ => panic!("not a writer crash scenario: {scenario:?}"),
+    }
+
+    let (runtime, store, model) = fixture.reopen_writer(scenario);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("resume writer crash lifecycle");
+    if expect_completed {
+        assert!(
+            matches!(outcome.terminal, TerminalState::Completed { .. }),
+            "writer lifecycle should complete after exact recovery: {:?}",
+            outcome.terminal
+        );
+    } else {
+        assert!(
+            !matches!(outcome.terminal, TerminalState::Completed { .. }),
+            "ambiguous writer execution must fail closed"
+        );
+    }
+    assert!(
+        model.observed_requests().iter().all(
+            |request| request.actor.kind != AgentActorKind::Root || request.request_number != 1
+        ),
+        "recovery must not reissue the root request that prepared the writer task"
+    );
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load recovered writer lifecycle")
+        .expect("recovered writer root exists");
+    assert_replay_prefix_preserved(&before, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce recovered writer lifecycle"),
+        after.snapshot
+    );
+    assert_writer_lifecycle_is_single(&after, &fixture);
+    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+    assert_eq!(marker_line_count(&fixture.writer_marker, "create"), 1);
+    assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+    if expect_completed {
+        for side_effect in ["seal", "integration", "cleanup"] {
+            assert_eq!(
+                marker_line_count(&fixture.writer_marker, side_effect),
+                1,
+                "completed recovery must settle '{side_effect}' exactly once"
+            );
+        }
+        assert_eq!(
+            event_count(&after, |event| matches!(
+                event,
+                RuntimeEventKind::AgentWorkspaceCreated { .. }
+            )),
+            1
+        );
+        assert_eq!(
+            event_count(&after, |event| matches!(
+                event,
+                RuntimeEventKind::AgentSealCommitted { .. }
+            )),
+            1
+        );
+        assert_eq!(
+            event_count(&after, |event| matches!(
+                event,
+                RuntimeEventKind::AgentIntegrationCommitted { .. }
+            )),
+            1
+        );
+        assert_eq!(
+            event_count(&after, |event| matches!(
+                event,
+                RuntimeEventKind::AgentCleanupCommitted { .. }
+            )),
+            1
+        );
+        assert_eq!(
+            marker_line_count(&fixture.tool_marker, "root-verifier"),
+            1,
+            "root exact verifier must execute once for the integrated revision"
+        );
+        assert_eq!(
+            event_count(&after, |event| matches!(
+                event,
+                RuntimeEventKind::HostVerificationCommitted { .. }
+            )),
+            1,
+            "root receipt must commit exactly once"
+        );
+        let [receipt] = after.snapshot.evidence_receipts.as_slice() else {
+            panic!("completed writer recovery must retain exactly one root receipt");
+        };
+        assert_eq!(
+            receipt.generation_id,
+            TaskGenerationId::from(RUN_ID),
+            "child evidence must not replace the root task generation"
+        );
+        assert_eq!(receipt.acceptance_id, AcceptanceId::from("writer-tests"));
+        assert_eq!(receipt.verifier, writer_verifier_spec());
+        assert_eq!(
+            receipt.workspace_state, after.snapshot.workspace_state,
+            "root receipt must bind the latest canonical workspace"
+        );
+        assert_eq!(
+            receipt.workspace_state.revision,
+            WorkspaceRevision::Known {
+                sha256: WRITER_FINAL_COMMIT.to_owned(),
+            },
+            "root receipt must verify the integrated commit"
+        );
+        let lifecycle = &after.snapshot.agent_tasks[0];
+        let seal = lifecycle
+            .seal
+            .as_ref()
+            .and_then(|seal| seal.committed.as_ref())
+            .expect("completed recovery must retain the exact writer seal");
+        assert_eq!(seal.final_commit, WRITER_FINAL_COMMIT);
+        assert_eq!(seal.diff_sha256, WRITER_DIFF_SHA256);
+        assert_eq!(seal.changed_files, vec!["src/lib.rs".to_owned()]);
+        let integration = lifecycle
+            .integration
+            .as_ref()
+            .and_then(|integration| integration.committed.as_ref())
+            .expect("completed recovery must retain the exact integration");
+        assert_eq!(integration.root_head_commit, WRITER_FINAL_COMMIT);
+        assert_eq!(
+            integration.root_workspace_state_after.revision,
+            WorkspaceRevision::Known {
+                sha256: WRITER_FINAL_COMMIT.to_owned(),
+            }
+        );
+        let cleanup = lifecycle
+            .cleanup
+            .as_ref()
+            .and_then(|cleanup| cleanup.committed.as_ref())
+            .expect("completed recovery must retain cleanup");
+        assert!(cleanup.worktree_removed);
+        assert!(cleanup.branch_removed);
+        assert!(!cleanup.retained_for_recovery);
+    } else {
+        assert_eq!(
+            marker_line_count(&fixture.writer_marker, "integration"),
+            0,
+            "ambiguous writer bytes must never be integrated"
+        );
+        assert!(
+            after.events.iter().all(|event| !matches!(
+                &event.event,
+                RuntimeEventKind::Terminal { outcome }
+                    if matches!(outcome.terminal, TerminalState::Completed { .. })
+            )),
+            "ambiguous writer execution must never commit Completed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn writer_task_prepared_sigkill_creates_one_owned_workspace_on_resume() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterTaskPrepared, true).await;
+}
+
+#[tokio::test]
+async fn writer_create_side_effect_sigkill_recovers_without_second_worktree_or_branch() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterCreateSideEffect, true).await;
+}
+
+#[tokio::test]
+async fn writer_running_sigkill_fails_closed_without_integration() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterRunning, false).await;
+}
+
+#[tokio::test]
+async fn writer_seal_side_effect_sigkill_proves_commit_without_resealing() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterSealSideEffect, true).await;
+}
+
+#[tokio::test]
+async fn writer_seal_committed_sigkill_reuses_one_diff_and_seal() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterSealCommitted, true).await;
+}
+
+#[tokio::test]
+async fn writer_integration_prepared_sigkill_starts_one_guarded_integration() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterIntegrationPrepared, true).await;
+}
+
+#[tokio::test]
+async fn writer_integration_started_sigkill_recovers_one_guarded_integration() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterIntegrationStarted, true).await;
+}
+
+#[tokio::test]
+async fn writer_integration_side_effect_sigkill_proves_commit_without_reapplying() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterIntegrationSideEffect, true).await;
+}
+
+#[tokio::test]
+async fn writer_integration_committed_sigkill_replays_one_agent_tool_outcome() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterIntegrationCommitted, true).await;
+}
+
+#[tokio::test]
+async fn writer_cleanup_prepared_sigkill_removes_owned_resources_once() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterCleanupPrepared, true).await;
+}
+
+#[tokio::test]
+async fn writer_cleanup_side_effect_sigkill_proves_absence_without_second_removal() {
+    assert_writer_sigkill_recovery(CrashScenario::WriterCleanupSideEffect, true).await;
 }
 
 #[tokio::test]

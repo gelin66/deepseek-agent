@@ -415,6 +415,7 @@ mod tests {
             runtime_model_requests: 1,
             runtime_retries: 0,
             tool_calls: 0,
+            details: Default::default(),
         }
     }
 
@@ -689,6 +690,7 @@ mod tests {
                 workspace_state: None,
             },
             RuntimeEventKind::ChildStarted {
+                task_id: "agent-task".into(),
                 call_id: "agent-call".to_owned(),
                 child_run_id,
                 depth: 1,

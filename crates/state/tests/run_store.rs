@@ -4,7 +4,9 @@ use std::sync::{Arc, Barrier};
 
 use codewhale_context::compaction::{ContextInput, effective_context};
 use codewhale_protocol::agent_runtime::{
-    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, InheritedRunFacts, ReasoningEffort, RunLimits, ToolPolicy,
+    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentActor, AgentActorKind, AgentTask, AgentTaskId,
+    AgentWorkspaceAccess, AgentWorkspaceAssignment, InheritedRunFacts, ReasoningEffort, RunLimits,
+    ToolPolicy,
 };
 use codewhale_protocol::run_api::{
     PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
@@ -16,14 +18,15 @@ use codewhale_protocol::task::{
     VerifierSpec, VerifierStep, VerifierVerdict, WorkspaceRevision, WorkspaceState,
 };
 use codewhale_runtime::{
-    ActorRequestAccounting, AgentOutcome, AttemptId, CommandId, CreatedRun, DurableActionState,
-    InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall,
-    OperationId, PendingRuntimeEvent, RootRunRecord, RunId, RunLease, RunReplay, RunRequest,
-    RunSnapshot, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeFailure,
-    StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus,
-    ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus,
-    ToolOperationStatus, ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus,
-    ToolTransportStatus, Usage, WorkspaceAccess, reduce_events,
+    ActorRequestAccounting, AgentOutcome, AgentResultDetails, AttemptId, CommandId, CreatedRun,
+    DurableActionState, InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput,
+    ModelRequest, ModelToolCall, OperationId, PendingRuntimeEvent, RootRunRecord, RunId, RunLease,
+    RunReplay, RunRequest, RunSnapshot, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind,
+    RuntimeFailure, StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact,
+    ToolArtifactStatus, ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation,
+    ToolInvocationStatus, ToolOperationStatus, ToolOutcome, ToolRetryDisposition,
+    ToolSideEffectStatus, ToolTransportStatus, Usage, WorkspaceAccess, WriterIntegrationStatus,
+    reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -47,6 +50,165 @@ fn request(run_id: &str, workspace: &str) -> RunRequest {
     request.run_id = Some(RunId::from(run_id));
     request.environment.workspace = workspace.to_owned();
     request
+}
+
+fn read_only_child_request(
+    child_run_id: &str,
+    parent_run_id: RunId,
+    workspace: &str,
+) -> RunRequest {
+    let mut request = request(child_run_id, workspace);
+    let task = AgentTask {
+        task_id: AgentTaskId::from(format!("task-{child_run_id}")),
+        root_run_id: parent_run_id.clone(),
+        parent_run_id: parent_run_id.clone(),
+        child_run_id: RunId::from(child_run_id),
+        call_id: format!("call-{child_run_id}"),
+        role: "researcher".to_owned(),
+        task_contract: request.task_contract.clone().expect("child task contract"),
+        workspace: AgentWorkspaceAssignment {
+            access: AgentWorkspaceAccess::ReadOnly,
+            root_workspace: workspace.to_owned(),
+            base_commit: "a".repeat(40),
+            worktree_path: None,
+            root_branch: None,
+            branch: None,
+            allowed_paths: Vec::new(),
+            owner_token: None,
+        },
+        tool_policy: request.tool_policy.clone(),
+        limits: request.limits,
+        deadline_unix_ms: request.deadline_unix_ms,
+        expected_artifact: "structured_handoff".to_owned(),
+    };
+    request.parent_run_id = Some(parent_run_id);
+    request.actor = AgentActor {
+        kind: AgentActorKind::Child,
+        depth: 1,
+    };
+    request.agent_task = Some(task);
+    request
+}
+
+fn known_workspace(generation: u64, revision: &str) -> WorkspaceState {
+    WorkspaceState {
+        generation,
+        revision: WorkspaceRevision::Known {
+            sha256: revision.to_owned(),
+        },
+    }
+}
+
+fn writer_parity_verifier() -> VerifierSpec {
+    VerifierSpec {
+        verifier_id: "run_tests".to_owned(),
+        parameters: serde_json::json!({"args": ["--locked"]}),
+        plan: VerifierPlan {
+            steps: vec![VerifierStep {
+                id: "writer-parity-test".to_owned(),
+                program: "cargo".to_owned(),
+                args: vec!["test".to_owned(), "--locked".to_owned()],
+                cwd: String::new(),
+                env: BTreeMap::new(),
+                timeout_ms: 600_000,
+            }],
+        },
+    }
+}
+
+fn writer_parity_task() -> AgentTask {
+    let child_run_id = RunId::from("writer-parity-child");
+    AgentTask {
+        task_id: AgentTaskId::from("writer-parity-task"),
+        root_run_id: RunId::from("writer-parity-root"),
+        parent_run_id: RunId::from("writer-parity-root"),
+        child_run_id: child_run_id.clone(),
+        call_id: "writer-parity-call".to_owned(),
+        role: "writer".to_owned(),
+        task_contract: TaskContract {
+            generation_id: TaskGenerationId::from(child_run_id.0),
+            definition: TaskDefinition {
+                objective: "修改一个冻结文件".to_owned(),
+                constraints: Vec::new(),
+                non_goals: Vec::new(),
+                acceptance: vec![TaskAcceptance::Verifier {
+                    id: AcceptanceId::from("writer-parity-verifier"),
+                    description: "冻结的 writer parity verifier 必须通过".to_owned(),
+                    verifier: writer_parity_verifier(),
+                }],
+            },
+        },
+        workspace: AgentWorkspaceAssignment {
+            access: AgentWorkspaceAccess::IsolatedWrite,
+            root_workspace: "/tmp/writer-parity-root".to_owned(),
+            base_commit: "a".repeat(40),
+            worktree_path: Some("/tmp/writer-parity-worktree".to_owned()),
+            root_branch: Some("deepseek-agent".to_owned()),
+            branch: Some("codewhale/writer/writer-parity-task".to_owned()),
+            allowed_paths: vec!["src/lib.rs".to_owned()],
+            owner_token: Some("writer-parity-owner".to_owned()),
+        },
+        tool_policy: ToolPolicy::default(),
+        limits: RunLimits::default(),
+        deadline_unix_ms: None,
+        expected_artifact: "sealed_commit".to_owned(),
+    }
+}
+
+fn writer_parity_outcome(integrated: bool) -> AgentOutcome {
+    let task = writer_parity_task();
+    let receipt = EvidenceReceipt {
+        id: EvidenceReceiptId::from("writer-parity-receipt"),
+        generation_id: task.task_contract.generation_id.clone(),
+        acceptance_id: AcceptanceId::from("writer-parity-verifier"),
+        verification_id: VerificationId::from("writer-parity-verification"),
+        verifier: writer_parity_verifier(),
+        workspace_state: known_workspace(1, "writer-dirty"),
+        artifact_ids: vec!["writer-parity-artifact".to_owned()],
+    };
+    let integration = if integrated {
+        WriterIntegrationStatus::Integrated {
+            integration_id: OperationId("writer-parity-integration".to_owned()),
+            writer_commit: "b".repeat(40),
+            root_workspace_state: known_workspace(2, "root-integrated"),
+        }
+    } else {
+        WriterIntegrationStatus::AwaitingHost
+    };
+    AgentOutcome {
+        run_id: task.child_run_id.clone(),
+        parent_run_id: Some(task.parent_run_id.clone()),
+        terminal: TerminalState::Completed {
+            message: "writer 完成".to_owned(),
+            decision: CompletionDecision {
+                candidate_id: CompletionCandidateId::from("writer-parity-candidate"),
+                generation_id: task.task_contract.generation_id.clone(),
+                workspace_state: known_workspace(1, "writer-dirty"),
+                satisfied: vec![AcceptanceSatisfaction::Evidence {
+                    acceptance_id: receipt.acceptance_id.clone(),
+                    receipt_id: receipt.id.clone(),
+                }],
+            },
+        },
+        accounting: ModelAccounting::default(),
+        runtime_model_requests: 1,
+        runtime_retries: 0,
+        tool_calls: 1,
+        details: AgentResultDetails {
+            summary: "修改并封存一个文件".to_owned(),
+            evidence: vec![receipt],
+            changed_files: vec!["src/lib.rs".to_owned()],
+            checks: Vec::new(),
+            unresolved: Vec::new(),
+            artifacts: Vec::new(),
+            workspace: Some(task.workspace),
+            workspace_state: Some(known_workspace(2, "writer-sealed")),
+            base_commit: Some("a".repeat(40)),
+            final_commit: Some("b".repeat(40)),
+            diff_sha256: Some("d".repeat(64)),
+            integration,
+        },
+    }
 }
 
 fn creation_intent(workspace: &str) -> codewhale_runtime::CreationIntent {
@@ -165,6 +327,7 @@ fn terminal_event(run_id: &RunId) -> PendingRuntimeEvent {
         runtime_model_requests: 0,
         runtime_retries: 0,
         tool_calls: 0,
+        details: Default::default(),
     })
 }
 
@@ -688,6 +851,7 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
         runtime_model_requests: 1,
         runtime_retries: 0,
         tool_calls: 1,
+        details: Default::default(),
     });
     append_to_both(
         &sqlite,
@@ -752,6 +916,173 @@ async fn sqlite_replay_matches_memory_and_survives_reopen() {
 }
 
 #[tokio::test]
+async fn writer_lifecycle_replay_matches_memory_and_survives_sqlite_reopen() {
+    let path = temp_state_path("writer_lifecycle_parity");
+    let sqlite = StateStore::open(Some(path.clone())).expect("open writer SQLite store");
+    let memory = InMemoryRunStore::default();
+    let mut root_request = request("writer-parity-root", "/tmp/writer-parity-root");
+    root_request.environment.auto_approve = true;
+
+    let sqlite_created = sqlite
+        .create(root_request.clone())
+        .await
+        .expect("create SQLite writer root");
+    let memory_created = memory
+        .create(root_request)
+        .await
+        .expect("create memory writer root");
+    let task = writer_parity_task();
+    let operation_id = OperationId("writer-parity-operation".to_owned());
+    let integration_id = OperationId("writer-parity-integration".to_owned());
+    let root_before = known_workspace(1, "root-base");
+    let root_after = known_workspace(2, "root-integrated");
+
+    let lifecycle = vec![
+        RuntimeEventKind::WorkspaceObserved {
+            workspace_state: root_before.clone(),
+        },
+        RuntimeEventKind::ToolPrepared {
+            operation_id: operation_id.clone(),
+            invocation: ToolInvocation {
+                run_id: RunId::from("writer-parity-root"),
+                call_id: task.call_id.clone(),
+                name: "agent".to_owned(),
+                arguments: ToolArguments::from_value(serde_json::json!({
+                    "workspace_access": "isolated_write",
+                    "allowed_paths": ["src/lib.rs"]
+                })),
+            },
+            workspace_access: WorkspaceAccess::MayWrite,
+        },
+        RuntimeEventKind::ToolExecutionStarted {
+            operation_id: operation_id.clone(),
+        },
+        RuntimeEventKind::AgentTaskPrepared {
+            task: Box::new(task.clone()),
+        },
+        RuntimeEventKind::AgentWorkspaceCreated {
+            task_id: task.task_id.clone(),
+            assignment: task.workspace.clone(),
+            writer_workspace_state: known_workspace(0, "writer-created"),
+        },
+        RuntimeEventKind::ChildStarted {
+            task_id: task.task_id.clone(),
+            call_id: task.call_id.clone(),
+            child_run_id: task.child_run_id.clone(),
+            depth: 1,
+        },
+        RuntimeEventKind::AgentSealPrepared {
+            task_id: task.task_id.clone(),
+            base_commit: "a".repeat(40),
+            writer_workspace_state_before: known_workspace(1, "writer-dirty"),
+        },
+        RuntimeEventKind::AgentSealCommitted {
+            task_id: task.task_id.clone(),
+            final_commit: "b".repeat(40),
+            diff_sha256: "d".repeat(64),
+            changed_files: vec!["src/lib.rs".to_owned()],
+            writer_workspace_state_after: known_workspace(2, "writer-sealed"),
+        },
+        RuntimeEventKind::AgentResultCollected {
+            task_id: task.task_id.clone(),
+            outcome: Box::new(writer_parity_outcome(false)),
+        },
+        RuntimeEventKind::AgentIntegrationPrepared {
+            task_id: task.task_id.clone(),
+            integration_id: integration_id.clone(),
+            base_commit: "a".repeat(40),
+            writer_commit: "b".repeat(40),
+            diff_sha256: "d".repeat(64),
+            expected_root_workspace_state: root_before,
+        },
+        RuntimeEventKind::AgentIntegrationStarted {
+            task_id: task.task_id.clone(),
+            integration_id: integration_id.clone(),
+        },
+        RuntimeEventKind::AgentIntegrationCommitted {
+            task_id: task.task_id.clone(),
+            integration_id,
+            root_head_commit: "b".repeat(40),
+            root_workspace_state_after: root_after.clone(),
+        },
+        RuntimeEventKind::ChildFinished {
+            call_id: task.call_id.clone(),
+            outcome: Box::new(writer_parity_outcome(true)),
+            accounting: Box::new(ModelAccounting::default()),
+            handoff_content: "writer 已集成".to_owned(),
+        },
+        RuntimeEventKind::ToolOutcomeCommitted {
+            operation_id,
+            call_id: task.call_id.clone(),
+            name: "agent".to_owned(),
+            outcome: Box::new(
+                ToolOutcome::success("writer 已封存并集成")
+                    .with_side_effect(ToolSideEffectStatus::Applied),
+            ),
+            workspace_state: Some(root_after),
+        },
+        RuntimeEventKind::AgentCleanupPrepared {
+            task_id: task.task_id.clone(),
+            worktree_path: task.workspace.worktree_path.clone().unwrap(),
+            branch: task.workspace.branch.clone().unwrap(),
+            owner_token: task.workspace.owner_token.clone().unwrap(),
+        },
+        RuntimeEventKind::AgentCleanupCommitted {
+            task_id: task.task_id,
+            worktree_path: task.workspace.worktree_path.unwrap(),
+            branch: task.workspace.branch.unwrap(),
+            owner_token: task.workspace.owner_token.unwrap(),
+            worktree_removed: true,
+            branch_removed: true,
+            retained_for_recovery: false,
+            reason: None,
+        },
+    ];
+
+    for (index, event) in lifecycle.into_iter().enumerate() {
+        append_to_both(
+            &sqlite,
+            &sqlite_created.lease,
+            &memory,
+            &memory_created.lease,
+            PendingRuntimeEvent {
+                event_id: RuntimeEventId(format!("writer-lifecycle-{}", index + 1)),
+                event,
+            },
+        )
+        .await;
+    }
+
+    let sqlite_replay = sqlite
+        .load(&sqlite_created.lease.run_id)
+        .await
+        .expect("load SQLite writer lifecycle")
+        .expect("SQLite writer root exists");
+    let memory_replay = memory
+        .load(&memory_created.lease.run_id)
+        .await
+        .expect("load memory writer lifecycle")
+        .expect("memory writer root exists");
+    assert_canonical_replay_eq(&sqlite_replay, &memory_replay);
+    assert_eq!(sqlite_replay.snapshot.agent_tasks.len(), 1);
+    assert!(sqlite_replay.snapshot.pending_tool.is_none());
+    assert_eq!(
+        reduce_events(&sqlite_replay.events).expect("replay SQLite writer lifecycle"),
+        sqlite_replay.snapshot
+    );
+
+    drop(sqlite);
+    let reopened = StateStore::open(Some(path)).expect("reopen writer SQLite store");
+    let reopened_replay = reopened
+        .load(&RunId::from("writer-parity-root"))
+        .await
+        .expect("reload writer lifecycle")
+        .expect("reopened writer root exists");
+    assert_eq!(reopened_replay, sqlite_replay);
+    assert_canonical_replay_eq(&reopened_replay, &memory_replay);
+}
+
+#[tokio::test]
 async fn sqlite_replay_preserves_disjoint_request_budget_failures_verbatim() {
     for (label, failure, expected_kind) in [
         (
@@ -784,6 +1115,7 @@ async fn sqlite_replay_preserves_disjoint_request_budget_failures_verbatim() {
             runtime_model_requests: 8,
             runtime_retries: 0,
             tool_calls: 0,
+            details: Default::default(),
         };
         store
             .append(
@@ -1248,8 +1580,11 @@ async fn root_runs_are_listed_from_durable_request_workspace() {
         .await
         .expect("latest");
     store.release(&latest.lease).await.expect("release latest");
-    let mut child_request = request("workspace-newer-child", "/tmp/workspace");
-    child_request.parent_run_id = Some(RunId::from("workspace-latest"));
+    let child_request = read_only_child_request(
+        "workspace-newer-child",
+        RunId::from("workspace-latest"),
+        "/tmp/workspace",
+    );
     let child = store.create(child_request).await.expect("newer child");
     store.release(&child.lease).await.expect("release child");
 
@@ -1342,8 +1677,11 @@ async fn root_list_semantics_match_memory_for_purpose_lineage_order_limit_and_st
         .await
         .expect("create memory active root");
 
-    let mut child_request = request("root-list-99-child", workspace);
-    child_request.parent_run_id = Some(sqlite_source.lease.run_id.clone());
+    let child_request = read_only_child_request(
+        "root-list-99-child",
+        sqlite_source.lease.run_id.clone(),
+        workspace,
+    );
     sqlite
         .create(child_request.clone())
         .await
@@ -1543,8 +1881,8 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
         })
     ));
 
-    let mut child_request = request("child-source", "/tmp/workspace");
-    child_request.parent_run_id = Some(RunId::from("parent"));
+    let child_request =
+        read_only_child_request("child-source", RunId::from("parent"), "/tmp/workspace");
     let child = store.create(child_request).await.expect("child source");
     store
         .append(
@@ -1559,6 +1897,7 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
                 runtime_model_requests: 0,
                 runtime_retries: 0,
                 tool_calls: 0,
+                details: Default::default(),
             }),
         )
         .await
@@ -1597,6 +1936,7 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
         runtime_model_requests: 1,
         runtime_retries: 0,
         tool_calls: 0,
+        details: Default::default(),
     };
     store
         .append(
@@ -1647,7 +1987,7 @@ async fn continuation_rejects_nonterminal_child_recovery_and_workspace_mismatch(
 }
 
 #[tokio::test]
-async fn v5_migration_replays_and_backfills_prepared_and_in_flight_runs() {
+async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let path = temp_state_path("v5_pending_model_migration");
     let conn = create_v5_run_store(&path);
     insert_v5_run(&conn, "v5-prepared", DurableActionState::Prepared, false);
@@ -1659,109 +1999,72 @@ async fn v5_migration_replays_and_backfills_prepared_and_in_flight_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 13);
-    for (run_id, expected_state) in [
-        ("v5-prepared", DurableActionState::Prepared),
-        ("v5-in-flight", DurableActionState::InFlight),
-    ] {
-        let (attempt_id, in_flight): (Option<String>, i64) = conn
-            .query_row(
-                r#"
-                SELECT pending_model_attempt_id, pending_model_in_flight
-                FROM agent_runs WHERE run_id = ?1
-                "#,
-                [run_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .expect("read migrated pending projection");
-        let expected_attempt_id = format!("{run_id}-attempt");
-        assert_eq!(attempt_id.as_deref(), Some(expected_attempt_id.as_str()));
-        assert_eq!(
-            in_flight,
-            i64::from(expected_state == DurableActionState::InFlight)
+    assert_eq!(user_version, 14);
+    let remaining_runs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
+        .expect("count retired v5 runs");
+    assert_eq!(remaining_runs, 0);
+    drop(conn);
+    for run_id in ["v5-prepared", "v5-in-flight"] {
+        assert!(
+            store
+                .load(&RunId::from(run_id))
+                .await
+                .expect("query retired v5 run")
+                .is_none(),
+            "{run_id} survived the RuntimeEvent v10 cutover"
         );
-
-        let replay = store
-            .load(&RunId::from(run_id))
-            .await
-            .expect("load migrated run")
-            .expect("migrated run exists");
-        assert_eq!(
-            replay
-                .snapshot
-                .pending_model
-                .as_ref()
-                .expect("pending model survives migration")
-                .state,
-            expected_state
-        );
-        assert_eq!(replay.snapshot.last_sequence, replay.events.len() as u64);
     }
 }
 
 #[tokio::test]
-async fn v9_migration_rebuilds_committed_response_catalog_from_canonical_events() {
+async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let path = temp_state_path("v9_model_catalog_migration");
     let run_id = persist_committed_catalog_run(&path, "v9-catalog-run").await;
     downgrade_catalog_snapshot_to_v9(&path, false);
 
     let store = StateStore::open(Some(path.clone())).expect("migrate v9 catalog snapshot");
-    let replay = store
-        .load(&run_id)
-        .await
-        .expect("load migrated catalog run")
-        .expect("migrated catalog run exists");
-    assert_eq!(
-        replay.snapshot.last_model_advertised_tool_names,
-        vec!["read"]
-    );
-    assert_eq!(
-        replay.snapshot,
-        reduce_events(&replay.events).expect("canonical replay after v10 migration")
+    assert!(
+        store
+            .load(&run_id)
+            .await
+            .expect("query retired catalog run")
+            .is_none()
     );
 
     let conn = Connection::open(path).expect("inspect migrated catalog database");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("read migrated v12 version");
-    assert_eq!(user_version, 13);
-    let snapshot_json: String = conn
-        .query_row(
-            "SELECT snapshot_json FROM agent_run_snapshots WHERE run_id = ?1",
-            [run_id.0],
-            |row| row.get(0),
-        )
-        .expect("read rebuilt catalog snapshot");
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&snapshot_json).expect("decode rebuilt snapshot")
-            ["last_model_advertised_tool_names"],
-        serde_json::json!(["read"])
-    );
+        .expect("read migrated v14 version");
+    assert_eq!(user_version, 14);
 }
 
 #[tokio::test]
-async fn corrupt_v9_snapshot_rolls_back_the_v10_catalog_migration() {
+async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let path = temp_state_path("v9_corrupt_catalog_migration");
-    persist_committed_catalog_run(&path, "v9-corrupt-catalog-run").await;
+    let run_id = persist_committed_catalog_run(&path, "v9-corrupt-catalog-run").await;
     downgrade_catalog_snapshot_to_v9(&path, true);
 
-    let error =
-        StateStore::open(Some(path.clone())).expect_err("corrupt v9 catalog snapshot must fail");
+    let store = StateStore::open(Some(path.clone()))
+        .expect("v14 must retire corrupt incompatible runtime state");
     assert!(
-        error
-            .to_string()
-            .contains("failed to rebuild model catalog snapshot projections")
+        store
+            .load(&run_id)
+            .await
+            .expect("query retired corrupt catalog run")
+            .is_none()
     );
+    drop(store);
 
-    let conn = Connection::open(path).expect("inspect rolled-back v10 migration");
+    let conn = Connection::open(path).expect("inspect completed v14 migration");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("read rolled-back v9 version");
-    assert_eq!(user_version, 9);
+        .expect("read migrated version");
+    assert_eq!(user_version, 14);
 }
 
 #[tokio::test]
-async fn v10_migration_deletes_retired_state_and_preserves_canonical_run_replay() {
+async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let path = temp_state_path("v10_retired_state_deletion");
     let store = StateStore::open(Some(path.clone())).expect("open current state store");
     let created = store
@@ -1775,11 +2078,6 @@ async fn v10_migration_deletes_retired_state_and_preserves_canonical_run_replay(
         .append(&created.lease, terminal_event(&created.lease.run_id))
         .await
         .expect("complete canonical run before downgrade");
-    let replay_before = store
-        .load(&created.lease.run_id)
-        .await
-        .expect("load canonical run before downgrade")
-        .expect("canonical run exists before downgrade");
     drop(store);
 
     let conn = Connection::open(&path).expect("open current database for v10 downgrade");
@@ -1835,20 +2133,26 @@ async fn v10_migration_deletes_retired_state_and_preserves_canonical_run_replay(
     .expect("restore exact retired v10 thread goal schema and data");
     drop(conn);
 
-    let reopened = StateStore::open(Some(path.clone())).expect("migrate v10 store to v12");
-    let replay_after = reopened
-        .load(&created.lease.run_id)
-        .await
-        .expect("load canonical run after v12 migration")
-        .expect("canonical run survives v12 migration");
-    assert_canonical_replay_eq(&replay_before, &replay_after);
+    let reopened = StateStore::open(Some(path.clone())).expect("migrate v10 store to v14");
+    assert!(
+        reopened
+            .load(&created.lease.run_id)
+            .await
+            .expect("query retired canonical run after v14 migration")
+            .is_none()
+    );
+    let thread = reopened
+        .get_thread("legacy-thread")
+        .expect("read retained legacy thread")
+        .expect("thread metadata survives v14 runtime cutover");
+    assert_eq!(thread.preview, "retired goal fixture");
     drop(reopened);
 
-    let conn = Connection::open(path).expect("inspect migrated v12 database");
+    let conn = Connection::open(path).expect("inspect migrated v14 database");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("read migrated v12 version");
-    assert_eq!(user_version, 13);
+        .expect("read migrated v14 version");
+    assert_eq!(user_version, 14);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -1884,7 +2188,7 @@ async fn v10_migration_deletes_retired_state_and_preserves_canonical_run_replay(
 }
 
 #[test]
-fn corrupt_v5_run_aborts_and_rolls_back_the_v6_migration() {
+fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let path = temp_state_path("v5_corrupt_migration");
     let conn = create_v5_run_store(&path);
     insert_v5_run(&conn, "v5-corrupt", DurableActionState::Prepared, false);
@@ -1895,25 +2199,169 @@ fn corrupt_v5_run_aborts_and_rolls_back_the_v6_migration() {
     .expect("corrupt v5 snapshot fixture");
     drop(conn);
 
-    let error = StateStore::open(Some(path.clone())).expect_err("corrupt v5 run must fail closed");
-    assert!(error.to_string().contains("failed to backfill"));
+    StateStore::open(Some(path.clone()))
+        .expect("v14 must retire incompatible state before legacy projection backfill");
 
-    let conn = Connection::open(path).expect("inspect rolled-back migration");
+    let conn = Connection::open(path).expect("inspect completed v14 migration");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .expect("read rolled-back schema version");
-    assert_eq!(user_version, 5);
-    let v6_column_count: i64 = conn
+        .expect("read migrated schema version");
+    assert_eq!(user_version, 14);
+    let remaining_runs: i64 = conn
+        .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
+        .expect("count incompatible runs");
+    assert_eq!(remaining_runs, 0);
+}
+
+#[tokio::test]
+async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence() {
+    let path = temp_state_path("v14_scoped_runtime_cutover");
+    let store = StateStore::open(Some(path.clone())).expect("open current state store");
+    let created = store
+        .create(request(
+            "v13-runtime-run",
+            "/tmp/v14-scoped-runtime-cutover",
+        ))
+        .await
+        .expect("create pre-cutover run");
+    drop(store);
+
+    let conn = Connection::open(&path).expect("prepare v13 cutover fixture");
+    conn.execute_batch(
+        r#"
+        INSERT INTO agent_run_creations(
+            command_id, command_sha256, run_id, created_at_unix_ms,
+            creation_kind, workspace, source_run_id, command_json
+        ) VALUES (
+            'legacy-create-command', 'sha256:legacy-command', 'legacy-create-run', 1,
+            'start', '/tmp/v14-scoped-runtime-cutover', NULL, '{"legacy":true}'
+        );
+        INSERT INTO threads (
+            id, preview, ephemeral, model_provider, created_at, updated_at,
+            status, cwd, cli_version, source, archived
+        ) VALUES (
+            'retained-thread', 'local development metadata', 0, 'deepseek', 1, 1,
+            'idle', '/tmp/v14-scoped-runtime-cutover', 'test', 'interactive', 0
+        );
+        CREATE TABLE evaluation_evidence (
+            id TEXT PRIMARY KEY NOT NULL,
+            summary TEXT NOT NULL
+        );
+        INSERT INTO evaluation_evidence VALUES (
+            'retained-eval', 'redacted offline evaluation result'
+        );
+        PRAGMA user_version = 13;
+        "#,
+    )
+    .expect("prepare v13 rows outside the RuntimeEvent v10 contract");
+    drop(conn);
+
+    let reopened = StateStore::open(Some(path.clone())).expect("apply atomic v14 cutover");
+    assert!(
+        reopened
+            .load(&created.lease.run_id)
+            .await
+            .expect("query retired v13 run")
+            .is_none()
+    );
+    let retained_thread = reopened
+        .get_thread("retained-thread")
+        .expect("read retained thread")
+        .expect("thread metadata must survive the runtime-only cutover");
+    assert_eq!(retained_thread.preview, "local development metadata");
+    drop(reopened);
+
+    let conn = Connection::open(path).expect("inspect v14 scoped cutover");
+    let user_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read v14 version");
+    assert_eq!(user_version, 14);
+    for table in [
+        "agent_run_creations",
+        "agent_runs",
+        "agent_run_events",
+        "agent_run_snapshots",
+    ] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap_or_else(|error| panic!("count cutover rows in {table}: {error}"));
+        assert_eq!(count, 0, "{table} retained incompatible runtime rows");
+    }
+    let retained_eval: String = conn
         .query_row(
-            r#"
-            SELECT COUNT(*) FROM pragma_table_info('agent_runs')
-            WHERE name IN ('pending_model_attempt_id', 'pending_model_in_flight')
-            "#,
+            "SELECT summary FROM evaluation_evidence WHERE id = 'retained-eval'",
             [],
             |row| row.get(0),
         )
-        .expect("inspect rolled-back v6 columns");
-    assert_eq!(v6_column_count, 0);
+        .expect("evaluation evidence must survive runtime-only cutover");
+    assert_eq!(retained_eval, "redacted offline evaluation result");
+}
+
+#[tokio::test]
+async fn failed_v14_runtime_cleanup_rolls_back_rows_and_schema_version_together() {
+    let path = temp_state_path("v14_atomic_runtime_cutover");
+    let store = StateStore::open(Some(path.clone())).expect("open current state store");
+    let created = store
+        .create(request(
+            "v13-rollback-run",
+            "/tmp/v14-atomic-runtime-cutover",
+        ))
+        .await
+        .expect("create pre-cutover run");
+    drop(store);
+
+    let conn = Connection::open(&path).expect("prepare failed v14 cutover");
+    conn.execute_batch(
+        r#"
+        INSERT INTO agent_run_creations(
+            command_id, command_sha256, run_id, created_at_unix_ms,
+            creation_kind, workspace, source_run_id, command_json
+        ) VALUES (
+            'rollback-create-command', 'sha256:rollback-command', 'rollback-create-run', 1,
+            'start', '/tmp/v14-atomic-runtime-cutover', NULL, '{"legacy":true}'
+        );
+        CREATE TRIGGER reject_v14_run_cleanup
+        BEFORE DELETE ON agent_runs
+        BEGIN
+            SELECT RAISE(ABORT, 'injected v14 cleanup failure');
+        END;
+        PRAGMA user_version = 13;
+        "#,
+    )
+    .expect("prepare v13 rollback counterexample");
+    drop(conn);
+
+    let error =
+        StateStore::open(Some(path.clone())).expect_err("injected v14 cleanup must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("failed to retire pre-Orchestrator canonical run state")
+    );
+
+    let conn = Connection::open(path).expect("inspect rolled-back v14 cutover");
+    let user_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read rolled-back schema version");
+    assert_eq!(user_version, 13);
+    let run_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agent_runs WHERE run_id = ?1",
+            [created.lease.run_id.0],
+            |row| row.get(0),
+        )
+        .expect("count restored pre-cutover run");
+    assert_eq!(run_count, 1);
+    let creation_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM agent_run_creations WHERE command_id = 'rollback-create-command'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("count restored creation intent");
+    assert_eq!(creation_count, 1);
 }
 
 #[test]
@@ -1943,7 +2391,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 13);
+        assert_eq!(user_version, 14);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -2188,6 +2636,7 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
         runtime_model_requests: 0,
         runtime_retries: 0,
         tool_calls: 1,
+        details: Default::default(),
     });
     for error in [
         sqlite
@@ -2234,13 +2683,13 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 14)
+    conn.pragma_update(None, "user_version", 15)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 13")
+            .contains("newer than supported version 14")
     );
 }

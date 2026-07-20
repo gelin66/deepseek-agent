@@ -631,6 +631,7 @@ mod tests {
                     runtime_model_requests: 0,
                     runtime_retries: 0,
                     tool_calls: 0,
+                    details: Default::default(),
                 }),
             },
         }

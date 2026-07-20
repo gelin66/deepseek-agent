@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use codewhale_protocol::agent_runtime::{
-    CommandId, DurableControlAction, InteractionId, RunId, StoredRuntimeEvent, TerminalState,
-    UserInteractionResponse,
+    AGENT_TOOL_NAME, AgentTask, AgentWorkspaceAccess, CommandId, DurableControlAction,
+    InteractionId, RunId, StoredRuntimeEvent, TerminalState, UserInteractionResponse,
 };
 use codewhale_protocol::run_api::{
     ContinueRunCommand, CreationRecoveryContext, MAX_RUN_LIST_LIMIT, PendingCreationKind,
@@ -76,14 +76,18 @@ impl ModelPort for ReplayOnlyModelPort {
 }
 
 /// Whether an unfinished persisted run may safely issue another live model
-/// request. Terminal/failed/in-flight actions, pending completion evaluation,
-/// and pending children replay without touching the credential or network.
+/// request. Terminal/failed/in-flight actions and pending completion
+/// evaluation replay without touching the credential or network. An
+/// An isolated writer lifecycle is different: recovery may have to resume its
+/// child or replay its finished tool result before the root asks DeepSeek for
+/// the next turn. A writer that already ended in `RecoveryRequired` closes
+/// locally and therefore keeps the credential-free path.
 #[must_use]
 pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
+    let recovering_writer = recoverable_writer_task(replay).is_some();
     if replay.snapshot.terminal.is_some()
         || replay.snapshot.last_model_failure.is_some()
         || replay.snapshot.pending_completion.is_some()
-        || !replay.snapshot.pending_children.is_empty()
     {
         return false;
     }
@@ -92,15 +96,39 @@ pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
         .pending_model
         .as_ref()
         .is_some_and(|pending| pending.state == DurableActionState::InFlight)
-        || replay
+    {
+        return false;
+    }
+    if recovering_writer {
+        return true;
+    }
+    replay.snapshot.pending_child_run_ids().is_empty()
+        && !replay
             .snapshot
             .pending_tool
             .as_ref()
             .is_some_and(|pending| pending.state == DurableActionState::InFlight)
-    {
-        return false;
-    }
-    true
+}
+
+fn recoverable_writer_task(replay: &RunReplay) -> Option<&AgentTask> {
+    let pending = replay.snapshot.pending_tool.as_ref().filter(|pending| {
+        pending.state == DurableActionState::InFlight && pending.invocation.name == AGENT_TOOL_NAME
+    })?;
+    replay
+        .snapshot
+        .agent_tasks
+        .iter()
+        .find(|lifecycle| {
+            lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                && lifecycle.task.call_id == pending.invocation.call_id
+                && lifecycle.finished.as_ref().is_none_or(|finished| {
+                    !matches!(
+                        finished.outcome.terminal,
+                        TerminalState::RecoveryRequired { .. }
+                    )
+                })
+        })
+        .map(|lifecycle| &lifecycle.task)
 }
 
 /// Canonical product command service shared by CLI, HTTP, SSE, and stdio.
@@ -1739,13 +1767,6 @@ mod tests {
             .expect("run exists");
         assert!(resume_needs_live_model(&replay));
 
-        replay
-            .snapshot
-            .pending_children
-            .push(RunId::from("pending-child"));
-        assert!(!resume_needs_live_model(&replay));
-
-        replay.snapshot.pending_children.clear();
         replay.snapshot.pending_completion = Some(CompletionCandidate {
             id: CompletionCandidateId::from("pending-completion"),
             generation_id: TaskGenerationId::from(run_id.0),

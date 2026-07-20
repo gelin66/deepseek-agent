@@ -783,7 +783,7 @@ fn build_pending_writes_from_changes(
             .and_then(Value::as_str)
             .ok_or_else(|| ToolError::missing_field("changes[].content"))?;
 
-        let resolved = context.resolve_path(path)?;
+        let resolved = context.resolve_write_path(path)?;
         let original = if resolved.exists() {
             Some(read_file_content(&resolved)?)
         } else {
@@ -831,7 +831,7 @@ fn build_pending_writes_from_patches(
             )));
         }
 
-        let resolved = context.resolve_path(&file_patch.path)?;
+        let resolved = context.resolve_write_path(&file_patch.path)?;
         let original = if resolved.exists() {
             Some(read_file_content(&resolved)?)
         } else {

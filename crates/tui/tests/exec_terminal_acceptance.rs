@@ -1413,11 +1413,17 @@ async fn multi_agent_exec_eager_joins_child_before_one_success_terminal() {
     );
     let child_started = events
         .iter()
-        .filter(|event| event["type"] == "child_started")
+        .filter(|event| {
+            event["type"] == "agent_lifecycle"
+                && event["runtime_event"]["event"]["kind"] == "child_started"
+        })
         .collect::<Vec<_>>();
     let child_finished = events
         .iter()
-        .filter(|event| event["type"] == "child_finished")
+        .filter(|event| {
+            event["type"] == "agent_lifecycle"
+                && event["runtime_event"]["event"]["kind"] == "child_finished"
+        })
         .collect::<Vec<_>>();
     assert_eq!(
         child_started.len(),
@@ -1429,14 +1435,31 @@ async fn multi_agent_exec_eager_joins_child_before_one_success_terminal() {
         1,
         "canonical child finish receipt missing or duplicated: {events:#?}"
     );
-    assert_eq!(child_started[0]["call_id"], child_finished[0]["call_id"]);
+    let child_started_event = &child_started[0]["runtime_event"]["event"];
+    let child_finished_event = &child_finished[0]["runtime_event"]["event"];
     assert_eq!(
-        child_started[0]["child_run_id"],
-        child_finished[0]["child_run_id"]
+        child_started_event["call_id"],
+        child_finished_event["call_id"]
     );
-    assert_eq!(child_started[0]["depth"], 1);
-    assert_eq!(child_finished[0]["status"], "completed");
-    assert_eq!(child_finished[0]["result_present"], true);
+    assert_eq!(
+        child_started_event["child_run_id"],
+        child_finished_event["outcome"]["run_id"]
+    );
+    assert_eq!(child_started_event["depth"], 1);
+    assert_eq!(
+        child_finished_event["outcome"]["terminal"]["state"],
+        "completed"
+    );
+    assert!(
+        child_finished_event["handoff_content"]
+            .as_str()
+            .is_some_and(|handoff| handoff.contains(MULTI_AGENT_HANDOFF_MARKER)),
+        "exact ChildFinished must preserve the canonical handoff: {child_finished_event:#?}"
+    );
+    assert_eq!(
+        child_finished_event["outcome"]["accounting"], child_finished_event["accounting"],
+        "ChildFinished must preserve both complete accounting receipts"
+    );
     assert!(
         events
             .iter()
@@ -1449,14 +1472,17 @@ async fn multi_agent_exec_eager_joins_child_before_one_success_terminal() {
         .expect("agent tool use");
     let child_started_index = events
         .iter()
-        .position(|event| event["type"] == "child_started")
+        .position(|event| {
+            event["type"] == "agent_lifecycle"
+                && event["runtime_event"]["event"]["kind"] == "child_started"
+        })
         .expect("child start receipt");
     let agent_tool_result_index = events
         .iter()
         .position(|event| event["type"] == "tool_result" && event["name"] == "agent")
         .expect("agent tool result");
     assert_eq!(
-        events[agent_tool_use_index]["id"], child_started[0]["call_id"],
+        events[agent_tool_use_index]["id"], child_started_event["call_id"],
         "child lifecycle must correlate with the launching tool call"
     );
     assert_eq!(
@@ -1468,12 +1494,15 @@ async fn multi_agent_exec_eager_joins_child_before_one_success_terminal() {
         .and_then(|output| serde_json::from_str::<Value>(output).ok())
         .expect("agent tool result must contain its redacted launch receipt");
     assert_eq!(
-        launch_receipt["agent_id"], child_started[0]["child_run_id"],
+        launch_receipt["agent_id"], child_started_event["child_run_id"],
         "launch receipt and canonical child lifecycle must identify the same run"
     );
     let child_finished_index = events
         .iter()
-        .position(|event| event["type"] == "child_finished")
+        .position(|event| {
+            event["type"] == "agent_lifecycle"
+                && event["runtime_event"]["event"]["kind"] == "child_finished"
+        })
         .expect("child finish receipt");
     assert!(
         agent_tool_use_index < child_started_index
@@ -1689,6 +1718,95 @@ async fn watchdog_cancels_a_hung_request_and_emits_one_failure_terminal() {
     assert_eq!(metadata["api_request_in_flight"], 0);
     assert_eq!(metadata["billing_unknown_attempts"], 1);
     assert_eq!(chat_request_count(&server).await, 1);
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sigterm_drains_the_canonical_cancel_terminal_before_exiting() {
+    let _serial = EXEC_TEST_LOCK.lock().await;
+    let server = MockServer::start().await;
+    mount_models(&server).await;
+    mount_chat(
+        &server,
+        sse_response(complete_sse("must-not-complete-after-sigterm"))
+            .set_delay(Duration::from_secs(10)),
+    )
+    .await;
+
+    let (mut command, _workspace, home) = prepare_exec(
+        &server.uri(),
+        60,
+        "exercise canonical SIGTERM drain",
+        "",
+        None,
+    );
+    let mut child = command.spawn().expect("spawn SIGTERM exec");
+    let stdout_reader = read_pipe(child.stdout.take().expect("stdout pipe"));
+    let stderr_reader = read_pipe(child.stderr.take().expect("stderr pipe"));
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while chat_request_count(&server).await == 0 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("model request reached loopback before SIGTERM");
+
+    let signal_result = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    assert_eq!(signal_result, 0, "send SIGTERM to production exec");
+    let status = child
+        .wait_timeout(Duration::from_secs(15))
+        .expect("wait for SIGTERM exec")
+        .unwrap_or_else(|| {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("SIGTERM exec did not settle through the canonical terminal");
+        });
+    let stdout =
+        String::from_utf8(join_pipe(stdout_reader, "stdout")).expect("stdout must be UTF-8");
+    let stderr =
+        String::from_utf8(join_pipe(stderr_reader, "stderr")).expect("stderr must be UTF-8");
+
+    assert_eq!(
+        status.code(),
+        Some(143),
+        "SIGTERM must preserve its shell exit code after draining\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let events = parse_strict_ndjson(&stdout);
+    let metadata = assert_terminal_tail(&events, Some("exec_cancelled"));
+    assert_eq!(metadata["status"], "interrupted");
+    assert_eq!(metadata["termination_reason"], "canceled");
+
+    let run_id = RunId::from(
+        metadata["run_id"]
+            .as_str()
+            .expect("cancel terminal identifies canonical run"),
+    );
+    let replay = StateStore::open(Some(home.path().join(".codewhale/state.db")))
+        .expect("open SIGTERM RunStore")
+        .load(&run_id)
+        .await
+        .expect("load SIGTERM run")
+        .expect("SIGTERM run exists");
+    let control_sequence = replay
+        .events
+        .iter()
+        .find_map(|event| {
+            matches!(event.event, RuntimeEventKind::ControlRequested { .. })
+                .then_some(event.sequence)
+        })
+        .expect("canonical cancel control event");
+    let terminal_sequence = replay
+        .events
+        .iter()
+        .find_map(|event| {
+            matches!(event.event, RuntimeEventKind::Terminal { .. }).then_some(event.sequence)
+        })
+        .expect("canonical cancel terminal event");
+    assert!(
+        control_sequence < terminal_sequence,
+        "terminal must follow the durable cancel request"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,0 +1,20 @@
+[package]
+name = "codewhale-orchestrator"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Canonical orchestration and owned Git workspace lifecycle for CodeWhale"
+
+[dependencies]
+async-trait.workspace = true
+codewhale-runtime = { path = "../runtime" }
+codewhale-tools = { path = "../tools" }
+fs2 = "0.4.3"
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

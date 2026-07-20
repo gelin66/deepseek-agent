@@ -165,6 +165,29 @@ impl ProductionToolConfig {
         self
     }
 
+    /// Clone this production configuration for one isolated writer worktree.
+    ///
+    /// This is intentionally a fresh per-run binding: it discards every path
+    /// escape and remote execution capability, enables Host-approved tool
+    /// execution, and requires the mandatory local writer sandbox. Constructing
+    /// a new executor from the returned value also creates fresh shell-process
+    /// and read-before-edit state.
+    #[must_use]
+    pub fn rebind_isolated_writer_workspace(&self, workspace: impl Into<PathBuf>) -> Self {
+        let workspace = workspace.into();
+        let mut rebound = self.clone();
+        rebound.workspace = workspace.clone();
+        rebound.trust_mode = false;
+        rebound.trusted_external_paths.clear();
+        rebound.follow_symlinks = false;
+        rebound.auto_approve = true;
+        rebound.elevated_sandbox_policy = Some(ExecutionSandboxPolicy::isolated_writer(workspace));
+        rebound.shell_network_denied_hint =
+            Some("isolated_writer_network_denied：Writer Agent 禁止网络访问".to_owned());
+        rebound.sandbox_backend = None;
+        rebound
+    }
+
     #[must_use]
     pub fn with_trust_mode(mut self, trust_mode: bool) -> Self {
         self.trust_mode = trust_mode;
@@ -370,11 +393,18 @@ impl ProductionToolExecutor {
     /// production cutover boundary.
     #[must_use]
     pub fn new(config: ProductionToolConfig) -> Self {
-        let context = ProductionToolContext::new(config.workspace.clone())
+        let isolated_writer_workspace = match config.elevated_sandbox_policy.as_ref() {
+            Some(ExecutionSandboxPolicy::IsolatedWriter { workspace }) => Some(workspace.clone()),
+            _ => None,
+        };
+        let mut context = ProductionToolContext::new(config.workspace.clone())
             .with_trust_mode(config.trust_mode)
             .with_trusted_external_paths(config.trusted_external_paths)
             .with_follow_symlinks(config.follow_symlinks)
             .with_auto_approve(config.auto_approve);
+        if let Some(workspace) = isolated_writer_workspace {
+            context = context.with_isolated_writer_write_guard(workspace);
+        }
         let mut shell = ExecShellOptions::new(
             new_shared_shell_manager(config.workspace),
             config.shell_policy,
@@ -1077,6 +1107,304 @@ mod tests {
             edit.content
         );
         assert_eq!(std::fs::read_to_string(path).unwrap(), "before\n");
+    }
+
+    #[tokio::test]
+    async fn isolated_writer_rebinding_is_restrictive_and_resets_read_state() {
+        let root = tempfile::tempdir().unwrap();
+        let writer = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("owned.txt"), "root\n").unwrap();
+        std::fs::write(writer.path().join("owned.txt"), "writer\n").unwrap();
+        let base = ProductionToolConfig::new(root.path())
+            .with_trust_mode(true)
+            .with_trusted_external_paths(vec![root.path().join("external")])
+            .with_follow_symlinks(true)
+            .with_auto_approve(false)
+            .with_shell_policy(ShellPolicy::Full)
+            .with_elevated_sandbox_policy(ExecutionSandboxPolicy::DangerFullAccess);
+        let root_executor = ProductionToolExecutor::new(base.clone());
+        let writer_config = base.rebind_isolated_writer_workspace(writer.path());
+        let identity = writer_config.execution_identity();
+        assert_eq!(
+            identity.workspace,
+            writer.path().canonicalize().unwrap().display().to_string()
+        );
+        assert!(!identity.trust_mode);
+        assert!(identity.trusted_external_paths.is_empty());
+        assert!(!identity.follow_symlinks);
+        assert!(identity.auto_approve);
+        assert_eq!(identity.sandbox_backend, None);
+        assert!(matches!(
+            identity.elevated_sandbox_policy,
+            Some(ExecutionSandboxPolicy::IsolatedWriter { ref workspace })
+                if workspace == writer.path()
+        ));
+
+        let writer_executor = ProductionToolExecutor::new(writer_config);
+        let read = root_executor
+            .execute(
+                invocation("read_file", json!({"path":"owned.txt"})),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(read.is_success());
+        let edit = writer_executor
+            .execute(
+                invocation(
+                    "edit_file",
+                    json!({"path":"owned.txt","search":"writer","replace":"changed"}),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(edit.operation, ToolOperationStatus::Failed);
+        assert!(
+            edit.content.contains("has not been read"),
+            "{}",
+            edit.content
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.path().join("owned.txt")).unwrap(),
+            "root\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(writer.path().join("owned.txt")).unwrap(),
+            "writer\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn isolated_writer_apply_patch_rejects_metadata_and_outside_before_mutation() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("root");
+        let common_git = root.join(".git");
+        let per_worktree_git = common_git.join("worktrees/writer");
+        let writer = fixture.path().join("writer");
+        let other = fixture.path().join("other");
+        for directory in [
+            &per_worktree_git,
+            &writer.join(".codewhale"),
+            &writer.join(".deepseek"),
+            &other,
+        ] {
+            std::fs::create_dir_all(directory).unwrap();
+        }
+        std::fs::write(
+            writer.join(".git"),
+            format!("gitdir: {}\n", per_worktree_git.display()),
+        )
+        .unwrap();
+        std::fs::write(per_worktree_git.join("commondir"), "../..").unwrap();
+        std::fs::write(
+            per_worktree_git.join("gitdir"),
+            writer.join(".git").display().to_string(),
+        )
+        .unwrap();
+        std::fs::write(per_worktree_git.join("index"), "per-worktree\n").unwrap();
+        std::fs::write(common_git.join("config"), "common\n").unwrap();
+        std::fs::write(root.join("root.txt"), "root\n").unwrap();
+        std::fs::write(other.join("other.txt"), "other\n").unwrap();
+        std::fs::write(writer.join(".codewhale/state"), "codewhale\n").unwrap();
+        std::fs::write(writer.join(".deepseek/config"), "deepseek\n").unwrap();
+        std::fs::write(writer.join("owned.txt"), "before\n").unwrap();
+
+        let executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(&root).rebind_isolated_writer_workspace(&writer),
+        );
+        let forbidden = [
+            writer.join(".git"),
+            writer.join(".git/index"),
+            writer.join("nested/../.codewhale/state"),
+            writer.join(".deepseek/config"),
+            per_worktree_git.join("index"),
+            common_git.join("config"),
+            root.join("root.txt"),
+            other.join("other.txt"),
+        ];
+
+        for target in forbidden {
+            let target_before = std::fs::read(&target).ok();
+            let outcome = executor
+                .execute(
+                    invocation(
+                        "apply_patch",
+                        json!({
+                            "changes": [
+                                {"path": "owned.txt", "content": "must-not-land\n"},
+                                {"path": target, "content": "must-not-land\n"}
+                            ]
+                        }),
+                    ),
+                    CancellationToken::default(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                outcome.invocation,
+                ToolInvocationStatus::Rejected,
+                "{}",
+                outcome.content
+            );
+            assert!(
+                outcome.content.contains("isolated_writer_write_denied"),
+                "{}",
+                outcome.content
+            );
+            assert_eq!(
+                std::fs::read(writer.join("owned.txt")).unwrap(),
+                b"before\n"
+            );
+            assert_eq!(std::fs::read(&target).ok(), target_before);
+        }
+
+        let allowed = executor
+            .execute(
+                invocation(
+                    "apply_patch",
+                    json!({"changes":[{"path":"owned.txt","content":"after\n"}]}),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(allowed.is_success(), "{}", allowed.content);
+        assert_eq!(std::fs::read(writer.join("owned.txt")).unwrap(), b"after\n");
+    }
+
+    #[tokio::test]
+    async fn isolated_writer_edit_file_rejects_protected_path_after_fresh_read() {
+        let writer = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(writer.path().join(".deepseek")).unwrap();
+        let protected = writer.path().join(".deepseek/config");
+        let ordinary = writer.path().join("owned.txt");
+        std::fs::write(&protected, "before\n").unwrap();
+        std::fs::write(&ordinary, "before\n").unwrap();
+        let executor = ProductionToolExecutor::new(
+            ProductionToolConfig::new(writer.path())
+                .rebind_isolated_writer_workspace(writer.path()),
+        );
+
+        let read_protected = executor
+            .execute(
+                invocation("read_file", json!({"path":".deepseek/config"})),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(read_protected.is_success(), "{}", read_protected.content);
+        let denied = executor
+            .execute(
+                invocation(
+                    "edit_file",
+                    json!({
+                        "path": ".deepseek/config",
+                        "search": "before",
+                        "replace": "after"
+                    }),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied.invocation, ToolInvocationStatus::Rejected);
+        assert!(
+            denied.content.contains("isolated_writer_write_denied"),
+            "{}",
+            denied.content
+        );
+        assert_eq!(std::fs::read(&protected).unwrap(), b"before\n");
+
+        let read_ordinary = executor
+            .execute(
+                invocation("read_file", json!({"path":"owned.txt"})),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(read_ordinary.is_success(), "{}", read_ordinary.content);
+        let edited = executor
+            .execute(
+                invocation(
+                    "edit_file",
+                    json!({
+                        "path": "owned.txt",
+                        "search": "before",
+                        "replace": "after"
+                    }),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(edited.is_success(), "{}", edited.content);
+        assert_eq!(std::fs::read(&ordinary).unwrap(), b"after\n");
+    }
+
+    #[tokio::test]
+    async fn ordinary_root_builtin_write_paths_do_not_gain_writer_restrictions() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in [".git", ".codewhale", ".deepseek"] {
+            std::fs::create_dir_all(root.path().join(directory)).unwrap();
+        }
+        std::fs::write(root.path().join(".git/local"), "git-before\n").unwrap();
+        std::fs::write(root.path().join(".codewhale/state"), "state-before\n").unwrap();
+        std::fs::write(root.path().join(".deepseek/config"), "config-before\n").unwrap();
+        let executor = ProductionToolExecutor::new(ProductionToolConfig::new(root.path()));
+
+        let patch = executor
+            .execute(
+                invocation(
+                    "apply_patch",
+                    json!({
+                        "changes": [
+                            {"path": ".git/local", "content": "git-after\n"},
+                            {"path": ".codewhale/state", "content": "state-after\n"}
+                        ]
+                    }),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(patch.is_success(), "{}", patch.content);
+
+        let read = executor
+            .execute(
+                invocation("read_file", json!({"path":".deepseek/config"})),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(read.is_success(), "{}", read.content);
+        let edit = executor
+            .execute(
+                invocation(
+                    "edit_file",
+                    json!({
+                        "path": ".deepseek/config",
+                        "search": "config-before",
+                        "replace": "config-after"
+                    }),
+                ),
+                CancellationToken::default(),
+            )
+            .await
+            .unwrap();
+        assert!(edit.is_success(), "{}", edit.content);
+        assert_eq!(
+            std::fs::read(root.path().join(".git/local")).unwrap(),
+            b"git-after\n"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join(".codewhale/state")).unwrap(),
+            b"state-after\n"
+        );
+        assert_eq!(
+            std::fs::read(root.path().join(".deepseek/config")).unwrap(),
+            b"config-after\n"
+        );
     }
 
     #[cfg(unix)]

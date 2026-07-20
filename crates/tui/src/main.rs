@@ -33,6 +33,7 @@ mod config_persistence;
 mod dependencies;
 mod error_taxonomy;
 mod eval;
+mod exec_lifecycle_stream;
 mod exec_output;
 mod exec_runtime;
 mod execpolicy;
@@ -5997,21 +5998,6 @@ enum ExecStreamEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         result_metadata: Option<serde_json::Value>,
     },
-    #[serde(rename = "child_started")]
-    ChildStarted {
-        call_id: String,
-        child_run_id: String,
-        depth: u8,
-        started_at: String,
-    },
-    #[serde(rename = "child_finished")]
-    ChildFinished {
-        call_id: String,
-        child_run_id: String,
-        status: String,
-        result_present: bool,
-        completed_at: String,
-    },
     #[serde(rename = "metadata")]
     Metadata { meta: Box<ExecStreamMeta> },
     #[serde(rename = "done")]
@@ -7713,75 +7699,41 @@ mod terminal_mode_tests {
     }
 
     #[test]
-    fn exec_child_receipt_contains_only_correlation_and_status() {
-        let started = ExecStreamEvent::ChildStarted {
-            call_id: "agent-call-1".to_string(),
-            child_run_id: "child-run-1".to_string(),
-            depth: 1,
-            started_at: "2026-07-18T00:00:00Z".to_string(),
-        };
-        let started_value = exec_stream_value(&started).expect("serializes");
-        let mut started_keys = started_value
-            .as_object()
-            .expect("object")
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        started_keys.sort();
-        assert_eq!(
-            started_keys,
-            [
-                "call_id",
-                "child_run_id",
-                "depth",
-                "schema",
-                "schema_version",
-                "started_at",
-                "type",
-            ]
-            .map(str::to_owned)
-        );
-
-        let event = ExecStreamEvent::ChildFinished {
-            call_id: "agent-call-1".to_string(),
-            child_run_id: "child-run-1".to_string(),
-            status: "completed".to_string(),
-            result_present: true,
-            completed_at: "2026-07-18T00:00:01Z".to_string(),
+    fn exec_agent_lifecycle_preserves_the_exact_canonical_event() {
+        use codewhale_protocol::agent_runtime::{
+            AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentTaskId, RunId, RuntimeEventId,
+            RuntimeEventKind, StoredRuntimeEvent,
         };
 
-        let value = exec_stream_value(&event).expect("serializes");
-        assert_eq!(value["type"], "child_finished");
+        let stored = StoredRuntimeEvent {
+            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            run_id: RunId::from("root-run"),
+            parent_run_id: None,
+            event_id: RuntimeEventId("event-cleanup-committed".to_owned()),
+            sequence: 17,
+            occurred_at_unix_ms: 1_789_000_000_123,
+            event: RuntimeEventKind::AgentCleanupCommitted {
+                task_id: AgentTaskId::from("writer-task"),
+                worktree_path: "/tmp/codewhale/writer-task".to_owned(),
+                branch: "codex/writer-task".to_owned(),
+                owner_token: "owner-token".to_owned(),
+                worktree_removed: false,
+                branch_removed: false,
+                retained_for_recovery: true,
+                reason: Some("集成冲突，保留现场".to_owned()),
+            },
+        };
+        let line =
+            crate::exec_lifecycle_stream::agent_lifecycle_stream_line(&stored).expect("serializes");
+        let value: serde_json::Value =
+            serde_json::from_slice(&line).expect("lifecycle line is JSON");
+
+        assert_eq!(value["type"], "agent_lifecycle");
         assert_eq!(value["schema"], "codewhale.exec-stream");
         assert_eq!(value["schema_version"], 1);
-        assert_eq!(value["call_id"], "agent-call-1");
-        assert_eq!(value["child_run_id"], "child-run-1");
-        assert_eq!(value["status"], "completed");
-        assert_eq!(value["result_present"], true);
-        let mut keys = value
-            .as_object()
-            .expect("object")
-            .keys()
-            .cloned()
-            .collect::<Vec<_>>();
-        keys.sort();
         assert_eq!(
-            keys,
-            [
-                "call_id",
-                "child_run_id",
-                "completed_at",
-                "result_present",
-                "schema",
-                "schema_version",
-                "status",
-                "type",
-            ]
-            .map(str::to_owned)
-        );
-        assert!(
-            value.get("content").is_none() && value.get("handoff_content").is_none(),
-            "public child receipt must not copy model output"
+            value["runtime_event"],
+            serde_json::to_value(stored).expect("canonical event serializes")
         );
     }
 

@@ -16,7 +16,7 @@ use crate::agent_runtime::{
 use crate::task::{TaskContract, TaskDefinition};
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 6;
+pub const RUN_API_SCHEMA_VERSION: u32 = 7;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -389,7 +389,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 6,
+                "schema_version": 7,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",

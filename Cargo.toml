@@ -10,6 +10,7 @@ members = [
     "crates/deepseek",
     "crates/execpolicy",
     "crates/lane",
+    "crates/orchestrator",
     "crates/protocol",
     "crates/release",
     "crates/runtime",

@@ -13,7 +13,6 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::registry::{LaneRecord, LaneRegistry, LaneStatus};
-use crate::worktree::{WorktreeProvision, provision_worktree, remove_worktree_if_expired};
 
 /// Execution backend for a lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,7 +50,7 @@ impl RuntimeBackendKind {
 pub struct LaneStartSpec {
     /// Command argv to run inside the backend (e.g. `codewhale exec …`).
     pub command: Vec<String>,
-    /// Working directory for the command (defaults to worktree or cwd).
+    /// Working directory for the command.
     pub cwd: Option<PathBuf>,
     /// Process-local runtime overrides. Values are never written into the
     /// Lane record or command argv; tmux bridges them through a private 0600
@@ -61,8 +60,6 @@ pub struct LaneStartSpec {
     /// Required by tmux so arbitrary/binary child output is framed as valid
     /// NDJSON without trusting a shell pipeline.
     pub log_proxy: Option<PathBuf>,
-    /// When set, provision an isolated git worktree + branch under this repo.
-    pub worktree: Option<WorktreeProvision>,
 }
 
 impl std::fmt::Debug for LaneStartSpec {
@@ -79,7 +76,6 @@ impl std::fmt::Debug for LaneStartSpec {
                     .collect::<Vec<_>>(),
             )
             .field("log_proxy", &self.log_proxy)
-            .field("worktree", &self.worktree)
             .finish()
     }
 }
@@ -107,18 +103,6 @@ pub trait RuntimeBackend {
     /// the detached process exit in a private sidecar and folds it in on the
     /// next read.
     fn reconcile(&self, _registry: &LaneRegistry, _record: &mut LaneRecord) -> Result<()> {
-        Ok(())
-    }
-
-    /// Optional worktree TTL cleanup after stop.
-    fn cleanup_worktree(&self, record: &LaneRecord) -> Result<()> {
-        if let Some(path) = record.worktree_path.as_ref() {
-            remove_worktree_if_expired(
-                path,
-                record.worktree_ttl_secs,
-                record.stopped_at.as_deref(),
-            )?;
-        }
         Ok(())
     }
 }
@@ -628,16 +612,6 @@ fn tmux_log_proxy_command(
     format!("exec {}", shell_join(&argv))
 }
 
-fn apply_worktree(record: &mut LaneRecord, spec: &LaneStartSpec) -> Result<Option<PathBuf>> {
-    let Some(wt) = spec.worktree.as_ref() else {
-        return Ok(spec.cwd.clone());
-    };
-    let provisioned = provision_worktree(wt)?;
-    record.worktree_path = Some(provisioned.path.clone());
-    record.branch = Some(provisioned.branch.clone());
-    Ok(Some(provisioned.path))
-}
-
 /// Durable local tmux sessions + attach + stream-json log file.
 #[derive(Debug, Default)]
 pub struct TmuxRuntime;
@@ -673,7 +647,7 @@ impl RuntimeBackend for TmuxRuntime {
             return Err(error);
         }
 
-        let cwd = apply_worktree(record, spec)?;
+        let cwd = spec.cwd.clone();
         let session = format!("cw-{}", record.id);
         let socket = registry.root().join("tmux.sock");
         record.tmux_session = Some(session.clone());
@@ -753,7 +727,6 @@ impl RuntimeBackend for TmuxRuntime {
             cmd.arg("-c").arg(cwd);
         }
         cmd.arg(shell_cmd);
-        let proposed_record = record.clone();
         let spawned = std::cell::Cell::new(false);
         let rolled_back = std::cell::Cell::new(false);
         match registry.mark_running_if_pending_with(
@@ -779,9 +752,6 @@ impl RuntimeBackend for TmuxRuntime {
                 if let Some(path) = environment_path.as_deref() {
                     remove_file_if_present(path)?;
                 }
-                let mut stopped_record = proposed_record;
-                stopped_record.stopped_at = record.stopped_at.clone();
-                self.cleanup_worktree(&stopped_record)?;
                 bail!("lane `{}` was stopped before tmux launch", record.id);
             }
             Err(error) => {
@@ -790,9 +760,6 @@ impl RuntimeBackend for TmuxRuntime {
                 }
                 if !spawned.get() || rolled_back.get() {
                     let _ = registry.mark_terminal_if_active(record, LaneStatus::Failed)?;
-                    let mut failed_record = proposed_record;
-                    failed_record.stopped_at = record.stopped_at.clone();
-                    self.cleanup_worktree(&failed_record)?;
                 }
                 return Err(error);
             }
@@ -842,7 +809,6 @@ impl RuntimeBackend for TmuxRuntime {
                 }),
             )?;
             remove_file_if_present(&lane_environment_path(&record.log_path))?;
-            self.cleanup_worktree(record)?;
         }
         Ok(())
     }
@@ -902,7 +868,6 @@ impl RuntimeBackend for TmuxRuntime {
                 }),
             )?;
             remove_file_if_present(&lane_environment_path(&record.log_path))?;
-            self.cleanup_worktree(record)?;
         }
         Ok(())
     }
@@ -926,7 +891,7 @@ impl RuntimeBackend for InlineRuntime {
         if spec.command.is_empty() {
             bail!("inline runtime requires a non-empty command");
         }
-        let cwd = apply_worktree(record, spec)?;
+        let cwd = spec.cwd.clone();
         append_log_event(
             &record.log_path,
             serde_json::json!({
@@ -1021,7 +986,7 @@ impl RuntimeBackend for InlineRuntime {
     }
 
     fn stop(&self, registry: &LaneRegistry, record: &mut LaneRecord) -> Result<()> {
-        if registry.mark_terminal_if_active_with(record, LaneStatus::Stopped, |current| {
+        let _ = registry.mark_terminal_if_active_with(record, LaneStatus::Stopped, |current| {
             if current.status == LaneStatus::Running {
                 bail!(
                     "inline lane `{}` cannot be stopped safely from another process",
@@ -1029,9 +994,7 @@ impl RuntimeBackend for InlineRuntime {
                 );
             }
             Ok(())
-        })? {
-            self.cleanup_worktree(record)?;
-        }
+        })?;
         Ok(())
     }
 }
@@ -1155,7 +1118,6 @@ mod tests {
                 Some("4090".into()),
                 None,
                 RuntimeBackendKind::Tmux,
-                None,
             )
             .unwrap();
         let backend = TmuxRuntime;
@@ -1168,7 +1130,6 @@ mod tests {
                     cwd: None,
                     environment: Vec::new(),
                     log_proxy: None,
-                    worktree: None,
                 },
             )
             .unwrap();
@@ -1212,7 +1173,7 @@ mod tests {
 
         let reg = LaneRegistry::open(dir.path().join("registry")).unwrap();
         let mut record = reg
-            .create_pending(None, None, None, None, RuntimeBackendKind::Tmux, None)
+            .create_pending(None, None, None, None, RuntimeBackendKind::Tmux)
             .unwrap();
         let error = TmuxRuntime
             .start(
@@ -1223,7 +1184,6 @@ mod tests {
                     cwd: None,
                     environment: Vec::new(),
                     log_proxy: Some(PathBuf::from("/bin/true")),
-                    worktree: None,
                 },
             )
             .unwrap_err();
@@ -1240,9 +1200,7 @@ mod tests {
         for kind in [RuntimeBackendKind::Vm, RuntimeBackendKind::Ci] {
             let dir = tempdir().unwrap();
             let reg = LaneRegistry::open(dir.path()).unwrap();
-            let mut record = reg
-                .create_pending(None, None, None, None, kind, None)
-                .unwrap();
+            let mut record = reg.create_pending(None, None, None, None, kind).unwrap();
             let error = resolve_backend(kind)
                 .start(
                     &reg,
@@ -1252,7 +1210,6 @@ mod tests {
                         cwd: None,
                         environment: Vec::new(),
                         log_proxy: None,
-                        worktree: None,
                     },
                 )
                 .unwrap_err();
@@ -1273,7 +1230,6 @@ mod tests {
                 None,
                 Some("echo".into()),
                 RuntimeBackendKind::Inline,
-                None,
             )
             .unwrap();
         InlineRuntime
@@ -1285,7 +1241,6 @@ mod tests {
                     cwd: None,
                     environment: Vec::new(),
                     log_proxy: None,
-                    worktree: None,
                 },
             )
             .unwrap();
@@ -1302,7 +1257,6 @@ mod tests {
             cwd: None,
             environment: vec![("DEEPSEEK_API_KEY".into(), "secret-value".into())],
             log_proxy: None,
-            worktree: None,
         };
         let rendered = format!("{spec:?}");
         assert!(rendered.contains("DEEPSEEK_API_KEY"));
@@ -1321,7 +1275,6 @@ mod tests {
                 None,
                 None,
                 RuntimeBackendKind::Inline,
-                None,
             )
             .unwrap();
         let log_path = record.log_path.clone();
@@ -1341,7 +1294,6 @@ mod tests {
                     cwd: None,
                     environment: Vec::new(),
                     log_proxy: None,
-                    worktree: None,
                 },
             );
             let _ = done_tx.send(result);
@@ -1383,7 +1335,6 @@ mod tests {
                     None,
                     None,
                     RuntimeBackendKind::Tmux,
-                    None,
                 )
                 .unwrap();
             assert!(reg.mark_running_if_pending(&mut record).unwrap());
@@ -1521,7 +1472,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn tmux_stop_failure_keeps_lane_running_and_preserves_cleanup_targets() {
+    fn tmux_stop_failure_keeps_lane_running_and_private_environment() {
         use std::os::unix::fs::symlink;
 
         let _env_guard = tmux_env_lock();
@@ -1545,14 +1496,10 @@ mod tests {
                 None,
                 None,
                 RuntimeBackendKind::Tmux,
-                Some(0),
             )
             .unwrap();
         record.tmux_session = Some(format!("cw-{}", record.id));
         record.tmux_socket = Some(reg.root().join("tmux.sock"));
-        let worktree = dir.path().join("worktree");
-        fs::create_dir(&worktree).unwrap();
-        record.worktree_path = Some(worktree.clone());
         let environment_path = lane_environment_path(&record.log_path);
         write_lane_environment(
             &environment_path,
@@ -1566,7 +1513,6 @@ mod tests {
         assert_eq!(record.status, LaneStatus::Running);
         assert_eq!(reg.load(&record.id).unwrap().status, LaneStatus::Running);
         assert!(environment_path.exists());
-        assert!(worktree.exists());
     }
 
     #[cfg(unix)]
@@ -1603,7 +1549,6 @@ mod tests {
                 None,
                 None,
                 RuntimeBackendKind::Tmux,
-                None,
             )
             .unwrap();
         record.tmux_session = Some(format!("missing-{}", record.id));

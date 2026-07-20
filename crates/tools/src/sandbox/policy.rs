@@ -72,6 +72,18 @@ pub enum SandboxPolicy {
         #[serde(default)]
         exclude_slash_tmp: bool,
     },
+
+    /// A fail-closed workspace policy for an isolated writer Agent.
+    ///
+    /// Only the child worktree may be modified. Git control files, temporary
+    /// directories, package-manager caches, external roots and the network
+    /// remain read-only or unavailable. Unlike `WorkspaceWrite`, this policy
+    /// must never fall back to unsandboxed execution.
+    #[serde(rename = "isolated-writer")]
+    IsolatedWriter {
+        /// Canonical child worktree root.
+        workspace: PathBuf,
+    },
 }
 
 impl Default for SandboxPolicy {
@@ -87,6 +99,14 @@ impl Default for SandboxPolicy {
 }
 
 impl SandboxPolicy {
+    /// Create the mandatory sandbox policy for one writer worktree.
+    #[must_use]
+    pub fn isolated_writer(workspace: impl Into<PathBuf>) -> Self {
+        Self::IsolatedWriter {
+            workspace: workspace.into(),
+        }
+    }
+
     /// Create a workspace-write policy with network access enabled.
     pub fn workspace_with_network() -> Self {
         SandboxPolicy::WorkspaceWrite {
@@ -125,10 +145,22 @@ impl SandboxPolicy {
     pub fn has_network_access(&self) -> bool {
         match self {
             SandboxPolicy::DangerFullAccess => true,
-            SandboxPolicy::ReadOnly => false,
+            SandboxPolicy::ReadOnly | SandboxPolicy::IsolatedWriter { .. } => false,
             SandboxPolicy::ExternalSandbox { network_access }
             | SandboxPolicy::WorkspaceWrite { network_access, .. } => *network_access,
         }
+    }
+
+    /// Whether local execution must fail when no enforcing sandbox exists.
+    #[must_use]
+    pub fn requires_enforced_sandbox(&self) -> bool {
+        matches!(self, Self::IsolatedWriter { .. })
+    }
+
+    /// Whether the sandbox may mutate host-level caches outside the workspace.
+    #[must_use]
+    pub(crate) fn allows_host_cache_writes(&self) -> bool {
+        !matches!(self, Self::ReadOnly | Self::IsolatedWriter { .. })
     }
 
     /// Returns true if the sandbox should be applied (not bypassed).
@@ -155,6 +187,20 @@ impl SandboxPolicy {
             SandboxPolicy::DangerFullAccess
             | SandboxPolicy::ExternalSandbox { .. }
             | SandboxPolicy::ReadOnly => vec![],
+
+            SandboxPolicy::IsolatedWriter { workspace } => {
+                let root = workspace
+                    .canonicalize()
+                    .unwrap_or_else(|_| workspace.clone());
+                vec![WritableRoot {
+                    read_only_subpaths: vec![
+                        root.join(".git"),
+                        root.join(".codewhale"),
+                        root.join(".deepseek"),
+                    ],
+                    root,
+                }]
+            }
 
             // Workspace write - enumerate all writable paths
             SandboxPolicy::WorkspaceWrite {
@@ -451,6 +497,61 @@ mod tests {
         let policy = SandboxPolicy::workspace_with_network();
         assert!(policy.has_network_access());
         assert!(policy.should_sandbox());
+    }
+
+    #[test]
+    fn isolated_writer_allows_only_worktree_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let common_git_dir = tmp.path().join("root").join(".git");
+        let worktree_git_dir = common_git_dir.join("worktrees").join("writer");
+        let root_workspace = tmp.path().join("root");
+        let worktree = tmp.path().join("writer");
+        let other_worktree = tmp.path().join("other-writer");
+        std::fs::create_dir_all(&worktree_git_dir).expect("mkdir gitdir");
+        std::fs::create_dir_all(&worktree).expect("mkdir worktree");
+        std::fs::create_dir_all(&other_worktree).expect("mkdir other worktree");
+        std::fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}\n", worktree_git_dir.display()),
+        )
+        .expect("write git pointer");
+        std::fs::write(worktree_git_dir.join("commondir"), "../..").expect("write commondir");
+        std::fs::write(
+            worktree_git_dir.join("gitdir"),
+            worktree.join(".git").display().to_string(),
+        )
+        .expect("write gitdir back pointer");
+
+        let policy = SandboxPolicy::isolated_writer(&worktree);
+        assert!(policy.requires_enforced_sandbox());
+        assert!(!policy.has_network_access());
+        assert!(!policy.allows_host_cache_writes());
+
+        let roots = policy.get_writable_roots(&worktree);
+        assert_eq!(roots.len(), 1);
+        let root = &roots[0];
+        let canonical_worktree = worktree.canonicalize().expect("canonical worktree");
+        assert_eq!(root.root, canonical_worktree);
+        assert!(root.is_path_writable(&canonical_worktree.join("src/lib.rs")));
+        assert!(!root.is_path_writable(&canonical_worktree.join(".git")));
+        assert!(!root.is_path_writable(&canonical_worktree.join(".git/index")));
+        assert!(!root.is_path_writable(&canonical_worktree.join(".codewhale/state")));
+        assert!(!root.is_path_writable(&canonical_worktree.join(".deepseek/config")));
+
+        for forbidden in [
+            root_workspace,
+            other_worktree,
+            worktree_git_dir,
+            common_git_dir,
+            PathBuf::from("/tmp"),
+            std::env::temp_dir(),
+        ] {
+            assert!(
+                !root.is_path_writable(&forbidden),
+                "isolated writer unexpectedly allowed {}",
+                forbidden.display()
+            );
+        }
     }
 
     #[test]

@@ -168,6 +168,112 @@ pub struct CommandReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentWorkspaceCreatedFact {
+    pub assignment: AgentWorkspaceAssignment,
+    pub writer_workspace_state: WorkspaceState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentChildStartedFact {
+    pub call_id: String,
+    pub child_run_id: RunId,
+    pub depth: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentSealCommittedFact {
+    pub final_commit: String,
+    pub diff_sha256: String,
+    pub changed_files: Vec<String>,
+    pub writer_workspace_state_after: WorkspaceState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentSealLifecycle {
+    pub base_commit: String,
+    pub writer_workspace_state_before: WorkspaceState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub committed: Option<AgentSealCommittedFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentIntegrationCommittedFact {
+    pub root_head_commit: String,
+    pub root_workspace_state_after: WorkspaceState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentIntegrationFailureFact {
+    pub status: WriterIntegrationStatus,
+    pub root_workspace_state: WorkspaceState,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentIntegrationLifecycle {
+    pub integration_id: OperationId,
+    pub base_commit: String,
+    pub writer_commit: String,
+    pub diff_sha256: String,
+    pub expected_root_workspace_state: WorkspaceState,
+    pub started: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub committed: Option<AgentIntegrationCommittedFact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<AgentIntegrationFailureFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCleanupCommittedFact {
+    pub worktree_removed: bool,
+    pub branch_removed: bool,
+    pub retained_for_recovery: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentCleanupLifecycle {
+    pub worktree_path: String,
+    pub branch: String,
+    pub owner_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub committed: Option<AgentCleanupCommittedFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentChildFinishedFact {
+    pub call_id: String,
+    pub outcome: AgentOutcome,
+    pub accounting: ModelAccounting,
+    pub handoff_content: String,
+}
+
+/// Durable orchestration truth for one Host-frozen child task.
+///
+/// The optional facts are a monotonic lifecycle, not independent flags. The
+/// reducer enforces their order and identity. Keeping every prepared action
+/// and committed result here lets recovery inspect the exact boundary without
+/// deriving authority from presentation state or a model-authored prompt.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentTaskLifecycle {
+    pub task: AgentTask,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_created: Option<AgentWorkspaceCreatedFact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_started: Option<AgentChildStartedFact>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seal: Option<AgentSealLifecycle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<AgentOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub integration: Option<AgentIntegrationLifecycle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<AgentCleanupLifecycle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished: Option<AgentChildFinishedFact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunSnapshot {
     pub request: RunRequest,
     pub transcript: CanonicalTranscript,
@@ -201,10 +307,24 @@ pub struct RunSnapshot {
     pub last_context_compaction: Option<CommittedContextCompaction>,
     pub pending_model: Option<PendingModelAction>,
     pub pending_tool: Option<PendingToolAction>,
-    pub pending_children: Vec<RunId>,
+    /// Canonical child/worktree lifecycle and recovery authority.
+    pub agent_tasks: Vec<AgentTaskLifecycle>,
     pub pending_steers: Vec<PendingSteer>,
     pub pending_control: Option<PendingControl>,
     pub command_receipts: Vec<CommandReceipt>,
+}
+
+impl RunSnapshot {
+    /// Derive unsettled child identities from the canonical task lifecycle,
+    /// including tasks that failed between preparation and child start.
+    #[must_use]
+    pub fn pending_child_run_ids(&self) -> Vec<RunId> {
+        self.agent_tasks
+            .iter()
+            .filter(|lifecycle| lifecycle.finished.is_none())
+            .map(|lifecycle| lifecycle.task.child_run_id.clone())
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -313,6 +433,9 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
             "run cannot be both a child Agent and a root continuation",
         ));
     }
+    request
+        .validate_agent_task_binding()
+        .map_err(|message| corrupt(&run_id, message))?;
     if request.continued_from_run_id.is_none() && request.inherited_facts.is_some() {
         return Err(corrupt(
             &run_id,
@@ -373,7 +496,7 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
         last_context_compaction: None,
         pending_model: None,
         pending_tool: None,
-        pending_children: Vec::new(),
+        agent_tasks: Vec::new(),
         pending_steers: Vec::new(),
         pending_control: None,
         command_receipts: Vec::new(),
@@ -403,10 +526,21 @@ pub fn apply_event(
     if snapshot.terminal.is_some() {
         return Err(corrupt(&run_id, "event appears after terminal"));
     }
+    stored
+        .event
+        .validate_agent_lifecycle_payload()
+        .map_err(|message| corrupt(&run_id, message))?;
     if snapshot.pending_control.is_some()
         && !matches!(
             &stored.event,
             RuntimeEventKind::ToolOutcomeCommitted { .. }
+                | RuntimeEventKind::AgentWorkspaceCreated { .. }
+                | RuntimeEventKind::AgentSealCommitted { .. }
+                | RuntimeEventKind::AgentResultCollected { .. }
+                | RuntimeEventKind::AgentIntegrationFailed { .. }
+                | RuntimeEventKind::AgentIntegrationCommitted { .. }
+                | RuntimeEventKind::AgentCleanupPrepared { .. }
+                | RuntimeEventKind::AgentCleanupCommitted { .. }
                 | RuntimeEventKind::ChildFinished { .. }
                 | RuntimeEventKind::Terminal { .. }
         )
@@ -885,7 +1019,73 @@ pub fn apply_event(
                     _ => {}
                 }
             }
-            match (pending.workspace_access, workspace_state) {
+            let pending_workspace_access = pending.workspace_access;
+            let pending_state = pending.state;
+            let settles_agent_call = (pending.invocation.name == AGENT_TOOL_NAME)
+                .then(|| pending.invocation.call_id.clone());
+            let settled_agent_lifecycle = settles_agent_call.as_ref().and_then(|agent_call_id| {
+                snapshot
+                    .agent_tasks
+                    .iter()
+                    .find(|lifecycle| lifecycle.task.call_id == *agent_call_id)
+            });
+            if settles_agent_call.is_some() {
+                match settled_agent_lifecycle {
+                    None if outcome.operation != ToolOperationStatus::Succeeded
+                        && outcome.side_effect == ToolSideEffectStatus::NotApplied => {}
+                    None => {
+                        return Err(corrupt(
+                            &run_id,
+                            "agent tool outcome without a lifecycle must prove preflight rejection without side effects",
+                        ));
+                    }
+                    Some(lifecycle) => match lifecycle.task.workspace.access {
+                        AgentWorkspaceAccess::ReadOnly
+                            if lifecycle.child_started.is_none()
+                                && lifecycle.finished.is_none() =>
+                        {
+                            return Err(corrupt(
+                                &run_id,
+                                "read-only agent launch outcome committed before child start",
+                            ));
+                        }
+                        AgentWorkspaceAccess::IsolatedWrite if lifecycle.finished.is_none() => {
+                            return Err(corrupt(
+                                &run_id,
+                                "writer agent tool outcome committed before its canonical child lifecycle finished",
+                            ));
+                        }
+                        AgentWorkspaceAccess::ReadOnly | AgentWorkspaceAccess::IsolatedWrite => {}
+                    },
+                }
+            }
+            let rejected_before_lifecycle = settles_agent_call.is_some()
+                && settled_agent_lifecycle.is_none()
+                && outcome.operation != ToolOperationStatus::Succeeded
+                && outcome.side_effect == ToolSideEffectStatus::NotApplied;
+            let failed_writer_without_integration =
+                settled_agent_lifecycle.is_some_and(|lifecycle| {
+                    lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                        && lifecycle.integration.is_none()
+                        && lifecycle.result.as_ref().is_some_and(|result| {
+                            !matches!(result.terminal, TerminalState::Completed { .. })
+                        })
+                });
+            let writer_integration_failed = settled_agent_lifecycle.is_some_and(|lifecycle| {
+                lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                    && lifecycle
+                        .integration
+                        .as_ref()
+                        .is_some_and(|integration| integration.failure.is_some())
+            });
+            let integrated_writer_state = settled_agent_lifecycle
+                .filter(|lifecycle| {
+                    lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                })
+                .and_then(|lifecycle| lifecycle.integration.as_ref())
+                .and_then(|integration| integration.committed.as_ref())
+                .map(|committed| committed.root_workspace_state_after.clone());
+            match (pending_workspace_access, workspace_state) {
                 (WorkspaceAccess::ReadOnly, None) => {}
                 (WorkspaceAccess::ReadOnly, Some(_)) => {
                     return Err(corrupt(
@@ -894,7 +1094,12 @@ pub fn apply_event(
                     ));
                 }
                 (WorkspaceAccess::MayWrite, None)
-                    if pending.state == DurableActionState::Prepared
+                    if (failed_writer_without_integration
+                        || writer_integration_failed
+                        || rejected_before_lifecycle)
+                        && outcome.side_effect == ToolSideEffectStatus::NotApplied => {}
+                (WorkspaceAccess::MayWrite, None)
+                    if pending_state == DurableActionState::Prepared
                         && outcome.side_effect == ToolSideEffectStatus::NotApplied => {}
                 (WorkspaceAccess::MayWrite, None) => {
                     return Err(corrupt(
@@ -903,6 +1108,27 @@ pub fn apply_event(
                     ));
                 }
                 (WorkspaceAccess::MayWrite, Some(state)) => {
+                    if settles_agent_call.is_some()
+                        && integrated_writer_state
+                            .as_ref()
+                            .is_some_and(|integrated| integrated != state)
+                    {
+                        return Err(corrupt(
+                            &run_id,
+                            "writer agent tool outcome does not settle the integrated root state",
+                        ));
+                    }
+                    if settles_agent_call.is_some()
+                        && settled_agent_lifecycle.is_some_and(|lifecycle| {
+                            lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                        })
+                        && integrated_writer_state.is_none()
+                    {
+                        return Err(corrupt(
+                            &run_id,
+                            "unintegrated writer agent tool outcome cannot advance the root workspace",
+                        ));
+                    }
                     state
                         .validate()
                         .map_err(|message| corrupt(&run_id, message))?;
@@ -1132,11 +1358,444 @@ pub fn apply_event(
             snapshot.last_completion_rejection = Some(rejection.clone());
             snapshot.pending_completion = None;
         }
-        RuntimeEventKind::ChildStarted { child_run_id, .. } => {
-            if snapshot.pending_children.contains(child_run_id) {
+        RuntimeEventKind::AgentTaskPrepared { task } => {
+            let pending = snapshot.pending_tool.as_ref().ok_or_else(|| {
+                corrupt(
+                    &run_id,
+                    "Agent task prepared without an in-flight agent tool",
+                )
+            })?;
+            let expected_access = match task.workspace.access {
+                AgentWorkspaceAccess::ReadOnly => WorkspaceAccess::ReadOnly,
+                AgentWorkspaceAccess::IsolatedWrite => WorkspaceAccess::MayWrite,
+            };
+            if pending.state != DurableActionState::InFlight
+                || pending.invocation.name != AGENT_TOOL_NAME
+                || pending.invocation.call_id != task.call_id
+                || pending.workspace_access != expected_access
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "Agent task does not match the in-flight agent tool authority",
+                ));
+            }
+            let expected_root_run_id = match snapshot.request.actor.kind {
+                AgentActorKind::Root => &run_id,
+                AgentActorKind::Child => {
+                    &snapshot
+                        .request
+                        .agent_task
+                        .as_ref()
+                        .expect("child RunRequest binding validated at creation")
+                        .root_run_id
+                }
+            };
+            let expected_root_workspace = match snapshot.request.actor.kind {
+                AgentActorKind::Root => snapshot.request.environment.workspace.as_str(),
+                AgentActorKind::Child => snapshot
+                    .request
+                    .agent_task
+                    .as_ref()
+                    .expect("child RunRequest binding validated at creation")
+                    .workspace
+                    .root_workspace
+                    .as_str(),
+            };
+            if task.parent_run_id != run_id
+                || &task.root_run_id != expected_root_run_id
+                || task.workspace.root_workspace != expected_root_workspace
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "Agent task parent, root, or root workspace does not match this run",
+                ));
+            }
+            if snapshot.agent_tasks.iter().any(|existing| {
+                existing.task.task_id == task.task_id
+                    || existing.task.child_run_id == task.child_run_id
+                    || existing.task.call_id == task.call_id
+            }) {
+                return Err(corrupt(
+                    &run_id,
+                    "Agent task reused a task, child run, or tool call identity",
+                ));
+            }
+            if task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                && snapshot.agent_tasks.iter().any(|existing| {
+                    existing.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                })
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "M6-A admits only one isolated writer task per root run",
+                ));
+            }
+            snapshot.agent_tasks.push(AgentTaskLifecycle {
+                task: (**task).clone(),
+                workspace_created: None,
+                child_started: None,
+                seal: None,
+                result: None,
+                integration: None,
+                cleanup: None,
+                finished: None,
+            });
+        }
+        RuntimeEventKind::AgentWorkspaceCreated {
+            task_id,
+            assignment,
+            writer_workspace_state,
+        } => {
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            if lifecycle.task.workspace.access != AgentWorkspaceAccess::IsolatedWrite
+                || lifecycle.task.workspace != *assignment
+                || lifecycle.workspace_created.is_some()
+                || lifecycle.child_started.is_some()
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer workspace creation does not match the prepared Agent task",
+                ));
+            }
+            lifecycle.workspace_created = Some(AgentWorkspaceCreatedFact {
+                assignment: assignment.clone(),
+                writer_workspace_state: writer_workspace_state.clone(),
+            });
+        }
+        RuntimeEventKind::ChildStarted {
+            task_id,
+            call_id,
+            child_run_id,
+            depth,
+        } => {
+            let expected_depth = snapshot.request.actor.depth.saturating_add(1);
+            if snapshot.agent_tasks.iter().any(|lifecycle| {
+                lifecycle.child_started.is_some()
+                    && lifecycle.finished.is_none()
+                    && lifecycle.task.child_run_id == *child_run_id
+            }) {
                 return Err(corrupt(&run_id, "child run started twice"));
             }
-            snapshot.pending_children.push(child_run_id.clone());
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let workspace_ready = match lifecycle.task.workspace.access {
+                AgentWorkspaceAccess::ReadOnly => lifecycle.workspace_created.is_none(),
+                AgentWorkspaceAccess::IsolatedWrite => lifecycle.workspace_created.is_some(),
+            };
+            if !workspace_ready
+                || lifecycle.child_started.is_some()
+                || lifecycle.task.call_id != *call_id
+                || lifecycle.task.child_run_id != *child_run_id
+                || *depth != expected_depth
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "child start does not match its prepared task and workspace boundary",
+                ));
+            }
+            lifecycle.child_started = Some(AgentChildStartedFact {
+                call_id: call_id.clone(),
+                child_run_id: child_run_id.clone(),
+                depth: *depth,
+            });
+        }
+        RuntimeEventKind::AgentSealPrepared {
+            task_id,
+            base_commit,
+            writer_workspace_state_before,
+        } => {
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let Some(created) = &lifecycle.workspace_created else {
+                return Err(corrupt(
+                    &run_id,
+                    "writer seal prepared before workspace creation",
+                ));
+            };
+            if lifecycle.task.workspace.access != AgentWorkspaceAccess::IsolatedWrite
+                || lifecycle.child_started.is_none()
+                || lifecycle.seal.is_some()
+                || lifecycle.result.is_some()
+                || base_commit != &lifecycle.task.workspace.base_commit
+                || writer_workspace_state_before.generation
+                    < created.writer_workspace_state.generation
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer seal preparation does not match its started task",
+                ));
+            }
+            lifecycle.seal = Some(AgentSealLifecycle {
+                base_commit: base_commit.clone(),
+                writer_workspace_state_before: writer_workspace_state_before.clone(),
+                committed: None,
+            });
+        }
+        RuntimeEventKind::AgentSealCommitted {
+            task_id,
+            final_commit,
+            diff_sha256,
+            changed_files,
+            writer_workspace_state_after,
+        } => {
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let seal = lifecycle
+                .seal
+                .as_mut()
+                .ok_or_else(|| corrupt(&run_id, "writer seal committed before it was prepared"))?;
+            if seal.committed.is_some()
+                || lifecycle.result.is_some()
+                || final_commit == &seal.base_commit
+                || writer_workspace_state_after.generation
+                    != seal
+                        .writer_workspace_state_before
+                        .generation
+                        .saturating_add(1)
+                || !paths_stay_within(changed_files, &lifecycle.task.workspace.allowed_paths)
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer seal commit changed identity, scope, or generation",
+                ));
+            }
+            seal.committed = Some(AgentSealCommittedFact {
+                final_commit: final_commit.clone(),
+                diff_sha256: diff_sha256.clone(),
+                changed_files: changed_files.clone(),
+                writer_workspace_state_after: writer_workspace_state_after.clone(),
+            });
+        }
+        RuntimeEventKind::AgentResultCollected { task_id, outcome } => {
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let child_never_started = lifecycle.child_started.is_none();
+            if lifecycle.result.is_some()
+                || (child_never_started
+                    && matches!(outcome.terminal, TerminalState::Completed { .. }))
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "Agent result was collected more than once or claimed success before child start",
+                ));
+            }
+            validate_collected_agent_result(&run_id, lifecycle, outcome)?;
+            lifecycle.result = Some((**outcome).clone());
+        }
+        RuntimeEventKind::AgentIntegrationPrepared {
+            task_id,
+            integration_id,
+            base_commit,
+            writer_commit,
+            diff_sha256,
+            expected_root_workspace_state,
+        } => {
+            if expected_root_workspace_state != &snapshot.workspace_state {
+                return Err(corrupt(
+                    &run_id,
+                    "writer integration expected state is not the current root workspace",
+                ));
+            }
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let seal = lifecycle
+                .seal
+                .as_ref()
+                .and_then(|seal| seal.committed.as_ref())
+                .ok_or_else(|| corrupt(&run_id, "writer integration prepared before sealing"))?;
+            let result = lifecycle
+                .result
+                .as_ref()
+                .ok_or_else(|| corrupt(&run_id, "writer integration prepared before result"))?;
+            if lifecycle.integration.is_some()
+                || !matches!(result.terminal, TerminalState::Completed { .. })
+                || result.details.integration != WriterIntegrationStatus::AwaitingHost
+                || base_commit != &lifecycle.task.workspace.base_commit
+                || writer_commit != &seal.final_commit
+                || diff_sha256 != &seal.diff_sha256
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer integration preparation does not match the sealed successful result",
+                ));
+            }
+            lifecycle.integration = Some(AgentIntegrationLifecycle {
+                integration_id: integration_id.clone(),
+                base_commit: base_commit.clone(),
+                writer_commit: writer_commit.clone(),
+                diff_sha256: diff_sha256.clone(),
+                expected_root_workspace_state: expected_root_workspace_state.clone(),
+                started: false,
+                committed: None,
+                failure: None,
+            });
+        }
+        RuntimeEventKind::AgentIntegrationStarted {
+            task_id,
+            integration_id,
+        } => {
+            let current_root_workspace_state = snapshot.workspace_state.clone();
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let integration = lifecycle
+                .integration
+                .as_mut()
+                .ok_or_else(|| corrupt(&run_id, "writer integration started before preparation"))?;
+            if integration.integration_id != *integration_id
+                || integration.started
+                || integration.committed.is_some()
+                || integration.failure.is_some()
+                || integration.expected_root_workspace_state != current_root_workspace_state
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer integration start does not match its prepared root state",
+                ));
+            }
+            integration.started = true;
+        }
+        RuntimeEventKind::AgentIntegrationFailed {
+            task_id,
+            integration_id,
+            status,
+            root_workspace_state,
+        } => {
+            let current_root_workspace_state = snapshot.workspace_state.clone();
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let integration = lifecycle
+                .integration
+                .as_mut()
+                .ok_or_else(|| corrupt(&run_id, "writer integration failed before preparation"))?;
+            if integration.integration_id != *integration_id
+                || !integration.started
+                || integration.committed.is_some()
+                || integration.failure.is_some()
+                || integration.expected_root_workspace_state != current_root_workspace_state
+                || integration.expected_root_workspace_state != *root_workspace_state
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer integration failure does not match the in-flight expected root state",
+                ));
+            }
+            integration.failure = Some(AgentIntegrationFailureFact {
+                status: status.clone(),
+                root_workspace_state: root_workspace_state.clone(),
+            });
+        }
+        RuntimeEventKind::AgentIntegrationCommitted {
+            task_id,
+            integration_id,
+            root_head_commit,
+            root_workspace_state_after,
+        } => {
+            let current_root_workspace_state = snapshot.workspace_state.clone();
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let integration = lifecycle.integration.as_mut().ok_or_else(|| {
+                corrupt(&run_id, "writer integration committed before preparation")
+            })?;
+            if integration.integration_id != *integration_id
+                || !integration.started
+                || integration.committed.is_some()
+                || integration.failure.is_some()
+                || integration.expected_root_workspace_state != current_root_workspace_state
+                || root_head_commit != &integration.writer_commit
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer integration commit does not match the in-flight action",
+                ));
+            }
+            if root_workspace_state_after.generation
+                != integration
+                    .expected_root_workspace_state
+                    .generation
+                    .saturating_add(1)
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer integration must advance exactly one generation",
+                ));
+            }
+            integration.committed = Some(AgentIntegrationCommittedFact {
+                root_head_commit: root_head_commit.clone(),
+                root_workspace_state_after: root_workspace_state_after.clone(),
+            });
+        }
+        RuntimeEventKind::AgentCleanupPrepared {
+            task_id,
+            worktree_path,
+            branch,
+            owner_token,
+        } => {
+            let tool_action_settled = snapshot.pending_tool.is_none();
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let result = lifecycle
+                .result
+                .as_ref()
+                .ok_or_else(|| corrupt(&run_id, "writer cleanup prepared before result"))?;
+            let successful = matches!(result.terminal, TerminalState::Completed { .. });
+            let integration_committed = lifecycle
+                .integration
+                .as_ref()
+                .is_some_and(|integration| integration.committed.is_some());
+            let integration_failed = lifecycle
+                .integration
+                .as_ref()
+                .is_some_and(|integration| integration.failure.is_some());
+            let integration_settled = integration_committed ^ integration_failed;
+            let cleanup_order_is_valid = if successful && integration_committed {
+                lifecycle.finished.is_some() && tool_action_settled
+            } else {
+                lifecycle.finished.is_none()
+            };
+            if lifecycle.task.workspace.access != AgentWorkspaceAccess::IsolatedWrite
+                || lifecycle.workspace_created.is_none()
+                || lifecycle.cleanup.is_some()
+                || lifecycle.task.workspace.worktree_path.as_deref() != Some(worktree_path.as_str())
+                || lifecycle.task.workspace.branch.as_deref() != Some(branch.as_str())
+                || lifecycle.task.workspace.owner_token.as_deref() != Some(owner_token.as_str())
+                || (successful && !integration_settled)
+                || (!successful && lifecycle.integration.is_some())
+                || !cleanup_order_is_valid
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer cleanup preparation does not match its owned completed path",
+                ));
+            }
+            lifecycle.cleanup = Some(AgentCleanupLifecycle {
+                worktree_path: worktree_path.clone(),
+                branch: branch.clone(),
+                owner_token: owner_token.clone(),
+                committed: None,
+            });
+        }
+        RuntimeEventKind::AgentCleanupCommitted {
+            task_id,
+            worktree_path,
+            branch,
+            owner_token,
+            worktree_removed,
+            branch_removed,
+            retained_for_recovery,
+            reason,
+        } => {
+            let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
+            let cleanup = lifecycle
+                .cleanup
+                .as_mut()
+                .ok_or_else(|| corrupt(&run_id, "writer cleanup committed before preparation"))?;
+            if cleanup.worktree_path != *worktree_path
+                || cleanup.branch != *branch
+                || cleanup.owner_token != *owner_token
+                || cleanup.committed.is_some()
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "writer cleanup commit does not match the prepared owned resources",
+                ));
+            }
+            cleanup.committed = Some(AgentCleanupCommittedFact {
+                worktree_removed: *worktree_removed,
+                branch_removed: *branch_removed,
+                retained_for_recovery: *retained_for_recovery,
+                reason: reason.clone(),
+            });
         }
         RuntimeEventKind::ChildFinished {
             call_id,
@@ -1144,14 +1803,28 @@ pub fn apply_event(
             accounting,
             handoff_content,
         } => {
-            let Some(position) = snapshot
-                .pending_children
+            let task_position = snapshot
+                .agent_tasks
                 .iter()
-                .position(|run| run == &outcome.run_id)
-            else {
-                return Err(corrupt(&run_id, "child finished without a matching start"));
-            };
-            snapshot.pending_children.remove(position);
+                .position(|lifecycle| lifecycle.task.child_run_id == outcome.run_id)
+                .ok_or_else(|| corrupt(&run_id, "child finished without a prepared Agent task"))?;
+            let lifecycle = &snapshot.agent_tasks[task_position];
+            let expected_outcome = expected_finished_outcome(&run_id, lifecycle)?;
+            if lifecycle.task.call_id != *call_id
+                || expected_outcome != **outcome
+                || lifecycle.finished.is_some()
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "child finish does not match its collected and integrated result",
+                ));
+            }
+            snapshot.agent_tasks[task_position].finished = Some(AgentChildFinishedFact {
+                call_id: call_id.clone(),
+                outcome: (**outcome).clone(),
+                accounting: (**accounting).clone(),
+                handoff_content: handoff_content.clone(),
+            });
             snapshot.runtime_model_requests = snapshot
                 .runtime_model_requests
                 .saturating_add(outcome.runtime_model_requests);
@@ -1230,6 +1903,22 @@ pub fn apply_event(
             if outcome.run_id != run_id {
                 return Err(corrupt(&run_id, "terminal outcome belongs to another run"));
             }
+            if outcome.parent_run_id != snapshot.request.parent_run_id {
+                return Err(corrupt(
+                    &run_id,
+                    "terminal outcome parent does not match the run",
+                ));
+            }
+            if snapshot
+                .agent_tasks
+                .iter()
+                .any(|lifecycle| lifecycle.finished.is_none())
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "run reached terminal with an unsettled AgentTask lifecycle",
+                ));
+            }
             if let Some(control) = &snapshot.pending_control {
                 let matches_control = matches!(
                     (control.action, &outcome.terminal),
@@ -1248,6 +1937,7 @@ pub fn apply_event(
                     ));
                 }
             }
+            validate_terminal_agent_cleanup(snapshot, &run_id, &outcome.terminal)?;
             if let TerminalState::Completed { decision, .. } = &outcome.terminal {
                 validate_completion_decision(snapshot, &run_id, decision)?;
             }
@@ -1255,6 +1945,368 @@ pub fn apply_event(
         }
     }
     snapshot.last_sequence = stored.sequence;
+    Ok(())
+}
+
+fn agent_task_mut<'a>(
+    snapshot: &'a mut RunSnapshot,
+    run_id: &RunId,
+    task_id: &AgentTaskId,
+) -> Result<&'a mut AgentTaskLifecycle, RunStoreError> {
+    snapshot
+        .agent_tasks
+        .iter_mut()
+        .find(|lifecycle| lifecycle.task.task_id == *task_id)
+        .ok_or_else(|| corrupt(run_id, "Agent lifecycle event has no prepared task"))
+}
+
+fn paths_stay_within(changed_files: &[String], allowed_paths: &[String]) -> bool {
+    changed_files.iter().all(|changed| {
+        allowed_paths.iter().any(|allowed| {
+            changed == allowed
+                || changed
+                    .strip_prefix(allowed)
+                    .is_some_and(|suffix| suffix.starts_with('/'))
+        })
+    })
+}
+
+fn validate_collected_agent_result(
+    run_id: &RunId,
+    lifecycle: &AgentTaskLifecycle,
+    outcome: &AgentOutcome,
+) -> Result<(), RunStoreError> {
+    if outcome.run_id != lifecycle.task.child_run_id
+        || outcome.parent_run_id.as_ref() != Some(&lifecycle.task.parent_run_id)
+    {
+        return Err(corrupt(
+            run_id,
+            "collected Agent result does not match its child and parent identity",
+        ));
+    }
+    if outcome
+        .details
+        .evidence
+        .iter()
+        .any(|receipt| receipt.generation_id != lifecycle.task.task_contract.generation_id)
+    {
+        return Err(corrupt(
+            run_id,
+            "collected Agent evidence belongs to another task generation",
+        ));
+    }
+    match lifecycle.task.workspace.access {
+        AgentWorkspaceAccess::ReadOnly => {
+            if lifecycle.workspace_created.is_some()
+                || lifecycle.seal.is_some()
+                || lifecycle.integration.is_some()
+                || lifecycle.cleanup.is_some()
+                || outcome.details.workspace.as_ref() != Some(&lifecycle.task.workspace)
+                || !matches!(
+                    outcome.details.integration,
+                    WriterIntegrationStatus::NotApplicable
+                )
+            {
+                return Err(corrupt(
+                    run_id,
+                    "read-only Agent result carries writer lifecycle facts or a different workspace",
+                ));
+            }
+        }
+        AgentWorkspaceAccess::IsolatedWrite => {
+            let successful = matches!(outcome.terminal, TerminalState::Completed { .. });
+            let committed = lifecycle
+                .seal
+                .as_ref()
+                .and_then(|seal| seal.committed.as_ref());
+            if successful && committed.is_none() {
+                return Err(corrupt(
+                    run_id,
+                    "successful writer result was collected before its seal committed",
+                ));
+            }
+            match committed {
+                Some(committed) => {
+                    if outcome.details.workspace.as_ref() != Some(&lifecycle.task.workspace)
+                        || outcome.details.workspace_state.as_ref()
+                            != Some(&committed.writer_workspace_state_after)
+                        || outcome.details.base_commit.as_deref()
+                            != Some(lifecycle.task.workspace.base_commit.as_str())
+                        || outcome.details.final_commit.as_deref()
+                            != Some(committed.final_commit.as_str())
+                        || outcome.details.diff_sha256.as_deref()
+                            != Some(committed.diff_sha256.as_str())
+                        || outcome.details.changed_files != committed.changed_files
+                    {
+                        return Err(corrupt(
+                            run_id,
+                            "writer result does not exactly match its sealed Host facts",
+                        ));
+                    }
+                    if successful {
+                        let expected_acceptance = lifecycle
+                            .task
+                            .task_contract
+                            .definition
+                            .acceptance
+                            .iter()
+                            .find_map(|acceptance| match acceptance {
+                                TaskAcceptance::Verifier { id, verifier, .. } => {
+                                    Some((id, verifier))
+                                }
+                                TaskAcceptance::Host { .. } => None,
+                            })
+                            .ok_or_else(|| {
+                                corrupt(
+                                    run_id,
+                                    "successful writer task has no exact verifier acceptance",
+                                )
+                            })?;
+                        if outcome.details.evidence.len() != 1
+                            || outcome.details.evidence.iter().any(|receipt| {
+                                receipt.acceptance_id != *expected_acceptance.0
+                                    || receipt.verifier != *expected_acceptance.1
+                                    || receipt.workspace_state
+                                        != lifecycle
+                                            .seal
+                                            .as_ref()
+                                            .expect("committed writer seal remains present")
+                                            .writer_workspace_state_before
+                            })
+                        {
+                            return Err(corrupt(
+                                run_id,
+                                "successful writer receipt does not verify the exact pre-seal child workspace",
+                            ));
+                        }
+                        let receipt = &outcome.details.evidence[0];
+                        let TerminalState::Completed { decision, .. } = &outcome.terminal else {
+                            unreachable!("successful writer was matched above");
+                        };
+                        if decision.generation_id != lifecycle.task.task_contract.generation_id
+                            || decision.workspace_state
+                                != lifecycle
+                                    .seal
+                                    .as_ref()
+                                    .expect("committed writer seal remains present")
+                                    .writer_workspace_state_before
+                            || decision.satisfied.as_slice()
+                                != [AcceptanceSatisfaction::Evidence {
+                                    acceptance_id: receipt.acceptance_id.clone(),
+                                    receipt_id: receipt.id.clone(),
+                                }]
+                        {
+                            return Err(corrupt(
+                                run_id,
+                                "successful writer completion decision is not backed by its exact pre-seal receipt",
+                            ));
+                        }
+                    }
+                    let valid_integration_state = if successful {
+                        matches!(
+                            outcome.details.integration,
+                            WriterIntegrationStatus::AwaitingHost
+                        )
+                    } else {
+                        matches!(
+                            outcome.details.integration,
+                            WriterIntegrationStatus::Rejected { .. }
+                                | WriterIntegrationStatus::Conflict { .. }
+                        )
+                    };
+                    if !valid_integration_state {
+                        return Err(corrupt(
+                            run_id,
+                            "writer result has an invalid pre-integration disposition",
+                        ));
+                    }
+                }
+                None => {
+                    if outcome.details.workspace.is_some()
+                        || outcome.details.workspace_state.is_some()
+                        || outcome.details.base_commit.is_some()
+                        || outcome.details.final_commit.is_some()
+                        || outcome.details.diff_sha256.is_some()
+                        || !outcome.details.changed_files.is_empty()
+                        || !matches!(
+                            outcome.details.integration,
+                            WriterIntegrationStatus::NotApplicable
+                        )
+                    {
+                        return Err(corrupt(
+                            run_id,
+                            "unsealed failed writer result claims Host seal facts",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn expected_finished_outcome(
+    run_id: &RunId,
+    lifecycle: &AgentTaskLifecycle,
+) -> Result<AgentOutcome, RunStoreError> {
+    let mut expected = lifecycle
+        .result
+        .clone()
+        .ok_or_else(|| corrupt(run_id, "child finished before its result was collected"))?;
+    match lifecycle.task.workspace.access {
+        AgentWorkspaceAccess::ReadOnly => {
+            if lifecycle.workspace_created.is_some()
+                || lifecycle.seal.is_some()
+                || lifecycle.integration.is_some()
+                || lifecycle.cleanup.is_some()
+            {
+                return Err(corrupt(
+                    run_id,
+                    "read-only child acquired a writer lifecycle",
+                ));
+            }
+        }
+        AgentWorkspaceAccess::IsolatedWrite => {
+            let integration_committed = lifecycle
+                .integration
+                .as_ref()
+                .is_some_and(|integration| integration.committed.is_some());
+            let cleanup_must_precede_finish =
+                !matches!(expected.terminal, TerminalState::Completed { .. })
+                    || !integration_committed;
+            if lifecycle.workspace_created.is_some()
+                && cleanup_must_precede_finish
+                && lifecycle
+                    .cleanup
+                    .as_ref()
+                    .and_then(|cleanup| cleanup.committed.as_ref())
+                    .is_none()
+            {
+                return Err(corrupt(
+                    run_id,
+                    "writer child finished before owned workspace cleanup settled",
+                ));
+            }
+            if matches!(expected.terminal, TerminalState::Completed { .. }) {
+                let integration = lifecycle
+                    .integration
+                    .as_ref()
+                    .ok_or_else(|| corrupt(run_id, "successful writer was not integrated"))?;
+                match (&integration.committed, &integration.failure) {
+                    (Some(committed), None) => {
+                        expected.details.integration = WriterIntegrationStatus::Integrated {
+                            integration_id: integration.integration_id.clone(),
+                            writer_commit: integration.writer_commit.clone(),
+                            root_workspace_state: committed.root_workspace_state_after.clone(),
+                        };
+                    }
+                    (None, Some(failure)) => {
+                        expected.details.integration = failure.status.clone();
+                        match &failure.status {
+                            WriterIntegrationStatus::Rejected { reason }
+                            | WriterIntegrationStatus::Conflict { reason } => {
+                                expected.terminal = TerminalState::Blocked {
+                                    reason: reason.clone(),
+                                };
+                            }
+                            WriterIntegrationStatus::RecoveryRequired { reason } => {
+                                expected.terminal = TerminalState::RecoveryRequired {
+                                    ambiguity: RecoveryAmbiguity {
+                                        phase: RecoveryAmbiguityPhase::ChildRun,
+                                        action_id: format!(
+                                            "agent-integration:{}",
+                                            integration.integration_id.0
+                                        ),
+                                        message: reason.clone(),
+                                    },
+                                };
+                            }
+                            WriterIntegrationStatus::NotApplicable
+                            | WriterIntegrationStatus::AwaitingHost
+                            | WriterIntegrationStatus::Integrated { .. } => {
+                                return Err(corrupt(
+                                    run_id,
+                                    "writer integration failure has a non-failure status",
+                                ));
+                            }
+                        }
+                    }
+                    (Some(_), Some(_)) => {
+                        return Err(corrupt(
+                            run_id,
+                            "writer integration cannot both commit and fail",
+                        ));
+                    }
+                    (None, None) => {
+                        return Err(corrupt(
+                            run_id,
+                            "successful writer integration did not reach a durable outcome",
+                        ));
+                    }
+                }
+            } else if lifecycle.integration.is_some() {
+                return Err(corrupt(
+                    run_id,
+                    "unsuccessful writer cannot carry an integration action",
+                ));
+            }
+            if let Some(cleanup) = lifecycle
+                .cleanup
+                .as_ref()
+                .and_then(|cleanup| cleanup.committed.as_ref())
+                && cleanup.retained_for_recovery
+            {
+                expected.terminal = TerminalState::RecoveryRequired {
+                    ambiguity: RecoveryAmbiguity {
+                        phase: RecoveryAmbiguityPhase::ChildRun,
+                        action_id: format!("agent-cleanup:{}", lifecycle.task.task_id.0),
+                        message: cleanup.reason.clone().unwrap_or_else(|| {
+                            "writer workspace ownership cleanup is ambiguous".to_owned()
+                        }),
+                    },
+                };
+            }
+        }
+    }
+    Ok(expected)
+}
+
+fn validate_terminal_agent_cleanup(
+    snapshot: &RunSnapshot,
+    run_id: &RunId,
+    terminal: &TerminalState,
+) -> Result<(), RunStoreError> {
+    let recovery_terminal = matches!(terminal, TerminalState::RecoveryRequired { .. });
+    for lifecycle in snapshot.agent_tasks.iter().filter(|lifecycle| {
+        lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+            && lifecycle.workspace_created.is_some()
+    }) {
+        let integrated = lifecycle
+            .integration
+            .as_ref()
+            .is_some_and(|integration| integration.committed.is_some());
+        let cleanup = lifecycle
+            .cleanup
+            .as_ref()
+            .and_then(|cleanup| cleanup.committed.as_ref());
+        if integrated && cleanup.is_none() {
+            return Err(corrupt(
+                run_id,
+                "root terminal requires every integrated writer cleanup to commit",
+            ));
+        }
+        let Some(cleanup) = cleanup else {
+            continue;
+        };
+        let fully_removed =
+            cleanup.worktree_removed && cleanup.branch_removed && !cleanup.retained_for_recovery;
+        if !fully_removed && !recovery_terminal {
+            return Err(corrupt(
+                run_id,
+                "retained or incomplete writer cleanup requires a recovery-required root terminal",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -1478,7 +2530,10 @@ fn validate_compaction_safe_boundary(
         || snapshot.pending_tool.is_some()
         || snapshot.pending_completion.is_some()
         || snapshot.pending_host_verification.is_some()
-        || !snapshot.pending_children.is_empty()
+        || snapshot
+            .agent_tasks
+            .iter()
+            .any(|lifecycle| lifecycle.finished.is_none())
         || !snapshot.pending_steers.is_empty()
         || snapshot.pending_control.is_some()
         || snapshot.last_model_failure.is_some()
@@ -1498,7 +2553,10 @@ fn validate_model_request_safe_boundary(
     if snapshot.pending_tool.is_some()
         || snapshot.pending_completion.is_some()
         || snapshot.pending_host_verification.is_some()
-        || !snapshot.pending_children.is_empty()
+        || snapshot
+            .agent_tasks
+            .iter()
+            .any(|lifecycle| lifecycle.finished.is_none())
         || !snapshot.pending_steers.is_empty()
         || snapshot.pending_control.is_some()
     {
@@ -1604,6 +2662,7 @@ pub struct InMemoryRunStore {
 #[derive(Debug)]
 struct InMemoryRun {
     events: Vec<StoredRuntimeEvent>,
+    snapshot: RunSnapshot,
     lease: Option<RunLease>,
     next_epoch: u64,
 }
@@ -1706,7 +2765,7 @@ impl RunStore for InMemoryRunStore {
                 .ok_or_else(|| RunStoreError::NotFound {
                     run_id: source_run_id.clone(),
                 })?;
-            let source = replay(source.events.clone())?;
+            let source = replay_in_memory_run(source)?;
             validate_continuation_request(&source.snapshot, &request)?;
             validate_in_memory_continuation_lineage(
                 &runs,
@@ -1731,6 +2790,7 @@ impl RunStore for InMemoryRunStore {
             run_id.clone(),
             InMemoryRun {
                 events: vec![created.clone()],
+                snapshot: replay.snapshot.clone(),
                 lease: Some(lease.clone()),
                 next_epoch: 2,
             },
@@ -1759,7 +2819,7 @@ impl RunStore for InMemoryRunStore {
             .ok_or_else(|| RunStoreError::NotFound {
                 run_id: run_id.clone(),
             })?;
-        let replay = replay(run.events.clone())?;
+        let replay = replay_in_memory_run(run)?;
         if replay.snapshot.terminal.is_some() {
             return Ok(AcquiredRun {
                 lease: None,
@@ -1831,13 +2891,13 @@ impl RunStore for InMemoryRunStore {
             occurred_at_unix_ms: now_unix_ms(),
             event: pending.event,
         };
-        let mut candidate = run.events.clone();
-        candidate.push(stored.clone());
-        reduce_events(&candidate)?;
+        let mut candidate_snapshot = run.snapshot.clone();
+        apply_event(&mut candidate_snapshot, &stored)?;
         if stored.event.is_terminal() {
             run.lease = None;
         }
         run.events.push(stored.clone());
+        run.snapshot = candidate_snapshot;
         Ok(stored)
     }
 
@@ -1846,7 +2906,7 @@ impl RunStore for InMemoryRunStore {
             .lock()
             .await
             .get(run_id)
-            .map(|run| replay(run.events.clone()))
+            .map(replay_in_memory_run)
             .transpose()
     }
 
@@ -1895,7 +2955,8 @@ impl RunStore for InMemoryRunStore {
         let runs = self.runs.lock().await;
         let mut candidates = Vec::new();
         for (run_id, run) in runs.iter() {
-            let snapshot = reduce_events(&run.events)?;
+            let replay = replay_in_memory_run(run)?;
+            let snapshot = replay.snapshot;
             if snapshot.request.parent_run_id.is_some()
                 || snapshot.request.environment.workspace != workspace
             {
@@ -1949,7 +3010,7 @@ fn validate_in_memory_continuation_lineage(
             return Err(invalid());
         }
         let run = runs.get(&run_id).ok_or_else(invalid)?;
-        let replay = replay(run.events.clone())?;
+        let replay = replay_in_memory_run(run)?;
         let snapshot = replay.snapshot;
         if snapshot.request.parent_run_id.is_some()
             || snapshot.request.actor.kind != AgentActorKind::Root
@@ -1969,11 +3030,1058 @@ fn replay(events: Vec<StoredRuntimeEvent>) -> Result<RunReplay, RunStoreError> {
     Ok(RunReplay { snapshot, events })
 }
 
+fn replay_in_memory_run(run: &InMemoryRun) -> Result<RunReplay, RunStoreError> {
+    let replay = replay(run.events.clone())?;
+    if replay.snapshot != run.snapshot {
+        let run_id = run.snapshot.request.run_id.clone().unwrap_or_default();
+        return Err(corrupt(
+            &run_id,
+            "cached in-memory snapshot diverges from full event replay",
+        ));
+    }
+    Ok(replay)
+}
+
 fn new_lease(run_id: RunId, epoch: u64) -> RunLease {
     RunLease {
         run_id,
         epoch,
         owner_id: RuntimeEventId::new().0,
         owner_pid: std::process::id(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use serde_json::json;
+
+    use super::*;
+
+    const BASE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const FINAL: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const DIFF: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    fn known(generation: u64, revision: &str) -> WorkspaceState {
+        WorkspaceState {
+            generation,
+            revision: WorkspaceRevision::Known {
+                sha256: revision.to_owned(),
+            },
+        }
+    }
+
+    fn root_request() -> RunRequest {
+        let run_id = RunId::from("root");
+        let mut request = RunRequest::new(
+            TaskContract {
+                generation_id: TaskGenerationId::from(run_id.0.clone()),
+                definition: TaskDefinition::host("root task"),
+            },
+            "system",
+        );
+        request.run_id = Some(run_id);
+        request.environment.workspace = "/repo".to_owned();
+        request
+    }
+
+    fn writer_task() -> AgentTask {
+        let child_run_id = RunId::from("child");
+        AgentTask {
+            task_id: AgentTaskId::from("task-1"),
+            root_run_id: RunId::from("root"),
+            parent_run_id: RunId::from("root"),
+            child_run_id: child_run_id.clone(),
+            call_id: "call-1".to_owned(),
+            role: "writer".to_owned(),
+            task_contract: TaskContract {
+                generation_id: TaskGenerationId::from(child_run_id.0),
+                definition: TaskDefinition {
+                    objective: "write one file".to_owned(),
+                    constraints: Vec::new(),
+                    non_goals: Vec::new(),
+                    acceptance: vec![TaskAcceptance::Verifier {
+                        id: AcceptanceId::from("host"),
+                        description: "exact child verifier".to_owned(),
+                        verifier: verifier(),
+                    }],
+                },
+            },
+            workspace: AgentWorkspaceAssignment {
+                access: AgentWorkspaceAccess::IsolatedWrite,
+                root_workspace: "/repo".to_owned(),
+                root_branch: Some("deepseek-agent".to_owned()),
+                base_commit: BASE.to_owned(),
+                worktree_path: Some("/tmp/codewhale-writer".to_owned()),
+                branch: Some("codewhale/writer/task-1".to_owned()),
+                allowed_paths: vec!["src/lib.rs".to_owned()],
+                owner_token: Some("owner-1".to_owned()),
+            },
+            tool_policy: ToolPolicy::default(),
+            limits: RunLimits::default(),
+            deadline_unix_ms: None,
+            expected_artifact: "sealed commit".to_owned(),
+        }
+    }
+
+    fn verifier() -> VerifierSpec {
+        VerifierSpec {
+            verifier_id: "fixture".to_owned(),
+            parameters: json!({}),
+            plan: VerifierPlan {
+                steps: vec![VerifierStep {
+                    id: "check".to_owned(),
+                    program: "true".to_owned(),
+                    args: Vec::new(),
+                    cwd: String::new(),
+                    env: BTreeMap::new(),
+                    timeout_ms: 1_000,
+                }],
+            },
+        }
+    }
+
+    fn child_receipt() -> EvidenceReceipt {
+        EvidenceReceipt {
+            id: EvidenceReceiptId::from("child-receipt"),
+            generation_id: TaskGenerationId::from("child"),
+            acceptance_id: AcceptanceId::from("host"),
+            verification_id: VerificationId::from("child-verification"),
+            verifier: verifier(),
+            workspace_state: known(1, "writer-dirty"),
+            artifact_ids: vec!["child-artifact".to_owned()],
+        }
+    }
+
+    fn collected_writer_outcome() -> AgentOutcome {
+        AgentOutcome {
+            run_id: RunId::from("child"),
+            parent_run_id: Some(RunId::from("root")),
+            terminal: TerminalState::Completed {
+                message: "done".to_owned(),
+                decision: CompletionDecision {
+                    candidate_id: CompletionCandidateId::from("child-candidate"),
+                    generation_id: TaskGenerationId::from("child"),
+                    workspace_state: known(1, "writer-dirty"),
+                    satisfied: vec![AcceptanceSatisfaction::Evidence {
+                        acceptance_id: AcceptanceId::from("host"),
+                        receipt_id: EvidenceReceiptId::from("child-receipt"),
+                    }],
+                },
+            },
+            accounting: ModelAccounting::default(),
+            runtime_model_requests: 1,
+            runtime_retries: 0,
+            tool_calls: 1,
+            details: AgentResultDetails {
+                summary: "changed one file".to_owned(),
+                evidence: vec![child_receipt()],
+                changed_files: vec!["src/lib.rs".to_owned()],
+                checks: Vec::new(),
+                unresolved: Vec::new(),
+                artifacts: Vec::new(),
+                workspace: Some(writer_task().workspace),
+                workspace_state: Some(known(2, "writer-sealed")),
+                base_commit: Some(BASE.to_owned()),
+                final_commit: Some(FINAL.to_owned()),
+                diff_sha256: Some(DIFF.to_owned()),
+                integration: WriterIntegrationStatus::AwaitingHost,
+            },
+        }
+    }
+
+    fn integrated_writer_outcome() -> AgentOutcome {
+        let mut outcome = collected_writer_outcome();
+        outcome.details.integration = WriterIntegrationStatus::Integrated {
+            integration_id: OperationId("integrate-1".to_owned()),
+            writer_commit: FINAL.to_owned(),
+            root_workspace_state: known(2, "root-integrated"),
+        };
+        outcome
+    }
+
+    fn read_only_task() -> AgentTask {
+        let child_run_id = RunId::from("child");
+        AgentTask {
+            task_id: AgentTaskId::from("task-1"),
+            root_run_id: RunId::from("root"),
+            parent_run_id: RunId::from("root"),
+            child_run_id: child_run_id.clone(),
+            call_id: "call-1".to_owned(),
+            role: "explorer".to_owned(),
+            task_contract: TaskContract {
+                generation_id: TaskGenerationId::from(child_run_id.0),
+                definition: TaskDefinition::host("inspect one file"),
+            },
+            workspace: AgentWorkspaceAssignment {
+                access: AgentWorkspaceAccess::ReadOnly,
+                root_workspace: "/repo".to_owned(),
+                root_branch: None,
+                base_commit: BASE.to_owned(),
+                worktree_path: None,
+                branch: None,
+                allowed_paths: Vec::new(),
+                owner_token: None,
+            },
+            tool_policy: ToolPolicy::default(),
+            limits: RunLimits::default(),
+            deadline_unix_ms: None,
+            expected_artifact: "analysis".to_owned(),
+        }
+    }
+
+    fn read_only_outcome() -> AgentOutcome {
+        AgentOutcome {
+            run_id: RunId::from("child"),
+            parent_run_id: Some(RunId::from("root")),
+            terminal: TerminalState::Blocked {
+                reason: "reported findings".to_owned(),
+            },
+            accounting: ModelAccounting::default(),
+            runtime_model_requests: 1,
+            runtime_retries: 0,
+            tool_calls: 1,
+            details: AgentResultDetails {
+                summary: "read-only findings".to_owned(),
+                workspace: Some(read_only_task().workspace),
+                workspace_state: Some(known(0, "root-read-view")),
+                ..AgentResultDetails::default()
+            },
+        }
+    }
+
+    fn event_kinds() -> Vec<RuntimeEventKind> {
+        let task = writer_task();
+        vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(root_request()),
+            },
+            RuntimeEventKind::WorkspaceObserved {
+                workspace_state: known(1, "root-base"),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("agent-operation".to_owned()),
+                invocation: ToolInvocation {
+                    run_id: RunId::from("root"),
+                    call_id: task.call_id.clone(),
+                    name: AGENT_TOOL_NAME.to_owned(),
+                    arguments: ToolArguments::from_value(json!({})),
+                },
+                workspace_access: WorkspaceAccess::MayWrite,
+            },
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: OperationId("agent-operation".to_owned()),
+            },
+            RuntimeEventKind::AgentTaskPrepared {
+                task: Box::new(task.clone()),
+            },
+            RuntimeEventKind::AgentWorkspaceCreated {
+                task_id: task.task_id.clone(),
+                assignment: task.workspace.clone(),
+                writer_workspace_state: known(0, "writer-created"),
+            },
+            RuntimeEventKind::ChildStarted {
+                task_id: task.task_id.clone(),
+                call_id: task.call_id.clone(),
+                child_run_id: task.child_run_id.clone(),
+                depth: 1,
+            },
+            RuntimeEventKind::AgentSealPrepared {
+                task_id: task.task_id.clone(),
+                base_commit: BASE.to_owned(),
+                writer_workspace_state_before: known(1, "writer-dirty"),
+            },
+            RuntimeEventKind::AgentSealCommitted {
+                task_id: task.task_id.clone(),
+                final_commit: FINAL.to_owned(),
+                diff_sha256: DIFF.to_owned(),
+                changed_files: vec!["src/lib.rs".to_owned()],
+                writer_workspace_state_after: known(2, "writer-sealed"),
+            },
+            RuntimeEventKind::AgentResultCollected {
+                task_id: task.task_id.clone(),
+                outcome: Box::new(collected_writer_outcome()),
+            },
+            RuntimeEventKind::AgentIntegrationPrepared {
+                task_id: task.task_id.clone(),
+                integration_id: OperationId("integrate-1".to_owned()),
+                base_commit: BASE.to_owned(),
+                writer_commit: FINAL.to_owned(),
+                diff_sha256: DIFF.to_owned(),
+                expected_root_workspace_state: known(1, "root-base"),
+            },
+            RuntimeEventKind::AgentIntegrationStarted {
+                task_id: task.task_id.clone(),
+                integration_id: OperationId("integrate-1".to_owned()),
+            },
+            RuntimeEventKind::AgentIntegrationCommitted {
+                task_id: task.task_id.clone(),
+                integration_id: OperationId("integrate-1".to_owned()),
+                root_head_commit: FINAL.to_owned(),
+                root_workspace_state_after: known(2, "root-integrated"),
+            },
+            RuntimeEventKind::ChildFinished {
+                call_id: task.call_id.clone(),
+                outcome: Box::new(integrated_writer_outcome()),
+                accounting: Box::new(ModelAccounting::default()),
+                handoff_content: "writer integrated".to_owned(),
+            },
+            RuntimeEventKind::ToolOutcomeCommitted {
+                operation_id: OperationId("agent-operation".to_owned()),
+                call_id: task.call_id.clone(),
+                name: AGENT_TOOL_NAME.to_owned(),
+                outcome: Box::new(
+                    ToolOutcome::success("writer integrated")
+                        .with_side_effect(ToolSideEffectStatus::Applied),
+                ),
+                workspace_state: Some(known(2, "root-integrated")),
+            },
+            RuntimeEventKind::AgentCleanupPrepared {
+                task_id: task.task_id.clone(),
+                worktree_path: task.workspace.worktree_path.clone().unwrap(),
+                branch: task.workspace.branch.clone().unwrap(),
+                owner_token: task.workspace.owner_token.clone().unwrap(),
+            },
+            RuntimeEventKind::AgentCleanupCommitted {
+                task_id: task.task_id.clone(),
+                worktree_path: task.workspace.worktree_path.clone().unwrap(),
+                branch: task.workspace.branch.clone().unwrap(),
+                owner_token: task.workspace.owner_token.clone().unwrap(),
+                worktree_removed: true,
+                branch_removed: true,
+                retained_for_recovery: false,
+                reason: None,
+            },
+        ]
+    }
+
+    fn outcome_after_integration_failure(status: WriterIntegrationStatus) -> AgentOutcome {
+        let mut outcome = collected_writer_outcome();
+        outcome.details.integration = status.clone();
+        outcome.terminal = match status {
+            WriterIntegrationStatus::Rejected { reason }
+            | WriterIntegrationStatus::Conflict { reason } => TerminalState::Blocked { reason },
+            WriterIntegrationStatus::RecoveryRequired { reason } => {
+                TerminalState::RecoveryRequired {
+                    ambiguity: RecoveryAmbiguity {
+                        phase: RecoveryAmbiguityPhase::ChildRun,
+                        action_id: "agent-integration:integrate-1".to_owned(),
+                        message: reason,
+                    },
+                }
+            }
+            WriterIntegrationStatus::NotApplicable
+            | WriterIntegrationStatus::AwaitingHost
+            | WriterIntegrationStatus::Integrated { .. } => {
+                panic!("failure fixture requires a failure status")
+            }
+        };
+        outcome
+    }
+
+    fn failed_integration_kinds(status: WriterIntegrationStatus) -> Vec<RuntimeEventKind> {
+        let mut kinds = event_kinds();
+        kinds[12] = RuntimeEventKind::AgentIntegrationFailed {
+            task_id: AgentTaskId::from("task-1"),
+            integration_id: OperationId("integrate-1".to_owned()),
+            status: status.clone(),
+            root_workspace_state: known(1, "root-base"),
+        };
+        let finished = kinds.remove(13);
+        let tool_outcome = kinds.remove(13);
+        assert!(matches!(
+            tool_outcome,
+            RuntimeEventKind::ToolOutcomeCommitted { .. }
+        ));
+        kinds.push(finished);
+        let RuntimeEventKind::ChildFinished { outcome, .. } = &mut kinds[15] else {
+            panic!("fixture child finish");
+        };
+        **outcome = outcome_after_integration_failure(status);
+        kinds
+    }
+
+    fn stored_events(kinds: Vec<RuntimeEventKind>) -> Vec<StoredRuntimeEvent> {
+        kinds
+            .into_iter()
+            .enumerate()
+            .map(|(index, event)| StoredRuntimeEvent {
+                schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+                run_id: RunId::from("root"),
+                parent_run_id: None,
+                event_id: if index == 0 {
+                    RuntimeEventId::run_created()
+                } else {
+                    RuntimeEventId(format!("event-{index}"))
+                },
+                sequence: u64::try_from(index).unwrap() + 1,
+                occurred_at_unix_ms: 1,
+                event,
+            })
+            .collect()
+    }
+
+    fn root_terminal(terminal: TerminalState) -> RuntimeEventKind {
+        RuntimeEventKind::Terminal {
+            outcome: Box::new(AgentOutcome {
+                run_id: RunId::from("root"),
+                parent_run_id: None,
+                terminal,
+                accounting: ModelAccounting::default(),
+                runtime_model_requests: 0,
+                runtime_retries: 0,
+                tool_calls: 0,
+                details: AgentResultDetails::default(),
+            }),
+        }
+    }
+
+    #[test]
+    fn writer_lifecycle_replays_full_recovery_facts_without_promoting_child_evidence() {
+        let snapshot = reduce_events(&stored_events(event_kinds())).unwrap();
+        let lifecycle = snapshot.agent_tasks.first().unwrap();
+        assert!(lifecycle.finished.is_some());
+        assert_eq!(
+            lifecycle
+                .integration
+                .as_ref()
+                .unwrap()
+                .committed
+                .as_ref()
+                .unwrap()
+                .root_workspace_state_after,
+            known(2, "root-integrated")
+        );
+        assert!(snapshot.pending_child_run_ids().is_empty());
+        assert!(
+            snapshot.evidence_receipts.is_empty(),
+            "a child receipt must never become root completion evidence"
+        );
+        assert_eq!(
+            snapshot.workspace_state,
+            known(2, "root-integrated"),
+            "the agent ToolOutcome settles the integrated root revision exactly once"
+        );
+    }
+
+    #[test]
+    fn writer_root_generation_advances_only_when_the_agent_tool_outcome_commits() {
+        let mut before_tool_outcome = event_kinds();
+        before_tool_outcome.truncate(14);
+        let snapshot = reduce_events(&stored_events(before_tool_outcome)).unwrap();
+        assert_eq!(snapshot.workspace_state, known(1, "root-base"));
+        assert!(snapshot.pending_tool.is_some());
+        assert!(snapshot.pending_child_run_ids().is_empty());
+        assert!(snapshot.agent_tasks[0].cleanup.is_none());
+
+        let snapshot = reduce_events(&stored_events(event_kinds())).unwrap();
+        assert_eq!(snapshot.workspace_state, known(2, "root-integrated"));
+        assert!(snapshot.pending_tool.is_none());
+    }
+
+    #[test]
+    fn successful_writer_cleanup_is_deferred_until_after_handoff_and_root_settlement() {
+        let mut early_cleanup = event_kinds();
+        let cleanup = early_cleanup.remove(15);
+        early_cleanup.insert(13, cleanup);
+        let error = reduce_events(&stored_events(early_cleanup)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("cleanup preparation does not match")
+        ));
+
+        let snapshot = reduce_events(&stored_events(event_kinds())).unwrap();
+        let lifecycle = &snapshot.agent_tasks[0];
+        assert!(lifecycle.finished.is_some());
+        assert!(lifecycle.cleanup.as_ref().unwrap().committed.is_some());
+    }
+
+    #[test]
+    fn root_terminal_rejects_an_integrated_writer_without_committed_cleanup() {
+        let mut missing_cleanup = event_kinds();
+        missing_cleanup.truncate(15);
+        missing_cleanup.push(root_terminal(TerminalState::Failed {
+            failure: RuntimeFailure::Join {
+                message: "root stopped".to_owned(),
+            },
+        }));
+        let error = reduce_events(&stored_events(missing_cleanup)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("integrated writer cleanup")
+        ));
+
+        let mut settled = event_kinds();
+        settled.push(root_terminal(TerminalState::Failed {
+            failure: RuntimeFailure::Join {
+                message: "root stopped".to_owned(),
+            },
+        }));
+        let snapshot = reduce_events(&stored_events(settled)).unwrap();
+        assert!(matches!(
+            snapshot.terminal.as_ref().map(|outcome| &outcome.terminal),
+            Some(TerminalState::Failed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_memory_append_is_incremental_atomic_and_matches_full_replay() {
+        let store = InMemoryRunStore::default();
+        let created = store.create(root_request()).await.unwrap();
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::WorkspaceObserved {
+                    workspace_state: known(1, "root-base"),
+                }),
+            )
+            .await
+            .unwrap();
+
+        let error = store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::AgentCleanupPrepared {
+                    task_id: AgentTaskId::from("missing-task"),
+                    worktree_path: "/tmp/missing-worktree".to_owned(),
+                    branch: "codex/missing-task".to_owned(),
+                    owner_token: "missing-owner".to_owned(),
+                }),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("no prepared task")
+        ));
+
+        {
+            let runs = store.runs.lock().await;
+            let run = runs.get(&RunId::from("root")).unwrap();
+            assert_eq!(run.events.len(), 2);
+            assert_eq!(run.snapshot.last_sequence, 2);
+            assert_eq!(run.snapshot.workspace_state, known(1, "root-base"));
+        }
+
+        store
+            .append(
+                &created.lease,
+                PendingRuntimeEvent::new(RuntimeEventKind::WorkspaceObserved {
+                    workspace_state: known(2, "root-after-rejected-event"),
+                }),
+            )
+            .await
+            .unwrap();
+        let replay = store.load(&RunId::from("root")).await.unwrap().unwrap();
+        assert_eq!(replay.events.len(), 3);
+        assert_eq!(replay.snapshot.last_sequence, 3);
+        assert_eq!(
+            replay.snapshot.workspace_state,
+            known(2, "root-after-rejected-event")
+        );
+        assert_eq!(replay.snapshot, reduce_events(&replay.events).unwrap());
+    }
+
+    #[test]
+    fn read_only_child_uses_the_minimal_lifecycle_without_writer_facts() {
+        let task = read_only_task();
+        let outcome = read_only_outcome();
+        let kinds = vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(root_request()),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("agent-operation".to_owned()),
+                invocation: ToolInvocation {
+                    run_id: RunId::from("root"),
+                    call_id: task.call_id.clone(),
+                    name: AGENT_TOOL_NAME.to_owned(),
+                    arguments: ToolArguments::from_value(json!({})),
+                },
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: OperationId("agent-operation".to_owned()),
+            },
+            RuntimeEventKind::AgentTaskPrepared {
+                task: Box::new(task.clone()),
+            },
+            RuntimeEventKind::ChildStarted {
+                task_id: task.task_id.clone(),
+                call_id: task.call_id.clone(),
+                child_run_id: task.child_run_id,
+                depth: 1,
+            },
+            RuntimeEventKind::ToolOutcomeCommitted {
+                operation_id: OperationId("agent-operation".to_owned()),
+                call_id: task.call_id.clone(),
+                name: AGENT_TOOL_NAME.to_owned(),
+                outcome: Box::new(ToolOutcome::success("read-only child launched")),
+                workspace_state: None,
+            },
+            RuntimeEventKind::AgentResultCollected {
+                task_id: task.task_id,
+                outcome: Box::new(outcome.clone()),
+            },
+            RuntimeEventKind::ChildFinished {
+                call_id: task.call_id,
+                outcome: Box::new(outcome),
+                accounting: Box::new(ModelAccounting::default()),
+                handoff_content: "read-only child settled".to_owned(),
+            },
+        ];
+        let snapshot = reduce_events(&stored_events(kinds)).unwrap();
+        let lifecycle = snapshot.agent_tasks.first().unwrap();
+        assert!(lifecycle.workspace_created.is_none());
+        assert!(lifecycle.seal.is_none());
+        assert!(lifecycle.integration.is_none());
+        assert!(lifecycle.cleanup.is_none());
+        assert!(lifecycle.finished.is_some());
+    }
+
+    #[test]
+    fn writer_start_failure_can_settle_without_a_created_workspace() {
+        let task = writer_task();
+        let outcome = AgentOutcome {
+            run_id: task.child_run_id.clone(),
+            parent_run_id: Some(task.parent_run_id.clone()),
+            terminal: TerminalState::Failed {
+                failure: RuntimeFailure::Join {
+                    message: "child process did not start".to_owned(),
+                },
+            },
+            accounting: ModelAccounting::default(),
+            runtime_model_requests: 0,
+            runtime_retries: 0,
+            tool_calls: 0,
+            details: AgentResultDetails::default(),
+        };
+        let kinds = vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(root_request()),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("agent-operation".to_owned()),
+                invocation: ToolInvocation {
+                    run_id: RunId::from("root"),
+                    call_id: task.call_id.clone(),
+                    name: AGENT_TOOL_NAME.to_owned(),
+                    arguments: ToolArguments::from_value(json!({})),
+                },
+                workspace_access: WorkspaceAccess::MayWrite,
+            },
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: OperationId("agent-operation".to_owned()),
+            },
+            RuntimeEventKind::AgentTaskPrepared {
+                task: Box::new(task.clone()),
+            },
+            RuntimeEventKind::AgentResultCollected {
+                task_id: task.task_id,
+                outcome: Box::new(outcome.clone()),
+            },
+            RuntimeEventKind::ChildFinished {
+                call_id: task.call_id,
+                outcome: Box::new(outcome),
+                accounting: Box::new(ModelAccounting::default()),
+                handoff_content: "writer did not start".to_owned(),
+            },
+        ];
+        let snapshot = reduce_events(&stored_events(kinds)).unwrap();
+        let lifecycle = snapshot.agent_tasks.first().unwrap();
+        assert!(lifecycle.workspace_created.is_none());
+        assert!(lifecycle.child_started.is_none());
+        assert!(lifecycle.finished.is_some());
+        assert!(snapshot.pending_child_run_ids().is_empty());
+    }
+
+    #[test]
+    fn writer_result_before_seal_is_rejected() {
+        let mut kinds = event_kinds();
+        let result = kinds.remove(9);
+        kinds.insert(7, result);
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("before its seal committed")
+        ));
+    }
+
+    #[test]
+    fn a_second_event_id_cannot_repeat_an_agent_lifecycle_stage() {
+        let mut kinds = event_kinds();
+        kinds.insert(
+            5,
+            RuntimeEventKind::AgentTaskPrepared {
+                task: Box::new(writer_task()),
+            },
+        );
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("reused a task")
+        ));
+    }
+
+    #[test]
+    fn a_root_can_never_freeze_a_second_writer_after_the_first_finished() {
+        let mut kinds = event_kinds();
+        let mut second = writer_task();
+        second.task_id = AgentTaskId::from("task-2");
+        second.child_run_id = RunId::from("child-2");
+        second.call_id = "call-2".to_owned();
+        second.task_contract.generation_id = TaskGenerationId::from("child-2");
+        second.workspace.base_commit = FINAL.to_owned();
+        second.workspace.worktree_path = Some("/tmp/codewhale-writer-2".to_owned());
+        second.workspace.branch = Some("codewhale/writer/task-2".to_owned());
+        second.workspace.owner_token = Some("owner-2".to_owned());
+        kinds.extend([
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("agent-operation-2".to_owned()),
+                invocation: ToolInvocation {
+                    run_id: RunId::from("root"),
+                    call_id: second.call_id.clone(),
+                    name: AGENT_TOOL_NAME.to_owned(),
+                    arguments: ToolArguments::from_value(json!({})),
+                },
+                workspace_access: WorkspaceAccess::MayWrite,
+            },
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: OperationId("agent-operation-2".to_owned()),
+            },
+            RuntimeEventKind::AgentTaskPrepared {
+                task: Box::new(second),
+            },
+        ]);
+
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("only one isolated writer task per root run")
+        ));
+    }
+
+    #[test]
+    fn agent_preflight_rejection_never_invents_a_child_lifecycle() {
+        let prefix = vec![
+            RuntimeEventKind::RunCreated {
+                request: Box::new(root_request()),
+            },
+            RuntimeEventKind::ToolPrepared {
+                operation_id: OperationId("agent-operation".to_owned()),
+                invocation: ToolInvocation {
+                    run_id: RunId::from("root"),
+                    call_id: "call-1".to_owned(),
+                    name: AGENT_TOOL_NAME.to_owned(),
+                    arguments: ToolArguments::from_value(json!({})),
+                },
+                workspace_access: WorkspaceAccess::ReadOnly,
+            },
+            RuntimeEventKind::ToolExecutionStarted {
+                operation_id: OperationId("agent-operation".to_owned()),
+            },
+        ];
+        let mut rejected = prefix.clone();
+        rejected.push(RuntimeEventKind::ToolOutcomeCommitted {
+            operation_id: OperationId("agent-operation".to_owned()),
+            call_id: "call-1".to_owned(),
+            name: AGENT_TOOL_NAME.to_owned(),
+            outcome: Box::new(ToolOutcome::rejected(
+                "capacity unavailable",
+                ToolRetryDisposition::NotRetryable,
+            )),
+            workspace_state: None,
+        });
+        let snapshot = reduce_events(&stored_events(rejected)).unwrap();
+        assert!(snapshot.agent_tasks.is_empty());
+
+        let mut fake_success = prefix;
+        fake_success.push(RuntimeEventKind::ToolOutcomeCommitted {
+            operation_id: OperationId("agent-operation".to_owned()),
+            call_id: "call-1".to_owned(),
+            name: AGENT_TOOL_NAME.to_owned(),
+            outcome: Box::new(ToolOutcome::success("launched without lifecycle")),
+            workspace_state: None,
+        });
+        let error = reduce_events(&stored_events(fake_success)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("prove preflight rejection")
+        ));
+    }
+
+    #[test]
+    fn integration_rejects_a_stale_expected_root_generation() {
+        let mut kinds = event_kinds();
+        let RuntimeEventKind::AgentIntegrationPrepared {
+            expected_root_workspace_state,
+            ..
+        } = &mut kinds[10]
+        else {
+            panic!("fixture integration preparation");
+        };
+        *expected_root_workspace_state = known(0, "stale-root");
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("current root workspace")
+        ));
+    }
+
+    #[test]
+    fn integration_commit_must_advance_exactly_one_generation() {
+        let mut kinds = event_kinds();
+        let RuntimeEventKind::AgentIntegrationCommitted {
+            root_workspace_state_after,
+            ..
+        } = &mut kinds[12]
+        else {
+            panic!("fixture integration commit");
+        };
+        *root_workspace_state_after = known(3, "root-integrated");
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("advance exactly one generation")
+        ));
+    }
+
+    #[test]
+    fn retained_writer_cleanup_requires_a_recovery_required_root_terminal() {
+        let mut kinds = event_kinds();
+        let RuntimeEventKind::AgentCleanupCommitted {
+            worktree_removed,
+            branch_removed,
+            retained_for_recovery,
+            reason,
+            ..
+        } = &mut kinds[16]
+        else {
+            panic!("fixture cleanup commit");
+        };
+        *worktree_removed = false;
+        *branch_removed = false;
+        *retained_for_recovery = true;
+        *reason = Some("owned worktree still exists".to_owned());
+
+        let snapshot = reduce_events(&stored_events(kinds.clone())).unwrap();
+        assert!(matches!(
+            snapshot.agent_tasks[0]
+                .finished
+                .as_ref()
+                .map(|finished| &finished.outcome.terminal),
+            Some(TerminalState::Completed { .. })
+        ));
+
+        let mut normal_terminal = kinds.clone();
+        normal_terminal.push(root_terminal(TerminalState::Failed {
+            failure: RuntimeFailure::Join {
+                message: "root stopped".to_owned(),
+            },
+        }));
+        let error = reduce_events(&stored_events(normal_terminal)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("requires a recovery-required root terminal")
+        ));
+
+        kinds.push(root_terminal(TerminalState::RecoveryRequired {
+            ambiguity: RecoveryAmbiguity {
+                phase: RecoveryAmbiguityPhase::ChildRun,
+                action_id: "agent-cleanup:task-1".to_owned(),
+                message: "owned worktree still exists".to_owned(),
+            },
+        }));
+        let snapshot = reduce_events(&stored_events(kinds)).unwrap();
+        assert!(matches!(
+            snapshot.terminal.as_ref().map(|outcome| &outcome.terminal),
+            Some(TerminalState::RecoveryRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn integration_conflict_is_a_single_durable_blocked_outcome() {
+        let reason = "root branch moved".to_owned();
+        let snapshot = reduce_events(&stored_events(failed_integration_kinds(
+            WriterIntegrationStatus::Conflict {
+                reason: reason.clone(),
+            },
+        )))
+        .unwrap();
+        let integration = snapshot.agent_tasks[0].integration.as_ref().unwrap();
+        assert!(integration.committed.is_none());
+        assert_eq!(
+            integration.failure.as_ref().unwrap().status,
+            WriterIntegrationStatus::Conflict {
+                reason: reason.clone(),
+            }
+        );
+        assert!(matches!(
+            snapshot.agent_tasks[0]
+                .finished
+                .as_ref()
+                .map(|finished| &finished.outcome.terminal),
+            Some(TerminalState::Blocked { reason: blocked }) if blocked == &reason
+        ));
+        assert_eq!(snapshot.workspace_state, known(1, "root-base"));
+    }
+
+    #[test]
+    fn integration_failure_and_commit_are_mutually_exclusive() {
+        let mut kinds = failed_integration_kinds(WriterIntegrationStatus::Rejected {
+            reason: "policy rejected".to_owned(),
+        });
+        kinds.insert(
+            13,
+            RuntimeEventKind::AgentIntegrationCommitted {
+                task_id: AgentTaskId::from("task-1"),
+                integration_id: OperationId("integrate-1".to_owned()),
+                root_head_commit: FINAL.to_owned(),
+                root_workspace_state_after: known(2, "root-integrated"),
+            },
+        );
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("does not match the in-flight action")
+        ));
+    }
+
+    #[test]
+    fn failed_integration_cannot_advance_the_root_tool_epoch() {
+        let mut kinds = failed_integration_kinds(WriterIntegrationStatus::Conflict {
+            reason: "root changed".to_owned(),
+        });
+        kinds.push(RuntimeEventKind::ToolOutcomeCommitted {
+            operation_id: OperationId("agent-operation".to_owned()),
+            call_id: "call-1".to_owned(),
+            name: AGENT_TOOL_NAME.to_owned(),
+            outcome: Box::new(
+                ToolOutcome::success("must not advance")
+                    .with_side_effect(ToolSideEffectStatus::Applied),
+            ),
+            workspace_state: Some(known(2, "root-integrated")),
+        });
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("cannot advance the root workspace")
+        ));
+
+        let mut settled = failed_integration_kinds(WriterIntegrationStatus::Conflict {
+            reason: "root changed".to_owned(),
+        });
+        settled.push(RuntimeEventKind::ToolOutcomeCommitted {
+            operation_id: OperationId("agent-operation".to_owned()),
+            call_id: "call-1".to_owned(),
+            name: AGENT_TOOL_NAME.to_owned(),
+            outcome: Box::new(
+                ToolOutcome::error("integration conflict")
+                    .with_side_effect(ToolSideEffectStatus::NotApplied),
+            ),
+            workspace_state: None,
+        });
+        let snapshot = reduce_events(&stored_events(settled)).unwrap();
+        assert_eq!(snapshot.workspace_state, known(1, "root-base"));
+        assert!(snapshot.pending_tool.is_none());
+    }
+
+    #[test]
+    fn integration_recovery_and_cleanup_ambiguity_use_typed_child_recovery() {
+        let integration_reason = "ff-only result is ambiguous".to_owned();
+        let snapshot = reduce_events(&stored_events(failed_integration_kinds(
+            WriterIntegrationStatus::RecoveryRequired {
+                reason: integration_reason.clone(),
+            },
+        )))
+        .unwrap();
+        assert!(matches!(
+            snapshot.agent_tasks[0]
+                .finished
+                .as_ref()
+                .map(|finished| &finished.outcome.terminal),
+            Some(TerminalState::RecoveryRequired { ambiguity })
+                if ambiguity.action_id == "agent-integration:integrate-1"
+                    && ambiguity.message == integration_reason
+        ));
+
+        let mut cleanup_ambiguous = failed_integration_kinds(WriterIntegrationStatus::Conflict {
+            reason: "root changed".to_owned(),
+        });
+        let RuntimeEventKind::AgentCleanupCommitted {
+            worktree_removed,
+            branch_removed,
+            retained_for_recovery,
+            reason,
+            ..
+        } = &mut cleanup_ambiguous[14]
+        else {
+            panic!("fixture cleanup commit");
+        };
+        *worktree_removed = false;
+        *branch_removed = false;
+        *retained_for_recovery = true;
+        *reason = Some("owned worktree retained".to_owned());
+        let RuntimeEventKind::ChildFinished { outcome, .. } = &mut cleanup_ambiguous[15] else {
+            panic!("fixture child finish");
+        };
+        outcome.terminal = TerminalState::RecoveryRequired {
+            ambiguity: RecoveryAmbiguity {
+                phase: RecoveryAmbiguityPhase::ChildRun,
+                action_id: "agent-cleanup:task-1".to_owned(),
+                message: "owned worktree retained".to_owned(),
+            },
+        };
+        let snapshot = reduce_events(&stored_events(cleanup_ambiguous)).unwrap();
+        assert!(matches!(
+            snapshot.agent_tasks[0]
+                .finished
+                .as_ref()
+                .map(|finished| &finished.outcome.terminal),
+            Some(TerminalState::RecoveryRequired { ambiguity })
+                if ambiguity.action_id == "agent-cleanup:task-1"
+        ));
+    }
+
+    #[test]
+    fn child_run_created_requires_an_exact_agent_task_binding() {
+        let mut request = root_request();
+        request.run_id = Some(RunId::from("child"));
+        request.parent_run_id = Some(RunId::from("root"));
+        request.actor = AgentActor {
+            kind: AgentActorKind::Child,
+            depth: 1,
+        };
+        request.task_contract = Some(writer_task().task_contract);
+        let error = reduce_events(&[StoredRuntimeEvent {
+            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            run_id: RunId::from("child"),
+            parent_run_id: Some(RunId::from("root")),
+            event_id: RuntimeEventId::run_created(),
+            sequence: 1,
+            occurred_at_unix_ms: 1,
+            event: RuntimeEventKind::RunCreated {
+                request: Box::new(request),
+            },
+        }])
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("requires an AgentTask")
+        ));
     }
 }

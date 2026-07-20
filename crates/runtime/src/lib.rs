@@ -14,15 +14,23 @@ pub use codewhale_protocol::task::*;
 use tokio::sync::Notify;
 
 mod agent;
+mod orchestration;
 mod store;
 
 pub use agent::{
     AgentControl, AgentRuntime, ControlError, RunReadyError, RuntimeJoinError, RuntimeRun,
 };
+pub use orchestration::{
+    AgentOrchestrationError, AgentOrchestrationErrorKind, AgentOrchestrator, WriterBinding,
+    WriterCleanup, WriterIntegration, WriterPlan, WriterPreparation, WriterSeal,
+};
 pub use store::{
-    AcquiredRun, CommandReceipt, CommittedContextCompaction, CreatedRun, CreationIntent,
-    CreationReservation, DurableActionState, DurableCommand, InMemoryRunStore, PendingControl,
-    PendingHostVerification, PendingModelAction, PendingSteer, PendingToolAction,
+    AcquiredRun, AgentChildFinishedFact, AgentChildStartedFact, AgentCleanupCommittedFact,
+    AgentCleanupLifecycle, AgentIntegrationCommittedFact, AgentIntegrationFailureFact,
+    AgentIntegrationLifecycle, AgentSealCommittedFact, AgentSealLifecycle, AgentTaskLifecycle,
+    AgentWorkspaceCreatedFact, CommandReceipt, CommittedContextCompaction, CreatedRun,
+    CreationIntent, CreationReservation, DurableActionState, DurableCommand, InMemoryRunStore,
+    PendingControl, PendingHostVerification, PendingModelAction, PendingSteer, PendingToolAction,
     PendingUserInteraction, ReservedCreation, RootRunRecord, RunLease, RunReplay, RunSnapshot,
     StoppedModelFailure, apply_event, reduce_events, validate_continuation_request,
 };

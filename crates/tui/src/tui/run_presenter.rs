@@ -11,6 +11,7 @@ use codewhale_protocol::agent_runtime::{
     ModelOutput, ModelRetryDecision, ModelRetryStopReason,
     ReasoningEffort as CanonicalReasoningEffort, RuntimeEventKind, TerminalState, ToolArguments,
     ToolOutcome, TranscriptEntry, UserInteractionRequest, UserInteractionResponse,
+    WriterIntegrationStatus,
 };
 use serde_json::Value;
 
@@ -212,10 +213,108 @@ fn present_canonical_event(
             app.status_message = Some(format!("完成候选被拒绝：{}", rejection.reason));
             None
         }
+        RuntimeEventKind::AgentTaskPrepared { task } => {
+            app.status_message = Some(format!("写入 Agent 任务已准备：{}", task.task_id));
+            None
+        }
+        RuntimeEventKind::AgentWorkspaceCreated {
+            task_id,
+            assignment,
+            ..
+        } => {
+            let content = format!(
+                "写入工作树已创建：{}（任务 {}）",
+                assignment.execution_workspace(),
+                task_id
+            );
+            present_agent_progress(app, content);
+            None
+        }
+        RuntimeEventKind::AgentSealPrepared { task_id, .. } => {
+            app.status_message = Some(format!("正在封存写入 Agent 变更：{task_id}"));
+            None
+        }
+        RuntimeEventKind::AgentSealCommitted {
+            task_id,
+            final_commit,
+            changed_files,
+            ..
+        } => {
+            let content = format!(
+                "写入 Agent 变更已封存：{} 个文件，提交 {}（任务 {}）",
+                changed_files.len(),
+                short_git_commit(&final_commit),
+                task_id
+            );
+            present_agent_progress(app, content);
+            None
+        }
+        RuntimeEventKind::AgentResultCollected { task_id, .. } => {
+            app.status_message = Some(format!("写入 Agent 结果已收集：{task_id}"));
+            None
+        }
+        RuntimeEventKind::AgentIntegrationPrepared { task_id, .. } => {
+            app.status_message = Some(format!("正在准备集成写入结果：{task_id}"));
+            None
+        }
+        RuntimeEventKind::AgentIntegrationStarted { task_id, .. } => {
+            app.status_message = Some(format!("正在集成写入结果：{task_id}"));
+            None
+        }
+        RuntimeEventKind::AgentIntegrationFailed {
+            task_id, status, ..
+        } => {
+            let content = writer_integration_status_message(&task_id.to_string(), &status);
+            present_agent_progress(app, content);
+            None
+        }
+        RuntimeEventKind::AgentIntegrationCommitted {
+            task_id,
+            root_head_commit,
+            ..
+        } => {
+            let content = format!(
+                "写入结果已集成：提交 {}（任务 {}）",
+                short_git_commit(&root_head_commit),
+                task_id
+            );
+            present_agent_progress(app, content);
+            None
+        }
+        RuntimeEventKind::AgentCleanupPrepared {
+            task_id,
+            worktree_path,
+            ..
+        } => {
+            app.status_message = Some(format!(
+                "正在清理写入工作树：{worktree_path}（任务 {task_id}）"
+            ));
+            None
+        }
+        RuntimeEventKind::AgentCleanupCommitted {
+            task_id,
+            worktree_path,
+            worktree_removed,
+            retained_for_recovery,
+            reason,
+            ..
+        } => {
+            let content = if retained_for_recovery {
+                let reason = reason.unwrap_or_else(|| "需要恢复处理".to_owned());
+                format!("写入工作树已保留：{worktree_path}（任务 {task_id}；{reason}）")
+            } else if worktree_removed {
+                format!("写入工作树已清理：{worktree_path}（任务 {task_id}）")
+            } else {
+                format!("写入工作树清理结果已提交：{worktree_path}（任务 {task_id}）")
+            };
+            present_agent_progress(app, content);
+            None
+        }
         RuntimeEventKind::ChildStarted {
             call_id,
             child_run_id,
             depth,
+            ..
         } => {
             app.child_agents.record_started(
                 source_run_id.clone(),
@@ -265,6 +364,39 @@ fn present_canonical_event(
         RuntimeEventKind::Terminal { outcome } => {
             finish_terminal(app, &outcome.terminal, &outcome.accounting);
             None
+        }
+    }
+}
+
+fn present_agent_progress(app: &mut App, content: String) {
+    app.status_message = Some(content.clone());
+    app.add_message(HistoryCell::System { content });
+}
+
+fn short_git_commit(commit: &str) -> &str {
+    commit.get(..12).unwrap_or(commit)
+}
+
+fn writer_integration_status_message(task_id: &str, status: &WriterIntegrationStatus) -> String {
+    match status {
+        WriterIntegrationStatus::Rejected { reason } => {
+            format!("写入结果未集成：{reason}（任务 {task_id}）")
+        }
+        WriterIntegrationStatus::Conflict { reason } => {
+            format!("写入结果集成冲突：{reason}（任务 {task_id}）")
+        }
+        WriterIntegrationStatus::RecoveryRequired { reason } => {
+            format!("写入结果集成需要恢复：{reason}（任务 {task_id}）")
+        }
+        WriterIntegrationStatus::Integrated { writer_commit, .. } => format!(
+            "写入结果已集成：提交 {}（任务 {task_id}）",
+            short_git_commit(writer_commit)
+        ),
+        WriterIntegrationStatus::AwaitingHost => {
+            format!("写入结果等待 Host 集成（任务 {task_id}）")
+        }
+        WriterIntegrationStatus::NotApplicable => {
+            format!("写入结果无需集成（任务 {task_id}）")
         }
     }
 }
@@ -594,12 +726,13 @@ mod tests {
     use std::path::PathBuf;
 
     use codewhale_protocol::agent_runtime::{
-        AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentActor, AgentOutcome, AttemptId, CommandId,
-        DurableControlAction, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest,
-        ModelToolCall, OperationId, PreparedModelRetry, ReasoningEffort, RecoveryAmbiguity,
-        RecoveryAmbiguityPhase, RunId, RunRequest, RuntimeEventId, RuntimeFailure,
-        StoredRuntimeEvent, SystemPrompt, TerminalState, ToolInvocation, TranscriptEntry, Usage,
-        WorkspaceAccess,
+        AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentActor, AgentOutcome, AgentTaskId,
+        AgentWorkspaceAccess, AgentWorkspaceAssignment, AttemptId, CommandId, DurableControlAction,
+        ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall, OperationId,
+        PreparedModelRetry, ReasoningEffort, RecoveryAmbiguity, RecoveryAmbiguityPhase, RunId,
+        RunRequest, RuntimeEventId, RuntimeFailure, StoredRuntimeEvent, SystemPrompt,
+        TerminalState, ToolInvocation, TranscriptEntry, Usage, WorkspaceAccess,
+        WriterIntegrationStatus,
     };
     use codewhale_protocol::task::{
         AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
@@ -729,6 +862,7 @@ mod tests {
                     runtime_model_requests: 1,
                     runtime_retries: 0,
                     tool_calls: 0,
+                    details: Default::default(),
                 }),
             },
         )
@@ -747,6 +881,7 @@ mod tests {
             runtime_model_requests: 1,
             runtime_retries: 0,
             tool_calls: 0,
+            details: Default::default(),
         }
     }
 
@@ -1343,6 +1478,7 @@ mod tests {
                     &root,
                     2,
                     RuntimeEventKind::ChildStarted {
+                        task_id: "task-child".into(),
                         call_id: "call-child".to_owned(),
                         child_run_id: child.clone(),
                         depth: 2,
@@ -1396,6 +1532,155 @@ mod tests {
     }
 
     #[test]
+    fn writer_lifecycle_events_render_only_canonical_chinese_progress() {
+        let root = RunId::from("root");
+        let task_id = AgentTaskId::from("writer-task");
+        let mut app = app();
+        let workspace_state = WorkspaceState {
+            generation: 2,
+            revision: WorkspaceRevision::Unknown {
+                reason: "presentation fixture".to_owned(),
+            },
+        };
+
+        let _ = present_canonical_event(
+            &mut app,
+            &root,
+            RuntimeEventKind::AgentWorkspaceCreated {
+                task_id: task_id.clone(),
+                assignment: AgentWorkspaceAssignment {
+                    access: AgentWorkspaceAccess::IsolatedWrite,
+                    root_workspace: "/workspace/root".to_owned(),
+                    base_commit: "a".repeat(40),
+                    worktree_path: Some("/workspace/worktrees/writer-task".to_owned()),
+                    root_branch: Some("deepseek-agent".to_owned()),
+                    branch: Some("codex/writer-task".to_owned()),
+                    allowed_paths: vec!["crates/tui".to_owned()],
+                    owner_token: Some("owner-token".to_owned()),
+                },
+                writer_workspace_state: workspace_state.clone(),
+            },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("写入工作树已创建：/workspace/worktrees/writer-task（任务 writer-task）")
+        );
+
+        let _ = present_canonical_event(
+            &mut app,
+            &root,
+            RuntimeEventKind::AgentSealCommitted {
+                task_id: task_id.clone(),
+                final_commit: "1234567890abcdef".to_owned(),
+                diff_sha256: "c".repeat(64),
+                changed_files: vec!["crates/tui/src/exec_runtime.rs".to_owned()],
+                writer_workspace_state_after: workspace_state.clone(),
+            },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("写入 Agent 变更已封存：1 个文件，提交 1234567890ab（任务 writer-task）")
+        );
+
+        let _ = present_canonical_event(
+            &mut app,
+            &root,
+            RuntimeEventKind::AgentIntegrationCommitted {
+                task_id: task_id.clone(),
+                integration_id: OperationId::from("integration"),
+                root_head_commit: "abcdef1234567890".to_owned(),
+                root_workspace_state_after: workspace_state.clone(),
+            },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("写入结果已集成：提交 abcdef123456（任务 writer-task）")
+        );
+
+        let _ = present_canonical_event(
+            &mut app,
+            &root,
+            RuntimeEventKind::AgentIntegrationFailed {
+                task_id: task_id.clone(),
+                integration_id: OperationId::from("integration"),
+                status: WriterIntegrationStatus::Conflict {
+                    reason: "root HEAD 已变化".to_owned(),
+                },
+                root_workspace_state: workspace_state.clone(),
+            },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("写入结果集成冲突：root HEAD 已变化（任务 writer-task）")
+        );
+
+        let _ = present_canonical_event(
+            &mut app,
+            &root,
+            RuntimeEventKind::AgentIntegrationFailed {
+                task_id: task_id.clone(),
+                integration_id: OperationId::from("integration"),
+                status: WriterIntegrationStatus::RecoveryRequired {
+                    reason: "集成结果不确定".to_owned(),
+                },
+                root_workspace_state: workspace_state,
+            },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("写入结果集成需要恢复：集成结果不确定（任务 writer-task）")
+        );
+
+        let _ = present_canonical_event(
+            &mut app,
+            &root,
+            RuntimeEventKind::AgentCleanupCommitted {
+                task_id: task_id.clone(),
+                worktree_path: "/workspace/worktrees/writer-task".to_owned(),
+                branch: "codex/writer-task".to_owned(),
+                owner_token: "owner-token".to_owned(),
+                worktree_removed: true,
+                branch_removed: true,
+                retained_for_recovery: false,
+                reason: None,
+            },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some("写入工作树已清理：/workspace/worktrees/writer-task（任务 writer-task）")
+        );
+
+        let _ = present_canonical_event(
+            &mut app,
+            &root,
+            RuntimeEventKind::AgentCleanupCommitted {
+                task_id,
+                worktree_path: "/workspace/worktrees/writer-task".to_owned(),
+                branch: "codex/writer-task".to_owned(),
+                owner_token: "owner-token".to_owned(),
+                worktree_removed: false,
+                branch_removed: false,
+                retained_for_recovery: true,
+                reason: Some("保留冲突现场".to_owned()),
+            },
+        );
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(
+                "写入工作树已保留：/workspace/worktrees/writer-task（任务 writer-task；保留冲突现场）"
+            )
+        );
+        assert!(
+            matches!(
+                app.history.last(),
+                Some(HistoryCell::System { content })
+                    if content == app.status_message.as_deref().unwrap_or_default()
+            ),
+            "关键进度必须由 canonical 事件即时呈现，不能依赖私有状态"
+        );
+    }
+
+    #[test]
     fn concurrent_children_finish_by_identity_not_finish_order() {
         let root = RunId::from("root");
         let child_a = RunId::from("child-a");
@@ -1409,6 +1694,7 @@ mod tests {
                     &root,
                     2,
                     RuntimeEventKind::ChildStarted {
+                        task_id: "task-a".into(),
                         call_id: "call-a".to_owned(),
                         child_run_id: child_a.clone(),
                         depth: 1,
@@ -1418,6 +1704,7 @@ mod tests {
                     &root,
                     3,
                     RuntimeEventKind::ChildStarted {
+                        task_id: "task-b".into(),
                         call_id: "call-b".to_owned(),
                         child_run_id: child_b.clone(),
                         depth: 1,

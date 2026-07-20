@@ -14,9 +14,11 @@ use codewhale_deepseek::{
     SharedApiRequestBudget, TransportRetryPolicy, model_accounting_snapshot,
     official_model_capabilities, resolve_deepseek_auto_route, resume_api_request_budget,
 };
+use codewhale_orchestrator::ProductionAgentOrchestrator;
 use codewhale_protocol::agent_runtime::{
-    AgentActor, CanonicalTranscript, ContextPolicy, InheritedRunFacts, ReasoningEffort,
-    RunEnvironment, RunId, RunRequest, ToolDefinition, TranscriptEntry,
+    ActorRequestAccounting, AgentActor, CanonicalTranscript, ContextPolicy, InheritedRunFacts,
+    ModelAccounting, ReasoningEffort, RunEnvironment, RunId, RunRequest, SurfaceUsage,
+    ToolDefinition, TranscriptEntry, Usage,
 };
 use codewhale_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunProductControls, StartRunCommand,
@@ -35,7 +37,8 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use super::{
-    AgentApplication, ReplayOnlyModelPort, RunComposition, api_error, resume_needs_live_model,
+    AgentApplication, ReplayOnlyModelPort, RunComposition, api_error, recoverable_writer_task,
+    resume_needs_live_model, store_error,
 };
 
 const DEEPSEEK_PROVIDER: &str = "deepseek";
@@ -197,6 +200,8 @@ pub enum ProductionApplicationError {
     InvalidDeepSeekConfig(String),
     #[error("failed to open the canonical StateStore: {0}")]
     StateStore(String),
+    #[error("初始化受管 writer 工作区根目录失败：{0}")]
+    ManagedWorktreeRoot(String),
 }
 
 struct ProductionComposition {
@@ -205,6 +210,7 @@ struct ProductionComposition {
     http_client: Option<reqwest::Client>,
     tools: ProductionToolConfig,
     prompt: ProductionPromptConfig,
+    managed_worktree_root: PathBuf,
     composition_build_revision: String,
     default_max_api_requests: NonZeroU32,
 }
@@ -221,12 +227,30 @@ impl AgentApplication {
             StateStore::open(config.state_db_path)
                 .map_err(|error| ProductionApplicationError::StateStore(error.to_string()))?,
         );
+        let managed_worktree_root = store
+            .db_path()
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("worktrees");
+        std::fs::create_dir_all(&managed_worktree_root).map_err(|error| {
+            ProductionApplicationError::ManagedWorktreeRoot(format!(
+                "无法创建 {}：{error}",
+                managed_worktree_root.display()
+            ))
+        })?;
+        let managed_worktree_root = managed_worktree_root.canonicalize().map_err(|error| {
+            ProductionApplicationError::ManagedWorktreeRoot(format!(
+                "无法规范化 {}：{error}",
+                managed_worktree_root.display()
+            ))
+        })?;
         let composition = Arc::new(ProductionComposition {
             deepseek: config.deepseek,
             credential: config.credential,
             http_client: config.http_client,
             tools: config.tools,
             prompt: config.prompt,
+            managed_worktree_root,
             composition_build_revision: config.composition_build_revision,
             default_max_api_requests: config.default_max_api_requests,
         });
@@ -304,11 +328,15 @@ impl RunComposition for ProductionComposition {
             .resolve_output_tokens(command.max_output_tokens)
             .map_err(|error| invalid_request(error.to_string()))?;
         let context_policy = production_context_policy(capability, max_output_tokens);
+        let orchestrator = self.production_orchestrator(&workspace, tool_config.clone())?;
         let tool_executor: Arc<dyn ToolExecutor> =
             Arc::new(ProductionToolExecutor::new(tool_config));
         let model_port: Arc<dyn ModelPort> =
             Arc::new(DeepSeekModelPort::new(transport, request_budget.clone()));
-        let runtime = Arc::new(AgentRuntime::new(model_port, tool_executor, sink, store));
+        let runtime = Arc::new(
+            AgentRuntime::new(model_port, tool_executor, sink, store)
+                .with_orchestrator(orchestrator),
+        );
         let tool_catalog = runtime.tool_definitions(
             &command.tool_policy,
             0,
@@ -335,6 +363,7 @@ impl RunComposition for ProductionComposition {
             max_output_tokens: Some(max_output_tokens),
             streaming: command.streaming,
             actor: AgentActor::default(),
+            agent_task: None,
             deadline_unix_ms,
             tool_policy: command.tool_policy,
             limits: command.limits,
@@ -387,16 +416,21 @@ impl RunComposition for ProductionComposition {
         };
         let tool_config = tool_config_for_run(&self.tools, &workspace, &controls)?;
         let tool_identity = tool_config.execution_identity();
+        let orchestrator = self.production_orchestrator(&workspace, tool_config.clone())?;
         let tool_executor: Arc<dyn ToolExecutor> =
             Arc::new(ProductionToolExecutor::new(tool_config));
-        let (request_budget, exhausted) = resume_api_request_budget(&replay.snapshot.accounting);
+        let accounting = recover_writer_accounting(&run_id, &replay, store.as_ref()).await?;
+        let (request_budget, exhausted) = resume_api_request_budget(&accounting);
         let model_port: Arc<dyn ModelPort> = if !exhausted && resume_needs_live_model(&replay) {
             let transport = self.bind_live_transport(request_budget.clone())?;
             Arc::new(DeepSeekModelPort::new(transport, request_budget))
         } else {
             Arc::new(ReplayOnlyModelPort)
         };
-        let runtime = Arc::new(AgentRuntime::new(model_port, tool_executor, sink, store));
+        let runtime = Arc::new(
+            AgentRuntime::new(model_port, tool_executor, sink, store)
+                .with_orchestrator(orchestrator),
+        );
         let tool_catalog = runtime.tool_definitions(
             &request.tool_policy,
             0,
@@ -451,7 +485,11 @@ impl RunComposition for ProductionComposition {
                 "run_resume_context_policy_mismatch：persisted context policy does not match the current official DeepSeek capability",
             ));
         }
-        Ok(runtime.resume(run_id))
+        Ok(runtime.resume_with_accounting_baseline(
+            run_id,
+            replay.snapshot.last_sequence,
+            accounting,
+        ))
     }
 
     async fn continue_run(
@@ -508,11 +546,15 @@ impl RunComposition for ProductionComposition {
             .resolve_output_tokens(source_request.max_output_tokens)
             .map_err(|error| environment_mismatch(&source_run_id, error.to_string()))?;
         let context_policy = production_context_policy(capability, max_output_tokens);
+        let orchestrator = self.production_orchestrator(&workspace, tool_config.clone())?;
         let tool_executor: Arc<dyn ToolExecutor> =
             Arc::new(ProductionToolExecutor::new(tool_config));
         let model_port: Arc<dyn ModelPort> =
             Arc::new(DeepSeekModelPort::new(transport, request_budget.clone()));
-        let runtime = Arc::new(AgentRuntime::new(model_port, tool_executor, sink, store));
+        let runtime = Arc::new(
+            AgentRuntime::new(model_port, tool_executor, sink, store)
+                .with_orchestrator(orchestrator),
+        );
         let tool_catalog = runtime.tool_definitions(
             &source_request.tool_policy,
             0,
@@ -552,6 +594,7 @@ impl RunComposition for ProductionComposition {
             max_output_tokens: Some(max_output_tokens),
             streaming: source_request.streaming,
             actor: AgentActor::default(),
+            agent_task: None,
             deadline_unix_ms,
             tool_policy: source_request.tool_policy.clone(),
             limits: source_request.limits,
@@ -583,6 +626,20 @@ impl RunComposition for ProductionComposition {
 }
 
 impl ProductionComposition {
+    fn production_orchestrator(
+        &self,
+        workspace: &Path,
+        root_tools: ProductionToolConfig,
+    ) -> Result<Arc<ProductionAgentOrchestrator>, RunApiError> {
+        ProductionAgentOrchestrator::new(workspace, &self.managed_worktree_root, root_tools)
+            .map(Arc::new)
+            .map_err(|error| {
+                invalid_request(format!(
+                    "writer_orchestrator_invalid：无法绑定 production writer 编排器：{error}"
+                ))
+            })
+    }
+
     fn bind_live_transport(
         &self,
         request_budget: SharedApiRequestBudget,
@@ -692,6 +749,120 @@ fn canonical_start_workspace(raw: &str) -> Result<PathBuf, RunApiError> {
         )));
     }
     Ok(canonical)
+}
+
+async fn recover_writer_accounting(
+    root_run_id: &RunId,
+    replay: &RunReplay,
+    store: &dyn RunStore,
+) -> Result<ModelAccounting, RunApiError> {
+    let parent = &replay.snapshot.accounting;
+    let Some(task) = recoverable_writer_task(replay) else {
+        return Ok(parent.clone());
+    };
+    let Some(child) = store.load(&task.child_run_id).await.map_err(store_error)? else {
+        // TaskPrepared and workspace-create side-effect recovery can precede
+        // durable child creation. No child ledger exists at those checkpoints.
+        return Ok(parent.clone());
+    };
+    let request = &child.snapshot.request;
+    if request.run_id.as_ref() != Some(&task.child_run_id)
+        || request.parent_run_id.as_ref() != Some(root_run_id)
+        || request.agent_task.as_ref() != Some(task)
+    {
+        return Err(environment_mismatch(
+            root_run_id,
+            "run_resume_writer_accounting_lineage_mismatch：writer child replay does not match the persisted parent task",
+        ));
+    }
+    if child.snapshot.accounting == ModelAccounting::default()
+        && request.accounting_baseline == ModelAccounting::default()
+    {
+        // A crash immediately after child creation has not emitted a child
+        // accounting observation yet. The parent is still the newest ledger;
+        // treating the child's intentionally empty baseline as a regression
+        // would make this valid checkpoint unrecoverable.
+        return Ok(parent.clone());
+    }
+    if !accounting_dominates(&child.snapshot.accounting, parent) {
+        return Err(environment_mismatch(
+            root_run_id,
+            "run_resume_writer_accounting_diverged：writer child physical ledger does not dominate its parent snapshot",
+        ));
+    }
+    let mut accounting = child.snapshot.accounting;
+    // Runtime retries are owned by each Runtime run, not the shared DeepSeek
+    // physical ledger. ChildFinished will fold child runtime retries into the
+    // parent exactly once; carrying them here would double-count that field.
+    accounting.runtime_retries = parent.runtime_retries;
+    Ok(accounting)
+}
+
+fn accounting_dominates(candidate: &ModelAccounting, parent: &ModelAccounting) -> bool {
+    candidate.hard_request_limit == parent.hard_request_limit
+        && actor_accounting_is_valid(&candidate.root)
+        && actor_accounting_is_valid(&candidate.child)
+        // While a writer is unsettled the root waits for that exact tool call,
+        // so only child-attributed physical requests may advance.
+        && candidate.root == parent.root
+        && actor_accounting_dominates(&candidate.child, &parent.child)
+        && candidate.transport_retries >= parent.transport_retries
+        && candidate.sealed_denied >= parent.sealed_denied
+        && candidate.exhausted_denied >= parent.exhausted_denied
+        && (!parent.budget_exhausted || candidate.budget_exhausted)
+        && !candidate.sealed
+        && candidate.usage_responses >= parent.usage_responses
+        && candidate.usage_missing_responses >= parent.usage_missing_responses
+        && candidate.incomplete_responses >= parent.incomplete_responses
+        && candidate.billing_unknown_attempts >= parent.billing_unknown_attempts
+        && candidate.unpriced_usage_responses >= parent.unpriced_usage_responses
+        && candidate.records_after_seal >= parent.records_after_seal
+        && usage_dominates(candidate.usage, parent.usage)
+        && candidate.cost_nanousd >= parent.cost_nanousd
+        && candidate.cost_nanocny >= parent.cost_nanocny
+        && parent
+            .surface_usage
+            .iter()
+            .all(|persisted| surface_usage_is_dominated(persisted, &candidate.surface_usage))
+        && candidate
+            .hard_request_limit
+            .is_none_or(|limit| candidate.total_started() <= u64::from(limit))
+}
+
+fn actor_accounting_is_valid(accounting: &ActorRequestAccounting) -> bool {
+    accounting.completed <= accounting.started
+        && accounting.in_flight <= accounting.started.saturating_sub(accounting.completed)
+}
+
+fn actor_accounting_dominates(
+    candidate: &ActorRequestAccounting,
+    parent: &ActorRequestAccounting,
+) -> bool {
+    candidate.started >= parent.started
+        && candidate.completed >= parent.completed
+        && candidate.retries >= parent.retries
+}
+
+fn usage_dominates(candidate: Usage, parent: Usage) -> bool {
+    candidate.input_tokens >= parent.input_tokens
+        && candidate.output_tokens >= parent.output_tokens
+        && candidate.cache_hit_tokens >= parent.cache_hit_tokens
+        && candidate.cache_miss_tokens >= parent.cache_miss_tokens
+        && candidate.cache_write_tokens >= parent.cache_write_tokens
+        && candidate.reasoning_tokens >= parent.reasoning_tokens
+        && candidate.reasoning_replay_tokens >= parent.reasoning_replay_tokens
+}
+
+fn surface_usage_is_dominated(parent: &SurfaceUsage, candidate: &[SurfaceUsage]) -> bool {
+    candidate.iter().any(|candidate| {
+        candidate.surface == parent.surface
+            && candidate.model == parent.model
+            && candidate.response_count >= parent.response_count
+            && candidate.usage_response_count >= parent.usage_response_count
+            && usage_dominates(candidate.usage, parent.usage)
+            && candidate.cost_nanousd >= parent.cost_nanousd
+            && candidate.cost_nanocny >= parent.cost_nanocny
+    })
 }
 
 fn prepare_production_start_command(
@@ -836,6 +1007,7 @@ fn environment_mismatch(run_id: &RunId, message: impl Into<String>) -> RunApiErr
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command as ProcessCommand;
     use std::sync::{Arc, Mutex as StdMutex};
 
     use codewhale_deepseek::{
@@ -843,15 +1015,22 @@ mod tests {
         OFFICIAL_V4_MAX_OUTPUT_TOKENS,
     };
     use codewhale_protocol::agent_runtime::{
-        ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelStreamEvent, RunLimits,
-        ToolArguments, ToolInvocation, ToolOutcome, ToolPolicy, Usage,
+        AGENT_TOOL_NAME, AgentActorKind, AgentOutcome, AgentResultDetails, AgentTask, AgentTaskId,
+        AgentWorkspaceAccess, AgentWorkspaceAssignment, ModelAccounting, ModelFinishReason,
+        ModelOutput, ModelRequest, ModelStreamEvent, OperationId, PendingRuntimeEvent,
+        RecoveryAmbiguity, RecoveryAmbiguityPhase, RunLimits, RuntimeEventKind, TerminalState,
+        ToolArguments, ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess,
     };
     use codewhale_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
         RunCommandResult, RunView,
     };
+    use codewhale_protocol::task::{
+        CompletionCandidateId, CompletionDecision, WorkspaceRevision, WorkspaceState,
+    };
     use codewhale_runtime::{
-        CancellationToken, ModelPortError, ModelStream, NullEventSink, ToolExecutionError,
+        AgentChildFinishedFact, CancellationToken, InMemoryRunStore, ModelPortError, ModelStream,
+        NullEventSink, RunLease, ToolExecutionError,
     };
     use codewhale_tools::PRODUCTION_TOOL_NAMES;
     use serde_json::{Value, json};
@@ -1050,6 +1229,551 @@ mod tests {
         );
         request.run_id = Some(run_id);
         request
+    }
+
+    fn test_production_composition(
+        temp: &Path,
+        connection: DeepSeekConnectionConfig,
+        credential: bool,
+    ) -> ProductionComposition {
+        let managed_worktree_root = temp.join("worktrees");
+        std::fs::create_dir_all(&managed_worktree_root).expect("managed worktree root");
+        let managed_worktree_root = managed_worktree_root
+            .canonicalize()
+            .expect("canonical managed worktree root");
+        let config = config(&temp.join("state.db"), connection, credential);
+        ProductionComposition {
+            deepseek: config.deepseek,
+            credential: config.credential,
+            http_client: config.http_client,
+            tools: config.tools,
+            prompt: config.prompt,
+            managed_worktree_root,
+            composition_build_revision: config.composition_build_revision,
+            default_max_api_requests: config.default_max_api_requests,
+        }
+    }
+
+    fn resume_accounting(
+        root_started: u64,
+        child_started: u64,
+        input_tokens: u64,
+    ) -> ModelAccounting {
+        ModelAccounting {
+            hard_request_limit: Some(5),
+            root: ActorRequestAccounting {
+                started: root_started,
+                completed: root_started,
+                ..ActorRequestAccounting::default()
+            },
+            child: ActorRequestAccounting {
+                started: child_started,
+                completed: child_started,
+                ..ActorRequestAccounting::default()
+            },
+            complete: true,
+            usage_complete: true,
+            usage_responses: root_started.saturating_add(child_started),
+            usage: Usage {
+                input_tokens,
+                output_tokens: root_started.saturating_add(child_started),
+                ..Usage::default()
+            },
+            ..ModelAccounting::default()
+        }
+    }
+
+    fn exact_resume_request(
+        composition: &ProductionComposition,
+        workspace: &Path,
+        run_id: RunId,
+        accounting: ModelAccounting,
+    ) -> RunRequest {
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let controls = RunProductControls {
+            auto_approve: true,
+            trust_mode: false,
+            allow_sandbox_elevation: false,
+            interactive: false,
+            sandbox: Some("workspace-write".to_owned()),
+        };
+        let mut request = test_run_request(run_id, "恢复 production Agent", "persisted prompt");
+        request.model = "deepseek-v4-pro".to_owned();
+        request.max_output_tokens = Some(OFFICIAL_V4_AGENT_DEFAULT_OUTPUT_TOKENS);
+        request.limits.max_depth = 1;
+        request.context_policy = production_context_policy(
+            official_model_capabilities(&request.model).expect("official model"),
+            request.max_output_tokens.expect("resolved output limit"),
+        );
+        request.environment = RunEnvironment {
+            workspace: stable_path(&workspace),
+            provider: DEEPSEEK_PROVIDER.to_owned(),
+            auto_approve: controls.auto_approve,
+            trust_mode: controls.trust_mode,
+            allow_sandbox_elevation: controls.allow_sandbox_elevation,
+            interactive: controls.interactive,
+            sandbox: controls.sandbox.clone(),
+            ..RunEnvironment::default()
+        };
+        request.accounting_baseline = accounting;
+
+        let tool_config =
+            tool_config_for_run(&composition.tools, &workspace, &controls).expect("tool config");
+        let tool_identity = tool_config.execution_identity();
+        let catalog_runtime = AgentRuntime::new(
+            Arc::new(ReplayOnlyModelPort),
+            Arc::new(ProductionToolExecutor::new(tool_config)),
+            Arc::new(NullEventSink),
+            Arc::new(InMemoryRunStore::default()),
+        );
+        let catalog = catalog_runtime.tool_definitions(
+            &request.tool_policy,
+            0,
+            request.limits.max_depth,
+            request.environment.interactive,
+        );
+        let catalog_sha256 = tool_catalog_sha256(&catalog);
+        request.environment.tool_catalog_sha256 = Some(catalog_sha256.clone());
+        request.environment.execution_fingerprint_sha256 =
+            Some(composition.execution_fingerprint_sha256(
+                &request.model,
+                &tool_identity,
+                &catalog_sha256,
+            ));
+        request
+    }
+
+    fn writer_task(request: &RunRequest) -> AgentTask {
+        let root_run_id = request.run_id.clone().expect("root run id");
+        let child_run_id = RunId::from(format!("{}-writer", root_run_id.0));
+        let mut tool_policy = request.tool_policy.clone();
+        tool_policy.denied.push(AGENT_TOOL_NAME.to_owned());
+        AgentTask {
+            task_id: AgentTaskId::from(format!("{}-task", root_run_id.0)),
+            root_run_id: root_run_id.clone(),
+            parent_run_id: root_run_id,
+            child_run_id: child_run_id.clone(),
+            call_id: format!("{}-call", child_run_id.0),
+            role: "implementer".to_owned(),
+            task_contract: TaskContract {
+                generation_id: TaskGenerationId::from(child_run_id.0.clone()),
+                definition: TaskDefinition::host("修改唯一允许的文件并给出证据"),
+            },
+            workspace: AgentWorkspaceAssignment {
+                access: AgentWorkspaceAccess::IsolatedWrite,
+                root_workspace: request.environment.workspace.clone(),
+                base_commit: "a".repeat(40),
+                worktree_path: Some(
+                    Path::new(&request.environment.workspace)
+                        .join(format!(".writer-{}", child_run_id.0))
+                        .display()
+                        .to_string(),
+                ),
+                root_branch: Some("main".to_owned()),
+                branch: Some(format!("codewhale/writer/{}", child_run_id.0)),
+                allowed_paths: vec!["src/lib.rs".to_owned()],
+                owner_token: Some(format!("owner-{}", child_run_id.0)),
+            },
+            tool_policy,
+            limits: RunLimits {
+                max_depth: 0,
+                ..request.limits
+            },
+            deadline_unix_ms: request.deadline_unix_ms,
+            expected_artifact: "一个 Host seal 的提交".to_owned(),
+        }
+    }
+
+    async fn append_test_event(store: &dyn RunStore, lease: &RunLease, event: RuntimeEventKind) {
+        store
+            .append(lease, PendingRuntimeEvent::new(event))
+            .await
+            .expect("append fixture event");
+    }
+
+    async fn seed_in_flight_tool(
+        store: &dyn RunStore,
+        request: RunRequest,
+        writer_checkpoint: Option<bool>,
+    ) -> (RunReplay, Option<AgentTask>) {
+        let run_id = request.run_id.clone().expect("root run id");
+        let task = writer_checkpoint.map(|_| writer_task(&request));
+        let call_id = task
+            .as_ref()
+            .map_or_else(|| "ordinary-call".to_owned(), |task| task.call_id.clone());
+        let name = task
+            .as_ref()
+            .map_or_else(|| "read_file".to_owned(), |_| AGENT_TOOL_NAME.to_owned());
+        let created = store.create(request).await.expect("create fixture root");
+        let operation_id = OperationId::from(format!("operation-{}", run_id.0));
+        append_test_event(
+            store,
+            &created.lease,
+            RuntimeEventKind::ToolPrepared {
+                operation_id: operation_id.clone(),
+                invocation: ToolInvocation {
+                    run_id: run_id.clone(),
+                    call_id,
+                    name,
+                    arguments: ToolArguments::from_value(json!({"path": "src/lib.rs"})),
+                },
+                workspace_access: if task.is_some() {
+                    WorkspaceAccess::MayWrite
+                } else {
+                    WorkspaceAccess::ReadOnly
+                },
+            },
+        )
+        .await;
+        append_test_event(
+            store,
+            &created.lease,
+            RuntimeEventKind::ToolExecutionStarted { operation_id },
+        )
+        .await;
+        if let Some(task) = &task {
+            append_test_event(
+                store,
+                &created.lease,
+                RuntimeEventKind::AgentTaskPrepared {
+                    task: Box::new(task.clone()),
+                },
+            )
+            .await;
+            if writer_checkpoint == Some(true) {
+                append_test_event(
+                    store,
+                    &created.lease,
+                    RuntimeEventKind::AgentWorkspaceCreated {
+                        task_id: task.task_id.clone(),
+                        assignment: task.workspace.clone(),
+                        writer_workspace_state: WorkspaceState {
+                            generation: 0,
+                            revision: WorkspaceRevision::Known {
+                                sha256: task.workspace.base_commit.clone(),
+                            },
+                        },
+                    },
+                )
+                .await;
+            }
+        }
+        store
+            .release(&created.lease)
+            .await
+            .expect("release fixture root");
+        let replay = store
+            .load(&run_id)
+            .await
+            .expect("load fixture root")
+            .expect("fixture root exists");
+        (replay, task)
+    }
+
+    fn mark_writer_finished(replay: &mut RunReplay, task: &AgentTask, terminal: TerminalState) {
+        let accounting = replay.snapshot.accounting.clone();
+        replay
+            .snapshot
+            .agent_tasks
+            .iter_mut()
+            .find(|lifecycle| lifecycle.task.task_id == task.task_id)
+            .expect("writer lifecycle")
+            .finished = Some(AgentChildFinishedFact {
+            call_id: task.call_id.clone(),
+            outcome: AgentOutcome {
+                run_id: task.child_run_id.clone(),
+                parent_run_id: Some(task.parent_run_id.clone()),
+                terminal,
+                accounting: accounting.clone(),
+                runtime_model_requests: 1,
+                runtime_retries: 0,
+                tool_calls: 1,
+                details: AgentResultDetails::default(),
+            },
+            accounting,
+            handoff_content: "writer lifecycle 已闭合，等待提交 agent 工具结果".to_owned(),
+        });
+    }
+
+    fn child_request(
+        parent: &RunRequest,
+        task: &AgentTask,
+        accounting: ModelAccounting,
+    ) -> RunRequest {
+        let mut request = RunRequest::new(task.task_contract.clone(), "writer child prompt");
+        request.run_id = Some(task.child_run_id.clone());
+        request.parent_run_id = Some(task.parent_run_id.clone());
+        request.model = parent.model.clone();
+        request.reasoning_effort = parent.reasoning_effort;
+        request.max_output_tokens = parent.max_output_tokens;
+        request.streaming = false;
+        request.actor = AgentActor {
+            kind: AgentActorKind::Child,
+            depth: 1,
+        };
+        request.agent_task = Some(task.clone());
+        request.deadline_unix_ms = parent.deadline_unix_ms;
+        request.tool_policy = task.tool_policy.clone();
+        request.limits = task.limits;
+        request.environment = parent.environment.clone();
+        request.environment.workspace = task.workspace.execution_workspace().to_owned();
+        request.environment.interactive = false;
+        request.environment.sandbox = Some("isolated_writer".to_owned());
+        request.context_policy = parent.context_policy;
+        request.accounting_baseline = accounting;
+        request
+    }
+
+    #[tokio::test]
+    async fn unfinished_writer_resume_checkpoints_require_live_model_binding() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let (root, accepted) = quiet_loopback().await;
+        let composition = test_production_composition(temp.path(), connection(&root, false), false);
+        let store = Arc::new(InMemoryRunStore::default());
+
+        for (suffix, workspace_created) in [("task-prepared", false), ("workspace-created", true)] {
+            let run_id = RunId::from(format!("writer-live-{suffix}"));
+            let request = exact_resume_request(
+                &composition,
+                temp.path(),
+                run_id.clone(),
+                resume_accounting(1, 0, 10),
+            );
+            let (replay, _) =
+                seed_in_flight_tool(store.as_ref(), request, Some(workspace_created)).await;
+            assert!(resume_needs_live_model(&replay));
+            let error = match composition
+                .resume(run_id, replay, store.clone(), Arc::new(NullEventSink))
+                .await
+            {
+                Ok(_) => panic!("unfinished writer must bind a live DeepSeek model"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, RunApiErrorCode::InvalidRequest);
+            assert!(error.message.contains("deepseek_credential_missing"));
+        }
+        assert_eq!(accepted.await.expect("zero request fixture"), 0);
+    }
+
+    #[tokio::test]
+    async fn finished_writer_pending_tool_result_requires_live_model_unless_recovery_required() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let (root, accepted) = quiet_loopback().await;
+        let composition = test_production_composition(temp.path(), connection(&root, false), false);
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("writer-finished-before-tool-result");
+        let request = exact_resume_request(
+            &composition,
+            temp.path(),
+            run_id.clone(),
+            resume_accounting(1, 0, 10),
+        );
+        let (mut replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(true)).await;
+        let task = task.expect("writer task");
+        mark_writer_finished(
+            &mut replay,
+            &task,
+            TerminalState::Completed {
+                message: "writer 已完成并集成".to_owned(),
+                decision: CompletionDecision {
+                    candidate_id: CompletionCandidateId::from("writer-finished"),
+                    generation_id: task.task_contract.generation_id.clone(),
+                    workspace_state: WorkspaceState {
+                        generation: 1,
+                        revision: WorkspaceRevision::Known {
+                            sha256: task.workspace.base_commit.clone(),
+                        },
+                    },
+                    satisfied: Vec::new(),
+                },
+            },
+        );
+        assert!(
+            resume_needs_live_model(&replay),
+            "ChildFinished 后仍须先提交 agent 工具结果，再让 root 继续模型回合"
+        );
+        let error = match composition
+            .resume(
+                run_id.clone(),
+                replay.clone(),
+                store.clone(),
+                Arc::new(NullEventSink),
+            )
+            .await
+        {
+            Ok(_) => panic!("finished writer tool replay must bind live DeepSeek"),
+            Err(error) => error,
+        };
+        assert!(error.message.contains("deepseek_credential_missing"));
+
+        mark_writer_finished(
+            &mut replay,
+            &task,
+            TerminalState::RecoveryRequired {
+                ambiguity: RecoveryAmbiguity {
+                    phase: RecoveryAmbiguityPhase::ChildRun,
+                    action_id: "writer-integration".to_owned(),
+                    message: "集成结果无法精确证明".to_owned(),
+                },
+            },
+        );
+        assert!(
+            !resume_needs_live_model(&replay),
+            "RecoveryRequired writer must close locally without a Key"
+        );
+        let run = composition
+            .resume(run_id, replay, store, Arc::new(NullEventSink))
+            .await
+            .expect("RecoveryRequired writer composes without a Key")
+            .ready()
+            .await
+            .expect("resume acquires canonical root");
+        let _ = run.wait().await.expect("recovery path settles locally");
+        assert_eq!(accepted.await.expect("zero request fixture"), 0);
+    }
+
+    #[tokio::test]
+    async fn ordinary_in_flight_tool_resume_needs_no_key_and_never_replays_side_effect() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let (root, accepted) = quiet_loopback().await;
+        let composition = test_production_composition(temp.path(), connection(&root, false), false);
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("ordinary-in-flight");
+        let request = exact_resume_request(
+            &composition,
+            temp.path(),
+            run_id.clone(),
+            resume_accounting(1, 0, 10),
+        );
+        let (replay, _) = seed_in_flight_tool(store.as_ref(), request, None).await;
+        assert!(!resume_needs_live_model(&replay));
+
+        let run = composition
+            .resume(run_id, replay, store.clone(), Arc::new(NullEventSink))
+            .await
+            .expect("ordinary ambiguous tool composes without a Key")
+            .ready()
+            .await
+            .expect("resume acquires the run");
+        let outcome = run.wait().await.expect("runtime settles ambiguity");
+        assert!(matches!(
+            outcome.terminal,
+            TerminalState::RecoveryRequired { .. }
+        ));
+        assert_eq!(accepted.await.expect("zero request fixture"), 0);
+    }
+
+    #[tokio::test]
+    async fn writer_resume_recovers_shared_child_ledger_without_reopening_limit_or_losing_usage() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let composition = test_production_composition(
+            temp.path(),
+            connection("http://127.0.0.1:9/v1", false),
+            false,
+        );
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("writer-accounting");
+        let parent_accounting = resume_accounting(1, 0, 10);
+        let request = exact_resume_request(
+            &composition,
+            temp.path(),
+            run_id.clone(),
+            parent_accounting.clone(),
+        );
+        let (replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(true)).await;
+        let task = task.expect("writer task");
+        let acquired = store.acquire(&run_id).await.expect("acquire root");
+        let lease = acquired.lease.expect("root lease");
+        append_test_event(
+            store.as_ref(),
+            &lease,
+            RuntimeEventKind::ChildStarted {
+                task_id: task.task_id.clone(),
+                call_id: task.call_id.clone(),
+                child_run_id: task.child_run_id.clone(),
+                depth: 1,
+            },
+        )
+        .await;
+        store.release(&lease).await.expect("release root");
+
+        let child_accounting = resume_accounting(1, 3, 40);
+        let child = store
+            .create(child_request(
+                &replay.snapshot.request,
+                &task,
+                child_accounting.clone(),
+            ))
+            .await
+            .expect("create child replay");
+        store.release(&child.lease).await.expect("release child");
+        let replay = store
+            .load(&run_id)
+            .await
+            .expect("load root")
+            .expect("root exists");
+
+        let recovered = recover_writer_accounting(&run_id, &replay, store.as_ref())
+            .await
+            .expect("recover shared ledger");
+        assert_eq!(recovered.root.started, 1);
+        assert_eq!(recovered.child.started, 3);
+        assert_eq!(recovered.total_started(), 4);
+        assert_eq!(recovered.usage, child_accounting.usage);
+
+        let (budget, exhausted) = resume_api_request_budget(&recovered);
+        assert!(!exhausted);
+        assert_eq!(budget.accounting_snapshot().0.limit, 1);
+        assert_eq!(
+            store
+                .load(&run_id)
+                .await
+                .expect("load canonical root")
+                .expect("root exists")
+                .snapshot
+                .accounting,
+            parent_accounting,
+            "accounting recovery must not invent an unlogged canonical Store mutation"
+        );
+    }
+
+    #[tokio::test]
+    async fn writer_resume_fails_closed_when_child_shared_ledger_regresses_parent() {
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let composition = test_production_composition(
+            temp.path(),
+            connection("http://127.0.0.1:9/v1", false),
+            false,
+        );
+        let store = Arc::new(InMemoryRunStore::default());
+        let run_id = RunId::from("writer-accounting-diverged");
+        let request = exact_resume_request(
+            &composition,
+            temp.path(),
+            run_id.clone(),
+            resume_accounting(1, 0, 10),
+        );
+        let (replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(false)).await;
+        let task = task.expect("writer task");
+        let child = store
+            .create(child_request(
+                &replay.snapshot.request,
+                &task,
+                resume_accounting(0, 1, 5),
+            ))
+            .await
+            .expect("create divergent child replay");
+        store.release(&child.lease).await.expect("release child");
+
+        let error = recover_writer_accounting(&run_id, &replay, store.as_ref())
+            .await
+            .expect_err("regressed root counters must fail closed");
+        assert_eq!(error.code, RunApiErrorCode::RunEnvironmentMismatch);
+        assert!(
+            error
+                .message
+                .starts_with("run_resume_writer_accounting_diverged：")
+        );
     }
 
     #[cfg(unix)]
@@ -1269,6 +1993,10 @@ mod tests {
             ProductionApplicationConfig::official().with_state_db_path(&state_path),
         )
         .expect("construct without credential");
+        assert!(
+            temp.path().join("worktrees").is_dir(),
+            "managed writer root must be a state-db sibling"
+        );
         let store = app.store.clone();
         let runtime = Arc::new(AgentRuntime::new(
             Arc::new(OneShotModel),
@@ -1374,6 +2102,71 @@ mod tests {
                 .expect("query runs")
                 .is_empty()
         );
+    }
+
+    #[tokio::test]
+    async fn ordinary_start_does_not_require_writer_git_admission() {
+        let server =
+            MockDeepSeekServer::start(vec![response("deepseek-v4-flash", "完成", 5, 2)]).await;
+        let temp = tempfile::tempdir().expect("temporary parent");
+        let workspace = temp.path().join("repo");
+        let state_dir = temp.path().join("state");
+        std::fs::create_dir(&workspace).expect("workspace");
+        std::fs::create_dir(&state_dir).expect("state directory");
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.name", "CodeWhale Test"],
+            vec!["config", "user.email", "test@codewhale.local"],
+        ] {
+            let output = ProcessCommand::new("git")
+                .current_dir(&workspace)
+                .args(args)
+                .output()
+                .expect("launch git");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::fs::write(workspace.join("tracked.txt"), "base\n").expect("tracked file");
+        for args in [&["add", "tracked.txt"][..], &["commit", "-m", "base"][..]] {
+            let output = ProcessCommand::new("git")
+                .current_dir(&workspace)
+                .args(args)
+                .output()
+                .expect("launch git");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        std::fs::write(workspace.join("dirty.txt"), "dirty\n").expect("dirty file");
+
+        let app = AgentApplication::production(config(
+            &state_dir.join("state.db"),
+            connection(&server.root, false),
+            true,
+        ))
+        .expect("production app");
+        let run = run_result(
+            app.execute(envelope(
+                "dirty-root-no-writer",
+                RunCommand::Start(start_command(&workspace, Some("deepseek-v4-flash"))),
+            ))
+            .await,
+        );
+        let replay = wait_terminal(app.store.as_ref(), &run.run_id).await;
+        assert!(matches!(
+            replay.snapshot.terminal,
+            Some(AgentOutcome {
+                terminal: TerminalState::Completed { .. },
+                ..
+            })
+        ));
+        assert_eq!(server.finish().await.len(), 1);
+        assert!(workspace.join("dirty.txt").is_file());
     }
 
     #[tokio::test]
@@ -1729,6 +2522,11 @@ mod tests {
             http_client: None,
             tools,
             prompt: ProductionPromptConfig::default(),
+            managed_worktree_root: {
+                let path = temp.path().join("worktrees");
+                std::fs::create_dir(&path).expect("managed worktree root");
+                path
+            },
             composition_build_revision: "test-composition".to_owned(),
             default_max_api_requests: NonZeroU32::new(DEFAULT_MAX_API_REQUESTS)
                 .expect("non-zero default"),

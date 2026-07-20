@@ -8,6 +8,7 @@
 //! Store; cross-surface comparison removes only generated identities and
 //! timestamps.
 
+use std::collections::BTreeMap;
 use std::io::Read;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -25,14 +26,22 @@ use codewhale_app::{
 use codewhale_app_server::{AppServerOptions, router, serve_stdio};
 use codewhale_config::PromptPreferences;
 use codewhale_protocol::agent_runtime::{
-    ReasoningEffort, RunId, RunRequest, RuntimeEventKind, StoredRuntimeEvent, TerminalState,
-    ToolPolicy,
+    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentOutcome, AgentResultDetails,
+    AgentTask, AgentTaskId, AgentWorkspaceAccess, AgentWorkspaceAssignment, ModelAccounting,
+    OperationId, ReasoningEffort, RunId, RunRequest, RuntimeEventId, RuntimeEventKind,
+    StoredRuntimeEvent, TerminalState, ToolArtifact, ToolArtifactStatus, ToolPolicy, Usage,
+    WriterIntegrationStatus,
 };
 use codewhale_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
     RunProductControls, RunView, StartRunCommand,
 };
-use codewhale_protocol::task::TaskDefinition;
+use codewhale_protocol::task::{
+    AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
+    EvidenceReceipt, EvidenceReceiptId, TaskAcceptance, TaskContract, TaskDefinition,
+    TaskGenerationId, VerificationId, VerifierPlan, VerifierSpec, VerifierStep, WorkspaceRevision,
+    WorkspaceState,
+};
 use codewhale_runtime::{RunReplay, RunStore};
 use codewhale_state::StateStore;
 use serde_json::{Map, Value, json};
@@ -43,12 +52,18 @@ use wait_timeout::ChildExt;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request as ModelRequest, Respond, ResponseTemplate};
 
+#[path = "../src/exec_lifecycle_stream.rs"]
+mod exec_lifecycle_stream;
+
 const TEST_MODEL: &str = "deepseek-v4-flash";
 const TEST_KEY: &str = "offline-run-surface-parity-key";
 const TEST_PROMPT: &str = "读取 fixture.txt，并根据文件内容给出固定结论。";
 const TOOL_CALL_ID: &str = "call_surface_parity_read";
 const FINAL_MESSAGE: &str = "三个入口读取到了同一份内容";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(30);
+const WRITER_BASE_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const WRITER_FINAL_COMMIT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const WRITER_DIFF_SHA256: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 
 #[derive(Clone, Copy)]
 struct ReadThenComplete;
@@ -201,6 +216,73 @@ async fn exec_http_and_stdio_preserve_one_canonical_run() {
         normalize_value(&requests[1]),
         normalize_value(&requests[5]),
         "exec/stdio replay request drifted"
+    );
+}
+
+#[test]
+fn writer_lifecycle_stream_preserves_child_identity_outcome_accounting_and_handoff() {
+    let events = writer_lifecycle_fixture();
+    let stdout = events
+        .iter()
+        .map(|event| {
+            String::from_utf8(
+                exec_lifecycle_stream::agent_lifecycle_stream_line(event)
+                    .expect("serialize production lifecycle stream line"),
+            )
+            .expect("lifecycle stream is UTF-8")
+        })
+        .collect::<String>();
+
+    assert_exec_agent_lifecycle_parity(&stdout, &events);
+
+    let values = stdout
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("strict lifecycle NDJSON"))
+        .collect::<Vec<_>>();
+    let child_started = values
+        .iter()
+        .find(|value| value["runtime_event"]["event"]["kind"] == "child_started")
+        .expect("exact ChildStarted stream event");
+    let child_finished = values
+        .iter()
+        .find(|value| value["runtime_event"]["event"]["kind"] == "child_finished")
+        .expect("exact ChildFinished stream event");
+    let expected_started = events
+        .iter()
+        .find(|event| matches!(event.event, RuntimeEventKind::ChildStarted { .. }))
+        .expect("fixture ChildStarted");
+    let expected_finished = events
+        .iter()
+        .find(|event| matches!(event.event, RuntimeEventKind::ChildFinished { .. }))
+        .expect("fixture ChildFinished");
+
+    assert_eq!(
+        child_started["runtime_event"],
+        serde_json::to_value(expected_started).expect("serialize expected ChildStarted")
+    );
+    assert_eq!(
+        child_finished["runtime_event"],
+        serde_json::to_value(expected_finished).expect("serialize expected ChildFinished")
+    );
+    assert_eq!(
+        child_finished["runtime_event"]["event"]["handoff_content"],
+        "writer 已集成；父 Agent 可继续使用变更"
+    );
+    assert_eq!(
+        child_finished["runtime_event"]["event"]["outcome"]["details"]["changed_files"],
+        json!(["src/lib.rs"])
+    );
+    assert_eq!(
+        child_finished["runtime_event"]["event"]["outcome"]["details"]["integration"]["state"],
+        "integrated"
+    );
+    assert_eq!(
+        child_finished["runtime_event"]["event"]["outcome"]["accounting"]["usage"]["input_tokens"],
+        101
+    );
+    assert_eq!(
+        child_finished["runtime_event"]["event"]["accounting"]["child"]["started"],
+        3
     );
 }
 
@@ -678,6 +760,17 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             RuntimeEventKind::HostVerificationStarted { .. } => "host_verification_started",
             RuntimeEventKind::HostVerificationCommitted { .. } => "host_verification_committed",
             RuntimeEventKind::CompletionRejected { .. } => "completion_rejected",
+            RuntimeEventKind::AgentTaskPrepared { .. } => "agent_task_prepared",
+            RuntimeEventKind::AgentWorkspaceCreated { .. } => "agent_workspace_created",
+            RuntimeEventKind::AgentSealPrepared { .. } => "agent_seal_prepared",
+            RuntimeEventKind::AgentSealCommitted { .. } => "agent_seal_committed",
+            RuntimeEventKind::AgentResultCollected { .. } => "agent_result_collected",
+            RuntimeEventKind::AgentIntegrationPrepared { .. } => "agent_integration_prepared",
+            RuntimeEventKind::AgentIntegrationStarted { .. } => "agent_integration_started",
+            RuntimeEventKind::AgentIntegrationFailed { .. } => "agent_integration_failed",
+            RuntimeEventKind::AgentIntegrationCommitted { .. } => "agent_integration_committed",
+            RuntimeEventKind::AgentCleanupPrepared { .. } => "agent_cleanup_prepared",
+            RuntimeEventKind::AgentCleanupCommitted { .. } => "agent_cleanup_committed",
             RuntimeEventKind::Terminal { .. } => "terminal",
         })
         .collect::<Vec<_>>();
@@ -701,6 +794,346 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
             "workspace_observed",
             "terminal",
         ]
+    );
+}
+
+fn writer_lifecycle_fixture() -> Vec<StoredRuntimeEvent> {
+    let root_run_id = RunId::from("writer-root-run");
+    let child_run_id = RunId::from("writer-child-run");
+    let task_id = AgentTaskId::from("writer-task");
+    let integration_id = OperationId::from("writer-integration");
+    let verifier = VerifierSpec {
+        verifier_id: "run_tests".to_owned(),
+        parameters: json!({"suite": "writer-surface"}),
+        plan: VerifierPlan {
+            steps: vec![VerifierStep {
+                id: "writer-tests".to_owned(),
+                program: "cargo".to_owned(),
+                args: vec!["test".to_owned(), "-p".to_owned(), "fixture".to_owned()],
+                cwd: String::new(),
+                env: BTreeMap::from([("CARGO_INCREMENTAL".to_owned(), "0".to_owned())]),
+                timeout_ms: 60_000,
+            }],
+        },
+    };
+    let task_contract = TaskContract {
+        generation_id: TaskGenerationId::from(child_run_id.0.clone()),
+        definition: TaskDefinition {
+            objective: "只修改 src/lib.rs 并通过冻结验证".to_owned(),
+            constraints: vec!["只允许修改 src/lib.rs".to_owned()],
+            non_goals: vec!["不得修改主工作区".to_owned()],
+            acceptance: vec![TaskAcceptance::Verifier {
+                id: AcceptanceId::from("writer-tests"),
+                description: "writer 测试必须通过".to_owned(),
+                verifier: verifier.clone(),
+            }],
+        },
+    };
+    let assignment = AgentWorkspaceAssignment {
+        access: AgentWorkspaceAccess::IsolatedWrite,
+        root_workspace: "/workspace/root".to_owned(),
+        base_commit: WRITER_BASE_COMMIT.to_owned(),
+        worktree_path: Some("/workspace/worktrees/writer-task".to_owned()),
+        root_branch: Some("deepseek-agent".to_owned()),
+        branch: Some("codewhale/writer-task".to_owned()),
+        allowed_paths: vec!["src/lib.rs".to_owned()],
+        owner_token: Some("writer-owner-token".to_owned()),
+    };
+    let task = AgentTask {
+        task_id: task_id.clone(),
+        root_run_id: root_run_id.clone(),
+        parent_run_id: root_run_id.clone(),
+        child_run_id: child_run_id.clone(),
+        call_id: "writer-call".to_owned(),
+        role: "implementer".to_owned(),
+        task_contract: task_contract.clone(),
+        workspace: assignment.clone(),
+        tool_policy: ToolPolicy {
+            enabled: true,
+            allowed: Some(vec!["read_file".to_owned(), "apply_patch".to_owned()]),
+            denied: vec!["agent".to_owned()],
+        },
+        limits: Default::default(),
+        deadline_unix_ms: Some(1_790_000_120_000),
+        expected_artifact: "一个 Host seal 的提交".to_owned(),
+    };
+    task.validate().expect("valid writer task fixture");
+
+    let receipt = EvidenceReceipt {
+        id: EvidenceReceiptId::from("writer-evidence"),
+        generation_id: task_contract.generation_id.clone(),
+        acceptance_id: AcceptanceId::from("writer-tests"),
+        verification_id: VerificationId::from("writer-verification"),
+        verifier,
+        workspace_state: writer_workspace_state(4, WRITER_FINAL_COMMIT),
+        artifact_ids: vec!["writer-diff".to_owned()],
+    };
+    let outcome_accounting = writer_outcome_accounting();
+    let awaiting_outcome = writer_outcome(
+        &task,
+        &receipt,
+        outcome_accounting.clone(),
+        WriterIntegrationStatus::AwaitingHost,
+    );
+    let integrated_outcome = writer_outcome(
+        &task,
+        &receipt,
+        outcome_accounting,
+        WriterIntegrationStatus::Integrated {
+            integration_id: integration_id.clone(),
+            writer_commit: WRITER_FINAL_COMMIT.to_owned(),
+            root_workspace_state: writer_workspace_state(2, WRITER_FINAL_COMMIT),
+        },
+    );
+
+    let kinds = vec![
+        RuntimeEventKind::AgentTaskPrepared {
+            task: Box::new(task.clone()),
+        },
+        RuntimeEventKind::AgentWorkspaceCreated {
+            task_id: task_id.clone(),
+            assignment: assignment.clone(),
+            writer_workspace_state: writer_workspace_state(0, WRITER_BASE_COMMIT),
+        },
+        RuntimeEventKind::ChildStarted {
+            task_id: task_id.clone(),
+            call_id: task.call_id.clone(),
+            child_run_id: child_run_id.clone(),
+            depth: 1,
+        },
+        RuntimeEventKind::AgentSealPrepared {
+            task_id: task_id.clone(),
+            base_commit: WRITER_BASE_COMMIT.to_owned(),
+            writer_workspace_state_before: writer_workspace_state(
+                3,
+                "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            ),
+        },
+        RuntimeEventKind::AgentSealCommitted {
+            task_id: task_id.clone(),
+            final_commit: WRITER_FINAL_COMMIT.to_owned(),
+            diff_sha256: WRITER_DIFF_SHA256.to_owned(),
+            changed_files: vec!["src/lib.rs".to_owned()],
+            writer_workspace_state_after: writer_workspace_state(4, WRITER_FINAL_COMMIT),
+        },
+        RuntimeEventKind::AgentResultCollected {
+            task_id: task_id.clone(),
+            outcome: Box::new(awaiting_outcome),
+        },
+        RuntimeEventKind::AgentIntegrationPrepared {
+            task_id: task_id.clone(),
+            integration_id: integration_id.clone(),
+            base_commit: WRITER_BASE_COMMIT.to_owned(),
+            writer_commit: WRITER_FINAL_COMMIT.to_owned(),
+            diff_sha256: WRITER_DIFF_SHA256.to_owned(),
+            expected_root_workspace_state: writer_workspace_state(1, WRITER_BASE_COMMIT),
+        },
+        RuntimeEventKind::AgentIntegrationStarted {
+            task_id: task_id.clone(),
+            integration_id: integration_id.clone(),
+        },
+        RuntimeEventKind::AgentIntegrationCommitted {
+            task_id: task_id.clone(),
+            integration_id,
+            root_head_commit: WRITER_FINAL_COMMIT.to_owned(),
+            root_workspace_state_after: writer_workspace_state(2, WRITER_FINAL_COMMIT),
+        },
+        RuntimeEventKind::ChildFinished {
+            call_id: task.call_id.clone(),
+            outcome: Box::new(integrated_outcome),
+            accounting: Box::new(writer_parent_accounting()),
+            handoff_content: "writer 已集成；父 Agent 可继续使用变更".to_owned(),
+        },
+        RuntimeEventKind::AgentCleanupPrepared {
+            task_id: task_id.clone(),
+            worktree_path: assignment
+                .worktree_path
+                .clone()
+                .expect("writer worktree path"),
+            branch: assignment.branch.clone().expect("writer branch"),
+            owner_token: assignment.owner_token.clone().expect("writer owner token"),
+        },
+        RuntimeEventKind::AgentCleanupCommitted {
+            task_id,
+            worktree_path: assignment.worktree_path.expect("writer worktree path"),
+            branch: assignment.branch.expect("writer branch"),
+            owner_token: assignment.owner_token.expect("writer owner token"),
+            worktree_removed: true,
+            branch_removed: true,
+            retained_for_recovery: false,
+            reason: None,
+        },
+    ];
+
+    kinds
+        .into_iter()
+        .enumerate()
+        .map(|(index, event)| StoredRuntimeEvent {
+            schema_version: AGENT_RUNTIME_EVENT_SCHEMA_VERSION,
+            run_id: root_run_id.clone(),
+            parent_run_id: None,
+            event_id: RuntimeEventId(format!("writer-event-{}", index + 1)),
+            sequence: (index + 1) as u64,
+            occurred_at_unix_ms: 1_790_000_000_000 + index as u64,
+            event,
+        })
+        .collect()
+}
+
+fn writer_outcome(
+    task: &AgentTask,
+    receipt: &EvidenceReceipt,
+    accounting: ModelAccounting,
+    integration: WriterIntegrationStatus,
+) -> AgentOutcome {
+    let outcome = AgentOutcome {
+        run_id: task.child_run_id.clone(),
+        parent_run_id: Some(task.parent_run_id.clone()),
+        terminal: TerminalState::Completed {
+            message: "writer 子任务完成".to_owned(),
+            decision: CompletionDecision {
+                candidate_id: CompletionCandidateId::from("writer-candidate"),
+                generation_id: task.task_contract.generation_id.clone(),
+                workspace_state: writer_workspace_state(4, WRITER_FINAL_COMMIT),
+                satisfied: vec![AcceptanceSatisfaction::Evidence {
+                    acceptance_id: receipt.acceptance_id.clone(),
+                    receipt_id: receipt.id.clone(),
+                }],
+            },
+        },
+        accounting,
+        runtime_model_requests: 2,
+        runtime_retries: 1,
+        tool_calls: 3,
+        details: AgentResultDetails {
+            summary: "writer 修改并验证了目标文件".to_owned(),
+            evidence: vec![receipt.clone()],
+            changed_files: vec!["src/lib.rs".to_owned()],
+            checks: Vec::new(),
+            unresolved: vec!["父 Agent 仍需消费 handoff".to_owned()],
+            artifacts: vec![ToolArtifact {
+                id: "writer-diff".to_owned(),
+                status: ToolArtifactStatus::Available,
+                sha256: Some(WRITER_DIFF_SHA256.to_owned()),
+                media_type: Some("text/x-diff".to_owned()),
+                byte_len: Some(128),
+            }],
+            workspace: Some(task.workspace.clone()),
+            workspace_state: Some(writer_workspace_state(4, WRITER_FINAL_COMMIT)),
+            base_commit: Some(WRITER_BASE_COMMIT.to_owned()),
+            final_commit: Some(WRITER_FINAL_COMMIT.to_owned()),
+            diff_sha256: Some(WRITER_DIFF_SHA256.to_owned()),
+            integration,
+        },
+    };
+    outcome.validate().expect("valid writer outcome fixture");
+    outcome
+}
+
+fn writer_outcome_accounting() -> ModelAccounting {
+    ModelAccounting {
+        hard_request_limit: Some(12),
+        root: ActorRequestAccounting {
+            started: 0,
+            completed: 0,
+            in_flight: 0,
+            retries: 0,
+        },
+        child: ActorRequestAccounting {
+            started: 2,
+            completed: 2,
+            in_flight: 0,
+            retries: 1,
+        },
+        runtime_retries: 1,
+        sealed: true,
+        complete: true,
+        usage_complete: true,
+        usage_responses: 2,
+        usage: Usage {
+            input_tokens: 101,
+            output_tokens: 17,
+            cache_hit_tokens: 41,
+            cache_miss_tokens: 60,
+            reasoning_tokens: 9,
+            reasoning_replay_tokens: 3,
+            ..Usage::default()
+        },
+        cost_nanousd: 12_345,
+        cost_nanocny: 88_888,
+        ..ModelAccounting::default()
+    }
+}
+
+fn writer_parent_accounting() -> ModelAccounting {
+    ModelAccounting {
+        hard_request_limit: Some(12),
+        root: ActorRequestAccounting {
+            started: 1,
+            completed: 1,
+            in_flight: 0,
+            retries: 0,
+        },
+        child: ActorRequestAccounting {
+            started: 3,
+            completed: 3,
+            in_flight: 0,
+            retries: 1,
+        },
+        transport_retries: 1,
+        sealed: true,
+        complete: true,
+        usage_complete: true,
+        usage_responses: 4,
+        usage: Usage {
+            input_tokens: 211,
+            output_tokens: 29,
+            cache_hit_tokens: 81,
+            cache_miss_tokens: 130,
+            reasoning_tokens: 15,
+            reasoning_replay_tokens: 5,
+            ..Usage::default()
+        },
+        cost_nanousd: 23_456,
+        cost_nanocny: 166_666,
+        ..ModelAccounting::default()
+    }
+}
+
+fn writer_workspace_state(generation: u64, sha256: &str) -> WorkspaceState {
+    WorkspaceState {
+        generation,
+        revision: WorkspaceRevision::Known {
+            sha256: sha256.to_owned(),
+        },
+    }
+}
+
+fn assert_exec_agent_lifecycle_parity(stdout: &str, events: &[StoredRuntimeEvent]) {
+    let expected = events
+        .iter()
+        .filter(|stored| exec_lifecycle_stream::is_agent_lifecycle_event(&stored.event))
+        .map(|stored| serde_json::to_value(stored).expect("serialize canonical lifecycle event"))
+        .collect::<Vec<_>>();
+    assert!(
+        !expected.is_empty(),
+        "Agent lifecycle parity requires a non-empty canonical fixture"
+    );
+    let actual = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|value| value["type"] == "agent_lifecycle")
+        .map(|value| {
+            value
+                .get("runtime_event")
+                .cloned()
+                .expect("agent_lifecycle must carry the exact stored event")
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        actual, expected,
+        "exec machine stream omitted, reordered, or rewrote canonical Agent lifecycle identity/facts"
     );
 }
 

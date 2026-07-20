@@ -158,10 +158,17 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
         full_policy.push_str(SEATBELT_NETWORK_POLICY);
     }
 
-    // Add Darwin user cache directory access (needed by many macOS tools)
+    // Add Darwin user cache directory access (needed by many macOS tools).
+    // Isolated writers may read it but cannot mutate anything outside their
+    // worktree.
     full_policy.push_str("\n\n; Darwin user cache directory\n");
-    full_policy
-        .push_str(r#"(allow file-read* file-write* (subpath (param "DARWIN_USER_CACHE_DIR")))"#);
+    if !matches!(policy, SandboxPolicy::IsolatedWriter { .. }) {
+        full_policy.push_str(
+            r#"(allow file-read* file-write* (subpath (param "DARWIN_USER_CACHE_DIR")))"#,
+        );
+    } else {
+        full_policy.push_str(r#"(allow file-read* (subpath (param "DARWIN_USER_CACHE_DIR")))"#);
+    }
 
     // Add common macOS directories that tools often need
     full_policy.push_str("\n\n; Common macOS directories\n");
@@ -187,7 +194,7 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     if resolve_cargo_home().is_some() {
         full_policy.push_str("\n\n; Cargo home (~/.cargo) — registry/index/git caches\n");
         full_policy.push_str(r#"(allow file-read* (subpath (param "CARGO_HOME")))"#);
-        if !matches!(policy, SandboxPolicy::ReadOnly) {
+        if policy.allows_host_cache_writes() {
             full_policy.push('\n');
             full_policy.push_str(r#"(allow file-write* (subpath (param "CARGO_HOME_REGISTRY")))"#);
             full_policy.push('\n');
@@ -205,7 +212,7 @@ fn generate_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
     if resolve_npm_cache_dir().is_some() {
         full_policy.push_str("\n\n; npm cache (~/.npm) — npx package downloads\n");
         full_policy.push_str(r#"(allow file-read* (subpath (param "NPM_CACHE_DIR")))"#);
-        if !matches!(policy, SandboxPolicy::ReadOnly) {
+        if policy.allows_host_cache_writes() {
             full_policy.push('\n');
             full_policy.push_str(r#"(allow file-write* (subpath (param "NPM_CACHE_DIR")))"#);
         }
@@ -273,6 +280,7 @@ fn generate_write_policy(policy: &SandboxPolicy, cwd: &Path) -> String {
 
             for (subpath_index, _) in root.read_only_subpaths.iter().enumerate() {
                 let ro_param = format!("WRITABLE_ROOT_{index}_RO_{subpath_index}");
+                parts.push(format!("(require-not (literal (param \"{ro_param}\")))"));
                 parts.push(format!("(require-not (subpath (param \"{ro_param}\")))"));
             }
 
@@ -447,6 +455,116 @@ mod tests {
         assert!(result.contains("(allow file-read*)"));
         // Should not have workspace write rules
         assert!(!result.contains("WRITABLE_ROOT"));
+    }
+
+    #[test]
+    fn isolated_writer_policy_has_no_external_write_grants() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        std::fs::write(
+            workspace.path().join(".git"),
+            "gitdir: /private/readonly/gitdir\n",
+        )
+        .expect("git pointer");
+        let policy = SandboxPolicy::isolated_writer(workspace.path());
+        let result = generate_policy(&policy, workspace.path());
+
+        assert!(!result.contains("network-outbound"));
+        assert!(!result.contains(r#"file-write* (subpath (param "DARWIN_USER_CACHE_DIR"))"#));
+        assert!(!result.contains(r#"file-write* (subpath (param "CARGO_HOME_REGISTRY"))"#));
+        assert!(!result.contains(r#"file-write* (subpath (param "CARGO_HOME_GIT"))"#));
+        assert!(!result.contains(r#"file-write* (subpath (param "NPM_CACHE_DIR"))"#));
+        assert!(result.contains("WRITABLE_ROOT_0_RO_0"));
+
+        let params = generate_params(&policy, workspace.path());
+        let writable = params
+            .iter()
+            .find(|(name, _)| name == "WRITABLE_ROOT_0")
+            .expect("writer root");
+        assert_eq!(
+            writable.1,
+            workspace
+                .path()
+                .canonicalize()
+                .expect("canonical workspace")
+        );
+        let git_pointer = params
+            .iter()
+            .find(|(name, _)| name == "WRITABLE_ROOT_0_RO_0")
+            .expect("protected git pointer");
+        assert_eq!(
+            git_pointer.1,
+            workspace
+                .path()
+                .join(".git")
+                .canonicalize()
+                .expect("canonical git pointer")
+        );
+    }
+
+    #[test]
+    fn isolated_writer_seatbelt_enforces_worktree_only_writes() {
+        if !is_available() {
+            return;
+        }
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path().join("root");
+        let common_git = root.join(".git");
+        let per_worktree_git = common_git.join("worktrees").join("writer");
+        let writer = tmp.path().join("writer");
+        let other = tmp.path().join("other");
+        std::fs::create_dir_all(&per_worktree_git).expect("mkdir gitdir");
+        std::fs::create_dir_all(&writer).expect("mkdir writer");
+        std::fs::create_dir_all(&other).expect("mkdir other");
+        std::fs::write(
+            writer.join(".git"),
+            format!("gitdir: {}\n", per_worktree_git.display()),
+        )
+        .expect("git pointer");
+        let policy = SandboxPolicy::isolated_writer(&writer);
+
+        let run = |script: String| {
+            let args = create_seatbelt_args(
+                vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
+                &policy,
+                &writer,
+            );
+            Command::new(SANDBOX_EXEC_PATH)
+                .args(args)
+                .output()
+                .expect("run sandbox-exec")
+        };
+
+        let inside = writer.join("allowed");
+        assert!(run(format!("touch {}", inside.display())).status.success());
+        assert!(inside.is_file());
+
+        let slash_tmp = PathBuf::from(format!(
+            "/tmp/codewhale-isolated-writer-{}",
+            std::process::id()
+        ));
+        let forbidden = [
+            root.join("blocked"),
+            other.join("blocked"),
+            per_worktree_git.join("blocked"),
+            common_git.join("blocked"),
+            writer.join(".git"),
+            slash_tmp,
+        ];
+        for path in forbidden {
+            let before = std::fs::read(&path).ok();
+            let output = run(format!("printf blocked > {}", path.display()));
+            assert!(
+                !output.status.success(),
+                "sandbox unexpectedly wrote {}",
+                path.display()
+            );
+            assert_eq!(
+                std::fs::read(&path).ok(),
+                before,
+                "forbidden path changed: {}",
+                path.display()
+            );
+        }
     }
 
     #[test]

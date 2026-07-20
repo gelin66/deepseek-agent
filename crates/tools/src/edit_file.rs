@@ -25,7 +25,7 @@ pub fn execute_edit_file(
         ));
     }
 
-    let file_path = context.resolve_path(path_str)?;
+    let file_path = context.resolve_write_path(path_str)?;
     context.require_fresh_file_read(&file_path, path_str)?;
 
     let contents = fs::read_to_string(&file_path).map_err(|e| {
