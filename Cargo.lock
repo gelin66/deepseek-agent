@@ -879,6 +879,7 @@ version = "0.8.68"
 dependencies = [
  "async-stream",
  "async-trait",
+ "codewhale-context",
  "codewhale-runtime",
  "futures-util",
  "reqwest 0.13.4",
@@ -968,6 +969,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "chrono",
+ "codewhale-context",
  "codewhale-protocol",
  "codewhale-runtime",
  "dirs",

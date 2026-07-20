@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use codewhale_context::compaction::{ContextInput, effective_context};
 use codewhale_protocol::agent_runtime::{ReasoningEffort, RunLimits, ToolPolicy};
 use codewhale_protocol::run_api::{
     PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
@@ -113,8 +114,6 @@ enum CrashScenario {
     InteractionResolved,
     SteerQueued,
     SteerApplied,
-    CompactionPrepared,
-    CompactionInFlight,
     CompactionCommitted,
     HostVerificationPrepared,
     HostVerificationInFlight,
@@ -136,8 +135,6 @@ impl CrashScenario {
             Self::InteractionResolved => "interaction_resolved",
             Self::SteerQueued => "steer_queued",
             Self::SteerApplied => "steer_applied",
-            Self::CompactionPrepared => "compaction_prepared",
-            Self::CompactionInFlight => "compaction_in_flight",
             Self::CompactionCommitted => "compaction_committed",
             Self::HostVerificationPrepared => "host_verification_prepared",
             Self::HostVerificationInFlight => "host_verification_in_flight",
@@ -159,8 +156,6 @@ impl CrashScenario {
             "interaction_resolved" => Self::InteractionResolved,
             "steer_queued" => Self::SteerQueued,
             "steer_applied" => Self::SteerApplied,
-            "compaction_prepared" => Self::CompactionPrepared,
-            "compaction_in_flight" => Self::CompactionInFlight,
             "compaction_committed" => Self::CompactionCommitted,
             "host_verification_prepared" => Self::HostVerificationPrepared,
             "host_verification_in_flight" => Self::HostVerificationInFlight,
@@ -300,7 +295,7 @@ impl CrashFixture {
         scenario: CrashScenario,
     ) -> (Arc<AgentRuntime>, Arc<StateStore>, Arc<MarkerModel>) {
         let store = Arc::new(StateStore::open(Some(self.db.clone())).expect("reopen SQLite store"));
-        let model = Arc::new(MarkerModel::new(self.model_marker.clone(), scenario, None));
+        let model = Arc::new(MarkerModel::new(self.model_marker.clone(), scenario));
         let runtime = Arc::new(AgentRuntime::new(
             model.clone(),
             Arc::new(MarkerTools::new(
@@ -327,17 +322,15 @@ struct ModelLedger {
 struct MarkerModel {
     marker: PathBuf,
     scenario: CrashScenario,
-    crash_ready_marker: Option<PathBuf>,
     ledger: Arc<ModelLedger>,
     observed_requests: Mutex<Vec<ModelRequest>>,
 }
 
 impl MarkerModel {
-    fn new(marker: PathBuf, scenario: CrashScenario, crash_ready_marker: Option<PathBuf>) -> Self {
+    fn new(marker: PathBuf, scenario: CrashScenario) -> Self {
         Self {
             marker,
             scenario,
-            crash_ready_marker,
             ledger: Arc::new(ModelLedger::default()),
             observed_requests: Mutex::new(Vec::new()),
         }
@@ -363,56 +356,30 @@ impl ModelPort for MarkerModel {
             CrashScenario::SteerQueued | CrashScenario::SteerApplied
         ) && marker_count(&self.marker) > 0
         {
+            assert_eq!(
+                request
+                    .messages
+                    .iter()
+                    .filter(|message| matches!(
+                        message,
+                        ModelMessage::User { content } if content == "改做新任务"
+                    ))
+                    .count(),
+                1,
+                "the applied steer must remain in canonical history exactly once"
+            );
             assert!(matches!(
                 request.messages.last(),
-                Some(ModelMessage::User { content }) if content == "改做新任务"
+                Some(ModelMessage::User { content }) if content.starts_with("## 当前 Host 事实")
             ));
         }
         let request_number = marker_count(&self.marker);
-        let compaction_request = matches!(
-            self.scenario,
-            CrashScenario::CompactionPrepared
-                | CrashScenario::CompactionInFlight
-                | CrashScenario::CompactionCommitted
-        ) && !request.streaming
-            && request.tools.is_empty();
-        if self.scenario == CrashScenario::CompactionInFlight && compaction_request {
-            if let Some(crash_ready_marker) = &self.crash_ready_marker {
-                append_marker(&self.marker, "compaction");
-                self.ledger.started.fetch_add(1, Ordering::AcqRel);
-                append_marker(crash_ready_marker, self.scenario.as_str());
-                wait_for_parent_kill().await;
-            }
-            panic!("an ambiguous in-flight compaction request must not be reissued");
-        }
-        append_marker(
-            &self.marker,
-            if compaction_request {
-                "compaction"
-            } else if matches!(
-                self.scenario,
-                CrashScenario::CompactionPrepared
-                    | CrashScenario::CompactionInFlight
-                    | CrashScenario::CompactionCommitted
-            ) {
-                "agent"
-            } else {
-                "request"
-            },
-        );
+        append_marker(&self.marker, "request");
         self.ledger.started.fetch_add(1, Ordering::AcqRel);
         if self.scenario == CrashScenario::SteerQueued {
             return Ok(Box::new(PendingStream));
         }
-        let output = if compaction_request {
-            ModelOutput {
-                content: "保留任务目标、约束、文件事实、测试证据和下一步。".to_owned(),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-                finish_reason: ModelFinishReason::Stop,
-                usage: one_usage(),
-            }
-        } else if matches!(
+        let output = if matches!(
             self.scenario,
             CrashScenario::ToolInFlight | CrashScenario::ToolInFlightControlRequested
         ) || matches!(
@@ -718,11 +685,6 @@ impl RuntimeEventSink for CrashSink {
                 matches!(event.event, RuntimeEventKind::ControlRequested { .. })
             }
             CrashScenario::SteerApplied => false,
-            CrashScenario::CompactionPrepared => matches!(
-                event.event,
-                RuntimeEventKind::ContextCompactionPrepared { .. }
-            ),
-            CrashScenario::CompactionInFlight => false,
             CrashScenario::CompactionCommitted => matches!(
                 event.event,
                 RuntimeEventKind::ContextCompactionCommitted { .. }
@@ -770,12 +732,6 @@ fn one_usage() -> Usage {
     }
 }
 
-fn two_usage() -> Usage {
-    let mut usage = one_usage();
-    usage.add_assign(one_usage());
-    usage
-}
-
 fn runtime_request() -> RunRequest {
     let mut request = RunRequest::new(
         TaskContract {
@@ -790,6 +746,12 @@ fn runtime_request() -> RunRequest {
     request.limits.max_turns = 4;
     request.limits.max_model_requests = 4;
     request.limits.max_tool_calls = 4;
+    request.context_policy = codewhale_runtime::ContextPolicy {
+        auto_compact: false,
+        context_window_tokens: 100_000,
+        trigger_tokens: 80_000,
+        hard_input_tokens: 90_000,
+    };
     request
 }
 
@@ -818,12 +780,7 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
         scenario,
         CrashScenario::InteractionRequested | CrashScenario::InteractionResolved
     );
-    if matches!(
-        scenario,
-        CrashScenario::CompactionPrepared
-            | CrashScenario::CompactionInFlight
-            | CrashScenario::CompactionCommitted
-    ) {
+    if scenario == CrashScenario::CompactionCommitted {
         request
             .task_contract
             .as_mut()
@@ -857,10 +814,6 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
             context_window_tokens: 100_000,
             trigger_tokens: 2_000,
             hard_input_tokens: 80_000,
-            summary_max_output_tokens: 512,
-            min_messages: 2,
-            keep_recent_user_turns: 1,
-            max_retries: 1,
         };
     }
     request
@@ -942,22 +895,18 @@ fn assert_projection_request(
 ) {
     assert!(request.streaming);
     assert!(!request.tools.is_empty());
-    assert_eq!(request.messages, projection.messages);
-    let summary = projection
-        .summary_prompt
-        .as_ref()
-        .expect("model compaction must produce a summary prompt");
+    assert!(
+        request.messages.starts_with(&projection.messages),
+        "the request must start with the exact durable projection"
+    );
     assert_eq!(
-        request.system_prompt.blocks.len(),
-        base_prompt.blocks.len() + summary.blocks.len()
+        request.messages.len(),
+        projection.messages.len() + 1,
+        "the only non-canonical suffix is the deterministic current Host-facts message"
     );
     assert!(
-        request
-            .system_prompt
-            .blocks
-            .starts_with(&base_prompt.blocks)
-            && request.system_prompt.blocks.ends_with(&summary.blocks),
-        "ordinary Agent request must merge the durable summary projection after the base prompt"
+        request.system_prompt == *base_prompt,
+        "deterministic compaction must preserve the stable system prompt byte-for-byte"
     );
 }
 
@@ -968,14 +917,35 @@ async fn commit_steer_applied_prefix(store: &StateStore, model_marker: &Path, ab
         .expect("create steer-applied crash run");
     let snapshot = &created.replay.snapshot;
     let attempt_id = codewhale_runtime::AttemptId("steer-applied-attempt".to_owned());
+    let tools = Vec::new();
+    let context = effective_context(ContextInput {
+        transcript: &snapshot.transcript,
+        projection: snapshot.context_projection.as_ref(),
+        task_contract: snapshot.request.task_contract.as_ref(),
+        workspace_state: &snapshot.workspace_state,
+        evidence_receipts: &snapshot.evidence_receipts,
+        last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
+        last_verifier_failure: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.outcome),
+        last_verifier_failure_workspace: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.workspace_state),
+        pending_interaction: None,
+        pending_control: None,
+        tools: &tools,
+    })
+    .expect("build canonical steer-applied request projection");
     let model_request = ModelRequest {
         run_id: created.lease.run_id.clone(),
         parent_run_id: snapshot.request.parent_run_id.clone(),
         actor: snapshot.request.actor,
         model: snapshot.request.model.clone(),
-        system_prompt: snapshot.request.system_prompt.clone(),
-        messages: snapshot.transcript.project_messages(),
-        tools: Vec::new(),
+        system_prompt: context.system_prompt,
+        messages: context.messages,
+        tools,
         reasoning_effort: snapshot.request.reasoning_effort,
         max_output_tokens: snapshot.request.max_output_tokens,
         streaming: snapshot.request.streaming,
@@ -1111,11 +1081,7 @@ fn process_crash_helper() {
             scenario,
         ));
         let runtime = Arc::new(AgentRuntime::new(
-            Arc::new(MarkerModel::new(
-                model_marker,
-                scenario,
-                Some(abort_marker.clone()),
-            )),
+            Arc::new(MarkerModel::new(model_marker, scenario)),
             tools,
             Arc::new(CrashSink {
                 scenario,
@@ -1997,282 +1963,14 @@ async fn host_verification_committed_sigkill_replays_receipt_and_completes_exact
 }
 
 #[tokio::test]
-async fn context_compaction_prepared_sigkill_resumes_persisted_request_exactly_once() {
-    let fixture = CrashFixture::new();
-    fixture.crash_child(CrashScenario::CompactionPrepared);
-    assert!(marker_lines(&fixture.model_marker).is_empty());
-
-    let (runtime, store, model) = fixture.reopen_with_model(CrashScenario::CompactionPrepared);
-    let before = store
-        .load(&RunId::from(RUN_ID))
-        .await
-        .expect("load prepared compaction")
-        .expect("prepared compaction exists");
-    let pending = before
-        .snapshot
-        .pending_context_compaction
-        .as_ref()
-        .expect("prepared compaction remains durable");
-    assert_eq!(pending.state, DurableActionState::Prepared);
-    let persisted_request = before
-        .events
-        .iter()
-        .find_map(|event| match &event.event {
-            RuntimeEventKind::ContextCompactionPrepared { request, .. } => {
-                Some((**request).clone())
-            }
-            _ => None,
-        })
-        .expect("persisted compaction request");
-    assert_eq!(pending.request, persisted_request);
-    let source_transcript = before.snapshot.transcript.clone();
-    assert_eq!(
-        event_count(&before, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionPrepared { .. }
-        )),
-        1
-    );
-    assert_eq!(
-        event_count(&before, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionInFlight { .. }
-        )),
-        0
-    );
-    assert!(before.snapshot.context_projection.is_none());
-    assert_eq!(before.snapshot.usage, Usage::default());
-    assert_eq!(before.snapshot.accounting.usage, Usage::default());
-    assert_eq!(before.snapshot.runtime_model_requests, 1);
-
-    let outcome = runtime
-        .resume(RunId::from(RUN_ID))
-        .wait()
-        .await
-        .expect("resume prepared compaction");
-    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
-    assert_eq!(
-        marker_lines(&fixture.model_marker),
-        vec!["compaction", "agent"]
-    );
-    let observed = model.observed_requests();
-    assert_eq!(observed.len(), 2);
-    assert_eq!(
-        observed[0], persisted_request,
-        "Prepared recovery must issue the exact durable compaction request"
-    );
-    let after = store
-        .load(&RunId::from(RUN_ID))
-        .await
-        .expect("load recovered compaction")
-        .expect("recovered compaction exists");
-    assert_replay_prefix_preserved(&before, &after);
-    assert_eq!(
-        reduce_events(&after.events).expect("reduce recovered compaction"),
-        after.snapshot
-    );
-    assert_eq!(
-        event_count(&after, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionPrepared { .. }
-        )),
-        1
-    );
-    assert_eq!(
-        event_count(&after, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionInFlight { .. }
-        )),
-        1
-    );
-    assert_eq!(
-        event_count(&after, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionCommitted { .. }
-        )),
-        1
-    );
-    assert_eq!(
-        event_count(&after, |event| matches!(
-            event,
-            RuntimeEventKind::ModelRequestPrepared { .. }
-        )),
-        1
-    );
-    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
-    assert!(after.snapshot.pending_context_compaction.is_none());
-    let projection = after
-        .snapshot
-        .context_projection
-        .as_ref()
-        .expect("committed projection");
-    assert!(after.snapshot.last_context_compaction.is_some());
-    assert_eq!(
-        projection.source_entry_count,
-        u64::try_from(source_transcript.entries.len()).expect("source transcript length")
-    );
-    assert_eq!(
-        projection.source_projection_sha256,
-        pending.plan.source_projection_sha256
-    );
-    assert!(
-        projection.messages.len() < source_transcript.project_messages().len(),
-        "projection must reduce the model-visible historical messages"
-    );
-    assert_projection_request(
-        &observed[1],
-        projection,
-        &before.snapshot.request.system_prompt,
-    );
-    let ordinary_request = after
-        .events
-        .iter()
-        .find_map(|event| match &event.event {
-            RuntimeEventKind::ModelRequestPrepared { request, .. } => Some(request.as_ref()),
-            _ => None,
-        })
-        .expect("ordinary Agent request");
-    assert_eq!(&observed[1], ordinary_request);
-    assert!(
-        after
-            .snapshot
-            .transcript
-            .entries
-            .starts_with(&source_transcript.entries)
-    );
-    assert_eq!(
-        after.snapshot.transcript.entries.len(),
-        source_transcript.entries.len() + 1,
-        "summary stays projection-only and only the final Agent response extends canonical history"
-    );
-    assert_eq!(after.snapshot.usage, two_usage());
-    assert_eq!(after.snapshot.accounting.usage, two_usage());
-    assert_eq!(after.snapshot.runtime_model_requests, 2);
-    assert_eq!(outcome.runtime_model_requests, 2);
-    assert_eq!(outcome.accounting.usage, two_usage());
-}
-
-#[tokio::test]
-async fn context_compaction_in_flight_sigkill_requires_recovery_without_reissue() {
-    let fixture = CrashFixture::new();
-    fixture.crash_child(CrashScenario::CompactionInFlight);
-    assert_eq!(marker_lines(&fixture.model_marker), vec!["compaction"]);
-
-    let (runtime, store, model) = fixture.reopen_with_model(CrashScenario::CompactionInFlight);
-    let before = store
-        .load(&RunId::from(RUN_ID))
-        .await
-        .expect("load in-flight compaction")
-        .expect("in-flight compaction exists");
-    let pending = before
-        .snapshot
-        .pending_context_compaction
-        .as_ref()
-        .expect("pending compaction");
-    assert_eq!(pending.state, DurableActionState::InFlight);
-    let expected_action_id = pending.attempt_id.0.clone();
-    let pending_before = pending.clone();
-    let source_transcript = before.snapshot.transcript.clone();
-    assert_eq!(
-        event_count(&before, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionPrepared { .. }
-        )),
-        1
-    );
-    assert_eq!(
-        event_count(&before, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionInFlight { .. }
-        )),
-        1
-    );
-    assert_eq!(
-        event_count(&before, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionCommitted { .. }
-        )),
-        0
-    );
-    assert_eq!(before.snapshot.runtime_model_requests, 1);
-    assert_eq!(before.snapshot.usage, Usage::default());
-
-    let outcome = runtime
-        .resume(RunId::from(RUN_ID))
-        .wait()
-        .await
-        .expect("resume in-flight compaction");
-    assert!(matches!(
-        outcome.terminal,
-        TerminalState::RecoveryRequired {
-            ambiguity: codewhale_runtime::RecoveryAmbiguity {
-                phase: RecoveryAmbiguityPhase::ContextCompactionModelRequest,
-                ref action_id,
-                ..
-            }
-        } if action_id == &expected_action_id
-    ));
-    assert!(outcome.accounting.billing_unknown);
-    assert!(!outcome.accounting.complete);
-    assert!(!outcome.accounting.usage_complete);
-    assert!(outcome.accounting.usage_incomplete);
-    assert_eq!(outcome.accounting.billing_unknown_attempts, 1);
-    assert_eq!(outcome.accounting.usage, Usage::default());
-    assert_eq!(outcome.runtime_model_requests, 1);
-    assert_eq!(marker_lines(&fixture.model_marker), vec!["compaction"]);
-    assert!(
-        model.observed_requests().is_empty(),
-        "reopened runtime must not call ModelPort for an ambiguous InFlight request"
-    );
-    let after = store
-        .load(&RunId::from(RUN_ID))
-        .await
-        .expect("load failed-closed compaction")
-        .expect("failed-closed compaction exists");
-    assert_replay_prefix_preserved(&before, &after);
-    assert_eq!(
-        reduce_events(&after.events).expect("reduce failed-closed compaction"),
-        after.snapshot
-    );
-    assert_eq!(
-        event_count(&after, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionCommitted { .. }
-        )),
-        0
-    );
-    assert_eq!(
-        event_count(&after, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionPrepared { .. }
-        )),
-        1
-    );
-    assert_eq!(
-        event_count(&after, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionInFlight { .. }
-        )),
-        1
-    );
-    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
-    assert_eq!(
-        after.snapshot.pending_context_compaction.as_ref(),
-        Some(&pending_before)
-    );
-    assert!(after.snapshot.context_projection.is_none());
-    assert_eq!(after.snapshot.transcript, source_transcript);
-    assert_eq!(after.snapshot.usage, Usage::default());
-    assert_eq!(after.snapshot.accounting.usage, Usage::default());
-    assert_eq!(after.snapshot.runtime_model_requests, 1);
-}
-
-#[tokio::test]
-async fn context_compaction_committed_sigkill_reuses_projection_without_duplicate_summary_or_usage()
+async fn local_context_compaction_commit_survives_sigkill_without_model_or_transcript_side_effects()
 {
     let fixture = CrashFixture::new();
     fixture.crash_child(CrashScenario::CompactionCommitted);
-    assert_eq!(marker_lines(&fixture.model_marker), vec!["compaction"]);
+    assert!(
+        marker_lines(&fixture.model_marker).is_empty(),
+        "local deterministic compaction must not call ModelPort"
+    );
 
     let (runtime, store, model) = fixture.reopen_with_model(CrashScenario::CompactionCommitted);
     let before = store
@@ -2280,21 +1978,73 @@ async fn context_compaction_committed_sigkill_reuses_projection_without_duplicat
         .await
         .expect("load committed compaction")
         .expect("committed compaction exists");
+    let source_request = scenario_request(CrashScenario::CompactionCommitted);
+    let mut source_transcript = source_request.transcript;
+    source_transcript
+        .entries
+        .push(codewhale_runtime::TranscriptEntry::User {
+            content: source_request
+                .task_contract
+                .expect("Agent task contract")
+                .definition
+                .model_message(),
+        });
     let projection = before
         .snapshot
         .context_projection
         .clone()
         .expect("committed projection");
+    let (persisted_projection, persisted_accounting, before_tokens, after_tokens) = before
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            RuntimeEventKind::ContextCompactionCommitted {
+                projection,
+                accounting,
+                before_tokens,
+                after_tokens,
+                ..
+            } => Some((
+                (**projection).clone(),
+                (**accounting).clone(),
+                *before_tokens,
+                *after_tokens,
+            )),
+            _ => None,
+        })
+        .expect("durable local compaction event");
     let commit = before
         .snapshot
         .last_context_compaction
         .clone()
         .expect("durable compaction marker");
-    let source_transcript = before.snapshot.transcript.clone();
-    assert!(before.snapshot.pending_context_compaction.is_none());
-    assert_eq!(before.snapshot.usage, one_usage());
-    assert_eq!(before.snapshot.accounting.usage, one_usage());
-    assert_eq!(before.snapshot.runtime_model_requests, 1);
+    assert_eq!(
+        projection, persisted_projection,
+        "SQLite reopen must rebuild the exact committed projection"
+    );
+    assert_eq!(
+        projection.source_projection_sha256, commit.source_projection_sha256,
+        "SQLite reopen must preserve the exact effective-context digest"
+    );
+    assert_eq!(before_tokens, commit.before_tokens);
+    assert_eq!(after_tokens, commit.after_tokens);
+    assert!(after_tokens < before_tokens);
+    assert_eq!(
+        projection.source_entry_count,
+        u64::try_from(source_transcript.entries.len()).expect("source transcript length")
+    );
+    assert!(
+        projection.messages.len() < source_transcript.project_messages().len(),
+        "projection must reduce model-visible history"
+    );
+    assert_eq!(
+        before.snapshot.transcript, source_transcript,
+        "compaction must never rewrite the canonical transcript"
+    );
+    assert_eq!(persisted_accounting, ModelAccounting::default());
+    assert_eq!(before.snapshot.usage, Usage::default());
+    assert_eq!(before.snapshot.accounting, ModelAccounting::default());
+    assert_eq!(before.snapshot.runtime_model_requests, 0);
     assert_eq!(
         event_count(&before, |event| matches!(
             event,
@@ -2302,6 +2052,14 @@ async fn context_compaction_committed_sigkill_reuses_projection_without_duplicat
         )),
         0
     );
+    assert_eq!(
+        event_count(&before, |event| matches!(
+            event,
+            RuntimeEventKind::ContextCompactionCommitted { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&before, RuntimeEventKind::is_terminal), 0);
 
     let outcome = runtime
         .resume(RunId::from(RUN_ID))
@@ -2309,15 +2067,12 @@ async fn context_compaction_committed_sigkill_reuses_projection_without_duplicat
         .await
         .expect("resume committed compaction");
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
-    assert_eq!(
-        marker_lines(&fixture.model_marker),
-        vec!["compaction", "agent"]
-    );
+    assert_eq!(marker_lines(&fixture.model_marker), vec!["request"]);
     let observed = model.observed_requests();
     assert_eq!(
         observed.len(),
         1,
-        "Committed recovery must skip the summary request"
+        "resume may issue only the ordinary Agent request"
     );
     assert_projection_request(
         &observed[0],
@@ -2336,6 +2091,15 @@ async fn context_compaction_committed_sigkill_reuses_projection_without_duplicat
     );
     assert_eq!(after.snapshot.context_projection, Some(projection));
     assert_eq!(after.snapshot.last_context_compaction, Some(commit));
+    assert_eq!(
+        after
+            .snapshot
+            .context_projection
+            .as_ref()
+            .expect("replayed projection")
+            .source_projection_sha256,
+        persisted_projection.source_projection_sha256
+    );
     let ordinary_request = after
         .events
         .iter()
@@ -2345,20 +2109,6 @@ async fn context_compaction_committed_sigkill_reuses_projection_without_duplicat
         })
         .expect("ordinary Agent request");
     assert_eq!(&observed[0], ordinary_request);
-    assert_eq!(
-        event_count(&after, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionPrepared { .. }
-        )),
-        1
-    );
-    assert_eq!(
-        event_count(&after, |event| matches!(
-            event,
-            RuntimeEventKind::ContextCompactionInFlight { .. }
-        )),
-        1
-    );
     assert_eq!(
         event_count(&after, |event| matches!(
             event,
@@ -2374,11 +2124,11 @@ async fn context_compaction_committed_sigkill_reuses_projection_without_duplicat
         1
     );
     assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
-    assert_eq!(after.snapshot.usage, two_usage());
-    assert_eq!(after.snapshot.accounting.usage, two_usage());
-    assert_eq!(after.snapshot.runtime_model_requests, 2);
-    assert_eq!(outcome.runtime_model_requests, 2);
-    assert_eq!(outcome.accounting.usage, two_usage());
+    assert_eq!(after.snapshot.usage, one_usage());
+    assert_eq!(after.snapshot.accounting.usage, one_usage());
+    assert_eq!(after.snapshot.runtime_model_requests, 1);
+    assert_eq!(outcome.runtime_model_requests, 1);
+    assert_eq!(outcome.accounting.usage, one_usage());
     let committed_position = after
         .events
         .iter()
@@ -2408,7 +2158,7 @@ async fn context_compaction_committed_sigkill_reuses_projection_without_duplicat
     assert_eq!(
         after.snapshot.transcript.entries.len(),
         source_transcript.entries.len() + 1,
-        "summary stays projection-only and only the resumed Agent response extends canonical history"
+        "only the resumed Agent response may extend canonical history"
     );
     assert_eq!(
         after
@@ -2419,7 +2169,7 @@ async fn context_compaction_committed_sigkill_reuses_projection_without_duplicat
             .filter(|entry| matches!(entry, codewhale_runtime::TranscriptEntry::Assistant { .. }))
             .count(),
         7,
-        "six source assistants plus one resumed Agent response; summary stays projection-only"
+        "six source assistants plus one resumed Agent response"
     );
 }
 

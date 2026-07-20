@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use async_trait::async_trait;
 use codewhale_context::compaction::{
-    ContextCompactionPreparation, effective_context, estimate_projection_tokens,
-    prepare_compaction, projection_from_summary,
+    ContextCompactionPreparation, ContextInput, effective_context, estimate_projection_tokens,
+    prepare_compaction,
 };
 use codewhale_protocol::run_api::{PendingCreationKind, RunCommand};
 use serde::{Deserialize, Serialize};
@@ -99,24 +99,6 @@ pub struct StoppedModelFailure {
     pub reason: ModelRetryStopReason,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PendingContextCompaction {
-    pub compaction_id: ContextCompactionId,
-    pub trigger: ContextCompactionTrigger,
-    pub plan: ContextCompactionPlan,
-    pub attempt_id: AttemptId,
-    pub request: ModelRequest,
-    pub state: DurableActionState,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StoppedContextCompactionFailure {
-    pub compaction_id: ContextCompactionId,
-    pub trigger: ContextCompactionTrigger,
-    pub source_projection_sha256: String,
-    pub failure: ModelAttemptFailure,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommittedContextCompaction {
     pub compaction_id: ContextCompactionId,
@@ -202,6 +184,7 @@ pub struct RunSnapshot {
     pub pending_completion: Option<CompletionCandidate>,
     pub pending_host_verification: Option<PendingHostVerification>,
     pub last_completion_rejection: Option<CompletionRejection>,
+    pub last_host_verification_failure: Option<HostVerificationFailure>,
     pub runtime_model_requests: u32,
     pub runtime_retries: u32,
     pub tool_calls: u32,
@@ -217,10 +200,6 @@ pub struct RunSnapshot {
     pub last_model_response_sequence: Option<u64>,
     pub last_model_activity_sequence: Option<u64>,
     pub last_model_failure: Option<StoppedModelFailure>,
-    #[serde(default)]
-    pub pending_context_compaction: Option<PendingContextCompaction>,
-    #[serde(default)]
-    pub last_context_compaction_failure: Option<StoppedContextCompactionFailure>,
     #[serde(default)]
     pub last_context_compaction: Option<CommittedContextCompaction>,
     pub pending_model: Option<PendingModelAction>,
@@ -293,6 +272,14 @@ pub fn validate_continuation_request(
     if request.context_projection != source.context_projection {
         return Err(invalid(ContinuationError::ContextProjectionMismatch));
     }
+    let expected_facts = InheritedRunFacts {
+        workspace_state: source.workspace_state.clone(),
+        last_completion_rejection: source.last_completion_rejection.clone(),
+        last_host_verification_failure: source.last_host_verification_failure.clone(),
+    };
+    if request.inherited_facts.as_ref() != Some(&expected_facts) {
+        return Err(invalid(ContinuationError::InheritedFactsMismatch));
+    }
     Ok(())
 }
 
@@ -329,6 +316,12 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
             "run cannot be both a child Agent and a root continuation",
         ));
     }
+    if request.continued_from_run_id.is_none() && request.inherited_facts.is_some() {
+        return Err(corrupt(
+            &run_id,
+            "only a root continuation may inherit prior run facts",
+        ));
+    }
     match request.purpose {
         RunPurpose::Agent => {
             let contract = request
@@ -362,6 +355,7 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
     let accounting = request.accounting_baseline.clone();
 
     let context_projection = request.context_projection.clone();
+    let inherited_facts = request.inherited_facts.clone();
     let mut snapshot = RunSnapshot {
         transcript: initial_transcript(&request),
         context_projection,
@@ -369,16 +363,23 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
         usage: Usage::default(),
         accounting,
         terminal: None,
-        workspace_state: WorkspaceState {
-            generation: 0,
-            revision: WorkspaceRevision::Unknown {
-                reason: "workspace has not been observed".to_owned(),
-            },
-        },
+        workspace_state: inherited_facts
+            .as_ref()
+            .map(|facts| facts.workspace_state.clone())
+            .unwrap_or_else(|| WorkspaceState {
+                generation: 0,
+                revision: WorkspaceRevision::Unknown {
+                    reason: "workspace has not been observed".to_owned(),
+                },
+            }),
         evidence_receipts: Vec::new(),
         pending_completion: None,
         pending_host_verification: None,
-        last_completion_rejection: None,
+        last_completion_rejection: inherited_facts
+            .as_ref()
+            .and_then(|facts| facts.last_completion_rejection.clone()),
+        last_host_verification_failure: inherited_facts
+            .and_then(|facts| facts.last_host_verification_failure),
         runtime_model_requests: 0,
         runtime_retries: 0,
         tool_calls: 0,
@@ -389,8 +390,6 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
         last_model_response_sequence: None,
         last_model_activity_sequence: None,
         last_model_failure: None,
-        pending_context_compaction: None,
-        last_context_compaction_failure: None,
         last_context_compaction: None,
         pending_model: None,
         pending_tool: None,
@@ -449,161 +448,11 @@ pub fn apply_event(
         RuntimeEventKind::RunCreated { .. } => {
             return Err(corrupt(&run_id, "duplicate run_created event"));
         }
-        RuntimeEventKind::ContextCompactionPrepared {
-            compaction_id,
-            attempt_id,
-            trigger,
-            plan,
-            request,
-        } => {
-            let trigger_matches_purpose = matches!(
-                (snapshot.request.purpose, *trigger),
-                (
-                    RunPurpose::ContextCompaction,
-                    ContextCompactionTrigger::Manual
-                ) | (
-                    RunPurpose::Agent,
-                    ContextCompactionTrigger::Threshold | ContextCompactionTrigger::PreflightLimit
-                )
-            );
-            if !trigger_matches_purpose {
-                return Err(corrupt(
-                    &run_id,
-                    "context compaction trigger does not match the run purpose",
-                ));
-            }
-            validate_compaction_safe_boundary(snapshot, &run_id)?;
-            if request.run_id != run_id {
-                return Err(corrupt(
-                    &run_id,
-                    "prepared context compaction request belongs to another run",
-                ));
-            }
-            if request.attempt != 0 || request.streaming || !request.tools.is_empty() {
-                return Err(corrupt(
-                    &run_id,
-                    "initial context compaction request must be attempt zero, non-streaming, and tool-free",
-                ));
-            }
-            let force = compaction_force(*trigger);
-            let preparation = prepare_compaction(
-                &snapshot.transcript,
-                snapshot.context_projection.as_ref(),
-                snapshot.request.context_policy,
-                &compaction_request_template(snapshot),
-                force,
-            )
-            .map_err(|error| corrupt(&run_id, error.to_string()))?;
-            match preparation {
-                ContextCompactionPreparation::Model {
-                    plan: expected_plan,
-                    request: expected_request,
-                } if expected_plan == **plan && expected_request == **request => {}
-                _ => {
-                    return Err(corrupt(
-                        &run_id,
-                        "prepared context compaction does not match the deterministic planner",
-                    ));
-                }
-            }
-            snapshot.runtime_model_requests = snapshot.runtime_model_requests.saturating_add(1);
-            snapshot.last_context_compaction_failure = None;
-            snapshot.pending_context_compaction = Some(PendingContextCompaction {
-                compaction_id: compaction_id.clone(),
-                trigger: *trigger,
-                plan: (**plan).clone(),
-                attempt_id: attempt_id.clone(),
-                request: (**request).clone(),
-                state: DurableActionState::Prepared,
-            });
-        }
-        RuntimeEventKind::ContextCompactionInFlight {
-            compaction_id,
-            attempt_id,
-        } => {
-            let pending =
-                pending_context_compaction_mut(snapshot, &run_id, compaction_id, attempt_id)?;
-            if pending.state != DurableActionState::Prepared {
-                return Err(corrupt(
-                    &run_id,
-                    "context compaction request entered in_flight twice",
-                ));
-            }
-            pending.state = DurableActionState::InFlight;
-        }
-        RuntimeEventKind::ContextCompactionAttemptFailed {
-            compaction_id,
-            attempt_id,
-            failure,
-            output,
-            accounting,
-            retry,
-        } => {
-            let pending = snapshot
-                .pending_context_compaction
-                .as_ref()
-                .cloned()
-                .ok_or_else(|| {
-                    corrupt(
-                        &run_id,
-                        "context compaction failure has no prepared request",
-                    )
-                })?;
-            if pending.compaction_id != *compaction_id || pending.attempt_id != *attempt_id {
-                return Err(corrupt(
-                    &run_id,
-                    "context compaction failure identity does not match the pending request",
-                ));
-            }
-            if pending.state != DurableActionState::InFlight {
-                return Err(corrupt(
-                    &run_id,
-                    "context compaction failed before transport began",
-                ));
-            }
-            if output.is_some() && !failure.actionable_output {
-                return Err(corrupt(
-                    &run_id,
-                    "rejected context compaction output must be marked actionable",
-                ));
-            }
-            validate_context_compaction_retry(snapshot, &run_id, &pending, failure, retry)?;
-            snapshot.pending_context_compaction = None;
-            if let Some(output) = output {
-                snapshot.usage.add_assign(output.usage);
-            }
-            snapshot.accounting = (**accounting).clone();
-            match retry {
-                ModelRetryDecision::Stop { .. } => {
-                    snapshot.last_context_compaction_failure =
-                        Some(StoppedContextCompactionFailure {
-                            compaction_id: compaction_id.clone(),
-                            trigger: pending.trigger,
-                            source_projection_sha256: pending.plan.source_projection_sha256.clone(),
-                            failure: failure.clone(),
-                        });
-                }
-                ModelRetryDecision::Retry { prepared } => {
-                    snapshot.runtime_model_requests =
-                        snapshot.runtime_model_requests.saturating_add(1);
-                    snapshot.runtime_retries = snapshot.runtime_retries.saturating_add(1);
-                    snapshot.last_context_compaction_failure = None;
-                    snapshot.pending_context_compaction = Some(PendingContextCompaction {
-                        compaction_id: compaction_id.clone(),
-                        trigger: pending.trigger,
-                        plan: pending.plan,
-                        attempt_id: prepared.attempt_id.clone(),
-                        request: (*prepared.request).clone(),
-                        state: DurableActionState::Prepared,
-                    });
-                }
-            }
-        }
         RuntimeEventKind::ContextCompactionCommitted {
             compaction_id,
             trigger,
             projection,
-            output,
+            tools,
             accounting,
             before_tokens,
             after_tokens,
@@ -624,9 +473,10 @@ pub fn apply_event(
                     "context compaction commit trigger does not match the run purpose",
                 ));
             }
+            validate_compaction_safe_boundary(snapshot, &run_id)?;
+            let input = context_input(snapshot, tools);
             let current =
-                effective_context(&snapshot.transcript, snapshot.context_projection.as_ref())
-                    .map_err(|error| corrupt(&run_id, error.to_string()))?;
+                effective_context(input).map_err(|error| corrupt(&run_id, error.to_string()))?;
             if projection.source_entry_count != current.source_entry_count
                 || projection.source_projection_sha256 != current.sha256
             {
@@ -635,88 +485,34 @@ pub fn apply_event(
                     "context compaction projection does not describe the current effective context",
                 ));
             }
-            match output {
-                Some(output) => {
-                    let pending = snapshot
-                        .pending_context_compaction
-                        .as_ref()
-                        .cloned()
-                        .ok_or_else(|| {
-                            corrupt(
-                                &run_id,
-                                "model context compaction committed without a pending request",
-                            )
-                        })?;
-                    if pending.compaction_id != *compaction_id
-                        || pending.trigger != *trigger
-                        || pending.state != DurableActionState::InFlight
-                    {
-                        return Err(corrupt(
-                            &run_id,
-                            "context compaction commit identity or state is invalid",
-                        ));
-                    }
-                    if output.finish_reason != ModelFinishReason::Stop
-                        || !output.tool_calls.is_empty()
-                        || output.content.trim().is_empty()
-                    {
-                        return Err(corrupt(
-                            &run_id,
-                            "context compaction model output must be a non-empty tool-free stop response",
-                        ));
-                    }
-                    let expected_projection =
-                        projection_from_summary(&pending.plan, &output.content);
-                    if expected_projection != **projection
-                        || *before_tokens != pending.plan.before_tokens
-                    {
-                        return Err(corrupt(
-                            &run_id,
-                            "context compaction commit differs from the prepared plan",
-                        ));
-                    }
-                    snapshot.usage.add_assign(output.usage);
-                    snapshot.pending_context_compaction = None;
-                }
-                None => {
-                    if snapshot.pending_context_compaction.is_some() {
-                        return Err(corrupt(
-                            &run_id,
-                            "local context compaction cannot bypass a pending model request",
-                        ));
-                    }
-                    if **accounting != snapshot.accounting {
-                        return Err(corrupt(
-                            &run_id,
-                            "local context compaction changed model accounting",
-                        ));
-                    }
-                    let preparation = prepare_compaction(
-                        &snapshot.transcript,
-                        snapshot.context_projection.as_ref(),
-                        snapshot.request.context_policy,
-                        &compaction_request_template(snapshot),
-                        compaction_force(*trigger),
-                    )
-                    .map_err(|error| corrupt(&run_id, error.to_string()))?;
-                    match preparation {
-                        ContextCompactionPreparation::Local {
-                            projection: expected_projection,
-                            before_tokens: expected_before,
-                            after_tokens: expected_after,
-                        } if expected_projection == **projection
-                            && expected_before == *before_tokens
-                            && expected_after == *after_tokens => {}
-                        _ => {
-                            return Err(corrupt(
-                                &run_id,
-                                "local context compaction does not match the deterministic planner",
-                            ));
-                        }
-                    }
+            if **accounting != snapshot.accounting {
+                return Err(corrupt(
+                    &run_id,
+                    "deterministic context compaction changed model accounting",
+                ));
+            }
+            let preparation = prepare_compaction(
+                input,
+                snapshot.request.context_policy,
+                compaction_force(*trigger),
+            )
+            .map_err(|error| corrupt(&run_id, error.to_string()))?;
+            match preparation {
+                ContextCompactionPreparation::Local {
+                    projection: expected_projection,
+                    before_tokens: expected_before,
+                    after_tokens: expected_after,
+                } if expected_projection == **projection
+                    && expected_before == *before_tokens
+                    && expected_after == *after_tokens => {}
+                _ => {
+                    return Err(corrupt(
+                        &run_id,
+                        "context compaction commit does not match the deterministic broker",
+                    ));
                 }
             }
-            let expected_after = estimate_projection_tokens(&snapshot.transcript, projection)
+            let expected_after = estimate_projection_tokens(input, projection)
                 .map_err(|error| corrupt(&run_id, error.to_string()))?;
             if expected_after != *after_tokens || *before_tokens != current.estimated_tokens {
                 return Err(corrupt(
@@ -734,7 +530,6 @@ pub fn apply_event(
             }
             snapshot.context_projection = Some((**projection).clone());
             snapshot.accounting = (**accounting).clone();
-            snapshot.last_context_compaction_failure = None;
             snapshot.last_context_compaction = Some(CommittedContextCompaction {
                 compaction_id: compaction_id.clone(),
                 trigger: *trigger,
@@ -754,7 +549,7 @@ pub fn apply_event(
                     "context-compaction run cannot prepare an ordinary Agent model request",
                 ));
             }
-            if snapshot.pending_model.is_some() || snapshot.pending_context_compaction.is_some() {
+            if snapshot.pending_model.is_some() {
                 return Err(corrupt(
                     &run_id,
                     "model request prepared while another model request is pending",
@@ -772,9 +567,9 @@ pub fn apply_event(
                     "standalone model request prepared event must start at attempt zero",
                 ));
             }
-            let effective =
-                effective_context(&snapshot.transcript, snapshot.context_projection.as_ref())
-                    .map_err(|error| corrupt(&run_id, error.to_string()))?;
+            validate_model_request_safe_boundary(snapshot, &run_id)?;
+            let effective = effective_context(context_input(snapshot, &request.tools))
+                .map_err(|error| corrupt(&run_id, error.to_string()))?;
             if request.parent_run_id != snapshot.request.parent_run_id
                 || request.actor != snapshot.request.actor
                 || request.model != snapshot.request.model
@@ -938,7 +733,7 @@ pub fn apply_event(
                     "context-compaction run cannot prepare a tool",
                 ));
             }
-            if snapshot.pending_tool.is_some() || snapshot.pending_context_compaction.is_some() {
+            if snapshot.pending_tool.is_some() {
                 return Err(corrupt(
                     &run_id,
                     "tool prepared while another durable action is pending",
@@ -1371,6 +1166,13 @@ pub fn apply_event(
                     return Err(corrupt(&run_id, "evidence receipt id was committed twice"));
                 }
                 snapshot.evidence_receipts.push(receipt.clone());
+                snapshot.last_completion_rejection = None;
+                snapshot.last_host_verification_failure = None;
+            } else {
+                snapshot.last_host_verification_failure = Some(HostVerificationFailure {
+                    outcome: (**outcome).clone(),
+                    workspace_state: workspace_state_after.clone(),
+                });
             }
             snapshot.workspace_state = workspace_state_after.clone();
             snapshot.pending_host_verification = None;
@@ -1390,6 +1192,7 @@ pub fn apply_event(
                 ));
             }
             snapshot.last_completion_rejection = Some(rejection.clone());
+            snapshot.pending_completion = None;
         }
         RuntimeEventKind::ChildStarted { child_run_id, .. } => {
             if snapshot.request.purpose != RunPurpose::Agent {
@@ -1756,9 +1559,10 @@ fn validate_compaction_safe_boundary(
     snapshot: &RunSnapshot,
     run_id: &RunId,
 ) -> Result<(), RunStoreError> {
-    if snapshot.pending_context_compaction.is_some()
-        || snapshot.pending_model.is_some()
+    if snapshot.pending_model.is_some()
         || snapshot.pending_tool.is_some()
+        || snapshot.pending_completion.is_some()
+        || snapshot.pending_host_verification.is_some()
         || !snapshot.pending_children.is_empty()
         || !snapshot.pending_steers.is_empty()
         || snapshot.pending_control.is_some()
@@ -1772,88 +1576,56 @@ fn validate_compaction_safe_boundary(
     Ok(())
 }
 
+fn validate_model_request_safe_boundary(
+    snapshot: &RunSnapshot,
+    run_id: &RunId,
+) -> Result<(), RunStoreError> {
+    if snapshot.pending_tool.is_some()
+        || snapshot.pending_completion.is_some()
+        || snapshot.pending_host_verification.is_some()
+        || !snapshot.pending_children.is_empty()
+        || !snapshot.pending_steers.is_empty()
+        || snapshot.pending_control.is_some()
+    {
+        return Err(corrupt(
+            run_id,
+            "model request must begin at a settled durable action boundary",
+        ));
+    }
+    Ok(())
+}
+
 fn compaction_force(trigger: ContextCompactionTrigger) -> bool {
     !matches!(trigger, ContextCompactionTrigger::Threshold)
 }
 
-fn validate_context_compaction_retry(
-    snapshot: &RunSnapshot,
-    run_id: &RunId,
-    pending: &PendingContextCompaction,
-    failure: &ModelAttemptFailure,
-    retry: &ModelRetryDecision,
-) -> Result<(), RunStoreError> {
-    let attempt = pending.request.attempt;
-    let retry_limit = snapshot.request.context_policy.max_retries;
-    let policy_reason = if failure.actionable_output {
-        Some(ModelRetryStopReason::ActionableOutput)
-    } else if !failure.retryable {
-        Some(ModelRetryStopReason::NotRetryable)
-    } else if attempt >= retry_limit {
-        Some(ModelRetryStopReason::RetryLimitReached)
-    } else {
-        None
-    };
-    match retry {
-        ModelRetryDecision::Stop { reason } => {
-            let valid = match policy_reason {
-                Some(expected) => *reason == expected,
-                None => *reason == ModelRetryStopReason::ModelRequestBudgetExceeded,
-            };
-            if !valid {
-                return Err(corrupt(
-                    run_id,
-                    "context compaction retry stop reason disagrees with policy",
-                ));
-            }
-            Ok(())
-        }
-        ModelRetryDecision::Retry { prepared } => {
-            if policy_reason.is_some() {
-                return Err(corrupt(
-                    run_id,
-                    "context compaction retried when policy required stopping",
-                ));
-            }
-            if prepared.attempt_id == pending.attempt_id {
-                return Err(corrupt(
-                    run_id,
-                    "context compaction retry reused the failed attempt id",
-                ));
-            }
-            let mut expected_request = pending.request.clone();
-            expected_request.attempt = attempt.saturating_add(1);
-            if *prepared.request != expected_request {
-                return Err(corrupt(
-                    run_id,
-                    "context compaction retry changed fields other than the persisted fallback or attempt number",
-                ));
-            }
-            Ok(())
-        }
-    }
-}
-
-fn compaction_request_template(snapshot: &RunSnapshot) -> ModelRequest {
-    ModelRequest {
-        run_id: snapshot.request.run_id.clone().unwrap_or_default(),
-        parent_run_id: snapshot.request.parent_run_id.clone(),
-        actor: snapshot.request.actor,
-        model: snapshot.request.model.clone(),
-        system_prompt: snapshot.request.system_prompt.clone(),
-        messages: Vec::new(),
-        tools: Vec::new(),
-        reasoning_effort: ReasoningEffort::Low,
-        max_output_tokens: Some(
-            snapshot
-                .request
-                .context_policy
-                .summary_max_output_tokens
-                .max(1),
-        ),
-        streaming: false,
-        request_number: snapshot.local_turns.saturating_add(1),
-        attempt: 0,
+fn context_input<'a>(snapshot: &'a RunSnapshot, tools: &'a [ToolDefinition]) -> ContextInput<'a> {
+    ContextInput {
+        transcript: &snapshot.transcript,
+        projection: snapshot.context_projection.as_ref(),
+        task_contract: snapshot.request.task_contract.as_ref(),
+        workspace_state: &snapshot.workspace_state,
+        evidence_receipts: &snapshot.evidence_receipts,
+        last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
+        last_verifier_failure: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.outcome),
+        last_verifier_failure_workspace: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.workspace_state),
+        pending_interaction: snapshot
+            .pending_tool
+            .as_ref()
+            .and_then(|pending| pending.interaction.as_ref())
+            .filter(|interaction| interaction.response.is_none())
+            .map(|interaction| &interaction.request),
+        pending_control: snapshot
+            .pending_control
+            .as_ref()
+            .map(|control| control.action),
+        tools,
     }
 }
 
@@ -1870,25 +1642,6 @@ fn pending_model_mut<'a>(
         return Err(corrupt(
             run_id,
             "model event attempt id does not match pending request",
-        ));
-    }
-    Ok(pending)
-}
-
-fn pending_context_compaction_mut<'a>(
-    snapshot: &'a mut RunSnapshot,
-    run_id: &RunId,
-    compaction_id: &ContextCompactionId,
-    attempt_id: &AttemptId,
-) -> Result<&'a mut PendingContextCompaction, RunStoreError> {
-    let pending = snapshot
-        .pending_context_compaction
-        .as_mut()
-        .ok_or_else(|| corrupt(run_id, "context compaction event has no prepared request"))?;
-    if &pending.compaction_id != compaction_id || &pending.attempt_id != attempt_id {
-        return Err(corrupt(
-            run_id,
-            "context compaction event identity does not match the pending request",
         ));
     }
     Ok(pending)

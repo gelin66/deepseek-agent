@@ -23,5 +23,6 @@ tokio = { workspace = true, features = ["rt"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
+codewhale-context = { path = "../context", version = "0.8.68" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

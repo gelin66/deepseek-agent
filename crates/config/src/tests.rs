@@ -4994,7 +4994,6 @@ fn harness_posture_default_is_standard() {
             kind: HarnessPostureKind::Standard,
             max_subagents: 0,
             prefer_codebase_search: false,
-            compaction_strategy: HarnessCompactionStrategy::Default,
             tool_surface: HarnessToolSurface::Full,
             safety_posture: HarnessSafetyPosture::Standard,
         }
@@ -5009,7 +5008,6 @@ fn harness_posture_factories_are_typed() {
             kind: HarnessPostureKind::CacheHeavy,
             max_subagents: 10,
             prefer_codebase_search: false,
-            compaction_strategy: HarnessCompactionStrategy::PrefixCache,
             tool_surface: HarnessToolSurface::Full,
             safety_posture: HarnessSafetyPosture::Standard,
         }
@@ -5020,7 +5018,6 @@ fn harness_posture_factories_are_typed() {
             kind: HarnessPostureKind::Lean,
             max_subagents: 20,
             prefer_codebase_search: true,
-            compaction_strategy: HarnessCompactionStrategy::Aggressive,
             tool_surface: HarnessToolSurface::Full,
             safety_posture: HarnessSafetyPosture::Standard,
         }
@@ -5055,7 +5052,6 @@ model_pattern = "deepseek-v4.*"
 [harness_profiles.posture]
 kind = "cache-heavy"
 max_subagents = 10
-compaction_strategy = "prefix-cache"
 tool_surface = "read-only"
 safety_posture = "strict"
 "#,
@@ -5071,7 +5067,6 @@ safety_posture = "strict"
                 kind: HarnessPostureKind::CacheHeavy,
                 max_subagents: 10,
                 prefer_codebase_search: false,
-                compaction_strategy: HarnessCompactionStrategy::PrefixCache,
                 tool_surface: HarnessToolSurface::ReadOnly,
                 safety_posture: HarnessSafetyPosture::Strict,
             },
@@ -5153,7 +5148,6 @@ fn configured_harness_profile_overrides_built_in_seed() {
                 kind: HarnessPostureKind::Custom,
                 max_subagents: 3,
                 prefer_codebase_search: true,
-                compaction_strategy: HarnessCompactionStrategy::Default,
                 tool_surface: HarnessToolSurface::Auto,
                 safety_posture: HarnessSafetyPosture::Strict,
             },

@@ -86,8 +86,7 @@ pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
         || replay.snapshot.pending_completion.is_some()
         || !replay.snapshot.pending_children.is_empty()
         || (replay.snapshot.request.purpose == RunPurpose::ContextCompaction
-            && (replay.snapshot.last_context_compaction.is_some()
-                || replay.snapshot.last_context_compaction_failure.is_some()))
+            && replay.snapshot.last_context_compaction.is_some())
     {
         return false;
     }
@@ -99,11 +98,6 @@ pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
         || replay
             .snapshot
             .pending_tool
-            .as_ref()
-            .is_some_and(|pending| pending.state == DurableActionState::InFlight)
-        || replay
-            .snapshot
-            .pending_context_compaction
             .as_ref()
             .is_some_and(|pending| pending.state == DurableActionState::InFlight)
     {
@@ -1389,9 +1383,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use codewhale_protocol::agent_runtime::{
-        ContextPolicy, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest,
-        ModelStreamEvent, ReasoningEffort, RunEnvironment, RunLimits, RunRequest, RuntimeEventKind,
-        ToolDefinition, ToolInvocation, ToolOutcome, ToolPolicy, TranscriptEntry, Usage,
+        ContextPolicy, InheritedRunFacts, ModelAccounting, ModelFinishReason, ModelOutput,
+        ModelRequest, ModelStreamEvent, ReasoningEffort, RunEnvironment, RunLimits, RunRequest,
+        RuntimeEventKind, ToolDefinition, ToolInvocation, ToolOutcome, ToolPolicy, TranscriptEntry,
+        Usage,
     };
     use codewhale_protocol::run_api::{CompactRunCommand, RunProductControls};
     use codewhale_protocol::task::{
@@ -1408,6 +1403,7 @@ mod tests {
     #[derive(Clone, Copy)]
     enum ModelMode {
         Complete,
+        LongComplete,
         Pending,
     }
 
@@ -1447,12 +1443,16 @@ mod tests {
         async fn next(&mut self) -> Option<Result<ModelStreamEvent, ModelPortError>> {
             match self.mode {
                 ModelMode::Pending => pending().await,
-                ModelMode::Complete if self.emitted => None,
-                ModelMode::Complete => {
+                ModelMode::Complete | ModelMode::LongComplete if self.emitted => None,
+                ModelMode::Complete | ModelMode::LongComplete => {
                     self.emitted = true;
                     Some(Ok(ModelStreamEvent::Completed {
                         output: ModelOutput {
-                            content: "完成".to_owned(),
+                            content: if matches!(self.mode, ModelMode::LongComplete) {
+                                "可确定性裁剪的旧模型历史。".repeat(8_000)
+                            } else {
+                                "完成".to_owned()
+                            },
                             reasoning_content: None,
                             tool_calls: Vec::new(),
                             finish_reason: ModelFinishReason::Stop,
@@ -1650,8 +1650,13 @@ mod tests {
                 generation_id: TaskGenerationId::from(run_id.0.clone()),
                 definition,
             });
-            request.transcript = source.snapshot.transcript;
-            request.context_projection = source.snapshot.context_projection;
+            request.transcript = source.snapshot.transcript.clone();
+            request.context_projection = source.snapshot.context_projection.clone();
+            request.inherited_facts = Some(InheritedRunFacts {
+                workspace_state: source.snapshot.workspace_state,
+                last_completion_rejection: source.snapshot.last_completion_rejection,
+                last_host_verification_failure: source.snapshot.last_host_verification_failure,
+            });
             request.deadline_unix_ms = None;
             request.accounting_baseline = ModelAccounting::default();
             Ok(self.runtime(store, sink).start(request))
@@ -1681,10 +1686,6 @@ mod tests {
             context_window_tokens: 100_000,
             trigger_tokens: 70_000,
             hard_input_tokens: 80_000,
-            summary_max_output_tokens: 512,
-            min_messages: 2,
-            keep_recent_user_turns: 0,
-            max_retries: 2,
         };
         request.environment = RunEnvironment {
             workspace: command.workspace,
@@ -2041,14 +2042,11 @@ mod tests {
 
     #[tokio::test]
     async fn manual_compact_creates_an_internal_root_then_continue_inherits_its_projection() {
-        let (app, store, _) = new_fixture(ModelMode::Complete).await;
+        let (app, store, _) = new_fixture(ModelMode::LongComplete).await;
         let source = run_result(
             app.execute(envelope(
                 "start-compact-source",
-                RunCommand::Start(start_command(&format!(
-                    "第一轮长上下文 {}",
-                    "甲".repeat(20_000)
-                ))),
+                RunCommand::Start(start_command("第一轮任务")),
             ))
             .await,
         );

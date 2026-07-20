@@ -1,31 +1,55 @@
-//! Deterministic planning for canonical context compaction.
+//! Evidence-aware, deterministic projection for the single Agent runtime.
 //!
-//! The full `CanonicalTranscript` is never rewritten. This module only
-//! materializes and compacts the model-visible request projection.
+//! The canonical transcript and RunStore facts remain the only durable truth.
+//! This module is a pure request projector: it keeps mandatory Host facts,
+//! selects complete reasoning/tool groups, and commits only provenance-backed
+//! model-visible projections. It never calls a model or reads the workspace.
+
+use std::collections::BTreeSet;
 
 use codewhale_protocol::agent_runtime::{
-    CanonicalTranscript, ContextCompactionPlan, ContextPolicy, ContextProjection, ModelMessage,
-    ModelRequest, PromptCacheControl, ReasoningEffort, SystemPrompt, SystemPromptBlock,
-    TranscriptEntry,
+    CanonicalTranscript, ContextPolicy, ContextProjection, DurableControlAction, ModelMessage,
+    ToolDefinition, ToolSideEffectStatus, TranscriptEntry, UserInteractionRequest,
+};
+use codewhale_protocol::task::{
+    CompletionRejection, EvidenceReceipt, TaskAcceptance, TaskContract, WorkspaceRevision,
+    WorkspaceState,
 };
 use sha2::{Digest, Sha256};
 
 const TOOL_RESULT_PRUNE_CHARS: usize = 16 * 1024;
 const TOOL_RESULT_RETAIN_CHARS: usize = 2 * 1024;
-const FALLBACK_SUMMARY_MAX_CHARS: usize = 120_000;
-const FALLBACK_SUMMARY_HEAD_CHARS: usize = 72_000;
-const FALLBACK_SUMMARY_TAIL_CHARS: usize = 36_000;
+const HOST_FACTS_HEADER: &str = "## 当前 Host 事实";
+const FORCED_TARGET_NUMERATOR: u64 = 3;
+const FORCED_TARGET_DENOMINATOR: u64 = 4;
+const MIN_MANUAL_SAVINGS_TOKENS: u64 = 256;
 
-const SUMMARY_INSTRUCTION: &str = "\
-请把此前的编码任务上下文压缩成一份可继续执行的中文工作摘要。必须保留：用户目标和最新约束、\
-已做决定、修改过的文件与关键代码事实、尚未解决的问题、工具调用的重要结果、测试与验证证据、\
-下一步动作。不要声称未验证的结果，不要输出寒暄，只输出结构清晰的摘要。";
+/// Narrow, borrowed view of the canonical facts needed for one model request.
+///
+/// Presentation clients never construct this value. AgentRuntime and the
+/// RunStore reducer both derive it from the same durable snapshot.
+#[derive(Debug, Clone, Copy)]
+pub struct ContextInput<'a> {
+    pub transcript: &'a CanonicalTranscript,
+    pub projection: Option<&'a ContextProjection>,
+    pub task_contract: Option<&'a TaskContract>,
+    pub workspace_state: &'a WorkspaceState,
+    pub evidence_receipts: &'a [EvidenceReceipt],
+    pub last_completion_rejection: Option<&'a CompletionRejection>,
+    pub last_verifier_failure: Option<&'a codewhale_protocol::agent_runtime::ToolOutcome>,
+    pub last_verifier_failure_workspace: Option<&'a WorkspaceState>,
+    pub pending_interaction: Option<&'a UserInteractionRequest>,
+    pub pending_control: Option<DurableControlAction>,
+    pub tools: &'a [ToolDefinition],
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EffectiveContext {
-    pub system_prompt: SystemPrompt,
+    pub system_prompt: codewhale_protocol::agent_runtime::SystemPrompt,
     pub messages: Vec<ModelMessage>,
-    pub user_message_indices: Vec<u32>,
+    /// Canonical transcript indices represented by the history portion of
+    /// `messages`. The deterministic Host-facts tail has no transcript index.
+    pub source_entry_indices: Vec<u64>,
     pub source_entry_count: u64,
     pub sha256: String,
     pub estimated_tokens: u64,
@@ -41,10 +65,6 @@ pub enum ContextCompactionPreparation {
         before_tokens: u64,
         after_tokens: u64,
     },
-    Model {
-        plan: ContextCompactionPlan,
-        request: ModelRequest,
-    },
     LimitExceeded {
         estimated_tokens: u64,
         hard_input_tokens: u64,
@@ -57,21 +77,22 @@ pub enum ContextProjectionError {
         "context projection boundary {boundary} is beyond canonical transcript length {entries}"
     )]
     BoundaryAhead { boundary: u64, entries: usize },
-    #[error("failed to serialize context projection for a stable digest: {0}")]
+    #[error("context projection source indices are invalid")]
+    InvalidSourceIndices,
+    #[error("context projection messages do not match their canonical sources")]
+    SourceMessageMismatch,
+    #[error("failed to serialize context facts for a stable digest: {0}")]
     Digest(String),
     #[error("invalid context policy: {0}")]
     InvalidPolicy(String),
-    #[error("failed to serialize bounded context-summary input: {0}")]
-    SummaryInput(String),
-    #[error("invalid context projection user-message index metadata")]
-    InvalidUserMessageIndices,
 }
 
+/// Materialize the exact model-visible request context.
 pub fn effective_context(
-    transcript: &CanonicalTranscript,
-    projection: Option<&ContextProjection>,
+    input: ContextInput<'_>,
 ) -> Result<EffectiveContext, ContextProjectionError> {
-    let base_system_prompt = transcript
+    let system_prompt = input
+        .transcript
         .entries
         .iter()
         .find_map(|entry| match entry {
@@ -79,123 +100,117 @@ pub fn effective_context(
             _ => None,
         })
         .unwrap_or_default();
-    let (system_prompt, messages, user_message_indices, source_entry_count) = match projection {
-        Some(projection) => {
-            let boundary = usize::try_from(projection.source_entry_count).unwrap_or(usize::MAX);
-            if boundary > transcript.entries.len() {
-                return Err(ContextProjectionError::BoundaryAhead {
-                    boundary: projection.source_entry_count,
-                    entries: transcript.entries.len(),
-                });
-            }
-            validate_user_message_indices(&projection.messages, &projection.user_message_indices)?;
-            let mut messages = projection.messages.clone();
-            let mut user_message_indices = projection.user_message_indices.clone();
-            let (suffix, suffix_user_indices) = project_entries(&transcript.entries[boundary..]);
-            let offset = u32::try_from(messages.len()).unwrap_or(u32::MAX);
-            messages.extend(suffix);
-            user_message_indices.extend(
-                suffix_user_indices
-                    .into_iter()
-                    .map(|index| index.saturating_add(offset)),
-            );
-            (
-                merge_summary_prompt(&base_system_prompt, projection.summary_prompt.as_ref()),
-                messages,
-                user_message_indices,
-                u64::try_from(transcript.entries.len()).unwrap_or(u64::MAX),
-            )
-        }
-        None => {
-            let (messages, user_message_indices) = project_entries(&transcript.entries);
-            (
-                base_system_prompt,
-                messages,
-                user_message_indices,
-                u64::try_from(transcript.entries.len()).unwrap_or(u64::MAX),
-            )
-        }
+
+    let (mut messages, mut source_entry_indices) = match input.projection {
+        Some(projection) => projected_history(input.transcript, projection)?,
+        None => project_range(input.transcript, 0, input.transcript.entries.len(), false),
     };
+
+    if let Some(host_facts) = render_host_facts(input, &messages)? {
+        messages.push(ModelMessage::User {
+            content: host_facts,
+        });
+    }
+
+    let source_entry_count = u64::try_from(input.transcript.entries.len()).unwrap_or(u64::MAX);
     let sha256 = projection_digest(
         &system_prompt,
         &messages,
-        &user_message_indices,
+        &source_entry_indices,
         source_entry_count,
+        input.tools,
     )?;
-    let estimated_tokens = estimate_context_tokens(&system_prompt, &messages);
+    let estimated_tokens = estimate_context_tokens(&system_prompt, &messages, input.tools);
+
+    // Keep the allocation owned by the returned bundle and make it explicit
+    // that Host facts do not manufacture canonical transcript provenance.
+    source_entry_indices.shrink_to_fit();
     Ok(EffectiveContext {
         system_prompt,
         messages,
-        user_message_indices,
+        source_entry_indices,
         source_entry_count,
         sha256,
         estimated_tokens,
     })
 }
 
+/// Plan one deterministic local compaction.
+///
+/// Mandatory facts are never semantically summarized. If they alone exceed
+/// the hard budget, the caller receives a typed limit outcome before any
+/// DeepSeek request is admitted.
 pub fn prepare_compaction(
-    transcript: &CanonicalTranscript,
-    projection: Option<&ContextProjection>,
+    input: ContextInput<'_>,
     policy: ContextPolicy,
-    request_template: &ModelRequest,
     force: bool,
 ) -> Result<ContextCompactionPreparation, ContextProjectionError> {
-    let effective = effective_context(transcript, projection)?;
+    validate_policy(policy)?;
+    let effective = effective_context(input)?;
     if !policy.auto_compact && !force {
         return Ok(ContextCompactionPreparation::NotNeeded {
             estimated_tokens: effective.estimated_tokens,
         });
     }
-    validate_policy(policy)?;
-    let trigger = u64::from(policy.trigger_tokens);
-    if !force && effective.estimated_tokens <= trigger {
+    if !force && effective.estimated_tokens <= u64::from(policy.trigger_tokens) {
         return Ok(ContextCompactionPreparation::NotNeeded {
             estimated_tokens: effective.estimated_tokens,
         });
     }
 
-    let cutoff = retained_suffix_start(
-        &effective.user_message_indices,
-        effective.messages.len(),
-        usize::try_from(policy.keep_recent_user_turns).unwrap_or(usize::MAX),
-    );
-    let mut locally_pruned = effective.messages.clone();
-    let pruned = prune_old_tool_results(&mut locally_pruned[..cutoff]);
-    let locally_pruned_tokens = estimate_context_tokens(&effective.system_prompt, &locally_pruned);
-    let existing_summary_prompt = projection.and_then(|value| value.summary_prompt.clone());
-    if pruned && !force && locally_pruned_tokens <= u64::from(policy.trigger_tokens) {
-        return Ok(ContextCompactionPreparation::Local {
-            projection: ContextProjection {
-                source_entry_count: effective.source_entry_count,
-                source_projection_sha256: effective.sha256,
-                summary_prompt: existing_summary_prompt,
-                messages: locally_pruned,
-                user_message_indices: effective.user_message_indices,
-            },
-            before_tokens: effective.estimated_tokens,
-            after_tokens: locally_pruned_tokens,
+    let mandatory = mandatory_entry_indices(input);
+    let groups = atomic_history_groups(input.transcript);
+    let mut selected = mandatory;
+    expand_selected_groups(&mut selected, &groups);
+
+    let mut candidate = projection_from_indices(&effective, input.transcript, &selected);
+    let mut after_tokens = estimate_projection_tokens(input, &candidate)?;
+    let hard = u64::from(policy.hard_input_tokens);
+    if after_tokens > hard {
+        return Ok(ContextCompactionPreparation::LimitExceeded {
+            estimated_tokens: after_tokens,
+            hard_input_tokens: hard,
         });
     }
+    let selection_target = if force {
+        let forced_target = effective
+            .estimated_tokens
+            .saturating_mul(FORCED_TARGET_NUMERATOR)
+            / FORCED_TARGET_DENOMINATOR;
+        u64::from(policy.trigger_tokens)
+            .min(forced_target)
+            .max(after_tokens)
+    } else {
+        u64::from(policy.trigger_tokens)
+    };
 
-    let min_messages = usize::try_from(policy.min_messages).unwrap_or(usize::MAX);
-    if cutoff < min_messages {
-        if pruned && locally_pruned_tokens <= u64::from(policy.hard_input_tokens) {
-            return Ok(ContextCompactionPreparation::Local {
-                projection: ContextProjection {
-                    source_entry_count: effective.source_entry_count,
-                    source_projection_sha256: effective.sha256,
-                    summary_prompt: existing_summary_prompt,
-                    messages: locally_pruned,
-                    user_message_indices: effective.user_message_indices,
-                },
-                before_tokens: effective.estimated_tokens,
-                after_tokens: locally_pruned_tokens,
-            });
+    // Spend the remaining budget on newest complete groups. A reasoning/tool
+    // group is admitted whole or not at all.
+    for group in groups.iter().rev() {
+        if group.iter().all(|index| selected.contains(index)) {
+            continue;
         }
-        if locally_pruned_tokens > u64::from(policy.hard_input_tokens) {
+        let mut trial = selected.clone();
+        trial.extend(group.iter().copied());
+        let trial_projection = projection_from_indices(&effective, input.transcript, &trial);
+        let trial_tokens = estimate_projection_tokens(input, &trial_projection)?;
+        if trial_tokens <= selection_target {
+            selected = trial;
+            candidate = trial_projection;
+            after_tokens = trial_tokens;
+        }
+    }
+
+    let savings = effective.estimated_tokens.saturating_sub(after_tokens);
+    let minimum_manual_savings =
+        MIN_MANUAL_SAVINGS_TOKENS.max(effective.estimated_tokens.saturating_div(100));
+    let manual_reduction_is_material =
+        effective.estimated_tokens > hard || !force || savings >= minimum_manual_savings;
+    if after_tokens >= effective.estimated_tokens || !manual_reduction_is_material {
+        if effective.estimated_tokens > hard {
             return Ok(ContextCompactionPreparation::LimitExceeded {
-                estimated_tokens: locally_pruned_tokens,
-                hard_input_tokens: u64::from(policy.hard_input_tokens),
+                estimated_tokens: effective.estimated_tokens,
+                hard_input_tokens: hard,
             });
         }
         return Ok(ContextCompactionPreparation::NotNeeded {
@@ -203,166 +218,411 @@ pub fn prepare_compaction(
         });
     }
 
-    let summary_source = locally_pruned[..cutoff].to_vec();
-    let retained_messages = locally_pruned[cutoff..].to_vec();
-    let cutoff_u32 = u32::try_from(cutoff).unwrap_or(u32::MAX);
-    let retained_user_message_indices = effective
-        .user_message_indices
-        .iter()
-        .copied()
-        .filter(|index| *index >= cutoff_u32)
-        .map(|index| index.saturating_sub(cutoff_u32))
-        .collect::<Vec<_>>();
-    let mut request = request_template.clone();
-    request.system_prompt = effective.system_prompt.clone();
-    request.messages = summary_source.clone();
-    request.messages.push(ModelMessage::User {
-        content: SUMMARY_INSTRUCTION.to_owned(),
-    });
-    request.tools.clear();
-    request.reasoning_effort = ReasoningEffort::Low;
-    request.max_output_tokens = Some(policy.summary_max_output_tokens.max(1));
-    request.streaming = false;
-    request.attempt = 0;
-
-    let mut bounded_request = request.clone();
-    bounded_request.system_prompt = SystemPrompt::from_text(
-        "你是编码 Agent 的上下文压缩器。准确保留事实、约束、工作状态和验证证据。",
-    );
-    bounded_request.messages = vec![ModelMessage::User {
-        content: bounded_summary_input(&summary_source)?,
-    }];
-    if estimate_context_tokens(&request.system_prompt, &request.messages)
-        > u64::from(policy.hard_input_tokens)
-    {
-        request = bounded_request;
-    }
-
-    Ok(ContextCompactionPreparation::Model {
-        plan: ContextCompactionPlan {
-            source_entry_count: effective.source_entry_count,
-            source_projection_sha256: effective.sha256,
-            before_tokens: effective.estimated_tokens,
-            locally_pruned_tokens,
-            retained_messages,
-            retained_user_message_indices,
-        },
-        request,
+    Ok(ContextCompactionPreparation::Local {
+        projection: candidate,
+        before_tokens: effective.estimated_tokens,
+        after_tokens,
     })
 }
 
-pub fn projection_from_summary(plan: &ContextCompactionPlan, summary: &str) -> ContextProjection {
-    ContextProjection {
-        source_entry_count: plan.source_entry_count,
-        source_projection_sha256: plan.source_projection_sha256.clone(),
-        summary_prompt: Some(SystemPrompt {
-            blocks: vec![SystemPromptBlock {
-                text: format!(
-                    "以下是此前编码工作的压缩摘要。它是上下文投影，不替代完整运行记录：\n\n{}",
-                    summary.trim()
-                ),
-                cache_control: PromptCacheControl::Volatile,
-            }],
-        }),
-        messages: plan.retained_messages.clone(),
-        user_message_indices: plan.retained_user_message_indices.clone(),
-    }
-}
-
 pub fn estimate_projection_tokens(
-    transcript: &CanonicalTranscript,
+    input: ContextInput<'_>,
     projection: &ContextProjection,
 ) -> Result<u64, ContextProjectionError> {
-    Ok(effective_context(transcript, Some(projection))?.estimated_tokens)
+    Ok(effective_context(ContextInput {
+        projection: Some(projection),
+        ..input
+    })?
+    .estimated_tokens)
 }
 
-fn project_entries(entries: &[TranscriptEntry]) -> (Vec<ModelMessage>, Vec<u32>) {
-    let mut messages = Vec::new();
-    let mut user_message_indices = Vec::new();
-    for entry in entries {
-        if matches!(entry, TranscriptEntry::System { .. }) {
-            continue;
-        }
-        if matches!(entry, TranscriptEntry::User { .. }) {
-            user_message_indices.push(u32::try_from(messages.len()).unwrap_or(u32::MAX));
-        }
-        let mut projected = CanonicalTranscript {
-            entries: vec![entry.clone()],
-        }
-        .project_messages();
-        messages.append(&mut projected);
-    }
-    (messages, user_message_indices)
-}
-
-fn merge_summary_prompt(base: &SystemPrompt, summary: Option<&SystemPrompt>) -> SystemPrompt {
-    let mut merged = base.clone();
-    if let Some(summary) = summary {
-        merged.blocks.extend(summary.blocks.clone());
-    }
-    merged
-}
-
-fn retained_suffix_start(
-    user_message_indices: &[u32],
-    message_count: usize,
-    keep_user_turns: usize,
-) -> usize {
-    if keep_user_turns == 0 {
-        return message_count;
-    }
-    if user_message_indices.len() <= keep_user_turns {
-        return 0;
-    }
-    usize::try_from(user_message_indices[user_message_indices.len() - keep_user_turns])
-        .unwrap_or(message_count)
-        .min(message_count)
-}
-
-fn validate_user_message_indices(
-    messages: &[ModelMessage],
-    indices: &[u32],
-) -> Result<(), ContextProjectionError> {
-    let valid = indices.windows(2).all(|pair| pair[0] < pair[1])
-        && indices.iter().all(|index| {
-            messages
-                .get(usize::try_from(*index).unwrap_or(usize::MAX))
-                .is_some_and(|message| matches!(message, ModelMessage::User { .. }))
+fn projected_history(
+    transcript: &CanonicalTranscript,
+    projection: &ContextProjection,
+) -> Result<(Vec<ModelMessage>, Vec<u64>), ContextProjectionError> {
+    let boundary = usize::try_from(projection.source_entry_count).unwrap_or(usize::MAX);
+    if boundary > transcript.entries.len() {
+        return Err(ContextProjectionError::BoundaryAhead {
+            boundary: projection.source_entry_count,
+            entries: transcript.entries.len(),
         });
-    if valid {
-        Ok(())
-    } else {
-        Err(ContextProjectionError::InvalidUserMessageIndices)
+    }
+    if projection.selected_entry_indices.len() != projection.messages.len()
+        || !projection
+            .selected_entry_indices
+            .windows(2)
+            .all(|pair| pair[0] < pair[1])
+        || projection
+            .selected_entry_indices
+            .iter()
+            .any(|index| *index >= projection.source_entry_count)
+    {
+        return Err(ContextProjectionError::InvalidSourceIndices);
+    }
+
+    let selected = projection
+        .selected_entry_indices
+        .iter()
+        .map(|index| usize::try_from(*index).unwrap_or(usize::MAX))
+        .collect::<BTreeSet<_>>();
+    let (expected, expected_indices) = project_selected(transcript, &selected, boundary, true);
+    if expected != projection.messages || expected_indices != projection.selected_entry_indices {
+        return Err(ContextProjectionError::SourceMessageMismatch);
+    }
+
+    let (suffix, suffix_indices) =
+        project_range(transcript, boundary, transcript.entries.len(), false);
+    let mut messages = projection.messages.clone();
+    messages.extend(suffix);
+    let mut source_indices = projection.selected_entry_indices.clone();
+    source_indices.extend(suffix_indices);
+    Ok((messages, source_indices))
+}
+
+fn projection_from_indices(
+    source: &EffectiveContext,
+    transcript: &CanonicalTranscript,
+    selected: &BTreeSet<usize>,
+) -> ContextProjection {
+    let boundary = transcript.entries.len();
+    let (messages, selected_entry_indices) = project_selected(transcript, selected, boundary, true);
+    ContextProjection {
+        source_entry_count: u64::try_from(boundary).unwrap_or(u64::MAX),
+        source_projection_sha256: source.sha256.clone(),
+        selected_entry_indices,
+        messages,
     }
 }
 
-fn prune_old_tool_results(messages: &mut [ModelMessage]) -> bool {
-    let mut changed = false;
-    for message in messages {
-        let ModelMessage::Tool { content, name, .. } = message else {
+fn mandatory_entry_indices(input: ContextInput<'_>) -> BTreeSet<usize> {
+    let entries = &input.transcript.entries;
+    let task_index = input.task_contract.and_then(|contract| {
+        let rendered = contract.definition.model_message();
+        entries.iter().enumerate().rev().find_map(|(index, entry)| {
+            matches!(entry, TranscriptEntry::User { content } if content == &rendered)
+                .then_some(index)
+        })
+    });
+    let task_start = task_index.unwrap_or(0);
+    let mut selected = BTreeSet::new();
+    if let Some(index) = task_index {
+        selected.insert(index);
+    }
+
+    // Every current-task user steer/constraint and joined child handoff is a
+    // durable semantic fact, not disposable chat prose.
+    for (index, entry) in entries.iter().enumerate().skip(task_start) {
+        if matches!(
+            entry,
+            TranscriptEntry::User { .. } | TranscriptEntry::ChildOutcome { .. }
+        ) {
+            selected.insert(index);
+        }
+    }
+
+    // Preserve every current-task mutation group. Their tool calls and
+    // outcomes are the canonical change facts when no later git_diff/status
+    // exists; keeping only the last write would forget earlier files.
+    let mutations = entries
+        .iter()
+        .enumerate()
+        .skip(task_start)
+        .filter_map(|(index, entry)| {
+            let TranscriptEntry::Tool { outcome, .. } = entry else {
+                return None;
+            };
+            (outcome.side_effect == ToolSideEffectStatus::Applied
+                || outcome.workspace_revision.is_some())
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    selected.extend(mutations.iter().copied());
+    let latest_mutation = mutations.last().copied();
+
+    // A diff/status result is current only if no later mutation invalidated
+    // it. The Broker performs no hidden Git I/O.
+    for name in ["git_diff", "git_status"] {
+        if let Some(index) = entries.iter().enumerate().rev().find_map(|(index, entry)| {
+            matches!(entry, TranscriptEntry::Tool { name: tool, .. } if tool == name)
+                .then_some(index)
+        }) && latest_mutation.is_none_or(|mutation| index > mutation)
+        {
+            selected.insert(index);
+        }
+    }
+    selected
+}
+
+fn atomic_history_groups(transcript: &CanonicalTranscript) -> Vec<Vec<usize>> {
+    let entries = &transcript.entries;
+    let mut groups = Vec::new();
+    let mut cursor = 0;
+    while cursor < entries.len() {
+        match &entries[cursor] {
+            TranscriptEntry::System { .. } => cursor += 1,
+            TranscriptEntry::Assistant { tool_calls, .. } if !tool_calls.is_empty() => {
+                let call_ids = tool_calls
+                    .iter()
+                    .map(|call| call.id.as_str())
+                    .collect::<BTreeSet<_>>();
+                let mut group = vec![cursor];
+                let mut next = cursor + 1;
+                while next < entries.len() {
+                    match &entries[next] {
+                        TranscriptEntry::Tool { call_id, .. }
+                            if call_ids.contains(call_id.as_str()) =>
+                        {
+                            group.push(next);
+                            next += 1;
+                        }
+                        TranscriptEntry::Tool { .. } | TranscriptEntry::ChildOutcome { .. } => {
+                            next += 1;
+                        }
+                        _ => break,
+                    }
+                }
+                groups.push(group);
+                cursor = next;
+            }
+            TranscriptEntry::Tool { .. } => {
+                // Orphan Tool entries are never selected as optional context.
+                cursor += 1;
+            }
+            _ => {
+                groups.push(vec![cursor]);
+                cursor += 1;
+            }
+        }
+    }
+    groups
+}
+
+fn expand_selected_groups(selected: &mut BTreeSet<usize>, groups: &[Vec<usize>]) {
+    loop {
+        let mut changed = false;
+        for group in groups {
+            if group.iter().any(|index| selected.contains(index)) {
+                for index in group {
+                    changed |= selected.insert(*index);
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+fn project_selected(
+    transcript: &CanonicalTranscript,
+    selected: &BTreeSet<usize>,
+    boundary: usize,
+    compact_tools: bool,
+) -> (Vec<ModelMessage>, Vec<u64>) {
+    let mut messages = Vec::new();
+    let mut indices = Vec::new();
+    for index in selected.iter().copied().filter(|index| *index < boundary) {
+        let Some(mut message) = project_entry(&transcript.entries[index]) else {
             continue;
         };
-        if content.chars().count() <= TOOL_RESULT_PRUNE_CHARS {
-            continue;
+        if compact_tools {
+            compact_tool_result(&mut message);
         }
-        let original = content.chars().count();
-        let head = take_chars(content, TOOL_RESULT_RETAIN_CHARS);
-        let tail = take_tail_chars(content, TOOL_RESULT_RETAIN_CHARS);
-        *content = format!(
-            "[{name} 的旧工具结果已在请求投影中压缩，原始记录保留 {original} 字符]\n{head}\n…\n{tail}"
-        );
-        changed = true;
+        messages.push(message);
+        indices.push(u64::try_from(index).unwrap_or(u64::MAX));
     }
-    changed
+    (messages, indices)
+}
+
+fn project_range(
+    transcript: &CanonicalTranscript,
+    start: usize,
+    end: usize,
+    compact_tools: bool,
+) -> (Vec<ModelMessage>, Vec<u64>) {
+    let mut messages = Vec::new();
+    let mut indices = Vec::new();
+    for index in start..end {
+        let Some(mut message) = project_entry(&transcript.entries[index]) else {
+            continue;
+        };
+        if compact_tools {
+            compact_tool_result(&mut message);
+        }
+        messages.push(message);
+        indices.push(u64::try_from(index).unwrap_or(u64::MAX));
+    }
+    (messages, indices)
+}
+
+fn project_entry(entry: &TranscriptEntry) -> Option<ModelMessage> {
+    match entry {
+        TranscriptEntry::System { .. } => None,
+        TranscriptEntry::User { content } => Some(ModelMessage::User {
+            content: content.clone(),
+        }),
+        TranscriptEntry::Assistant {
+            content,
+            reasoning_content,
+            tool_calls,
+        } => Some(ModelMessage::Assistant {
+            content: content.clone(),
+            reasoning_content: reasoning_content.clone(),
+            tool_calls: tool_calls.clone(),
+        }),
+        TranscriptEntry::Tool {
+            call_id,
+            name,
+            outcome,
+        } => Some(ModelMessage::Tool {
+            call_id: call_id.clone(),
+            name: name.clone(),
+            content: outcome.content.clone(),
+        }),
+        TranscriptEntry::ChildOutcome {
+            handoff_content, ..
+        } => Some(ModelMessage::User {
+            content: handoff_content.clone(),
+        }),
+    }
+}
+
+fn compact_tool_result(message: &mut ModelMessage) {
+    let ModelMessage::Tool { content, name, .. } = message else {
+        return;
+    };
+    if content.chars().count() <= TOOL_RESULT_PRUNE_CHARS {
+        return;
+    }
+    let original = content.chars().count();
+    let head = take_chars(content, TOOL_RESULT_RETAIN_CHARS);
+    let tail = take_tail_chars(content, TOOL_RESULT_RETAIN_CHARS);
+    *content = format!(
+        "[{name} 的旧工具结果已在请求投影中压缩，canonical 记录保留 {original} 字符]\n{head}\n…\n{tail}"
+    );
+}
+
+fn render_host_facts(
+    input: ContextInput<'_>,
+    history: &[ModelMessage],
+) -> Result<Option<String>, ContextProjectionError> {
+    let mut lines = vec![HOST_FACTS_HEADER.to_owned()];
+
+    if let Some(contract) = input.task_contract {
+        let rendered = contract.definition.model_message();
+        let already_present = history.iter().any(
+            |message| matches!(message, ModelMessage::User { content } if content == &rendered),
+        );
+        if !already_present {
+            lines.push("### 冻结任务契约".to_owned());
+            lines.push(rendered);
+        }
+        let acceptance_ids = contract
+            .definition
+            .acceptance
+            .iter()
+            .map(|acceptance| acceptance.id().0.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        lines.push(format!(
+            "- task_generation: `{}`\n- acceptance_ids: `{acceptance_ids}`",
+            contract.generation_id.0
+        ));
+    }
+
+    let revision = match &input.workspace_state.revision {
+        WorkspaceRevision::Known { sha256 } => format!("known:{sha256}"),
+        WorkspaceRevision::Unknown { reason } => format!("unknown:{reason}"),
+    };
+    lines.push(format!(
+        "- workspace_generation: `{}`\n- workspace_revision: `{revision}`",
+        input.workspace_state.generation
+    ));
+
+    if let Some(receipt) = latest_valid_receipt(input) {
+        let encoded = serde_json::to_string(receipt)
+            .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
+        lines.push(format!("### 当前有效 EvidenceReceipt\n`{encoded}`"));
+    } else {
+        lines.push("- current_evidence_receipt: `none`".to_owned());
+    }
+
+    if let Some(rejection) = unresolved_rejection(input) {
+        let encoded = serde_json::to_string(rejection)
+            .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
+        lines.push(format!("### 未解决的完成拒绝\n`{encoded}`"));
+        if let Some(outcome) = input.last_verifier_failure {
+            let mut outcome = outcome.clone();
+            if outcome.content.chars().count() > TOOL_RESULT_PRUNE_CHARS {
+                let original = outcome.content.chars().count();
+                outcome.content = format!(
+                    "[verifier 输出已确定性压缩，canonical 记录保留 {original} 字符]\n{}\n…\n{}",
+                    take_chars(&outcome.content, TOOL_RESULT_RETAIN_CHARS * 3),
+                    take_tail_chars(&outcome.content, TOOL_RESULT_RETAIN_CHARS),
+                );
+            }
+            let encoded = serde_json::to_string(&outcome)
+                .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
+            lines.push(format!("### 最近一次 verifier 失败\n`{encoded}`"));
+        }
+        if let Some(workspace) = input.last_verifier_failure_workspace {
+            let encoded = serde_json::to_string(workspace)
+                .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
+            lines.push(format!("- verifier_failure_workspace: `{encoded}`"));
+        }
+    }
+    if let Some(interaction) = input.pending_interaction {
+        let encoded = serde_json::to_string(interaction)
+            .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
+        lines.push(format!("### 未解决 interaction\n`{encoded}`"));
+    }
+    if let Some(control) = input.pending_control {
+        let encoded = serde_json::to_string(&control)
+            .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
+        lines.push(format!("### 未解决 control\n`{encoded}`"));
+    }
+
+    Ok(Some(lines.join("\n")))
+}
+
+fn latest_valid_receipt(input: ContextInput<'_>) -> Option<&EvidenceReceipt> {
+    let contract = input.task_contract?;
+    input.evidence_receipts.iter().rev().find(|receipt| {
+        receipt.generation_id == contract.generation_id
+            && receipt.workspace_state == *input.workspace_state
+            && contract.definition.acceptance.iter().any(|acceptance| {
+                matches!(
+                    acceptance,
+                    TaskAcceptance::Verifier { id, verifier, .. }
+                        if *id == receipt.acceptance_id && *verifier == receipt.verifier
+                )
+            })
+    })
+}
+
+fn unresolved_rejection(input: ContextInput<'_>) -> Option<&CompletionRejection> {
+    let rejection = input.last_completion_rejection?;
+    let contract = input.task_contract?;
+    let resolved = rejection.unmet_acceptance_ids.iter().all(|acceptance_id| {
+        input.evidence_receipts.iter().any(|receipt| {
+            receipt.generation_id == contract.generation_id
+                && receipt.acceptance_id == *acceptance_id
+                && receipt.workspace_state == *input.workspace_state
+                && contract.definition.acceptance.iter().any(|acceptance| {
+                    matches!(
+                        acceptance,
+                        TaskAcceptance::Verifier { id, verifier, .. }
+                            if id == acceptance_id && *verifier == receipt.verifier
+                    )
+                })
+        })
+    });
+    (!resolved).then_some(rejection)
 }
 
 fn validate_policy(policy: ContextPolicy) -> Result<(), ContextProjectionError> {
-    if policy.context_window_tokens == 0 {
-        return Err(ContextProjectionError::InvalidPolicy(
-            "context_window_tokens must be non-zero".to_owned(),
-        ));
-    }
-    if policy.trigger_tokens == 0
+    if policy.context_window_tokens == 0
+        || policy.trigger_tokens == 0
         || policy.hard_input_tokens == 0
         || policy.trigger_tokens > policy.hard_input_tokens
         || policy.hard_input_tokens >= policy.context_window_tokens
@@ -371,61 +631,32 @@ fn validate_policy(policy: ContextPolicy) -> Result<(), ContextProjectionError> 
             "expected 0 < trigger_tokens <= hard_input_tokens < context_window_tokens".to_owned(),
         ));
     }
-    if policy.summary_max_output_tokens == 0 {
-        return Err(ContextProjectionError::InvalidPolicy(
-            "summary_max_output_tokens must be non-zero".to_owned(),
-        ));
-    }
-    if policy
-        .hard_input_tokens
-        .saturating_add(policy.summary_max_output_tokens)
-        > policy.context_window_tokens
-    {
-        return Err(ContextProjectionError::InvalidPolicy(
-            "hard input plus summary output reservation exceeds the context window".to_owned(),
-        ));
-    }
     Ok(())
 }
 
-fn bounded_summary_input(messages: &[ModelMessage]) -> Result<String, ContextProjectionError> {
-    let rendered = serde_json::to_string(messages)
-        .map_err(|error| ContextProjectionError::SummaryInput(error.to_string()))?;
-    let body = if rendered.chars().count() <= FALLBACK_SUMMARY_MAX_CHARS {
-        rendered
-    } else {
-        format!(
-            "{}\n…[中间内容省略，仅用于本次摘要请求]…\n{}",
-            take_chars(&rendered, FALLBACK_SUMMARY_HEAD_CHARS),
-            take_tail_chars(&rendered, FALLBACK_SUMMARY_TAIL_CHARS)
-        )
-    };
-    Ok(format!(
-        "{SUMMARY_INSTRUCTION}\n\n需要压缩的历史 JSON：\n{body}"
-    ))
-}
-
 fn projection_digest(
-    system_prompt: &SystemPrompt,
+    system_prompt: &codewhale_protocol::agent_runtime::SystemPrompt,
     messages: &[ModelMessage],
-    user_message_indices: &[u32],
+    source_entry_indices: &[u64],
     source_entry_count: u64,
+    tools: &[ToolDefinition],
 ) -> Result<String, ContextProjectionError> {
     let bytes = serde_json::to_vec(&(
         system_prompt,
         messages,
-        user_message_indices,
+        source_entry_indices,
         source_entry_count,
+        tools,
     ))
     .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
-    let digest = Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    Ok(format!("sha256:{digest}"))
+    Ok(format_sha256(&bytes))
 }
 
-fn estimate_context_tokens(system_prompt: &SystemPrompt, messages: &[ModelMessage]) -> u64 {
+fn estimate_context_tokens(
+    system_prompt: &codewhale_protocol::agent_runtime::SystemPrompt,
+    messages: &[ModelMessage],
+    tools: &[ToolDefinition],
+) -> u64 {
     let system_tokens = system_prompt
         .blocks
         .iter()
@@ -442,43 +673,49 @@ fn estimate_context_tokens(system_prompt: &SystemPrompt, messages: &[ModelMessag
             } => content
                 .as_deref()
                 .map_or(0, estimate_text_tokens)
-                .saturating_add(if tool_calls.is_empty() {
-                    0
-                } else {
-                    reasoning_content.as_deref().map_or(0, estimate_text_tokens)
-                })
+                .saturating_add(reasoning_content.as_deref().map_or(0, estimate_text_tokens))
                 .saturating_add(
                     tool_calls
                         .iter()
                         .map(|call| {
-                            estimate_text_tokens(&call.name)
+                            estimate_text_tokens(&call.id)
+                                .saturating_add(estimate_text_tokens(&call.name))
                                 .saturating_add(estimate_text_tokens(&call.arguments.raw))
                         })
                         .sum::<usize>(),
                 ),
-            ModelMessage::Tool { name, content, .. } => {
-                estimate_text_tokens(name).saturating_add(estimate_text_tokens(content))
-            }
+            ModelMessage::Tool {
+                call_id,
+                name,
+                content,
+            } => estimate_text_tokens(call_id)
+                .saturating_add(estimate_text_tokens(name))
+                .saturating_add(estimate_text_tokens(content)),
         })
         .sum::<usize>();
-    let lexical_tokens = system_tokens.saturating_add(message_tokens);
+    let tool_tokens = tools
+        .iter()
+        .map(|tool| {
+            estimate_text_tokens(&tool.name)
+                .saturating_add(estimate_text_tokens(&tool.description))
+                .saturating_add(estimate_text_tokens(&tool.input_schema.to_string()))
+        })
+        .sum::<usize>();
+    let lexical_tokens = system_tokens
+        .saturating_add(message_tokens)
+        .saturating_add(tool_tokens);
     u64::try_from(lexical_tokens)
         .unwrap_or(u64::MAX)
         .saturating_add(
-            u64::try_from(messages.len())
+            u64::try_from(messages.len().saturating_add(tools.len()))
                 .unwrap_or(u64::MAX)
                 .saturating_mul(12),
         )
         .saturating_add(48)
 }
 
-/// Conservative tokenizer-free estimate calibrated against the official
-/// DeepSeek usage response for Chinese, repetitive ASCII, and high-entropy
-/// hexadecimal input.
-///
-/// Ordinary words retain useful context capacity. Dense mixed alphanumeric
-/// data, digits, punctuation, and four-byte Unicode use stricter bounds because
-/// they tokenize much less efficiently than prose.
+/// Conservative tokenizer-free estimate calibrated for Chinese prose,
+/// repetitive ASCII, and high-entropy identifiers.
 fn estimate_text_tokens(value: &str) -> usize {
     let bytes = value.as_bytes();
     let mut tokens = 0usize;
@@ -488,7 +725,7 @@ fn estimate_text_tokens(value: &str) -> usize {
             let character = value[cursor..]
                 .chars()
                 .next()
-                .expect("cursor is always on a UTF-8 character boundary");
+                .expect("cursor is on a UTF-8 boundary");
             tokens = tokens.saturating_add(character.len_utf8().div_ceil(3));
             cursor = cursor.saturating_add(character.len_utf8());
             continue;
@@ -549,6 +786,14 @@ fn estimate_text_tokens(value: &str) -> usize {
     tokens
 }
 
+fn format_sha256(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{digest}")
+}
+
 fn take_chars(value: &str, count: usize) -> String {
     value.chars().take(count).collect()
 }
@@ -561,412 +806,363 @@ fn take_tail_chars(value: &str, count: usize) -> String {
 #[cfg(test)]
 mod tests {
     use codewhale_protocol::agent_runtime::{
-        AgentActor, AgentOutcome, ContextPolicy, ModelAccounting, ModelMessage, RunId,
-        TerminalState, ToolArguments,
+        AgentOutcome, ModelAccounting, ModelToolCall, RunId, SystemPrompt, ToolArguments,
+        ToolOutcome, TranscriptEntry,
+    };
+    use codewhale_protocol::task::{
+        AcceptanceId, EvidenceReceiptId, TaskDefinition, TaskGenerationId, VerificationId,
+        VerifierPlan, VerifierSpec, VerifierStep, WorkspaceRevision,
     };
     use serde_json::json;
 
     use super::*;
 
-    fn request(messages: Vec<ModelMessage>) -> ModelRequest {
-        ModelRequest {
-            run_id: RunId::from("run-1"),
-            parent_run_id: None,
-            actor: AgentActor::default(),
-            model: "deepseek-v4-pro".to_owned(),
-            system_prompt: SystemPrompt::from_text("system"),
-            messages,
-            tools: Vec::new(),
-            reasoning_effort: ReasoningEffort::High,
-            max_output_tokens: Some(8_192),
-            streaming: true,
-            request_number: 1,
-            attempt: 0,
+    fn contract() -> TaskContract {
+        TaskContract {
+            generation_id: TaskGenerationId::from("run-1"),
+            definition: TaskDefinition {
+                objective: "修复 sentinel 功能".to_owned(),
+                constraints: vec!["必须保留 SENTINEL_CONSTRAINT".to_owned()],
+                non_goals: vec!["不要修改测试".to_owned()],
+                acceptance: vec![TaskAcceptance::Verifier {
+                    id: AcceptanceId::from("accept-1"),
+                    description: "通过冻结验证".to_owned(),
+                    verifier: verifier(),
+                }],
+            },
         }
     }
 
-    fn transcript(turns: usize, tool_chars: usize) -> CanonicalTranscript {
-        let mut entries = vec![TranscriptEntry::System {
-            prompt: SystemPrompt::from_text("system"),
-        }];
-        for index in 0..turns {
-            entries.push(TranscriptEntry::User {
-                content: format!("用户任务 {index} {}", "甲".repeat(3_000)),
-            });
-            entries.push(TranscriptEntry::Assistant {
-                content: None,
-                reasoning_content: Some("推理".repeat(100)),
-                tool_calls: vec![codewhale_protocol::agent_runtime::ModelToolCall {
-                    id: format!("call-{index}"),
-                    name: "read_file".to_owned(),
-                    arguments: ToolArguments::from_value(
-                        json!({"path": format!("src/{index}.rs")}),
-                    ),
+    fn verifier() -> VerifierSpec {
+        VerifierSpec {
+            verifier_id: "run_verifiers".to_owned(),
+            parameters: json!({"profile": "exact"}),
+            plan: VerifierPlan {
+                steps: vec![VerifierStep {
+                    id: "check".to_owned(),
+                    program: "cargo".to_owned(),
+                    args: vec!["test".to_owned()],
+                    cwd: String::new(),
+                    env: Default::default(),
+                    timeout_ms: 1_000,
                 }],
-            });
-            entries.push(TranscriptEntry::Tool {
-                call_id: format!("call-{index}"),
-                name: "read_file".to_owned(),
-                outcome: Box::new(codewhale_protocol::agent_runtime::ToolOutcome::success(
-                    "结果".repeat(tool_chars / 2),
-                )),
-            });
+            },
         }
-        CanonicalTranscript { entries }
+    }
+
+    fn workspace(generation: u64, revision: &str) -> WorkspaceState {
+        WorkspaceState {
+            generation,
+            revision: WorkspaceRevision::Known {
+                sha256: revision.to_owned(),
+            },
+        }
     }
 
     fn policy() -> ContextPolicy {
         ContextPolicy {
             auto_compact: true,
-            trigger_tokens: 1,
-            hard_input_tokens: 500_000,
-            context_window_tokens: 1_000_000,
-            summary_max_output_tokens: 2_048,
-            min_messages: 6,
-            keep_recent_user_turns: 4,
-            max_retries: 3,
+            context_window_tokens: 40_000,
+            trigger_tokens: 6_000,
+            hard_input_tokens: 30_000,
         }
     }
 
+    fn input<'a>(
+        transcript: &'a CanonicalTranscript,
+        projection: Option<&'a ContextProjection>,
+        contract: &'a TaskContract,
+        workspace: &'a WorkspaceState,
+        receipts: &'a [EvidenceReceipt],
+        rejection: Option<&'a CompletionRejection>,
+    ) -> ContextInput<'a> {
+        ContextInput {
+            transcript,
+            projection,
+            task_contract: Some(contract),
+            workspace_state: workspace,
+            evidence_receipts: receipts,
+            last_completion_rejection: rejection,
+            last_verifier_failure: None,
+            last_verifier_failure_workspace: None,
+            pending_interaction: None,
+            pending_control: None,
+            tools: &[],
+        }
+    }
+
+    fn long_transcript(contract: &TaskContract) -> CanonicalTranscript {
+        let mut entries = vec![
+            TranscriptEntry::System {
+                prompt: SystemPrompt::from_text("stable system"),
+            },
+            TranscriptEntry::User {
+                content: contract.definition.model_message(),
+            },
+        ];
+        for index in 0..8 {
+            entries.push(TranscriptEntry::Assistant {
+                content: None,
+                reasoning_content: Some(format!("reasoning-{index}")),
+                tool_calls: vec![ModelToolCall {
+                    id: format!("call-{index}"),
+                    name: "read_file".to_owned(),
+                    arguments: ToolArguments::from_value(json!({"path": format!("{index}.rs")})),
+                }],
+            });
+            entries.push(TranscriptEntry::Tool {
+                call_id: format!("call-{index}"),
+                name: "read_file".to_owned(),
+                outcome: Box::new(ToolOutcome::success("甲".repeat(4_000))),
+            });
+        }
+        entries.push(TranscriptEntry::User {
+            content: "第五条之后仍有效的约束".to_owned(),
+        });
+        CanonicalTranscript { entries }
+    }
+
     #[test]
-    fn projection_keeps_canonical_transcript_and_tool_pairs_intact() {
-        let transcript = transcript(8, 40_000);
-        let effective = effective_context(&transcript, None).expect("effective context");
-        let mut template = request(effective.messages.clone());
-        template.system_prompt = effective.system_prompt;
-        let preparation =
-            prepare_compaction(&transcript, None, policy(), &template, false).expect("plan");
-        let ContextCompactionPreparation::Model { plan, .. } = preparation else {
-            panic!("expected model compaction")
+    fn task_contract_and_current_host_facts_survive_repeated_compaction_once() {
+        let contract = contract();
+        let workspace = workspace(3, "sha256:current");
+        let transcript = long_transcript(&contract);
+        let canonical = transcript.clone();
+
+        let ContextCompactionPreparation::Local {
+            projection: first, ..
+        } = prepare_compaction(
+            input(&transcript, None, &contract, &workspace, &[], None),
+            policy(),
+            true,
+        )
+        .expect("first plan")
+        else {
+            panic!("expected local compaction");
         };
-        assert_eq!(transcript.entries.len(), 25);
-        assert!(plan.retained_messages.len() >= 12);
-        for message in &plan.retained_messages {
-            if let ModelMessage::Assistant { tool_calls, .. } = message {
-                for call in tool_calls {
-                    assert!(plan.retained_messages.iter().any(|candidate| {
-                        matches!(
-                            candidate,
-                            ModelMessage::Tool { call_id, .. } if call_id == &call.id
-                        )
-                    }));
-                }
+        let projected = effective_context(input(
+            &transcript,
+            Some(&first),
+            &contract,
+            &workspace,
+            &[],
+            None,
+        ))
+        .expect("first projection");
+        let rendered = serde_json::to_string(&projected.messages).expect("messages");
+        assert_eq!(rendered.matches("SENTINEL_CONSTRAINT").count(), 1);
+        assert_eq!(rendered.matches("第五条之后仍有效的约束").count(), 1);
+        assert_eq!(transcript, canonical);
+
+        let mut extended = transcript.clone();
+        extended.entries.push(TranscriptEntry::User {
+            content: "最新约束".to_owned(),
+        });
+        let second = prepare_compaction(
+            input(&extended, Some(&first), &contract, &workspace, &[], None),
+            policy(),
+            true,
+        )
+        .expect("second plan");
+        let second_projection = match &second {
+            ContextCompactionPreparation::Local { projection, .. } => projection,
+            ContextCompactionPreparation::NotNeeded { .. } => &first,
+            ContextCompactionPreparation::LimitExceeded { .. } => {
+                panic!("repeated compaction must remain within the hard limit")
+            }
+        };
+        let projected = effective_context(input(
+            &extended,
+            Some(second_projection),
+            &contract,
+            &workspace,
+            &[],
+            None,
+        ))
+        .expect("second projection");
+        let rendered = serde_json::to_string(&projected.messages).expect("messages");
+        assert_eq!(rendered.matches("SENTINEL_CONSTRAINT").count(), 1);
+        assert_eq!(rendered.matches("最新约束").count(), 1);
+    }
+
+    #[test]
+    fn receipt_requires_exact_workspace_generation_not_only_revision_hash() {
+        let contract = contract();
+        let transcript = long_transcript(&contract);
+        let old_workspace = workspace(4, "sha256:same");
+        let receipt = EvidenceReceipt {
+            id: EvidenceReceiptId::from("receipt-1"),
+            generation_id: contract.generation_id.clone(),
+            acceptance_id: AcceptanceId::from("accept-1"),
+            verification_id: VerificationId::from("verification-1"),
+            verifier: verifier(),
+            workspace_state: old_workspace.clone(),
+            artifact_ids: vec!["artifact-1".to_owned()],
+        };
+        let receipts = vec![receipt];
+        let current_workspace = workspace(5, "sha256:same");
+        let context = effective_context(input(
+            &transcript,
+            None,
+            &contract,
+            &current_workspace,
+            &receipts,
+            None,
+        ))
+        .expect("context");
+        let rendered = serde_json::to_string(&context.messages).expect("messages");
+        assert!(!rendered.contains("receipt-1"));
+        assert!(rendered.contains("current_evidence_receipt"));
+        assert!(rendered.contains("`none`"));
+    }
+
+    #[test]
+    fn joined_child_handoff_and_reasoning_tool_group_remain_atomic() {
+        let contract = contract();
+        let workspace = workspace(1, "sha256:workspace");
+        let mut transcript = long_transcript(&contract);
+        transcript.entries.push(TranscriptEntry::ChildOutcome {
+            call_id: "agent-call".to_owned(),
+            child_run_id: RunId::from("child-1"),
+            outcome: Box::new(AgentOutcome {
+                run_id: RunId::from("child-1"),
+                parent_run_id: Some(RunId::from("run-1")),
+                terminal: codewhale_protocol::agent_runtime::TerminalState::Blocked {
+                    reason: "done".to_owned(),
+                },
+                accounting: ModelAccounting::default(),
+                runtime_model_requests: 1,
+                runtime_retries: 0,
+                tool_calls: 1,
+            }),
+            handoff_content: "CHILD_HANDOFF_SENTINEL".to_owned(),
+        });
+
+        let ContextCompactionPreparation::Local { projection, .. } = prepare_compaction(
+            input(&transcript, None, &contract, &workspace, &[], None),
+            policy(),
+            true,
+        )
+        .expect("plan") else {
+            panic!("expected local compaction");
+        };
+        let context = effective_context(input(
+            &transcript,
+            Some(&projection),
+            &contract,
+            &workspace,
+            &[],
+            None,
+        ))
+        .expect("context");
+        assert!(context.messages.iter().any(
+            |message| matches!(message, ModelMessage::User { content } if content == "CHILD_HANDOFF_SENTINEL")
+        ));
+        for (index, message) in context.messages.iter().enumerate() {
+            let ModelMessage::Assistant { tool_calls, .. } = message else {
+                continue;
+            };
+            for call in tool_calls {
+                assert!(context.messages[index + 1..].iter().any(|candidate| {
+                    matches!(candidate, ModelMessage::Tool { call_id, .. } if call_id == &call.id)
+                }));
             }
         }
     }
 
     #[test]
-    fn committed_projection_appends_only_new_canonical_suffix() {
-        let mut transcript = transcript(6, 100);
-        let effective = effective_context(&transcript, None).expect("effective");
-        let template = request(effective.messages.clone());
-        let ContextCompactionPreparation::Model { plan, .. } = prepare_compaction(
-            &transcript,
-            None,
-            ContextPolicy {
-                keep_recent_user_turns: 2,
-                ..policy()
-            },
-            &template,
-            true,
-        )
-        .expect("plan") else {
-            panic!("expected model plan")
-        };
-        let projection = projection_from_summary(&plan, "已完成前半部分");
-        transcript.entries.push(TranscriptEntry::User {
-            content: "新的约束".to_owned(),
-        });
-        let projected =
-            effective_context(&transcript, Some(&projection)).expect("projected context");
-        assert!(matches!(
-            projected.messages.last(),
-            Some(ModelMessage::User { content }) if content == "新的约束"
-        ));
-        assert_eq!(
-            projection.source_entry_count,
-            u64::try_from(transcript.entries.len() - 1).unwrap()
-        );
-    }
-
-    #[test]
-    fn child_handoffs_do_not_consume_recent_user_turn_budget() {
-        let mut entries = vec![TranscriptEntry::System {
-            prompt: SystemPrompt::from_text("system"),
-        }];
-        for index in 0..6 {
-            entries.push(TranscriptEntry::User {
-                content: format!("真实用户约束 {index}"),
-            });
-            entries.push(TranscriptEntry::ChildOutcome {
-                call_id: format!("child-{index}"),
-                child_run_id: RunId::from(format!("child-run-{index}")),
-                outcome: Box::new(AgentOutcome {
-                    run_id: RunId::from(format!("child-run-{index}")),
-                    parent_run_id: Some(RunId::from("run-1")),
-                    terminal: TerminalState::Blocked {
-                        reason: "夹具子 Agent 已结束".to_owned(),
-                    },
-                    accounting: ModelAccounting::default(),
-                    runtime_model_requests: 0,
-                    runtime_retries: 0,
-                    tool_calls: 0,
-                }),
-                handoff_content: format!("子 Agent handoff {index}"),
-            });
-        }
-        let transcript = CanonicalTranscript { entries };
-        let effective = effective_context(&transcript, None).expect("effective");
-        let ContextCompactionPreparation::Model { plan, .. } = prepare_compaction(
-            &transcript,
-            None,
-            ContextPolicy {
-                keep_recent_user_turns: 2,
-                min_messages: 2,
-                ..policy()
-            },
-            &request(effective.messages),
-            true,
-        )
-        .expect("plan") else {
-            panic!("expected model compaction")
-        };
-        assert_eq!(plan.retained_user_message_indices.len(), 2);
-        assert!(plan.retained_messages.iter().any(
-            |message| matches!(message, ModelMessage::User { content } if content == "真实用户约束 4")
-        ));
-        assert!(plan.retained_messages.iter().any(
-            |message| matches!(message, ModelMessage::User { content } if content == "真实用户约束 5")
-        ));
-    }
-
-    #[test]
-    fn repeated_compaction_replaces_instead_of_stacking_summary() {
-        let mut transcript = transcript(8, 100);
-        let first_effective = effective_context(&transcript, None).expect("effective");
-        let ContextCompactionPreparation::Model {
-            plan: first_plan, ..
-        } = prepare_compaction(
-            &transcript,
-            None,
-            ContextPolicy {
-                keep_recent_user_turns: 2,
-                ..policy()
-            },
-            &request(first_effective.messages),
-            true,
-        )
-        .expect("first plan")
-        else {
-            panic!("expected first model compaction")
-        };
-        let first = projection_from_summary(&first_plan, "旧摘要标记");
-        for index in 0..4 {
-            transcript.entries.push(TranscriptEntry::User {
-                content: format!("后续约束 {index}"),
-            });
+    fn every_current_task_mutation_group_survives_compaction() {
+        let contract = contract();
+        let workspace = workspace(3, "sha256:after-two-writes");
+        let mut transcript = long_transcript(&contract);
+        for (call_id, path, sentinel, revision) in [
+            (
+                "write-first",
+                "src/first.rs",
+                "FIRST_MUTATION_SENTINEL",
+                "sha256:first",
+            ),
+            (
+                "write-second",
+                "src/second.rs",
+                "SECOND_MUTATION_SENTINEL",
+                "sha256:second",
+            ),
+        ] {
             transcript.entries.push(TranscriptEntry::Assistant {
-                content: Some(format!("后续答复 {index}")),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
+                content: None,
+                reasoning_content: Some(format!("修改 {path}")),
+                tool_calls: vec![ModelToolCall {
+                    id: call_id.to_owned(),
+                    name: "apply_patch".to_owned(),
+                    arguments: ToolArguments::from_value(json!({"path": path})),
+                }],
+            });
+            let mut outcome = ToolOutcome::success(sentinel);
+            outcome.side_effect = ToolSideEffectStatus::Applied;
+            outcome.workspace_revision = Some(revision.to_owned());
+            transcript.entries.push(TranscriptEntry::Tool {
+                call_id: call_id.to_owned(),
+                name: "apply_patch".to_owned(),
+                outcome: Box::new(outcome),
             });
         }
-        let second_effective =
-            effective_context(&transcript, Some(&first)).expect("second effective");
-        let ContextCompactionPreparation::Model {
-            plan: second_plan,
-            request: second_request,
-        } = prepare_compaction(
-            &transcript,
-            Some(&first),
-            ContextPolicy {
-                keep_recent_user_turns: 2,
-                ..policy()
-            },
-            &request(second_effective.messages),
+
+        let ContextCompactionPreparation::Local { projection, .. } = prepare_compaction(
+            input(&transcript, None, &contract, &workspace, &[], None),
+            policy(),
             true,
         )
-        .expect("second plan")
-        else {
-            panic!("expected second model compaction")
+        .expect("plan") else {
+            panic!("expected local compaction");
         };
-        assert!(
-            second_request
-                .system_prompt
-                .blocks
-                .iter()
-                .any(|block| block.text.contains("旧摘要标记"))
-        );
-        let second = projection_from_summary(&second_plan, "新摘要标记");
-        let projected = effective_context(&transcript, Some(&second)).expect("second projection");
-        let prompt = projected
-            .system_prompt
-            .blocks
-            .iter()
-            .map(|block| block.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(prompt.contains("新摘要标记"));
-        assert!(!prompt.contains("旧摘要标记"));
-    }
-
-    #[test]
-    fn oversized_primary_uses_bounded_summary_request_before_transport() {
-        let mut entries = vec![TranscriptEntry::System {
-            prompt: SystemPrompt::from_text("system"),
-        }];
-        for index in 0..10 {
-            entries.push(TranscriptEntry::User {
-                content: format!("用户约束 {index} {}", "甲".repeat(60_000)),
-            });
-            entries.push(TranscriptEntry::Assistant {
-                content: Some("已记录".to_owned()),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-            });
-        }
-        let transcript = CanonicalTranscript { entries };
-        let effective = effective_context(&transcript, None).expect("effective");
-        let ContextCompactionPreparation::Model { request, .. } = prepare_compaction(
+        let context = effective_context(input(
             &transcript,
+            Some(&projection),
+            &contract,
+            &workspace,
+            &[],
             None,
-            ContextPolicy {
-                context_window_tokens: 200_000,
-                trigger_tokens: 50_000,
-                hard_input_tokens: 100_000,
-                summary_max_output_tokens: 2_048,
-                keep_recent_user_turns: 1,
-                ..policy()
-            },
-            &request(effective.messages),
-            true,
-        )
-        .expect("bounded plan") else {
-            panic!("expected model compaction")
-        };
-        assert_eq!(request.messages.len(), 1);
-        assert!(matches!(
-            &request.messages[0],
-            ModelMessage::User { content }
-                if content.contains("需要压缩的历史 JSON")
-                    && content.chars().count() < 130_000
-        ));
+        ))
+        .expect("context");
+        let rendered = serde_json::to_string(&context.messages).expect("messages");
+        for sentinel in ["FIRST_MUTATION_SENTINEL", "SECOND_MUTATION_SENTINEL"] {
+            assert_eq!(rendered.matches(sentinel).count(), 1);
+        }
+        for call_id in ["write-first", "write-second"] {
+            assert_eq!(rendered.matches(call_id).count(), 2);
+        }
     }
 
     #[test]
-    fn token_estimate_covers_live_calibrated_chinese_and_dense_ascii() {
-        let chinese = vec![ModelMessage::User {
-            content: "甲".repeat(3_000),
-        }];
-        let ascii = vec![ModelMessage::User {
-            content: "a".repeat(3_000),
-        }];
-        let repeated_digits = vec![ModelMessage::User {
-            content: "1".repeat(3_000),
-        }];
-        let repeated_punctuation = vec![ModelMessage::User {
-            content: "=".repeat(3_000),
-        }];
-        let mut high_entropy_hex =
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".repeat(47);
-        high_entropy_hex.truncate(3_000);
-        let high_entropy_letters = high_entropy_hex
-            .bytes()
-            .map(|byte| match byte {
-                b'0'..=b'9' => char::from(b'a' + (byte - b'0')),
-                b'a'..=b'f' => char::from(b'k' + (byte - b'a')),
-                _ => unreachable!("fixture contains only lowercase hexadecimal"),
-            })
-            .collect::<String>();
-        let high_entropy_four_letters = high_entropy_hex
-            .bytes()
-            .map(|byte| {
-                let value = match byte {
-                    b'0'..=b'9' => byte - b'0',
-                    b'a'..=b'f' => 10 + (byte - b'a'),
-                    _ => unreachable!("fixture contains only lowercase hexadecimal"),
-                };
-                char::from(b'a' + (value % 4))
-            })
-            .collect::<String>();
-        let high_entropy = vec![ModelMessage::User {
-            content: high_entropy_hex,
-        }];
-        let high_entropy_alpha = vec![ModelMessage::User {
-            content: high_entropy_letters,
-        }];
-        let high_entropy_four_alpha = vec![ModelMessage::User {
-            content: high_entropy_four_letters,
-        }];
-        let prompt = SystemPrompt::default();
-        assert!(
-            estimate_context_tokens(&prompt, &chinese) >= 3_004,
-            "Chinese estimate must cover the observed official usage"
-        );
-        assert!(
-            estimate_context_tokens(&prompt, &ascii) >= 379,
-            "repetitive ASCII estimate must cover the observed official usage"
-        );
-        assert!(
-            estimate_context_tokens(&prompt, &ascii) < 1_000,
-            "repetitive ASCII must retain substantially more capacity than high-entropy data"
-        );
-        assert!(
-            estimate_context_tokens(&prompt, &repeated_digits) >= 1_500,
-            "numeric runs must not use the alphabetic repeated-character discount"
-        );
-        assert!(
-            estimate_context_tokens(&prompt, &repeated_punctuation) >= 1_500,
-            "punctuation runs require a stricter bound than repetitive letters"
-        );
-        assert!(
-            estimate_context_tokens(&prompt, &high_entropy) >= 1_708,
-            "high-entropy hexadecimal estimate must cover the observed official usage"
-        );
-        assert!(
-            estimate_context_tokens(&prompt, &high_entropy_alpha) >= 1_534,
-            "high-entropy alphabetic estimate must cover the observed official usage"
-        );
-        assert!(
-            estimate_context_tokens(&prompt, &high_entropy_four_alpha) >= 1_417,
-            "dense four-letter estimate must cover the observed official usage"
-        );
-    }
-
-    #[test]
-    fn projection_digest_covers_user_origin_metadata() {
+    fn mandatory_facts_over_hard_limit_fail_closed_without_summary() {
+        let mut contract = contract();
+        contract.definition.constraints = vec!["约束".repeat(20_000)];
+        let workspace = workspace(1, "sha256:workspace");
         let transcript = CanonicalTranscript {
             entries: vec![
                 TranscriptEntry::System {
                     prompt: SystemPrompt::from_text("system"),
                 },
                 TranscriptEntry::User {
-                    content: "用户一".to_owned(),
-                },
-                TranscriptEntry::User {
-                    content: "用户二".to_owned(),
+                    content: contract.definition.model_message(),
                 },
             ],
         };
-        let base = effective_context(&transcript, None).expect("base");
-        let first = ContextProjection {
-            source_entry_count: 3,
-            source_projection_sha256: base.sha256.clone(),
-            summary_prompt: None,
-            messages: base.messages.clone(),
-            user_message_indices: vec![0],
-        };
-        let second = ContextProjection {
-            user_message_indices: vec![1],
-            ..first.clone()
-        };
-        assert_ne!(
-            effective_context(&transcript, Some(&first))
-                .expect("first")
-                .sha256,
-            effective_context(&transcript, Some(&second))
-                .expect("second")
-                .sha256
-        );
+        let outcome = prepare_compaction(
+            input(&transcript, None, &contract, &workspace, &[], None),
+            ContextPolicy {
+                auto_compact: true,
+                context_window_tokens: 2_000,
+                trigger_tokens: 500,
+                hard_input_tokens: 1_000,
+            },
+            true,
+        )
+        .expect("plan");
+        assert!(matches!(
+            outcome,
+            ContextCompactionPreparation::LimitExceeded { .. }
+        ));
     }
 }

@@ -1,7 +1,7 @@
 //! Harness posture + profile config types (#3311).
 //!
 //! A *harness posture* is the agent-shaping policy (sub-agent cap, tool
-//! surface, compaction/cache strategy, safety stance); a *harness profile*
+//! surface, and safety stance); a *harness profile*
 //! binds a posture to a provider route + model pattern. Extracted verbatim
 //! from lib.rs to separate this agent-posture domain from the rest of the
 //! config schema; re-exported at the crate root so existing paths are
@@ -34,16 +34,6 @@ pub enum HarnessPostureKind {
     Lean,
     /// User-defined posture assembled from explicit knobs below.
     Custom,
-}
-
-/// How this posture should approach compaction and prompt-cache stability.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
-#[serde(rename_all = "kebab-case")]
-pub enum HarnessCompactionStrategy {
-    #[default]
-    Default,
-    PrefixCache,
-    Aggressive,
 }
 
 /// Which tool catalog shape this posture prefers.
@@ -79,9 +69,6 @@ pub struct HarnessPosture {
     /// Prefer search-based/on-demand context over always-on documentation.
     #[serde(default)]
     pub prefer_codebase_search: bool,
-    /// Compaction and prompt-cache strategy.
-    #[serde(default)]
-    pub compaction_strategy: HarnessCompactionStrategy,
     /// Preferred tool catalog shape.
     #[serde(default)]
     pub tool_surface: HarnessToolSurface,
@@ -96,7 +83,6 @@ impl Default for HarnessPosture {
             kind: HarnessPostureKind::Standard,
             max_subagents: 0,
             prefer_codebase_search: false,
-            compaction_strategy: HarnessCompactionStrategy::default(),
             tool_surface: HarnessToolSurface::default(),
             safety_posture: HarnessSafetyPosture::default(),
         }
@@ -111,7 +97,6 @@ impl HarnessPosture {
             kind: HarnessPostureKind::CacheHeavy,
             max_subagents: 10,
             prefer_codebase_search: false,
-            compaction_strategy: HarnessCompactionStrategy::PrefixCache,
             tool_surface: HarnessToolSurface::Full,
             safety_posture: HarnessSafetyPosture::Standard,
         }
@@ -124,7 +109,6 @@ impl HarnessPosture {
             kind: HarnessPostureKind::Lean,
             max_subagents: 20,
             prefer_codebase_search: true,
-            compaction_strategy: HarnessCompactionStrategy::Aggressive,
             tool_surface: HarnessToolSurface::Full,
             safety_posture: HarnessSafetyPosture::Standard,
         }

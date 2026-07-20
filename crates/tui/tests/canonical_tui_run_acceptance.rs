@@ -16,7 +16,8 @@ use codewhale_app::{
     ProductionPromptConfig, ProductionToolConfig, ShellPolicy, TransportRetryPolicy,
 };
 use codewhale_protocol::agent_runtime::{
-    ReasoningEffort, RunId, RunLimits, RuntimeEventKind, StoredRuntimeEvent, ToolPolicy,
+    ReasoningEffort, RunId, RunLimits, RunPurpose, RuntimeEventKind, StoredRuntimeEvent,
+    TerminalState, ToolPolicy,
 };
 use codewhale_protocol::run_api::{RunProductControls, StartRunCommand};
 use codewhale_protocol::task::TaskDefinition;
@@ -57,15 +58,15 @@ impl Respond for ChineseCompletionFixture {
             .body_json::<Value>()
             .expect("DeepSeek request must be JSON");
         let content = if json_strings_contain(&body, CONTINUE_INPUT) {
-            CONTINUE_OUTPUT
+            CONTINUE_OUTPUT.to_owned()
         } else {
             assert!(
                 json_strings_contain(&body, FIRST_INPUT),
                 "first request lost the Chinese user input: {body:#}"
             );
-            FIRST_OUTPUT
+            format!("{FIRST_OUTPUT}\n{}", "可裁剪的旧历史。".repeat(12_000))
         };
-        sse_response(completion_sse(content))
+        sse_response(completion_sse(&content))
     }
 }
 
@@ -141,9 +142,51 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
     assert_canonical_projection(&continued_events, &continued_effects, CONTINUE_INPUT);
     assert_stored_event_identity(&continued_events, &continued_view.run_id);
 
+    let compacted_view = rebuilt_client
+        .compact(
+            continued_view.run_id.clone(),
+            Some(canonical_workspace.clone()),
+        )
+        .await
+        .expect("terminal continuation compacts through the canonical TUI client");
+    assert_eq!(compacted_view.purpose, RunPurpose::ContextCompaction);
+    assert_eq!(
+        compacted_view.continued_from_run_id,
+        Some(continued_view.run_id.clone())
+    );
+    let (compaction_events, compaction_effects) = collect_terminal(
+        &mut rebuilt_rx,
+        &mut rebuilt_projection,
+        &compacted_view.run_id,
+    )
+    .await;
+    assert_stored_event_identity(&compaction_events, &compacted_view.run_id);
+    assert!(compaction_events.iter().any(|event| matches!(
+        event.event,
+        RuntimeEventKind::ContextCompactionCommitted { .. }
+    )));
+    assert_eq!(
+        compaction_effects
+            .iter()
+            .filter_map(|effect| match &effect.kind {
+                ProjectionEffectKind::Canonical(event) => Some((**event).clone()),
+                ProjectionEffectKind::UserTranscript { .. } => None,
+            })
+            .collect::<Vec<_>>(),
+        compaction_events,
+        "TUI projector changed canonical compaction events"
+    );
+    assert!(
+        compaction_effects
+            .iter()
+            .all(|effect| matches!(effect.kind, ProjectionEffectKind::Canonical(_))),
+        "an input-free compaction root must not manufacture user transcript"
+    );
+
     let store = StateStore::open(Some(state_path)).expect("reopen canonical RunStore");
     let source_after = load_replay(&store, &first_view.run_id).await;
     let continuation = load_replay(&store, &continued_view.run_id).await;
+    let compaction = load_replay(&store, &compacted_view.run_id).await;
     assert_eq!(
         source_after, source_before,
         "Continue must not rewrite its source run"
@@ -168,6 +211,24 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
         }
         event => panic!("continuation must start with RunCreated, got {event:?}"),
     }
+    assert_eq!(
+        compaction.snapshot.request.continued_from_run_id,
+        Some(continued_view.run_id.clone())
+    );
+    assert_eq!(
+        compaction.snapshot.transcript, continuation.snapshot.transcript,
+        "compaction must not rewrite or duplicate canonical transcript entries"
+    );
+    assert!(compaction.snapshot.context_projection.is_some());
+    assert!(compaction.snapshot.last_context_compaction.is_some());
+    assert_eq!(
+        compaction
+            .snapshot
+            .terminal
+            .as_ref()
+            .map(|outcome| &outcome.terminal),
+        Some(&TerminalState::ContextCompactionCompleted)
+    );
 
     let requests = model
         .received_requests()
@@ -177,7 +238,11 @@ async fn canonical_tui_rebuild_replays_then_continues_without_legacy_state() {
         .filter(|request| request.url.path() == "/v1/chat/completions")
         .map(|request| request.body_json::<Value>().expect("DeepSeek request body"))
         .collect::<Vec<_>>();
-    assert_eq!(requests.len(), 2, "each root should make one model request");
+    assert_eq!(
+        requests.len(),
+        2,
+        "deterministic compaction must not make a third model request"
+    );
     assert!(json_strings_contain(&requests[0], FIRST_INPUT));
     assert!(!json_strings_contain(&requests[0], CONTINUE_INPUT));
     assert!(json_strings_contain(&requests[1], FIRST_INPUT));

@@ -1639,9 +1639,9 @@ mod tests {
     async fn http_continuation_and_root_list_use_the_canonical_application_contract() {
         let temp = tempfile::tempdir().expect("temporary continuation workspace");
         let fixture = DeepSeekFixture::start().await;
-        // Eight user turns leave a real prefix beyond the four retained turns,
-        // so the manual compact command exercises the model-backed path.
-        fixture.release.add_permits(9);
+        // Eight user turns leave enough optional history for deterministic
+        // local compaction. Compact must not issue a ninth model request.
+        fixture.release.add_permits(8);
         let application = production_app(&temp.path().join("state.db"), &fixture, true);
         let app = router(application, &test_options(None)).expect("canonical router");
         let start = envelope(RunCommand::Start(production_start(
@@ -1729,8 +1729,8 @@ mod tests {
             compacted.continued_from_run_id,
             Some(continued.run_id.clone())
         );
-        fixture.wait_requests(9).await;
         let compacted = wait_http_terminal(&app, &compacted.run_id, None).await;
+        assert_eq!(fixture.requests.load(Ordering::Acquire), 8);
         assert!(matches!(
             compacted.terminal,
             Some(TerminalState::ContextCompactionCompleted)

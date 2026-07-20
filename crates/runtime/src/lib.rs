@@ -21,11 +21,10 @@ pub use agent::{
 };
 pub use store::{
     AcquiredRun, CommandReceipt, CommittedContextCompaction, CreatedRun, CreationIntent,
-    CreationReservation, DurableActionState, DurableCommand, InMemoryRunStore,
-    PendingContextCompaction, PendingControl, PendingHostVerification, PendingModelAction,
-    PendingSteer, PendingToolAction, PendingUserInteraction, ReservedCreation, RootRunRecord,
-    RunLease, RunReplay, RunSnapshot, StoppedContextCompactionFailure, StoppedModelFailure,
-    apply_event, reduce_events, validate_continuation_request,
+    CreationReservation, DurableActionState, DurableCommand, InMemoryRunStore, PendingControl,
+    PendingHostVerification, PendingModelAction, PendingSteer, PendingToolAction,
+    PendingUserInteraction, ReservedCreation, RootRunRecord, RunLease, RunReplay, RunSnapshot,
+    StoppedModelFailure, apply_event, reduce_events, validate_continuation_request,
 };
 
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
@@ -125,6 +124,8 @@ pub enum ContinuationError {
     TranscriptMismatch,
     #[error("continuation context projection is not the source projection")]
     ContextProjectionMismatch,
+    #[error("continuation inherited facts do not match the source run")]
+    InheritedFactsMismatch,
     #[error("continuation lineage is missing, cyclic, or internally inconsistent")]
     LineageCorrupt,
 }

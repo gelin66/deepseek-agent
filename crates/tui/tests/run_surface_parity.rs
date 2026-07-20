@@ -182,11 +182,24 @@ async fn exec_http_and_stdio_preserve_one_canonical_run() {
         6,
         "each surface must make exactly two requests"
     );
-    assert_eq!(requests[0], requests[2], "exec/HTTP first request drifted");
-    assert_eq!(requests[0], requests[4], "exec/stdio first request drifted");
-    assert_eq!(requests[1], requests[3], "exec/HTTP replay request drifted");
     assert_eq!(
-        requests[1], requests[5],
+        normalize_value(&requests[0]),
+        normalize_value(&requests[2]),
+        "exec/HTTP first request drifted"
+    );
+    assert_eq!(
+        normalize_value(&requests[0]),
+        normalize_value(&requests[4]),
+        "exec/stdio first request drifted"
+    );
+    assert_eq!(
+        normalize_value(&requests[1]),
+        normalize_value(&requests[3]),
+        "exec/HTTP replay request drifted"
+    );
+    assert_eq!(
+        normalize_value(&requests[1]),
+        normalize_value(&requests[5]),
         "exec/stdio replay request drifted"
     );
 }
@@ -639,11 +652,6 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
         .iter()
         .map(|event| match &event.event {
             RuntimeEventKind::RunCreated { .. } => "run_created",
-            RuntimeEventKind::ContextCompactionPrepared { .. } => "context_compaction_prepared",
-            RuntimeEventKind::ContextCompactionInFlight { .. } => "context_compaction_in_flight",
-            RuntimeEventKind::ContextCompactionAttemptFailed { .. } => {
-                "context_compaction_attempt_failed"
-            }
             RuntimeEventKind::ContextCompactionCommitted { .. } => "context_compaction_committed",
             RuntimeEventKind::ModelRequestPrepared { .. } => "model_request_prepared",
             RuntimeEventKind::ModelRequestInFlight { .. } => "model_request_in_flight",
@@ -678,12 +686,14 @@ fn assert_fixture_event_sequence(events: &[StoredRuntimeEvent]) {
         kinds,
         [
             "run_created",
+            "workspace_observed",
             "model_request_prepared",
             "model_request_in_flight",
             "model_response_committed",
             "tool_prepared",
             "tool_execution_started",
             "tool_outcome_committed",
+            "workspace_observed",
             "model_request_prepared",
             "model_request_in_flight",
             "content_delta",
@@ -725,7 +735,25 @@ fn normalize_volatile_fields(value: &mut Value) {
     match value {
         Value::Array(values) => values.iter_mut().for_each(normalize_volatile_fields),
         Value::Object(values) => normalize_object(values),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        Value::String(text) => {
+            if text
+                .lines()
+                .any(|line| line.starts_with("- task_generation: `"))
+            {
+                *text = text
+                    .lines()
+                    .map(|line| {
+                        if line.starts_with("- task_generation: `") {
+                            "- task_generation: `<generation-id>`"
+                        } else {
+                            line
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }
 

@@ -111,24 +111,6 @@ fn present_canonical_event(
             }
             None
         }
-        RuntimeEventKind::ContextCompactionPrepared { .. } => {
-            app.is_compacting = true;
-            app.status_message = Some("正在准备压缩上下文…".to_owned());
-            None
-        }
-        RuntimeEventKind::ContextCompactionInFlight { .. } => {
-            app.is_compacting = true;
-            app.status_message = Some("正在压缩上下文…".to_owned());
-            None
-        }
-        RuntimeEventKind::ContextCompactionAttemptFailed { failure, retry, .. } => {
-            app.status_message = Some(format!(
-                "上下文压缩失败：{}；{}",
-                model_failure_label(&failure),
-                model_retry_label(&retry)
-            ));
-            None
-        }
         RuntimeEventKind::ContextCompactionCommitted {
             before_tokens,
             after_tokens,

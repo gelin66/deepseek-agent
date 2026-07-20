@@ -727,7 +727,14 @@ fn strict_enum_values_match(
 
 #[cfg(test)]
 mod tests {
-    use codewhale_runtime::{AgentActor, ModelToolCall, RunId, ToolArguments, ToolDefinition};
+    use codewhale_context::compaction::{
+        ContextCompactionPreparation, ContextInput, effective_context, prepare_compaction,
+    };
+    use codewhale_runtime::{
+        AgentActor, CanonicalTranscript, ContextPolicy, ModelToolCall, RunId, TaskContract,
+        TaskDefinition, TaskGenerationId, ToolArguments, ToolDefinition, ToolOutcome,
+        TranscriptEntry, WorkspaceRevision, WorkspaceState,
+    };
 
     use super::*;
 
@@ -810,6 +817,159 @@ mod tests {
             plan.body["messages"][1]["tool_calls"][0]["function"]["arguments"],
             "{ \"z\" : 1, \"path\" : \"src/lib.rs\", \"a\" : 2 }"
         );
+    }
+
+    #[test]
+    fn compacted_context_reaches_beta_chat_without_rewriting_reasoning_or_tools() {
+        let task_contract = TaskContract {
+            generation_id: TaskGenerationId::from("task-wire-compaction"),
+            definition: TaskDefinition::host("压缩后继续检查 src/latest.rs"),
+        };
+        let workspace = WorkspaceState {
+            generation: 7,
+            revision: WorkspaceRevision::Known {
+                sha256: "sha256:wire-current".to_owned(),
+            },
+        };
+        let tools = vec![compatible_tool("read_file")];
+        let mut transcript = CanonicalTranscript {
+            entries: vec![
+                TranscriptEntry::System {
+                    prompt: SystemPrompt::from_text("稳定系统提示"),
+                },
+                TranscriptEntry::User {
+                    content: task_contract.definition.model_message(),
+                },
+            ],
+        };
+        for index in 0..6 {
+            let call_id = format!("old-call-{index}");
+            transcript.entries.push(TranscriptEntry::Assistant {
+                content: None,
+                reasoning_content: Some(format!("旧推理-{index}")),
+                tool_calls: vec![ModelToolCall {
+                    id: call_id.clone(),
+                    name: "read_file".to_owned(),
+                    arguments: ToolArguments::from_value(
+                        json!({"path": format!("src/old-{index}.rs")}),
+                    ),
+                }],
+            });
+            transcript.entries.push(TranscriptEntry::Tool {
+                call_id,
+                name: "read_file".to_owned(),
+                outcome: Box::new(ToolOutcome::success("可裁剪旧结果".repeat(2_000))),
+            });
+        }
+        let raw_arguments = "{ \"z\" : 1, \"path\" : \"src/latest.rs\", \"a\" : 2 }";
+        let exact_reasoning = "WIRE_REASONING_SENTINEL：必须原样重放";
+        let exact_result = "WIRE_RESULT_SENTINEL".repeat(128);
+        transcript.entries.push(TranscriptEntry::Assistant {
+            content: None,
+            reasoning_content: Some(exact_reasoning.to_owned()),
+            tool_calls: vec![ModelToolCall {
+                id: "wire-call".to_owned(),
+                name: "read_file".to_owned(),
+                arguments: ToolArguments::parse(raw_arguments),
+            }],
+        });
+        transcript.entries.push(TranscriptEntry::Tool {
+            call_id: "wire-call".to_owned(),
+            name: "read_file".to_owned(),
+            outcome: Box::new(ToolOutcome::success(exact_result.clone())),
+        });
+
+        let no_receipts = Vec::new();
+        let input = ContextInput {
+            transcript: &transcript,
+            projection: None,
+            task_contract: Some(&task_contract),
+            workspace_state: &workspace,
+            evidence_receipts: &no_receipts,
+            last_completion_rejection: None,
+            last_verifier_failure: None,
+            last_verifier_failure_workspace: None,
+            pending_interaction: None,
+            pending_control: None,
+            tools: &tools,
+        };
+        let ContextCompactionPreparation::Local { projection, .. } = prepare_compaction(
+            input,
+            ContextPolicy {
+                auto_compact: true,
+                context_window_tokens: 40_000,
+                trigger_tokens: 6_000,
+                hard_input_tokens: 30_000,
+            },
+            true,
+        )
+        .expect("deterministic compaction") else {
+            panic!("long fixture must produce a local compaction");
+        };
+        let projected = effective_context(ContextInput {
+            projection: Some(&projection),
+            ..input
+        })
+        .expect("materialize compacted context");
+        assert!(
+            projected.messages.iter().all(|message| !matches!(
+                message,
+                ModelMessage::Tool { content, .. } if content.contains("可裁剪旧结果")
+            )),
+            "obsolete tool output should not survive the frozen projection"
+        );
+
+        let request = ModelRequest {
+            run_id: RunId::from("run-wire-compaction"),
+            parent_run_id: None,
+            actor: AgentActor::default(),
+            model: "deepseek-v4-pro".to_owned(),
+            system_prompt: projected.system_prompt,
+            messages: projected.messages,
+            tools,
+            reasoning_effort: ReasoningEffort::Max,
+            max_output_tokens: Some(64),
+            streaming: true,
+            request_number: 1,
+            attempt: 0,
+        };
+        let plan = plan_runtime_chat(
+            RuntimeChatPlanInput {
+                root: "https://api.deepseek.com",
+                strict_enabled: true,
+                wire_model: request.model.clone(),
+                max_tokens: 64,
+            },
+            &request,
+        )
+        .expect("plan official DeepSeek request");
+
+        assert_eq!(plan.surface, ApiSurface::StrictChat);
+        assert_eq!(plan.url, "https://api.deepseek.com/beta/chat/completions");
+        assert_eq!(
+            plan.body["messages"][0],
+            json!({"role": "system", "content": "稳定系统提示"})
+        );
+        assert_eq!(plan.body["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(plan.body["tools"][0]["function"]["strict"], true);
+        let messages = plan.body["messages"]
+            .as_array()
+            .expect("wire messages are an array");
+        let assistant_index = messages
+            .iter()
+            .position(|message| message["tool_calls"][0]["id"].as_str() == Some("wire-call"))
+            .expect("selected assistant tool call reaches the wire");
+        assert_eq!(
+            messages[assistant_index]["reasoning_content"],
+            exact_reasoning
+        );
+        assert_eq!(
+            messages[assistant_index]["tool_calls"][0]["function"]["arguments"],
+            raw_arguments
+        );
+        assert_eq!(messages[assistant_index + 1]["role"], "tool");
+        assert_eq!(messages[assistant_index + 1]["tool_call_id"], "wire-call");
+        assert_eq!(messages[assistant_index + 1]["content"], exact_result);
     }
 
     #[test]

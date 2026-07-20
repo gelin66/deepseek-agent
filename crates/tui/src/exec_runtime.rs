@@ -1377,9 +1377,6 @@ impl<'a> RuntimeEventProjection<'a> {
             RuntimeEventKind::ModelRequestPrepared { .. }
             | RuntimeEventKind::ModelRequestInFlight { .. }
             | RuntimeEventKind::ModelRequestFailed { .. }
-            | RuntimeEventKind::ContextCompactionPrepared { .. }
-            | RuntimeEventKind::ContextCompactionInFlight { .. }
-            | RuntimeEventKind::ContextCompactionAttemptFailed { .. }
             | RuntimeEventKind::ContextCompactionCommitted { .. }
             | RuntimeEventKind::ReasoningDelta { .. }
             | RuntimeEventKind::ToolExecutionStarted { .. } => None,

@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Barrier};
 
+use codewhale_context::compaction::{ContextInput, effective_context};
 use codewhale_protocol::agent_runtime::{
-    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ReasoningEffort, RunLimits, ToolPolicy,
+    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, InheritedRunFacts, ReasoningEffort, RunLimits, ToolPolicy,
 };
 use codewhale_protocol::run_api::{
     PendingCreationKind, RunCommand, RunProductControls, StartRunCommand,
@@ -18,11 +19,11 @@ use codewhale_runtime::{
     ActorRequestAccounting, AgentOutcome, AttemptId, CommandId, CreatedRun, DurableActionState,
     InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall,
     OperationId, PendingRuntimeEvent, RootRunRecord, RunId, RunLease, RunPurpose, RunReplay,
-    RunRequest, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeFailure,
-    StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus,
-    ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus,
-    ToolOperationStatus, ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus,
-    ToolTransportStatus, Usage, WorkspaceAccess, reduce_events,
+    RunRequest, RunSnapshot, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind,
+    RuntimeFailure, StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact,
+    ToolArtifactStatus, ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation,
+    ToolInvocationStatus, ToolOperationStatus, ToolOutcome, ToolRetryDisposition,
+    ToolSideEffectStatus, ToolTransportStatus, Usage, WorkspaceAccess, reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -90,22 +91,77 @@ fn content_delta(id: &str, attempt_id: &AttemptId, content: &str) -> PendingRunt
     }
 }
 
-fn model_request(created: &CreatedRun) -> ModelRequest {
-    let snapshot = &created.replay.snapshot;
+fn model_request_for_snapshot(
+    run_id: RunId,
+    snapshot: &RunSnapshot,
+    tools: Vec<ToolDefinition>,
+) -> ModelRequest {
+    let context = effective_context(ContextInput {
+        transcript: &snapshot.transcript,
+        projection: snapshot.context_projection.as_ref(),
+        task_contract: snapshot.request.task_contract.as_ref(),
+        workspace_state: &snapshot.workspace_state,
+        evidence_receipts: &snapshot.evidence_receipts,
+        last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
+        last_verifier_failure: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.outcome),
+        last_verifier_failure_workspace: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.workspace_state),
+        pending_interaction: snapshot
+            .pending_tool
+            .as_ref()
+            .and_then(|pending| pending.interaction.as_ref())
+            .filter(|interaction| interaction.response.is_none())
+            .map(|interaction| &interaction.request),
+        pending_control: snapshot
+            .pending_control
+            .as_ref()
+            .map(|control| control.action),
+        tools: &tools,
+    })
+    .expect("build canonical model request projection");
     ModelRequest {
-        run_id: created.lease.run_id.clone(),
+        run_id,
         parent_run_id: snapshot.request.parent_run_id.clone(),
         actor: snapshot.request.actor,
         model: snapshot.request.model.clone(),
-        system_prompt: snapshot.request.system_prompt.clone(),
-        messages: snapshot.transcript.project_messages(),
-        tools: Vec::new(),
+        system_prompt: context.system_prompt,
+        messages: context.messages,
+        tools,
         reasoning_effort: snapshot.request.reasoning_effort,
         max_output_tokens: snapshot.request.max_output_tokens,
         streaming: snapshot.request.streaming,
-        request_number: 1,
+        request_number: snapshot.local_turns.saturating_add(1),
         attempt: 0,
     }
+}
+
+fn model_request(created: &CreatedRun) -> ModelRequest {
+    model_request_for_snapshot(
+        created.lease.run_id.clone(),
+        &created.replay.snapshot,
+        Vec::new(),
+    )
+}
+
+fn continuation_request(
+    mut request: RunRequest,
+    source: &RunReplay,
+    source_run_id: RunId,
+) -> RunRequest {
+    request.continued_from_run_id = Some(source_run_id);
+    request.transcript = source.snapshot.transcript.clone();
+    request.context_projection = source.snapshot.context_projection.clone();
+    request.inherited_facts = Some(InheritedRunFacts {
+        workspace_state: source.snapshot.workspace_state.clone(),
+        last_completion_rejection: source.snapshot.last_completion_rejection.clone(),
+        last_host_verification_failure: source.snapshot.last_host_verification_failure.clone(),
+    });
+    request
 }
 
 fn terminal_event(run_id: &RunId) -> PendingRuntimeEvent {
@@ -183,39 +239,17 @@ fn root_list_semantics(
 }
 
 fn v5_model_request(request: &RunRequest) -> ModelRequest {
-    let mut transcript = request.transcript.clone();
-    if !matches!(
-        transcript.entries.first(),
-        Some(codewhale_runtime::TranscriptEntry::System { .. })
-    ) {
-        transcript.entries.insert(
-            0,
-            codewhale_runtime::TranscriptEntry::System {
-                prompt: request.system_prompt.clone(),
-            },
-        );
-    }
-    if let Some(contract) = &request.task_contract {
-        transcript
-            .entries
-            .push(codewhale_runtime::TranscriptEntry::User {
-                content: contract.definition.model_message(),
-            });
-    }
-    ModelRequest {
-        run_id: request.run_id.clone().expect("v5 fixture run id"),
-        parent_run_id: request.parent_run_id.clone(),
-        actor: request.actor,
-        model: request.model.clone(),
-        system_prompt: request.system_prompt.clone(),
-        messages: transcript.project_messages(),
-        tools: Vec::new(),
-        reasoning_effort: request.reasoning_effort,
-        max_output_tokens: request.max_output_tokens,
-        streaming: request.streaming,
-        request_number: 1,
-        attempt: 0,
-    }
+    let run_id = request.run_id.clone().expect("v5 fixture run id");
+    let snapshot = reduce_events(&[v5_event(
+        &run_id,
+        "model-request-source",
+        1,
+        RuntimeEventKind::RunCreated {
+            request: Box::new(request.clone()),
+        },
+    )])
+    .expect("reduce v5 model request source");
+    model_request_for_snapshot(run_id, &snapshot, Vec::new())
 }
 
 fn v5_event(
@@ -395,12 +429,16 @@ async fn persist_committed_catalog_run(path: &std::path::Path, run_id: &str) -> 
         .await
         .expect("create catalog migration run");
     let attempt_id = AttemptId("catalog-migration-attempt".to_owned());
-    let mut prepared = model_request(&created);
-    prepared.tools = vec![ToolDefinition {
+    let tools = vec![ToolDefinition {
         name: "read".to_owned(),
         description: "read".to_owned(),
         input_schema: serde_json::json!({"type": "object"}),
     }];
+    let prepared = model_request_for_snapshot(
+        created.lease.run_id.clone(),
+        &created.replay.snapshot,
+        tools,
+    );
     store
         .append(
             &created.lease,
@@ -1280,14 +1318,14 @@ async fn root_list_semantics_match_memory_for_purpose_lineage_order_limit_and_st
         .expect("source exists");
 
     let mut continuation = request("root-list-02-agent-continuation", workspace);
-    continuation.continued_from_run_id = Some(sqlite_source.lease.run_id.clone());
     continuation
         .task_contract
         .as_mut()
         .expect("Agent task contract")
         .definition
         .objective = "继续完成列表验收".to_owned();
-    continuation.transcript = source.snapshot.transcript.clone();
+    let continuation =
+        continuation_request(continuation, &source, sqlite_source.lease.run_id.clone());
     let sqlite_continuation = sqlite
         .create(continuation.clone())
         .await
@@ -1306,10 +1344,9 @@ async fn root_list_semantics_match_memory_for_purpose_lineage_order_limit_and_st
     .await;
 
     let mut compaction = request("root-list-03-context-compaction", workspace);
-    compaction.continued_from_run_id = Some(sqlite_source.lease.run_id.clone());
     compaction.purpose = RunPurpose::ContextCompaction;
     compaction.task_contract = None;
-    compaction.transcript = source.snapshot.transcript.clone();
+    let compaction = continuation_request(compaction, &source, sqlite_source.lease.run_id.clone());
     sqlite
         .create(compaction.clone())
         .await
@@ -1442,7 +1479,6 @@ async fn continuation_create_is_atomic_and_matches_memory_store() {
         .expect("source exists");
 
     let mut continuation = request("continued-root", "/tmp/workspace");
-    continuation.continued_from_run_id = Some(sqlite_source.lease.run_id.clone());
     continuation
         .task_contract
         .as_mut()
@@ -1461,7 +1497,11 @@ async fn continuation_create_is_atomic_and_matches_memory_store() {
         .expect("Agent task contract")
         .definition
         .non_goals = vec!["不恢复旧兼容层".to_owned()];
-    continuation.transcript = source_before.snapshot.transcript.clone();
+    let continuation = continuation_request(
+        continuation,
+        &source_before,
+        sqlite_source.lease.run_id.clone(),
+    );
     let sqlite_continued = sqlite
         .create(continuation.clone())
         .await

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use codewhale_context::compaction::{ContextCompactionPreparation, prepare_compaction};
+use codewhale_context::compaction::{ContextInput, effective_context};
 use codewhale_runtime::*;
 use serde_json::json;
 use tokio::sync::Notify;
@@ -301,6 +301,13 @@ struct VerifierTools {
     calls: AtomicUsize,
 }
 
+struct CorrectableVerifierTools {
+    spec: VerifierSpec,
+    revision: Mutex<String>,
+    fixed: AtomicBool,
+    calls: Mutex<Vec<String>>,
+}
+
 #[async_trait]
 impl ToolExecutor for VerifierTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
@@ -338,6 +345,57 @@ impl ToolExecutor for VerifierTools {
             outcome.artifacts.clear();
         }
         Ok(outcome)
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for CorrectableVerifierTools {
+    fn definitions(&self) -> Vec<ToolDefinition> {
+        vec![definition("write"), definition("run_tests")]
+    }
+
+    fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
+        if invocation.name == "write" {
+            WorkspaceAccess::MayWrite
+        } else {
+            WorkspaceAccess::ReadOnly
+        }
+    }
+
+    async fn observe_workspace_revision(&self) -> Result<String, ToolExecutionError> {
+        Ok(self.revision.lock().expect("revision lock").clone())
+    }
+
+    async fn execute(
+        &self,
+        invocation: ToolInvocation,
+        _cancellation: CancellationToken,
+    ) -> Result<ToolOutcome, ToolExecutionError> {
+        self.calls
+            .lock()
+            .expect("tool call lock")
+            .push(invocation.name.clone());
+        match invocation.name.as_str() {
+            "write" => {
+                self.fixed.store(true, Ordering::Release);
+                *self.revision.lock().expect("revision lock") = "sha256:fixed".to_owned();
+                Ok(ToolOutcome::success("已修复确定性测试夹具"))
+            }
+            "run_tests" if !self.fixed.load(Ordering::Acquire) => {
+                Ok(ToolOutcome::error("EXPECTED_SENTINEL：断言失败"))
+            }
+            "run_tests" => Ok(passed_verifier_outcome(
+                VerifierSpec {
+                    parameters: invocation
+                        .arguments
+                        .parsed
+                        .expect("Host verifier arguments are canonical"),
+                    ..self.spec.clone()
+                },
+                &self.revision.lock().expect("revision lock"),
+            )),
+            _ => Err(ToolExecutionError::new("not_found", "tool not found")),
+        }
     }
 }
 
@@ -479,6 +537,12 @@ fn request(input: &str) -> RunRequest {
         "系统提示",
     );
     request.run_id = Some(run_id);
+    request.context_policy = ContextPolicy {
+        auto_compact: false,
+        context_window_tokens: 1_000_000,
+        trigger_tokens: 800_000,
+        hard_input_tokens: 900_000,
+    };
     request.limits.max_model_requests = 128;
     request.limits.max_turns = 16;
     request
@@ -543,20 +607,56 @@ fn passed_verifier_outcome(spec: VerifierSpec, revision: &str) -> ToolOutcome {
 
 fn persisted_model_request(created: &CreatedRun, request_number: u32) -> ModelRequest {
     let snapshot = &created.replay.snapshot;
+    let tools = Vec::new();
+    let context = request_context(snapshot, &tools);
     ModelRequest {
         run_id: created.lease.run_id.clone(),
         parent_run_id: snapshot.request.parent_run_id.clone(),
         actor: snapshot.request.actor,
         model: snapshot.request.model.clone(),
-        system_prompt: snapshot.request.system_prompt.clone(),
-        messages: snapshot.transcript.project_messages(),
-        tools: Vec::new(),
+        system_prompt: context.system_prompt,
+        messages: context.messages,
+        tools,
         reasoning_effort: snapshot.request.reasoning_effort,
         max_output_tokens: snapshot.request.max_output_tokens,
         streaming: snapshot.request.streaming,
         request_number,
         attempt: 0,
     }
+}
+
+fn request_context(
+    snapshot: &RunSnapshot,
+    tools: &[ToolDefinition],
+) -> codewhale_context::compaction::EffectiveContext {
+    effective_context(ContextInput {
+        transcript: &snapshot.transcript,
+        projection: snapshot.context_projection.as_ref(),
+        task_contract: snapshot.request.task_contract.as_ref(),
+        workspace_state: &snapshot.workspace_state,
+        evidence_receipts: &snapshot.evidence_receipts,
+        last_completion_rejection: snapshot.last_completion_rejection.as_ref(),
+        last_verifier_failure: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.outcome),
+        last_verifier_failure_workspace: snapshot
+            .last_host_verification_failure
+            .as_ref()
+            .map(|failure| &failure.workspace_state),
+        pending_interaction: snapshot
+            .pending_tool
+            .as_ref()
+            .and_then(|pending| pending.interaction.as_ref())
+            .filter(|interaction| interaction.response.is_none())
+            .map(|interaction| &interaction.request),
+        pending_control: snapshot
+            .pending_control
+            .as_ref()
+            .map(|control| control.action),
+        tools,
+    })
+    .expect("test fixture must produce a valid deterministic request context")
 }
 
 async fn append_event(
@@ -1557,9 +1657,13 @@ async fn resume_after_steer_applied_never_reuses_the_superseded_stop_response() 
     store.release(&created.lease).await.unwrap();
 
     let model = Arc::new(MockModel::new(|request| {
+        assert!(request.messages.iter().any(|message| matches!(
+            message,
+            ModelMessage::User { content } if content == "改做新任务"
+        )));
         assert!(matches!(
             request.messages.last(),
-            Some(ModelMessage::User { content }) if content == "改做新任务"
+            Some(ModelMessage::User { content }) if content.contains("## 当前 Host 事实")
         ));
         ScriptResponse::Events(vec![completed(
             "新结果",
@@ -2015,6 +2119,121 @@ async fn async_child_handoff_precedes_the_next_root_request() {
 }
 
 #[tokio::test]
+async fn a_real_child_uses_the_same_broker_and_compacts_without_a_summary_request() {
+    let root_calls = Arc::new(AtomicUsize::new(0));
+    let child_calls = Arc::new(AtomicUsize::new(0));
+    let root_counter = root_calls.clone();
+    let child_counter = child_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| match request.actor.kind {
+        AgentActorKind::Root => match root_counter.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                None,
+                vec![call(
+                    "agent-compaction",
+                    "agent",
+                    r#"{"prompt":"读取一个文件并返回简短结论","fork_context":false,"allowed_tools":["read"],"max_steps":2,"expected_artifact":"简短结论"}"#,
+                )],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => {
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::User { content }
+                        if content.contains("kind=\"subagent_completion\"")
+                )));
+                ScriptResponse::Events(vec![completed(
+                    "已整合子 Agent 结论",
+                    None,
+                    Vec::new(),
+                    ModelFinishReason::Stop,
+                )])
+            }
+            _ => panic!("unexpected root request"),
+        },
+        AgentActorKind::Child => match child_counter.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "",
+                Some(&"甲".repeat(12_000)),
+                vec![call("child-read", "read", r#"{"path":"src/lib.rs"}"#)],
+                ModelFinishReason::ToolCalls,
+            )]),
+            1 => {
+                let rendered =
+                    serde_json::to_string(&request.messages).expect("child request messages");
+                assert!(rendered.contains("读取一个文件并返回简短结论"));
+                assert!(rendered.contains("## 当前 Host 事实"));
+                assert!(
+                    !rendered.contains(&"甲".repeat(1_000)),
+                    "the oversized optional reasoning group should be locally pruned"
+                );
+                ScriptResponse::Events(vec![completed(
+                    "子 Agent 简短结论",
+                    None,
+                    Vec::new(),
+                    ModelFinishReason::Stop,
+                )])
+            }
+            _ => panic!("unexpected child request"),
+        },
+    }));
+    let (runtime, _, sink, _) = fixture(model);
+    let mut run_request = request("让子 Agent 审计后整合");
+    run_request.context_policy = ContextPolicy {
+        auto_compact: true,
+        context_window_tokens: 100_000,
+        trigger_tokens: 2_000,
+        hard_input_tokens: 80_000,
+    };
+
+    let outcome = runtime.start(run_request).wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    assert_eq!(root_calls.load(Ordering::Acquire), 2);
+    assert_eq!(child_calls.load(Ordering::Acquire), 2);
+    assert_eq!(outcome.runtime_model_requests, 4);
+    let events = sink.events();
+    let child_run_id = events
+        .iter()
+        .find_map(|event| match &event.event {
+            RuntimeEventKind::ChildStarted { child_run_id, .. } => Some(child_run_id.clone()),
+            _ => None,
+        })
+        .expect("child start");
+    let child_events = events
+        .iter()
+        .filter(|event| event.run_id == child_run_id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        child_events
+            .iter()
+            .filter(|event| matches!(
+                event.event,
+                RuntimeEventKind::ContextCompactionCommitted { .. }
+            ))
+            .count(),
+        1
+    );
+    let committed = child_events
+        .iter()
+        .position(|event| {
+            matches!(
+                event.event,
+                RuntimeEventKind::ContextCompactionCommitted { .. }
+            )
+        })
+        .expect("child compaction commit");
+    let second_request = child_events
+        .iter()
+        .enumerate()
+        .filter(|(_, event)| matches!(event.event, RuntimeEventKind::ModelRequestPrepared { .. }))
+        .nth(1)
+        .map(|(index, _)| index)
+        .expect("second child request");
+    assert!(committed < second_request);
+}
+
+#[tokio::test]
 async fn shared_exact_four_budget_preserves_child_artifact_and_root_integration_turns() {
     let root_calls = Arc::new(AtomicUsize::new(0));
     let child_calls = Arc::new(AtomicUsize::new(0));
@@ -2401,7 +2620,7 @@ async fn empty_tool_free_terminal_response_is_not_false_completion() {
 }
 
 #[tokio::test]
-async fn host_only_completion_observes_the_workspace_once() {
+async fn host_only_completion_observes_the_workspace_at_each_evidence_boundary() {
     let model = Arc::new(MockModel::new(|_| {
         ScriptResponse::Events(vec![completed(
             "任务已完成",
@@ -2421,8 +2640,8 @@ async fn host_only_completion_observes_the_workspace_once() {
             .iter()
             .filter(|event| matches!(event.event, RuntimeEventKind::WorkspaceObserved { .. }))
             .count(),
-        1,
-        "Host-only acceptance has no verifier side effect to reconcile twice"
+        2,
+        "the request context and completion decision each observe current workspace state"
     );
 }
 
@@ -2479,7 +2698,18 @@ async fn model_completion_requires_the_frozen_host_verifier_receipt() {
 
 #[tokio::test]
 async fn model_completion_is_rejected_when_the_frozen_verifier_fails() {
-    let model = Arc::new(MockModel::new(|_| {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = model_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        let call_index = observed_calls.fetch_add(1, Ordering::AcqRel);
+        if call_index == 1 {
+            let rendered =
+                serde_json::to_string(&request.messages).expect("model request messages");
+            assert!(rendered.contains("deterministic verifier failed"));
+            assert!(rendered.contains("未解决的完成拒绝"));
+        } else {
+            assert_eq!(call_index, 0, "unexpected extra model request");
+        }
         ScriptResponse::Events(vec![completed(
             "我已经完成",
             None,
@@ -2509,6 +2739,7 @@ async fn model_completion_is_rejected_when_the_frozen_verifier_fails() {
         .unwrap();
 
     assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
+    assert_eq!(model_calls.load(Ordering::Acquire), 2);
     assert_eq!(tools.calls.load(Ordering::Acquire), 1);
     let events = sink.events();
     assert!(events.iter().any(|event| matches!(
@@ -2520,6 +2751,96 @@ async fn model_completion_is_rejected_when_the_frozen_verifier_fails() {
             .iter()
             .any(|event| matches!(&event.event, RuntimeEventKind::CompletionRejected { .. }))
     );
+}
+
+#[tokio::test]
+async fn verifier_failure_is_projected_once_then_a_write_allows_verified_correction() {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = model_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        match observed_calls.fetch_add(1, Ordering::AcqRel) {
+            0 => ScriptResponse::Events(vec![completed(
+                "先提出完成",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )]),
+            1 => {
+                let rendered =
+                    serde_json::to_string(&request.messages).expect("model request messages");
+                assert_eq!(rendered.matches("EXPECTED_SENTINEL").count(), 1);
+                assert_eq!(rendered.matches("未解决的完成拒绝").count(), 1);
+                assert_eq!(rendered.matches("最近一次 verifier 失败").count(), 1);
+                ScriptResponse::Events(vec![completed(
+                    "",
+                    Some("根据 Host verifier 的确定性失败修复工作区"),
+                    vec![call("write-fix", "write", "{}")],
+                    ModelFinishReason::ToolCalls,
+                )])
+            }
+            2 => ScriptResponse::Events(vec![completed(
+                "已根据验证证据完成修复",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )]),
+            _ => panic!("unexpected extra model request"),
+        }
+    }));
+    let tools = Arc::new(CorrectableVerifierTools {
+        spec: exact_run_tests_spec(),
+        revision: Mutex::new("sha256:broken".to_owned()),
+        fixed: AtomicBool::new(false),
+        calls: Mutex::new(Vec::new()),
+    });
+    let sink = Arc::new(CollectSink::default());
+    let store = Arc::new(InMemoryRunStore::default());
+    let runtime = Arc::new(AgentRuntime::new(
+        model,
+        tools.clone(),
+        sink.clone(),
+        store.clone(),
+    ));
+
+    let outcome = runtime
+        .start(verifier_request("修复边界错误"))
+        .wait()
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::Completed { ref message, .. }
+            if message == "已根据验证证据完成修复"
+    ));
+    assert_eq!(model_calls.load(Ordering::Acquire), 3);
+    assert_eq!(
+        *tools.calls.lock().expect("tool call lock"),
+        ["run_tests", "write", "run_tests"]
+    );
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::CompletionRejected { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        replay
+            .events
+            .iter()
+            .filter(|event| matches!(
+                event.event,
+                RuntimeEventKind::HostVerificationCommitted { .. }
+            ))
+            .count(),
+        2
+    );
+    assert!(replay.snapshot.last_completion_rejection.is_none());
+    assert!(replay.snapshot.last_host_verification_failure.is_none());
+    assert_eq!(replay.snapshot.evidence_receipts.len(), 1);
 }
 
 #[tokio::test]
@@ -5215,23 +5536,21 @@ async fn live_projection_matches_store_replay_through_tool_steer_and_terminal() 
         };
         prepared_requests += 1;
         let projection = reduce_events(&replay.events[..=index]).unwrap();
-        assert_eq!(request.messages, projection.transcript.project_messages());
+        let expected = request_context(&projection, &request.tools);
+        assert_eq!(request.system_prompt, expected.system_prompt);
+        assert_eq!(request.messages, expected.messages);
         assert_eq!(request.request_number, projection.local_turns);
         assert_eq!(request.run_id, run_id);
     }
     assert_eq!(prepared_requests, 2);
 }
 
-fn compaction_policy(keep_recent_user_turns: u32) -> ContextPolicy {
+fn compaction_policy() -> ContextPolicy {
     ContextPolicy {
         auto_compact: true,
         context_window_tokens: 100_000,
         trigger_tokens: 1,
         hard_input_tokens: 80_000,
-        summary_max_output_tokens: 512,
-        min_messages: 2,
-        keep_recent_user_turns,
-        max_retries: 2,
     }
 }
 
@@ -5263,8 +5582,15 @@ async fn automatic_compaction_cannot_consume_the_reserved_terminal_request() {
             "the only admitted request is the reserved terminal turn"
         );
         assert!(
-            request.messages.len() > 2,
-            "the terminal turn keeps the uncompressed context while it is below the hard limit"
+            request.messages.len() <= 2,
+            "deterministic compaction does not need a model-request permit"
+        );
+        assert!(
+            request.messages.iter().any(|message| matches!(
+                message,
+                ModelMessage::User { content } if content.contains("保留唯一终局请求")
+            )),
+            "the frozen task remains visible after local compaction"
         );
         ScriptResponse::Events(vec![completed(
             "终局请求未被自动压缩抢占",
@@ -5276,7 +5602,7 @@ async fn automatic_compaction_cannot_consume_the_reserved_terminal_request() {
     let (runtime, _, sink, store) = fixture(model);
     let mut run_request = request("保留唯一终局请求");
     run_request.transcript = long_transcript(2);
-    run_request.context_policy = compaction_policy(1);
+    run_request.context_policy = compaction_policy();
     run_request.limits.max_turns = 1;
     run_request.limits.max_model_requests = 1;
 
@@ -5289,13 +5615,19 @@ async fn automatic_compaction_cannot_consume_the_reserved_terminal_request() {
     ));
     assert_eq!(calls.load(Ordering::Acquire), 1);
     assert_eq!(outcome.runtime_model_requests, 1);
-    assert!(!sink.events().iter().any(|event| matches!(
-        event.event,
-        RuntimeEventKind::ContextCompactionPrepared { .. }
-    )));
+    assert_eq!(
+        sink.events()
+            .iter()
+            .filter(|event| matches!(
+                event.event,
+                RuntimeEventKind::ContextCompactionCommitted { .. }
+            ))
+            .count(),
+        1
+    );
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
     assert_eq!(replay.snapshot.runtime_model_requests, 1);
-    assert!(replay.snapshot.context_projection.is_none());
+    assert!(replay.snapshot.context_projection.is_some());
 }
 
 #[tokio::test]
@@ -5305,27 +5637,26 @@ async fn automatic_compaction_is_durable_and_the_agent_consumes_only_the_project
     let model = Arc::new(MockModel::new(move |request| {
         match observed_calls.fetch_add(1, Ordering::AcqRel) {
             0 => {
-                assert!(!request.streaming);
-                assert!(request.tools.is_empty());
-                assert!(request.messages.len() > 2);
-                ScriptResponse::Events(vec![completed(
-                    "已压缩：保留用户目标、代码状态和测试证据。",
-                    None,
-                    Vec::new(),
-                    ModelFinishReason::Stop,
-                )])
-            }
-            1 => {
                 assert!(request.streaming);
-                assert!(request.system_prompt.blocks.iter().any(|block| {
-                    block
-                        .text
-                        .contains("已压缩：保留用户目标、代码状态和测试证据")
-                }));
+                assert_eq!(request.system_prompt, SystemPrompt::from_text("系统提示"));
                 assert!(
                     request.messages.len() < 8,
                     "ordinary Agent request must use the compacted projection"
                 );
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::User { content } if content.contains("最新任务")
+                )));
+                assert!(request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::User { content }
+                        if content.contains("## 当前 Host 事实")
+                            && content.contains("current_evidence_receipt: `none`")
+                )));
+                assert!(!request.messages.iter().any(|message| matches!(
+                    message,
+                    ModelMessage::User { content } if content.contains("历史用户约束 0")
+                )));
                 ScriptResponse::Events(vec![completed(
                     "压缩后继续执行完成",
                     None,
@@ -5338,16 +5669,22 @@ async fn automatic_compaction_is_durable_and_the_agent_consumes_only_the_project
     }));
     let (runtime, _, _, store) = fixture(model);
     let original = long_transcript(8);
+    let original_entries = original.entries.clone();
     let original_len = original.entries.len();
     let mut run_request = request("最新任务");
     run_request.transcript = original;
-    run_request.context_policy = compaction_policy(2);
+    run_request.context_policy = compaction_policy();
     let outcome = runtime.start(run_request).wait().await.unwrap();
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
 
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
-    assert_eq!(calls.load(Ordering::Acquire), 2);
-    assert_eq!(replay.snapshot.runtime_model_requests, 2);
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(replay.snapshot.runtime_model_requests, 1);
+    assert_eq!(
+        &replay.snapshot.transcript.entries[..original_len],
+        original_entries.as_slice(),
+        "compaction must never rewrite canonical history"
+    );
     assert_eq!(
         replay.snapshot.transcript.entries.len(),
         original_len + 2,
@@ -5355,20 +5692,48 @@ async fn automatic_compaction_is_durable_and_the_agent_consumes_only_the_project
     );
     assert!(replay.snapshot.context_projection.is_some());
     assert!(replay.snapshot.last_context_compaction.is_some());
-    let kinds = replay
+    let committed = replay
         .events
         .iter()
-        .map(|event| &event.event)
-        .collect::<Vec<_>>();
-    let committed = kinds
-        .iter()
-        .position(|event| matches!(event, RuntimeEventKind::ContextCompactionCommitted { .. }))
+        .position(|event| {
+            matches!(
+                event.event,
+                RuntimeEventKind::ContextCompactionCommitted { .. }
+            )
+        })
         .expect("compaction committed");
-    let ordinary = kinds
+    let ordinary = replay
+        .events
         .iter()
-        .position(|event| matches!(event, RuntimeEventKind::ModelRequestPrepared { .. }))
+        .position(|event| matches!(event.event, RuntimeEventKind::ModelRequestPrepared { .. }))
         .expect("ordinary model prepared");
     assert!(committed < ordinary);
+    let RuntimeEventKind::ContextCompactionCommitted {
+        projection,
+        tools,
+        accounting,
+        before_tokens,
+        after_tokens,
+        ..
+    } = &replay.events[committed].event
+    else {
+        unreachable!()
+    };
+    let RuntimeEventKind::ModelRequestPrepared { request, .. } = &replay.events[ordinary].event
+    else {
+        unreachable!()
+    };
+    assert_eq!(tools, &request.tools);
+    assert!(
+        !tools.is_empty(),
+        "the tool catalog participates in the budget"
+    );
+    assert_eq!(**accounting, ModelAccounting::default());
+    assert!(after_tokens < before_tokens);
+    assert_eq!(
+        replay.snapshot.context_projection.as_ref(),
+        Some(projection.as_ref())
+    );
 }
 
 #[tokio::test]
@@ -5383,21 +5748,31 @@ async fn manual_compaction_is_an_input_free_continuation_with_a_completion_marke
                 Vec::new(),
                 ModelFinishReason::Stop,
             )]),
-            1 => {
-                assert!(!request.streaming);
-                ScriptResponse::Events(vec![completed(
-                    "手动压缩摘要",
-                    None,
-                    Vec::new(),
-                    ModelFinishReason::Stop,
-                )])
-            }
-            _ => panic!("manual compaction was issued more than once"),
+            _ => panic!(
+                "manual deterministic compaction must not issue a model request: {request:?}"
+            ),
         }
     }));
     let (runtime, _, _, store) = fixture(model);
     let mut source_request = request(&format!("源任务 {}", "乙".repeat(20_000)));
-    source_request.transcript = long_transcript(3);
+    source_request.transcript = CanonicalTranscript {
+        entries: vec![
+            TranscriptEntry::System {
+                prompt: SystemPrompt::from_text("系统提示"),
+            },
+            TranscriptEntry::Assistant {
+                content: Some("可丢弃的旧答复".repeat(20_000)),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+            },
+        ],
+    };
+    source_request.context_policy = ContextPolicy {
+        auto_compact: false,
+        context_window_tokens: 500_000,
+        trigger_tokens: 400_000,
+        hard_input_tokens: 450_000,
+    };
     let source = runtime.start(source_request).wait().await.unwrap();
     let source_replay = store.load(&source.run_id).await.unwrap().unwrap();
 
@@ -5409,7 +5784,15 @@ async fn manual_compaction_is_an_input_free_continuation_with_a_completion_marke
     compact_request.task_contract = None;
     compact_request.transcript = source_replay.snapshot.transcript.clone();
     compact_request.context_projection = source_replay.snapshot.context_projection.clone();
-    compact_request.context_policy = compaction_policy(0);
+    compact_request.context_policy = compaction_policy();
+    compact_request.inherited_facts = Some(InheritedRunFacts {
+        workspace_state: source_replay.snapshot.workspace_state.clone(),
+        last_completion_rejection: source_replay.snapshot.last_completion_rejection.clone(),
+        last_host_verification_failure: source_replay
+            .snapshot
+            .last_host_verification_failure
+            .clone(),
+    });
     compact_request.deadline_unix_ms = None;
     compact_request.accounting_baseline = ModelAccounting::default();
     let compact = runtime.start(compact_request).wait().await.unwrap();
@@ -5425,154 +5808,48 @@ async fn manual_compaction_is_an_input_free_continuation_with_a_completion_marke
         Some(source.run_id.clone())
     );
     assert!(replay.snapshot.last_context_compaction.is_some());
-    assert_eq!(calls.load(Ordering::Acquire), 2);
-    let source_after = store.load(&source.run_id).await.unwrap().unwrap();
-    assert_eq!(source_after.events, source_replay.events);
-}
-
-async fn seed_prepared_compaction(
-    store: &InMemoryRunStore,
-) -> (CreatedRun, ContextCompactionId, AttemptId) {
-    let mut run_request = request("最新任务");
-    run_request.transcript = long_transcript(8);
-    run_request.context_policy = compaction_policy(2);
-    let created = store.create(run_request).await.unwrap();
-    let snapshot = &created.replay.snapshot;
-    let template = ModelRequest {
-        run_id: created.lease.run_id.clone(),
-        parent_run_id: None,
-        actor: AgentActor::default(),
-        model: snapshot.request.model.clone(),
-        system_prompt: snapshot.request.system_prompt.clone(),
-        messages: Vec::new(),
-        tools: Vec::new(),
-        reasoning_effort: ReasoningEffort::Low,
-        max_output_tokens: Some(snapshot.request.context_policy.summary_max_output_tokens),
-        streaming: false,
-        request_number: 1,
-        attempt: 0,
-    };
-    let ContextCompactionPreparation::Model { plan, request } = prepare_compaction(
-        &snapshot.transcript,
-        None,
-        snapshot.request.context_policy,
-        &template,
-        false,
-    )
-    .expect("compaction plan") else {
-        panic!("expected model compaction")
-    };
-    let compaction_id = ContextCompactionId::new();
-    let attempt_id = AttemptId::new();
-    append_event(
-        store,
-        &created.lease,
-        "prepared-context-compaction",
-        RuntimeEventKind::ContextCompactionPrepared {
-            compaction_id: compaction_id.clone(),
-            attempt_id: attempt_id.clone(),
-            trigger: ContextCompactionTrigger::Threshold,
-            plan: Box::new(plan),
-            request: Box::new(request),
-        },
-    )
-    .await;
-    (created, compaction_id, attempt_id)
-}
-
-#[tokio::test]
-async fn resume_prepared_compaction_sends_the_persisted_summary_once() {
-    let store = Arc::new(InMemoryRunStore::default());
-    let (created, _, _) = seed_prepared_compaction(&store).await;
-    store.release(&created.lease).await.unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let observed = calls.clone();
-    let model = Arc::new(MockModel::new(move |request| {
-        match observed.fetch_add(1, Ordering::AcqRel) {
-            0 => {
-                assert!(!request.streaming);
-                ScriptResponse::Events(vec![completed(
-                    "恢复后的压缩摘要",
-                    None,
-                    Vec::new(),
-                    ModelFinishReason::Stop,
-                )])
-            }
-            1 => ScriptResponse::Events(vec![completed(
-                "继续执行完成",
-                None,
-                Vec::new(),
-                ModelFinishReason::Stop,
-            )]),
-            _ => panic!("prepared compaction was sent more than once"),
-        }
-    }));
-    let runtime = Arc::new(AgentRuntime::new(
-        model,
-        Arc::new(MockTools::default()),
-        Arc::new(CollectSink::default()),
-        store.clone(),
-    ));
-    let outcome = runtime
-        .resume(created.lease.run_id.clone())
-        .wait()
-        .await
-        .unwrap();
-    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
-    assert_eq!(calls.load(Ordering::Acquire), 2);
-    let replay = store.load(&created.lease.run_id).await.unwrap().unwrap();
-    assert!(replay.snapshot.last_context_compaction.is_some());
+    assert_eq!(calls.load(Ordering::Acquire), 1);
+    assert_eq!(replay.snapshot.runtime_model_requests, 0);
+    assert_eq!(replay.snapshot.accounting, ModelAccounting::default());
     assert_eq!(
         replay
             .events
             .iter()
             .filter(|event| matches!(
                 event.event,
-                RuntimeEventKind::ContextCompactionPrepared { .. }
+                RuntimeEventKind::ContextCompactionCommitted { .. }
             ))
             .count(),
         1
     );
-}
+    let source_after = store.load(&source.run_id).await.unwrap().unwrap();
+    assert_eq!(source_after.events, source_replay.events);
 
-#[tokio::test]
-async fn resume_in_flight_compaction_requires_recovery_without_reissuing() {
-    let store = Arc::new(InMemoryRunStore::default());
-    let (created, compaction_id, attempt_id) = seed_prepared_compaction(&store).await;
-    append_event(
-        &store,
-        &created.lease,
-        "in-flight-context-compaction",
-        RuntimeEventKind::ContextCompactionInFlight {
-            compaction_id,
-            attempt_id,
-        },
-    )
-    .await;
-    store.release(&created.lease).await.unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let observed = calls.clone();
-    let model = Arc::new(MockModel::new(move |_| {
-        observed.fetch_add(1, Ordering::AcqRel);
-        panic!("in-flight compaction must not be reissued")
-    }));
-    let runtime = Arc::new(AgentRuntime::new(
-        model,
+    let compact_events = replay.events.clone();
+    let compact_run_id = compact.run_id.clone();
+    let no_reissue_calls = Arc::new(AtomicUsize::new(0));
+    let observed_reissue = no_reissue_calls.clone();
+    let reopened_runtime = Arc::new(AgentRuntime::new(
+        Arc::new(MockModel::new(move |_| {
+            observed_reissue.fetch_add(1, Ordering::AcqRel);
+            panic!("replaying committed local compaction must not call the model")
+        })),
         Arc::new(MockTools::default()),
         Arc::new(CollectSink::default()),
-        store,
+        store.clone(),
     ));
-    let outcome = runtime.resume(created.lease.run_id).wait().await.unwrap();
-    assert!(matches!(
-        outcome.terminal,
-        TerminalState::RecoveryRequired {
-            ambiguity: RecoveryAmbiguity {
-                phase: RecoveryAmbiguityPhase::ContextCompactionModelRequest,
-                ..
-            }
-        }
-    ));
-    assert_eq!(calls.load(Ordering::Acquire), 0);
-    assert!(outcome.accounting.billing_unknown);
-    assert_eq!(outcome.accounting.billing_unknown_attempts, 1);
+    let reopened = reopened_runtime
+        .resume(compact_run_id.clone())
+        .wait()
+        .await
+        .unwrap();
+    assert_eq!(reopened.terminal, TerminalState::ContextCompactionCompleted);
+    assert_eq!(no_reissue_calls.load(Ordering::Acquire), 0);
+    let reopened_replay = store.load(&compact_run_id).await.unwrap().unwrap();
+    assert_eq!(reopened_replay.events, compact_events);
+    assert_eq!(
+        reduce_events(&reopened_replay.events).unwrap(),
+        reopened_replay.snapshot
+    );
+    assert!(!reopened_replay.snapshot.accounting.billing_unknown);
 }

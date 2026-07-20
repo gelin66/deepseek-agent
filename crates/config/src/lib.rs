@@ -13,8 +13,8 @@ pub mod route;
 pub mod setup_state;
 pub mod user_constitution;
 pub use harness::{
-    HarnessCompactionStrategy, HarnessPosture, HarnessPostureKind, HarnessProfile,
-    HarnessSafetyPosture, HarnessToolSurface, built_in_harness_profiles,
+    HarnessPosture, HarnessPostureKind, HarnessProfile, HarnessSafetyPosture, HarnessToolSurface,
+    built_in_harness_profiles,
 };
 pub use model_reference::{Modality, ModelReferenceCard, ModelReferenceDatabase};
 pub use prompt_preferences::{

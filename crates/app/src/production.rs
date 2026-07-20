@@ -15,8 +15,8 @@ use codewhale_deepseek::{
     official_model_capabilities, resolve_deepseek_auto_route, resume_api_request_budget,
 };
 use codewhale_protocol::agent_runtime::{
-    AgentActor, CanonicalTranscript, ContextPolicy, ReasoningEffort, RunEnvironment, RunId,
-    RunPurpose, RunRequest, ToolDefinition, TranscriptEntry,
+    AgentActor, CanonicalTranscript, ContextPolicy, InheritedRunFacts, ReasoningEffort,
+    RunEnvironment, RunId, RunPurpose, RunRequest, ToolDefinition, TranscriptEntry,
 };
 use codewhale_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunProductControls, StartRunCommand,
@@ -352,6 +352,7 @@ impl RunComposition for ProductionComposition {
             },
             context_policy,
             context_projection: None,
+            inherited_facts: None,
             accounting_baseline,
         };
         Ok(runtime.start(request))
@@ -570,6 +571,14 @@ impl RunComposition for ProductionComposition {
             },
             context_policy,
             context_projection: source.snapshot.context_projection.clone(),
+            inherited_facts: Some(InheritedRunFacts {
+                workspace_state: source.snapshot.workspace_state.clone(),
+                last_completion_rejection: source.snapshot.last_completion_rejection.clone(),
+                last_host_verification_failure: source
+                    .snapshot
+                    .last_host_verification_failure
+                    .clone(),
+            }),
             accounting_baseline: model_accounting_snapshot(&request_budget),
         };
         Ok(runtime.start(request))
@@ -793,10 +802,6 @@ fn production_context_policy(
         context_window_tokens: capability.context_window_tokens,
         trigger_tokens: hard_input_tokens.saturating_mul(9) / 10,
         hard_input_tokens,
-        summary_max_output_tokens: 2_048,
-        min_messages: 6,
-        keep_recent_user_turns: 4,
-        max_retries: 3,
     }
 }
 

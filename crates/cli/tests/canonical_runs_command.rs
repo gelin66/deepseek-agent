@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use codewhale_protocol::agent_runtime::{RunId, RunPurpose, RunRequest};
+use codewhale_protocol::agent_runtime::{InheritedRunFacts, RunId, RunPurpose, RunRequest};
 use codewhale_protocol::run_api::{RUN_API_SCHEMA_VERSION, RunCommandResponse, RunCommandResult};
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
@@ -78,6 +78,11 @@ async fn seed_compaction(store: &StateStore, run_id: &str, source_run_id: &str) 
     request.purpose = RunPurpose::ContextCompaction;
     request.task_contract = None;
     request.transcript = source.snapshot.transcript;
+    request.inherited_facts = Some(InheritedRunFacts {
+        workspace_state: source.snapshot.workspace_state,
+        last_completion_rejection: source.snapshot.last_completion_rejection,
+        last_host_verification_failure: source.snapshot.last_host_verification_failure,
+    });
     let created = store
         .create(request)
         .await

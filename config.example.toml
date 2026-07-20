@@ -655,7 +655,6 @@ fallback_default_prior = 3.8
 # kind = "cache-heavy"          # standard | cache-heavy | lean | custom
 # max_subagents = 10            # 0 means runtime default
 # prefer_codebase_search = false
-# compaction_strategy = "prefix-cache" # default | prefix-cache | aggressive
 # tool_surface = "full"              # full | read-only | auto
 # safety_posture = "standard"        # standard | strict | permissive
 
