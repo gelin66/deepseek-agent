@@ -3,10 +3,10 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M5-B 已完成并 shrink；当前接口只保留 hard-limit context safety
-- 更新日期：2026-07-20
-- schema：`Run API`（`schema_version = 6`）、`RuntimeEvent`（writer/reader v9）、
-  `State`（schema v13）
+- 状态：M6-A 单 Writer isolated worktree canonical lifecycle 已接入
+- 更新日期：2026-07-21
+- schema：`Run API`（`schema_version = 7`）、`RuntimeEvent`（writer/reader v10）、
+  `State`（schema v14）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -19,7 +19,11 @@ crates/app-server        认证、限流、framing
         |
 AgentApplication         start/continue/list/recover/get/events/resume/control
         |
-AgentRuntime             唯一根/子 Agent 执行内核
+        +------> AgentRuntime                  唯一根/只读子/Writer 执行内核
+        |
+        +------> ProductionAgentOrchestrator   Writer worktree/verify/integrate/cleanup
+                         |
+                         +----> AgentRuntime    同一实现，不是第二模型循环
         |
 SQLite RunStore          唯一持久事实
 ```
@@ -399,14 +403,31 @@ prepared/in-flight/failed 生命周期。事件持久化精确 source projection
 因此 production 调用图只剩普通 Agent request 的一个 `ModelPort::stream` 调用点。
 
 RuntimeEvent v9 继续收缩协议：删除手动/threshold trigger、特殊 compaction ID、独立
-compaction purpose 和 compaction terminal。当前 writer 和 reducer/Store reader 只接受
-v9，不保留旧 event schema 兼容路径。
+compaction purpose 和 compaction terminal。后续 v10 直接替代 v9；当前 writer 与
+reducer/Store reader 只接受 v10，不保留旧 event schema 兼容路径。
+
+RuntimeEvent v10 建立唯一 Writer lifecycle：
+
+- `AgentTaskPrepared` 冻结 parent/root、role profile、workspace access、精确 base、
+  allowed paths、tool policy、预算与 verifier；
+- workspace create/execute/collect 的 canonical 事件绑定唯一 task、child run、worktree、
+  branch/base/final revision；
+- `AgentOutcome` 同时携带模型 handoff 与 Host 观测的 changed files、diff digest、checks、
+  artifacts、usage、terminal 和 integration 状态；
+- integration prepared/started/failed/committed、post-integration verifier 与 cleanup/recovery
+  都写入同一个 RunStore reducer；
+- Writer receipt 不能完成 root；只有集成后最新根 generation/revision 上的新
+  EvidenceReceipt 可以满足 root TaskContract。
+
+Run API v7 只把上述 canonical facts 投影到 exec、TUI、HTTP/SSE/stdio；没有新增
+presentation-local worktree command、第二事件总线或兼容 alias。State schema v14 继续复用
+canonical event/snapshot/lease，而不是增加 Orchestrator 私有 ledger。
 
 ## 6. 并发、控制与恢复
 
 - `start` 和 `continue` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v13（该 creation intent 表由 State schema v9 引入并保留；v13
+  持久写入 State schema v14（该 creation intent 表由 State schema v9 引入并保留；v13
   迁移会删除旧 `creation_kind = compact` 的 pending intent）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
   若 reservation 已存在但 continuation run 尚未创建，重试沿用同一 reserved
@@ -430,6 +451,10 @@ v9，不保留旧 event schema 兼容路径。
 - owner 进程死亡后，resume 重开同一个 `run_id`，保留已提交前缀并提升 execution epoch。
 - 模型请求在途而账单未知时 fail closed 为 `RecoveryRequired`，不会盲目重发请求。
 - Host/Store 保证 canonical terminal 至多一个；模型只提出完成候选。
+- M6-A Writer 只接纳 clean Git、精确 base、唯一 Writer 和冻结 allowed paths；dirty、
+  base/branch 漂移、越界 diff、verifier 失败或恢复歧义 typed fail closed。
+- Writer integration 使用唯一 fast-forward 策略、跨进程 lease、精确 Git `HEAD.lock` 与
+  compare-and-swap；成功、失败、取消和恢复后的 cleanup 都按 canonical ownership 幂等执行。
 
 ## 7. 边界与门禁
 

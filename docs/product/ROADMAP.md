@@ -5,16 +5,18 @@
 - 状态：执行中
 - 当前阶段：M4 已关闭；M5-A canonical `TaskContract`/`EvidenceReceipt` 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 结论为 `shrink`：
-  保留硬上限安全压缩，删除手动和提前阈值压缩；当前进入 M6 最小 Orchestrator/worktree
-  垂直切片，M5-C RepoGraph 因无缺失检索证据继续延后。M4 最终代码检查点为
-  `65fa88ba`；M5-B 收缩检查点为 `e2c870b0`；当前 Run API v6、RuntimeEvent v9、State
-  schema v13。CLI、TUI、本地 API 与根/子 Agent 已统一到
+  保留硬上限安全压缩，删除手动和提前阈值压缩。M6-A 单 Writer isolated worktree
+  垂直闭环已完成，下一步是 M6-B 冻结任务 single-agent / writer-agent 正式 A/B；
+  M5-C RepoGraph 因无缺失检索证据继续延后。M4 最终代码检查点为 `65fa88ba`；
+  M5-B 收缩检查点为 `e2c870b0`；M6-A 代码与真实 canary 检查点为 `a982a9a8`。
+  当前 Run API v7、RuntimeEvent v10、State schema v14。CLI、TUI、本地 API 与
+  根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
   Goal/Memory 原型均已物理删除。focused、真实 PTY、进程级 crash/replay、严格 workspace
   Clippy 与完整 workspace tests 已通过。M1 的导入基线 A/B 与 M2 的完整官方 surface
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
-- 上次更新：2026-07-20
+- 上次更新：2026-07-21
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -1502,6 +1504,54 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 ## 10. M6：统一多 Agent
 
 多 Agent 是必须保留的产品能力。本阶段不是删除智能体，而是删除多套重复内核和产品外壳。
+
+### M6-A：单 Writer isolated worktree 闭环（已完成）
+
+- `crates/orchestrator::ProductionAgentOrchestrator` 是唯一生产编排 owner；它复用同一个
+  `AgentRuntime`、固定工具目录、canonical `RuntimeEvent` 与 SQLite `RunStore`，不拥有
+  第二模型循环、工具实现、终态或私有 ledger。
+- 唯一模型可见 `agent` 工具现在可以由 Host 接纳为一个 `IsolatedWrite` AgentTask。
+  当前严格限制为一个 root Integrator、最多一个 Writer、clean Git workspace、精确 base
+  commit 与冻结 allowed paths；Writer 角色本身不自动获得写权限。
+- Writer 从精确 base 创建独立 worktree，在相同 `AgentRuntime` 内执行；Host 封存真实
+  changed files、binary-safe diff、revision、检查和 usage，执行 worktree exact verifier，
+  再以唯一 fast-forward 策略集成。根分支使用跨进程 lease、精确 `HEAD.lock` 和
+  compare-and-swap，base 或分支变化时 typed conflict，不覆盖用户修改。
+- 集成后根 workspace generation/revision 推进，并在最新根 revision 重新执行 verifier；
+  Writer receipt 不能直接满足 root TaskContract。成功、失败、取消与恢复均走 canonical
+  lifecycle 和幂等 cleanup。
+- Writer 的 Linux bubblewrap / macOS seatbelt 工具执行只允许其 worktree，显式保护
+  `.git`、`.codewhale` 和 `.deepseek`；只读 child 行为和后续只读委派保持不变。
+- Run API v7、RuntimeEvent v10 与 State v14 持久化 `AgentTask`、workspace assignment、
+  Host-observed `AgentOutcome`、integration、post-integration verification 和 cleanup/recovery。
+  exec、TUI、HTTP/SSE/stdio 只投影这些 canonical facts。
+- Lane 的第二份 worktree create/remove 与重复字段/CLI 参数已物理删除；Lane/Fleet 仍有
+  真实消费者的 lifecycle/执行面没有在本切片无证据删除，也没有成为 Writer 的第二 owner。
+- 真实 DeepSeek 生产 canary 在 `a982a9a8` 通过完整
+  `root -> Writer -> edit -> verify -> integrate -> root verify -> complete -> cleanup`
+  链路：7/7 Standard Chat 请求完成、0 retry、根仓干净、worktree/临时 branch 均删除，
+  费用 USD `0.001594964`。它是 `mechanism_canary`，
+  `product_metric_eligible=false`，不证明多 Agent 更快或更省。
+- DeepSeek canary 暴露并修复了一个真实协议缺口：assistant tool call 与对应 tool result
+  之间若出现 child handoff，request projection 现在会暂存 handoff，先精确回放 tool
+  result，再恢复 handoff；缺失 tool result 在发 HTTP 前 typed fail closed。Strict
+  Function Calling 的 Beta 路由与整目录原子 fallback 未被误改。
+
+M6-A 明确没有实现完整 DAG、多 Writer 并发、脏工作区快照、自动冲突修复或远程 worker。
+这些都不能从单次 canary 推断为值得开发。
+
+### M6-B：先评测，后决定是否扩到双 Writer
+
+- 先冻结同任务、同模型、同工具、同请求/Token/费用上限的 current single-agent 与
+  M6-A writer-agent 对照；至少包含可分工写任务和不适合委派的 control 任务，每 cell
+  至少 3 次。
+- 同时测量 verified success、false-success、wall time、API requests、Token/cache、
+  费用、writer admission/rejection、冲突、integration、cleanup/recovery 与新增复杂度。
+- 若 M6-A 只在少数任务有收益，收缩为显式/确定性按需委派；若没有净收益，保留可靠的
+  isolated-write 机制但不默认调度，且不开发多 Writer。
+- 只有预注册门槛通过，才进入独立的 M6-B2：最多两个 allowed paths 不重叠的 Writer、
+  有界并发 2、同一个 Orchestrator/Runtime/Store，范围重叠或集成歧义一律 fail closed。
+  不开发通用 DAG、自由聊天 swarm、新工具族或另一套 scheduler。
 
 ### 工作
 

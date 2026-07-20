@@ -65,15 +65,22 @@ Changing one of these constraints requires evidence and a new ADR.
   shell, duplicate tool/state/model owners, and unwired Goal/Memory facades
   have been physically deleted. Underwater is the sole interactive shell.
   Production root/child execution uses canonical `AgentRuntime` and `RunStore`.
-- Current Run API is v6, State schema is v13, and RuntimeEvent is v9. State
-  v13 persists and rebuilds the exact tool catalog advertised by the latest
-  model request.
+- Current Run API is v7, State schema is v14, and RuntimeEvent is v10. State
+  v14 persists and rebuilds the exact tool catalog advertised by the latest
+  model request plus the canonical Writer lifecycle.
 - M5-A established the only canonical TaskContract/EvidenceReceipt/Host
   completion owner. M5-B retained the evidence-aware ContextBroker and
   hard-limit local compaction, then deleted manual/early compaction, the
   independent compaction root, and the model-summary lifecycle at shrink
   checkpoint `e2c870b0`. Its formal DeepSeek A/B does not support an
   efficiency claim.
+- M6-A established the unique production `Orchestrator` and a single
+  isolated Writer worktree lifecycle at code/canary checkpoint `a982a9a8`.
+  Root, read-only child, and Writer child use the same `AgentRuntime`; Host
+  seals diff/outcome, verifies in the worktree, integrates fast-forward with
+  Git CAS/lease, verifies the latest root revision, and cleans up. The live
+  canary is mechanism evidence only. M6-B must run frozen single-agent versus
+  Writer-agent A/B before any multi-Writer expansion.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split

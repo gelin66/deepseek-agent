@@ -3,7 +3,7 @@
 > 文档类别：产品权威。仅定义能力的验证与保留门槛。
 
 - 状态：V1 评测契约
-- 上次更新：2026-07-20
+- 上次更新：2026-07-21
 
 本文件决定一项能力是否真正提升产品。它不是排行榜，也不以“模型回答看起来不错”
 作为结论。
@@ -574,6 +574,43 @@ SHA-256 为 `2f5a1956b9fd18ac2b202f4911faef71cf88823ebeeead10f166af4ca6351b10`�
 `verified_success=null`。Harness 直接调用官方 API，不经过生产 Agent loop；它是当前 M2
 外部协议复核，不单独证明 Rust `RequestPlan`、transport 或 Agent 链路已接管，也不构成编码
 任务成功率、Token、时延或成本提升证据。历史 M1-B 5/5 结果继续作为旧 revision 基线保留。
+
+### 9.2 M6-A isolated Writer 机制证据（2026-07-21）
+
+M6-A 的验收目标是证明唯一 Orchestrator 下的单 Writer 生产闭环可用，而不是证明多 Agent
+具有产品净收益。离线验收必须覆盖：
+
+- root、read-only child、Writer 使用同一个 `AgentRuntime` conformance；
+- clean Git、精确 base、独立 worktree、allowed paths 和根目录字节隔离；
+- Host-observed diff/changed files/revision、worktree verifier、唯一 fast-forward
+  integration 与最新根 revision verifier；
+- base/branch CAS conflict、重复 integrate、取消、cleanup 和进程级 crash/reopen；
+- Memory/SQLite reducer parity，以及 exec/TUI/HTTP/stdio canonical projection；
+- 没有第二 Runtime、Store、模型调用路径、工具目录或 presentation-local truth。
+
+在代码检查点 `a982a9a878587450aab57e87f4ec9df7751eb146` 上，生产二进制
+SHA-256 `ccba6647be7e07b7f117bf1a28d888ffc4578215f7defcb2e40aa510e425566c`
+完成一次费用受限的官方 DeepSeek Writer canary：
+
+- `deepseek-v4-flash` Standard Chat 7/7 请求完成，0 transport retry；
+- 21,611 input、1,790 output、14,080 cache-hit、7,531 cache-miss、
+  726 reasoning Token，费用 USD `0.001594964`，耗时 29.047 秒；
+- Writer 只修改冻结范围 `answer.txt`，worktree exact verifier 与集成后根 verifier 均通过；
+- 集成为精确 fast-forward，根仓最终 clean，临时 worktree 与 branch 均删除；
+- 根 EvidenceReceipt 绑定 integration 后 workspace generation 3 和最新已知 revision；
+- Key 未进入 argv、stdio 协议、临时 State、fixture Git 或提交摘要。
+
+该记录必须标记：
+
+```text
+record_class=mechanism_canary
+product_metric_eligible=false
+```
+
+它只证明当前二进制、官方 API 与完整 Writer lifecycle 能共同工作。它不能替代 M6-B 的
+single-agent / writer-agent 冻结任务 A/B，不能证明成功率、Token、费用或时间改善，也不
+支持直接开发通用 DAG 或多 Writer swarm。可提交事实、身份与归因限制见
+[M6-A isolated Writer 机制 canary](../../eval/summaries/m6-a-isolated-writer-canary-2026-07-21.md)。
 
 ## 10. 结果与决策记录
 
