@@ -393,8 +393,24 @@ def event_summary(stream: list[dict[str, Any]]) -> dict[str, Any]:
     for name in kinds:
         counts[name] = counts.get(name, 0) + 1
     failures = []
+    tool_names = []
+    tool_outcomes = []
     for stored in stream:
         event = stored.get("event", {})
+        if event.get("kind") == "tool_prepared":
+            tool_names.append(event.get("invocation", {}).get("name"))
+        if event.get("kind") == "tool_outcome_committed":
+            outcome = event.get("outcome", {})
+            observation = outcome.get("verifier_observation", {})
+            tool_outcomes.append(
+                {
+                    "name": event.get("name"),
+                    "invocation": outcome.get("invocation"),
+                    "operation": outcome.get("operation"),
+                    "side_effect": outcome.get("side_effect"),
+                    "verifier_verdict": observation.get("verdict"),
+                }
+            )
         if event.get("kind") != "model_request_failed":
             continue
         failure = event.get("failure", {})
@@ -418,6 +434,10 @@ def event_summary(stream: list[dict[str, Any]]) -> dict[str, Any]:
     }
     if failures:
         summary["model_failures"] = failures
+    if tool_names:
+        summary["tool_names"] = tool_names
+    if tool_outcomes:
+        summary["tool_outcomes"] = tool_outcomes
     return summary
 
 def run_summary(run: dict[str, Any]) -> dict[str, Any]:
@@ -1062,7 +1082,20 @@ def live(args: argparse.Namespace, disclosure: dict[str, Any]) -> dict[str, Any]
                     raise Failure("run_view_missing")
                 run = result["run"]
                 check(run.get("model") == args.model, "root_model_projection_invalid")
-            request_counts = accounting(run)
+            try:
+                request_counts = accounting(run)
+            except Failure as error:
+                try:
+                    progress = collect_progress(client, root_id, run, "terminal-failure")
+                except Failure as progress_error:
+                    progress = {"collection_error": progress_error.code}
+                raise Failure(
+                    error.code,
+                    {
+                        **error.details,
+                        "progress": progress,
+                    },
+                ) from error
             disclosure["paid_request_started"] = True
             root_events = events(client, root_id, "m6-root-events")
             child_id = one(root_events, "agent_task_prepared")["task"]["child_run_id"]
