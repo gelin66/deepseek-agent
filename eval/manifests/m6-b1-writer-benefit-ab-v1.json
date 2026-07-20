@@ -13,6 +13,8 @@
     "accepted_arms": 36,
     "pair_attempts_max": 3,
     "pair_order": "task-local odd pair single->writer; even pair writer->single",
+    "terminal_request_catalog": "Runtime may advertise an empty tool catalog only on the final terminal model request; every earlier request must advertise the exact treatment catalog",
+    "wall_time_contract": "one absolute 240-second arm deadline bounds fixture Git setup, every stdio frame, the live app-server process, evidence Git commands, and the external verifier; post-delete elapsed time is also measured and fails the arm if it exceeds the contract",
     "task_round_order": [
       ["t1", "t2", "t3"],
       ["t2", "t3", "t1"],
@@ -31,6 +33,10 @@
     "max_output_tokens_per_request": 8192,
     "runtime_wall_time_seconds": 225,
     "harness_wall_time_seconds": 240,
+    "runtime_cancel_grace_seconds": 5,
+    "stdio_poll_timeout_seconds": 5,
+    "production_verifier_gate_timeout_ms": 600000,
+    "harness_external_verifier_timeout_seconds": 30,
     "max_tool_calls_per_arm": 24,
     "max_known_cost_usd_per_arm": 0.02,
     "suite_known_cost_usd": 0.5,
@@ -188,16 +194,16 @@
     }
   },
   "frozen_hashes": {
-    "manifest_sha256_excluding_this_field": "sha256:eb1a4cce2f135f5f5b2fc818af2b32a365ff96a8a0ab11fdda4057b4f4db827c",
+    "manifest_sha256_excluding_this_field": "sha256:7542b8cb0837065ae509dd04adb0766f29097d8f8c96e1fb6e739e6a78a7638a",
     "fixture_tree_sha256": {
       "t1": "sha256:0e7ff64a80159f7fff149fba3c0a24af5836a7c8697f32e3ad7c242d1bc87733",
       "t2": "sha256:1fc1e191d26c0ae486a3108ca96351b2e7d28b9dafbe6b55fb0691ab85b24922",
       "t3": "sha256:7fbd2ebbe0dc9db1c3484e4c26d030d8619d689fdf4747652d6626d7bb1279cc"
     },
     "task_definition_sha256": {
-      "t1": "sha256:a99cc6c7be65120d81dbb1cf84163550ffa2bf2b59b9430dafce82fcaad787ea",
-      "t2": "sha256:22754b95d9673f1a76f33d04d487d2fe44a4cb8f18c12f14e016c270f2ba2612",
-      "t3": "sha256:f62532920d430c8aac026ae1f04129395115f35a57767b9280ebca42897b7c7b"
+      "t1": "sha256:f6b5c636e2c66e3002e7f1472d61615dcb5c101d1f8f0058e35e34a544196378",
+      "t2": "sha256:d07579ee044f64fb7558eaf0117a9935c7c97c9225177a055996c3ba48a61c41",
+      "t3": "sha256:4007a982ad9d2d2327b7d8edf4cf0abddb24816375746e3ccf0a75238803ac0c"
     },
     "verifier_file_sha256": {
       "t1": "sha256:b5f53a18cdd6ebc83bd73bda77bc50ca98c63721ff6d19a60609cbec2e98ca39",
@@ -205,9 +211,9 @@
       "t3": "sha256:1ce985b7aab41d2a8bfb64222a34f2b42d85e13392ecc1989dc04092f966403b"
     },
     "verifier_spec_sha256": {
-      "t1": "sha256:b0e27f93ae9272019855baa9a7d3736e398c823377b951c0f884faa3bd0ca441",
-      "t2": "sha256:5578619fb8199b3b84ae3ab878bf19811b6ce5e7d1df133315dc890ad759c7c6",
-      "t3": "sha256:ef4a83da4af7a939f6c1c3ce5a7b4aba8606b60473f6750ca28cef27e07e5a93"
+      "t1": "sha256:e60fd62e21721f19a66e718b53e83ef2be875384e388b9dd9904130717fc29d8",
+      "t2": "sha256:2920cd8e1c7cfbf250f19e5e86c8ef07e34a55da3445e1354297cd0bc333a7f1",
+      "t3": "sha256:4a8531d59ccc4f995592b0345f1896c7a692492461feabd0539fefc5cc457346"
     }
   }
 }

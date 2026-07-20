@@ -327,24 +327,28 @@ class Stdio:
         self.stdin = process.stdin
         self.stdout = process.stdout
         self.forbidden = forbidden
+        self.stdin_fd = self.stdin.fileno()
+        self.stdout_fd = self.stdout.fileno()
+        os.set_blocking(self.stdin_fd, False)
+        os.set_blocking(self.stdout_fd, False)
+        self.buffer = bytearray()
         self.selector = selectors.DefaultSelector()
-        self.selector.register(self.stdout, selectors.EVENT_READ)
+        self.selector.register(self.stdout_fd, selectors.EVENT_READ)
 
-    def call(self, envelope: dict[str, Any]) -> dict[str, Any]:
+    def call(
+        self,
+        envelope: dict[str, Any],
+        timeout_seconds: float = 30,
+    ) -> dict[str, Any]:
         request_id = envelope["request_id"]
         encoded = (
             json.dumps(envelope, ensure_ascii=False, separators=(",", ":")).encode()
             + b"\n"
         )
         check(self.forbidden not in encoded, "key_in_protocol")
-        try:
-            self.stdin.write(encoded)
-            self.stdin.flush()
-        except OSError as error:
-            raise Failure("stdio_write_failed") from error
-        if not self.selector.select(30):
-            raise Failure("stdio_timeout")
-        line = bounded_line(self.stdout)
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        self._write_frame(encoded, deadline)
+        line = self._read_frame(deadline)
         check(self.forbidden not in line, "key_in_protocol")
         try:
             response = json.loads(line)
@@ -363,11 +367,60 @@ class Stdio:
             raise Failure(f"run_api_{code}" if isinstance(code, str) else "run_api_unknown")
         return result
 
+    def _write_frame(self, encoded: bytes, deadline: float) -> None:
+        view = memoryview(encoded)
+        while view:
+            try:
+                written = os.write(self.stdin_fd, view)
+            except BlockingIOError:
+                written = 0
+            except OSError as error:
+                raise Failure("stdio_write_failed") from error
+            if written:
+                view = view[written:]
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise Failure("stdio_timeout")
+            with selectors.DefaultSelector() as writable:
+                writable.register(self.stdin_fd, selectors.EVENT_WRITE)
+                if not writable.select(remaining):
+                    raise Failure("stdio_timeout")
+
+    def _read_frame(self, deadline: float) -> bytes:
+        while True:
+            newline = self.buffer.find(b"\n")
+            if newline >= 0:
+                line = bytes(self.buffer[: newline + 1])
+                del self.buffer[: newline + 1]
+                check(len(line) <= MAX_STDIO_FRAME, "stdio_frame_invalid")
+                return line
+            check(len(self.buffer) <= MAX_STDIO_FRAME, "stdio_frame_invalid")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self.selector.select(remaining):
+                raise Failure("stdio_timeout")
+            try:
+                chunk = os.read(self.stdout_fd, 65_536)
+            except BlockingIOError:
+                continue
+            except OSError as error:
+                raise Failure("stdio_read_failed") from error
+            check(bool(chunk), "stdio_frame_invalid")
+            self.buffer.extend(chunk)
+
     def close(self) -> None:
         self.selector.close()
 
-def events(client: Stdio, run_id: str, request_id: str) -> list[dict[str, Any]]:
-    result = client.call(query("events", run_id, request_id))
+def events(
+    client: Stdio,
+    run_id: str,
+    request_id: str,
+    timeout_seconds: float = 30,
+) -> list[dict[str, Any]]:
+    result = client.call(
+        query("events", run_id, request_id),
+        timeout_seconds=timeout_seconds,
+    )
     value = result.get("events")
     check(
         result.get("kind") == "events" and result.get("run_id") == run_id and isinstance(value, list),
@@ -975,12 +1028,15 @@ def accounting(run: dict[str, Any]) -> dict[str, Any]:
         )
     return result
 
-def stop(process: subprocess.Popen[bytes]) -> None:
+def stop(
+    process: subprocess.Popen[bytes],
+    timeout_seconds: float = 5,
+) -> None:
     if process.poll() is not None:
         return
     try:
         os.killpg(process.pid, signal.SIGTERM)
-        process.wait(timeout=5)
+        process.wait(timeout=max(0.0, timeout_seconds))
     except (OSError, subprocess.TimeoutExpired):
         try:
             os.killpg(process.pid, signal.SIGKILL)
@@ -1250,6 +1306,54 @@ def self_test() -> None:
         rejects("candidate_version_invalid", lambda value=invalid: parse_binary_version(value, revision))
     rejects("stdio_frame_invalid", lambda: bounded_line(io.BytesIO(b"unterminated")))
     rejects("stdio_frame_invalid", lambda: bounded_line(io.BytesIO(b"x" * (MAX_STDIO_FRAME + 1))))
+    partial = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import os,time; os.write(1,b'{\"partial\":'); time.sleep(1)",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    partial_client = Stdio(partial, b"forbidden")
+    try:
+        rejects(
+            "stdio_timeout",
+            lambda: partial_client.call(
+                {"request_id": "partial-frame"},
+                timeout_seconds=0.05,
+            ),
+        )
+    finally:
+        partial_client.close()
+        stop(partial, timeout_seconds=0)
+    echo = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json,sys; request=json.loads(sys.stdin.readline()); "
+                "print(json.dumps({'schema_version':7,"
+                "'request_id':request['request_id'],"
+                "'result':{'kind':'accepted','run_id':'run-1'}}),flush=True)"
+            ),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    echo_client = Stdio(echo, b"forbidden")
+    try:
+        assert echo_client.call(
+            {"request_id": "complete-frame"},
+            timeout_seconds=1,
+        ) == {"kind": "accepted", "run_id": "run-1"}
+    finally:
+        echo_client.close()
+        stop(echo, timeout_seconds=0)
     integrated = {"generation": 7, "revision": {"status": "known", "sha256": "sha256:x"}}
     check_post_integration_receipt(integrated, {"generation": 8, "revision": integrated["revision"]})
     rejects("root_receipt_not_latest", lambda: check_post_integration_receipt(integrated, integrated))

@@ -86,6 +86,17 @@ accepted-arm 还要求实际总 transport retry 不超过 1；所有 retry 都�
 还会在每个 arm 前和最终落盘前复核仓库、fixture、manifest、Harness、helper 与 binary
 身份，运行中变化会生成 typed abort。
 
+Runtime 在最后一次 terminal model request 会有意移除全部工具；Harness 只允许最后一个
+request 使用空目录，此前每个 request 仍必须精确匹配 treatment 目录。225 秒 Runtime wall
+后先留 5 秒给原生 timeout 收敛；仍无终态时，Harness 才通过 canonical Run API 发送
+cancel，并以 5 秒 stdio 轮询上限在总计 240 秒内收集 typed terminal 和完整 accounting，
+而不是与原生 deadline 竞态，或把悬挂执行伪装成未知的成功/重采样。
+同一个绝对 arm deadline 还约束每个 stdio frame（包括部分帧读写）、fixture/evidence Git
+命令、外部 verifier 和 app-server 停止等待；临时目录删除后的总耗时也会复核，超限即失败。
+TaskContract 中冻结的 verifier step timeout 必须与生产 `run_verifiers` 实际签入 observation
+的 600000 ms 完全一致，否则即使命令通过，Host 也会因 spec 不同而拒绝 EvidenceReceipt；
+Harness 自己的进程外复核仍使用独立的 30 秒上限。
+
 每个 arm 冻结 0.02 USD 已知费用储备；新 arm 只有在“累计已知费用 + 未知账单储备 +
 下一 arm 储备”不超过 0.50 USD 时才能启动，arm 后再次检查。该边界是已知费用下界加冻结
 储备，不虚构 unknown billing 为精确零账单。

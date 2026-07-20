@@ -203,18 +203,23 @@ def run_git(
     *arguments: str,
     check: bool = True,
     environment: dict[str, str] | None = None,
+    deadline: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        ["git", *arguments],
-        cwd=workspace,
-        env=environment or CANARY.safe_env(),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    timeout = bounded_timeout(deadline, 30, "arm_harness_deadline")
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=workspace,
+            env=environment or CANARY.safe_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise EvaluationError("git_deadline_exceeded") from error
     if check and result.returncode != 0:
         raise EvaluationError(
             "git_failed",
@@ -227,19 +232,43 @@ def run_git(
     return result
 
 
-def run_external_verifier(task_id: str, workspace: Path) -> dict[str, Any]:
+def bounded_timeout(
+    deadline: float | None,
+    maximum_seconds: float,
+    code: str,
+) -> float:
+    if deadline is None:
+        return maximum_seconds
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise EvaluationError(code)
+    return min(maximum_seconds, remaining)
+
+
+def run_external_verifier(
+    task_id: str,
+    workspace: Path,
+    deadline: float | None = None,
+) -> dict[str, Any]:
     before = canonical_hash(snapshot_tree(workspace))
     started = time.monotonic()
-    result = subprocess.run(
-        [str(PYTHON), "-I", "-B", "_eval_verifier.py", "."],
-        cwd=workspace,
-        env=CANARY.safe_env(),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=30,
-        check=False,
-    )
+    try:
+        result = subprocess.run(
+            [str(PYTHON), "-I", "-B", "_eval_verifier.py", "."],
+            cwd=workspace,
+            env=CANARY.safe_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=bounded_timeout(
+                deadline,
+                RESOURCES["harness_external_verifier_timeout_seconds"],
+                "arm_harness_deadline",
+            ),
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise EvaluationError("external_verifier_deadline_exceeded") from error
     after = canonical_hash(snapshot_tree(workspace))
     return {
         "passed": result.returncode == 0 and before == after,
@@ -252,18 +281,22 @@ def run_external_verifier(task_id: str, workspace: Path) -> dict[str, Any]:
     }
 
 
-def initialize_workspace(task_id: str, root: Path) -> tuple[Path, str, str]:
+def initialize_workspace(
+    task_id: str,
+    root: Path,
+    deadline: float | None = None,
+) -> tuple[Path, str, str]:
     source = fixture_path(task_id)
     workspace = root / "workspace"
     shutil.copytree(source, workspace, copy_function=shutil.copy2)
     initial_tree = canonical_hash(snapshot_tree(workspace))
     if initial_tree != fixture_hash(task_id):
         raise EvaluationError("fixture_copy_mismatch")
-    if run_external_verifier(task_id, workspace)["passed"]:
+    if run_external_verifier(task_id, workspace, deadline)["passed"]:
         raise EvaluationError("fixture_must_fail_before_task")
 
-    run_git(workspace, "init", "-q", "-b", "main")
-    run_git(workspace, "add", "--all")
+    run_git(workspace, "init", "-q", "-b", "main", deadline=deadline)
+    run_git(workspace, "add", "--all", deadline=deadline)
     environment = {
         **CANARY.safe_env(),
         "GIT_AUTHOR_DATE": "2026-07-21T00:00:00Z",
@@ -282,12 +315,25 @@ def initialize_workspace(task_id: str, root: Path) -> tuple[Path, str, str]:
         "-m",
         f"M6-B1 frozen fixture {task_id}",
         environment=environment,
+        deadline=deadline,
     )
     status = run_git(
-        workspace, "status", "--porcelain=v1", "--untracked-files=all"
+        workspace,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        deadline=deadline,
     ).stdout
-    base = run_git(workspace, "rev-parse", "HEAD").stdout.strip()
-    branch = run_git(workspace, "symbolic-ref", "-q", "HEAD").stdout.strip()
+    base = run_git(
+        workspace, "rev-parse", "HEAD", deadline=deadline
+    ).stdout.strip()
+    branch = run_git(
+        workspace,
+        "symbolic-ref",
+        "-q",
+        "HEAD",
+        deadline=deadline,
+    ).stdout.strip()
     if (
         status
         or len(base) != 40
@@ -309,7 +355,7 @@ def verifier_spec(task_id: str) -> dict[str, Any]:
         "args": arguments,
         "cwd": "",
         "env": {},
-        "timeout_ms": 30_000,
+        "timeout_ms": RESOURCES["production_verifier_gate_timeout_ms"],
     }
     return {
         "verifier_id": "run_verifiers",
@@ -343,7 +389,7 @@ def treatment_protocol(task_id: str) -> str:
         "处理协议由实际工具目录决定，且是验收的一部分："
         "若当前请求没有 agent 工具，根 Agent 必须直接使用文件工具完成修改；"
         "若当前请求存在 agent 工具，根 Agent 可以读取、搜索和审查，但不得调用 "
-        "apply_patch、edit_file、exec_shell 或 run_tests，必须且只能调用一次 agent，"
+        "apply_patch、edit_file、exec_shell、run_tests 或 run_verifiers，必须且只能调用一次 agent，"
         f"除 prompt 外的参数必须精确等于 {arguments}；prompt 必须完整转交当前任务。"
         "Writer 集成后根 Agent 只能只读审查并提出完成，最终只认 Host 冻结 verifier。"
     )
@@ -491,8 +537,20 @@ def tool_outcome_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
 def catalogs_are_exact(
     catalogs: list[dict[str, Any]], expected_names: list[str]
 ) -> bool:
-    return bool(catalogs) and all(
-        catalog["tool_names"] == expected_names for catalog in catalogs
+    if not catalogs:
+        return False
+    empty_positions = [
+        index
+        for index, catalog in enumerate(catalogs)
+        if catalog["tool_names"] == []
+    ]
+    if len(empty_positions) > 1:
+        return False
+    if empty_positions and empty_positions[0] != len(catalogs) - 1:
+        return False
+    return all(
+        catalog["tool_names"] in (expected_names, [])
+        for catalog in catalogs
     )
 
 
@@ -966,21 +1024,43 @@ def git_evidence(
     base_commit: str,
     state_root: Path,
     treatment: str,
+    deadline: float,
 ) -> dict[str, Any]:
-    head = run_git(workspace, "rev-parse", "HEAD").stdout.strip()
+    head = run_git(
+        workspace, "rev-parse", "HEAD", deadline=deadline
+    ).stdout.strip()
     status = run_git(
-        workspace, "status", "--porcelain=v1", "--untracked-files=all"
+        workspace,
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+        deadline=deadline,
     ).stdout.splitlines()
     changed = run_git(
-        workspace, "diff", "--name-only", "--no-renames", base_commit
+        workspace,
+        "diff",
+        "--name-only",
+        "--no-renames",
+        base_commit,
+        deadline=deadline,
     ).stdout.splitlines()
     untracked = run_git(
-        workspace, "ls-files", "--others", "--exclude-standard"
+        workspace,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+        deadline=deadline,
     ).stdout.splitlines()
     changed_files = sorted(set(changed + untracked))
     worktrees = [
         line.removeprefix("worktree ")
-        for line in run_git(workspace, "worktree", "list", "--porcelain")
+        for line in run_git(
+            workspace,
+            "worktree",
+            "list",
+            "--porcelain",
+            deadline=deadline,
+        )
         .stdout.splitlines()
         if line.startswith("worktree ")
     ]
@@ -989,6 +1069,7 @@ def git_evidence(
         "for-each-ref",
         "--format=%(refname)",
         "refs/heads/codewhale/writer/",
+        deadline=deadline,
     ).stdout.splitlines()
     managed = state_root / "codewhale" / "worktrees"
     managed_entries = (
@@ -1002,7 +1083,13 @@ def git_evidence(
         and not managed_entries
     )
     commit_count = int(
-        run_git(workspace, "rev-list", "--count", f"{base_commit}..{head}")
+        run_git(
+            workspace,
+            "rev-list",
+            "--count",
+            f"{base_commit}..{head}",
+            deadline=deadline,
+        )
         .stdout.strip()
     )
     expected_clean = treatment == "writer"
@@ -1074,6 +1161,12 @@ def treatment_audit(
         "catalog_valid": catalog_valid,
         "root_catalog_requests": len(root_catalogs),
         "child_catalog_requests": len(child_catalogs),
+        "root_terminal_empty_catalog_requests": sum(
+            catalog["tool_names"] == [] for catalog in root_catalogs
+        ),
+        "child_terminal_empty_catalog_requests": sum(
+            catalog["tool_names"] == [] for catalog in child_catalogs
+        ),
         "root_direct_write_violation": bool(root_direct_writes),
         "root_direct_write_tools": root_direct_writes,
         "agent_tool_calls": agent_count,
@@ -1189,10 +1282,32 @@ def query(kind: str, run_id: str, request_id: str) -> dict[str, Any]:
     return CANARY.query(kind, run_id, request_id)
 
 
+def cancel_was_accepted(response: dict[str, Any], run_id: str) -> bool:
+    return (
+        response.get("kind") == "accepted"
+        and response.get("run_id") == run_id
+    )
+
+
 def collect_events(
-    client: Any, run_id: str, request_id: str
+    client: Any,
+    run_id: str,
+    request_id: str,
+    deadline: float,
 ) -> list[dict[str, Any]]:
-    return CANARY.events(client, run_id, request_id)
+    return CANARY.events(
+        client,
+        run_id,
+        request_id,
+        timeout_seconds=remaining_stdio_timeout(deadline),
+    )
+
+
+def remaining_stdio_timeout(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise EvaluationError("arm_harness_deadline")
+    return min(RESOURCES["stdio_poll_timeout_seconds"], remaining)
 
 
 def failure_arm_record(
@@ -1306,16 +1421,18 @@ def execute_arm(
     execution_state: dict[str, Any],
 ) -> dict[str, Any]:
     arm_started = time.monotonic()
+    deadline = arm_started + RESOURCES["harness_wall_time_seconds"]
     arm_started_at_utc = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
     )
     evaluation_id = str(uuid.uuid4())
     execution_state["api_exposure"] = "none"
+    execution_state["harness_cancel_sent"] = False
     secret = key.encode()
     with tempfile.TemporaryDirectory(prefix="codewhale-m6b-arm-") as raw:
         ephemeral = Path(raw)
         workspace, base_commit, initial_tree = initialize_workspace(
-            task_id, ephemeral
+            task_id, ephemeral, deadline
         )
         if file_hash(binary) != binary_sha256:
             raise EvaluationError("candidate_binary_changed")
@@ -1369,6 +1486,7 @@ def execute_arm(
         root_events: list[dict[str, Any]] = []
         child_events: list[dict[str, Any]] = []
         child_run: dict[str, Any] = {}
+        harness_cancel_sent = False
         try:
             client = CANARY.Stdio(process, secret)
             envelope = start_command(
@@ -1380,31 +1498,65 @@ def execute_arm(
             if secret in canonical_bytes(envelope):
                 raise EvaluationError("key_in_protocol")
             execution_state["api_exposure"] = "possible"
-            response = client.call(envelope)
+            response = client.call(
+                envelope,
+                timeout_seconds=remaining_stdio_timeout(deadline),
+            )
             if response.get("kind") != "run":
                 raise EvaluationError("start_run_missing")
+            runtime_started = time.monotonic()
             run = response.get("run", {})
             run_id = run.get("run_id")
             if not isinstance(run_id, str):
                 raise EvaluationError("root_run_id_missing")
-            deadline = arm_started + RESOURCES["harness_wall_time_seconds"]
+            runtime_deadline = (
+                runtime_started + RESOURCES["runtime_wall_time_seconds"]
+            )
+            cancel_deadline = (
+                runtime_deadline
+                + RESOURCES["runtime_cancel_grace_seconds"]
+            )
             poll = 0
             while run.get("terminal") is None:
                 poll += 1
-                if time.monotonic() >= deadline:
+                now = time.monotonic()
+                if now >= deadline:
                     raise EvaluationError("arm_harness_deadline")
                 if process.poll() is not None:
                     raise EvaluationError("app_server_exited")
+                if (
+                    not harness_cancel_sent
+                    and now >= cancel_deadline
+                ):
+                    response = client.call(
+                        query(
+                            "cancel",
+                            run_id,
+                            f"m6b-cancel-{evaluation_id}",
+                        ),
+                        timeout_seconds=remaining_stdio_timeout(deadline),
+                    )
+                    if not cancel_was_accepted(response, run_id):
+                        raise EvaluationError("cancel_not_accepted")
+                    harness_cancel_sent = True
+                    execution_state["harness_cancel_sent"] = True
+                    continue
                 time.sleep(0.2)
                 response = client.call(
-                    query("get", run_id, f"m6b-get-{evaluation_id}-{poll}")
+                    query("get", run_id, f"m6b-get-{evaluation_id}-{poll}"),
+                    timeout_seconds=remaining_stdio_timeout(deadline),
                 )
                 if response.get("kind") != "run":
                     raise EvaluationError("run_view_missing")
                 run = response.get("run", {})
 
+            execution_state["api_exposure"] = "accounted"
+            execution_state["accounting"] = accounting_summary(run)
             root_events = collect_events(
-                client, run_id, f"m6b-root-events-{evaluation_id}"
+                client,
+                run_id,
+                f"m6b-root-events-{evaluation_id}",
+                deadline,
             )
             child_ids = [
                 event.get("task", {}).get("child_run_id")
@@ -1417,7 +1569,8 @@ def execute_arm(
                         "get",
                         child_ids[0],
                         f"m6b-child-get-{evaluation_id}",
-                    )
+                    ),
+                    timeout_seconds=remaining_stdio_timeout(deadline),
                 )
                 if response.get("kind") == "run":
                     child_run = response.get("run", {})
@@ -1425,13 +1578,17 @@ def execute_arm(
                         client,
                         child_ids[0],
                         f"m6b-child-events-{evaluation_id}",
+                        deadline,
                     )
         except CANARY.Failure as error:
             raise EvaluationError(error.code) from error
         finally:
             if client is not None:
                 client.close()
-            CANARY.stop(process)
+            CANARY.stop(
+                process,
+                timeout_seconds=max(0.0, deadline - time.monotonic()),
+            )
 
         stderr = stderr_path.read_bytes() if stderr_path.is_file() else b""
         if secret in stderr:
@@ -1485,9 +1642,15 @@ def execute_arm(
             root_receipt,
         )
         git = git_evidence(
-            workspace, base_commit, state_root, treatment
+            workspace,
+            base_commit,
+            state_root,
+            treatment,
+            deadline,
         )
-        exact_verifier = run_external_verifier(task_id, workspace)
+        exact_verifier = run_external_verifier(
+            task_id, workspace, deadline
+        )
         treatment_result = treatment_audit(
             task_id,
             treatment,
@@ -1610,6 +1773,7 @@ def execute_arm(
             "false_success": false_success,
             "task_success_before_measurement": task_success_before_measurement,
             "wall_time_contract_valid": wall_time_valid,
+            "harness_cancel_sent_after_runtime_grace": harness_cancel_sent,
             "budget_terminal_attribution_valid": budget_terminal_valid,
             "terminal": terminal,
             "completion": root_receipt,
@@ -2657,6 +2821,20 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertEqual(RESOURCES["suite_known_cost_usd"], 0.5)
         self.assertEqual(MAX_PAIR_ATTEMPTS, 3)
         self.assertEqual(MODEL, "deepseek-v4-flash")
+        self.assertEqual(
+            RESOURCES["production_verifier_gate_timeout_ms"], 600_000
+        )
+        self.assertLess(
+            RESOURCES["runtime_wall_time_seconds"]
+            + RESOURCES["runtime_cancel_grace_seconds"],
+            RESOURCES["harness_wall_time_seconds"],
+        )
+        self.assertLessEqual(
+            RESOURCES["stdio_poll_timeout_seconds"],
+            RESOURCES["harness_wall_time_seconds"]
+            - RESOURCES["runtime_wall_time_seconds"]
+            - RESOURCES["runtime_cancel_grace_seconds"],
+        )
         self.assertEqual(ROOT_BASE_CATALOG, sorted(ROOT_BASE_CATALOG))
         self.assertEqual(WRITER_ROOT_CATALOG, sorted(WRITER_ROOT_CATALOG))
         self.assertEqual(WRITER_CHILD_TOOLS, sorted(WRITER_CHILD_TOOLS))
@@ -2812,6 +2990,47 @@ class HarnessSelfTests(unittest.TestCase):
     def test_canonical_source_owners_are_singular(self) -> None:
         self.assertEqual(source_owner_audit(), expected_source_owners())
 
+    def test_runtime_terminal_catalog_is_empty_only_at_the_end(self) -> None:
+        expected = ["read_file", "run_verifiers"]
+        self.assertTrue(
+            catalogs_are_exact(
+                [
+                    {"tool_names": expected},
+                    {"tool_names": expected},
+                    {"tool_names": []},
+                ],
+                expected,
+            )
+        )
+        self.assertFalse(
+            catalogs_are_exact(
+                [
+                    {"tool_names": expected},
+                    {"tool_names": []},
+                    {"tool_names": expected},
+                ],
+                expected,
+            )
+        )
+        self.assertFalse(
+            catalogs_are_exact(
+                [{"tool_names": ["read_file"]}],
+                expected,
+            )
+        )
+        self.assertTrue(
+            cancel_was_accepted(
+                {"kind": "accepted", "run_id": "run-1"},
+                "run-1",
+            )
+        )
+        self.assertFalse(
+            cancel_was_accepted(
+                {"kind": "run", "run_id": "run-1"},
+                "run-1",
+            )
+        )
+
 
 def run_self_tests() -> int:
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(HarnessSelfTests)
@@ -2951,6 +3170,9 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     if "accounting" in execution_state:
                         arm["requests"] = execution_state["accounting"]
+                    arm["harness_cancel_sent_after_runtime_grace"] = (
+                        execution_state["harness_cancel_sent"]
+                    )
                 pair["arms"].append(arm)
                 progress = partial_payload(
                     identity,
