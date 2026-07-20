@@ -564,10 +564,9 @@ fn canonical_local_commands_are_truthful_and_never_post_to_deepseek() -> anyhow:
     tui.wait_for_text("/help", Duration::from_secs(5))?;
     tui.send(keys::key::enter())?;
     tui.wait_for_text("当前可用命令：", Duration::from_secs(5))?;
-    tui.wait_for_text("/compact", Duration::from_secs(5))?;
     tui.wait_for_text("/cost", Duration::from_secs(5))?;
 
-    for command in ["/provider", "/load", "/skills"] {
+    for command in ["/compact", "/provider", "/load", "/skills"] {
         tui.paste(command)?;
         tui.send(keys::key::enter())?;
         tui.wait_for_text(&format!("未知命令：{command}"), Duration::from_secs(5))?;

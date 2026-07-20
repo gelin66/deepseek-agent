@@ -2,11 +2,11 @@ use std::collections::HashMap;
 
 use codewhale_protocol::agent_runtime::{
     AGENT_RUNTIME_EVENT_SCHEMA_VERSION, ActorRequestAccounting, AgentActor, AgentActorKind,
-    AgentOutcome, AttemptId, ContextCompactionId, ContextCompactionTrigger, ContextProjection,
-    ModelAccounting, ModelAttemptFailure, ModelErrorCategory, ModelMessage, ModelRequest,
-    ModelRetryDecision, ModelRetryStopReason, PreparedModelRetry, PromptCacheControl,
-    ReasoningEffort, RunId, RunRequest, RuntimeEventId, RuntimeEventKind, RuntimeFailure,
-    StoredRuntimeEvent, SystemPrompt, SystemPromptBlock, TerminalState, ToolDefinition,
+    AgentOutcome, AttemptId, ContextProjection, ModelAccounting, ModelAttemptFailure,
+    ModelErrorCategory, ModelMessage, ModelRequest, ModelRetryDecision, ModelRetryStopReason,
+    PreparedModelRetry, PromptCacheControl, ReasoningEffort, RunId, RunRequest, RuntimeEventId,
+    RuntimeEventKind, RuntimeFailure, StoredRuntimeEvent, SystemPrompt, SystemPromptBlock,
+    TerminalState, ToolDefinition,
 };
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 
@@ -140,9 +140,6 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
         "当前角色：只读子 Agent。",
     );
     child_request.limits.max_model_requests = 0;
-    child_request.context_policy.auto_compact = true;
-    child_request.context_policy.context_window_tokens = 16_000;
-    child_request.context_policy.trigger_tokens = 10_000;
     child_request.context_policy.hard_input_tokens = 12_000;
     let initial_model_request = model_request(&root_request, 0);
     let retry_model_request = model_request(&root_request, 1);
@@ -269,8 +266,6 @@ fn prompt_ledger_fixture() -> Vec<StoredRuntimeEvent> {
             "child-compaction-committed",
             2,
             RuntimeEventKind::ContextCompactionCommitted {
-                compaction_id: ContextCompactionId("child-compaction-1".to_owned()),
-                trigger: ContextCompactionTrigger::PreflightLimit,
                 projection: Box::new(ContextProjection {
                     source_entry_count: 8,
                     source_projection_sha256: "fixture-source-projection".to_owned(),
@@ -332,10 +327,10 @@ fn assert_retry_only_advances_attempt(initial: &ModelRequest, retry: &ModelReque
 }
 
 #[test]
-fn runtime_event_v8_prompt_ledger_fixture_matches_rust_contract() {
+fn runtime_event_v9_prompt_ledger_fixture_matches_rust_contract() {
     let fixture = prompt_ledger_fixture();
     let fixture_json =
-        serde_json::to_vec(&fixture).expect("RuntimeEvent v8 fixture must serialize");
+        serde_json::to_vec(&fixture).expect("RuntimeEvent v9 fixture must serialize");
     let fixture_wire = std::str::from_utf8(&fixture_json).expect("fixture JSON must be UTF-8");
     for deleted_kind in [
         "context_compaction_prepared",
@@ -344,11 +339,11 @@ fn runtime_event_v8_prompt_ledger_fixture_matches_rust_contract() {
     ] {
         assert!(
             !fixture_wire.contains(deleted_kind),
-            "v8 fixture must not retain deleted event kind {deleted_kind}"
+            "v9 fixture must not retain deleted event kind {deleted_kind}"
         );
     }
     let events: Vec<StoredRuntimeEvent> = serde_json::from_slice(&fixture_json)
-        .expect("fixture must use the Rust RuntimeEvent v8 schema");
+        .expect("fixture must use the Rust RuntimeEvent v9 schema");
     assert!(!events.is_empty());
 
     for event in &events {
@@ -516,13 +511,13 @@ fn runtime_event_v8_prompt_ledger_fixture_matches_rust_contract() {
         })
         .expect("fixture must contain a committed deterministic compaction");
     let encoded = serde_json::to_value(compaction).expect("compaction event must serialize");
-    assert_eq!(encoded["schema_version"], 8);
+    assert_eq!(encoded["schema_version"], 9);
     assert_eq!(encoded["event"]["kind"], "context_compaction_committed");
     assert!(
         encoded["event"].get("attempt_id").is_none()
             && encoded["event"].get("request").is_none()
             && encoded["event"].get("output").is_none(),
-        "v8 compaction must not retain the deleted model-summary protocol"
+        "v9 compaction must not retain the deleted model-summary protocol"
     );
     match &compaction.event {
         RuntimeEventKind::ContextCompactionCommitted {

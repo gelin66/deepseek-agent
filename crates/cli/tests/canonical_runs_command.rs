@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use codewhale_protocol::agent_runtime::{InheritedRunFacts, RunId, RunPurpose, RunRequest};
+use codewhale_protocol::agent_runtime::{RunId, RunRequest};
 use codewhale_protocol::run_api::{RUN_API_SCHEMA_VERSION, RunCommandResponse, RunCommandResult};
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
@@ -20,7 +20,6 @@ async fn seed_root(
     store: &StateStore,
     run_id: &str,
     workspace: &Path,
-    purpose: RunPurpose,
     parent_run_id: Option<RunId>,
 ) {
     let run_id = RunId::from(run_id);
@@ -31,7 +30,6 @@ async fn seed_root(
         },
         "fixture system prompt",
     );
-    request.purpose = purpose;
     request.parent_run_id = parent_run_id;
     request.environment.workspace = workspace.display().to_string();
     let created = store.create(request).await.expect("create canonical run");
@@ -62,35 +60,6 @@ async fn complete_root(store: &StateStore, run_id: &str) {
         )
         .await
         .expect("complete canonical run");
-}
-
-async fn seed_compaction(store: &StateStore, run_id: &str, source_run_id: &str) {
-    let source_run_id = RunId::from(source_run_id);
-    let source = store
-        .load(&source_run_id)
-        .await
-        .expect("load source root")
-        .expect("source root exists");
-    let mut request = source.snapshot.request.clone();
-    request.run_id = Some(RunId::from(run_id));
-    request.parent_run_id = None;
-    request.continued_from_run_id = Some(source_run_id);
-    request.purpose = RunPurpose::ContextCompaction;
-    request.task_contract = None;
-    request.transcript = source.snapshot.transcript;
-    request.inherited_facts = Some(InheritedRunFacts {
-        workspace_state: source.snapshot.workspace_state,
-        last_completion_rejection: source.snapshot.last_completion_rejection,
-        last_host_verification_failure: source.snapshot.last_host_verification_failure,
-    });
-    let created = store
-        .create(request)
-        .await
-        .expect("create canonical compaction root");
-    store
-        .release(&created.lease)
-        .await
-        .expect("release canonical compaction root");
 }
 
 fn run_dispatcher(home: &Path, workspace: &Path, args: &[&str]) -> Output {
@@ -183,28 +152,17 @@ async fn dispatcher_lists_workspace_scoped_agent_roots_without_credentials() {
 
     let store =
         StateStore::open(Some(home.path().join("state.db"))).expect("open canonical State DB");
-    seed_root(&store, "aa-agent-old", &workspace, RunPurpose::Agent, None).await;
+    seed_root(&store, "aa-agent-old", &workspace, None).await;
     complete_root(&store, "aa-agent-old").await;
-    seed_root(
-        &store,
-        "other-agent",
-        &other_workspace,
-        RunPurpose::Agent,
-        None,
-    )
-    .await;
+    seed_root(&store, "other-agent", &other_workspace, None).await;
     seed_root(
         &store,
         "child-agent",
         &workspace,
-        RunPurpose::Agent,
         Some(RunId::from("aa-agent-old")),
     )
     .await;
-    seed_root(&store, "yy-agent-new", &workspace, RunPurpose::Agent, None).await;
-    // This is newest so a raw ListRoots(limit=1) would hide the user run.
-    // The CLI must filter purpose before applying its user-facing limit.
-    seed_compaction(&store, "zz-internal-compaction", "aa-agent-old").await;
+    seed_root(&store, "yy-agent-new", &workspace, None).await;
     drop(store);
 
     let all = parse_response(&run_dispatcher(
@@ -227,7 +185,6 @@ async fn dispatcher_lists_workspace_scoped_agent_roots_without_credentials() {
             .collect::<Vec<_>>(),
         vec!["yy-agent-new", "aa-agent-old"]
     );
-    assert!(runs.iter().all(|run| run.purpose == RunPurpose::Agent));
 
     let limited = parse_response(&run_dispatcher(
         home.path(),
@@ -340,14 +297,7 @@ async fn canonical_runs_bypasses_malformed_config_without_tui_or_credentials() {
         .expect("canonical temporary workspace");
     let store =
         StateStore::open(Some(home.path().join("state.db"))).expect("open canonical State DB");
-    seed_root(
-        &store,
-        "agent-with-bad-config",
-        &workspace,
-        RunPurpose::Agent,
-        None,
-    )
-    .await;
+    seed_root(&store, "agent-with-bad-config", &workspace, None).await;
     let before_events = store
         .load(&RunId::from("agent-with-bad-config"))
         .await

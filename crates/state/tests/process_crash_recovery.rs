@@ -747,9 +747,6 @@ fn runtime_request() -> RunRequest {
     request.limits.max_model_requests = 4;
     request.limits.max_tool_calls = 4;
     request.context_policy = codewhale_runtime::ContextPolicy {
-        auto_compact: false,
-        context_window_tokens: 100_000,
-        trigger_tokens: 80_000,
         hard_input_tokens: 90_000,
     };
     request
@@ -810,10 +807,7 @@ fn scenario_request(scenario: CrashScenario) -> RunRequest {
                 });
         }
         request.context_policy = codewhale_runtime::ContextPolicy {
-            auto_compact: true,
-            context_window_tokens: 100_000,
-            trigger_tokens: 2_000,
-            hard_input_tokens: 80_000,
+            hard_input_tokens: 2_000,
         };
     }
     request
@@ -933,8 +927,6 @@ async fn commit_steer_applied_prefix(store: &StateStore, model_marker: &Path, ab
             .last_host_verification_failure
             .as_ref()
             .map(|failure| &failure.workspace_state),
-        pending_interaction: None,
-        pending_control: None,
         tools: &tools,
     })
     .expect("build canonical steer-applied request projection");

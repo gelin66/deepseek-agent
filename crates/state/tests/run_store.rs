@@ -18,12 +18,12 @@ use codewhale_protocol::task::{
 use codewhale_runtime::{
     ActorRequestAccounting, AgentOutcome, AttemptId, CommandId, CreatedRun, DurableActionState,
     InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput, ModelRequest, ModelToolCall,
-    OperationId, PendingRuntimeEvent, RootRunRecord, RunId, RunLease, RunPurpose, RunReplay,
-    RunRequest, RunSnapshot, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind,
-    RuntimeFailure, StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact,
-    ToolArtifactStatus, ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation,
-    ToolInvocationStatus, ToolOperationStatus, ToolOutcome, ToolRetryDisposition,
-    ToolSideEffectStatus, ToolTransportStatus, Usage, WorkspaceAccess, reduce_events,
+    OperationId, PendingRuntimeEvent, RootRunRecord, RunId, RunLease, RunReplay, RunRequest,
+    RunSnapshot, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeFailure,
+    StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus,
+    ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus,
+    ToolOperationStatus, ToolOutcome, ToolRetryDisposition, ToolSideEffectStatus,
+    ToolTransportStatus, Usage, WorkspaceAccess, reduce_events,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -111,16 +111,6 @@ fn model_request_for_snapshot(
             .last_host_verification_failure
             .as_ref()
             .map(|failure| &failure.workspace_state),
-        pending_interaction: snapshot
-            .pending_tool
-            .as_ref()
-            .and_then(|pending| pending.interaction.as_ref())
-            .filter(|interaction| interaction.response.is_none())
-            .map(|interaction| &interaction.request),
-        pending_control: snapshot
-            .pending_control
-            .as_ref()
-            .map(|control| control.action),
         tools: &tools,
     })
     .expect("build canonical model request projection");
@@ -220,7 +210,7 @@ async fn append_to_both(
 
 fn root_list_semantics(
     records: Vec<RootRunRecord>,
-) -> Vec<(RunId, RunPurpose, Option<RunId>, String, u64, bool)> {
+) -> Vec<(RunId, Option<RunId>, String, u64, bool)> {
     records
         .into_iter()
         .map(|record| {
@@ -228,7 +218,6 @@ fn root_list_semantics(
             assert!(record.updated_at_unix_ms >= record.created_at_unix_ms);
             (
                 record.run_id,
-                record.purpose,
                 record.continued_from_run_id,
                 record.workspace,
                 record.last_sequence,
@@ -1343,19 +1332,6 @@ async fn root_list_semantics_match_memory_for_purpose_lineage_order_limit_and_st
     )
     .await;
 
-    let mut compaction = request("root-list-03-context-compaction", workspace);
-    compaction.purpose = RunPurpose::ContextCompaction;
-    compaction.task_contract = None;
-    let compaction = continuation_request(compaction, &source, sqlite_source.lease.run_id.clone());
-    sqlite
-        .create(compaction.clone())
-        .await
-        .expect("create sqlite context-compaction root");
-    memory
-        .create(compaction)
-        .await
-        .expect("create memory context-compaction root");
-
     let active_request = request("root-list-04-active", workspace);
     sqlite
         .create(active_request.clone())
@@ -1405,23 +1381,13 @@ async fn root_list_semantics_match_memory_for_purpose_lineage_order_limit_and_st
         vec![
             (
                 RunId::from("root-list-04-active"),
-                RunPurpose::Agent,
                 None,
                 workspace.to_owned(),
                 1,
                 false,
             ),
             (
-                RunId::from("root-list-03-context-compaction"),
-                RunPurpose::ContextCompaction,
-                Some(RunId::from("root-list-01-source")),
-                workspace.to_owned(),
-                1,
-                false,
-            ),
-            (
                 RunId::from("root-list-02-agent-continuation"),
-                RunPurpose::Agent,
                 Some(RunId::from("root-list-01-source")),
                 workspace.to_owned(),
                 2,
@@ -1429,7 +1395,6 @@ async fn root_list_semantics_match_memory_for_purpose_lineage_order_limit_and_st
             ),
             (
                 RunId::from("root-list-01-source"),
-                RunPurpose::Agent,
                 None,
                 workspace.to_owned(),
                 2,
@@ -1694,7 +1659,7 @@ async fn v5_migration_replays_and_backfills_prepared_and_in_flight_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 12);
+    assert_eq!(user_version, 13);
     for (run_id, expected_state) in [
         ("v5-prepared", DurableActionState::Prepared),
         ("v5-in-flight", DurableActionState::InFlight),
@@ -1759,7 +1724,7 @@ async fn v9_migration_rebuilds_committed_response_catalog_from_canonical_events(
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated v12 version");
-    assert_eq!(user_version, 12);
+    assert_eq!(user_version, 13);
     let snapshot_json: String = conn
         .query_row(
             "SELECT snapshot_json FROM agent_run_snapshots WHERE run_id = ?1",
@@ -1883,7 +1848,7 @@ async fn v10_migration_deletes_retired_state_and_preserves_canonical_run_replay(
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated v12 version");
-    assert_eq!(user_version, 12);
+    assert_eq!(user_version, 13);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -1978,7 +1943,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 12);
+        assert_eq!(user_version, 13);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -2269,13 +2234,13 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 13)
+    conn.pragma_update(None, "user_version", 14)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 12")
+            .contains("newer than supported version 13")
     );
 }

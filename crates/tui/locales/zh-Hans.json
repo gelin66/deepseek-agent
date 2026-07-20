@@ -1,6 +1,5 @@
 {
     "ComposerPlaceholder": "编写任务或使用 /。",
-    "CmdCompactDescription": "触发上下文压缩以释放空间",
     "CmdCostDescription": "显示本次会话的费用明细",
     "CmdExitDescription": "退出应用",
     "CmdHelpDescription": "理解概念、命令与快捷键",
@@ -36,7 +35,7 @@
     "OnboardTrustSaveFailed": "保存工作区信任失败：{error}",
     "OnboardTipsTitle": "开始使用",
     "OnboardTipsLine1": "直接用自然语言描述任务，Agent 会在当前工作区执行并验证结果。",
-    "OnboardTipsLine2": "用 {help} 查看可用命令；上下文过长时用 {compact} 压缩。",
+    "OnboardTipsLine2": "用 {help} 查看可用命令。",
     "OnboardTipsLine3": "用 {cost} 查看本次运行的用量与费用。",
     "OnboardTipsLine4": "用 {exit} 或 {quit} 退出。",
     "OnboardTipsFooterEnter": "按 {key}",
@@ -54,7 +53,6 @@
     "CanonicalWaitTerminalBeforeExit": "等待 canonical 终态事件后才能退出",
     "CanonicalInterruptAccepted": "中断请求已受理，等待 canonical 终态…",
     "CanonicalWaitTerminal": "等待 canonical 终态事件…",
-    "CanonicalNoTerminalRunToCompact": "当前没有可压缩的终态运行",
     "CanonicalCancelBeforeExit": "正在取消当前运行，完成后退出…",
     "CanonicalHelpShown": "已显示 canonical 交互命令",
     "CanonicalCostShown": "已显示 canonical 用量费用",

@@ -10,13 +10,13 @@ use std::num::NonZeroU32;
 use serde::{Deserialize, Serialize};
 
 use crate::agent_runtime::{
-    InteractionId, ModelAccounting, ReasoningEffort, RunId, RunLimits, RunPurpose,
-    StoredRuntimeEvent, TerminalState, ToolPolicy, Usage, UserInteractionResponse,
+    InteractionId, ModelAccounting, ReasoningEffort, RunId, RunLimits, StoredRuntimeEvent,
+    TerminalState, ToolPolicy, Usage, UserInteractionResponse,
 };
 use crate::task::{TaskContract, TaskDefinition};
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 5;
+pub const RUN_API_SCHEMA_VERSION: u32 = 6;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -86,14 +86,6 @@ pub struct ContinueRunCommand {
     pub expected_workspace: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", deny_unknown_fields)]
-pub struct CompactRunCommand {
-    pub run_id: RunId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_workspace: Option<String>,
-}
-
 /// Durable identity of a creation command whose reserved run has not reached
 /// `RunCreated`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +93,6 @@ pub struct CompactRunCommand {
 pub enum PendingCreationKind {
     Start,
     Continue,
-    Compact,
 }
 
 /// Read-only projection of one pending creation intent.
@@ -138,7 +129,6 @@ pub struct RunCommandEnvelope {
 pub enum RunCommand {
     Start(StartRunCommand),
     Continue(ContinueRunCommand),
-    Compact(CompactRunCommand),
     ListRoots {
         workspace: String,
         #[serde(default = "default_run_list_limit")]
@@ -190,7 +180,6 @@ pub enum RunCommand {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RunView {
     pub run_id: RunId,
-    pub purpose: RunPurpose,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_run_id: Option<RunId>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -212,7 +201,6 @@ pub struct RunView {
 
 /// Lightweight RunStore projection used for workspace-scoped session lookup.
 ///
-/// Entries are root runs, including internal context-compaction roots.
 /// Continuation lineage is represented by `continued_from_run_id`; child
 /// hierarchy remains represented exclusively by `parent_run_id` on full run
 /// views and events.
@@ -220,7 +208,6 @@ pub struct RunView {
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RootRunSummary {
     pub run_id: RunId,
-    pub purpose: RunPurpose,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub continued_from_run_id: Option<RunId>,
     pub workspace: String,
@@ -367,7 +354,6 @@ mod tests {
     fn run_view() -> RunView {
         RunView {
             run_id: RunId::from("run-1"),
-            purpose: RunPurpose::Agent,
             parent_run_id: None,
             continued_from_run_id: None,
             model: "deepseek-v4-flash".to_owned(),
@@ -403,7 +389,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 5,
+                "schema_version": 6,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
@@ -485,10 +471,6 @@ mod tests {
                 task: TaskDefinition::host("继续修复"),
                 expected_workspace: Some("/workspace/project".to_owned()),
             }),
-            RunCommand::Compact(CompactRunCommand {
-                run_id: RunId::from("run-1"),
-                expected_workspace: Some("/workspace/project".to_owned()),
-            }),
             RunCommand::ListRoots {
                 workspace: "/workspace/project".to_owned(),
                 limit: 25,
@@ -530,7 +512,6 @@ mod tests {
         let expected = [
             "start",
             "continue",
-            "compact",
             "list_roots",
             "list_pending_creations",
             "recover_creation",

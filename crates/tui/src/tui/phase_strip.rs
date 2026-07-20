@@ -177,16 +177,11 @@ pub fn render(area: Rect, buf: &mut Buffer, app: &mut App) {
 
     // Live phases keep the strip quiet so the ledger owns attention.
     // Idle/typing advertise only commands handled by the canonical foreground.
-    // Compact terminals keep the discovery entry; wider tiers also expose the
-    // manual compaction operation.
     let right_text: Cow<'static, str> = if PhaseStripPlacement::for_phase(phase).is_above_composer()
     {
         Cow::Borrowed("")
     } else {
-        Cow::Borrowed(match tier {
-            ShellTier::Compact => "/help",
-            ShellTier::Normal | ShellTier::Wide => "/help · /compact",
-        })
+        Cow::Borrowed("/help")
     };
 
     let right_width = right_text.width();
@@ -299,7 +294,7 @@ mod tests {
         assert!(text.contains("工作中"), "{text}");
         assert!(text.contains("12s"), "{text}");
         assert!(
-            !text.contains("/help") && !text.contains("/compact"),
+            !text.contains("/help"),
             "live phase strip stays quiet: {text}"
         );
     }
@@ -323,7 +318,7 @@ mod tests {
         for width in [80, 120] {
             let text = render_text(width);
             assert!(text.contains("/help"), "{text}");
-            assert!(text.contains("/compact"), "{text}");
+            assert!(!text.contains("/compact"), "{text}");
             assert!(!text.contains("Alt+V"), "{text}");
             assert!(!text.contains("F1"), "{text}");
         }

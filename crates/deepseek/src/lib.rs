@@ -889,19 +889,13 @@ mod tests {
             last_completion_rejection: None,
             last_verifier_failure: None,
             last_verifier_failure_workspace: None,
-            pending_interaction: None,
-            pending_control: None,
             tools: &tools,
         };
         let ContextCompactionPreparation::Local { projection, .. } = prepare_compaction(
             input,
             ContextPolicy {
-                auto_compact: true,
-                context_window_tokens: 40_000,
-                trigger_tokens: 6_000,
-                hard_input_tokens: 30_000,
+                hard_input_tokens: 6_000,
             },
-            true,
         )
         .expect("deterministic compaction") else {
             panic!("long fixture must produce a local compaction");

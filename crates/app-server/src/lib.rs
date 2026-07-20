@@ -101,7 +101,6 @@ struct WorkspaceListQuery {
 enum PostRoute {
     Start,
     Continue,
-    Compact,
     Resume,
     Steer,
     Interrupt,
@@ -141,7 +140,6 @@ pub fn router(
         .route("/v1/runs/{run_id}", get(get_run))
         .route("/v1/runs/{run_id}/events", get(get_events))
         .route("/v1/runs/{run_id}/continue", post(continue_run))
-        .route("/v1/runs/{run_id}/compact", post(compact_run))
         .route("/v1/runs/{run_id}/resume", post(resume_run))
         .route("/v1/runs/{run_id}/steer", post(steer_run))
         .route("/v1/runs/{run_id}/interrupt", post(interrupt_run))
@@ -222,14 +220,6 @@ async fn continue_run(
     payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     execute_post(&state, PostRoute::Continue, Some(run_id), None, payload).await
-}
-
-async fn compact_run(
-    State(state): State<TransportState>,
-    Path(run_id): Path<String>,
-    payload: Result<Json<RunCommandEnvelope>, axum::extract::rejection::JsonRejection>,
-) -> Response {
-    execute_post(&state, PostRoute::Compact, Some(run_id), None, payload).await
 }
 
 async fn steer_run(
@@ -573,7 +563,6 @@ fn validate_post_envelope(
     let body_run_id = match (&route, &envelope.command) {
         (PostRoute::Start, RunCommand::Start(_)) => return Ok(()),
         (PostRoute::Continue, RunCommand::Continue(command)) => &command.run_id,
-        (PostRoute::Compact, RunCommand::Compact(command)) => &command.run_id,
         (PostRoute::Resume, RunCommand::Resume { run_id, .. })
         | (PostRoute::Steer, RunCommand::Steer { run_id, .. })
         | (PostRoute::Interrupt, RunCommand::Interrupt { run_id })
@@ -612,7 +601,6 @@ fn route_name(route: PostRoute) -> &'static str {
     match route {
         PostRoute::Start => "start",
         PostRoute::Continue => "continue",
-        PostRoute::Compact => "compact",
         PostRoute::Resume => "resume",
         PostRoute::Steer => "steer",
         PostRoute::Interrupt => "interrupt",
@@ -848,12 +836,11 @@ mod tests {
     };
     use codewhale_protocol::agent_runtime::{
         AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentOutcome, CommandId, InteractionId,
-        ModelAccounting, ReasoningEffort, RunLimits, RunPurpose, RuntimeEventId, RuntimeEventKind,
+        ModelAccounting, ReasoningEffort, RunLimits, RuntimeEventId, RuntimeEventKind,
         TerminalState, ToolPolicy, UserInteractionResponse,
     };
     use codewhale_protocol::run_api::{
-        CompactRunCommand, ContinueRunCommand, PendingCreationKind, RunProductControls, RunView,
-        StartRunCommand,
+        ContinueRunCommand, PendingCreationKind, RunProductControls, RunView, StartRunCommand,
     };
     use codewhale_protocol::task::TaskDefinition;
     use serde_json::json;
@@ -1470,10 +1457,6 @@ mod tests {
                 task: TaskDefinition::host("下一轮"),
                 expected_workspace: None,
             }),
-            RunCommand::Compact(CompactRunCommand {
-                run_id: run_id.clone(),
-                expected_workspace: None,
-            }),
             RunCommand::ListRoots {
                 workspace: "/workspace".to_owned(),
                 limit: 10,
@@ -1639,8 +1622,7 @@ mod tests {
     async fn http_continuation_and_root_list_use_the_canonical_application_contract() {
         let temp = tempfile::tempdir().expect("temporary continuation workspace");
         let fixture = DeepSeekFixture::start().await;
-        // Eight user turns leave enough optional history for deterministic
-        // local compaction. Compact must not issue a ninth model request.
+        // Eight user turns exercise a long canonical continuation chain.
         fixture.release.add_permits(8);
         let application = production_app(&temp.path().join("state.db"), &fixture, true);
         let app = router(application, &test_options(None)).expect("canonical router");
@@ -1705,36 +1687,7 @@ mod tests {
             wait_http_terminal(&app, &continued.run_id, None).await;
         }
 
-        let compact_command = envelope(RunCommand::Compact(CompactRunCommand {
-            run_id: continued.run_id.clone(),
-            expected_workspace: Some(
-                temp.path()
-                    .canonicalize()
-                    .expect("canonical workspace")
-                    .display()
-                    .to_string(),
-            ),
-        }));
-        let (status, response) = post_command(
-            &app,
-            &format!("/v1/runs/{}/compact", continued.run_id.0),
-            &compact_command,
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        let compacted = run_from_response(response);
-        assert_eq!(compacted.purpose, RunPurpose::ContextCompaction);
-        assert_eq!(
-            compacted.continued_from_run_id,
-            Some(continued.run_id.clone())
-        );
-        let compacted = wait_http_terminal(&app, &compacted.run_id, None).await;
         assert_eq!(fixture.requests.load(Ordering::Acquire), 8);
-        assert!(matches!(
-            compacted.terminal,
-            Some(TerminalState::ContextCompactionCompleted)
-        ));
 
         let workspace = temp
             .path()
@@ -1756,15 +1709,10 @@ mod tests {
             panic!("expected root run list")
         };
         assert_eq!(listed_workspace, workspace);
-        assert_eq!(runs.len(), 9);
+        assert_eq!(runs.len(), 8);
         assert!(runs.iter().any(|run| {
             run.run_id == first_continued_id
                 && run.continued_from_run_id.as_ref() == Some(&source.run_id)
-        }));
-        assert!(runs.iter().any(|run| {
-            run.run_id == compacted.run_id
-                && run.purpose == RunPurpose::ContextCompaction
-                && run.continued_from_run_id.as_ref() == Some(&continued.run_id)
         }));
     }
 

@@ -22,7 +22,6 @@ use codewhale_config::{
     RuntimeApiKeySource, load_prompt_preferences,
 };
 use codewhale_execpolicy::{AskForApproval, ExecPolicyContext, ExecPolicyEngine};
-use codewhale_protocol::agent_runtime::RunPurpose;
 use codewhale_protocol::run_api::{
     DEFAULT_RUN_LIST_LIMIT, MAX_RUN_LIST_LIMIT, RUN_API_SCHEMA_VERSION, RootRunSummary, RunCommand,
     RunCommandEnvelope, RunCommandResponse, RunCommandResult,
@@ -2056,9 +2055,6 @@ fn run_runs_command(cli: &Cli, args: RunsArgs) -> Result<()> {
         request_id: "cli-runs".to_owned(),
         command: RunCommand::ListRoots {
             workspace: workspace.clone(),
-            // ListRoots currently includes internal compaction roots. Query the
-            // bounded canonical window first, then apply the user-facing
-            // purpose filter before the requested limit.
             limit: MAX_RUN_LIST_LIMIT,
         },
     }));
@@ -2081,7 +2077,6 @@ fn run_runs_command(cli: &Cli, args: RunsArgs) -> Result<()> {
     };
     let runs = runs
         .into_iter()
-        .filter(|run| run.purpose == RunPurpose::Agent)
         .take(args.limit as usize)
         .collect::<Vec<_>>();
 

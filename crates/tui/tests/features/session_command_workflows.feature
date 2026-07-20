@@ -70,11 +70,8 @@ Feature: Session command workflows
     And the fresh session should still be loadable
     And the stale session should no longer be loadable
 
-  Scenario: Context management commands emit actions without clearing the active session
+  Scenario: Context purge and relay commands preserve the active session
     Given a CodeWhale session workspace with one user message
-    When the user compacts context
-    Then CodeWhale should trigger context compaction
-    And the active session should contain the saved message
     When the user purges context
     Then CodeWhale should trigger context purge
     And the active session should contain the saved message

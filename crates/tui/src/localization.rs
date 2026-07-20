@@ -7,7 +7,6 @@ use std::borrow::Cow;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageId {
     ComposerPlaceholder,
-    CmdCompactDescription,
     CmdCostDescription,
     CmdExitDescription,
     CmdHelpDescription,
@@ -79,7 +78,6 @@ pub enum MessageId {
     CanonicalWaitTerminalBeforeExit,
     CanonicalInterruptAccepted,
     CanonicalWaitTerminal,
-    CanonicalNoTerminalRunToCompact,
     CanonicalCancelBeforeExit,
     CanonicalHelpShown,
     CanonicalCostShown,
@@ -199,7 +197,6 @@ pub enum MessageId {
 #[cfg(test)]
 pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::ComposerPlaceholder,
-    MessageId::CmdCompactDescription,
     MessageId::CmdCostDescription,
     MessageId::CmdExitDescription,
     MessageId::CmdHelpDescription,
@@ -266,7 +263,6 @@ pub const ALL_MESSAGE_IDS: &[MessageId] = &[
     MessageId::CanonicalWaitTerminalBeforeExit,
     MessageId::CanonicalInterruptAccepted,
     MessageId::CanonicalWaitTerminal,
-    MessageId::CanonicalNoTerminalRunToCompact,
     MessageId::CanonicalCancelBeforeExit,
     MessageId::CanonicalHelpShown,
     MessageId::CanonicalCostShown,

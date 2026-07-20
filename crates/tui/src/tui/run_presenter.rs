@@ -9,8 +9,8 @@ use std::time::Instant;
 use codewhale_protocol::agent_runtime::{
     DurableControlAction, InteractionId, ModelAccounting, ModelAttemptFailure, ModelErrorCategory,
     ModelOutput, ModelRetryDecision, ModelRetryStopReason,
-    ReasoningEffort as CanonicalReasoningEffort, RunPurpose, RuntimeEventKind, TerminalState,
-    ToolArguments, ToolOutcome, TranscriptEntry, UserInteractionRequest, UserInteractionResponse,
+    ReasoningEffort as CanonicalReasoningEffort, RuntimeEventKind, TerminalState, ToolArguments,
+    ToolOutcome, TranscriptEntry, UserInteractionRequest, UserInteractionResponse,
 };
 use serde_json::Value;
 
@@ -80,34 +80,17 @@ fn present_canonical_event(
         RuntimeEventKind::RunCreated { request } => {
             app.is_loading = true;
             app.turn_started_at = Some(Instant::now());
-            match request.purpose {
-                RunPurpose::ContextCompaction => {
-                    // A fresh TUI process may attach directly to the newest
-                    // compaction lineage head. Its RunCreated transcript is
-                    // canonical and must therefore rebuild the same display
-                    // that was visible before restart.
-                    app.child_agents.begin_root(source_run_id.clone());
-                    reset_run_display(app);
-                    rebuild_transcript(app, source_run_id, &request.transcript.entries);
-                    app.model = request.model.clone();
-                    app.reasoning_effort = present_reasoning_effort(request.reasoning_effort);
-                    app.is_compacting = true;
-                    app.runtime_turn_status = Some("compacting".to_owned());
-                    app.status_message = Some("正在压缩上下文…".to_owned());
-                }
-                RunPurpose::Agent if request.parent_run_id.is_none() => {
-                    app.child_agents.begin_root(source_run_id.clone());
-                    reset_run_display(app);
-                    rebuild_transcript(app, source_run_id, &request.transcript.entries);
-                    app.model = request.model.clone();
-                    app.reasoning_effort = present_reasoning_effort(request.reasoning_effort);
-                    app.runtime_turn_status = Some("in_progress".to_owned());
-                    app.status_message = Some("DeepSeek 正在处理…".to_owned());
-                }
-                RunPurpose::Agent => {
-                    app.runtime_turn_status = Some("child_in_progress".to_owned());
-                    app.status_message = Some("子 Agent 正在处理…".to_owned());
-                }
+            if request.parent_run_id.is_none() {
+                app.child_agents.begin_root(source_run_id.clone());
+                reset_run_display(app);
+                rebuild_transcript(app, source_run_id, &request.transcript.entries);
+                app.model = request.model.clone();
+                app.reasoning_effort = present_reasoning_effort(request.reasoning_effort);
+                app.runtime_turn_status = Some("in_progress".to_owned());
+                app.status_message = Some("DeepSeek 正在处理…".to_owned());
+            } else {
+                app.runtime_turn_status = Some("child_in_progress".to_owned());
+                app.status_message = Some("子 Agent 正在处理…".to_owned());
             }
             None
         }
@@ -116,7 +99,6 @@ fn present_canonical_event(
             after_tokens,
             ..
         } => {
-            app.is_compacting = false;
             app.status_message = Some(format!(
                 "上下文压缩完成：{before_tokens} → {after_tokens} tokens"
             ));
@@ -291,7 +273,6 @@ fn reset_run_display(app: &mut App) {
     app.clear_history();
     app.tool_cells.clear();
     app.streaming_message_index = None;
-    app.is_compacting = false;
 }
 
 fn rebuild_transcript(
@@ -499,7 +480,6 @@ fn finish_terminal(app: &mut App, terminal: &TerminalState, accounting: &ModelAc
 
     project_accounting(app, accounting);
     app.is_loading = false;
-    app.is_compacting = false;
     app.turn_started_at = None;
     app.runtime_turn_status = Some(terminal_runtime_status(terminal).to_owned());
     app.status_message = Some(format!("运行已结束：{}", terminal_label(terminal)));
@@ -539,7 +519,6 @@ fn narrow_u64(value: u64) -> u32 {
 fn terminal_runtime_status(terminal: &TerminalState) -> &'static str {
     match terminal {
         TerminalState::Completed { .. } => "completed",
-        TerminalState::ContextCompactionCompleted => "completed",
         TerminalState::Blocked { .. } => "blocked",
         TerminalState::Failed { .. } => "failed",
         TerminalState::Cancelled => "cancelled",
@@ -551,7 +530,6 @@ fn terminal_runtime_status(terminal: &TerminalState) -> &'static str {
 fn terminal_label(terminal: &TerminalState) -> &'static str {
     match terminal {
         TerminalState::Completed { .. } => "已完成",
-        TerminalState::ContextCompactionCompleted => "压缩完成",
         TerminalState::Blocked { .. } => "已阻塞",
         TerminalState::Failed { .. } => "失败",
         TerminalState::Cancelled => "已取消",
@@ -999,44 +977,6 @@ mod tests {
         );
         let _ = present_effect(&mut app, effects[1].clone());
         assert_eq!(transcript(&app), vec!["user:历史输入", "user:本轮输入"]);
-    }
-
-    #[test]
-    fn context_compaction_rebuilds_canonical_transcript_without_internal_input() {
-        let run_id = RunId::from("compaction");
-        let mut request = request(&run_id, "压缩内部输入", "压缩系统提示");
-        request.purpose = RunPurpose::ContextCompaction;
-        request.task_contract = None;
-        request.transcript.entries.push(TranscriptEntry::User {
-            content: "压缩请求内部历史".to_owned(),
-        });
-        let event = stored(
-            &run_id,
-            1,
-            RuntimeEventKind::RunCreated {
-                request: Box::new(request),
-            },
-        );
-        let mut projection = CanonicalRunProjection::new();
-        let mut app = app();
-        app.add_message(HistoryCell::User {
-            content: "保留当前聊天".to_owned(),
-        });
-
-        for effect in projection.apply(event).unwrap() {
-            let _ = present_effect(&mut app, effect);
-        }
-
-        assert_eq!(transcript(&app), vec!["user:压缩请求内部历史"]);
-        assert!(
-            !transcript(&app)
-                .iter()
-                .any(|line| line.contains("压缩内部输入")),
-            "the compaction command input is not a user chat turn"
-        );
-        assert!(app.is_compacting);
-        assert!(app.is_loading);
-        assert_eq!(app.runtime_turn_status.as_deref(), Some("compacting"));
     }
 
     #[test]

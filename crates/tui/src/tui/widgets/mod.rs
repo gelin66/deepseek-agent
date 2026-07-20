@@ -1987,7 +1987,7 @@ fn option_abort() -> Cow<'static, str> {
 }
 
 fn should_render_empty_state(app: &App) -> bool {
-    app.history.is_empty() && !app.is_loading && !app.is_compacting && !app.attention_hold_active()
+    app.history.is_empty() && !app.is_loading && !app.attention_hold_active()
 }
 
 fn build_empty_state_lines(app: &App, area: Rect) -> Vec<Line<'static>> {

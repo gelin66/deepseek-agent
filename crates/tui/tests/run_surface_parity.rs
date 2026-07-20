@@ -608,7 +608,6 @@ fn view_from_replay(replay: &RunReplay) -> RunView {
     let request = &snapshot.request;
     RunView {
         run_id: request.run_id.clone().expect("persisted run id"),
-        purpose: request.purpose,
         parent_run_id: request.parent_run_id.clone(),
         continued_from_run_id: request.continued_from_run_id.clone(),
         model: request.model.clone(),

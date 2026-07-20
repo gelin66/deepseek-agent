@@ -36,7 +36,6 @@ pub struct AcquiredRun {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RootRunRecord {
     pub run_id: RunId,
-    pub purpose: RunPurpose,
     pub continued_from_run_id: Option<RunId>,
     pub workspace: String,
     pub last_sequence: u64,
@@ -101,8 +100,6 @@ pub struct StoppedModelFailure {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommittedContextCompaction {
-    pub compaction_id: ContextCompactionId,
-    pub trigger: ContextCompactionTrigger,
     pub source_projection_sha256: String,
     pub before_tokens: u64,
     pub after_tokens: u64,
@@ -322,35 +319,18 @@ pub fn reduce_events(events: &[StoredRuntimeEvent]) -> Result<RunSnapshot, RunSt
             "only a root continuation may inherit prior run facts",
         ));
     }
-    match request.purpose {
-        RunPurpose::Agent => {
-            let contract = request
-                .task_contract
-                .as_ref()
-                .ok_or_else(|| corrupt(&run_id, "Agent run has no frozen task contract"))?;
-            contract
-                .validate()
-                .map_err(|message| corrupt(&run_id, message))?;
-            if contract.generation_id.0 != run_id.0 {
-                return Err(corrupt(
-                    &run_id,
-                    "task generation id does not match the run id",
-                ));
-            }
-        }
-        RunPurpose::ContextCompaction => {
-            if request.parent_run_id.is_some()
-                || request.continued_from_run_id.is_none()
-                || request.actor.kind != AgentActorKind::Root
-                || request.actor.depth != 0
-                || request.task_contract.is_some()
-            {
-                return Err(corrupt(
-                    &run_id,
-                    "context-compaction run must be a contract-free root continuation",
-                ));
-            }
-        }
+    let contract = request
+        .task_contract
+        .as_ref()
+        .ok_or_else(|| corrupt(&run_id, "Agent run has no frozen task contract"))?;
+    contract
+        .validate()
+        .map_err(|message| corrupt(&run_id, message))?;
+    if contract.generation_id.0 != run_id.0 {
+        return Err(corrupt(
+            &run_id,
+            "task generation id does not match the run id",
+        ));
     }
     let accounting = request.accounting_baseline.clone();
 
@@ -449,30 +429,12 @@ pub fn apply_event(
             return Err(corrupt(&run_id, "duplicate run_created event"));
         }
         RuntimeEventKind::ContextCompactionCommitted {
-            compaction_id,
-            trigger,
             projection,
             tools,
             accounting,
             before_tokens,
             after_tokens,
         } => {
-            let trigger_matches_purpose = matches!(
-                (snapshot.request.purpose, *trigger),
-                (
-                    RunPurpose::ContextCompaction,
-                    ContextCompactionTrigger::Manual
-                ) | (
-                    RunPurpose::Agent,
-                    ContextCompactionTrigger::Threshold | ContextCompactionTrigger::PreflightLimit
-                )
-            );
-            if !trigger_matches_purpose {
-                return Err(corrupt(
-                    &run_id,
-                    "context compaction commit trigger does not match the run purpose",
-                ));
-            }
             validate_compaction_safe_boundary(snapshot, &run_id)?;
             let input = context_input(snapshot, tools);
             let current =
@@ -491,12 +453,8 @@ pub fn apply_event(
                     "deterministic context compaction changed model accounting",
                 ));
             }
-            let preparation = prepare_compaction(
-                input,
-                snapshot.request.context_policy,
-                compaction_force(*trigger),
-            )
-            .map_err(|error| corrupt(&run_id, error.to_string()))?;
+            let preparation = prepare_compaction(input, snapshot.request.context_policy)
+                .map_err(|error| corrupt(&run_id, error.to_string()))?;
             match preparation {
                 ContextCompactionPreparation::Local {
                     projection: expected_projection,
@@ -531,8 +489,6 @@ pub fn apply_event(
             snapshot.context_projection = Some((**projection).clone());
             snapshot.accounting = (**accounting).clone();
             snapshot.last_context_compaction = Some(CommittedContextCompaction {
-                compaction_id: compaction_id.clone(),
-                trigger: *trigger,
                 source_projection_sha256: projection.source_projection_sha256.clone(),
                 before_tokens: *before_tokens,
                 after_tokens: *after_tokens,
@@ -543,12 +499,6 @@ pub fn apply_event(
             attempt_id,
             request,
         } => {
-            if snapshot.request.purpose != RunPurpose::Agent {
-                return Err(corrupt(
-                    &run_id,
-                    "context-compaction run cannot prepare an ordinary Agent model request",
-                ));
-            }
             if snapshot.pending_model.is_some() {
                 return Err(corrupt(
                     &run_id,
@@ -727,12 +677,6 @@ pub fn apply_event(
             invocation,
             workspace_access,
         } => {
-            if snapshot.request.purpose != RunPurpose::Agent {
-                return Err(corrupt(
-                    &run_id,
-                    "context-compaction run cannot prepare a tool",
-                ));
-            }
             if snapshot.pending_tool.is_some() {
                 return Err(corrupt(
                     &run_id,
@@ -1001,12 +945,6 @@ pub fn apply_event(
             snapshot.workspace_state = workspace_state.clone();
         }
         RuntimeEventKind::CompletionProposed { candidate } => {
-            if snapshot.request.purpose != RunPurpose::Agent {
-                return Err(corrupt(
-                    &run_id,
-                    "context-compaction run cannot propose task completion",
-                ));
-            }
             candidate
                 .validate()
                 .map_err(|message| corrupt(&run_id, message))?;
@@ -1195,12 +1133,6 @@ pub fn apply_event(
             snapshot.pending_completion = None;
         }
         RuntimeEventKind::ChildStarted { child_run_id, .. } => {
-            if snapshot.request.purpose != RunPurpose::Agent {
-                return Err(corrupt(
-                    &run_id,
-                    "context-compaction run cannot start a child Agent",
-                ));
-            }
             if snapshot.pending_children.contains(child_run_id) {
                 return Err(corrupt(&run_id, "child run started twice"));
             }
@@ -1242,12 +1174,6 @@ pub fn apply_event(
             command_id,
             content,
         } => {
-            if snapshot.request.purpose != RunPurpose::Agent {
-                return Err(corrupt(
-                    &run_id,
-                    "context-compaction run cannot accept a steer",
-                ));
-            }
             record_command(
                 snapshot,
                 &run_id,
@@ -1322,19 +1248,8 @@ pub fn apply_event(
                     ));
                 }
             }
-            match (&snapshot.request.purpose, &outcome.terminal) {
-                (RunPurpose::ContextCompaction, TerminalState::ContextCompactionCompleted) => {}
-                (RunPurpose::ContextCompaction, _) => {}
-                (RunPurpose::Agent, TerminalState::ContextCompactionCompleted) => {
-                    return Err(corrupt(
-                        &run_id,
-                        "Agent run cannot use the context-compaction terminal",
-                    ));
-                }
-                (RunPurpose::Agent, TerminalState::Completed { decision, .. }) => {
-                    validate_completion_decision(snapshot, &run_id, decision)?;
-                }
-                (RunPurpose::Agent, _) => {}
+            if let TerminalState::Completed { decision, .. } = &outcome.terminal {
+                validate_completion_decision(snapshot, &run_id, decision)?;
             }
             snapshot.terminal = Some((**outcome).clone());
         }
@@ -1595,10 +1510,6 @@ fn validate_model_request_safe_boundary(
     Ok(())
 }
 
-fn compaction_force(trigger: ContextCompactionTrigger) -> bool {
-    !matches!(trigger, ContextCompactionTrigger::Threshold)
-}
-
 fn context_input<'a>(snapshot: &'a RunSnapshot, tools: &'a [ToolDefinition]) -> ContextInput<'a> {
     ContextInput {
         transcript: &snapshot.transcript,
@@ -1615,16 +1526,6 @@ fn context_input<'a>(snapshot: &'a RunSnapshot, tools: &'a [ToolDefinition]) -> 
             .last_host_verification_failure
             .as_ref()
             .map(|failure| &failure.workspace_state),
-        pending_interaction: snapshot
-            .pending_tool
-            .as_ref()
-            .and_then(|pending| pending.interaction.as_ref())
-            .filter(|interaction| interaction.response.is_none())
-            .map(|interaction| &interaction.request),
-        pending_control: snapshot
-            .pending_control
-            .as_ref()
-            .map(|control| control.action),
         tools,
     }
 }
@@ -2012,7 +1913,6 @@ impl RunStore for InMemoryRunStore {
                 .occurred_at_unix_ms;
             candidates.push(RootRunRecord {
                 run_id: run_id.clone(),
-                purpose: snapshot.request.purpose,
                 continued_from_run_id: snapshot.request.continued_from_run_id.clone(),
                 workspace: snapshot.request.environment.workspace,
                 last_sequence: snapshot.last_sequence,

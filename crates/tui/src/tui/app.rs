@@ -931,8 +931,6 @@ pub struct App {
     pub runtime_turn_status: Option<String>,
     /// Whether the UI needs to be redrawn.
     pub needs_redraw: bool,
-    /// Whether context compaction is currently in progress.
-    pub is_compacting: bool,
     /// Set when the user scrolls up/down during a streaming turn so subsequent
     /// streamed chunks don't yank the view back to the live tail. Cleared
     /// when the user explicitly returns to bottom or the turn completes.
@@ -1211,7 +1209,6 @@ impl App {
             turn_started_at: None,
             runtime_turn_status: None,
             needs_redraw: true,
-            is_compacting: false,
             user_scrolled_during_stream: false,
             auto_submit_initial_input,
             collapsed_cells: HashSet::new(),

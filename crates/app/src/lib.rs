@@ -10,14 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use codewhale_protocol::agent_runtime::{
-    CommandId, DurableControlAction, InteractionId, RunId, RunPurpose, StoredRuntimeEvent,
-    TerminalState, UserInteractionResponse,
+    CommandId, DurableControlAction, InteractionId, RunId, StoredRuntimeEvent, TerminalState,
+    UserInteractionResponse,
 };
 use codewhale_protocol::run_api::{
-    CompactRunCommand, ContinueRunCommand, CreationRecoveryContext, MAX_RUN_LIST_LIMIT,
-    PendingCreationKind, PendingCreationSummary, RUN_API_SCHEMA_VERSION, RootRunSummary,
-    RunApiError, RunApiErrorCode, RunCommand, RunCommandEnvelope, RunCommandResponse,
-    RunCommandResult, RunView, StartRunCommand,
+    ContinueRunCommand, CreationRecoveryContext, MAX_RUN_LIST_LIMIT, PendingCreationKind,
+    PendingCreationSummary, RUN_API_SCHEMA_VERSION, RootRunSummary, RunApiError, RunApiErrorCode,
+    RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult, RunView, StartRunCommand,
 };
 use codewhale_protocol::task::TaskDefinition;
 use codewhale_runtime::{
@@ -85,8 +84,6 @@ pub fn resume_needs_live_model(replay: &RunReplay) -> bool {
         || replay.snapshot.last_model_failure.is_some()
         || replay.snapshot.pending_completion.is_some()
         || !replay.snapshot.pending_children.is_empty()
-        || (replay.snapshot.request.purpose == RunPurpose::ContextCompaction
-            && replay.snapshot.last_context_compaction.is_some())
     {
         return false;
     }
@@ -179,8 +176,7 @@ trait RunComposition: Send + Sync {
         &self,
         run_id: RunId,
         source: RunReplay,
-        task: Option<TaskDefinition>,
-        purpose: RunPurpose,
+        task: TaskDefinition,
         store: Arc<dyn RunStore>,
         sink: Arc<dyn RuntimeEventSink>,
     ) -> Result<RuntimeRun, RunApiError>;
@@ -269,10 +265,6 @@ impl AgentApplication {
                 RunCommand::Continue(command) => {
                     let digest = creation_command_sha256(&RunCommand::Continue(command.clone()));
                     self.continue_run(command_id, digest, command).await
-                }
-                RunCommand::Compact(command) => {
-                    let digest = creation_command_sha256(&RunCommand::Compact(command.clone()));
-                    self.compact_run(command_id, digest, command).await
                 }
                 RunCommand::ListRoots { workspace, limit } => {
                     self.list_roots(&workspace, limit).await
@@ -542,106 +534,7 @@ impl AgentApplication {
             .continue_run(
                 reservation.reservation.run_id.clone(),
                 source,
-                Some(command.task),
-                RunPurpose::Agent,
-                self.store.clone(),
-                sink,
-            )
-            .await
-        {
-            Ok(run) => run,
-            Err(error) => return error_result(error),
-        };
-        let run_id = run.run_id.clone();
-        match self.activate(run).await {
-            Ok(()) => self.get(&run_id).await,
-            Err(error) if error.code == RunApiErrorCode::RunAlreadyExists => {
-                self.get(&run_id).await
-            }
-            Err(error) => error_result(error),
-        }
-    }
-
-    async fn compact_run(
-        &self,
-        command_id: CommandId,
-        command_sha256: String,
-        command: CompactRunCommand,
-    ) -> RunCommandResult {
-        let source = match self.load(&command.run_id).await {
-            Ok(replay) => replay,
-            Err(error) => return error_result(error),
-        };
-        if let Some(expected_workspace) = command.expected_workspace.as_deref()
-            && expected_workspace != source.snapshot.request.environment.workspace
-        {
-            return error_result(api_error(
-                RunApiErrorCode::RunEnvironmentMismatch,
-                format!(
-                    "run_compact_workspace_mismatch：expected workspace {expected_workspace:?} does not match persisted workspace {:?}",
-                    source.snapshot.request.environment.workspace
-                ),
-                Some(command.run_id),
-                None,
-            ));
-        }
-        if source.snapshot.request.parent_run_id.is_some() {
-            return error_result(api_error(
-                RunApiErrorCode::RunContinuationInvalid,
-                "child Agent runs cannot be context-compaction sources",
-                Some(command.run_id),
-                None,
-            ));
-        }
-        let Some(outcome) = source.snapshot.terminal.as_ref() else {
-            return error_result(api_error(
-                RunApiErrorCode::RunContinuationInvalid,
-                "only a terminal root run can be compacted",
-                Some(command.run_id),
-                None,
-            ));
-        };
-        if matches!(outcome.terminal, TerminalState::RecoveryRequired { .. }) {
-            return error_result(api_error(
-                RunApiErrorCode::RunRecoveryRequired,
-                "run has unresolved recovery ambiguity and cannot be compacted",
-                Some(command.run_id),
-                Some(outcome.terminal.clone()),
-            ));
-        }
-        let intent = CreationIntent {
-            kind: PendingCreationKind::Compact,
-            workspace: source.snapshot.request.environment.workspace.clone(),
-            source_run_id: Some(command.run_id.clone()),
-            command: RunCommand::Compact(command.clone()),
-        };
-        let reservation = match self
-            .reserve_creation(&command_id, &command_sha256, intent)
-            .await
-        {
-            Ok(reservation) => reservation,
-            Err(error) => return error_result(error),
-        };
-        if !reservation.newly_reserved {
-            match self.store.load(&reservation.reservation.run_id).await {
-                Ok(Some(replay)) => {
-                    return RunCommandResult::Run {
-                        run: Box::new(project_run(&replay)),
-                    };
-                }
-                Ok(None) => {}
-                Err(error) => return error_result(store_error(error)),
-            }
-        }
-
-        let sink = self.event_sink();
-        let run = match self
-            .composition
-            .continue_run(
-                reservation.reservation.run_id.clone(),
-                source,
-                None,
-                RunPurpose::ContextCompaction,
+                command.task,
                 self.store.clone(),
                 sink,
             )
@@ -722,7 +615,6 @@ impl AgentApplication {
         match intent.command {
             RunCommand::Start(command) => self.start(command_id, digest, command).await,
             RunCommand::Continue(command) => self.continue_run(command_id, digest, command).await,
-            RunCommand::Compact(command) => self.compact_run(command_id, digest, command).await,
             _ => error_result(creation_error(
                 RunApiErrorCode::RunStoreFailed,
                 "pending creation payload is not a creation command",
@@ -1154,7 +1046,6 @@ fn project_run(replay: &RunReplay) -> RunView {
     let request = &snapshot.request;
     RunView {
         run_id: request.run_id.clone().unwrap_or_default(),
-        purpose: request.purpose,
         parent_run_id: request.parent_run_id.clone(),
         continued_from_run_id: request.continued_from_run_id.clone(),
         model: request.model.clone(),
@@ -1177,7 +1068,6 @@ fn project_run(replay: &RunReplay) -> RunView {
 fn project_root_run(record: RootRunRecord) -> RootRunSummary {
     RootRunSummary {
         run_id: record.run_id,
-        purpose: record.purpose,
         continued_from_run_id: record.continued_from_run_id,
         workspace: record.workspace,
         last_sequence: record.last_sequence,
@@ -1388,7 +1278,7 @@ mod tests {
         RuntimeEventKind, ToolDefinition, ToolInvocation, ToolOutcome, ToolPolicy, TranscriptEntry,
         Usage,
     };
-    use codewhale_protocol::run_api::{CompactRunCommand, RunProductControls};
+    use codewhale_protocol::run_api::RunProductControls;
     use codewhale_protocol::task::{
         CompletionCandidate, CompletionCandidateId, TaskContract, TaskGenerationId,
     };
@@ -1403,7 +1293,6 @@ mod tests {
     #[derive(Clone, Copy)]
     enum ModelMode {
         Complete,
-        LongComplete,
         Pending,
     }
 
@@ -1443,16 +1332,12 @@ mod tests {
         async fn next(&mut self) -> Option<Result<ModelStreamEvent, ModelPortError>> {
             match self.mode {
                 ModelMode::Pending => pending().await,
-                ModelMode::Complete | ModelMode::LongComplete if self.emitted => None,
-                ModelMode::Complete | ModelMode::LongComplete => {
+                ModelMode::Complete if self.emitted => None,
+                ModelMode::Complete => {
                     self.emitted = true;
                     Some(Ok(ModelStreamEvent::Completed {
                         output: ModelOutput {
-                            content: if matches!(self.mode, ModelMode::LongComplete) {
-                                "可确定性裁剪的旧模型历史。".repeat(8_000)
-                            } else {
-                                "完成".to_owned()
-                            },
+                            content: "完成".to_owned(),
                             reasoning_content: None,
                             tool_calls: Vec::new(),
                             finish_reason: ModelFinishReason::Stop,
@@ -1635,8 +1520,7 @@ mod tests {
             &self,
             run_id: RunId,
             source: RunReplay,
-            task: Option<TaskDefinition>,
-            purpose: RunPurpose,
+            task: TaskDefinition,
             store: Arc<dyn RunStore>,
             sink: Arc<dyn RuntimeEventSink>,
         ) -> Result<RuntimeRun, RunApiError> {
@@ -1645,10 +1529,9 @@ mod tests {
             request.run_id = Some(run_id.clone());
             request.parent_run_id = None;
             request.continued_from_run_id = Some(source_run_id);
-            request.purpose = purpose;
-            request.task_contract = task.map(|definition| TaskContract {
+            request.task_contract = Some(TaskContract {
                 generation_id: TaskGenerationId::from(run_id.0.clone()),
-                definition,
+                definition: task,
             });
             request.transcript = source.snapshot.transcript.clone();
             request.context_projection = source.snapshot.context_projection.clone();
@@ -1682,9 +1565,6 @@ mod tests {
         request.tool_policy = command.tool_policy;
         request.limits = command.limits;
         request.context_policy = ContextPolicy {
-            auto_compact: false,
-            context_window_tokens: 100_000,
-            trigger_tokens: 70_000,
             hard_input_tokens: 80_000,
         };
         request.environment = RunEnvironment {
@@ -2041,83 +1921,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_compact_creates_an_internal_root_then_continue_inherits_its_projection() {
-        let (app, store, _) = new_fixture(ModelMode::LongComplete).await;
-        let source = run_result(
-            app.execute(envelope(
-                "start-compact-source",
-                RunCommand::Start(start_command("第一轮任务")),
-            ))
-            .await,
-        );
-        let source_replay = wait_terminal(store.as_ref(), &source.run_id).await;
-        let source_events = source_replay.events.clone();
-
-        let compact = run_result(
-            app.execute(envelope(
-                "compact-source",
-                RunCommand::Compact(CompactRunCommand {
-                    run_id: source.run_id.clone(),
-                    expected_workspace: Some("/workspace/project".to_owned()),
-                }),
-            ))
-            .await,
-        );
-        assert_eq!(compact.purpose, RunPurpose::ContextCompaction);
-        assert_eq!(compact.continued_from_run_id, Some(source.run_id.clone()));
-        let compact_replay = wait_terminal(store.as_ref(), &compact.run_id).await;
-        assert!(compact_replay.snapshot.context_projection.is_some());
-        assert!(compact_replay.snapshot.last_context_compaction.is_some());
-        assert!(compact_replay.events.iter().any(|event| matches!(
-            event.event,
-            RuntimeEventKind::ContextCompactionCommitted { .. }
-        )));
-        assert_eq!(
-            store
-                .load(&source.run_id)
-                .await
-                .expect("reload source")
-                .expect("source exists")
-                .events,
-            source_events
-        );
-
-        let continued = run_result(
-            app.execute(envelope(
-                "continue-after-compact",
-                RunCommand::Continue(ContinueRunCommand {
-                    run_id: compact.run_id.clone(),
-                    task: TaskDefinition::host("第二轮"),
-                    expected_workspace: Some("/workspace/project".to_owned()),
-                }),
-            ))
-            .await,
-        );
-        assert_eq!(continued.purpose, RunPurpose::Agent);
-        let continued_replay = wait_terminal(store.as_ref(), &continued.run_id).await;
-        assert_eq!(
-            continued_replay.snapshot.request.context_projection,
-            compact_replay.snapshot.context_projection
-        );
-
-        let listed = app
-            .execute(envelope(
-                "list-roots-with-purpose",
-                RunCommand::ListRoots {
-                    workspace: "/workspace/project".to_owned(),
-                    limit: 10,
-                },
-            ))
-            .await;
-        let RunCommandResult::Runs { runs, .. } = listed.result else {
-            panic!("expected root list");
-        };
-        assert!(runs.iter().any(|run| {
-            run.run_id == compact.run_id && run.purpose == RunPurpose::ContextCompaction
-        }));
-    }
-
-    #[tokio::test]
     async fn continue_rejects_active_source_empty_input_and_workspace_mismatch() {
         let (app, _, _) = new_fixture(ModelMode::Pending).await;
         let active = run_result(
@@ -2208,19 +2011,11 @@ mod tests {
         assert_eq!(continued_retry.run_id, continued.run_id);
         wait_terminal(store.as_ref(), &continued.run_id).await;
 
-        let compact = RunCommand::Compact(CompactRunCommand {
-            run_id: continued.run_id.clone(),
-            expected_workspace: Some("/workspace/project".to_owned()),
-        });
-        let compacted = run_result(app.execute(envelope("same-compact", compact.clone())).await);
-        let compacted_retry = run_result(app.execute(envelope("same-compact", compact)).await);
-        assert_eq!(compacted_retry.run_id, compacted.run_id);
-
         let roots = store
             .list_root_runs("/workspace/project", 10)
             .await
             .expect("list idempotent roots");
-        assert_eq!(roots.len(), 3);
+        assert_eq!(roots.len(), 2);
     }
 
     #[tokio::test]
@@ -2511,7 +2306,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pending_continue_and_compact_recover_their_reserved_run_ids() {
+    async fn pending_continue_recovers_its_reserved_run_id() {
         let (app, store, _) = new_fixture(ModelMode::Complete).await;
         let source = run_result(
             app.execute(envelope(
@@ -2557,40 +2352,6 @@ mod tests {
         );
         assert_eq!(continued.run_id, continued_run_id);
         wait_terminal(store.as_ref(), &continued.run_id).await;
-
-        let compact_request_id = "recover-compact";
-        let compact_command = RunCommand::Compact(CompactRunCommand {
-            run_id: continued.run_id,
-            expected_workspace: Some("/workspace/project".to_owned()),
-        });
-        let compact_run_id = RunId::from("reserved-compact");
-        store
-            .reserve_creation(
-                &CommandId::from(compact_request_id),
-                &creation_command_sha256(&compact_command),
-                compact_run_id.clone(),
-                CreationIntent {
-                    kind: PendingCreationKind::Compact,
-                    workspace: "/workspace/project".to_owned(),
-                    source_run_id: match &compact_command {
-                        RunCommand::Compact(command) => Some(command.run_id.clone()),
-                        _ => unreachable!(),
-                    },
-                    command: compact_command,
-                },
-            )
-            .await
-            .expect("reserve interrupted compaction");
-        let compacted = run_result(
-            app.execute(envelope(
-                "recover-compact-caller",
-                RunCommand::RecoverCreation {
-                    creation_request_id: compact_request_id.to_owned(),
-                },
-            ))
-            .await,
-        );
-        assert_eq!(compacted.run_id, compact_run_id);
     }
 
     #[tokio::test]

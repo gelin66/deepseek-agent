@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 12;
+const STATE_SCHEMA_VERSION: u32 = 13;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -407,6 +407,16 @@ impl StateStore {
             }
             tx.pragma_update(None, "user_version", 12)
                 .context("failed to commit retired state table deletion")?;
+            user_version = 12;
+        }
+        if user_version < 13 {
+            tx.execute(
+                "DELETE FROM agent_run_creations WHERE creation_kind = 'compact'",
+                [],
+            )
+            .context("failed to delete retired manual compaction creation intents")?;
+            tx.pragma_update(None, "user_version", 13)
+                .context("failed to commit manual compaction state deletion")?;
         }
         tx.commit()
             .context("failed to commit state schema migration")?;

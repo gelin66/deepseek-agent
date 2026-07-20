@@ -538,9 +538,6 @@ fn request(input: &str) -> RunRequest {
     );
     request.run_id = Some(run_id);
     request.context_policy = ContextPolicy {
-        auto_compact: false,
-        context_window_tokens: 1_000_000,
-        trigger_tokens: 800_000,
         hard_input_tokens: 900_000,
     };
     request.limits.max_model_requests = 128;
@@ -644,16 +641,6 @@ fn request_context(
             .last_host_verification_failure
             .as_ref()
             .map(|failure| &failure.workspace_state),
-        pending_interaction: snapshot
-            .pending_tool
-            .as_ref()
-            .and_then(|pending| pending.interaction.as_ref())
-            .filter(|interaction| interaction.response.is_none())
-            .map(|interaction| &interaction.request),
-        pending_control: snapshot
-            .pending_control
-            .as_ref()
-            .map(|control| control.action),
         tools,
     })
     .expect("test fixture must produce a valid deterministic request context")
@@ -2180,10 +2167,7 @@ async fn a_real_child_uses_the_same_broker_and_compacts_without_a_summary_reques
     let (runtime, _, sink, _) = fixture(model);
     let mut run_request = request("让子 Agent 审计后整合");
     run_request.context_policy = ContextPolicy {
-        auto_compact: true,
-        context_window_tokens: 100_000,
-        trigger_tokens: 2_000,
-        hard_input_tokens: 80_000,
+        hard_input_tokens: 2_000,
     };
 
     let outcome = runtime.start(run_request).wait().await.unwrap();
@@ -5547,10 +5531,7 @@ async fn live_projection_matches_store_replay_through_tool_steer_and_terminal() 
 
 fn compaction_policy() -> ContextPolicy {
     ContextPolicy {
-        auto_compact: true,
-        context_window_tokens: 100_000,
-        trigger_tokens: 1,
-        hard_input_tokens: 80_000,
+        hard_input_tokens: 2_000,
     }
 }
 
@@ -5572,7 +5553,7 @@ fn long_transcript(turns: usize) -> CanonicalTranscript {
 }
 
 #[tokio::test]
-async fn automatic_compaction_cannot_consume_the_reserved_terminal_request() {
+async fn limit_compaction_cannot_consume_the_reserved_terminal_request() {
     let calls = Arc::new(AtomicUsize::new(0));
     let observed_calls = calls.clone();
     let model = Arc::new(MockModel::new(move |request| {
@@ -5582,8 +5563,11 @@ async fn automatic_compaction_cannot_consume_the_reserved_terminal_request() {
             "the only admitted request is the reserved terminal turn"
         );
         assert!(
-            request.messages.len() <= 2,
-            "deterministic compaction does not need a model-request permit"
+            !request.messages.iter().any(|message| matches!(
+                message,
+                ModelMessage::User { content } if content.contains("历史用户约束 0")
+            )),
+            "hard-limit compaction must prune the oldest optional history"
         );
         assert!(
             request.messages.iter().any(|message| matches!(
@@ -5631,7 +5615,7 @@ async fn automatic_compaction_cannot_consume_the_reserved_terminal_request() {
 }
 
 #[tokio::test]
-async fn automatic_compaction_is_durable_and_the_agent_consumes_only_the_projection() {
+async fn limit_compaction_is_durable_and_the_agent_consumes_only_the_projection() {
     let calls = Arc::new(AtomicUsize::new(0));
     let observed_calls = calls.clone();
     let model = Arc::new(MockModel::new(move |request| {
@@ -5639,10 +5623,6 @@ async fn automatic_compaction_is_durable_and_the_agent_consumes_only_the_project
             0 => {
                 assert!(request.streaming);
                 assert_eq!(request.system_prompt, SystemPrompt::from_text("系统提示"));
-                assert!(
-                    request.messages.len() < 8,
-                    "ordinary Agent request must use the compacted projection"
-                );
                 assert!(request.messages.iter().any(|message| matches!(
                     message,
                     ModelMessage::User { content } if content.contains("最新任务")
@@ -5734,122 +5714,4 @@ async fn automatic_compaction_is_durable_and_the_agent_consumes_only_the_project
         replay.snapshot.context_projection.as_ref(),
         Some(projection.as_ref())
     );
-}
-
-#[tokio::test]
-async fn manual_compaction_is_an_input_free_continuation_with_a_completion_marker() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let observed_calls = calls.clone();
-    let model = Arc::new(MockModel::new(move |request| {
-        match observed_calls.fetch_add(1, Ordering::AcqRel) {
-            0 => ScriptResponse::Events(vec![completed(
-                "源运行完成",
-                None,
-                Vec::new(),
-                ModelFinishReason::Stop,
-            )]),
-            _ => panic!(
-                "manual deterministic compaction must not issue a model request: {request:?}"
-            ),
-        }
-    }));
-    let (runtime, _, _, store) = fixture(model);
-    let mut source_request = request(&format!("源任务 {}", "乙".repeat(20_000)));
-    source_request.transcript = CanonicalTranscript {
-        entries: vec![
-            TranscriptEntry::System {
-                prompt: SystemPrompt::from_text("系统提示"),
-            },
-            TranscriptEntry::Assistant {
-                content: Some("可丢弃的旧答复".repeat(20_000)),
-                reasoning_content: None,
-                tool_calls: Vec::new(),
-            },
-        ],
-    };
-    source_request.context_policy = ContextPolicy {
-        auto_compact: false,
-        context_window_tokens: 500_000,
-        trigger_tokens: 400_000,
-        hard_input_tokens: 450_000,
-    };
-    let source = runtime.start(source_request).wait().await.unwrap();
-    let source_replay = store.load(&source.run_id).await.unwrap().unwrap();
-
-    let mut compact_request = source_replay.snapshot.request.clone();
-    compact_request.run_id = None;
-    compact_request.parent_run_id = None;
-    compact_request.continued_from_run_id = Some(source.run_id.clone());
-    compact_request.purpose = RunPurpose::ContextCompaction;
-    compact_request.task_contract = None;
-    compact_request.transcript = source_replay.snapshot.transcript.clone();
-    compact_request.context_projection = source_replay.snapshot.context_projection.clone();
-    compact_request.context_policy = compaction_policy();
-    compact_request.inherited_facts = Some(InheritedRunFacts {
-        workspace_state: source_replay.snapshot.workspace_state.clone(),
-        last_completion_rejection: source_replay.snapshot.last_completion_rejection.clone(),
-        last_host_verification_failure: source_replay
-            .snapshot
-            .last_host_verification_failure
-            .clone(),
-    });
-    compact_request.deadline_unix_ms = None;
-    compact_request.accounting_baseline = ModelAccounting::default();
-    let compact = runtime.start(compact_request).wait().await.unwrap();
-    assert_eq!(compact.terminal, TerminalState::ContextCompactionCompleted);
-
-    let replay = store.load(&compact.run_id).await.unwrap().unwrap();
-    assert_eq!(
-        replay.snapshot.request.purpose,
-        RunPurpose::ContextCompaction
-    );
-    assert_eq!(
-        replay.snapshot.request.continued_from_run_id,
-        Some(source.run_id.clone())
-    );
-    assert!(replay.snapshot.last_context_compaction.is_some());
-    assert_eq!(calls.load(Ordering::Acquire), 1);
-    assert_eq!(replay.snapshot.runtime_model_requests, 0);
-    assert_eq!(replay.snapshot.accounting, ModelAccounting::default());
-    assert_eq!(
-        replay
-            .events
-            .iter()
-            .filter(|event| matches!(
-                event.event,
-                RuntimeEventKind::ContextCompactionCommitted { .. }
-            ))
-            .count(),
-        1
-    );
-    let source_after = store.load(&source.run_id).await.unwrap().unwrap();
-    assert_eq!(source_after.events, source_replay.events);
-
-    let compact_events = replay.events.clone();
-    let compact_run_id = compact.run_id.clone();
-    let no_reissue_calls = Arc::new(AtomicUsize::new(0));
-    let observed_reissue = no_reissue_calls.clone();
-    let reopened_runtime = Arc::new(AgentRuntime::new(
-        Arc::new(MockModel::new(move |_| {
-            observed_reissue.fetch_add(1, Ordering::AcqRel);
-            panic!("replaying committed local compaction must not call the model")
-        })),
-        Arc::new(MockTools::default()),
-        Arc::new(CollectSink::default()),
-        store.clone(),
-    ));
-    let reopened = reopened_runtime
-        .resume(compact_run_id.clone())
-        .wait()
-        .await
-        .unwrap();
-    assert_eq!(reopened.terminal, TerminalState::ContextCompactionCompleted);
-    assert_eq!(no_reissue_calls.load(Ordering::Acquire), 0);
-    let reopened_replay = store.load(&compact_run_id).await.unwrap().unwrap();
-    assert_eq!(reopened_replay.events, compact_events);
-    assert_eq!(
-        reduce_events(&reopened_replay.events).unwrap(),
-        reopened_replay.snapshot
-    );
-    assert!(!reopened_replay.snapshot.accounting.billing_unknown);
 }

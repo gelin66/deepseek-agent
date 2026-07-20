@@ -59,7 +59,6 @@ fn child_status(terminal: Option<&TerminalState>) -> &'static str {
     match terminal {
         None => "running",
         Some(TerminalState::Completed { .. }) => "done",
-        Some(TerminalState::ContextCompactionCompleted) => "done",
         Some(TerminalState::Blocked { .. }) => "blocked",
         Some(TerminalState::Failed { .. }) => "failed",
         Some(TerminalState::Cancelled) => "canceled",

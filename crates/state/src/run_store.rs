@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use codewhale_protocol::run_api::PendingCreationKind;
 use codewhale_runtime::{
-    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, PendingRuntimeEvent, RunId, RunPurpose, RunRequest,
-    RuntimeEventId, RuntimeEventKind, StoredRuntimeEvent,
+    AGENT_RUNTIME_EVENT_SCHEMA_VERSION, PendingRuntimeEvent, RunId, RunRequest, RuntimeEventId,
+    RuntimeEventKind, StoredRuntimeEvent,
 };
 use codewhale_runtime::{
     AcquiredRun, CreatedRun, CreationIntent, CreationReservation, DurableActionState,
@@ -536,7 +536,6 @@ impl StateStore {
                 let run_id = RunId(row.get::<_, String>(0).map_err(backend)?);
                 records.push(RootRunRecord {
                     run_id: run_id.clone(),
-                    purpose: RunPurpose::Agent,
                     continued_from_run_id: row
                         .get::<_, Option<String>>(1)
                         .map_err(backend)?
@@ -589,7 +588,6 @@ impl StateStore {
                     "root run query projection disagrees with canonical replay",
                 ));
             }
-            record.purpose = replay.snapshot.request.purpose;
         }
         tx.commit().map_err(backend)?;
         Ok(records)
@@ -685,7 +683,6 @@ fn decode_creation_intent(
     let kind = match creation_kind.as_deref() {
         Some("start") => PendingCreationKind::Start,
         Some("continue") => PendingCreationKind::Continue,
-        Some("compact") => PendingCreationKind::Compact,
         _ => {
             return Err(corrupt(
                 run_id,
@@ -716,16 +713,6 @@ fn decode_creation_intent(
                     .as_ref()
                     .is_none_or(|expected| expected == &workspace)
         }
-        (
-            PendingCreationKind::Compact,
-            codewhale_protocol::run_api::RunCommand::Compact(command),
-        ) => {
-            source_run_id.as_ref() == Some(&command.run_id)
-                && command
-                    .expected_workspace
-                    .as_ref()
-                    .is_none_or(|expected| expected == &workspace)
-        }
         _ => false,
     };
     if !metadata_matches {
@@ -746,7 +733,6 @@ const fn encode_creation_kind(kind: PendingCreationKind) -> &'static str {
     match kind {
         PendingCreationKind::Start => "start",
         PendingCreationKind::Continue => "continue",
-        PendingCreationKind::Compact => "compact",
     }
 }
 

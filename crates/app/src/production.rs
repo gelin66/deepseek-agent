@@ -16,7 +16,7 @@ use codewhale_deepseek::{
 };
 use codewhale_protocol::agent_runtime::{
     AgentActor, CanonicalTranscript, ContextPolicy, InheritedRunFacts, ReasoningEffort,
-    RunEnvironment, RunId, RunPurpose, RunRequest, ToolDefinition, TranscriptEntry,
+    RunEnvironment, RunId, RunRequest, ToolDefinition, TranscriptEntry,
 };
 use codewhale_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunProductControls, StartRunCommand,
@@ -324,7 +324,6 @@ impl RunComposition for ProductionComposition {
             run_id: Some(run_id.clone()),
             parent_run_id: None,
             continued_from_run_id: None,
-            purpose: RunPurpose::Agent,
             model,
             task_contract: Some(TaskContract {
                 generation_id: TaskGenerationId::from(run_id.0.clone()),
@@ -459,8 +458,7 @@ impl RunComposition for ProductionComposition {
         &self,
         run_id: RunId,
         source: RunReplay,
-        task: Option<TaskDefinition>,
-        purpose: RunPurpose,
+        task: TaskDefinition,
         store: Arc<dyn RunStore>,
         sink: Arc<dyn RuntimeEventSink>,
     ) -> Result<RuntimeRun, RunApiError> {
@@ -543,11 +541,10 @@ impl RunComposition for ProductionComposition {
             run_id: Some(run_id.clone()),
             parent_run_id: None,
             continued_from_run_id: Some(source_run_id),
-            purpose,
             model,
-            task_contract: task.map(|definition| TaskContract {
+            task_contract: Some(TaskContract {
                 generation_id: TaskGenerationId::from(run_id.0.clone()),
-                definition,
+                definition: task,
             }),
             system_prompt,
             transcript,
@@ -797,12 +794,7 @@ fn production_context_policy(
         .saturating_sub(max_output_tokens)
         .saturating_sub(CONTEXT_INPUT_SAFETY_TOKENS)
         .max(1);
-    ContextPolicy {
-        auto_compact: true,
-        context_window_tokens: capability.context_window_tokens,
-        trigger_tokens: hard_input_tokens.saturating_mul(9) / 10,
-        hard_input_tokens,
-    }
+    ContextPolicy { hard_input_tokens }
 }
 
 fn unix_ms_now() -> u64 {
@@ -1119,8 +1111,6 @@ mod tests {
                     .saturating_sub(output)
                     .saturating_sub(CONTEXT_INPUT_SAFETY_TOKENS);
                 assert_eq!(policy.hard_input_tokens, expected_hard);
-                assert_eq!(policy.trigger_tokens, expected_hard * 9 / 10);
-                assert!(policy.auto_compact);
             }
         }
     }

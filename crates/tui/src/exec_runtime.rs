@@ -1324,7 +1324,6 @@ impl<'a> RuntimeEventProjection<'a> {
                         TerminalState::Completed { message, .. } => {
                             ("completed", !message.trim().is_empty())
                         }
-                        TerminalState::ContextCompactionCompleted => ("completed", false),
                         TerminalState::Blocked { .. } => ("blocked", false),
                         TerminalState::Failed { .. } => ("failed", false),
                         TerminalState::Cancelled => ("cancelled", false),
@@ -1399,9 +1398,6 @@ struct TerminalProjection {
 fn project_terminal(terminal: &TerminalState) -> TerminalProjection {
     let (reason, error, code, category, recoverable) = match terminal {
         TerminalState::Completed { .. } => (RunTerminationReason::Resolved, None, "", "", false),
-        TerminalState::ContextCompactionCompleted => {
-            (RunTerminationReason::Resolved, None, "", "", false)
-        }
         TerminalState::Blocked { reason } => (
             RunTerminationReason::Unresolved,
             Some(reason.clone()),
@@ -1534,13 +1530,6 @@ fn project_failure(
                     .replace("{hard_input_tokens}", &hard_input_tokens.to_string()),
             ),
             "context_limit_exceeded",
-            "state",
-            false,
-        ),
-        RuntimeFailure::ContextCompactionFailed { message } => (
-            RunTerminationReason::ModelError,
-            Some(message.clone()),
-            "context_compaction_failed",
             "state",
             false,
         ),

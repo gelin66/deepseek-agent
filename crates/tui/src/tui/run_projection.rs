@@ -79,9 +79,7 @@ impl CanonicalRunProjection {
         state.record(stored.clone());
 
         let transcript = match event {
-            RuntimeEventKind::RunCreated { request }
-                if request.purpose == codewhale_protocol::agent_runtime::RunPurpose::Agent =>
-            {
+            RuntimeEventKind::RunCreated { request } => {
                 request.task_contract.as_ref().map(|contract| {
                     (
                         UserTranscriptSource::RunCreated,

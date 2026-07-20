@@ -611,9 +611,9 @@ exponential_base = 2.0
 # ─────────────────────────────────────────────────────────────────────────────────
 # Context Compaction
 # ─────────────────────────────────────────────────────────────────────────────────
-# Automatic compaction belongs to the canonical AgentRuntime context policy;
-# the TUI does not keep a second enable/threshold setting. Use `/compact` for an
-# explicit manual boundary. There is no config-file `[compaction]` table.
+# Context compaction is a fixed AgentRuntime hard-limit safety mechanism.
+# There is no manual command, early threshold, or config-file `[compaction]`
+# table.
 
 # Include a deterministic project context pack in the stable prompt prefix.
 [context]

@@ -9,7 +9,6 @@ use crate::localization::{MessageId, tr};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CanonicalSlashCommand {
     Help,
-    Compact,
     Cost,
     Exit,
 }
@@ -28,12 +27,6 @@ const COMMANDS: &[CanonicalSlashCommandInfo] = &[
         name: "help",
         aliases: &[],
         description_id: MessageId::CmdHelpDescription,
-    },
-    CanonicalSlashCommandInfo {
-        command: CanonicalSlashCommand::Compact,
-        name: "compact",
-        aliases: &[],
-        description_id: MessageId::CmdCompactDescription,
     },
     CanonicalSlashCommandInfo {
         command: CanonicalSlashCommand::Cost,
@@ -213,12 +206,9 @@ mod tests {
         assert!(matches!(parse("/jobs"), CanonicalSlashParse::Error(_)));
         assert!(matches!(parse("/restore 1"), CanonicalSlashParse::Error(_)));
         assert!(matches!(parse("/undo"), CanonicalSlashParse::Error(_)));
+        assert!(matches!(parse("/compact"), CanonicalSlashParse::Error(_)));
         assert!(matches!(
             parse("/jobs show shell_x"),
-            CanonicalSlashParse::Error(_)
-        ));
-        assert!(matches!(
-            parse("/compact now"),
             CanonicalSlashParse::Error(_)
         ));
     }

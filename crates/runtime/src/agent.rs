@@ -229,7 +229,7 @@ impl AgentRuntime {
             .is_some_and(|pending| pending.request.tools.is_empty())
             || recovery_output.is_some() && snapshot.last_model_advertised_tool_names.is_empty();
         let terminal_model_request = terminal_model_request.or_else(|| {
-            (snapshot.request.purpose == RunPurpose::Agent && !terminal_request_is_already_admitted)
+            (!terminal_request_is_already_admitted)
                 .then(|| budget.reserve_terminal_model_request())
                 .flatten()
         });
@@ -367,44 +367,7 @@ impl AgentRuntime {
                 state.snapshot.request.limits.max_depth,
                 state.snapshot.request.environment.interactive,
             );
-            if state.snapshot.request.purpose == RunPurpose::ContextCompaction {
-                if state.snapshot.last_context_compaction.is_some() {
-                    return self
-                        .finalize(
-                            &mut state,
-                            TerminalState::ContextCompactionCompleted,
-                            &budget,
-                        )
-                        .await;
-                }
-                match self
-                    .compact_context(
-                        &mut state,
-                        &context_tools,
-                        ContextCompactionTrigger::Manual,
-                        true,
-                    )
-                    .await
-                {
-                    Ok(
-                        ContextCompactionControl::Committed | ContextCompactionControl::NotNeeded,
-                    ) => {
-                        return self
-                            .finalize(
-                                &mut state,
-                                TerminalState::ContextCompactionCompleted,
-                                &budget,
-                            )
-                            .await;
-                    }
-                    Err(failure) => {
-                        return self
-                            .finalize(&mut state, TerminalState::Failed { failure }, &budget)
-                            .await;
-                    }
-                }
-            }
-            if safe_fresh_boundary && state.snapshot.request.context_policy.auto_compact {
+            if safe_fresh_boundary {
                 let estimated =
                     match effective_context(context_input(&state.snapshot, &context_tools)) {
                         Ok(context) => context.estimated_tokens,
@@ -424,28 +387,17 @@ impl AgentRuntime {
                     };
                 let hard_input_tokens =
                     u64::from(state.snapshot.request.context_policy.hard_input_tokens);
-                let exceeds_hard_limit = estimated > hard_input_tokens;
-                let trigger = if exceeds_hard_limit {
-                    ContextCompactionTrigger::PreflightLimit
-                } else {
-                    ContextCompactionTrigger::Threshold
-                };
-                match self
-                    .compact_context(
-                        &mut state,
-                        &context_tools,
-                        trigger,
-                        trigger == ContextCompactionTrigger::PreflightLimit,
-                    )
-                    .await
-                {
-                    Ok(
-                        ContextCompactionControl::Committed | ContextCompactionControl::NotNeeded,
-                    ) => {}
-                    Err(failure) => {
-                        return self
-                            .finalize(&mut state, TerminalState::Failed { failure }, &budget)
-                            .await;
+                if estimated > hard_input_tokens {
+                    match self.compact_context(&mut state, &context_tools).await {
+                        Ok(
+                            ContextCompactionControl::Committed
+                            | ContextCompactionControl::NotNeeded,
+                        ) => {}
+                        Err(failure) => {
+                            return self
+                                .finalize(&mut state, TerminalState::Failed { failure }, &budget)
+                                .await;
+                        }
                     }
                 }
             }
@@ -663,13 +615,10 @@ impl AgentRuntime {
         &self,
         state: &mut RunState,
         tools: &[ToolDefinition],
-        trigger: ContextCompactionTrigger,
-        force: bool,
     ) -> Result<ContextCompactionControl, RuntimeFailure> {
         match prepare_compaction(
             context_input(&state.snapshot, tools),
             state.snapshot.request.context_policy,
-            force,
         )
         .map_err(context_projection_failure)?
         {
@@ -691,8 +640,6 @@ impl AgentRuntime {
                 self.publish(
                     state,
                     RuntimeEventKind::ContextCompactionCommitted {
-                        compaction_id: ContextCompactionId::new(),
-                        trigger,
                         projection: Box::new(projection),
                         tools: tools.to_vec(),
                         accounting: Box::new(state.snapshot.accounting.clone()),
@@ -1685,7 +1632,6 @@ impl AgentRuntime {
             run_id: Some(child_run_id.clone()),
             parent_run_id: Some(state.run_id().clone()),
             continued_from_run_id: None,
-            purpose: RunPurpose::Agent,
             model: state.snapshot.request.model.clone(),
             task_contract: Some(TaskContract {
                 generation_id: TaskGenerationId::from(child_run_id.0.clone()),
@@ -3026,16 +2972,6 @@ fn context_input<'a>(snapshot: &'a RunSnapshot, tools: &'a [ToolDefinition]) -> 
             .last_host_verification_failure
             .as_ref()
             .map(|failure| &failure.workspace_state),
-        pending_interaction: snapshot
-            .pending_tool
-            .as_ref()
-            .and_then(|pending| pending.interaction.as_ref())
-            .filter(|interaction| interaction.response.is_none())
-            .map(|interaction| &interaction.request),
-        pending_control: snapshot
-            .pending_control
-            .as_ref()
-            .map(|control| control.action),
         tools,
     }
 }

@@ -15,8 +15,8 @@ use crate::task::{
     TaskContract, VerificationId, VerifierObservation, VerifierSpec, WorkspaceState,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 8;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 8;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 9;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 9;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -234,11 +234,8 @@ pub struct RunRequest {
     /// for the root/child Agent hierarchy.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continued_from_run_id: Option<RunId>,
-    #[serde(default)]
-    pub purpose: RunPurpose,
     pub model: String,
-    /// Frozen Host task boundary. Agent runs require one; internal context
-    /// compaction runs must not manufacture a task contract.
+    /// Frozen Host task boundary for this Agent run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub task_contract: Option<TaskContract>,
     pub system_prompt: SystemPrompt,
@@ -284,7 +281,6 @@ impl RunRequest {
             run_id: Some(run_id),
             parent_run_id: None,
             continued_from_run_id: None,
-            purpose: RunPurpose::Agent,
             model: "deepseek-v4-flash".to_owned(),
             task_contract: Some(task_contract),
             system_prompt: system_prompt.into(),
@@ -305,21 +301,10 @@ impl RunRequest {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunPurpose {
-    #[default]
-    Agent,
-    ContextCompaction,
-}
-
 /// Host-owned context limits for the official DeepSeek model selected for a
 /// run. Transport clients cannot supply these values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextPolicy {
-    pub auto_compact: bool,
-    pub context_window_tokens: u32,
-    pub trigger_tokens: u32,
     pub hard_input_tokens: u32,
 }
 
@@ -1093,9 +1078,6 @@ pub enum RuntimeFailure {
         estimated_tokens: u64,
         hard_input_tokens: u64,
     },
-    ContextCompactionFailed {
-        message: String,
-    },
     Model {
         code: String,
         category: ModelErrorCategory,
@@ -1117,7 +1099,6 @@ pub enum TerminalState {
         message: String,
         decision: CompletionDecision,
     },
-    ContextCompactionCompleted,
     Blocked {
         reason: String,
     },
@@ -1184,31 +1165,6 @@ impl AttemptId {
     pub fn new() -> Self {
         Self(Uuid::new_v4().to_string())
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct ContextCompactionId(pub String);
-
-impl ContextCompactionId {
-    #[must_use]
-    pub fn new() -> Self {
-        Self(Uuid::new_v4().to_string())
-    }
-}
-
-impl Default for ContextCompactionId {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ContextCompactionTrigger {
-    Manual,
-    Threshold,
-    PreflightLimit,
 }
 
 impl Default for AttemptId {
@@ -1600,8 +1556,6 @@ pub enum RuntimeEventKind {
         request: Box<RunRequest>,
     },
     ContextCompactionCommitted {
-        compaction_id: ContextCompactionId,
-        trigger: ContextCompactionTrigger,
         projection: Box<ContextProjection>,
         tools: Vec<ToolDefinition>,
         accounting: Box<ModelAccounting>,

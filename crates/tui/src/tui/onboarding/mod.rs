@@ -106,8 +106,7 @@ pub fn tips_lines(app: &App) -> Vec<ratatui::text::Line<'static>> {
 
     let commands_line = app
         .tr(MessageId::OnboardTipsLine2)
-        .replace("{help}", "/help")
-        .replace("{compact}", "/compact");
+        .replace("{help}", "/help");
     let cost_line = app
         .tr(MessageId::OnboardTipsLine3)
         .replace("{cost}", "/cost");

@@ -13,9 +13,9 @@ use codewhale_protocol::agent_runtime::{
     InteractionId, RunId, StoredRuntimeEvent, UserInteractionResponse,
 };
 use codewhale_protocol::run_api::{
-    CompactRunCommand, ContinueRunCommand, MAX_RUN_LIST_LIMIT, PendingCreationSummary,
-    RUN_API_SCHEMA_VERSION, RootRunSummary, RunApiError, RunCommand, RunCommandEnvelope,
-    RunCommandResult, RunView, StartRunCommand,
+    ContinueRunCommand, MAX_RUN_LIST_LIMIT, PendingCreationSummary, RUN_API_SCHEMA_VERSION,
+    RootRunSummary, RunApiError, RunCommand, RunCommandEnvelope, RunCommandResult, RunView,
+    StartRunCommand,
 };
 use tokio::sync::{Mutex, mpsc};
 use uuid::Uuid;
@@ -159,13 +159,6 @@ impl RequestIds {
     }
 }
 
-fn compact_command(run_id: RunId, expected_workspace: Option<String>) -> RunCommand {
-    RunCommand::Compact(CompactRunCommand {
-        run_id,
-        expected_workspace,
-    })
-}
-
 fn run_requires_resume(run: &RunView) -> bool {
     run.terminal.is_none()
 }
@@ -220,21 +213,7 @@ impl TuiRunClient {
         self.execute_launch("submit", command).await
     }
 
-    /// Compact one terminal root into a new canonical compaction root.
-    pub async fn compact(
-        &self,
-        run_id: RunId,
-        expected_workspace: Option<String>,
-    ) -> Result<RunView, TuiRunClientError> {
-        self.begin_launch().await?;
-        self.execute_launch("compact", compact_command(run_id, expected_workspace))
-            .await
-    }
-
-    /// Return the newest canonical root, including an internal compaction
-    /// head. A compaction root is hidden from a user-facing picker, but it is
-    /// still the correct source for resume/continue because it owns the newest
-    /// canonical transcript.
+    /// Return the newest canonical root for resume or continuation.
     pub async fn latest_root(
         &self,
         workspace: String,
@@ -293,7 +272,7 @@ impl TuiRunClient {
     ///
     /// `AgentApplication` owns payload replay and unknown-billing policy. This
     /// client only supplies the durable creation identity and then uses the
-    /// same adoption/monitoring path as Start, Continue, Compact, and Resume.
+    /// same adoption/monitoring path as Start, Continue, and Resume.
     pub async fn recover_creation(
         &self,
         creation_request_id: String,
@@ -617,7 +596,6 @@ mod tests {
     fn run_view(run_id: &str, terminal: Option<TerminalState>, last_sequence: u64) -> RunView {
         RunView {
             run_id: RunId::from(run_id),
-            purpose: Default::default(),
             parent_run_id: None,
             continued_from_run_id: None,
             model: "deepseek-v4-flash".to_owned(),
@@ -707,14 +685,6 @@ mod tests {
                         .expected_workspace
                         .clone()
                         .expect("fixture continuation workspace"),
-                    Some(command.run_id.clone()),
-                ),
-                RunCommand::Compact(command) => (
-                    PendingCreationKind::Compact,
-                    command
-                        .expected_workspace
-                        .clone()
-                        .expect("fixture compaction workspace"),
                     Some(command.run_id.clone()),
                 ),
                 other => panic!("fixture only reserves creation commands: {other:?}"),
@@ -828,21 +798,6 @@ mod tests {
             Err(TuiRunClientError::ActiveRun { run_id })
                 if run_id == RunId::from("active-root")
         ));
-    }
-
-    #[test]
-    fn compact_planning_preserves_source_and_workspace_guard() {
-        let RunCommand::Compact(command) = compact_command(
-            RunId::from("terminal-root"),
-            Some("/workspace/project".to_owned()),
-        ) else {
-            panic!("compact helper must plan canonical Compact")
-        };
-        assert_eq!(command.run_id, RunId::from("terminal-root"));
-        assert_eq!(
-            command.expected_workspace.as_deref(),
-            Some("/workspace/project")
-        );
     }
 
     #[test]

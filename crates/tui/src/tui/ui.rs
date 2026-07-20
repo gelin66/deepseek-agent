@@ -940,23 +940,6 @@ async fn handle_canonical_key(
         app.needs_redraw = true;
         return Ok(false);
     }
-    if control && matches!(key.code, KeyCode::Char('l') | KeyCode::Char('L')) {
-        let snapshot = run_client.snapshot().await;
-        if let Some(run_id) = snapshot.latest_terminal_root {
-            let _ = run_client
-                .compact(run_id, Some(app.workspace.display().to_string()))
-                .await?;
-            app.is_loading = true;
-        } else {
-            app.status_message = Some(
-                app.tr(MessageId::CanonicalNoTerminalRunToCompact)
-                    .into_owned(),
-            );
-        }
-        app.needs_redraw = true;
-        return Ok(false);
-    }
-
     let slash_menu_entries = visible_slash_menu_entries(app, SLASH_MENU_LIMIT);
     let mention_menu_limit = app.mention_menu_limit;
     let mention_menu_entries =
@@ -996,20 +979,6 @@ async fn handle_canonical_key(
                         return Ok(false);
                     }
                     return Ok(true);
-                }
-                CanonicalSlashParse::Command(CanonicalSlashCommand::Compact) => {
-                    let snapshot = run_client.snapshot().await;
-                    if let Some(run_id) = snapshot.latest_terminal_root {
-                        let _ = run_client
-                            .compact(run_id, Some(app.workspace.display().to_string()))
-                            .await?;
-                        app.is_loading = true;
-                    } else {
-                        app.status_message = Some(
-                            app.tr(MessageId::CanonicalNoTerminalRunToCompact)
-                                .into_owned(),
-                        );
-                    }
                 }
                 CanonicalSlashParse::Command(CanonicalSlashCommand::Help) => {
                     app.add_message(HistoryCell::System {

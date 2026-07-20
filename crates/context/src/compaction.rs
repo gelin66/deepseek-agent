@@ -8,8 +8,8 @@
 use std::collections::BTreeSet;
 
 use codewhale_protocol::agent_runtime::{
-    CanonicalTranscript, ContextPolicy, ContextProjection, DurableControlAction, ModelMessage,
-    ToolDefinition, ToolSideEffectStatus, TranscriptEntry, UserInteractionRequest,
+    CanonicalTranscript, ContextPolicy, ContextProjection, ModelMessage, ToolDefinition,
+    ToolSideEffectStatus, TranscriptEntry,
 };
 use codewhale_protocol::task::{
     CompletionRejection, EvidenceReceipt, TaskAcceptance, TaskContract, WorkspaceRevision,
@@ -20,9 +20,8 @@ use sha2::{Digest, Sha256};
 const TOOL_RESULT_PRUNE_CHARS: usize = 16 * 1024;
 const TOOL_RESULT_RETAIN_CHARS: usize = 2 * 1024;
 const HOST_FACTS_HEADER: &str = "## 当前 Host 事实";
-const FORCED_TARGET_NUMERATOR: u64 = 3;
-const FORCED_TARGET_DENOMINATOR: u64 = 4;
-const MIN_MANUAL_SAVINGS_TOKENS: u64 = 256;
+const LIMIT_TARGET_NUMERATOR: u64 = 3;
+const LIMIT_TARGET_DENOMINATOR: u64 = 4;
 
 /// Narrow, borrowed view of the canonical facts needed for one model request.
 ///
@@ -38,8 +37,6 @@ pub struct ContextInput<'a> {
     pub last_completion_rejection: Option<&'a CompletionRejection>,
     pub last_verifier_failure: Option<&'a codewhale_protocol::agent_runtime::ToolOutcome>,
     pub last_verifier_failure_workspace: Option<&'a WorkspaceState>,
-    pub pending_interaction: Option<&'a UserInteractionRequest>,
-    pub pending_control: Option<DurableControlAction>,
     pub tools: &'a [ToolDefinition],
 }
 
@@ -143,16 +140,11 @@ pub fn effective_context(
 pub fn prepare_compaction(
     input: ContextInput<'_>,
     policy: ContextPolicy,
-    force: bool,
 ) -> Result<ContextCompactionPreparation, ContextProjectionError> {
     validate_policy(policy)?;
     let effective = effective_context(input)?;
-    if !policy.auto_compact && !force {
-        return Ok(ContextCompactionPreparation::NotNeeded {
-            estimated_tokens: effective.estimated_tokens,
-        });
-    }
-    if !force && effective.estimated_tokens <= u64::from(policy.trigger_tokens) {
+    let hard = u64::from(policy.hard_input_tokens);
+    if effective.estimated_tokens <= hard {
         return Ok(ContextCompactionPreparation::NotNeeded {
             estimated_tokens: effective.estimated_tokens,
         });
@@ -165,24 +157,20 @@ pub fn prepare_compaction(
 
     let mut candidate = projection_from_indices(&effective, input.transcript, &selected);
     let mut after_tokens = estimate_projection_tokens(input, &candidate)?;
-    let hard = u64::from(policy.hard_input_tokens);
     if after_tokens > hard {
         return Ok(ContextCompactionPreparation::LimitExceeded {
             estimated_tokens: after_tokens,
             hard_input_tokens: hard,
         });
     }
-    let selection_target = if force {
-        let forced_target = effective
-            .estimated_tokens
-            .saturating_mul(FORCED_TARGET_NUMERATOR)
-            / FORCED_TARGET_DENOMINATOR;
-        u64::from(policy.trigger_tokens)
-            .min(forced_target)
-            .max(after_tokens)
-    } else {
-        u64::from(policy.trigger_tokens)
-    };
+    let selection_target = hard
+        .min(
+            effective
+                .estimated_tokens
+                .saturating_mul(LIMIT_TARGET_NUMERATOR)
+                / LIMIT_TARGET_DENOMINATOR,
+        )
+        .max(after_tokens);
 
     // Spend the remaining budget on newest complete groups. A reasoning/tool
     // group is admitted whole or not at all.
@@ -201,20 +189,10 @@ pub fn prepare_compaction(
         }
     }
 
-    let savings = effective.estimated_tokens.saturating_sub(after_tokens);
-    let minimum_manual_savings =
-        MIN_MANUAL_SAVINGS_TOKENS.max(effective.estimated_tokens.saturating_div(100));
-    let manual_reduction_is_material =
-        effective.estimated_tokens > hard || !force || savings >= minimum_manual_savings;
-    if after_tokens >= effective.estimated_tokens || !manual_reduction_is_material {
-        if effective.estimated_tokens > hard {
-            return Ok(ContextCompactionPreparation::LimitExceeded {
-                estimated_tokens: effective.estimated_tokens,
-                hard_input_tokens: hard,
-            });
-        }
-        return Ok(ContextCompactionPreparation::NotNeeded {
+    if after_tokens >= effective.estimated_tokens {
+        return Ok(ContextCompactionPreparation::LimitExceeded {
             estimated_tokens: effective.estimated_tokens,
+            hard_input_tokens: hard,
         });
     }
 
@@ -571,17 +549,6 @@ fn render_host_facts(
             lines.push(format!("- verifier_failure_workspace: `{encoded}`"));
         }
     }
-    if let Some(interaction) = input.pending_interaction {
-        let encoded = serde_json::to_string(interaction)
-            .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
-        lines.push(format!("### 未解决 interaction\n`{encoded}`"));
-    }
-    if let Some(control) = input.pending_control {
-        let encoded = serde_json::to_string(&control)
-            .map_err(|error| ContextProjectionError::Digest(error.to_string()))?;
-        lines.push(format!("### 未解决 control\n`{encoded}`"));
-    }
-
     Ok(Some(lines.join("\n")))
 }
 
@@ -621,14 +588,9 @@ fn unresolved_rejection(input: ContextInput<'_>) -> Option<&CompletionRejection>
 }
 
 fn validate_policy(policy: ContextPolicy) -> Result<(), ContextProjectionError> {
-    if policy.context_window_tokens == 0
-        || policy.trigger_tokens == 0
-        || policy.hard_input_tokens == 0
-        || policy.trigger_tokens > policy.hard_input_tokens
-        || policy.hard_input_tokens >= policy.context_window_tokens
-    {
+    if policy.hard_input_tokens == 0 {
         return Err(ContextProjectionError::InvalidPolicy(
-            "expected 0 < trigger_tokens <= hard_input_tokens < context_window_tokens".to_owned(),
+            "hard_input_tokens must be greater than zero".to_owned(),
         ));
     }
     Ok(())
@@ -861,10 +823,7 @@ mod tests {
 
     fn policy() -> ContextPolicy {
         ContextPolicy {
-            auto_compact: true,
-            context_window_tokens: 40_000,
-            trigger_tokens: 6_000,
-            hard_input_tokens: 30_000,
+            hard_input_tokens: 6_000,
         }
     }
 
@@ -885,8 +844,6 @@ mod tests {
             last_completion_rejection: rejection,
             last_verifier_failure: None,
             last_verifier_failure_workspace: None,
-            pending_interaction: None,
-            pending_control: None,
             tools: &[],
         }
     }
@@ -934,7 +891,6 @@ mod tests {
         } = prepare_compaction(
             input(&transcript, None, &contract, &workspace, &[], None),
             policy(),
-            true,
         )
         .expect("first plan")
         else {
@@ -961,7 +917,6 @@ mod tests {
         let second = prepare_compaction(
             input(&extended, Some(&first), &contract, &workspace, &[], None),
             policy(),
-            true,
         )
         .expect("second plan");
         let second_projection = match &second {
@@ -1041,7 +996,6 @@ mod tests {
         let ContextCompactionPreparation::Local { projection, .. } = prepare_compaction(
             input(&transcript, None, &contract, &workspace, &[], None),
             policy(),
-            true,
         )
         .expect("plan") else {
             panic!("expected local compaction");
@@ -1111,7 +1065,6 @@ mod tests {
         let ContextCompactionPreparation::Local { projection, .. } = prepare_compaction(
             input(&transcript, None, &contract, &workspace, &[], None),
             policy(),
-            true,
         )
         .expect("plan") else {
             panic!("expected local compaction");
@@ -1152,12 +1105,8 @@ mod tests {
         let outcome = prepare_compaction(
             input(&transcript, None, &contract, &workspace, &[], None),
             ContextPolicy {
-                auto_compact: true,
-                context_window_tokens: 2_000,
-                trigger_tokens: 500,
                 hard_input_tokens: 1_000,
             },
-            true,
         )
         .expect("plan");
         assert!(matches!(
