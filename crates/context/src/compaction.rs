@@ -989,6 +989,7 @@ mod tests {
                 runtime_model_requests: 1,
                 runtime_retries: 0,
                 tool_calls: 1,
+                details: Default::default(),
             }),
             handoff_content: "CHILD_HANDOFF_SENTINEL".to_owned(),
         });
