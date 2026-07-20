@@ -857,7 +857,8 @@ def accounting(run: dict[str, Any]) -> dict[str, Any]:
     result["cost_usd"] = cost_nanousd / 1_000_000_000
     result["cost_cny"] = cost_nanocny / 1_000_000_000
     result["surface_usage"] = value.get("surface_usage")
-    terminal_state = run.get("terminal", {}).get("state")
+    terminal = run.get("terminal", {})
+    terminal_state = terminal.get("state")
     if (
         terminal_state != "completed"
         or value.get("complete") is not True
@@ -880,6 +881,11 @@ def accounting(run: dict[str, Any]) -> dict[str, Any]:
             "accounting_invalid",
             {
                 "terminal_state": terminal_state,
+                "terminal_reason": " ".join(str(terminal.get("reason", "")).split())[:512],
+                "runtime_model_requests": run.get("runtime_model_requests"),
+                "runtime_retries": run.get("runtime_retries"),
+                "tool_calls": run.get("tool_calls"),
+                "local_turns": run.get("local_turns"),
                 "root": root,
                 "child": child,
                 "hard_request_limit": result["limit"],
