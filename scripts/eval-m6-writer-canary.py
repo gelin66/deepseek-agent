@@ -391,11 +391,32 @@ def event_summary(stream: list[dict[str, Any]]) -> dict[str, Any]:
     kinds = [kind(stored) for stored in stream]
     for name in kinds:
         counts[name] = counts.get(name, 0) + 1
-    return {
+    failures = []
+    for stored in stream:
+        event = stored.get("event", {})
+        if event.get("kind") != "model_request_failed":
+            continue
+        failure = event.get("failure", {})
+        retry = event.get("retry", {})
+        failures.append(
+            {
+                "sequence": stored.get("sequence"),
+                "code": failure.get("code"),
+                "category": failure.get("category"),
+                "retryable": failure.get("retryable"),
+                "actionable_output": failure.get("actionable_output"),
+                "retry_decision": retry.get("decision"),
+                "stop_reason": retry.get("reason"),
+            }
+        )
+    summary = {
         "last_sequence": stream[-1].get("sequence") if stream else 0,
         "event_counts": counts,
         "event_tail": kinds[-32:],
     }
+    if failures:
+        summary["model_failures"] = failures
+    return summary
 
 def run_summary(run: dict[str, Any]) -> dict[str, Any]:
     accounting_value = run.get("accounting", {})
@@ -1139,6 +1160,39 @@ def self_test() -> None:
             "model_request_prepared",
         ],
     }
+    failed_summary = event_summary(
+        [
+            {
+                "sequence": 1,
+                "event": {
+                    "kind": "model_request_failed",
+                    "failure": {
+                        "code": "stream_stall",
+                        "category": "stream_stall",
+                        "message": "must not be copied",
+                        "retryable": True,
+                        "actionable_output": True,
+                    },
+                    "retry": {
+                        "decision": "stop",
+                        "reason": "actionable_output",
+                    },
+                },
+            }
+        ]
+    )
+    assert failed_summary["model_failures"] == [
+        {
+            "sequence": 1,
+            "code": "stream_stall",
+            "category": "stream_stall",
+            "retryable": True,
+            "actionable_output": True,
+            "retry_decision": "stop",
+            "stop_reason": "actionable_output",
+        }
+    ]
+    assert "message" not in json.dumps(failed_summary)
     rejects(
         "run_identity_invalid",
         lambda: audit_run_identity(
