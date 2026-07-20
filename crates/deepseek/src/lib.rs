@@ -136,6 +136,10 @@ pub enum ChatPlanError {
         message_index: usize,
         block_count: usize,
     },
+    MissingToolResults {
+        message_index: usize,
+        unresolved_count: usize,
+    },
 }
 
 impl fmt::Display for ChatPlanError {
@@ -151,6 +155,13 @@ impl fmt::Display for ChatPlanError {
             } => write!(
                 formatter,
                 "Invalid DeepSeek request: assistant message {message_index} contains {block_count} reasoning blocks, so the original single reasoning_content value cannot be reconstructed exactly; HTTP request was not sent"
+            ),
+            Self::MissingToolResults {
+                message_index,
+                unresolved_count,
+            } => write!(
+                formatter,
+                "Invalid DeepSeek request: assistant message {message_index} has {unresolved_count} tool call(s) without canonical results; HTTP request was not sent"
             ),
         }
     }
@@ -289,7 +300,7 @@ pub fn plan_runtime_chat(
     } else {
         ResponseMode::NonStreaming
     };
-    let messages = runtime_chat_messages(request, &input.wire_model);
+    let messages = runtime_chat_messages(request, &input.wire_model)?;
     let tools = (!request.tools.is_empty()).then(|| {
         request
             .tools
@@ -393,26 +404,41 @@ fn planned_tool_to_chat(tool: &PlannedTool, strict: bool) -> Value {
     value
 }
 
-fn runtime_chat_messages(request: &ModelRequest, wire_model: &str) -> Vec<Value> {
+fn runtime_chat_messages(
+    request: &ModelRequest,
+    wire_model: &str,
+) -> Result<Vec<Value>, ChatPlanError> {
     let mut messages = Vec::new();
     let mut pending_tool_calls: HashSet<String> = HashSet::new();
+    let mut pending_assistant_index = None;
+    let mut deferred_users = Vec::new();
     if let Some(system) = runtime_system_instructions(&request.system_prompt) {
         messages.push(json!({"role": "system", "content": system}));
     }
 
     let replay_current_reasoning =
         ReasoningMode::from_runtime(request.reasoning_effort).thinking_enabled();
-    for message in &request.messages {
+    for (message_index, message) in request.messages.iter().enumerate() {
         match message {
             ModelMessage::User { content } => {
-                pending_tool_calls.clear();
-                messages.push(json!({"role": "user", "content": content}));
+                let wire = json!({"role": "user", "content": content});
+                if pending_tool_calls.is_empty() {
+                    messages.push(wire);
+                } else {
+                    deferred_users.push(wire);
+                }
             }
             ModelMessage::Assistant {
                 content,
                 reasoning_content,
                 tool_calls,
             } => {
+                if !pending_tool_calls.is_empty() {
+                    return Err(ChatPlanError::MissingToolResults {
+                        message_index: pending_assistant_index.unwrap_or(message_index),
+                        unresolved_count: pending_tool_calls.len(),
+                    });
+                }
                 let replay_tool_reasoning =
                     !tool_calls.is_empty() && requires_tool_call_reasoning_replay(wire_model);
                 let reasoning = reasoning_content
@@ -454,8 +480,10 @@ fn runtime_chat_messages(request: &ModelRequest, wire_model: &str) -> Vec<Value>
                             .collect(),
                     );
                     pending_tool_calls = tool_calls.iter().map(|call| call.id.clone()).collect();
+                    pending_assistant_index = Some(message_index);
                 } else {
                     pending_tool_calls.clear();
+                    pending_assistant_index = None;
                 }
                 messages.push(wire);
             }
@@ -470,10 +498,20 @@ fn runtime_chat_messages(request: &ModelRequest, wire_model: &str) -> Vec<Value>
                     "tool_call_id": call_id,
                     "content": content,
                 }));
+                if pending_tool_calls.is_empty() {
+                    pending_assistant_index = None;
+                    messages.append(&mut deferred_users);
+                }
             }
         }
     }
-    messages
+    if !pending_tool_calls.is_empty() {
+        return Err(ChatPlanError::MissingToolResults {
+            message_index: pending_assistant_index.unwrap_or(request.messages.len()),
+            unresolved_count: pending_tool_calls.len(),
+        });
+    }
+    Ok(messages)
 }
 
 fn runtime_system_instructions(system: &SystemPrompt) -> Option<String> {
@@ -816,6 +854,65 @@ mod tests {
         assert_eq!(
             plan.body["messages"][1]["tool_calls"][0]["function"]["arguments"],
             "{ \"z\" : 1, \"path\" : \"src/lib.rs\", \"a\" : 2 }"
+        );
+    }
+
+    #[test]
+    fn child_handoff_is_deferred_until_all_deepseek_tool_results() {
+        let mut request = runtime_request(true);
+        request.messages.insert(
+            1,
+            ModelMessage::User {
+                content: "子 Agent 已完成并交回结构化结果".to_owned(),
+            },
+        );
+
+        let plan = plan_runtime_chat(
+            RuntimeChatPlanInput {
+                root: "https://api.deepseek.com",
+                strict_enabled: false,
+                wire_model: request.model.clone(),
+                max_tokens: 64,
+            },
+            &request,
+        )
+        .expect("child handoff must not break DeepSeek tool-call adjacency");
+        let messages = plan.body["messages"].as_array().expect("wire messages");
+        let assistant_index = messages
+            .iter()
+            .position(|message| message["role"] == "assistant")
+            .expect("assistant tool call");
+        assert_eq!(messages[assistant_index + 1]["role"], "tool");
+        assert_eq!(messages[assistant_index + 1]["tool_call_id"], "call-1");
+        assert_eq!(messages[assistant_index + 2]["role"], "user");
+        assert_eq!(
+            messages[assistant_index + 2]["content"],
+            "子 Agent 已完成并交回结构化结果"
+        );
+    }
+
+    #[test]
+    fn missing_canonical_tool_result_fails_before_http() {
+        let mut request = runtime_request(true);
+        request.messages.pop();
+        request.messages.push(ModelMessage::User {
+            content: "不能越过尚未结算的工具调用".to_owned(),
+        });
+
+        assert_eq!(
+            plan_runtime_chat(
+                RuntimeChatPlanInput {
+                    root: "https://api.deepseek.com",
+                    strict_enabled: false,
+                    wire_model: request.model.clone(),
+                    max_tokens: 64,
+                },
+                &request,
+            ),
+            Err(ChatPlanError::MissingToolResults {
+                message_index: 0,
+                unresolved_count: 1,
+            })
         );
     }
 
