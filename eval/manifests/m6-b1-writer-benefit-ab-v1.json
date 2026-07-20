@@ -15,6 +15,7 @@
     "pair_order": "task-local odd pair single->writer; even pair writer->single",
     "terminal_request_catalog": "Runtime may advertise an empty tool catalog only on the final terminal model request; every earlier request must advertise the exact treatment catalog",
     "wall_time_contract": "one absolute 240-second arm deadline bounds fixture Git setup, every stdio frame, the live app-server process, evidence Git commands, and the external verifier; post-delete elapsed time is also measured and fails the arm if it exceeds the contract",
+    "cancel_conflict_contract": "after the Runtime deadline grace, accepted records a Harness cancel; run_terminal or run_not_active triggers one canonical get and no second cancel, but only a Run view that already contains terminal is classified as a terminal race, while inactive without terminal is a typed product convergence failure",
     "task_round_order": [
       ["t1", "t2", "t3"],
       ["t2", "t3", "t1"],
@@ -194,7 +195,7 @@
     }
   },
   "frozen_hashes": {
-    "manifest_sha256_excluding_this_field": "sha256:c16d689c755414793510c02245cb9514083adfbcbb4b2e69cc2db5786cd077ef",
+    "manifest_sha256_excluding_this_field": "sha256:18d88682b6e2470bc9ca571a863923a35d6d71c689bf50e8e5b781ec43874b97",
     "fixture_tree_sha256": {
       "t1": "sha256:0e7ff64a80159f7fff149fba3c0a24af5836a7c8697f32e3ad7c242d1bc87733",
       "t2": "sha256:1fc1e191d26c0ae486a3108ca96351b2e7d28b9dafbe6b55fb0691ab85b24922",

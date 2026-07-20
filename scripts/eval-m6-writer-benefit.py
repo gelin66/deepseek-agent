@@ -1289,6 +1289,26 @@ def cancel_was_accepted(response: dict[str, Any], run_id: str) -> bool:
     )
 
 
+def cancel_requires_canonical_get(error: CANARY.Failure) -> bool:
+    return error.code in {
+        "run_api_run_not_active",
+        "run_api_run_terminal",
+    }
+
+
+def cancel_conflict_failure(
+    error: CANARY.Failure,
+    run: dict[str, Any],
+) -> str | None:
+    if run.get("terminal") is not None:
+        return None
+    return (
+        "run_inactive_without_terminal"
+        if error.code == "run_api_run_not_active"
+        else "run_terminal_without_terminal"
+    )
+
+
 def collect_events(
     client: Any,
     run_id: str,
@@ -1428,6 +1448,7 @@ def execute_arm(
     evaluation_id = str(uuid.uuid4())
     execution_state["api_exposure"] = "none"
     execution_state["harness_cancel_sent"] = False
+    execution_state["harness_cancel_raced"] = False
     secret = key.encode()
     with tempfile.TemporaryDirectory(prefix="codewhale-m6b-arm-") as raw:
         ephemeral = Path(raw)
@@ -1487,6 +1508,8 @@ def execute_arm(
         child_events: list[dict[str, Any]] = []
         child_run: dict[str, Any] = {}
         harness_cancel_sent = False
+        harness_cancel_attempted = False
+        harness_cancel_raced = False
         try:
             client = CANARY.Stdio(process, secret)
             envelope = start_command(
@@ -1525,17 +1548,40 @@ def execute_arm(
                 if process.poll() is not None:
                     raise EvaluationError("app_server_exited")
                 if (
-                    not harness_cancel_sent
+                    not harness_cancel_attempted
                     and now >= cancel_deadline
                 ):
-                    response = client.call(
-                        query(
-                            "cancel",
-                            run_id,
-                            f"m6b-cancel-{evaluation_id}",
-                        ),
-                        timeout_seconds=remaining_stdio_timeout(deadline),
-                    )
+                    harness_cancel_attempted = True
+                    try:
+                        response = client.call(
+                            query(
+                                "cancel",
+                                run_id,
+                                f"m6b-cancel-{evaluation_id}",
+                            ),
+                            timeout_seconds=remaining_stdio_timeout(deadline),
+                        )
+                    except CANARY.Failure as error:
+                        if not cancel_requires_canonical_get(error):
+                            raise
+                        response = client.call(
+                            query(
+                                "get",
+                                run_id,
+                                f"m6b-cancel-conflict-get-{evaluation_id}",
+                            ),
+                            timeout_seconds=remaining_stdio_timeout(deadline),
+                        )
+                        if response.get("kind") != "run":
+                            raise EvaluationError("run_view_missing")
+                        run = response.get("run", {})
+                        execution_state["api_exposure"] = "accounted"
+                        execution_state["accounting"] = accounting_summary(run)
+                        if code := cancel_conflict_failure(error, run):
+                            raise EvaluationError(code)
+                        harness_cancel_raced = True
+                        execution_state["harness_cancel_raced"] = True
+                        continue
                     if not cancel_was_accepted(response, run_id):
                         raise EvaluationError("cancel_not_accepted")
                     harness_cancel_sent = True
@@ -1549,6 +1595,8 @@ def execute_arm(
                 if response.get("kind") != "run":
                     raise EvaluationError("run_view_missing")
                 run = response.get("run", {})
+                execution_state["api_exposure"] = "accounted"
+                execution_state["accounting"] = accounting_summary(run)
 
             execution_state["api_exposure"] = "accounted"
             execution_state["accounting"] = accounting_summary(run)
@@ -1774,6 +1822,7 @@ def execute_arm(
             "task_success_before_measurement": task_success_before_measurement,
             "wall_time_contract_valid": wall_time_valid,
             "harness_cancel_sent_after_runtime_grace": harness_cancel_sent,
+            "harness_cancel_raced_with_runtime_terminal": harness_cancel_raced,
             "budget_terminal_attribution_valid": budget_terminal_valid,
             "terminal": terminal,
             "completion": root_receipt,
@@ -3043,6 +3092,41 @@ class HarnessSelfTests(unittest.TestCase):
                 "run-1",
             )
         )
+        self.assertTrue(
+            cancel_requires_canonical_get(
+                CANARY.Failure("run_api_run_not_active")
+            )
+        )
+        self.assertTrue(
+            cancel_requires_canonical_get(
+                CANARY.Failure("run_api_run_terminal")
+            )
+        )
+        self.assertFalse(
+            cancel_requires_canonical_get(
+                CANARY.Failure("run_api_run_store_failed")
+            )
+        )
+        terminal_run = {"terminal": {"state": "timed_out"}}
+        self.assertIsNone(
+            cancel_conflict_failure(
+                CANARY.Failure("run_api_run_terminal"),
+                terminal_run,
+            )
+        )
+        self.assertIsNone(
+            cancel_conflict_failure(
+                CANARY.Failure("run_api_run_not_active"),
+                terminal_run,
+            )
+        )
+        self.assertEqual(
+            cancel_conflict_failure(
+                CANARY.Failure("run_api_run_not_active"),
+                {"terminal": None},
+            ),
+            "run_inactive_without_terminal",
+        )
 
 
 def run_self_tests() -> int:
@@ -3185,6 +3269,9 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                         arm["requests"] = execution_state["accounting"]
                     arm["harness_cancel_sent_after_runtime_grace"] = (
                         execution_state["harness_cancel_sent"]
+                    )
+                    arm["harness_cancel_raced_with_runtime_terminal"] = (
+                        execution_state["harness_cancel_raced"]
                     )
                 pair["arms"].append(arm)
                 progress = partial_payload(

@@ -91,6 +91,10 @@ request 使用空目录，此前每个 request 仍必须精确匹配 treatment �
 后先留 5 秒给原生 timeout 收敛；仍无终态时，Harness 才通过 canonical Run API 发送
 cancel，并以 5 秒 stdio 轮询上限在总计 240 秒内收集 typed terminal 和完整 accounting，
 而不是与原生 deadline 竞态，或把悬挂执行伪装成未知的成功/重采样。
+若 cancel 与 Runtime 原生收敛冲突并返回 `run_terminal` 或 `run_not_active`，Harness
+不再重复 cancel，而是立即通过 `get` 读取 canonical Run。只有 `get` 已观察到 terminal
+才记为终态竞态；inactive 且仍无 terminal 是 typed 产品收敛失败，不能伪装成正常竞态。
+只有收到 `accepted` 才记录为 Harness 已发送 cancel，且所有路径都不能越过 240 秒总期限。
 同一个绝对 arm deadline 还约束每个 stdio frame（包括部分帧读写）、fixture/evidence Git
 命令、外部 verifier 和 app-server 停止等待；临时目录删除后的总耗时也会复核，超限即失败。
 TaskContract 中冻结的 verifier step timeout 必须与生产 `run_verifiers` 实际签入 observation
