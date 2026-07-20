@@ -3581,7 +3581,7 @@ impl AgentRuntime {
             tool_calls: state.snapshot.tool_calls,
             details,
         };
-        if self
+        if let Err(error) = self
             .publish(
                 state,
                 RuntimeEventKind::Terminal {
@@ -3589,8 +3589,11 @@ impl AgentRuntime {
                 },
             )
             .await
-            .is_err()
         {
+            let error = match error {
+                RuntimeFailure::Store { message } => message,
+                other => format!("{other:?}"),
+            };
             if let Ok(Some(replay)) = self.store.load(state.run_id()).await
                 && let Some(existing) = replay.snapshot.terminal
             {
@@ -3600,7 +3603,7 @@ impl AgentRuntime {
             return AgentOutcome {
                 terminal: TerminalState::Failed {
                     failure: RuntimeFailure::Store {
-                        message: "failed to persist the terminal event".to_owned(),
+                        message: format!("terminal_persist_failed：{error}"),
                     },
                 },
                 ..outcome

@@ -39,6 +39,7 @@ impl ModelStream for PendingStream {
 enum ModelScript {
     Writer,
     SlowWriter,
+    TurnLimitedWriter,
     ReadOnlyRole,
     RejectWriter,
     ResumeWriter,
@@ -63,10 +64,18 @@ impl DeterministicModel {
     }
 
     fn output(&self, request: &ModelRequest, request_index: usize) -> ModelOutput {
+        let turn_limited_writer_child = matches!(self.script, ModelScript::TurnLimitedWriter)
+            && request.actor.kind == AgentActorKind::Child;
         let isolated_writer_child = request.actor.kind == AgentActorKind::Child
             && request_index == 0
             && request.tools.iter().any(|tool| tool.name == "write");
-        let tool_calls = if isolated_writer_child {
+        let tool_calls = if turn_limited_writer_child {
+            vec![tool_call(
+                &format!("writer-edit-{request_index}"),
+                "write",
+                json!({"path": "src/lib.rs", "content": "improved"}),
+            )]
+        } else if isolated_writer_child {
             vec![tool_call(
                 "writer-edit",
                 "write",
@@ -85,6 +94,19 @@ impl DeterministicModel {
                         "allowed_paths": ["src/lib.rs"],
                         "wall_time_secs": 180,
                         "expected_artifact": "一个 Host seal 的提交"
+                    }),
+                )],
+                (ModelScript::TurnLimitedWriter, AgentActorKind::Root, 0) => vec![tool_call(
+                    "turn-limited-writer-call",
+                    AGENT_TOOL_NAME,
+                    json!({
+                        "prompt": "持续写入直到冻结的七轮上限",
+                        "type": "implementer",
+                        "workspace_access": "isolated_write",
+                        "allowed_paths": ["src/lib.rs"],
+                        "max_steps": 7,
+                        "wall_time_secs": 180,
+                        "expected_artifact": "一个有界 Writer 结果"
                     }),
                 )],
                 (ModelScript::SlowWriter, AgentActorKind::Root, 0) => vec![tool_call(
@@ -1474,6 +1496,11 @@ async fn writer_child_times_out_at_its_shorter_frozen_deadline() {
     .expect("root must converge after the child deadline")
     .expect("root runtime joins");
     let root_replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert_eq!(
+        root_replay.snapshot.terminal.as_ref(),
+        Some(&outcome),
+        "root deadline convergence must be durably terminal, not only return an in-memory outcome",
+    );
     let lifecycle = root_replay
         .snapshot
         .agent_tasks
@@ -1502,6 +1529,47 @@ async fn writer_child_times_out_at_its_shorter_frozen_deadline() {
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn turn_limited_writer_still_persists_the_root_terminal() {
+    let RuntimeFixture {
+        runtime,
+        model,
+        store,
+        ..
+    } = runtime_fixture(ModelScript::TurnLimitedWriter);
+    let mut request = root_request(true, true);
+    request.limits.max_model_requests = 10;
+    request.limits.max_turns = 10;
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        runtime.start(request).wait(),
+    )
+    .await
+    .expect("turn-limited writer root must converge")
+    .expect("root runtime joins");
+    let root_replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert_eq!(
+        root_replay.snapshot.terminal.as_ref(),
+        Some(&outcome),
+        "turn exhaustion must settle the Writer lifecycle before the root terminal",
+    );
+    let requests = model.requests.lock().expect("request log");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.actor.kind == AgentActorKind::Root)
+            .count(),
+        2,
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.actor.kind == AgentActorKind::Child)
+            .count(),
+        7,
+    );
 }
 
 #[tokio::test]

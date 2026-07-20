@@ -23,7 +23,7 @@ use codewhale_runtime::{
     AgentControl, ContinuationError, ControlError, CreationIntent, CreationReservation,
     DurableActionState, DurableCommand, ModelAccounting, ModelErrorCategory, ModelPort,
     ModelPortError, ModelRequest, ModelStream, RootRunRecord, RunReadyError, RunReplay, RunStore,
-    RunStoreError, RuntimeEventSink, RuntimeRun,
+    RunStoreError, RuntimeEventSink, RuntimeFailure, RuntimeRun,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify};
@@ -1027,7 +1027,23 @@ fn spawn_monitor(
 ) {
     tokio::spawn(async move {
         let run_id = run.run_id.clone();
-        let _ = run.wait().await;
+        match run.wait().await {
+            Ok(outcome) => {
+                if let TerminalState::Failed {
+                    failure: RuntimeFailure::Store { message },
+                } = &outcome.terminal
+                    && message.starts_with("terminal_persist_failed：")
+                {
+                    eprintln!(
+                        "runtime_terminal_not_persisted：run={} error={message}",
+                        run_id
+                    );
+                }
+            }
+            Err(error) => {
+                eprintln!("runtime_join_failed：run={} error={error}", run_id);
+            }
+        }
         let mut active = active.lock().await;
         if active
             .get(&run_id)
