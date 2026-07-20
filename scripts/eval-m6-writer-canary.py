@@ -386,6 +386,83 @@ def events(client: Stdio, run_id: str, request_id: str) -> list[dict[str, Any]]:
 def kind(stored: dict[str, Any]) -> str:
     return stored.get("event", {}).get("kind", "")
 
+def event_summary(stream: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    kinds = [kind(stored) for stored in stream]
+    for name in kinds:
+        counts[name] = counts.get(name, 0) + 1
+    return {
+        "last_sequence": stream[-1].get("sequence") if stream else 0,
+        "event_counts": counts,
+        "event_tail": kinds[-32:],
+    }
+
+def run_summary(run: dict[str, Any]) -> dict[str, Any]:
+    accounting_value = run.get("accounting", {})
+    return {
+        name: run.get(name)
+        for name in (
+            "run_id",
+            "parent_run_id",
+            "last_sequence",
+            "terminal",
+            "runtime_model_requests",
+            "runtime_retries",
+            "tool_calls",
+            "local_turns",
+        )
+    } | {
+        "accounting": {
+            name: accounting_value.get(name)
+            for name in (
+                "root",
+                "child",
+                "hard_request_limit",
+                "transport_retries",
+                "complete",
+                "usage_complete",
+                "usage_missing",
+                "usage_incomplete",
+                "billing_unknown",
+            )
+        }
+    }
+
+def collect_progress(
+    client: Stdio,
+    root_id: str,
+    run: dict[str, Any],
+    request_suffix: str,
+) -> dict[str, Any]:
+    root_events = events(client, root_id, f"m6-debug-root-events-{request_suffix}")
+    child_ids = [
+        stored.get("event", {}).get("task", {}).get("child_run_id")
+        for stored in root_events
+        if kind(stored) == "agent_task_prepared"
+    ]
+    children = []
+    for index, child_id in enumerate(child_ids):
+        if not isinstance(child_id, str):
+            continue
+        result = client.call(query("get", child_id, f"m6-debug-child-get-{request_suffix}-{index}"))
+        child = result.get("run") if result.get("kind") == "run" else {}
+        child_events = events(
+            client,
+            child_id,
+            f"m6-debug-child-events-{request_suffix}-{index}",
+        )
+        children.append(
+            {
+                "run": run_summary(child) if isinstance(child, dict) else {},
+                "events": event_summary(child_events),
+            }
+        )
+    return {
+        "root": run_summary(run),
+        "root_events": event_summary(root_events),
+        "children": children,
+    }
+
 def one(stream: list[dict[str, Any]], name: str) -> dict[str, Any]:
     found = [stored["event"] for stored in stream if kind(stored) == name]
     check(len(found) == 1, f"expected_one_{name}")
@@ -880,19 +957,29 @@ def live(args: argparse.Namespace, disclosure: dict[str, Any]) -> dict[str, Any]
                         },
                     )
                 if time.monotonic() >= deadline:
+                    try:
+                        progress = collect_progress(client, root_id, run, "deadline")
+                    except Failure as progress_error:
+                        progress = {"collection_error": progress_error.code}
                     raise Failure(
                         "run_deadline_exceeded",
                         {
                             "poll_count": poll,
                             "wall_time_ms": int((time.monotonic() - started) * 1000),
+                            "progress": progress,
                         },
                     )
                 if poll > MAX_POLLS:
+                    try:
+                        progress = collect_progress(client, root_id, run, "poll-limit")
+                    except Failure as progress_error:
+                        progress = {"collection_error": progress_error.code}
                     raise Failure(
                         "run_poll_limit_exceeded",
                         {
                             "poll_count": poll,
                             "wall_time_ms": int((time.monotonic() - started) * 1000),
+                            "progress": progress,
                         },
                     )
                 time.sleep(0.2)
@@ -1036,6 +1123,22 @@ def self_test() -> None:
     model_request = {key: value for key, value in identity.items() if key != "environment"}
     stream = [{"event": {"kind": "model_request_prepared", "request": model_request}}]
     audit_run_identity(stream, identity, "root", None, MODEL, True, "root", 0)
+    summary = event_summary(
+        [
+            {"sequence": 1, "event": {"kind": "run_created"}},
+            {"sequence": 2, "event": {"kind": "model_request_prepared"}},
+            {"sequence": 3, "event": {"kind": "model_request_prepared"}},
+        ]
+    )
+    assert summary == {
+        "last_sequence": 3,
+        "event_counts": {"run_created": 1, "model_request_prepared": 2},
+        "event_tail": [
+            "run_created",
+            "model_request_prepared",
+            "model_request_prepared",
+        ],
+    }
     rejects(
         "run_identity_invalid",
         lambda: audit_run_identity(
