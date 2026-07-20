@@ -857,8 +857,9 @@ def accounting(run: dict[str, Any]) -> dict[str, Any]:
     result["cost_usd"] = cost_nanousd / 1_000_000_000
     result["cost_cny"] = cost_nanocny / 1_000_000_000
     result["surface_usage"] = value.get("surface_usage")
+    terminal_state = run.get("terminal", {}).get("state")
     if (
-        run.get("terminal", {}).get("state") != "completed"
+        terminal_state != "completed"
         or value.get("complete") is not True
         or value.get("usage_complete") is not True
         or value.get("usage_missing") is not False
@@ -874,7 +875,43 @@ def accounting(run: dict[str, Any]) -> dict[str, Any]:
         or not isinstance(result["surface_usage"], list)
         or not result["surface_usage"]
     ):
-        raise Failure("accounting_invalid")
+        surface_usage = result["surface_usage"]
+        raise Failure(
+            "accounting_invalid",
+            {
+                "terminal_state": terminal_state,
+                "root": root,
+                "child": child,
+                "hard_request_limit": result["limit"],
+                "transport_retries": result["transport_retries"],
+                "complete": value.get("complete"),
+                "usage_complete": value.get("usage_complete"),
+                "usage_missing": value.get("usage_missing"),
+                "usage_incomplete": value.get("usage_incomplete"),
+                "billing_unknown": value.get("billing_unknown"),
+                "unpriced": value.get("unpriced"),
+                "started": result["started"],
+                "completed": result["completed"],
+                "in_flight": result["in_flight"],
+                "cost_nanousd": cost_nanousd,
+                "cost_nanocny": cost_nanocny,
+                "surface_usage": [
+                    {
+                        key: entry.get(key)
+                        for key in (
+                            "surface",
+                            "model",
+                            "response_count",
+                            "usage_response_count",
+                        )
+                    }
+                    for entry in surface_usage
+                    if isinstance(entry, dict)
+                ]
+                if isinstance(surface_usage, list)
+                else None,
+            },
+        )
     return result
 
 def stop(process: subprocess.Popen[bytes]) -> None:
