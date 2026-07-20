@@ -65,9 +65,15 @@ Changing one of these constraints requires evidence and a new ADR.
   shell, duplicate tool/state/model owners, and unwired Goal/Memory facades
   have been physically deleted. Underwater is the sole interactive shell.
   Production root/child execution uses canonical `AgentRuntime` and `RunStore`.
-- Current Run API is v4, State schema is v12, and RuntimeEvent is v6. State
-  v12 persists and rebuilds the exact tool catalog advertised by the latest
+- Current Run API is v6, State schema is v13, and RuntimeEvent is v9. State
+  v13 persists and rebuilds the exact tool catalog advertised by the latest
   model request.
+- M5-A established the only canonical TaskContract/EvidenceReceipt/Host
+  completion owner. M5-B retained the evidence-aware ContextBroker and
+  hard-limit local compaction, then deleted manual/early compaction, the
+  independent compaction root, and the model-summary lifecycle at shrink
+  checkpoint `e2c870b0`. Its formal DeepSeek A/B does not support an
+  efficiency claim.
 - Existing DeepSeek work was preserved in WIP commit `2ccccdd4` and local
   branch `archive/pre-product-plan-20260715`.
 - That WIP is not automatically accepted as stable behavior. It must be split
@@ -80,9 +86,9 @@ Changing one of these constraints requires evidence and a new ADR.
   model or tool loops as compatibility paths.
 - The TUI-local Goal/Hunt loop, private TaskContract/receipt store, Slop ledger,
   fake custom-command pause state, and their UI/config surfaces have been
-  physically deleted. They had no canonical production consumer. M5 must build
-  the only TaskContract/EvidenceReceipt owner in protocol/runtime/state rather
-  than adapt or restore this prototype.
+  physically deleted. They had no canonical production consumer. The only
+  TaskContract/EvidenceReceipt owner now lives in protocol/runtime/state; do
+  not adapt or restore this prototype.
 
 Never use broad `git clean`, `git restore`, reset, or file moves to make a
 dirty tree look tidy. Inspect consumers with `rg`, preserve unrelated changes,

@@ -3,10 +3,10 @@
 > 文档类别：当前生产接口。长期架构约束以
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md) 和 ADR 为准。
 
-- 状态：M4 已关闭；M5-A canonical completion 已进入该接口
-- 更新日期：2026-07-19
-- schema：`Run API`（`schema_version = 5`）、`RuntimeEvent`（writer/reader v7）、
-  `State`（schema v12）
+- 状态：M5-B 已完成并 shrink；当前接口只保留 hard-limit context safety
+- 更新日期：2026-07-20
+- schema：`Run API`（`schema_version = 6`）、`RuntimeEvent`（writer/reader v9）、
+  `State`（schema v13）
 
 `codewhale app-server` 是本地程序接入 Agent 的唯一 API 入口。它不拥有模型循环、
 工具实现或运行状态，只把 HTTP/SSE/stdio 命令交给
@@ -17,7 +17,7 @@ HTTP / SSE / stdio
         |
 crates/app-server        认证、限流、framing
         |
-AgentApplication         start/continue/compact/list/recover/get/events/resume/control
+AgentApplication         start/continue/list/recover/get/events/resume/control
         |
 AgentRuntime             唯一根/子 Agent 执行内核
         |
@@ -88,7 +88,6 @@ CodeWhale 仍可作为 MCP client 消费外部工具服务，但不再提供自�
 | `GET` | `/v1/runs/{run_id}` | get |
 | `GET` | `/v1/runs/{run_id}/events?after_sequence=N` | events 或 SSE replay |
 | `POST` | `/v1/runs/{run_id}/continue` | 从终态 root 创建新的 root run |
-| `POST` | `/v1/runs/{run_id}/compact` | 从终态 root 创建 context-compaction root |
 | `POST` | `/v1/runs/{run_id}/resume` | resume |
 | `POST` | `/v1/runs/{run_id}/steer` | steer |
 | `POST` | `/v1/runs/{run_id}/interrupt` | interrupt |
@@ -108,7 +107,7 @@ POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "request_id": "client-request-42",
   "command": {
     "kind": "get",
@@ -117,12 +116,11 @@ POST body 必须是 canonical envelope，且 command kind 必须与 route 匹配
 }
 ```
 
-支持且只支持十三种 command：
+支持且只支持十二种 command：
 
 ```text
 start
 continue
-compact
 list_roots
 list_pending_creations
 recover_creation
@@ -161,7 +159,7 @@ accounting baseline 等恢复事实由 Host 组合，不能从 transport 注入�
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "request_id": "start-1",
   "command": {
     "kind": "start",
@@ -207,7 +205,7 @@ description 会以确定性的中文 user turn 进入 canonical transcript；精
 Host typed fact，不复制进 prompt。默认 Host acceptance 只表示 Runtime policy 接受完成
 候选，不等于评测意义上的 `verified_success`。
 
-### continue、compact 与 list
+### continue 与 list
 
 `continue` 只接受终态 root run 和有效的新 `TaskDefinition`，并可用
 `expected_workspace` 做精确 workspace 校验。它创建独立的新 root：新 run 的
@@ -219,7 +217,7 @@ Agent，也不是同 run 的 `resume`。
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "request_id": "continue-42",
   "command": {
     "kind": "continue",
@@ -241,21 +239,23 @@ Agent，也不是同 run 的 `resume`。
 }
 ```
 
-`compact` 同样只接受非 `RecoveryRequired` 的终态 root，但不接收新
-`TaskDefinition`。它创建
-`purpose = context_compaction` 的独立 root，并把成功提交的 projection 留给后续
-continuation 继承；source 仍不可变。`list_roots` 按精确 workspace 返回最近更新优先的
-root 摘要，包含普通 Agent root 与内部 context-compaction root，不返回 child run。
+`list_roots` 按精确 workspace 返回最近更新优先的 Agent root 摘要，不返回 child run。
 `list_pending_creations` 返回创建事实尚未送达 `RunCreated` 的 durable intent；
 `recover_creation` 只按原 `creation_request_id` 恢复该 intent，不接受客户端重建或修改
 原命令。
 
-完整 canonical transcript 始终 append-only；compaction 只改变下一次模型请求使用的
-projection。Runtime 可因手动命令、threshold 或 preflight limit 触发：先本地裁剪较老的大型
-工具结果，仍不足时才发出 tool-free、non-streaming、low-reasoning 摘要请求。该请求计入物理
-请求预算与 accounting。当前实现只建立可恢复的最小投影机制，尚未证明 Token、成功率或成本
-收益，也未确定性保证摘要保留 TaskContract、当前 diff 和最新 evidence；这些结论仍需 M5
-的 compaction on/off A/B。
+完整 canonical transcript 始终 append-only；每次模型请求的 projection 由唯一
+`crates/context` ContextBroker 确定。Runtime 在安全边界估算下一次输入，只有预计超过
+基于官方 context/output capability 和 safety headroom 派生的 Host hard input limit 时，
+才在同一个 root/child 内本地确定性压缩，并提交
+`ContextCompactionCommitted`；压缩不调用模型、不消耗请求许可，也不创建新 run。Store
+按 canonical transcript、当次真实 tool catalog、source digest 和 before/after Token
+重算该事件；压缩后仍超限则 typed fail closed。Run API、HTTP/stdio 和 TUI 都没有手动
+compact 命令，也没有提前百分比阈值或用户配置。
+
+正式 M5-B A/B 只支持把该机制保留为 hard-limit 可靠性边界；主动压缩没有通过费用、时间
+或成功率收益门槛，不得把它描述为效率优化。完整证据见
+[M5-B ContextBroker 正式 A/B](../../eval/summaries/m5-context-broker-ab-2026-07-20.md)。
 
 ### resolve_interaction
 
@@ -266,7 +266,7 @@ prompt；过期、重复、错 ID 和错 response 均返回 typed error。
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "request_id": "approve-42",
   "command": {
     "kind": "resolve_interaction",
@@ -293,7 +293,7 @@ typed prompt。approval 必须在任何 `ToolExecutionStarted` 前提交并解�
 
 ```json
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "request_id": "client-request-42",
   "result": {
     "kind": "run",
@@ -357,7 +357,7 @@ RuntimeEvent v4 的控制事实为：
 - `ControlRequested`：interrupt/cancel 的持久意图；
 - v3 的单一 `Steered` 已删除，不提供兼容 alias。
 
-RuntimeEvent v5 在 v4 基础上增加：
+RuntimeEvent v5 曾在 v4 基础上增加：
 
 - `ContextCompactionPrepared`：摘要请求及其 source projection 已持久准备；
 - `ContextCompactionInFlight`：物理摘要请求可能已经发出；
@@ -375,8 +375,6 @@ RuntimeEvent v6 删除泛化的 `request_budget_exceeded` failure kind，改为�
 
 达到物理 `started == limit` 本身不代表耗尽。RunStore 原样持久化这两个 kind，不根据计数
 重新猜测终态。
-prepared 尚未进入 in-flight 时可恢复一次；in-flight 后无法证明请求未发送或账单完整时必须
-fail closed 为 `RecoveryRequired`，不能盲目重发摘要请求。
 
 RuntimeEvent v7 建立唯一任务完成与证据链：
 
@@ -393,15 +391,25 @@ RuntimeEvent v7 建立唯一任务完成与证据链：
 任何 `MayWrite` 操作一旦可能开始就推进 workspace generation，即使最终内容 hash 与旧
 revision 相同，旧 receipt 也不会复活。verifier Started 后进程死亡无法证明副作用边界时
 fail closed 为 `RecoveryRequired`；Committed 后恢复只重放已提交事实，不重复 verifier 或
-terminal。当前 writer 和 reducer/Store reader 只接受 v7，不保留旧 event schema 兼容路径。
+terminal。
+
+RuntimeEvent v8 用唯一的本地确定性 `ContextCompactionCommitted` 替换旧摘要模型的
+prepared/in-flight/failed 生命周期。事件持久化精确 source projection、selected entry、
+真实 tool catalog、before/after Token 和未变化的 accounting；Store 独立重算后才接受。
+因此 production 调用图只剩普通 Agent request 的一个 `ModelPort::stream` 调用点。
+
+RuntimeEvent v9 继续收缩协议：删除手动/threshold trigger、特殊 compaction ID、独立
+compaction purpose 和 compaction terminal。当前 writer 和 reducer/Store reader 只接受
+v9，不保留旧 event schema 兼容路径。
 
 ## 6. 并发、控制与恢复
 
-- `start`、`continue` 和 `compact` 在创建 run 前先把
+- `start` 和 `continue` 在创建 run 前先把
   `request_id + normalized command digest -> reserved run_id` 及可恢复 creation intent
-  持久写入 State schema v12（该 creation intent 表由 v9 引入并保留）；
+  持久写入 State schema v13（该 creation intent 表由 State schema v9 引入并保留；v13
+  迁移会删除旧 `creation_kind = compact` 的 pending intent）；
   同 ID 同 payload 重试复用同一 reserved/created run，不同 payload 复用同一 ID 被拒绝。
-  若 reservation 已存在但 continuation/compaction run 尚未创建，重试沿用同一 reserved
+  若 reservation 已存在但 continuation run 尚未创建，重试沿用同一 reserved
   run ID，不能再生成第二个 run。自动路由 start 的预运行请求可能已发出时则 fail closed，
   避免重复计费。
 - `start`/`resume` 只有在 canonical Store 已持久创建或取得 lease 后才确认。

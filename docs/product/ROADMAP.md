@@ -3,16 +3,18 @@
 > 文档类别：产品权威。仅定义实施顺序、迁移和删除点。
 
 - 状态：执行中
-- 当前阶段：M4 已关闭；M5-A canonical `TaskContract`/`EvidenceReceipt` 已完成并通过
-  正式 DeepSeek 显式 verifier A/B，当前进入 M5-B evidence-aware ContextBroker。M4 最终
-  代码检查点为 `65fa88ba`；当前
-  Run API v5、RuntimeEvent v7、State schema v12。CLI、TUI、本地 API 与根/子 Agent 已统一到
+- 当前阶段：M4 已关闭；M5-A canonical `TaskContract`/`EvidenceReceipt` 与 M5-B
+  evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 结论为 `shrink`：
+  保留硬上限安全压缩，删除手动和提前阈值压缩；当前进入 M6 最小 Orchestrator/worktree
+  垂直切片，M5-C RepoGraph 因无缺失检索证据继续延后。M4 最终代码检查点为
+  `65fa88ba`；M5-B 收缩检查点为 `e2c870b0`；当前 Run API v6、RuntimeEvent v9、State
+  schema v13。CLI、TUI、本地 API 与根/子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
   Goal/Memory 原型均已物理删除。focused、真实 PTY、进程级 crash/replay、严格 workspace
   Clippy 与完整 workspace tests 已通过。M1 的导入基线 A/B 与 M2 的完整官方 surface
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
-- 上次更新：2026-07-19
+- 上次更新：2026-07-20
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -116,8 +118,8 @@ multi 从 baseline 的 6/6 降为 5/6 并真实耗尽请求预算；candidate si
 | M2 | 独立 DeepSeekBackend 与领域协议 | 进行中（当前候选全仓/exec/QA 回归通过，official live 待完成） | Production RequestPlan 通过真实路径/live 门禁，旧 DeepSeek 决策分支删除 |
 | M3 | 最小 Headless AgentRuntime 垂直切片 | 已完成（仅 `exec`） | `exec` 单一生产 loop，离线/全仓/真实 DeepSeek 证据通过 |
 | M4 | 统一工具、事件、RunStore 和产品入口 | 已完成 | CLI/TUI/API 同事件，所有生产模型循环统一 |
-| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 进行中（M5-A 已完成；M5-B 待开发） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定，ContextBroker/RepoGraph 各自由 A/B 证明净收益 |
-| M6 | 统一多 Agent 与 worktree 生命周期 | 部分开始（canonical 根/子同 Runtime 已完成） | 唯一 Orchestrator、writer worktree 和并行净收益 |
+| M5 | RepoGraph、ContextBroker 和 canonical 证据链 | 核心完成（M5-A 完成；M5-B 完成并 shrink；M5-C 无证据延后） | TaskContract/receipt 只由唯一 Runtime/RunStore 判定；ContextBroker 保留硬限制可靠性，不虚报效率收益 |
+| M6 | 统一多 Agent 与 worktree 生命周期 | 当前阶段（canonical 根/子同 Runtime 已完成） | 唯一 Orchestrator、writer worktree 和并行净收益 |
 | M7 | DeepSeek 专项调优与产品清理 | 待开始 | 其他 Provider 和重复产品外壳被删除 |
 | M8 | V1 本地产品化 | 待开始 | 自己的品牌、配置、CI、打包和开发流程完整 |
 
@@ -1308,8 +1310,9 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 - 切换删除点：C2 切换 exec/app-server 的旧 continuation lookup；其后 C3 已删除交互
   foreground engine/session/runtime-thread 调用链，`afeca3c4` 已物理删除退役的
   `crates/tui/src/compaction.rs`/`seam_manager.rs`，`1ff73a00` 又删除了不再影响 canonical
-  Runtime 的 TUI `auto_compact` 假设置和阈值状态。M5 再以 A/B 决定
-  evidence-aware compaction/ContextBroker 的保留设计，不堆叠第二套摘要器。
+  Runtime 的 TUI `auto_compact` 假设置和阈值状态。M5-B 已以正式 A/B 决定 shrink：
+  保留 evidence-aware ContextBroker 与 hard-limit safety，删除主动产品面，不堆叠第二套
+  摘要器。
 
 #### M4-C C3：交互前台与 child 投影切换（已完成）
 
@@ -1451,27 +1454,30 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
   改善而非效率收益。完整结果见
   [M5-A canonical 完成门禁精确 A/B](../../eval/summaries/m5-completion-gate-ab-2026-07-19.md)。
 
-### M5-B：evidence-aware ContextBroker 与 compaction（下一阶段）
+### M5-B：evidence-aware ContextBroker 与 compaction（已完成并 shrink）
 
-- 真实问题：当前 canonical transcript 与 compaction 已可恢复，但投影策略尚未确定性保证
-  保留 TaskContract、未决问题、当前 workspace/diff 和最新有效 evidence；长任务可能在
-  压缩后丢失完成所需事实。
-- 单一 owner：选择与预算策略位于 `crates/context`，`AgentRuntime` 只在现有
-  ModelRequest/compaction 边界调用它；不得建立第二 transcript、第二 compaction loop 或
-  presentation-local memory。
-- 先实现最小 deterministic pinned set：TaskContract、未决 interaction/control、当前
-  workspace generation/revision、最新有效 receipt、未解决 verifier failure 和已 join 的
-  child handoff。其余历史按相关性与 Token 预算裁剪。
-- 基于 M4-C C2 的唯一 projection/event 状态机增强 compaction，使其可确定性保留
-  TaskContract、未决问题、当前 diff 和最新证据；不得另建第二套 compaction runtime。
-- 用同任务、同预算的 compaction on/off A/B 测量 verified success、false-success、Token、
-  时间和费用；M4-C 的协议/恢复通过不能替代该收益证据。
-- 切换真实调用方后删除被替代的旧启发式 projection 分支；若 A/B 无净收益，缩小或删除
-  新策略，不以更多摘要提示词或配置项掩盖。
+- 单一 `crates/context` owner 已接管 root/child 的每次 request projection；canonical
+  transcript 仍 append-only，Store 用 exact source index、tool catalog、digest 和
+  before/after Token 重算每次 committed projection。
+- 确定性 pinned facts 包括 TaskContract、当前 workspace generation/revision、最新有效
+  receipt、未解决 verifier failure、当前任务 mutation group 和已 join child handoff；
+  reasoning/tool group 保持原子，不调用摘要模型。
+- 正式官方 DeepSeek 评测为 12 对 / 24 treatment arms、2 个长任务、3/cell。candidate
+  compaction on/off 均 `6/6` verified、0 false-success；on 的 Token 6/6 对下降，平均
+  `-8.743%`，但费用 6/6 对上升，平均 `+7.995%`，请求完全相同，时间方向各半。
+- 旧 baseline 模型摘要 on 为 `0/6`、off 为 `4/6`，因此旧模型摘要路径保持物理删除。
+  candidate 的 ContextBroker 可靠性保留，但主动压缩没有通过产品收益门槛。
+- `e2c870b0` 落实 shrink：只在下一请求预计超过基于官方 context/output capability
+  派生的 Host hard input limit 时在同一
+  `AgentRuntime` 本地压缩；删除 `/compact`、HTTP/stdio Compact、独立 compaction root、
+  90% 提前阈值、特殊 purpose/terminal/creation 状态。Run API v6、RuntimeEvent v9、
+  State v13，净删 `1,074` 行。
+- 完整身份、binary/result SHA、cell、pair、未知计费下界与归因限制见
+  [M5-B ContextBroker 正式 A/B](../../eval/summaries/m5-context-broker-ab-2026-07-20.md)。
 
 ### M5-C：增量 RepoGraph（证据触发，暂不开发）
 
-- 只有 M5-B 真实长任务能定位“缺少结构检索”而不是“上下文选择错误”时才开始。
+- M5-B 没有把失败定位为“缺少结构检索”，因此当前不开始。
 - 首个纵向切片优先复用 ripgrep、git diff 和包清单；tree-sitter/LSP/embedding 必须各自
   证明比现有 project map 提高 verified success 或减少 Token，不能一次性全部引入。
 - RepoGraph 只向同一 ContextBroker 提供候选事实，不拥有模型循环、任务状态或完成判定。
@@ -1484,9 +1490,10 @@ compat bridge 包装成新能力；未进入 canonical command/event 的能力�
 
 ### 退出门槛
 
-- RepoGraph 相比当前 project map 提高成功率或减少 Token。
-- evidence-aware compaction 相比关闭 compaction 的变体产生可重复净收益；无收益则缩小或
-  删除对应增强，不能用实现复杂度冒充能力。
+- RepoGraph 仍需先由真实任务定位结构检索缺口，再证明相比当前 project map 提高成功率
+  或减少 Token。
+- ContextBroker 已按 A/B 完成 shrink：保留硬限制可靠性，删除未产生净收益的主动压缩；
+  不宣称 compaction 降低成本、缩短时间或提高成功率。
 - 写操作会使旧证据失效。
 - false-success 显著下降。
 - 根/子 Agent 与 Headless/TUI/API 对同一 TaskContract 共享同一验收判定和 RunStore 真相。
@@ -1580,7 +1587,7 @@ M8 退出前必须通过第 2.1 节的中文端到端、机器协议稳定性、
 | 当前实现 | 目标归属 | 替代后删除 |
 |---|---|---|
 | `client.rs`、`client/chat.rs` | `deepseek` | 通用 Provider/DeepSeek 混合 client |
-| 退役 `tui/compaction`、`seam_manager`（已删除） | `context` | canonical 实现位于 `context + runtime + app` |
+| 退役 `tui/compaction`、`seam_manager`（已删除） | `context` | canonical hard-limit 实现位于 `context + runtime` |
 | `project_context`、`working_set` 遗留半区 | `context` | 浅层 project map 和重复投影 |
 | `tui/src/tools/*` | `tools` | TUI 工具业务逻辑 |
 | legacy thread tables、Fleet ledger | `state` | 多状态真相 |

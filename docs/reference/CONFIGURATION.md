@@ -137,7 +137,7 @@ is a no-op**, so existing installs keep the bundled prompt.
 
 Scope is deliberately narrow: only the byte-stable **base prompt segment** is
 overridable. Mode deltas, the approval policy, the tool taxonomy, Context
-Management, and the Compaction Relay are still owned by CodeWhale's runtime
+Management, and the hard-limit ContextBroker are still owned by CodeWhale's runtime
 assembly, so an override **cannot remove safety-relevant guidance** (sandbox,
 approvals) — it only swaps the task/voice framing. To customize ordinary
 personal behavior, prefer `/constitution`; to customize per-repo behavior,
@@ -501,7 +501,6 @@ model_pattern = "deepseek-v4.*"
 kind = "cache-heavy"          # standard | cache-heavy | lean | custom
 max_subagents = 10            # 0 means runtime default
 prefer_codebase_search = false
-compaction_strategy = "prefix-cache" # default | prefix-cache | aggressive
 tool_surface = "full"              # full | read-only | auto
 safety_posture = "standard"        # standard | strict | permissive
 ```
@@ -686,11 +685,10 @@ codewhale also stores user preferences in:
 - `~/.deepseek/settings.toml` or the legacy platform config-dir
   `deepseek/settings.toml` when an existing settings file is present
 
-These settings control presentation and input behavior. Automatic compaction is
-owned by the canonical AgentRuntime context policy rather than a TUI
-preference; the TUI exposes no enable or threshold setting. Manual `/compact`
-remains available. Edit `~/.codewhale/settings.toml` to change retained
-preferences.
+These settings control presentation and input behavior. Hard-limit compaction
+is a fixed canonical `AgentRuntime` safety policy rather than a TUI preference;
+there is no enable switch, threshold setting, manual `/compact`, or transport
+command. Edit `~/.codewhale/settings.toml` to change retained preferences.
 
 Common settings keys:
 
@@ -762,12 +760,22 @@ separate:
 | Context percent | Active request input estimate divided by the model context window. | Display only; it mirrors the active-input basis used by context safeguards. |
 | Cost estimate | Approximate spend from provider usage and configured DeepSeek rates. | Display only. |
 
-Automatic replacement compaction is a fixed canonical Runtime policy. It
-replays the generated summary through the stable system prompt on the next
-request and is accounted as a real model request. The TUI does not implement a
-second pre-send compaction path or user override. Protocol and recovery tests
-prove the mechanism; product benefit still requires the compaction on/off A/B
-defined in the evaluation plan.
+Hard-limit compaction is a fixed canonical Runtime safety policy. At every safe
+request boundary, the evidence-aware ContextBroker builds the actual
+model-visible projection. Only when that input would exceed the Host hard
+input limit derived from the official context/output capability and safety
+headroom does it deterministically retain the pinned facts and compact older
+groups in the same root/child run. It does not call a summary model, consume a
+model-request permit, create a separate run, or expose a TUI override. Store
+replay recomputes the source digest, actual tool catalog, selected entries, and
+before/after Token estimates. If the resulting projection is still too large,
+the Runtime fails closed with a typed context-limit outcome.
+
+The formal M5-B on/off A/B rejected proactive compaction as an efficiency
+feature: Token fell, but all six candidate pairs cost more and elapsed-time
+direction was split. Accordingly there is no early percentage threshold or
+manual trigger. See
+[`m5-context-broker-ab-2026-07-20.md`](../../eval/summaries/m5-context-broker-ab-2026-07-20.md).
 
 ### Command Migration Notes
 
@@ -789,7 +797,7 @@ If you are upgrading from older releases:
 - `minimax-anthropic` (string provider value): selects MiniMax's Anthropic-compatible Messages route through `[providers.minimax_anthropic]`. The default Base URL is `https://api.minimax.io/anthropic`; set `https://api.minimaxi.com/anthropic` for China. Keep the `/anthropic` suffix because CodeWhale appends `/v1/messages`. The route uses `MINIMAX_API_KEY` and defaults to `MiniMax-M3`; `MiniMax-M2.7` is also registered. Official M3 input modalities are text, image, and video, with adaptive or disabled thinking. M2.7 is text-only and always keeps thinking enabled.
 - `api_key` (string, required for hosted providers): must be non-empty for DeepSeek/hosted providers (or set the provider API key env var). Self-hosted SGLang, vLLM, and Ollama can omit it.
 - `base_url` (string, optional): defaults to the official root `https://api.deepseek.com` for DeepSeek, including legacy `provider = "deepseek-cn"` configs. The DeepSeek request planner keeps ordinary Chat on the Standard surface and selects Beta only for an all-compatible Strict Chat catalog or FIM; callers do not switch the configured root to select a capability. Other defaults are `https://api.deepseek.com/anthropic` for `deepseek-anthropic`, `https://integrate.api.nvidia.com/v1` for `nvidia-nim`, `https://api.openai.com/v1` for `openai`, `https://api.atlascloud.ai/v1` for `atlascloud`, `https://maas-openapi.wanjiedata.com/api/v1` for `wanjie-ark`, `https://ark.cn-beijing.volces.com/api/coding/v3` for `volcengine`, `https://openrouter.ai/api/v1` for `openrouter`, `https://token-plan-sgp.xiaomimimo.com/v1` for `xiaomi-mimo` when the API key starts with `tp-...` and `https://api.xiaomimimo.com/v1` otherwise, `https://api.novita.ai/openai/v1` for `novita`, `https://api.fireworks.ai/inference/v1` for `fireworks`, `https://api.siliconflow.com/v1` for `siliconflow`, `https://api.siliconflow.cn/v1` for `siliconflow-CN`, `https://api.arcee.ai/api/v1` for `arcee`, `https://api.moonshot.ai/v1` for `moonshot`, `https://api.minimax.io/v1` for `minimax`, `https://api.openmodel.ai` for `openmodel`, `https://api.z.ai/api/coding/paas/v4` for `zai`, `https://api.stepfun.ai/v1` for `stepfun`, `https://api.deepinfra.com/v1/openai` for `deepinfra`, `https://api.sakana.ai/v1` for `sakana`, `https://router.huggingface.co/v1` for `huggingface`, `https://api.together.xyz/v1` for `together`, `https://api.baiduqianfan.ai/v1` for `qianfan`, `https://chatgpt.com/backend-api` for `openai-codex`, `https://api.anthropic.com` for `anthropic`, `http://localhost:30000/v1` for `sglang`, `http://localhost:8000/v1` for `vllm`, and `http://localhost:11434/v1` for `ollama`. Set `base_url = "https://token-plan-cn.xiaomimimo.com/v1"` for China-region Xiaomi MiMo Token Plan accounts or `base_url = "https://token-plan-ams.xiaomimimo.com/v1"` for Europe/Amsterdam accounts.
-- `context_window` (integer, optional provider-table key): override the total context window for the active `[providers.<name>]` route when an OpenAI-compatible gateway, hosted model alias, or self-hosted runtime has a different limit than CodeWhale's static model table. For example, `[providers.openai] context_window = 1000000` lets an OpenAI-compatible DashScope/Qwen route budget against a 1M-token window instead of the conservative fallback. The value must be greater than 0 and affects prompt context notes, compaction thresholds, context-pressure checks, and request output caps.
+- `context_window` (integer, optional provider-table key): override the total context window for the active `[providers.<name>]` route when an OpenAI-compatible gateway, hosted model alias, or self-hosted runtime has a different limit than CodeWhale's static model table. For example, `[providers.openai] context_window = 1000000` lets an OpenAI-compatible DashScope/Qwen route budget against a 1M-token window instead of the conservative fallback. The value must be greater than 0 and affects prompt context notes, the Host-derived hard input limit, context-pressure checks, and request output caps.
 - `path_suffix` (string, optional provider-table key): override the chat-completions path for OpenAI-compatible gateways that do not serve `/v1/chat/completions`. For example, `[providers.openai] path_suffix = "/chat/completions"` sends chat requests to the unversioned base URL plus `/chat/completions`; `models` and `beta/*` requests keep their normal routing.
 - `reasoning_stream_style` (string, optional provider-table key): override how streaming reasoning is separated from answer text for the active provider route. Use `separate_field` for `reasoning_content` / `reasoning` deltas, `inline_tags` for gateways that stream `<think>...</think>` inside `delta.content`, or `none` to render incoming content exactly as answer text.
 - `[providers.<name>.auth]` (table, optional): provider-scoped auth source metadata. `source = "command"` stores a command argv plus optional `timeout_ms`; `source = "secret"` stores a `secret_id`. This slice lets provider readiness, `/provider`, and doctor JSON report the auth source class without exposing command argv output or secret values; executing commands and resolving external secret material is handled by the follow-up resolver work.

@@ -4,15 +4,16 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-19
+- 快照日期：2026-07-20
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - M4 最终代码检查点：`65fa88ba`
-- 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 已完成并通过正式
-  DeepSeek 显式 verifier A/B；下一实现切片为 M5-B ContextBroker
-- 当前协议：Run API v5、RuntimeEvent v7、State schema v12
+- 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
+  evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
+  safety，下一实现切片为 M6 最小 Orchestrator/worktree
+- 当前协议：Run API v6、RuntimeEvent v9、State schema v13
 
 ## 1. 当前结论
 
@@ -30,10 +31,11 @@ interactive TUI --------/          |                |
 这三条入口不再拥有各自的模型循环、工具目录、终态判断或持久状态。交互 TUI 只提交
 canonical Run command，并从 durable event 投影 root/child 状态。
 
-最终 HEAD 调用图只有一个 `AgentRuntime` 定义；普通模型请求与 compaction 的两个
-`ModelPort::stream` 调用点都位于该实现中。canonical Agent Run 的 terminal 也只在该
-Runtime 提交。`StateStore` 是唯一生产 SQLite `RunStore` 实现；`InMemoryRunStore` 只用于
-测试。Fleet ledger 仍是 M6 编排债务，但不拥有 Agent 模型循环、RunStore 或 terminal。
+最终 HEAD 调用图只有一个 `AgentRuntime` 定义和一个普通 Agent request
+`ModelPort::stream` 调用点；hard-limit context compaction 完全本地确定，不调用模型。
+canonical Agent Run 的 terminal 也只在该 Runtime 提交。`StateStore` 是唯一生产 SQLite
+`RunStore` 实现；`InMemoryRunStore` 只用于测试。Fleet ledger 仍是 M6 编排债务，但不拥有
+Agent 模型循环、RunStore 或 terminal。
 
 旧生产例外 `workflow -> workflow-tool -> WorkflowTool -> SubAgentRuntime ->
 DeepSeekClient` 已物理删除；同时删除 Workflow/Workflow-JS crate、私有 JSON/JSONL
@@ -105,7 +107,8 @@ budget pressure、格式化和估算 token throughput 只由自身测试调用�
 旧 TUI `ContextBudget` 也只有自身测试和一个零调用的 `route_context_budget` wrapper，文件
 注释明确其 engine/TUI consumers 从未接线。该 505 行 foundation 与 wrapper 已删除；仍有
 真实调用方的 route context window、canonical DeepSeek output limit、`crates/context`
-projection/compaction 和 Runtime/RunStore 的预算、恢复及 accounting 语义不变。
+projection 以及 Runtime/RunStore 的预算、恢复及 accounting 保持原 owner；后续 M5-B 已把
+旧摘要 lifecycle 收缩为当前 hard-limit 本地投影事件。
 `route_runtime` 现只保留生产 `resolve_route_candidate` 与 context override：交互 TUI 用它
 建立 active route limits，Fleet 用它生成 `FleetResolvedRoute` receipt。没有生产调用方的
 `ResolvedRuntimeRoute` 配置快照包装、`resolve_runtime_route`、私有 base-URL 猜测器及其
@@ -135,9 +138,9 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 - 打开同一种 SQLite `RunStore`；
 - 绑定 physical request budget、model accounting 和 execution fingerprint；
 - 维护轻量 process-local active control registry；
-- 实现 start、continue、compact、list_roots、get、events、resume、steer、interrupt、
+- 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
-- start/continue/compact 通过 State schema v12 中保留的 durable creation reservation 先绑定
+- start/continue 通过 State schema v13 中保留的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
@@ -161,7 +164,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-RuntimeEvent v7 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
+RuntimeEvent v9 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -181,7 +184,7 @@ generation 和已知 revision 的 Host-sealed `EvidenceReceipt`。任何 `MayWri
 
 Runtime 还为每个 root/child 从共享逻辑预算预留一个可退还的最终请求许可。descendant 与
 child 必须先 join，随后各自以 `tools=[]` 发出最后请求；没有最终容量时不得先提交假的
-`ChildStarted`。自动 compaction 在尚未触及硬上下文限制时不能消耗最后许可，恢复则按该次
+`ChildStarted`。hard-limit 本地 compaction 不调用模型，不能消耗最后许可；恢复则按该次
 请求实际 advertised tool catalog 拒绝未授权工具。该最终请求许可机制已有离线
 conformance/Store replay 和真实 A/B；A/B 保留可靠性机制，但其原始实现的 multi
 Token/时间/费用均回退，不能作为产品效率提升。
@@ -195,10 +198,12 @@ candidate multi 请求均值下降 `9.62%`，Token/费用均值下降 `8.27%/11.
 
 C2 把 continuation 与 recovery 分开：`resume` 继续同一个 run，`continue` 从一个终态
 root 创建新的 root，并用 `continued_from_run_id` 记录 lineage；source 不被改写。完整
-canonical transcript 仍 append-only，compaction 只替换每次请求的 model-visible projection。
-当前会先本地裁剪旧的大型工具结果，必要时才发出计入预算和 accounting 的 tool-free 摘要
-请求；prepared/in-flight/failed/committed 由 RuntimeEvent v5 引入，并继续由当前 v7
-持久化。
+canonical transcript 仍 append-only，每次 request projection 由唯一 `crates/context`
+ContextBroker 确定。只有预计输入超过 Host 根据官方 context/output capability 和 safety
+headroom 派生的 hard input limit 时，Runtime 才在同一 root/child 本地压缩并提交
+`ContextCompactionCommitted`。Store 从 transcript、真实 tool catalog、digest 和
+before/after Token 重算，仍超限则 typed fail closed。该路径没有摘要模型请求、手动命令、
+提前阈值、独立 root 或第二状态机。
 
 ### DeepSeek backend
 
@@ -244,14 +249,14 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v12；RunStore 继续复用同一 event/snapshot 表，不增加
+- 当前 State 物理 schema 为 v13；RunStore 继续复用同一 event/snapshot 表，不增加
   EvidenceReceipt 私表；
-- 当前 canonical RuntimeEvent writer/reader 为 v7；
+- 当前 canonical RuntimeEvent writer/reader 为 v9；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
   创建；
-- durable creation reservation：start/continue/compact 的同 ID 同 payload 重试只对应
+- durable creation reservation：start/continue 的同 ID 同 payload 重试只对应
   一个 reserved run ID，不同 payload 复用 ID 被拒绝；
 - 最近一次模型请求实际 advertised tool catalog 的持久化与 replay 重建；
 - execution lease 与 epoch；
@@ -287,9 +292,9 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v5 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+- 当前 Run API v6 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v7；
+  writer/reader 为 v9；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -299,38 +304,38 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 
 交互 foreground 已切到 `AgentApplication`：
 
-- `TuiRunClient` 提交 start/resume/continue/compact/steer/interrupt/cancel 和 interaction
+- `TuiRunClient` 提交 start/resume/continue/steer/interrupt/cancel 和 interaction
   command；
 - `CanonicalRunProjection` 与 presenter 只从 `RunStore` event 投影 root/child 进度、终态和
   durable outcome；
 - 旧 foreground Engine、EventBroker、runtime-thread owner、`SessionManager`、child display
   cache 和 registry-driven slash command system 已删除；
-- slash command 只剩统一的 `help/compact/cost/exit` canonical contract；
+- slash command 只剩统一的 `help/cost/exit` canonical contract；
 - 退役的 `crates/tui/src/compaction.rs`、`seam_manager.rs` 以及不再生效的 TUI
-  `auto_compact` 开关/阈值状态均已删除；真正的 compaction 位于
-  `crates/context + crates/runtime + crates/app`，手动 `/compact` 仍提交 canonical command；
+  `auto_compact` 开关/阈值状态均已删除；hard-limit compaction 位于
+  `crates/context + crates/runtime`，不存在手动 `/compact` 或传输层 command；
 - generic Provider/config/UI 仍未执行 DeepSeek-only 最终清理。
-- Work surface 只投影仍存在的 plan/todo 与 canonical child facts，不再投影 TUI 私有
-  Goal/Hunt 或 custom-command pause 状态；canonical Run 的工具 allow-list 不从旧 UI 状态
-  注入。
+- Work surface 只投影 canonical child/tool facts，不再投影已删除的 TUI 私有 Plan/Todo、
+  Goal/Hunt 或 custom-command pause 状态；canonical Run 的工具 allow-list 不从旧 UI
+  状态注入。
 
-因此三个保留 foreground 入口与所有生产可达根/子 Agent 模型循环已经统一；最终 M4
-集成门禁仍需确认完整调用图和回归。
+因此三个保留 foreground 入口与所有生产可达根/子 Agent 模型循环已经统一；M4 最终集成
+门禁已确认完整调用图和回归。
 
 ## 4. Crate responsibility snapshot
 
 | Crate | 当前生产职责 | 当前迁移债务 |
 |---|---|---|
-| `protocol` | canonical task、request、command、event、evidence、terminal | M5 后续 compaction/RepoGraph 契约 |
-| `runtime` | 唯一根/子 Agent loop、completion gate 与 reducer | ContextBroker 与 Orchestrator 强化 |
+| `protocol` | canonical task、request、command、event、evidence、terminal | M6 Orchestrator/worktree 契约 |
+| `runtime` | 唯一根/子 Agent loop、completion gate 与 reducer | Orchestrator 接入与并行验收 |
 | `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | FIM 调优与定期官方复核 |
-| `context` | production prompt/context 构建与最小 compaction projection | RepoGraph、evidence-aware compaction 与 A/B 在 M5 |
+| `context` | production prompt、evidence-aware projection 与 hard-limit compaction | RepoGraph 仅在缺失检索证据出现后启动 |
 | `tools` | 固定 production tool catalog 与执行 | 编辑/FIM 协议 A/B |
 | `state` | SQLite RunStore、lease、replay | legacy thread tables 删除 |
 | `app` | 唯一 production composition 与 Run command | 后续 orchestrator command |
 | `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
 | `cli` | 顶层命令与 production config 解析 | DeepSeek-only 配置/中文 M7-M8 |
-| `tui` | exec/interactive canonical projection + Provider 遗留 | 删除退役 context 实现和非 DeepSeek 产品面 |
+| `tui` | exec/interactive canonical projection + Provider 遗留 | 删除剩余非 DeepSeek 产品面 |
 
 `crates/core` 已删除。它原有的 fake `handle_prompt` 从未是 production Agent 能力；app-server
 迁移后没有保留兼容 crate 或空壳。
@@ -742,7 +747,8 @@ M4-C foreground 切换后还已物理删除：
   header schema，留待 M7 收口；生产 DeepSeek transport 当前不消费任意 custom headers。
 - 只由自身测试调用的 TUI `is_key_file`/`summarize_project`/`project_tree` 浅层 project-map
   helpers；生产上下文仍由 `crates/context`、显式文件工具与 canonical transcript 负责，
-  没有为尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层。
+  没有为当时尚未开始的 M5 RepoGraph/ContextBroker 保留兼容层；当前 ContextBroker 已由
+  后续 canonical vertical slice 实现。
 - 零生产调用方的 TUI `open_url` 及其平台 browser-command 构造器；当前没有外链打开交互，
   OAuth/MCP transport、终端复制和 DeepSeek HTTP 请求不依赖该 helper。
 - 零调用的 TUI `record_caught_panic`、`ensure_dir`、`pretty_json`、`url_encode` 与
@@ -815,13 +821,17 @@ v12、RuntimeEvent 为 v6、Run API 为 v4。M4 最终验证结果：
 后者在一个固定任务中降低请求且不回归 handoff。完整 eager-join 身份、四 cell 与 pair
 边界见
 [子 Agent eager join 精确 A/B](../../eval/summaries/eager-join-exact-ab-2026-07-18.md)。
-compaction on/off A/B 仍属于 M5 产品收益证据；M4 的结构与可靠性门禁不能替代它。
+M5-B 已补齐 compaction on/off 产品收益证据：candidate on/off 均 `6/6` verified，
+Token 下降但费用 6/6 对上升、时间方向各半，所以只保留 hard-limit safety 并删除主动
+产品面。完整身份与限制见
+[M5-B ContextBroker 正式 A/B](../../eval/summaries/m5-context-broker-ab-2026-07-20.md)。
 
 ## 7. 明确非结论
 
 当前源码不证明：
 
-- 当前 compaction 已证明节省 Token、降低成本或提高任务成功率；
+- hard-limit compaction 已证明节省成本、缩短时间或提高任务成功率；正式 A/B 只支持其
+  可靠性保留，不支持这些效率结论；
 - Provider 清理或全面汉化已完成；
 - 当前中文 Agent prompt 已获得能力提升；首个正式 A/B 及后续 v2/v3 收敛 canary 均未通过，
   v3 的 multi child 两次用满 4 轮并把成功率降为 `1/3`，见
