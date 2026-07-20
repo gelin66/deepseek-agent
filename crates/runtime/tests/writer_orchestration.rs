@@ -498,6 +498,7 @@ struct FakeOrchestrator {
     cleanup_side_effects: AtomicUsize,
     workspace_exists: AtomicBool,
     integrated: AtomicBool,
+    bind_recovery: AtomicBool,
     cleanup_ambiguous: AtomicBool,
 }
 
@@ -519,6 +520,7 @@ impl FakeOrchestrator {
             cleanup_side_effects: AtomicUsize::new(0),
             workspace_exists: AtomicBool::new(false),
             integrated: AtomicBool::new(false),
+            bind_recovery: AtomicBool::new(false),
             cleanup_ambiguous: AtomicBool::new(false),
         }
     }
@@ -565,6 +567,13 @@ impl AgentOrchestrator for FakeOrchestrator {
     ) -> Result<WriterBinding, AgentOrchestrationError> {
         self.bind_calls.fetch_add(1, Ordering::AcqRel);
         assert_eq!(task.workspace, self.assignment);
+        if self.bind_recovery.load(Ordering::Acquire) {
+            return Err(AgentOrchestrationError::new(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_bind_ambiguous",
+                "无法证明 Writer workspace 是否已创建",
+            ));
+        }
         if !self.workspace_exists.swap(true, Ordering::AcqRel) {
             self.bind_side_effects.fetch_add(1, Ordering::AcqRel);
             self.timeline
@@ -1573,6 +1582,169 @@ async fn turn_limited_writer_still_persists_the_root_terminal() {
 }
 
 #[tokio::test]
+async fn failed_turn_limited_writer_with_retained_cleanup_is_recovery_required() {
+    let RuntimeFixture {
+        runtime,
+        model,
+        root_tools,
+        orchestrator,
+        store,
+        ..
+    } = runtime_fixture(ModelScript::TurnLimitedWriter);
+    orchestrator
+        .cleanup_ambiguous
+        .store(true, Ordering::Release);
+    let mut request = root_request(true, true);
+    request.limits.max_model_requests = 10;
+    request.limits.max_turns = 10;
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        runtime.start(request).wait(),
+    )
+    .await
+    .expect("retained Writer cleanup must converge")
+    .expect("root runtime joins");
+    let root_replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    let lifecycle = root_replay
+        .snapshot
+        .agent_tasks
+        .first()
+        .expect("retained Writer lifecycle");
+    let writer_terminal = lifecycle
+        .finished
+        .as_ref()
+        .map(|finished| &finished.outcome.terminal);
+    assert!(
+        matches!(outcome.terminal, TerminalState::RecoveryRequired { .. }),
+        "retained Writer cleanup must replace the ordinary root terminal; root={:?}, writer={writer_terminal:?}",
+        outcome.terminal,
+    );
+    assert_eq!(
+        root_replay.snapshot.terminal.as_ref(),
+        Some(&outcome),
+        "the recovery-required root terminal must be canonical",
+    );
+    assert!(matches!(
+        writer_terminal,
+        Some(TerminalState::RecoveryRequired { .. })
+    ));
+    assert_eq!(writer_terminal, Some(&outcome.terminal));
+    assert!(lifecycle.integration.is_none());
+    assert!(lifecycle.cleanup.as_ref().is_some_and(|cleanup| {
+        cleanup.committed.as_ref().is_some_and(|committed| {
+            committed.retained_for_recovery
+                && !committed.worktree_removed
+                && !committed.branch_removed
+        })
+    }));
+    assert_eq!(
+        root_replay.snapshot.workspace_state,
+        known(1, BASE_COMMIT),
+        "an unintegrated Writer recovery must not advance the root workspace generation",
+    );
+    assert_eq!(
+        root_tools
+            .revision
+            .lock()
+            .expect("root revision lock")
+            .as_str(),
+        BASE_COMMIT,
+    );
+    let agent_outcomes = root_replay
+        .events
+        .iter()
+        .filter_map(|event| match &event.event {
+            RuntimeEventKind::ToolOutcomeCommitted {
+                call_id,
+                name,
+                outcome,
+                workspace_state,
+                ..
+            } if call_id == "turn-limited-writer-call" && name == AGENT_TOOL_NAME => {
+                Some((outcome, workspace_state))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(agent_outcomes.len(), 1);
+    let (agent_outcome, workspace_state) = agent_outcomes[0];
+    assert_eq!(agent_outcome.invocation, ToolInvocationStatus::Accepted);
+    assert_eq!(agent_outcome.transport, ToolTransportStatus::Indeterminate);
+    assert_eq!(agent_outcome.operation, ToolOperationStatus::Cancelled);
+    assert_eq!(
+        agent_outcome.side_effect,
+        ToolSideEffectStatus::Indeterminate
+    );
+    assert_eq!(agent_outcome.retry, ToolRetryDisposition::Unsafe);
+    assert!(agent_outcome.workspace_revision.is_none());
+    assert_eq!(workspace_state, &None);
+    assert!(root_replay.snapshot.pending_tool.is_none());
+    assert_eq!(
+        root_replay
+            .snapshot
+            .transcript
+            .entries
+            .iter()
+            .filter(|entry| matches!(
+                entry,
+                TranscriptEntry::Tool { call_id, .. }
+                    if call_id == "turn-limited-writer-call"
+            ))
+            .count(),
+        1,
+    );
+    assert_eq!(
+        root_replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::Terminal { .. }))
+            .count(),
+        1,
+        "the root recovery terminal must be appended exactly once",
+    );
+    let child_replay = store
+        .load(&lifecycle.task.child_run_id)
+        .await
+        .unwrap()
+        .expect("turn-limited Writer child replay");
+    assert!(matches!(
+        child_replay.snapshot.terminal,
+        Some(AgentOutcome {
+            terminal: TerminalState::Failed { .. },
+            ..
+        })
+    ));
+    assert_eq!(
+        child_replay
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, RuntimeEventKind::Terminal { .. }))
+            .count(),
+        1,
+        "the child must retain its single original failure terminal",
+    );
+    assert_eq!(orchestrator.cleanup_calls.load(Ordering::Acquire), 1);
+    assert_eq!(orchestrator.seal_calls.load(Ordering::Acquire), 0);
+    assert_eq!(orchestrator.integrate_calls.load(Ordering::Acquire), 0);
+    let requests = model.requests.lock().expect("request log");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.actor.kind == AgentActorKind::Root)
+            .count(),
+        1,
+        "the root must stop immediately after canonical Writer recovery",
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.actor.kind == AgentActorKind::Child)
+            .count(),
+        7,
+    );
+}
+
+#[tokio::test]
 async fn isolated_writer_requires_auto_approve_and_one_exact_verifier() {
     for (exact, auto_approve, expected_error) in [
         (true, false, "writer_requires_auto_approve"),
@@ -1780,6 +1952,74 @@ async fn ambiguous_cleanup_fails_closed_as_recovery_required() {
                 if matches!(outcome.terminal, TerminalState::Completed { .. })
         )),
         "ambiguous cleanup must replace the proposed completed terminal"
+    );
+}
+
+#[tokio::test]
+async fn uncreated_writer_recovery_does_not_advance_the_root_workspace() {
+    let RuntimeFixture {
+        runtime,
+        model,
+        orchestrator,
+        store,
+        ..
+    } = runtime_fixture(ModelScript::Writer);
+    orchestrator.bind_recovery.store(true, Ordering::Release);
+    let outcome = runtime
+        .start(root_request(true, true))
+        .wait()
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::RecoveryRequired { .. }
+    ));
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert_eq!(replay.snapshot.terminal.as_ref(), Some(&outcome));
+    assert_eq!(replay.snapshot.workspace_state, known(1, BASE_COMMIT));
+    let lifecycle = replay.snapshot.agent_tasks.first().expect("Writer task");
+    assert!(lifecycle.workspace_created.is_none());
+    assert!(lifecycle.integration.is_none());
+    assert!(lifecycle.cleanup.is_none());
+    assert_eq!(
+        lifecycle
+            .finished
+            .as_ref()
+            .map(|finished| &finished.outcome.terminal),
+        Some(&outcome.terminal),
+    );
+    assert!(replay.events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ToolOutcomeCommitted {
+            call_id,
+            name,
+            outcome,
+            workspace_state: None,
+            ..
+        } if call_id == "writer-call"
+            && name == AGENT_TOOL_NAME
+            && outcome.transport == ToolTransportStatus::Indeterminate
+            && outcome.operation == ToolOperationStatus::Cancelled
+            && outcome.side_effect == ToolSideEffectStatus::Indeterminate
+            && outcome.retry == ToolRetryDisposition::Unsafe
+    )));
+    assert_eq!(orchestrator.bind_calls.load(Ordering::Acquire), 1);
+    assert_eq!(orchestrator.bind_side_effects.load(Ordering::Acquire), 0);
+    assert_eq!(orchestrator.cleanup_calls.load(Ordering::Acquire), 0);
+    let requests = model.requests.lock().expect("request log");
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.actor.kind == AgentActorKind::Root)
+            .count(),
+        1,
+    );
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.actor.kind == AgentActorKind::Child)
+            .count(),
+        0,
     );
 }
 

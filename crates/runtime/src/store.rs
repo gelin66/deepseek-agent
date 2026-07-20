@@ -273,6 +273,20 @@ pub struct AgentTaskLifecycle {
     pub finished: Option<AgentChildFinishedFact>,
 }
 
+pub(crate) fn is_unintegrated_writer_recovery(lifecycle: &AgentTaskLifecycle) -> bool {
+    lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+        && lifecycle
+            .integration
+            .as_ref()
+            .is_none_or(|integration| integration.committed.is_none())
+        && lifecycle.finished.as_ref().is_some_and(|finished| {
+            matches!(
+                finished.outcome.terminal,
+                TerminalState::RecoveryRequired { .. }
+            )
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunSnapshot {
     pub request: RunRequest,
@@ -1078,6 +1092,8 @@ pub fn apply_event(
                         .as_ref()
                         .is_some_and(|integration| integration.failure.is_some())
             });
+            let unintegrated_writer_recovery =
+                settled_agent_lifecycle.is_some_and(is_unintegrated_writer_recovery);
             let integrated_writer_state = settled_agent_lifecycle
                 .filter(|lifecycle| {
                     lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
@@ -1101,6 +1117,15 @@ pub fn apply_event(
                 (WorkspaceAccess::MayWrite, None)
                     if pending_state == DurableActionState::Prepared
                         && outcome.side_effect == ToolSideEffectStatus::NotApplied => {}
+                (WorkspaceAccess::MayWrite, None)
+                    if unintegrated_writer_recovery
+                        && pending_state == DurableActionState::InFlight
+                        && outcome.invocation == ToolInvocationStatus::Accepted
+                        && outcome.transport == ToolTransportStatus::Indeterminate
+                        && outcome.operation == ToolOperationStatus::Cancelled
+                        && outcome.side_effect == ToolSideEffectStatus::Indeterminate
+                        && outcome.retry == ToolRetryDisposition::Unsafe
+                        && outcome.workspace_revision.is_none() => {}
                 (WorkspaceAccess::MayWrite, None) => {
                     return Err(corrupt(
                         &run_id,

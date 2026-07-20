@@ -1432,10 +1432,20 @@ impl AgentRuntime {
             }
         };
 
+        let unintegrated_writer_recovery = call.name == AGENT_TOOL_NAME
+            && matches!(
+                terminal_after_result,
+                Some(TerminalState::RecoveryRequired { .. })
+            )
+            && state.snapshot.agent_tasks.iter().any(|lifecycle| {
+                lifecycle.task.call_id == call.id
+                    && super::store::is_unintegrated_writer_recovery(lifecycle)
+            });
         let workspace_state = if state.snapshot.pending_tool.as_ref().is_some_and(|pending| {
             pending.workspace_access == WorkspaceAccess::MayWrite
                 && !(pending.invocation.name == AGENT_TOOL_NAME
-                    && outcome.side_effect == ToolSideEffectStatus::NotApplied)
+                    && (outcome.side_effect == ToolSideEffectStatus::NotApplied
+                        || unintegrated_writer_recovery))
         }) {
             Some(self.observe_workspace_state(state, true).await)
         } else {
@@ -2303,14 +2313,14 @@ impl AgentRuntime {
     ) -> Result<ToolOutcome, TerminalState> {
         let mut lifecycle = current_agent_lifecycle(state, &task.task_id)?;
         if let Some(finished) = lifecycle.finished.clone() {
-            if let Some(terminal) = parent_terminal {
-                return Err(terminal);
-            }
             if matches!(
                 finished.outcome.terminal,
                 TerminalState::RecoveryRequired { .. }
             ) {
                 return Err(finished.outcome.terminal);
+            }
+            if let Some(terminal) = parent_terminal {
+                return Err(terminal);
             }
             return Ok(writer_tool_outcome(&task, &finished.outcome));
         }
@@ -2329,6 +2339,9 @@ impl AgentRuntime {
                     .finished
                     .expect("failed writer was finished")
                     .outcome;
+                if matches!(finished.terminal, TerminalState::RecoveryRequired { .. }) {
+                    return Err(finished.terminal);
+                }
                 if let Some(terminal) = parent_terminal {
                     return Err(terminal);
                 }
