@@ -29,7 +29,7 @@ MAX_REQUESTS, RUNTIME_SECONDS = 10, 420
 HARNESS_SECONDS = RUNTIME_SECONDS + 15
 MAX_POLLS, MAX_STDIO_FRAME = 2_200, 4 * 1024 * 1024
 ROOT_BRANCH_REF = "refs/heads/main"
-ROOT_TOOLS = ["agent", "read_file", "apply_patch", "edit_file"]
+ROOT_TOOLS = ["agent"]
 WRITER_TOOLS = ["read_file", "apply_patch", "edit_file"]
 EXPECTED_ARTIFACT = "Host seal 的单文件提交和冻结验证证据"
 ENV_ALLOWLIST = "PATH TMPDIR LANG LC_ALL LC_CTYPE".split()
@@ -616,10 +616,18 @@ def audit(
     expected_acceptance = acceptance(contract["definition"])
 
     prepared_tools = [stored["event"] for stored in root if kind(stored) == "tool_prepared"]
-    check(
-        len(prepared_tools) == 1 and prepared_tools[0].get("invocation", {}).get("name") == "agent",
-        "root_agent_call_invalid",
-    )
+    prepared_tool_names = [
+        event.get("invocation", {}).get("name")
+        for event in prepared_tools
+    ]
+    if len(prepared_tools) != 1 or prepared_tool_names != ["agent"]:
+        raise Failure(
+            "root_agent_call_invalid",
+            {
+                "prepared_tool_count": len(prepared_tools),
+                "prepared_tool_names": prepared_tool_names,
+            },
+        )
     agent_call = prepared_tools[0]
     args = agent_call.get("invocation", {}).get("arguments", {}).get("parsed", {})
     expected_args = {
