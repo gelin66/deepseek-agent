@@ -216,7 +216,10 @@ evidence
 
 用于声称产品能力提升的 A/B 必须满足：
 
-- 显式提供 baseline/candidate 二进制及彼此不同的 revision，不由 Harness 自动 checkout；
+- 代码 revision A/B 必须显式提供 baseline/candidate 二进制及彼此不同的 revision，不由
+  Harness 自动 checkout；当前同一二进制内已有能力的 on/off treatment A/B 则必须反向
+  要求同一个 revision、同一个不可变 binary SHA，并只允许预注册的 treatment 差异。后者
+  只能声称当前 treatment 相对对照 treatment 的效果，不能声称代码 revision 获得提升；
 - baseline 与 candidate 使用相同任务、模型、评测任务提示词、请求/turn/时间和费用预算；
 - 若要把变化归因给某一个组件，该组件之外的生产系统提示词、工具目录和其他能力面必须
   保持一致；若评测的是一个有意同时替换 Runtime、生产提示词或工具目录的垂直切片，必须

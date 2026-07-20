@@ -42,6 +42,58 @@ python3 scripts/eval-deepseek-resume.py \
 进程矩阵验证 fail-closed，不能用真实 Key 自动重试。正式结果自绑定 supervisor、依赖
 Harness、候选 revision 和 binary-pair SHA，且始终标记 `product_metric_eligible=false`。
 
+## M6-B1 同二进制 Writer 收益 A/B
+
+[`eval-m6-writer-benefit.py`](../scripts/eval-m6-writer-benefit.py) 使用同一个冻结
+`codewhale app-server --stdio` 二进制、相同 TaskDefinition、模型、工具 policy 输入与总预算，
+比较 single（子 Agent 深度/并发为零）和 M6-A isolated Writer（深度/并发各一）。冻结计划、
+三个 clean-Git fixture、任务、路径、verifier、顺序和决策门槛见
+[`m6-b1-writer-benefit-ab-v1.json`](manifests/m6-b1-writer-benefit-ab-v1.json)。
+
+先执行不会读取 Key 或联网的自测与计划检查：
+
+```bash
+python3 scripts/eval-m6-writer-benefit.py --self-test
+python3 scripts/eval-m6-writer-benefit.py --dry-run
+```
+
+从冻结提交使用仓库外 Cargo target 构建一次 release 二进制后，再把同一个 binary/revision
+提供给 dry-run。正式运行固定为 18 对、36 个 accepted arm；每个任务内奇数对
+`single -> writer`、偶数对反向，且每个 arm 都从字节一致的全新 fixture 和独立 State
+开始：
+
+```bash
+python3 scripts/eval-m6-writer-benefit.py \
+  --dry-run \
+  --candidate-binary /absolute/frozen/codewhale \
+  --candidate-revision "$(git rev-parse HEAD)"
+
+python3 scripts/eval-m6-writer-benefit.py \
+  --acknowledge-cost \
+  --key-file key.txt \
+  --candidate-binary /absolute/frozen/codewhale \
+  --candidate-revision "$(git rev-parse HEAD)" \
+  --output eval/results/m6-b1-writer-benefit-ab.json
+```
+
+当前 child policy 只能从 parent policy 收窄，因此 Writer root 的实际目录仍包含写工具；
+Harness 要求它恰好委派一次，并把任何 root 直接写入判为产品失败，不能伪称 Host 已物理
+移除权限。正式 Harness 以 `--transport-max-retries 1` 启动同一个 app-server 二进制，
+accepted-arm 还要求实际总 transport retry 不超过 1；所有 retry 都进入每 arm 10 次共享物理
+请求硬预算。若配置身份或实际计量不符，该 arm 不具备正式资格，不能靠扩大预算或重跑模型
+失败掩盖。效率中位数只使用 single 与 Writer 均通过冻结 verifier 的 pair，T1/T2/T3
+分别至少需要 3 个这种双成功 pair；模型失败不会因更快、更省而被误算成效率收益。Harness
+还会在每个 arm 前和最终落盘前复核仓库、fixture、manifest、Harness、helper 与 binary
+身份，运行中变化会生成 typed abort。
+
+每个 arm 冻结 0.02 USD 已知费用储备；新 arm 只有在“累计已知费用 + 未知账单储备 +
+下一 arm 储备”不超过 0.50 USD 时才能启动，arm 后再次检查。该边界是已知费用下界加冻结
+储备，不虚构 unknown billing 为精确零账单。
+
+结果只保存 canonical 计量、事件种类、工具名/hash、receipt/hash 和 Git lifecycle 事实；
+不保存模型正文、reasoning、工具参数/输出、stderr、临时路径或 Key。partial/final 结果均以
+`0600` 原子写入被忽略的 `eval/results/`。
+
 ## M1 基线证据
 
 2026-07-15 的同 Harness 结果、证据边界和后续决策见
