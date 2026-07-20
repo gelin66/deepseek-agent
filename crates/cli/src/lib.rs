@@ -888,6 +888,9 @@ struct AppServerArgs {
     /// Maximum accepted HTTP request body size.
     #[arg(long = "max-body-bytes")]
     max_body_bytes: Option<usize>,
+    /// Maximum transport retries for each DeepSeek request.
+    #[arg(long = "transport-max-retries", value_parser = clap::value_parser!(u32).range(0..=10))]
+    transport_max_retries: Option<u32>,
 }
 
 fn install_rustls_crypto_provider() {
@@ -2110,7 +2113,7 @@ fn run_app_server_command(
         .build()
         .context("failed to create tokio runtime")?;
     let application = Arc::new(AgentApplication::production(
-        production_application_config(resolved_runtime)?,
+        production_application_config(resolved_runtime, args.transport_max_retries)?,
     )?);
     if args.stdio {
         return runtime
@@ -2139,6 +2142,7 @@ fn run_app_server_command(
 
 fn production_application_config(
     resolved_runtime: &ResolvedRuntimeOptions,
+    transport_max_retries: Option<u32>,
 ) -> Result<ProductionApplicationConfig> {
     if resolved_runtime.provider != ProviderKind::Deepseek {
         bail!("app-server only supports the official DeepSeek provider");
@@ -2170,6 +2174,9 @@ fn production_application_config(
         ..ProductionPromptConfig::default()
     };
     let mut config = ProductionApplicationConfig::official().with_prompt(prompt);
+    if let Some(max_retries) = transport_max_retries {
+        config = config.with_transport_max_retries(max_retries);
+    }
     if let Some(api_key) = resolved_runtime.api_key.clone() {
         config = config.with_api_key(api_key)?;
     }
@@ -2862,10 +2869,20 @@ mod tests {
             })) if host == Ipv4Addr::UNSPECIFIED
         ));
 
-        let cli = parse_ok(&["deepseek", "app-server", "--stdio"]);
+        let cli = parse_ok(&[
+            "deepseek",
+            "app-server",
+            "--stdio",
+            "--transport-max-retries",
+            "1",
+        ]);
         assert!(matches!(
             cli.command,
-            Some(Commands::AppServer(AppServerArgs { stdio: true, .. }))
+            Some(Commands::AppServer(AppServerArgs {
+                stdio: true,
+                transport_max_retries: Some(1),
+                ..
+            }))
         ));
 
         let cli = parse_ok(&["deepseek", "completion", "bash"]);

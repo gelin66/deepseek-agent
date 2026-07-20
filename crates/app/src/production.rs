@@ -137,6 +137,16 @@ impl ProductionApplicationConfig {
         self
     }
 
+    /// Override only the transport retry admission bound.
+    ///
+    /// The resolved value is part of the production execution fingerprint, so
+    /// a resumed run cannot silently change this resource contract.
+    #[must_use]
+    pub fn with_transport_max_retries(mut self, max_retries: u32) -> Self {
+        self.deepseek.retry.max_retries = max_retries;
+        self
+    }
+
     /// Replace the app-owned tool defaults with one resolved host snapshot.
     #[must_use]
     pub fn with_tool_config(mut self, tools: ProductionToolConfig) -> Self {
@@ -1170,6 +1180,26 @@ mod tests {
             stream_idle_timeout: Duration::from_secs(2),
             retry: TransportRetryPolicy::disabled(),
         }
+    }
+
+    #[test]
+    fn transport_retry_override_changes_only_the_connection_bound() {
+        let baseline = ProductionApplicationConfig::official();
+        let limited = baseline.clone().with_transport_max_retries(1);
+        assert_eq!(baseline.deepseek.retry.max_retries, 3);
+        assert_eq!(limited.deepseek.retry.max_retries, 1);
+        assert_eq!(
+            baseline.deepseek.retry.initial_delay,
+            limited.deepseek.retry.initial_delay
+        );
+        assert_eq!(
+            baseline.deepseek.retry.max_delay,
+            limited.deepseek.retry.max_delay
+        );
+        assert_eq!(
+            baseline.deepseek.retry.exponential_base,
+            limited.deepseek.retry.exponential_base,
+        );
     }
 
     fn config(
