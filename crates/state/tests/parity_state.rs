@@ -44,7 +44,7 @@ fn assert_current_schema(conn: &Connection) {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version;", [], |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 14);
+    assert_eq!(user_version, 15);
 
     for table in [
         "threads",

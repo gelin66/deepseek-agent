@@ -2560,6 +2560,15 @@ mod tests {
         );
         let terminal = wait_terminal(first_store.as_ref(), &run.run_id).await;
         let frozen_events = terminal.events.clone();
+        let terminal_accounting = terminal
+            .snapshot
+            .terminal
+            .as_ref()
+            .expect("terminal outcome")
+            .accounting
+            .clone();
+        assert!(terminal_accounting.sealed);
+        assert_eq!(terminal.snapshot.accounting, terminal_accounting);
         assert_eq!(first_composition.starts.load(Ordering::Acquire), 1);
         drop(first_app);
         drop(first_store);
@@ -2582,6 +2591,10 @@ mod tests {
                 .await,
         );
         assert_eq!(fetched.terminal, project_run(&terminal).terminal);
+        assert_eq!(
+            fetched.accounting, terminal_accounting,
+            "Run API must replay canonical terminal accounting after application rebuild",
+        );
 
         let events = rebuilt_app
             .execute(envelope(

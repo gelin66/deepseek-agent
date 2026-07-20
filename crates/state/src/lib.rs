@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 14;
+const STATE_SCHEMA_VERSION: u32 = 15;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -444,6 +444,13 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 14)
                 .context("failed to commit canonical AgentTask state cutover")?;
             user_version = 14;
+        }
+        if user_version < 15 {
+            run_store::backfill_v15_terminal_accounting_snapshots(&tx)
+                .context("failed to rebuild terminal accounting snapshots")?;
+            tx.pragma_update(None, "user_version", 15)
+                .context("failed to commit terminal accounting snapshot schema version")?;
+            user_version = 15;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

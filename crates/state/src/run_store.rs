@@ -954,6 +954,65 @@ pub(super) fn backfill_v10_model_catalog_snapshots(conn: &Connection) -> Result<
     Ok(())
 }
 
+/// Rebuild v14 terminal snapshots from the canonical terminal outcome.
+///
+/// RuntimeEvent v10 already stores the final accounting in `Terminal`.
+/// State v15 removes the stale materialized view left by the old reducer,
+/// accepting only the exact v14 shape or the already-updated canonical shape.
+pub(super) fn backfill_v15_terminal_accounting_snapshots(
+    conn: &Connection,
+) -> Result<(), RunStoreError> {
+    let run_ids = {
+        let mut statement = conn
+            .prepare("SELECT run_id FROM agent_runs ORDER BY run_id")
+            .map_err(backend)?;
+        let mut rows = statement.query([]).map_err(backend)?;
+        let mut run_ids = Vec::new();
+        while let Some(row) = rows.next().map_err(backend)? {
+            run_ids.push(RunId(row.get::<_, String>(0).map_err(backend)?));
+        }
+        run_ids
+    };
+
+    for run_id in run_ids {
+        let projection =
+            read_run_projection(conn, &run_id)?.ok_or_else(|| RunStoreError::NotFound {
+                run_id: run_id.clone(),
+            })?;
+        let events = read_events_after(conn, &run_id, 0)?;
+        let canonical = reduce_events(&events)?;
+        let persisted = read_persisted_snapshot(conn, &run_id, &projection)?;
+        let legacy = if projection.terminal {
+            let Some((terminal, preceding)) = events.split_last() else {
+                return Err(corrupt(
+                    &run_id,
+                    "v15 migration found a terminal projection without events",
+                ));
+            };
+            if !terminal.event.is_terminal() {
+                return Err(corrupt(
+                    &run_id,
+                    "v15 migration found a terminal projection without a final terminal event",
+                ));
+            }
+            let previous = reduce_events(preceding)?;
+            let mut legacy = canonical.clone();
+            legacy.accounting = previous.accounting;
+            legacy
+        } else {
+            canonical.clone()
+        };
+        if persisted != canonical && persisted != legacy {
+            return Err(corrupt(
+                &run_id,
+                "v14 snapshot disagrees with canonical replay during v15 migration",
+            ));
+        }
+        upsert_snapshot(conn, &run_id, &canonical)?;
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl RunStore for StateStore {
     async fn reserve_creation(

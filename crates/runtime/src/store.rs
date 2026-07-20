@@ -1966,6 +1966,7 @@ pub fn apply_event(
             if let TerminalState::Completed { decision, .. } = &outcome.terminal {
                 validate_completion_decision(snapshot, &run_id, decision)?;
             }
+            snapshot.accounting = outcome.accounting.clone();
             snapshot.terminal = Some((**outcome).clone());
         }
     }

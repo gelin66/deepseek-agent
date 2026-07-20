@@ -5474,16 +5474,10 @@ async fn run_created_accounting_baseline_survives_crash_and_resume() {
     assert_eq!(outcome.accounting.cost_nanousd, baseline.cost_nanousd);
     assert_eq!(outcome.accounting.cost_nanocny, baseline.cost_nanocny);
     let replay = store.load(&created.lease.run_id).await.unwrap().unwrap();
-    assert_eq!(replay.snapshot.accounting.total_started(), 2);
-    assert_eq!(replay.snapshot.accounting.total_completed(), 2);
-    assert_eq!(replay.snapshot.accounting.usage, outcome.accounting.usage);
+    assert!(outcome.accounting.sealed);
     assert_eq!(
-        replay.snapshot.accounting.cost_nanousd,
-        outcome.accounting.cost_nanousd
-    );
-    assert_eq!(
-        replay.snapshot.accounting.cost_nanocny,
-        outcome.accounting.cost_nanocny
+        replay.snapshot.accounting, outcome.accounting,
+        "the terminal reducer must project the exact sealed outcome accounting",
     );
 }
 

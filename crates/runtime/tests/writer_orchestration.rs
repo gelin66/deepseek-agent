@@ -1714,6 +1714,18 @@ async fn failed_turn_limited_writer_with_retained_cleanup_is_recovery_required()
             ..
         })
     ));
+    let child_terminal_accounting = child_replay
+        .snapshot
+        .terminal
+        .as_ref()
+        .expect("child terminal")
+        .accounting
+        .clone();
+    assert!(!child_terminal_accounting.sealed);
+    assert_eq!(
+        child_replay.snapshot.accounting, child_terminal_accounting,
+        "child accounting remains unsealed while sharing the root ledger",
+    );
     assert_eq!(
         child_replay
             .events
@@ -1729,6 +1741,8 @@ async fn failed_turn_limited_writer_with_retained_cleanup_is_recovery_required()
     assert!(outcome.accounting.complete);
     assert!(outcome.accounting.usage_complete);
     assert!(!outcome.accounting.billing_unknown);
+    assert!(outcome.accounting.sealed);
+    assert_eq!(root_replay.snapshot.accounting, outcome.accounting);
     assert_eq!(outcome.accounting.root.started, 1);
     assert_eq!(outcome.accounting.root.completed, 1);
     assert_eq!(outcome.accounting.root.in_flight, 0);
