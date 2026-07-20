@@ -1742,7 +1742,7 @@ impl AgentRuntime {
             .unwrap_or_else(|| state.snapshot.request.system_prompt.clone());
         let access_prompt = if writer {
             format!(
-                "你是在同一 AgentRuntime 中运行的隔离写入子 Agent。角色：{role}。只在分配的 worktree 内修改允许路径；不要访问主工作区或 Git 元数据；完成前让 Host 使用冻结的 exact verifier 验收。"
+                "你是在同一 AgentRuntime 中运行的隔离写入子 Agent。角色：{role}。只在分配的 worktree 内修改允许路径；不要访问主工作区或 Git 元数据。必须使用本次实际提供的文件工具完成任务，不得只描述或声称已修改；已有文件先读取，再用写工具修改，写后重新读取相关文件核对最终内容。至少一次写工具成功前不得提出完成；最终结果仍由 Host 的冻结 exact verifier 验收。"
             )
         } else {
             format!(

@@ -723,6 +723,7 @@ fn root_request(exact_verifier: bool, auto_approve: bool) -> RunRequest {
 
 struct RuntimeFixture {
     runtime: Arc<AgentRuntime>,
+    model: Arc<DeterministicModel>,
     root_tools: Arc<RootTools>,
     writer_tools: Arc<WriterTools>,
     orchestrator: Arc<FakeOrchestrator>,
@@ -740,9 +741,10 @@ fn runtime_fixture(script: ModelScript) -> RuntimeFixture {
     ));
     let sink = Arc::new(CollectSink::with_timeline(timeline));
     let store = Arc::new(InMemoryRunStore::default());
+    let model = Arc::new(DeterministicModel::new(script));
     let runtime = Arc::new(
         AgentRuntime::new(
-            Arc::new(DeterministicModel::new(script)),
+            model.clone(),
             root_tools.clone(),
             sink.clone(),
             store.clone(),
@@ -751,6 +753,7 @@ fn runtime_fixture(script: ModelScript) -> RuntimeFixture {
     );
     RuntimeFixture {
         runtime,
+        model,
         root_tools,
         writer_tools,
         orchestrator,
@@ -1281,6 +1284,7 @@ fn position(timeline: &[String], expected: &str) -> usize {
 async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_evidence() {
     let RuntimeFixture {
         runtime,
+        model,
         root_tools,
         writer_tools,
         orchestrator,
@@ -1326,6 +1330,20 @@ async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_
         1
     );
     assert_eq!(orchestrator.cleanup_side_effects.load(Ordering::Acquire), 1);
+    let requests = model.requests.lock().expect("model request log");
+    let writer_request = requests
+        .iter()
+        .find(|request| request.actor.kind == AgentActorKind::Child)
+        .expect("writer child model request");
+    let writer_instructions = writer_request
+        .system_prompt
+        .blocks
+        .iter()
+        .map(|block| block.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(writer_instructions.contains("至少一次写工具成功前不得提出完成"));
+    assert!(writer_instructions.contains("写后重新读取相关文件核对最终内容"));
 
     let seal = lifecycle.seal.as_ref().expect("seal lifecycle");
     let child_result = lifecycle.result.as_ref().expect("child result");
