@@ -33,10 +33,11 @@ ROOT = Path(__file__).resolve().parents[1]
 HELPER_PATH = ROOT / "scripts/eval-m5-completion-gate.py"
 FIXTURE_ROOT = ROOT / "eval/fixtures/m5-context-broker"
 VERIFIER = FIXTURE_ROOT / "verifier.py"
-RESULT_SCHEMA = "codewhale.eval.m5-context-broker.v1"
+RESULT_SCHEMA = "codewhale.eval.m5-context-broker.v2"
 MODEL = "deepseek-v4-flash"
 RUNS_PER_CELL = 3
 PHASES = 9
+MAX_PAIR_ATTEMPTS = 4
 MAX_API_REQUESTS = 8
 MAX_MODEL_REQUESTS = 6
 MAX_OUTPUT_TOKENS = 4_096
@@ -467,12 +468,107 @@ def run_usage_projection_valid(run: dict[str, Any]) -> bool:
     return retry_exercised or physical == logical
 
 
-def accounting_metrics(run: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
+def nonnegative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def accounting_invariants_valid(accounting: dict[str, Any]) -> bool:
+    root = accounting.get("root")
+    child = accounting.get("child")
+    if not isinstance(root, dict) or not isinstance(child, dict):
+        return False
+    actor_fields = ("started", "completed", "in_flight", "retries")
+    top_level_counts = (
+        "transport_retries",
+        "runtime_retries",
+        "sealed_denied",
+        "exhausted_denied",
+        "usage_responses",
+        "usage_missing_responses",
+        "incomplete_responses",
+        "billing_unknown_attempts",
+        "unpriced_usage_responses",
+        "records_after_seal",
+        "cost_nanousd",
+        "cost_nanocny",
+    )
+    if not all(
+        nonnegative_integer(actor.get(field))
+        for actor in (root, child)
+        for field in actor_fields
+    ) or not all(
+        nonnegative_integer(accounting.get(field)) for field in top_level_counts
+    ):
+        return False
+    actors_settled = all(
+        all(
+            (
+                actor["in_flight"] == 0,
+                actor["started"] == actor["completed"],
+                actor["retries"] <= actor["started"],
+            )
+        )
+        for actor in (root, child)
+    )
+    usage_missing = accounting["usage_missing_responses"] > 0
+    usage_incomplete = accounting["incomplete_responses"] > 0
+    billing_unknown = accounting["billing_unknown_attempts"] > 0
+    unpriced = accounting["unpriced_usage_responses"] > 0
+    records_after_seal = accounting["records_after_seal"] > 0
+    completed = root["completed"] + child["completed"]
+    usage_complete = not usage_missing and not usage_incomplete
+    complete = (
+        actors_settled
+        and usage_complete
+        and not billing_unknown
+        and not unpriced
+        and not records_after_seal
+    )
+    return all(
+        (
+            actors_settled,
+            accounting.get("sealed") is False,
+            accounting["sealed_denied"] == 0,
+            accounting.get("usage_missing") is usage_missing,
+            accounting.get("usage_incomplete") is usage_incomplete,
+            accounting.get("billing_unknown") is billing_unknown,
+            accounting.get("unpriced") is unpriced,
+            accounting.get("usage_complete") is usage_complete,
+            accounting.get("complete") is complete,
+            accounting.get("budget_exhausted")
+            is (accounting["exhausted_denied"] > 0),
+            accounting["transport_retries"]
+            == root["retries"] + child["retries"],
+            accounting["usage_responses"] <= completed,
+            accounting["usage_missing_responses"] <= completed,
+            accounting["incomplete_responses"] <= completed,
+            accounting["billing_unknown_attempts"] <= completed,
+            accounting["unpriced_usage_responses"]
+            <= accounting["usage_responses"],
+        )
+    )
+
+
+def accounting_assessment(
+    run: dict[str, Any], events: list[dict[str, Any]]
+) -> tuple[dict[str, Any], dict[str, Any]]:
     HELPER.MAX_API_REQUESTS = MAX_API_REQUESTS
     accounting = run.get("accounting")
     physical_usage = accounting.get("usage") if isinstance(accounting, dict) else None
     projected = {**run, "usage": physical_usage}
     metrics = HELPER.accounting_metrics(projected)
+    normalized = copy.deepcopy(projected)
+    normalized_accounting = normalized["accounting"]
+    normalized_accounting.update(
+        {
+            "complete": True,
+            "usage_complete": True,
+            "usage_missing": False,
+            "usage_incomplete": False,
+            "billing_unknown": False,
+        }
+    )
+    normalized_observability_valid = HELPER.accounting_metrics(normalized)["valid"]
     terminal_state(events)
     terminal_outcome = next(
         stored["event"].get("outcome")
@@ -483,15 +579,69 @@ def accounting_metrics(run: dict[str, Any], events: list[dict[str, Any]]) -> dic
         field: int(metrics["usage"].get(field, 0)) for field in USAGE_FIELDS
     }
     usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
-    metrics["valid"] = all(
-        (
-            metrics["valid"],
-            terminal_accounting_projection_valid(terminal_outcome, run),
-            run_usage_projection_valid(run),
-            int(run.get("runtime_model_requests", 0)) <= MAX_MODEL_REQUESTS,
-        )
+    terminal_projection_valid = terminal_accounting_projection_valid(
+        terminal_outcome, run
     )
+    usage_projection_valid = run_usage_projection_valid(run)
+    model_request_limit_valid = (
+        int(run.get("runtime_model_requests", 0)) <= MAX_MODEL_REQUESTS
+    )
+    axes = {
+        "helper_valid": bool(metrics["valid"]),
+        "terminal_projection_valid": terminal_projection_valid,
+        "usage_projection_valid": usage_projection_valid,
+        "model_request_limit_valid": model_request_limit_valid,
+        "hard_request_limit_valid": (
+            accounting.get("hard_request_limit") == MAX_API_REQUESTS
+        ),
+        "api_request_limit_valid": (
+            int(metrics["api_requests"]) <= MAX_API_REQUESTS
+        ),
+        "accounting_invariants_valid": accounting_invariants_valid(accounting),
+        "normalized_observability_valid": normalized_observability_valid,
+        "complete": accounting.get("complete") is True,
+        "usage_complete": accounting.get("usage_complete") is True,
+        "usage_missing_absent": accounting.get("usage_missing") is False,
+        "usage_incomplete_absent": accounting.get("usage_incomplete") is False,
+        "billing_known": accounting.get("billing_unknown") is False,
+        "priced": accounting.get("unpriced") is False,
+        "budget_not_exhausted": (
+            accounting.get("budget_exhausted") is False
+            and int(accounting.get("exhausted_denied", 0)) == 0
+        ),
+        "no_in_flight": (
+            int(accounting.get("root", {}).get("in_flight", 0)) == 0
+            and int(accounting.get("child", {}).get("in_flight", 0)) == 0
+        ),
+        "no_records_after_seal": (
+            int(accounting.get("records_after_seal", 0)) == 0
+        ),
+    }
+    metrics["valid"] = all(axes.values())
     metrics["usage"] = usage
+    logical_usage = run.get("usage")
+    usage_delta = {
+        field: (
+            int(physical_usage.get(field, 0)) - int(logical_usage.get(field, 0))
+            if isinstance(physical_usage, dict) and isinstance(logical_usage, dict)
+            else None
+        )
+        for field in USAGE_FIELDS
+    }
+    audit = {
+        "valid": metrics["valid"],
+        "api_started": int(metrics["api_requests"]),
+        "runtime_model_requests": int(run.get("runtime_model_requests", 0)),
+        "runtime_retries": int(run.get("runtime_retries", 0)),
+        "transport_retries": int(accounting.get("transport_retries", 0)),
+        "axes": axes,
+        "physical_minus_logical": usage_delta,
+    }
+    return metrics, audit
+
+
+def accounting_metrics(run: dict[str, Any], events: list[dict[str, Any]]) -> dict[str, Any]:
+    metrics, _ = accounting_assessment(run, events)
     return metrics
 
 
@@ -512,6 +662,104 @@ def sum_metrics(values: list[dict[str, Any]]) -> dict[str, Any]:
         "cost_usd": round(sum(float(value["cost_usd"]) for value in values), 9),
         "cost_cny": round(sum(float(value["cost_cny"]) for value in values), 9),
     }
+
+
+def pair_attempt_metrics(pair: dict[str, Any]) -> dict[str, Any]:
+    values = [pair["source"]["metrics"]]
+    for arm in pair["arms"]:
+        values.extend((arm["compact_metrics"], arm["final_metrics"]))
+    return sum_metrics(values)
+
+
+def measurement_execution_summary(
+    accepted_pairs: list[dict[str, Any]],
+    invalid_attempts: list[dict[str, Any]],
+) -> dict[str, Any]:
+    attempts = [*invalid_attempts, *accepted_pairs]
+    known_minimum = sum_metrics(
+        [pair["execution_metrics"] for pair in attempts]
+    )
+    return {
+        "total_pair_attempts": len(attempts),
+        "accepted_pairs": len(accepted_pairs),
+        "invalid_pair_attempts": len(invalid_attempts),
+        "unaccounted_pair_attempts": 0,
+        "pair_attempt_duration_seconds": round(
+            sum(float(pair["pair_duration_seconds"]) for pair in attempts), 3
+        ),
+        "invalid_attempt_duration_seconds": round(
+            sum(
+                float(pair["pair_duration_seconds"])
+                for pair in invalid_attempts
+            ),
+            3,
+        ),
+        "accounting_complete": known_minimum["valid"],
+        "cost_semantics": (
+            "exact" if known_minimum["valid"] else "known_minimum"
+        ),
+        "known_minimum_metrics": known_minimum,
+    }
+
+
+def accounting_gap_resample_eligible(audit: dict[str, Any]) -> bool:
+    if audit["valid"]:
+        return False
+    axes = audit["axes"]
+    protected_axes = (
+        "terminal_projection_valid",
+        "usage_projection_valid",
+        "model_request_limit_valid",
+        "hard_request_limit_valid",
+        "api_request_limit_valid",
+        "accounting_invariants_valid",
+        "normalized_observability_valid",
+        "priced",
+        "budget_not_exhausted",
+        "no_in_flight",
+        "no_records_after_seal",
+    )
+    observability_axes = (
+        "complete",
+        "usage_complete",
+        "usage_missing_absent",
+        "usage_incomplete_absent",
+        "billing_known",
+    )
+    retries = int(audit["runtime_retries"]) + int(audit["transport_retries"])
+    return all(axes[axis] for axis in protected_axes) and any(
+        not axes[axis] for axis in observability_axes
+    ) and retries > 0
+
+
+def arm_resample_eligible(arm: dict[str, Any]) -> bool:
+    failed_axes = {
+        axis for axis, valid in arm["measurement_axes"].items() if not valid
+    }
+    accounting_axes = {"compact_accounting", "final_accounting"}
+    if not failed_axes or not failed_axes.issubset(accounting_axes):
+        return False
+    audits = {
+        "compact_accounting": arm["compact_accounting_audit"],
+        "final_accounting": arm["final_accounting_audit"],
+    }
+    return all(
+        accounting_gap_resample_eligible(audits[axis])
+        for axis in failed_axes
+    )
+
+
+def pair_resample_eligible(
+    arms: list[dict[str, Any]], pair_contract_valid: bool
+) -> bool:
+    return (
+        pair_contract_valid
+        and any(not arm["measurement_valid"] for arm in arms)
+        and all(
+            arm["measurement_valid"] or arm_resample_eligible(arm)
+            for arm in arms
+        )
+    )
 
 
 def run_external_verifier(scenario: str, workspace: Path) -> dict[str, Any]:
@@ -649,7 +897,9 @@ def failed_verifier_outcome_valid(outcome: Any) -> bool:
     )
 
 
-def source_failure_facts(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+def source_failure_fact_assessment(
+    events: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     commits = [
         stored["event"]
         for stored in events
@@ -661,23 +911,46 @@ def source_failure_facts(events: list[dict[str, Any]]) -> dict[str, Any] | None:
         if event_kind(stored) == "completion_rejected"
     ]
     if not commits and not rejections:
-        return None
-    if not commits or not rejections:
-        raise EvaluationError("source_failure_facts_incomplete")
+        return None, {
+            "valid": True,
+            "commit_count": 0,
+            "rejection_count": 0,
+            "failed_outcome_valid": None,
+            "rejection_valid": None,
+            "receipt_absent": None,
+        }
+    presence_valid = bool(commits) and bool(rejections)
+    if not presence_valid:
+        return None, {
+            "valid": False,
+            "commit_count": len(commits),
+            "rejection_count": len(rejections),
+            "failed_outcome_valid": None,
+            "rejection_valid": None,
+            "receipt_absent": None,
+        }
     commit = commits[-1]
     outcome = commit.get("outcome")
     rejection = rejections[-1]
-    if (
-        not failed_verifier_outcome_valid(outcome)
-        or not isinstance(rejection, dict)
-        or commit.get("receipt") is not None
-    ):
-        raise EvaluationError("source_failure_facts_invalid")
+    outcome_valid = failed_verifier_outcome_valid(outcome)
+    rejection_valid = isinstance(rejection, dict)
+    receipt_absent = commit.get("receipt") is None
+    valid = outcome_valid and rejection_valid and receipt_absent
+    audit = {
+        "valid": valid,
+        "commit_count": len(commits),
+        "rejection_count": len(rejections),
+        "failed_outcome_valid": outcome_valid,
+        "rejection_valid": rejection_valid,
+        "receipt_absent": receipt_absent,
+    }
+    if not valid:
+        return None, audit
     return {
         "rejection": rejection,
         "outcome": outcome,
         "workspace_state": commit.get("workspace_state_after"),
-    }
+    }, audit
 
 
 def projected_failure_outcome(outcome: dict[str, Any]) -> dict[str, Any]:
@@ -971,7 +1244,7 @@ def create_source(
     scenario: str,
     model: str,
     variant: str,
-) -> tuple[list[dict[str, Any]], str, dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], str, dict[str, Any] | None, dict[str, Any]]:
     roots: list[dict[str, Any]] = []
     run, events = submit_run(
         server,
@@ -1008,31 +1281,62 @@ def create_source(
         if SCENARIOS[scenario]["source_failure"]
         else "completion_rejected" not in [event_kind(item) for item in events]
     )
-    if states != expected_states or not schema_valid or not failure_valid:
-        last_counts = Counter(event_kind(item) for item in events)
-        commits = [
-            item["event"]
-            for item in events
-            if event_kind(item) == "host_verification_committed"
-        ]
-        raise EvaluationError(
-            "source_contract_failed:"
-            f"states={','.join(states)}:"
-            f"last_failure={terminal_failure_kind(events) or 'none'}:"
-            f"schema={str(schema_valid).lower()}:"
-            f"rejection={str(failure_valid).lower()}:"
-            f"proposed={last_counts['completion_proposed']}:"
-            f"prepared={last_counts['host_verification_prepared']}:"
-            f"started={last_counts['host_verification_started']}:"
-            f"committed={last_counts['host_verification_committed']}:"
-            f"rejected={last_counts['completion_rejected']}:"
-            f"receipt={str(any(commit.get('receipt') is not None for commit in commits)).lower()}"
-        )
-    source_request = run_created_request(events)
-    transcript = source_request.get("transcript")
-    if not isinstance(transcript, dict) or not isinstance(transcript.get("entries"), list):
-        raise EvaluationError("source_transcript_missing")
-    return roots, run["run_id"], transcript
+    source_request = next(
+        (
+            stored["event"].get("request")
+            for stored in events
+            if event_kind(stored) == "run_created"
+        ),
+        None,
+    )
+    transcript = (
+        source_request.get("transcript")
+        if isinstance(source_request, dict)
+        else None
+    )
+    transcript_valid = isinstance(transcript, dict) and isinstance(
+        transcript.get("entries"), list
+    )
+    last_counts = Counter(event_kind(item) for item in events)
+    commits = [
+        item["event"]
+        for item in events
+        if event_kind(item) == "host_verification_committed"
+    ]
+    audit = {
+        "valid": all(
+            (
+                states == expected_states,
+                schema_valid,
+                failure_valid,
+                transcript_valid,
+            )
+        ),
+        "terminal_states_valid": states == expected_states,
+        "event_schema_valid": schema_valid,
+        "expected_failure_valid": failure_valid,
+        "transcript_valid": transcript_valid,
+        "last_failure_kind": terminal_failure_kind(events),
+        "last_event_kind_counts": {
+            kind: last_counts[kind]
+            for kind in (
+                "completion_proposed",
+                "host_verification_prepared",
+                "host_verification_started",
+                "host_verification_committed",
+                "completion_rejected",
+            )
+        },
+        "receipt_present": any(
+            commit.get("receipt") is not None for commit in commits
+        ),
+    }
+    return (
+        roots,
+        run["run_id"],
+        transcript if transcript_valid else None,
+        audit,
+    )
 
 
 def arm_order(variant: str, scenario: str, repetition: int) -> tuple[str, str]:
@@ -1089,8 +1393,13 @@ def run_arm(
         if compact_events is not None
         else final_transcript
     )
+    source_continuation_valid = (
+        compact_run is None
+        or compact_run.get("continued_from_run_id") == source_run_id
+    )
     final_lineage_valid = all(
         (
+            source_continuation_valid,
             final_run.get("continued_from_run_id") == continuation_source,
             isinstance(final_transcript, dict),
             isinstance(source_transcript, dict),
@@ -1156,11 +1465,26 @@ def run_arm(
         source_facts,
         required=variant == "candidate" and scenario == "task-b",
     )
-    final_metrics = accounting_metrics(final_run, final_events)
-    compact_metrics = (
-        accounting_metrics(compact_run, compact_events)
+    final_metrics, final_accounting_audit = accounting_assessment(
+        final_run, final_events
+    )
+    compact_metrics, compact_accounting_audit = (
+        accounting_assessment(compact_run, compact_events)
         if compact_run is not None and compact_events is not None
-        else sum_metrics([])
+        else (
+            sum_metrics([]),
+            {
+                "valid": True,
+                "api_started": 0,
+                "runtime_model_requests": 0,
+                "runtime_retries": 0,
+                "transport_retries": 0,
+                "axes": {},
+                "physical_minus_logical": {
+                    field: 0 for field in USAGE_FIELDS
+                },
+            },
+        )
     )
     terminal = terminal_name(final_events)
     verified_success = all(
@@ -1258,7 +1582,9 @@ def run_arm(
         ),
         "compaction": compact,
         "compact_metrics": compact_metrics,
+        "compact_accounting_audit": compact_accounting_audit,
         "final_metrics": final_metrics,
+        "final_accounting_audit": final_accounting_audit,
         "arm_duration_seconds": round(duration, 3),
         "changed_files": HELPER.changed_files(
             initialize_snapshot_for(scenario), HELPER.snapshot_workspace(workspace)
@@ -1347,7 +1673,7 @@ def run_pair(
         source_started = time.monotonic()
         server = HELPER.StdioRunApi(binary, 5, workspace, environment)
         try:
-            source_roots, source_run_id, source_transcript = create_source(
+            source_roots, source_run_id, source_transcript, source_creation_audit = create_source(
                 server, workspace, scenario, model, variant
             )
         finally:
@@ -1360,39 +1686,57 @@ def run_pair(
             if SCENARIOS[scenario]["source_failure"]
             else []
         )
-        if source_changed != expected_source_changed:
-            raise EvaluationError("source_workspace_change_contract_failed")
         mutation_exercised = any(
             stored["event"].get("outcome", {}).get("side_effect") == "applied"
             and stored["event"].get("workspace_state") is not None
             for stored in source_roots[PHASES - 2]["events"]
             if event_kind(stored) == "tool_outcome_committed"
         )
-        if SCENARIOS[scenario]["source_failure"] and not mutation_exercised:
-            raise EvaluationError("source_mutation_not_exercised")
         stage_audit = source_stage_audit(scenario, workspace)
-        if not stage_audit["valid"]:
-            raise EvaluationError(
-                "source_stage_invariant_failed:"
-                f"placeholder={str(stage_audit['placeholder_exact']).lower()}:"
-                f"external={str(stage_audit['external_valid']).lower()}:"
-                f"public_failing={str(stage_audit['public_behavior_failing']).lower()}:"
-                f"boundary={str(stage_audit['changed_file_boundary']).lower()}"
-            )
-        source_facts = source_failure_facts(source_roots[-1]["events"])
-        if SCENARIOS[scenario]["source_failure"] != (source_facts is not None):
-            raise EvaluationError("source_failure_fact_contract_failed")
-        shutil.copytree(workspace, backup, symlinks=True)
-        source_metrics = [
-            accounting_metrics(root_data["run"], root_data["events"])
+        source_facts, source_failure_fact_audit = (
+            source_failure_fact_assessment(source_roots[-1]["events"])
+        )
+        source_assessments = [
+            accounting_assessment(root_data["run"], root_data["events"])
             for root_data in source_roots
         ]
+        source_metrics = [metrics for metrics, _ in source_assessments]
         source_aggregate = sum_metrics(source_metrics)
+        source_accounting_audits = [
+            {"phase": phase, **audit}
+            for phase, (_, audit) in enumerate(source_assessments, start=1)
+        ]
         source_compaction_free = not any(
             event_kind(stored).startswith("context_compaction_")
             for root_data in source_roots
             for stored in root_data["events"]
         )
+        expected_failure_exercised = (
+            validate_expected_source_failure(
+                source_roots[-1]["events"],
+                source_roots[-1]["run"],
+                scenario,
+            )
+            if SCENARIOS[scenario]["source_failure"]
+            else False
+        )
+        source_contract_axes = {
+            "creation_contract": source_creation_audit["valid"],
+            "workspace_change_boundary": (
+                source_changed == expected_source_changed
+            ),
+            "mutation_contract": (
+                not SCENARIOS[scenario]["source_failure"]
+                or mutation_exercised
+            ),
+            "stage_contract": stage_audit["valid"],
+            "failure_fact_contract": (
+                source_failure_fact_audit["valid"]
+                and SCENARIOS[scenario]["source_failure"]
+                == (source_facts is not None)
+            ),
+            "source_compaction_free": source_compaction_free,
+        }
         source_contract = {
             "run_id_sha256": canonical_hash(source_run_id),
             "terminal_states": [
@@ -1401,22 +1745,25 @@ def run_pair(
             "event_prefix_sha256": canonical_hash(
                 [canonical_hash(root_data["events"]) for root_data in source_roots]
             ),
-            "last_phase_input_transcript_sha256": canonical_hash(source_transcript),
-            "last_phase_input_transcript_entries": len(source_transcript["entries"]),
+            "last_phase_input_transcript_sha256": (
+                canonical_hash(source_transcript)
+                if source_transcript is not None
+                else None
+            ),
+            "last_phase_input_transcript_entries": (
+                len(source_transcript["entries"])
+                if source_transcript is not None
+                else None
+            ),
             "initial_workspace_sha256": canonical_hash(initial),
             "source_workspace_sha256": canonical_hash(source_workspace),
             "changed_files": source_changed,
             "mutation_exercised": mutation_exercised,
             "stage_audit": stage_audit,
-            "expected_failure_exercised": (
-                validate_expected_source_failure(
-                    source_roots[-1]["events"],
-                    source_roots[-1]["run"],
-                    scenario,
-                )
-                if SCENARIOS[scenario]["source_failure"]
-                else False
-            ),
+            "failure_fact_audit": source_failure_fact_audit,
+            "creation_audit": source_creation_audit,
+            "contract_axes": source_contract_axes,
+            "expected_failure_exercised": expected_failure_exercised,
             "host_failure_cycles": sum(
                 event_kind(stored) == "host_verification_committed"
                 for stored in source_roots[-1]["events"]
@@ -1424,7 +1771,54 @@ def run_pair(
             "automatic_compaction_absent": source_compaction_free,
             "duration_seconds": round(source_duration, 3),
             "metrics": source_aggregate,
+            "accounting_audits": source_accounting_audits,
+            "invalid_accounting_phases": [
+                audit["phase"]
+                for audit in source_accounting_audits
+                if not audit["valid"]
+            ],
         }
+        if not all(source_contract_axes.values()):
+            return {
+                "pair_id": f"{variant}:{scenario}:{repetition}",
+                "variant": variant,
+                "scenario": scenario,
+                "repetition": repetition,
+                "measurement_valid": False,
+                "resample_eligible": False,
+                "invalid_stage": "source_contract",
+                "source": source_contract,
+                "arm_order": [],
+                "arms": [],
+                "pair_duration_seconds": round(time.monotonic() - pair_started, 3),
+            }
+        if not source_aggregate["valid"] or not source_compaction_free:
+            invalid_source_audits = [
+                audit for audit in source_accounting_audits if not audit["valid"]
+            ]
+            return {
+                "pair_id": f"{variant}:{scenario}:{repetition}",
+                "variant": variant,
+                "scenario": scenario,
+                "repetition": repetition,
+                "measurement_valid": False,
+                "resample_eligible": (
+                    source_compaction_free
+                    and bool(invalid_source_audits)
+                    and all(
+                        accounting_gap_resample_eligible(audit)
+                        for audit in invalid_source_audits
+                    )
+                ),
+                "invalid_stage": "source",
+                "source": source_contract,
+                "arm_order": [],
+                "arms": [],
+                "pair_duration_seconds": round(time.monotonic() - pair_started, 3),
+            }
+        if source_transcript is None:
+            raise EvaluationError("validated_source_transcript_missing")
+        shutil.copytree(workspace, backup, symlinks=True)
         arms = []
         for mode in arm_order(variant, scenario, repetition):
             restore_workspace(backup, workspace)
@@ -1447,7 +1841,40 @@ def run_pair(
             arm["chain_duration_seconds"] = round(
                 source_duration + arm["arm_duration_seconds"], 3
             )
+            arm["measurement_axes"]["source_accounting"] = True
+            arm["measurement_axes"]["source_compaction_free"] = True
             arms.append(arm)
+            if not arm["measurement_valid"]:
+                source_contract["shared_arm_transcript"] = None
+                source_contract["terminal_transcript_sha256"] = arm[
+                    "source_transcript_sha256"
+                ]
+                source_contract["terminal_transcript_entries"] = arm[
+                    "source_transcript_entries"
+                ]
+                pair_contract_valid = all(
+                    (
+                        source_aggregate["valid"],
+                        source_compaction_free,
+                    )
+                )
+                return {
+                    "pair_id": f"{variant}:{scenario}:{repetition}",
+                    "variant": variant,
+                    "scenario": scenario,
+                    "repetition": repetition,
+                    "measurement_valid": False,
+                    "resample_eligible": pair_resample_eligible(
+                        arms, pair_contract_valid
+                    ),
+                    "invalid_stage": "treatment_arm",
+                    "source": source_contract,
+                    "arm_order": [item["mode"] for item in arms],
+                    "arms": arms,
+                    "pair_duration_seconds": round(
+                        time.monotonic() - pair_started, 3
+                    ),
+                }
         source_digests = {arm["source_transcript_sha256"] for arm in arms}
         shared_source_transcript = len(source_digests) == 1 and None not in source_digests
         for arm in arms:
@@ -1469,11 +1896,27 @@ def run_pair(
         source_contract["terminal_transcript_entries"] = arms[0][
             "source_transcript_entries"
         ]
+        measurement_valid = all(arm["measurement_valid"] for arm in arms)
+        pair_contract_valid = all(
+            (
+                shared_source_transcript,
+                source_aggregate["valid"],
+                source_compaction_free,
+            )
+        )
         return {
             "pair_id": f"{variant}:{scenario}:{repetition}",
             "variant": variant,
             "scenario": scenario,
             "repetition": repetition,
+            "measurement_valid": measurement_valid,
+            "resample_eligible": (
+                not measurement_valid
+                and pair_resample_eligible(arms, pair_contract_valid)
+            ),
+            "invalid_stage": (
+                None if measurement_valid else "treatment_arm"
+            ),
             "source": source_contract,
             "arm_order": [arm["mode"] for arm in arms],
             "arms": arms,
@@ -1569,7 +2012,12 @@ def paired_comparison(
     }
 
 
-def aggregate(pairs: list[dict[str, Any]], runs_per_cell: int) -> dict[str, Any]:
+def aggregate(
+    pairs: list[dict[str, Any]],
+    runs_per_cell: int,
+    invalid_attempts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    invalid_attempts = invalid_attempts or []
     arms = []
     for pair in pairs:
         for arm in pair["arms"]:
@@ -1581,11 +2029,31 @@ def aggregate(pairs: list[dict[str, Any]], runs_per_cell: int) -> dict[str, Any]
                     **arm,
                 }
             )
+    invalid_outcome_arms = [
+        {
+            "variant": attempt["variant"],
+            "scenario": attempt["scenario"],
+            "repetition": attempt["repetition"],
+            "measurement_attempt": attempt.get("measurement_attempt"),
+            **arm,
+        }
+        for attempt in invalid_attempts
+        for arm in attempt["arms"]
+    ]
+    outcome_arms = [*arms, *invalid_outcome_arms]
     cells: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     for arm in arms:
         cells[(arm["variant"], arm["scenario"], arm["mode"])].append(arm)
+    outcome_cells: dict[
+        tuple[str, str, str], list[dict[str, Any]]
+    ] = defaultdict(list)
+    for arm in outcome_arms:
+        outcome_cells[(arm["variant"], arm["scenario"], arm["mode"])].append(
+            arm
+        )
     summaries = []
     for (variant, scenario, mode), rows in sorted(cells.items()):
+        observed = outcome_cells[(variant, scenario, mode)]
         summaries.append(
             {
                 "variant": variant,
@@ -1594,6 +2062,18 @@ def aggregate(pairs: list[dict[str, Any]], runs_per_cell: int) -> dict[str, Any]
                 "runs": len(rows),
                 "verified_success": sum(row["verified_success"] for row in rows),
                 "false_success": sum(row["false_success"] for row in rows),
+                "observed_outcomes": len(observed),
+                "observed_verified_success": sum(
+                    row["verified_success"] for row in observed
+                ),
+                "observed_false_success": sum(
+                    row["false_success"] for row in observed
+                ),
+                "observed_success_rate": round(
+                    sum(row["verified_success"] for row in observed)
+                    / len(observed),
+                    9,
+                ),
                 "api_requests": metric_summary(
                     [row["chain_metrics"]["api_requests"] for row in rows]
                 ),
@@ -1659,16 +2139,29 @@ def aggregate(pairs: list[dict[str, Any]], runs_per_cell: int) -> dict[str, Any]
     candidate_rows = [
         arm for arm in arms if arm["variant"] == "candidate" and arm["mode"] == "on"
     ]
+    candidate_outcomes = [
+        arm
+        for arm in outcome_arms
+        if arm["variant"] == "candidate" and arm["mode"] == "on"
+    ]
     candidate_all_success = (
-        len(candidate_rows) == len(SCENARIOS) * runs_per_cell
-        and all(row["verified_success"] for row in candidate_rows)
-        and not any(row["false_success"] for row in candidate_rows)
+        len(candidate_outcomes) >= len(SCENARIOS) * runs_per_cell
+        and all(row["verified_success"] for row in candidate_outcomes)
+        and not any(row["false_success"] for row in candidate_outcomes)
     )
     reliability_non_regression = product_eligible and candidate_all_success and all(
-        summaries_by_key[("candidate", scenario, "on")]["verified_success"]
-        >= summaries_by_key[("candidate", scenario, "off")]["verified_success"]
-        and summaries_by_key[("candidate", scenario, "on")]["verified_success"]
-        >= summaries_by_key[("baseline", scenario, "on")]["verified_success"]
+        summaries_by_key[("candidate", scenario, "on")][
+            "observed_success_rate"
+        ]
+        >= summaries_by_key[("candidate", scenario, "off")][
+            "observed_success_rate"
+        ]
+        and summaries_by_key[("candidate", scenario, "on")][
+            "observed_success_rate"
+        ]
+        >= summaries_by_key[("baseline", scenario, "on")][
+            "observed_success_rate"
+        ]
         for scenario in SCENARIOS
     )
     comparisons_by_key = {
@@ -1734,18 +2227,18 @@ def aggregate(pairs: list[dict[str, Any]], runs_per_cell: int) -> dict[str, Any]
     reliability_benefit = (
         reliability_non_regression
         and all(
-            summaries_by_key[("candidate", scenario, "on")]["verified_success"]
-            == runs_per_cell
-            and summaries_by_key[("candidate", scenario, "on")][
-                "verified_success"
+            summaries_by_key[("candidate", scenario, "on")][
+                "observed_success_rate"
             ]
-            - summaries_by_key[("candidate", scenario, "off")]["verified_success"]
-            >= 1
-            and summaries_by_key[("candidate", scenario, "on")][
-                "verified_success"
+            > summaries_by_key[("candidate", scenario, "off")][
+                "observed_success_rate"
             ]
-            - summaries_by_key[("baseline", scenario, "on")]["verified_success"]
-            >= 1
+            and summaries_by_key[("candidate", scenario, "on")][
+                "observed_success_rate"
+            ]
+            > summaries_by_key[("baseline", scenario, "on")][
+                "observed_success_rate"
+            ]
             for scenario in SCENARIOS
         )
         and all(
@@ -1786,6 +2279,7 @@ def aggregate(pairs: list[dict[str, Any]], runs_per_cell: int) -> dict[str, Any]
         "candidate_decision": candidate_decision,
         "exact_pairs": exact_pairs,
         "exact_cells": exact_cells,
+        "invalid_treatment_outcomes": len(invalid_outcome_arms),
         "cells": summaries,
         "paired_comparisons": comparisons,
         "physical_suite_metrics": sum_metrics(physical_metrics),
@@ -1899,8 +2393,12 @@ def dry_plan(args: argparse.Namespace) -> dict[str, Any]:
         "mode": "dry_run",
         "model": args.model,
         "runs_per_cell": args.runs_per_cell,
+        "max_pair_attempts": MAX_PAIR_ATTEMPTS,
         "planned_pairs": len(SCENARIOS) * 2 * args.runs_per_cell,
         "planned_arms": len(SCENARIOS) * 4 * args.runs_per_cell,
+        "maximum_pair_attempts": (
+            len(SCENARIOS) * 2 * args.runs_per_cell * MAX_PAIR_ATTEMPTS
+        ),
         "schedule": [
             {"variant": variant, "scenario": scenario, "repetition": repetition}
             for variant, scenario, repetition in schedule(args.runs_per_cell)
@@ -1958,6 +2456,302 @@ class HarnessSelfTests(unittest.TestCase):
         run["runtime_retries"] = 1
         run["accounting"]["usage"]["input_tokens"] = 99
         self.assertFalse(run_usage_projection_valid(run))
+
+    def test_resampling_only_accepts_retry_backed_observability_gaps(self) -> None:
+        axes = {
+            "helper_valid": False,
+            "terminal_projection_valid": True,
+            "usage_projection_valid": True,
+            "model_request_limit_valid": True,
+            "hard_request_limit_valid": True,
+            "api_request_limit_valid": True,
+            "accounting_invariants_valid": True,
+            "normalized_observability_valid": True,
+            "complete": False,
+            "usage_complete": True,
+            "usage_missing_absent": True,
+            "usage_incomplete_absent": True,
+            "billing_known": False,
+            "priced": True,
+            "budget_not_exhausted": True,
+            "no_in_flight": True,
+            "no_records_after_seal": True,
+        }
+        audit = {
+            "valid": False,
+            "runtime_retries": 1,
+            "transport_retries": 0,
+            "axes": axes,
+        }
+        self.assertTrue(accounting_gap_resample_eligible(audit))
+        audit["runtime_retries"] = 0
+        self.assertFalse(accounting_gap_resample_eligible(audit))
+        audit["runtime_retries"] = 1
+        axes["terminal_projection_valid"] = False
+        self.assertFalse(accounting_gap_resample_eligible(audit))
+
+        axes["terminal_projection_valid"] = True
+        arm = {
+            "measurement_valid": False,
+            "verified_success": True,
+            "false_success": False,
+            "terminal_state": "completed",
+            "measurement_axes": {
+                "final_accounting": False,
+                "compact_accounting": True,
+                "lineage": True,
+            },
+            "final_accounting_audit": audit,
+            "compact_accounting_audit": {"valid": True},
+        }
+        self.assertTrue(arm_resample_eligible(arm))
+        self.assertTrue(pair_resample_eligible([arm], True))
+        self.assertFalse(pair_resample_eligible([arm], False))
+        failed_outcome = {
+            **arm,
+            "measurement_valid": True,
+            "verified_success": False,
+            "terminal_state": "blocked",
+        }
+        self.assertTrue(
+            pair_resample_eligible([arm, failed_outcome], True)
+        )
+        arm["verified_success"] = False
+        arm["terminal_state"] = "blocked"
+        self.assertTrue(arm_resample_eligible(arm))
+        arm["verified_success"] = True
+        arm["terminal_state"] = "completed"
+        arm["measurement_axes"]["lineage"] = False
+        self.assertFalse(arm_resample_eligible(arm))
+
+    def test_accounting_invariants_reject_counter_or_flag_corruption(self) -> None:
+        accounting = {
+            "root": {
+                "started": 2,
+                "completed": 2,
+                "in_flight": 0,
+                "retries": 0,
+            },
+            "child": {
+                "started": 0,
+                "completed": 0,
+                "in_flight": 0,
+                "retries": 0,
+            },
+            "transport_retries": 0,
+            "runtime_retries": 0,
+            "sealed_denied": 0,
+            "exhausted_denied": 0,
+            "budget_exhausted": False,
+            "sealed": False,
+            "complete": False,
+            "usage_complete": True,
+            "usage_missing": False,
+            "usage_incomplete": False,
+            "billing_unknown": True,
+            "unpriced": False,
+            "usage_responses": 1,
+            "usage_missing_responses": 0,
+            "incomplete_responses": 0,
+            "billing_unknown_attempts": 1,
+            "unpriced_usage_responses": 0,
+            "records_after_seal": 0,
+            "cost_nanousd": 10,
+            "cost_nanocny": 70,
+        }
+        self.assertTrue(accounting_invariants_valid(accounting))
+        for field, bad_value in (
+            ("sealed_denied", 1),
+            ("transport_retries", 1),
+            ("billing_unknown_attempts", 0),
+            ("unpriced_usage_responses", 1),
+            ("usage_missing_responses", 3),
+            ("incomplete_responses", 3),
+        ):
+            corrupted = {**accounting, field: bad_value}
+            self.assertFalse(accounting_invariants_valid(corrupted))
+        corrupted = copy.deepcopy(accounting)
+        corrupted["root"]["completed"] = 1
+        self.assertFalse(accounting_invariants_valid(corrupted))
+
+    def test_full_accounting_assessment_accepts_only_retry_observability_gap(
+        self,
+    ) -> None:
+        usage = {field: 0 for field in USAGE_FIELDS}
+        usage["input_tokens"] = 100
+        usage["output_tokens"] = 20
+
+        def assess(
+            *,
+            usage_complete: bool,
+            usage_incomplete: bool,
+            billing_unknown: bool,
+        ) -> dict[str, Any]:
+            accounting = {
+                "hard_request_limit": MAX_API_REQUESTS,
+                "root": {
+                    "started": 2,
+                    "completed": 2,
+                    "in_flight": 0,
+                    "retries": 0,
+                },
+                "child": {
+                    "started": 0,
+                    "completed": 0,
+                    "in_flight": 0,
+                    "retries": 0,
+                },
+                "transport_retries": 0,
+                "runtime_retries": 0,
+                "sealed_denied": 0,
+                "exhausted_denied": 0,
+                "budget_exhausted": False,
+                "sealed": False,
+                "complete": False,
+                "usage_complete": usage_complete,
+                "usage_missing": False,
+                "usage_incomplete": usage_incomplete,
+                "billing_unknown": billing_unknown,
+                "unpriced": False,
+                "usage_responses": 1,
+                "usage_missing_responses": 0,
+                "incomplete_responses": int(usage_incomplete),
+                "billing_unknown_attempts": int(billing_unknown),
+                "unpriced_usage_responses": 0,
+                "records_after_seal": 0,
+                "usage": usage,
+                "surface_usage": [],
+                "cost_nanousd": 10,
+                "cost_nanocny": 70,
+            }
+            run = {
+                "accounting": accounting,
+                "usage": usage,
+                "runtime_model_requests": 2,
+                "runtime_retries": 1,
+                "tool_calls": 0,
+            }
+            terminal_accounting = {
+                **accounting,
+                "sealed": True,
+                "runtime_retries": 1,
+            }
+            events = [
+                {
+                    "event": {
+                        "kind": "terminal",
+                        "outcome": {
+                            "terminal": {"state": "completed"},
+                            "accounting": terminal_accounting,
+                            "runtime_model_requests": 2,
+                            "runtime_retries": 1,
+                            "tool_calls": 0,
+                        },
+                    }
+                }
+            ]
+            _, audit = accounting_assessment(run, events)
+            return audit
+
+        unknown = assess(
+            usage_complete=True,
+            usage_incomplete=False,
+            billing_unknown=True,
+        )
+        self.assertTrue(accounting_gap_resample_eligible(unknown))
+        incomplete = assess(
+            usage_complete=False,
+            usage_incomplete=True,
+            billing_unknown=False,
+        )
+        self.assertTrue(accounting_gap_resample_eligible(incomplete))
+
+    def test_source_failure_fact_assessment_never_drops_partial_protocol(
+        self,
+    ) -> None:
+        commit = {
+            "event": {
+                "kind": "host_verification_committed",
+                "outcome": {},
+                "receipt": None,
+            }
+        }
+        rejection = {
+            "event": {
+                "kind": "completion_rejected",
+                "rejection": {"candidate_id": "candidate-1"},
+            }
+        }
+        for events in ([commit], [rejection], [commit, rejection]):
+            facts, audit = source_failure_fact_assessment(events)
+            self.assertIsNone(facts)
+            self.assertFalse(audit["valid"])
+        facts, audit = source_failure_fact_assessment([])
+        self.assertIsNone(facts)
+        self.assertTrue(audit["valid"])
+
+    def test_invalid_attempt_costs_remain_known_minima(self) -> None:
+        def metrics(valid: bool, requests: int, tokens: int) -> dict[str, Any]:
+            usage = {field: 0 for field in USAGE_FIELDS}
+            usage["input_tokens"] = tokens
+            usage["total_tokens"] = tokens
+            return {
+                "valid": valid,
+                "api_requests": requests,
+                "runtime_model_requests": requests,
+                "runtime_retries": 0,
+                "tool_calls": 0,
+                "usage": usage,
+                "cost_usd": tokens / 1_000_000,
+                "cost_cny": tokens / 100_000,
+            }
+
+        invalid = {
+            "execution_metrics": metrics(False, 2, 200),
+            "pair_duration_seconds": 2.5,
+        }
+        accepted = {
+            "execution_metrics": metrics(True, 1, 100),
+            "pair_duration_seconds": 1.5,
+        }
+        summary = measurement_execution_summary([accepted], [invalid])
+        self.assertEqual(summary["total_pair_attempts"], 2)
+        self.assertEqual(summary["invalid_pair_attempts"], 1)
+        self.assertEqual(summary["pair_attempt_duration_seconds"], 4.0)
+        self.assertEqual(summary["invalid_attempt_duration_seconds"], 2.5)
+        self.assertFalse(summary["accounting_complete"])
+        self.assertEqual(summary["cost_semantics"], "known_minimum")
+        self.assertEqual(
+            summary["known_minimum_metrics"]["usage"]["total_tokens"], 300
+        )
+
+    def test_source_retry_aggregation_preserves_physical_minima(self) -> None:
+        def metrics(valid: bool, requests: int) -> dict[str, Any]:
+            usage = {field: 0 for field in USAGE_FIELDS}
+            usage["input_tokens"] = requests * 10
+            usage["total_tokens"] = requests * 10
+            return {
+                "valid": valid,
+                "api_requests": requests,
+                "runtime_model_requests": requests,
+                "runtime_retries": requests - 1,
+                "tool_calls": 0,
+                "usage": usage,
+                "cost_usd": requests / 1_000,
+                "cost_cny": requests / 100,
+            }
+
+        complete = [metrics(True, 2), *[metrics(True, 1) for _ in range(8)]]
+        complete_aggregate = sum_metrics(complete)
+        self.assertTrue(complete_aggregate["valid"])
+        self.assertEqual(complete_aggregate["api_requests"], 10)
+        self.assertEqual(complete_aggregate["usage"]["total_tokens"], 100)
+
+        complete[0]["valid"] = False
+        unknown_aggregate = sum_metrics(complete)
+        self.assertFalse(unknown_aggregate["valid"])
+        self.assertEqual(unknown_aggregate["api_requests"], 10)
+        self.assertEqual(unknown_aggregate["usage"]["total_tokens"], 100)
 
     def test_baseline_compaction_retry_lifecycle_is_exact(self) -> None:
         def stored(kind: str, **payload: Any) -> dict[str, Any]:
@@ -2179,6 +2973,45 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertFalse(result["candidate_reliability_benefit_met"])
         self.assertEqual(result["candidate_decision"], "shrink")
 
+        invalid_attempt = {
+            "variant": "candidate",
+            "scenario": "task-a",
+            "repetition": 1,
+            "measurement_attempt": 1,
+            "arms": [
+                {
+                    "mode": "on",
+                    "verified_success": False,
+                    "false_success": False,
+                }
+            ],
+        }
+        with_invalid_outcome = aggregate(pairs, 3, [invalid_attempt])
+        self.assertTrue(with_invalid_outcome["product_metric_eligible"])
+        self.assertEqual(
+            with_invalid_outcome["invalid_treatment_outcomes"], 1
+        )
+        self.assertFalse(
+            with_invalid_outcome[
+                "candidate_reliability_non_regression_met"
+            ]
+        )
+        self.assertEqual(with_invalid_outcome["candidate_decision"], "delete")
+        candidate_task_a_on = next(
+            cell
+            for cell in with_invalid_outcome["cells"]
+            if (
+                cell["variant"],
+                cell["scenario"],
+                cell["mode"],
+            )
+            == ("candidate", "task-a", "on")
+        )
+        self.assertEqual(candidate_task_a_on["observed_outcomes"], 4)
+        self.assertEqual(
+            candidate_task_a_on["observed_success_rate"], 0.75
+        )
+
     def test_verifier_specs_are_exact_and_hidden_from_model_message(self) -> None:
         for scenario in SCENARIOS:
             spec = verifier_spec(scenario)
@@ -2256,29 +3089,126 @@ def main() -> int:
         "baseline": args.baseline_bin.resolve(),
         "candidate": args.candidate_bin.resolve(),
     }
-    pairs = []
+    pairs: list[dict[str, Any]] = []
+    invalid_attempts: list[dict[str, Any]] = []
+    planned_schedule = schedule(args.runs_per_cell)
     suite_started = time.monotonic()
     for index, (variant, scenario, repetition) in enumerate(
-        schedule(args.runs_per_cell), start=1
+        planned_schedule, start=1
     ):
-        pair = run_pair(
-            variant,
-            binaries[variant],
-            scenario,
-            repetition,
-            args.model,
-            key,
-        )
-        pairs.append(pair)
-        progress = {
-            "schema": RESULT_SCHEMA,
-            "mode": "partial",
-            "completed_pairs": index,
-            "planned_pairs": len(schedule(args.runs_per_cell)),
-            "pairs": pairs,
-        }
-        assert_redacted(progress, key)
-        HELPER.atomic_write_json(args.output.with_suffix(args.output.suffix + ".partial"), progress)
+        accepted = False
+        for measurement_attempt in range(1, MAX_PAIR_ATTEMPTS + 1):
+            try:
+                pair = run_pair(
+                    variant,
+                    binaries[variant],
+                    scenario,
+                    repetition,
+                    args.model,
+                    key,
+                )
+            except EvaluationError as error:
+                execution = measurement_execution_summary(
+                    pairs, invalid_attempts
+                )
+                execution["unaccounted_pair_attempts"] = 1
+                execution["accounting_complete"] = False
+                execution["cost_semantics"] = "known_minimum"
+                progress = {
+                    "schema": RESULT_SCHEMA,
+                    "mode": "aborted_harness_error",
+                    "completed_pairs": len(pairs),
+                    "planned_pairs": len(planned_schedule),
+                    "completed_pair_attempts": (
+                        len(pairs) + len(invalid_attempts)
+                    ),
+                    "max_pair_attempts": MAX_PAIR_ATTEMPTS,
+                    "suite_duration_seconds": round(
+                        time.monotonic() - suite_started, 3
+                    ),
+                    "pairs": pairs,
+                    "invalid_attempts": invalid_attempts,
+                    "measurement_execution": execution,
+                    "abort": {
+                        "reason": "harness_error",
+                        "reason_sha256": canonical_hash(str(error)),
+                        "pair_id": f"{variant}:{scenario}:{repetition}",
+                        "measurement_attempt": measurement_attempt,
+                    },
+                }
+                assert_redacted(progress, key)
+                HELPER.atomic_write_json(
+                    args.output.with_suffix(args.output.suffix + ".partial"),
+                    progress,
+                )
+                raise
+            pair["schedule_index"] = index
+            pair["measurement_attempt"] = measurement_attempt
+            pair["execution_metrics"] = pair_attempt_metrics(pair)
+            if pair["measurement_valid"]:
+                pairs.append(pair)
+                accepted = True
+            else:
+                invalid_attempts.append(pair)
+            progress = {
+                "schema": RESULT_SCHEMA,
+                "mode": "partial",
+                "completed_pairs": len(pairs),
+                "planned_pairs": len(planned_schedule),
+                "completed_pair_attempts": len(pairs) + len(invalid_attempts),
+                "max_pair_attempts": MAX_PAIR_ATTEMPTS,
+                "suite_duration_seconds": round(
+                    time.monotonic() - suite_started, 3
+                ),
+                "pairs": pairs,
+                "invalid_attempts": invalid_attempts,
+                "measurement_execution": measurement_execution_summary(
+                    pairs, invalid_attempts
+                ),
+            }
+            assert_redacted(progress, key)
+            HELPER.atomic_write_json(
+                args.output.with_suffix(args.output.suffix + ".partial"),
+                progress,
+            )
+            if accepted:
+                break
+            if not pair["resample_eligible"]:
+                progress["mode"] = "aborted_measurement_invalid"
+                progress["abort"] = {
+                    "reason": "not_resample_eligible",
+                    "pair_id": pair["pair_id"],
+                    "measurement_attempt": measurement_attempt,
+                    "invalid_stage": pair["invalid_stage"],
+                }
+                assert_redacted(progress, key)
+                HELPER.atomic_write_json(
+                    args.output.with_suffix(args.output.suffix + ".partial"),
+                    progress,
+                )
+                raise EvaluationError(
+                    "pair_measurement_invalid_not_resample_eligible:"
+                    f"{pair['pair_id']}:attempt={measurement_attempt}:"
+                    f"stage={pair['invalid_stage']}"
+                )
+        if not accepted:
+            progress["mode"] = "aborted_measurement_invalid"
+            progress["abort"] = {
+                "reason": "attempts_exhausted",
+                "pair_id": f"{variant}:{scenario}:{repetition}",
+                "measurement_attempt": MAX_PAIR_ATTEMPTS,
+                "invalid_stage": pair["invalid_stage"],
+            }
+            assert_redacted(progress, key)
+            HELPER.atomic_write_json(
+                args.output.with_suffix(args.output.suffix + ".partial"),
+                progress,
+            )
+            raise EvaluationError(
+                "pair_measurement_attempts_exhausted:"
+                f"{variant}:{scenario}:{repetition}:"
+                f"max_attempts={MAX_PAIR_ATTEMPTS}"
+            )
 
     result = {
         "schema": RESULT_SCHEMA,
@@ -2292,12 +3222,21 @@ def main() -> int:
         "verifier_sha256": plan["verifier_sha256"],
         "complexity": plan["complexity"],
         "pairs": pairs,
-        "aggregate": aggregate(pairs, args.runs_per_cell),
+        "invalid_attempts": invalid_attempts,
+        "measurement_execution": measurement_execution_summary(
+            pairs, invalid_attempts
+        ),
+        "aggregate": aggregate(pairs, args.runs_per_cell, invalid_attempts),
         "suite_duration_seconds": round(time.monotonic() - suite_started, 3),
         "interpretation": {
             "treatment": "manual_compaction_on_off_within_each_revision",
             "cross_revision_scope": "entire_m5b_vertical_slice",
             "statistical_claim": "repeated_direction_only_not_statistical_significance",
+            "resampling": (
+                "whole_pair_only_for_retry_backed_accounting_observability_gap;"
+                f"maximum_{MAX_PAIR_ATTEMPTS}_attempts;"
+                "never_task_outcome_or_product_contract"
+            ),
         },
     }
     assert_redacted(result, key)
@@ -2316,6 +3255,8 @@ def main() -> int:
                 ],
                 "pairs": len(pairs),
                 "arms": sum(len(pair["arms"]) for pair in pairs),
+                "invalid_pair_attempts": len(invalid_attempts),
+                "total_pair_attempts": len(pairs) + len(invalid_attempts),
             },
             ensure_ascii=False,
             sort_keys=True,
