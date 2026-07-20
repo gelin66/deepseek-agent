@@ -29,9 +29,9 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m6-b1-writer-benefit-ab-v1.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m6-b1-writer-benefit-ab-v2.json"
 CANARY_PATH = ROOT / "scripts/eval-m6-writer-canary.py"
-RESULT_SCHEMA = "codewhale.eval.m6-writer-benefit.v1"
+RESULT_SCHEMA = "codewhale.eval.m6-writer-benefit.v2"
 RUN_API_SCHEMA = 7
 RUNTIME_EVENT_SCHEMA = 10
 MODEL = "deepseek-v4-flash"
@@ -51,6 +51,9 @@ RESAMPLEABLE_HARNESS_FAILURE_CODES = {
 SECRET_BOUNDARY_FAILURE_CODES = {
     "key_in_fixture",
     "key_in_protocol",
+    "key_in_result_file",
+    "result_contains_key",
+    "secret_scan_incomplete",
     "key_in_state",
     "key_in_stderr",
 }
@@ -147,7 +150,7 @@ def load_manifest() -> dict[str, Any]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise EvaluationError("manifest_unavailable") from error
     if (
-        value.get("schema") != "codewhale.eval.m6-writer-benefit-plan.v1"
+        value.get("schema") != "codewhale.eval.m6-writer-benefit-plan.v2"
         or tuple(value.get("tasks", {})) != TASK_IDS
     ):
         raise EvaluationError("manifest_invalid")
@@ -683,26 +686,56 @@ def add_usage(target: dict[str, int], value: dict[str, Any]) -> None:
             target[field] += raw
 
 
-def actor_usage(events: list[dict[str, Any]]) -> dict[str, int]:
+def actor_usage(events: list[dict[str, Any]]) -> dict[str, Any]:
     result = usage_zero()
+    response_count = 0
+    shape_valid = True
     for event in event_values(events, "model_response_committed"):
+        response_count += 1
         output = event.get("output", {})
         usage = output.get("usage", {}) if isinstance(output, dict) else {}
-        if isinstance(usage, dict):
+        if (
+            isinstance(usage, dict)
+            and all(
+                isinstance(usage.get(field), int)
+                and not isinstance(usage.get(field), bool)
+                and usage.get(field) >= 0
+                for field in USAGE_FIELDS
+            )
+        ):
             add_usage(result, usage)
-    return result
+        else:
+            shape_valid = False
+    return {
+        "usage": result,
+        "response_count": response_count,
+        "shape_valid": shape_valid,
+    }
 
 
-def accounting_summary(run: dict[str, Any]) -> dict[str, Any]:
-    value = run.get("accounting", {})
-    usage = value.get("usage", {}) if isinstance(value, dict) else {}
-    root = value.get("root", {}) if isinstance(value, dict) else {}
-    child = value.get("child", {}) if isinstance(value, dict) else {}
+def summarize_accounting(value: Any) -> dict[str, Any]:
+    value = value if isinstance(value, dict) else {}
+    usage_value = value.get("usage")
+    usage = usage_value if isinstance(usage_value, dict) else {}
+    root_value = value.get("root")
+    root = root_value if isinstance(root_value, dict) else {}
+    child_value = value.get("child")
+    child = child_value if isinstance(child_value, dict) else {}
     cost_nanousd = value.get("cost_nanousd")
     cost_nanocny = value.get("cost_nanocny")
     exact_billing = (
-        value.get("billing_unknown") is False
+        value.get("sealed") is True
+        and value.get("complete") is True
+        and value.get("usage_complete") is True
+        and value.get("usage_missing") is False
+        and value.get("usage_incomplete") is False
+        and value.get("records_after_seal") == 0
+        and value.get("billing_unknown") is False
         and value.get("unpriced") is False
+        and value.get("usage_missing_responses") == 0
+        and value.get("incomplete_responses") == 0
+        and value.get("billing_unknown_attempts") == 0
+        and value.get("unpriced_usage_responses") == 0
         and isinstance(cost_nanousd, int)
         and not isinstance(cost_nanousd, bool)
         and isinstance(cost_nanocny, int)
@@ -756,8 +789,10 @@ def accounting_summary(run: dict[str, Any]) -> dict[str, Any]:
         "cost_nanousd": cost_nanousd,
         "cost_nanocny": cost_nanocny,
     }
-    for surface in value.get("surface_usage", []) if isinstance(value, dict) else []:
+    surface_values = value.get("surface_usage")
+    for surface in surface_values if isinstance(surface_values, list) else []:
         if not isinstance(surface, dict):
+            summary["surface_usage"].append({"invalid": True})
             continue
         surface_usage = surface.get("usage", {})
         summary["surface_usage"].append(
@@ -779,41 +814,350 @@ def accounting_summary(run: dict[str, Any]) -> dict[str, Any]:
     return summary
 
 
+def accounting_summary(run: dict[str, Any]) -> dict[str, Any]:
+    return summarize_accounting(run.get("accounting"))
+
+
+def lower_bound_accounting_summary(
+    summary: dict[str, Any],
+    *other_summaries: dict[str, Any],
+) -> dict[str, Any]:
+    summary = copy.deepcopy(summary)
+    for other in other_summaries:
+        for field in (
+            "transport_retries",
+            "runtime_retries",
+            "sealed_denied",
+            "exhausted_denied",
+            "usage_responses",
+            "usage_missing_responses",
+            "incomplete_responses",
+            "billing_unknown_attempts",
+            "unpriced_usage_responses",
+            "records_after_seal",
+            "cost_nanousd",
+            "cost_nanocny",
+        ):
+            candidates = [
+                value
+                for value in (summary.get(field), other.get(field))
+                if isinstance(value, int) and not isinstance(value, bool)
+            ]
+            if candidates:
+                summary[field] = max(candidates)
+        for actor_name in ("root", "child"):
+            actor = summary.get(actor_name, {})
+            other_actor = other.get(actor_name, {})
+            for field in ("started", "completed", "in_flight", "retries"):
+                candidates = [
+                    value
+                    for value in (actor.get(field), other_actor.get(field))
+                    if isinstance(value, int) and not isinstance(value, bool)
+                ]
+                if candidates:
+                    actor[field] = max(candidates)
+        usage = summary.get("usage", {})
+        other_usage = other.get("usage", {})
+        for field in USAGE_FIELDS:
+            candidates = [
+                value
+                for value in (usage.get(field), other_usage.get(field))
+                if isinstance(value, int) and not isinstance(value, bool)
+            ]
+            if candidates:
+                usage[field] = max(candidates)
+    summary["sealed"] = False
+    summary["complete"] = False
+    summary["usage_complete"] = False
+    summary["usage_incomplete"] = True
+    summary["billing_unknown"] = True
+    summary["known_cost_is_lower_bound"] = True
+    summary["request_count_unknown"] = True
+    return summary
+
+
+def provisional_accounting_summary(run: dict[str, Any]) -> dict[str, Any]:
+    return lower_bound_accounting_summary(accounting_summary(run))
+
+
+def provisional_accounting_provenance(run: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "source": "run_view_partial",
+        "terminal_sequence": None,
+        "run_last_sequence": run.get("last_sequence"),
+        "terminal_count": 0,
+        "terminal_is_last": False,
+        "terminal_matches_run_view": False,
+        "terminal_accounting_matches_run_view": False,
+    }
+
+
+def canonical_terminal_identity(
+    run: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any], list[str]]:
+    terminals = [
+        stored for stored in events if event_kind(stored) == "terminal"
+    ]
+    provenance = {
+        "source": "canonical_terminal_event" if len(terminals) == 1 else "run_view_partial",
+        "terminal_sequence": (
+            terminals[0].get("sequence") if len(terminals) == 1 else None
+        ),
+        "run_last_sequence": run.get("last_sequence"),
+        "terminal_count": len(terminals),
+        "terminal_is_last": bool(terminals and events and terminals[0] == events[-1]),
+        "terminal_matches_run_view": False,
+        "terminal_accounting_matches_run_view": False,
+    }
+    reasons: list[str] = []
+    if len(terminals) != 1:
+        reasons.append("terminal_accounting_provenance")
+        return None, provenance, reasons
+    terminal = terminals[0]
+    outcome = terminal.get("event", {}).get("outcome", {})
+    terminal_value = outcome.get("terminal") if isinstance(outcome, dict) else None
+    provenance["terminal_matches_run_view"] = (
+        isinstance(outcome, dict)
+        and outcome.get("run_id") == run.get("run_id")
+        and terminal_value == run.get("terminal")
+    )
+    if (
+        terminal != events[-1]
+        or terminal.get("sequence") != run.get("last_sequence")
+        or not provenance["terminal_matches_run_view"]
+    ):
+        reasons.append("terminal_accounting_provenance")
+    return terminal, provenance, reasons
+
+
+def canonical_terminal_accounting(
+    run: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
+    terminal, provenance, reasons = canonical_terminal_identity(run, events)
+    if terminal is None:
+        terminal_summaries = []
+        for stored in events:
+            if event_kind(stored) != "terminal":
+                continue
+            outcome = stored.get("event", {}).get("outcome", {})
+            value = outcome.get("accounting") if isinstance(outcome, dict) else None
+            if isinstance(value, dict):
+                terminal_summaries.append(summarize_accounting(value))
+        accounting = lower_bound_accounting_summary(
+            accounting_summary(run),
+            *terminal_summaries,
+        )
+        return accounting, provenance, reasons
+    outcome = terminal.get("event", {}).get("outcome", {})
+    accounting_value = outcome.get("accounting") if isinstance(outcome, dict) else None
+    if not isinstance(accounting_value, dict):
+        reasons.append("terminal_accounting_missing")
+        provenance["source"] = "run_view_partial"
+        return provisional_accounting_summary(run), provenance, reasons
+    accounting = summarize_accounting(accounting_value)
+    run_accounting = accounting_summary(run)
+    provenance["terminal_accounting_matches_run_view"] = accounting == run_accounting
+    if not provenance["terminal_accounting_matches_run_view"]:
+        reasons.append("terminal_accounting_run_view_mismatch")
+    if reasons:
+        provenance["source"] = "terminal_event_unverified"
+        accounting = lower_bound_accounting_summary(
+            accounting,
+            run_accounting,
+        )
+    return accounting, provenance, reasons
+
+
+def is_nonnegative_int(value: Any) -> bool:
+    return (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and value >= 0
+    )
+
+
+def nonnegative_int_or_zero(value: Any) -> int:
+    return value if is_nonnegative_int(value) else 0
+
+
 def accounting_valid(accounting: dict[str, Any]) -> tuple[bool, list[str]]:
     reasons = []
     root = accounting["root"]
     child = accounting["child"]
-    started = int(root.get("started") or 0) + int(child.get("started") or 0)
-    completed = int(root.get("completed") or 0) + int(child.get("completed") or 0)
-    in_flight = int(root.get("in_flight") or 0) + int(child.get("in_flight") or 0)
+    actor_counter_values = [
+        actor.get(field)
+        for actor in (root, child)
+        for field in ("started", "completed", "in_flight", "retries")
+    ]
+    scalar_counter_fields = (
+        "transport_retries",
+        "runtime_retries",
+        "sealed_denied",
+        "exhausted_denied",
+        "usage_responses",
+        "usage_missing_responses",
+        "incomplete_responses",
+        "billing_unknown_attempts",
+        "unpriced_usage_responses",
+        "records_after_seal",
+        "cost_nanousd",
+        "cost_nanocny",
+    )
+    scalar_counter_values = [
+        accounting.get(field) for field in scalar_counter_fields
+    ]
+    usage_values = [
+        accounting.get("usage", {}).get(field)
+        for field in USAGE_FIELDS
+    ]
+    surfaces = accounting.get("surface_usage", [])
+    surface_shape_valid = isinstance(surfaces, list) and all(
+        isinstance(surface, dict)
+        and all(
+            is_nonnegative_int(surface.get(field))
+            for field in (
+                "response_count",
+                "usage_response_count",
+                "cost_nanousd",
+                "cost_nanocny",
+            )
+        )
+        and isinstance(surface.get("usage"), dict)
+        and all(
+            is_nonnegative_int(surface["usage"].get(field))
+            for field in USAGE_FIELDS
+        )
+        for surface in surfaces
+    )
+    numeric_shape_valid = (
+        all(is_nonnegative_int(value) for value in actor_counter_values)
+        and all(is_nonnegative_int(value) for value in scalar_counter_values)
+        and all(is_nonnegative_int(value) for value in usage_values)
+        and surface_shape_valid
+    )
+    boolean_fields = (
+        "budget_exhausted",
+        "sealed",
+        "complete",
+        "usage_complete",
+        "usage_missing",
+        "usage_incomplete",
+        "billing_unknown",
+        "known_cost_is_lower_bound",
+        "request_count_unknown",
+        "unpriced",
+    )
+    boolean_shape_valid = all(
+        isinstance(accounting.get(field), bool) for field in boolean_fields
+    )
+    started = nonnegative_int_or_zero(root.get("started")) + (
+        nonnegative_int_or_zero(child.get("started"))
+    )
+    completed = nonnegative_int_or_zero(root.get("completed")) + (
+        nonnegative_int_or_zero(child.get("completed"))
+    )
+    in_flight = nonnegative_int_or_zero(root.get("in_flight")) + (
+        nonnegative_int_or_zero(child.get("in_flight"))
+    )
+    surface_usage = usage_zero()
+    if surface_shape_valid:
+        for surface in surfaces:
+            add_usage(surface_usage, surface["usage"])
+    surface_response_count = sum(
+        nonnegative_int_or_zero(surface.get("response_count"))
+        for surface in surfaces
+        if isinstance(surface, dict)
+    )
+    surface_usage_response_count = sum(
+        nonnegative_int_or_zero(surface.get("usage_response_count"))
+        for surface in surfaces
+        if isinstance(surface, dict)
+    )
+    surface_cost_nanousd = sum(
+        nonnegative_int_or_zero(surface.get("cost_nanousd"))
+        for surface in surfaces
+        if isinstance(surface, dict)
+    )
+    surface_cost_nanocny = sum(
+        nonnegative_int_or_zero(surface.get("cost_nanocny"))
+        for surface in surfaces
+        if isinstance(surface, dict)
+    )
     checks = {
+        "numeric_shape": numeric_shape_valid,
+        "boolean_shape": boolean_shape_valid,
         "hard_request_limit": accounting["hard_request_limit"]
         == RESOURCES["max_physical_api_requests_per_arm"],
         "request_range": 1 <= started
         <= RESOURCES["max_physical_api_requests_per_arm"],
         "requests_closed": started == completed and in_flight == 0,
+        "actor_requests_closed": all(
+            nonnegative_int_or_zero(actor.get("started"))
+            == nonnegative_int_or_zero(actor.get("completed"))
+            and nonnegative_int_or_zero(actor.get("in_flight")) == 0
+            for actor in (root, child)
+        ),
+        "response_count_within_requests": nonnegative_int_or_zero(
+            accounting["usage_responses"]
+        )
+        <= completed,
+        "retry_actor_total": (
+            nonnegative_int_or_zero(root.get("retries"))
+            + nonnegative_int_or_zero(child.get("retries"))
+            == nonnegative_int_or_zero(accounting["transport_retries"])
+        ),
+        "retry_count_range": all(
+            nonnegative_int_or_zero(actor.get("retries"))
+            <= nonnegative_int_or_zero(actor.get("started"))
+            for actor in (root, child)
+        ),
+        "request_count_known": accounting["request_count_unknown"] is False,
+        "sealed": accounting["sealed"] is True,
         "complete": accounting["complete"] is True,
         "usage_complete": accounting["usage_complete"] is True,
         "usage_present": accounting["usage_missing"] is False,
         "usage_not_incomplete": accounting["usage_incomplete"] is False,
         "billing_known": accounting["billing_unknown"] is False,
         "priced": accounting["unpriced"] is False,
+        "usage_gap_counters_zero": (
+            accounting["usage_missing_responses"] == 0
+            and accounting["incomplete_responses"] == 0
+            and accounting["billing_unknown_attempts"] == 0
+            and accounting["unpriced_usage_responses"] == 0
+        ),
+        "sealed_denied_zero": accounting["sealed_denied"] == 0,
         "no_records_after_seal": accounting["records_after_seal"] == 0,
-        "transport_retry_limit": int(accounting["transport_retries"] or 0)
+        "transport_retry_limit": nonnegative_int_or_zero(
+            accounting["transport_retries"]
+        )
         <= RESOURCES["accepted_transport_retries_per_arm"],
-        "runtime_retry_limit": int(accounting["runtime_retries"] or 0)
+        "runtime_retry_limit": nonnegative_int_or_zero(
+            accounting["runtime_retries"]
+        )
         <= RESOURCES["max_runtime_retries_per_arm"],
         "budget_exhaustion_semantics": (
             accounting["budget_exhausted"] is True
-        )
-        == (int(accounting["exhausted_denied"] or 0) > 0),
-        "cost_available": isinstance(accounting["cost_nanousd"], int)
-        and isinstance(accounting["cost_nanocny"], int),
-        "standard_chat_only": bool(accounting["surface_usage"])
+        ) == (
+            nonnegative_int_or_zero(accounting["exhausted_denied"]) > 0
+        ),
+        "cost_available": is_nonnegative_int(accounting["cost_nanousd"])
+        and is_nonnegative_int(accounting["cost_nanocny"]),
+        "surface_usage_matches_total": (
+            surface_shape_valid
+            and surface_usage == accounting["usage"]
+            and surface_response_count == accounting["usage_responses"]
+            and surface_usage_response_count == accounting["usage_responses"]
+            and surface_cost_nanousd == accounting["cost_nanousd"]
+            and surface_cost_nanocny == accounting["cost_nanocny"]
+        ),
+        "standard_chat_only": bool(surfaces)
         and all(
             surface.get("surface") == "standard_chat"
             and surface.get("model") == MODEL
-            for surface in accounting["surface_usage"]
+            for surface in surfaces
+            if isinstance(surface, dict)
         ),
     }
     reasons.extend(name for name, passed in checks.items() if not passed)
@@ -1383,6 +1727,24 @@ def failure_arm_record(
             "known_cost_is_lower_bound": billing_unknown,
             "request_count_unknown": billing_unknown,
         },
+        "accounting_provenance": {
+            "source": "none",
+            "terminal_sequence": None,
+            "run_last_sequence": None,
+            "terminal_count": 0,
+            "terminal_is_last": False,
+            "terminal_matches_run_view": False,
+            "terminal_accounting_matches_run_view": False,
+        },
+        "child_accounting_provenance": {
+            "source": "none",
+            "terminal_sequence": None,
+            "run_last_sequence": None,
+            "terminal_count": 0,
+            "terminal_is_last": False,
+            "terminal_matches_run_view": False,
+            "terminal_accounting_matches_run_view": False,
+        },
         "api_exposure": api_exposure,
         "wall_time_ms": duration_ms,
         "failure_code": code,
@@ -1507,9 +1869,12 @@ def execute_arm(
         root_events: list[dict[str, Any]] = []
         child_events: list[dict[str, Any]] = []
         child_run: dict[str, Any] = {}
+        child_ids: list[str] = []
+        child_lookup_reasons: list[str] = []
         harness_cancel_sent = False
         harness_cancel_attempted = False
         harness_cancel_raced = False
+        pending_error: Exception | None = None
         try:
             client = CANARY.Stdio(process, secret)
             envelope = start_command(
@@ -1576,7 +1941,12 @@ def execute_arm(
                             raise EvaluationError("run_view_missing")
                         run = response.get("run", {})
                         execution_state["api_exposure"] = "accounted"
-                        execution_state["accounting"] = accounting_summary(run)
+                        execution_state["accounting"] = (
+                            provisional_accounting_summary(run)
+                        )
+                        execution_state["accounting_provenance"] = (
+                            provisional_accounting_provenance(run)
+                        )
                         if code := cancel_conflict_failure(error, run):
                             raise EvaluationError(code)
                         harness_cancel_raced = True
@@ -1596,10 +1966,16 @@ def execute_arm(
                     raise EvaluationError("run_view_missing")
                 run = response.get("run", {})
                 execution_state["api_exposure"] = "accounted"
-                execution_state["accounting"] = accounting_summary(run)
+                execution_state["accounting"] = provisional_accounting_summary(run)
+                execution_state["accounting_provenance"] = (
+                    provisional_accounting_provenance(run)
+                )
 
             execution_state["api_exposure"] = "accounted"
-            execution_state["accounting"] = accounting_summary(run)
+            execution_state["accounting"] = provisional_accounting_summary(run)
+            execution_state["accounting_provenance"] = (
+                provisional_accounting_provenance(run)
+            )
             root_events = collect_events(
                 client,
                 run_id,
@@ -1621,38 +1997,100 @@ def execute_arm(
                     timeout_seconds=remaining_stdio_timeout(deadline),
                 )
                 if response.get("kind") == "run":
-                    child_run = response.get("run", {})
-                    child_events = collect_events(
-                        client,
-                        child_ids[0],
-                        f"m6b-child-events-{evaluation_id}",
-                        deadline,
-                    )
+                    value = response.get("run")
+                    if isinstance(value, dict):
+                        child_run = value
+                        child_events = collect_events(
+                            client,
+                            child_ids[0],
+                            f"m6b-child-events-{evaluation_id}",
+                            deadline,
+                        )
+                    else:
+                        child_lookup_reasons.append("child_run_view_missing")
+                else:
+                    child_lookup_reasons.append("child_run_view_missing")
+            elif len(child_ids) > 1:
+                child_lookup_reasons.append("child_terminal_cardinality")
         except CANARY.Failure as error:
-            raise EvaluationError(error.code) from error
+            pending_error = EvaluationError(error.code)
+        except Exception as error:
+            pending_error = error
         finally:
+            cleanup_error: Exception | None = None
             if client is not None:
-                client.close()
-            CANARY.stop(
-                process,
-                timeout_seconds=max(0.0, deadline - time.monotonic()),
-            )
+                try:
+                    client.close()
+                except Exception as error:
+                    cleanup_error = error
+            try:
+                CANARY.stop(
+                    process,
+                    timeout_seconds=max(0.0, deadline - time.monotonic()),
+                )
+            except Exception as error:
+                cleanup_error = cleanup_error or error
+            pending_error = pending_error or cleanup_error
 
-        stderr = stderr_path.read_bytes() if stderr_path.is_file() else b""
-        if secret in stderr:
-            raise EvaluationError("key_in_stderr")
-        if CANARY.tree_contains(workspace, secret):
-            raise EvaluationError("key_in_fixture")
-        if CANARY.tree_contains(state_root, secret):
-            raise EvaluationError("key_in_state")
+        secret_failures: list[str] = []
+        scan_incomplete = False
+        try:
+            stderr = stderr_path.read_bytes() if stderr_path.is_file() else b""
+            if secret in stderr:
+                secret_failures.append("key_in_stderr")
+        except Exception:
+            scan_incomplete = True
+        try:
+            if CANARY.tree_contains(workspace, secret):
+                secret_failures.append("key_in_fixture")
+        except Exception:
+            scan_incomplete = True
+        try:
+            if CANARY.tree_contains(state_root, secret):
+                secret_failures.append("key_in_state")
+        except Exception:
+            scan_incomplete = True
+        if secret_failures:
+            raise EvaluationError(secret_failures[0])
+        if scan_incomplete:
+            raise EvaluationError("secret_scan_incomplete")
+        if pending_error is not None:
+            if isinstance(pending_error, EvaluationError):
+                raise pending_error
+            raise EvaluationError("harness_internal_error") from pending_error
 
         terminal = typed_terminal_summary(run)
-        accounting = accounting_summary(run)
+        accounting, accounting_provenance, provenance_reasons = (
+            canonical_terminal_accounting(run, root_events)
+        )
         execution_state["api_exposure"] = "accounted"
         execution_state["accounting"] = accounting
+        execution_state["accounting_provenance"] = accounting_provenance
         accounting_is_valid, accounting_reasons = accounting_valid(accounting)
+        if not accounting_is_valid:
+            accounting = lower_bound_accounting_summary(accounting)
+            execution_state["accounting"] = accounting
+        accounting_reasons.extend(provenance_reasons)
+        accounting_reasons.extend(child_lookup_reasons)
+        if provenance_reasons:
+            accounting_is_valid = False
+        if child_lookup_reasons:
+            accounting_is_valid = False
+        child_accounting_provenance = provisional_accounting_provenance(
+            child_run
+        )
+        child_accounting_provenance["source"] = "none"
+        if len(child_ids) == 1:
+            _, child_accounting_provenance, child_provenance_reasons = (
+                canonical_terminal_accounting(child_run, child_events)
+            )
+            if child_provenance_reasons:
+                accounting_reasons.extend(
+                    f"child_{reason}" for reason in child_provenance_reasons
+                )
+                accounting_is_valid = False
         budget_terminal_valid = (
-            int(accounting["exhausted_denied"] or 0) == 0
+            nonnegative_int_or_zero(accounting["exhausted_denied"]) == 0
             or terminal["reason_code"]
             == "llm_api_request_budget_exhausted"
         )
@@ -1662,11 +2100,39 @@ def execute_arm(
         root_actor_usage = actor_usage(root_events)
         child_actor_usage = actor_usage(child_events)
         actor_total = usage_zero()
-        add_usage(actor_total, root_actor_usage)
-        add_usage(actor_total, child_actor_usage)
-        actor_usage_matches = actor_total == accounting["usage"]
+        add_usage(actor_total, root_actor_usage["usage"])
+        add_usage(actor_total, child_actor_usage["usage"])
+        actor_usage_shape_valid = (
+            root_actor_usage["shape_valid"]
+            and child_actor_usage["shape_valid"]
+        )
+        actor_usage_matches = (
+            actor_usage_shape_valid and actor_total == accounting["usage"]
+        )
+        usage_response_count_matches = (
+            root_actor_usage["response_count"]
+            + child_actor_usage["response_count"]
+            == accounting["usage_responses"]
+        )
+        actor_response_counts_within_requests = (
+            root_actor_usage["response_count"]
+            <= nonnegative_int_or_zero(accounting["root"]["completed"])
+            and child_actor_usage["response_count"]
+            <= nonnegative_int_or_zero(accounting["child"]["completed"])
+        )
+        if not actor_usage_shape_valid:
+            accounting_reasons.append("actor_usage_shape")
+            accounting_is_valid = False
         if not actor_usage_matches:
             accounting_reasons.append("actor_usage_mismatch")
+            accounting_is_valid = False
+        if not usage_response_count_matches:
+            accounting_reasons.append("usage_response_count_mismatch")
+            accounting_is_valid = False
+        if not actor_response_counts_within_requests:
+            accounting_reasons.append(
+                "actor_response_count_exceeds_requests"
+            )
             accounting_is_valid = False
 
         created = run_created(root_events)
@@ -1757,22 +2223,7 @@ def execute_arm(
             measurement_invalid_reasons.append("root_events_missing")
         measurement_valid = not measurement_invalid_reasons
         mixed_failure_gap = product_failure and not measurement_valid
-        resample_eligible = (
-            not measurement_valid
-            and not mixed_failure_gap
-            and all(
-                reason
-                in {
-                    "usage_complete",
-                    "usage_present",
-                    "usage_not_incomplete",
-                    "billing_known",
-                    "cost_available",
-                    "actor_usage_mismatch",
-                }
-                for reason in measurement_invalid_reasons
-            )
-        )
+        resample_eligible = False
         catalogs = {
             "root": catalog_summary(root_events, "root"),
             "child": catalog_summary(child_events, "child"),
@@ -1839,10 +2290,16 @@ def execute_arm(
             "writer": writer,
             "git": git,
             "requests": accounting,
+            "accounting_provenance": accounting_provenance,
+            "child_accounting_provenance": child_accounting_provenance,
             "actor_usage": {
                 "root": root_actor_usage,
                 "child": child_actor_usage,
                 "total_matches_terminal": actor_usage_matches,
+                "response_count_matches_terminal": usage_response_count_matches,
+                "response_counts_within_actor_requests": (
+                    actor_response_counts_within_requests
+                ),
                 "actor_cost_available": False,
             },
             "tool_catalogs": catalogs,
@@ -2452,29 +2909,35 @@ def known_execution_metrics(
         for arm in arms
     )
     known_cost_nanousd = sum(
-        int(arm.get("requests", {}).get("cost_nanousd") or 0)
+        nonnegative_int_or_zero(
+            arm.get("requests", {}).get("cost_nanousd")
+        )
         for arm in arms
-    )
-    reserve_nanousd = int(
-        RESOURCES["max_known_cost_usd_per_arm"] * 1_000_000_000
     )
     return {
         "arm_attempts": len(arms),
         "known_cost_nanousd": known_cost_nanousd,
         "known_cost_is_lower_bound": unknown_billing_arms > 0,
-        "reserved_unknown_exposure_nanousd": (
-            unknown_billing_arms * reserve_nanousd
-        ),
-        "budget_exposure_nanousd": (
-            known_cost_nanousd + unknown_billing_arms * reserve_nanousd
-        ),
+        "unknown_exposure_is_unbounded": unknown_billing_arms > 0,
+        "reserved_unknown_exposure_nanousd": None
+        if unknown_billing_arms
+        else 0,
+        "budget_exposure_nanousd": None
+        if unknown_billing_arms
+        else known_cost_nanousd,
         "known_cost_nanocny": sum(
-            int(arm.get("requests", {}).get("cost_nanocny") or 0)
+            nonnegative_int_or_zero(
+                arm.get("requests", {}).get("cost_nanocny")
+            )
             for arm in arms
         ),
         "physical_requests_started": sum(
-            int(arm.get("requests", {}).get("root", {}).get("started") or 0)
-            + int(arm.get("requests", {}).get("child", {}).get("started") or 0)
+            nonnegative_int_or_zero(
+                arm.get("requests", {}).get("root", {}).get("started")
+            )
+            + nonnegative_int_or_zero(
+                arm.get("requests", {}).get("child", {}).get("started")
+            )
             for arm in arms
         ),
         "unknown_billing_arms": unknown_billing_arms,
@@ -2703,8 +3166,9 @@ def finalize_result(
                 "the shared physical budget"
             ),
             "cost_boundary": (
-                "suite gate applies to known cost plus a frozen per-arm reserve; "
-                "unknown billing is retained as a lower-bound exposure"
+                "suite gate applies to exact known cost before each arm; any "
+                "unknown billing is retained as a lower bound and stops the "
+                "suite immediately because its exposure has no proven bound"
             ),
         },
     }
@@ -2756,6 +3220,222 @@ def dry_plan(binary: Path | None, revision: str | None) -> dict[str, Any]:
 
 
 class HarnessSelfTests(unittest.TestCase):
+    @staticmethod
+    def complete_accounting(*, sealed: bool = True) -> dict[str, Any]:
+        usage = {
+            "input_tokens": 10,
+            "output_tokens": 2,
+            "cache_hit_tokens": 0,
+            "cache_miss_tokens": 10,
+            "cache_write_tokens": 0,
+            "reasoning_tokens": 0,
+            "reasoning_replay_tokens": 0,
+        }
+        return {
+            "hard_request_limit": 10,
+            "root": {
+                "started": 1,
+                "completed": 1,
+                "in_flight": 0,
+                "retries": 0,
+            },
+            "child": {
+                "started": 0,
+                "completed": 0,
+                "in_flight": 0,
+                "retries": 0,
+            },
+            "transport_retries": 0,
+            "runtime_retries": 0,
+            "sealed_denied": 0,
+            "exhausted_denied": 0,
+            "budget_exhausted": False,
+            "sealed": sealed,
+            "complete": True,
+            "usage_complete": True,
+            "usage_missing": False,
+            "usage_incomplete": False,
+            "billing_unknown": False,
+            "unpriced": False,
+            "usage_responses": 1,
+            "usage_missing_responses": 0,
+            "incomplete_responses": 0,
+            "billing_unknown_attempts": 0,
+            "unpriced_usage_responses": 0,
+            "records_after_seal": 0,
+            "usage": usage,
+            "surface_usage": [
+                {
+                    "surface": "standard_chat",
+                    "model": MODEL,
+                    "response_count": 1,
+                    "usage_response_count": 1,
+                    "usage": usage,
+                    "cost_nanousd": 100,
+                    "cost_nanocny": 700,
+                }
+            ],
+            "cost_nanousd": 100,
+            "cost_nanocny": 700,
+        }
+
+    def test_terminal_accounting_has_canonical_provenance(self) -> None:
+        accounting = self.complete_accounting()
+        terminal = {"state": "blocked", "reason": "fixture"}
+        run = {
+            "run_id": "run-1",
+            "last_sequence": 2,
+            "terminal": terminal,
+            "accounting": copy.deepcopy(accounting),
+        }
+        events = [
+            {"sequence": 1, "event": {"kind": "run_created"}},
+            {
+                "sequence": 2,
+                "event": {
+                    "kind": "terminal",
+                    "outcome": {
+                        "run_id": "run-1",
+                        "terminal": terminal,
+                        "accounting": accounting,
+                    },
+                },
+            },
+        ]
+        summary, provenance, reasons = canonical_terminal_accounting(
+            run, events
+        )
+        self.assertEqual(reasons, [])
+        self.assertEqual(provenance["source"], "canonical_terminal_event")
+        self.assertTrue(provenance["terminal_is_last"])
+        self.assertTrue(provenance["terminal_matches_run_view"])
+        self.assertTrue(
+            provenance["terminal_accounting_matches_run_view"]
+        )
+        self.assertTrue(accounting_valid(summary)[0])
+
+        mismatched_run = copy.deepcopy(run)
+        mismatched_run["accounting"]["cost_nanousd"] = 101
+        selected, mismatch, reasons = canonical_terminal_accounting(
+            mismatched_run, events
+        )
+        self.assertEqual(selected["cost_nanousd"], 101)
+        self.assertTrue(selected["billing_unknown"])
+        self.assertTrue(selected["known_cost_is_lower_bound"])
+        self.assertEqual(mismatch["source"], "terminal_event_unverified")
+        self.assertFalse(
+            mismatch["terminal_accounting_matches_run_view"]
+        )
+        self.assertIn("terminal_accounting_run_view_mismatch", reasons)
+
+        non_terminal_tail = [
+            *events,
+            {"sequence": 3, "event": {"kind": "diagnostic"}},
+        ]
+        tail_run = copy.deepcopy(run)
+        tail_run["last_sequence"] = 3
+        selected, non_terminal, reasons = canonical_terminal_accounting(
+            tail_run, non_terminal_tail
+        )
+        self.assertEqual(non_terminal["source"], "terminal_event_unverified")
+        self.assertFalse(non_terminal["terminal_is_last"])
+        self.assertTrue(selected["billing_unknown"])
+        self.assertIn("terminal_accounting_provenance", reasons)
+
+        expensive_duplicate = copy.deepcopy(events[-1])
+        expensive_accounting = expensive_duplicate["event"]["outcome"][
+            "accounting"
+        ]
+        expensive_accounting["cost_nanousd"] = 900
+        expensive_accounting["cost_nanocny"] = 6_300
+        expensive_accounting["surface_usage"][0]["cost_nanousd"] = 900
+        expensive_accounting["surface_usage"][0]["cost_nanocny"] = 6_300
+        duplicated = [*events, expensive_duplicate]
+        selected, duplicate_provenance, reasons = canonical_terminal_accounting(
+            run, duplicated
+        )
+        self.assertEqual(duplicate_provenance["terminal_count"], 2)
+        self.assertEqual(selected["cost_nanousd"], 900)
+        self.assertTrue(selected["billing_unknown"])
+        self.assertIn("terminal_accounting_provenance", reasons)
+
+    def test_unsealed_and_partial_accounting_are_lower_bounds(self) -> None:
+        run = {
+            "accounting": self.complete_accounting(sealed=False),
+            "last_sequence": 1,
+        }
+        summary = accounting_summary(run)
+        valid, reasons = accounting_valid(summary)
+        self.assertFalse(valid)
+        self.assertIn("sealed", reasons)
+        self.assertIn("billing_known", reasons)
+        self.assertTrue(summary["billing_unknown"])
+        self.assertTrue(summary["known_cost_is_lower_bound"])
+
+        partial = provisional_accounting_summary(
+            {
+                "accounting": self.complete_accounting(),
+                "last_sequence": 2,
+            }
+        )
+        self.assertFalse(partial["sealed"])
+        self.assertFalse(partial["complete"])
+        self.assertTrue(partial["billing_unknown"])
+        self.assertTrue(partial["known_cost_is_lower_bound"])
+        self.assertTrue(partial["request_count_unknown"])
+        self.assertEqual(partial["cost_nanousd"], 100)
+
+        after_seal = self.complete_accounting()
+        after_seal["records_after_seal"] = 1
+        summary = accounting_summary({"accounting": after_seal})
+        self.assertTrue(summary["billing_unknown"])
+        self.assertTrue(summary["known_cost_is_lower_bound"])
+
+    def test_actor_usage_counts_responses_and_rejects_bad_shape(self) -> None:
+        usage = self.complete_accounting()["usage"]
+        valid = actor_usage(
+            [
+                {
+                    "event": {
+                        "kind": "model_response_committed",
+                        "output": {"usage": usage},
+                    }
+                }
+            ]
+        )
+        self.assertEqual(valid["usage"], usage)
+        self.assertEqual(valid["response_count"], 1)
+        self.assertTrue(valid["shape_valid"])
+
+        malformed = copy.deepcopy(usage)
+        malformed.pop("reasoning_replay_tokens")
+        invalid = actor_usage(
+            [
+                {
+                    "event": {
+                        "kind": "model_response_committed",
+                        "output": {"usage": malformed},
+                    }
+                }
+            ]
+        )
+        self.assertEqual(invalid["response_count"], 1)
+        self.assertFalse(invalid["shape_valid"])
+
+        negative = copy.deepcopy(usage)
+        negative["output_tokens"] = -1
+        invalid = actor_usage(
+            [
+                {
+                    "event": {
+                        "kind": "model_response_committed",
+                        "output": {"usage": negative},
+                    }
+                }
+            ]
+        )
+        self.assertFalse(invalid["shape_valid"])
+
     def test_fixture_git_identities_are_reproducible(self) -> None:
         for task_id in TASK_IDS:
             with self.subTest(task=task_id), tempfile.TemporaryDirectory() as raw:
@@ -2950,7 +3630,7 @@ class HarnessSelfTests(unittest.TestCase):
         )
         self.assertTrue(secret_failure["hard_safety_violation"])
 
-    def test_non_exact_billing_reserves_unknown_exposure(self) -> None:
+    def test_non_exact_billing_stops_with_unbounded_exposure(self) -> None:
         summary = accounting_summary(
             {
                 "accounting": {
@@ -2966,6 +3646,46 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertTrue(summary["billing_unknown"])
         self.assertTrue(summary["known_cost_is_lower_bound"])
         self.assertTrue(summary["request_count_unknown"])
+        metrics = known_execution_metrics(
+            [],
+            [{"arms": [{"requests": summary}]}],
+        )
+        self.assertEqual(metrics["unknown_billing_arms"], 1)
+        self.assertTrue(metrics["unknown_exposure_is_unbounded"])
+        self.assertIsNone(metrics["reserved_unknown_exposure_nanousd"])
+        self.assertIsNone(metrics["budget_exposure_nanousd"])
+
+    def test_accounting_rejects_internally_inconsistent_counts(self) -> None:
+        too_many_responses = self.complete_accounting()
+        too_many_responses["usage_responses"] = 2
+        too_many_responses["surface_usage"][0]["response_count"] = 2
+        too_many_responses["surface_usage"][0]["usage_response_count"] = 2
+        valid, reasons = accounting_valid(
+            summarize_accounting(too_many_responses)
+        )
+        self.assertFalse(valid)
+        self.assertIn("response_count_within_requests", reasons)
+
+        negative_cost = self.complete_accounting()
+        negative_cost["cost_nanousd"] = -1
+        negative_cost["surface_usage"][0]["cost_nanousd"] = -1
+        valid, reasons = accounting_valid(summarize_accounting(negative_cost))
+        self.assertFalse(valid)
+        self.assertIn("numeric_shape", reasons)
+
+        hidden_gap = self.complete_accounting()
+        hidden_gap["billing_unknown_attempts"] = 1
+        valid, reasons = accounting_valid(summarize_accounting(hidden_gap))
+        self.assertFalse(valid)
+        self.assertIn("usage_gap_counters_zero", reasons)
+
+        corrupt_surface = self.complete_accounting()
+        corrupt_surface["surface_usage"].append("corrupt")
+        valid, reasons = accounting_valid(
+            summarize_accounting(corrupt_surface)
+        )
+        self.assertFalse(valid)
+        self.assertIn("numeric_shape", reasons)
 
     def test_pair_failure_and_gap_is_never_resampled(self) -> None:
         observed_failure = {
@@ -3214,8 +3934,8 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                     * 1_000_000_000
                 )
                 if (
-                    execution["budget_exposure_nanousd"]
-                    + reserve_nanousd
+                    execution["unknown_billing_arms"] > 0
+                    or execution["known_cost_nanousd"] + reserve_nanousd
                     > suite_limit_nanousd
                 ):
                     return finalize_result(
@@ -3231,8 +3951,8 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                             "known_cost_nanousd": execution[
                                 "known_cost_nanousd"
                             ],
-                            "budget_exposure_nanousd": execution[
-                                "budget_exposure_nanousd"
+                            "unknown_billing_arms": execution[
+                                "unknown_billing_arms"
                             ],
                             "next_arm_reserve_nanousd": reserve_nanousd,
                         },
@@ -3253,7 +3973,12 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                         arm_position,
                         execution_state,
                     )
-                except EvaluationError as error:
+                except Exception as error:
+                    code = (
+                        error.code
+                        if isinstance(error, EvaluationError)
+                        else "harness_postprocess_error"
+                    )
                     arm = failure_arm_record(
                         planned["task_id"],
                         treatment,
@@ -3261,12 +3986,16 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                         attempt_index,
                         planned["order"],
                         arm_position,
-                        error.code,
+                        code,
                         execution_state["api_exposure"],
                         int((time.monotonic() - started) * 1000),
                     )
                     if "accounting" in execution_state:
                         arm["requests"] = execution_state["accounting"]
+                    if "accounting_provenance" in execution_state:
+                        arm["accounting_provenance"] = execution_state[
+                            "accounting_provenance"
+                        ]
                     arm["harness_cancel_sent_after_runtime_grace"] = (
                         execution_state["harness_cancel_sent"]
                     )
@@ -3281,15 +4010,41 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 result_redacted(progress, key)
                 atomic_write_json(partial, progress)
+                if (
+                    arm.get("api_exposure") == "none"
+                    and arm.get("resample_eligible") is True
+                ):
+                    break
                 post_execution = known_execution_metrics(
                     accepted_pairs, [*invalid_attempts, pair]
                 )
-                arm_known_cost = int(
-                    arm.get("requests", {}).get("cost_nanousd") or 0
+                arm_known_cost = nonnegative_int_or_zero(
+                    arm.get("requests", {}).get("cost_nanousd")
                 )
+                if arm.get("requests", {}).get("billing_unknown") is True:
+                    pair["measurement_valid"] = False
+                    pair["resample_eligible"] = False
+                    pair["unknown_billing_stop"] = True
+                    invalid_attempts.append(pair)
+                    return finalize_result(
+                        args,
+                        key,
+                        identity,
+                        accepted_pairs,
+                        invalid_attempts,
+                        suite_started,
+                        "aborted_unknown_billing",
+                        {
+                            "reason": "unknown_billing_is_unbounded",
+                            "arm_known_cost_nanousd": arm_known_cost,
+                            "known_cost_nanousd": post_execution[
+                                "known_cost_nanousd"
+                            ],
+                        },
+                    )
                 if (
                     arm_known_cost > reserve_nanousd
-                    or post_execution["budget_exposure_nanousd"]
+                    or post_execution["known_cost_nanousd"]
                     > suite_limit_nanousd
                 ):
                     pair["measurement_valid"] = False
@@ -3312,8 +4067,8 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                             ),
                             "arm_known_cost_nanousd": arm_known_cost,
                             "arm_limit_nanousd": reserve_nanousd,
-                            "budget_exposure_nanousd": post_execution[
-                                "budget_exposure_nanousd"
+                            "known_cost_nanousd": post_execution[
+                                "known_cost_nanousd"
                             ],
                         },
                     )

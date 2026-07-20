@@ -1,5 +1,5 @@
 {
-  "schema": "codewhale.eval.m6-writer-benefit-plan.v1",
+  "schema": "codewhale.eval.m6-writer-benefit-plan.v2",
   "status": "frozen_before_live_api",
   "date": "2026-07-21",
   "start_revision": "39f5902cdbc9f1bd2981471bd388d2897117a5e5",
@@ -78,12 +78,15 @@
   "invalid_attempt_policy": {
     "whole_pair_retry_only": true,
     "maximum_reruns": 2,
+    "first_arm_zero_exposure_failure": "stop the pair immediately before starting its mate",
+    "exposed_exact_mate": "a whole-pair retry may repeat an already exposed mate only when its canonical terminal accounting is exact; preserve its requests and cost under the unchanged arm and suite gates",
+    "unknown_billing": "stop the suite immediately; retain every visible value as a lower bound and do not claim a finite exposure bound",
     "eligible": [
-      "pre-API app-server launch failure",
-      "missing or corrupt canonical measurement with no simultaneous product failure",
-      "unknown billing after a fully observed successful product outcome"
+      "pre-API Harness, app-server, or stdio failure with api_exposure=none"
     ],
     "never_resample": [
+      "any missing, duplicate, non-terminal, corrupt, unsealed, internally inconsistent, or mismatched canonical measurement",
+      "unknown billing or unpriced usage",
       "model or protocol failure",
       "typed timeout or budget exhaustion",
       "verifier failure",
@@ -195,7 +198,7 @@
     }
   },
   "frozen_hashes": {
-    "manifest_sha256_excluding_this_field": "sha256:18d88682b6e2470bc9ca571a863923a35d6d71c689bf50e8e5b781ec43874b97",
+    "manifest_sha256_excluding_this_field": "sha256:414fd3ab38376d99c8ad181f5bb32c0d39fb8bc5febd4994a30718b6a67ee9be",
     "fixture_tree_sha256": {
       "t1": "sha256:0e7ff64a80159f7fff149fba3c0a24af5836a7c8697f32e3ad7c242d1bc87733",
       "t2": "sha256:1fc1e191d26c0ae486a3108ca96351b2e7d28b9dafbe6b55fb0691ab85b24922",
