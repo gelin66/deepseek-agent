@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 17;
+const STATE_SCHEMA_VERSION: u32 = 18;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -333,6 +333,17 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-temporal-evidence canonical run state")?;
         }
+        if user_version < 18 {
+            // RuntimeEvent v13 replaces ambiguous cleanup booleans with one
+            // persisted exact plan and typed per-resource results. Historical
+            // rows cannot be upgraded without inventing scope/ownership facts.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                tx.execute("DELETE FROM agent_run_creations", [])
+                    .context("failed to retire pre-exact-cleanup creation state")?;
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-exact-cleanup canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -483,6 +494,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 17)
                 .context("failed to commit temporal evidence state cutover")?;
             user_version = 17;
+        }
+        if user_version < 18 {
+            tx.pragma_update(None, "user_version", 18)
+                .context("failed to commit exact Writer cleanup state cutover")?;
+            user_version = 18;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

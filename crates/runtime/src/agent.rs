@@ -2037,20 +2037,14 @@ impl AgentRuntime {
             let binding = match orchestrator.bind_writer(&task, None).await {
                 Ok(binding) => binding,
                 Err(error) => {
-                    let finished = self
-                        .finish_uncreated_writer(
+                    return self
+                        .finish_bound_writer_failure(
                             state,
                             &task,
                             orchestration_child_outcome(&task, &error),
+                            error,
                         )
-                        .await?;
-                    return match error.kind {
-                        AgentOrchestrationErrorKind::RecoveryRequired => Err(finished.terminal),
-                        AgentOrchestrationErrorKind::Rejected
-                        | AgentOrchestrationErrorKind::Conflict => {
-                            Ok(writer_failure_tool_outcome(&task, &finished))
-                        }
-                    };
+                        .await;
                 }
             };
             if binding.assignment != task.workspace {
@@ -2059,14 +2053,14 @@ impl AgentRuntime {
                     "writer_binding_mismatch",
                     "创建后的 writer assignment 与已持久化 AgentTask 不一致",
                 );
-                let finished = self
-                    .finish_uncreated_writer(
+                return self
+                    .finish_bound_writer_failure(
                         state,
                         &task,
                         orchestration_child_outcome(&task, &error),
+                        error,
                     )
-                    .await?;
-                return Err(finished.terminal);
+                    .await;
             }
             self.publish(
                 state,
@@ -2209,46 +2203,14 @@ impl AgentRuntime {
             match orchestrator.bind_writer(&task, seal.as_ref()).await {
                 Ok(binding) => Some(binding),
                 Err(error) => {
-                    if lifecycle.workspace_created.is_some() {
-                        let outcome = orchestration_child_outcome(&task, &error);
-                        if error.kind == AgentOrchestrationErrorKind::RecoveryRequired {
-                            self.collect_failed_writer_retained(
-                                state,
-                                &task,
-                                outcome,
-                                format!("{}：{}", error.code, error.message),
-                            )
-                            .await?;
-                        } else {
-                            self.collect_failed_writer(state, &task, outcome).await?;
-                        }
-                        let finished = current_agent_lifecycle(state, &task.task_id)?
-                            .finished
-                            .expect("failed recovered writer was finished")
-                            .outcome;
-                        return if matches!(
-                            finished.terminal,
-                            TerminalState::RecoveryRequired { .. }
-                        ) {
-                            Err(finished.terminal)
-                        } else {
-                            Ok(writer_failure_tool_outcome(&task, &finished))
-                        };
-                    }
-                    let finished = self
-                        .finish_uncreated_writer(
+                    return self
+                        .finish_bound_writer_failure(
                             state,
                             &task,
                             orchestration_child_outcome(&task, &error),
+                            error,
                         )
-                        .await?;
-                    return match error.kind {
-                        AgentOrchestrationErrorKind::RecoveryRequired => Err(finished.terminal),
-                        AgentOrchestrationErrorKind::Rejected
-                        | AgentOrchestrationErrorKind::Conflict => {
-                            Ok(writer_failure_tool_outcome(&task, &finished))
-                        }
-                    };
+                        .await;
                 }
             }
         };
@@ -2259,14 +2221,14 @@ impl AgentRuntime {
                     "writer_recovery_binding",
                     "恢复得到的 writer workspace 与持久 AgentTask 不一致",
                 );
-                let finished = self
-                    .finish_uncreated_writer(
+                return self
+                    .finish_bound_writer_failure(
                         state,
                         &task,
                         orchestration_child_outcome(&task, &error),
+                        error,
                     )
-                    .await?;
-                return Err(finished.terminal);
+                    .await;
             }
             if lifecycle.workspace_created.is_none() {
                 self.publish(
@@ -2390,9 +2352,9 @@ impl AgentRuntime {
             let outcome = loop {
                 tokio::select! {
                     joined = &mut child.join => {
-                        break joined.unwrap_or_else(|error| failed_child_outcome(
+                        break joined.unwrap_or_else(|_error| failed_child_outcome(
                             task,
-                            RuntimeFailure::Join { message: error.to_string() },
+                            runtime_join_failure(),
                         ));
                     }
                     command = control.recv() => if let Some(command) = command {
@@ -2719,30 +2681,19 @@ impl AgentRuntime {
                 }
                 lifecycle = current_agent_lifecycle(state, &task.task_id)?;
             }
-            if let Some(failure) = lifecycle
+            if lifecycle
                 .integration
                 .as_ref()
                 .and_then(|integration| integration.failure.as_ref())
-                .cloned()
+                .is_some()
                 && lifecycle
                     .cleanup
                     .as_ref()
                     .and_then(|cleanup| cleanup.committed.as_ref())
                     .is_none()
             {
-                if matches!(
-                    failure.status,
-                    WriterIntegrationStatus::RecoveryRequired { .. }
-                ) {
-                    let reason = writer_integration_failure_reason(&failure.status)
-                        .unwrap_or("writer integration 需要人工恢复")
-                        .to_owned();
-                    self.retain_writer_for_recovery(state, &task, reason)
-                        .await?;
-                } else {
-                    self.resume_writer_cleanup(state, &task, Some(&seal))
-                        .await?;
-                }
+                self.resume_writer_cleanup(state, &task, Some(&seal))
+                    .await?;
                 lifecycle = current_agent_lifecycle(state, &task.task_id)?;
             }
         }
@@ -2783,46 +2734,27 @@ impl AgentRuntime {
         state: &mut RunState,
         task: &AgentTask,
         seal: Option<&WriterSeal>,
-    ) -> Result<WriterCleanup, TerminalState> {
+    ) -> Result<WriterCleanupResult, TerminalState> {
         let lifecycle = current_agent_lifecycle(state, &task.task_id)?;
         if lifecycle.cleanup.is_none() {
             return self.cleanup_writer(state, task, seal).await;
         }
         let cleanup = lifecycle.cleanup.expect("cleanup presence checked");
         if let Some(committed) = cleanup.committed {
-            return Ok(WriterCleanup {
-                worktree_removed: committed.worktree_removed,
-                branch_removed: committed.branch_removed,
-                retained_for_recovery: committed.retained_for_recovery,
-                reason: committed.reason,
-            });
+            return Ok(committed);
         }
-        let result = match self
+        let result = self
             .orchestrator
             .as_ref()
             .expect("writer recovery requires orchestrator")
-            .cleanup_writer(task, seal)
+            .execute_writer_cleanup(task, &cleanup.plan)
             .await
-        {
-            Ok(cleanup) => cleanup,
-            Err(error) => WriterCleanup {
-                worktree_removed: false,
-                branch_removed: false,
-                retained_for_recovery: true,
-                reason: Some(format!("{}：{}", error.code, error.message)),
-            },
-        };
+            .unwrap_or_else(|error| retained_cleanup_result(error.code));
         self.publish(
             state,
             RuntimeEventKind::AgentCleanupCommitted {
                 task_id: task.task_id.clone(),
-                worktree_path: cleanup.worktree_path,
-                branch: cleanup.branch,
-                owner_token: cleanup.owner_token,
-                worktree_removed: result.worktree_removed,
-                branch_removed: result.branch_removed,
-                retained_for_recovery: result.retained_for_recovery,
-                reason: result.reason.clone(),
+                result: result.clone(),
             },
         )
         .await
@@ -2843,9 +2775,9 @@ impl AgentRuntime {
         let outcome = loop {
             tokio::select! {
                 joined = &mut child.join => {
-                    break joined.unwrap_or_else(|error| failed_child_outcome(
+                    break joined.unwrap_or_else(|_error| failed_child_outcome(
                         &task,
-                        RuntimeFailure::Join { message: error.to_string() },
+                        runtime_join_failure(),
                     ));
                 }
                 command = control.recv() => if let Some(command) = command {
@@ -2858,9 +2790,9 @@ impl AgentRuntime {
                                 child.control.cancel().ok();
                             }
                             parent_terminal = Some(terminal);
-                            break child.join.await.unwrap_or_else(|error| failed_child_outcome(
+                            break child.join.await.unwrap_or_else(|_error| failed_child_outcome(
                                 &task,
-                                RuntimeFailure::Join { message: error.to_string() },
+                                runtime_join_failure(),
                             ));
                         }
                     }
@@ -2868,9 +2800,9 @@ impl AgentRuntime {
                 () = wait_for_deadline(deadline) => {
                     child.control.cancel().ok();
                     parent_terminal = Some(timeout_terminal(state, deadline));
-                    break child.join.await.unwrap_or_else(|error| failed_child_outcome(
+                    break child.join.await.unwrap_or_else(|_error| failed_child_outcome(
                         &task,
-                        RuntimeFailure::Join { message: error.to_string() },
+                        runtime_join_failure(),
                     ));
                 }
             }
@@ -2891,96 +2823,6 @@ impl AgentRuntime {
         .await
     }
 
-    async fn retain_writer_for_recovery(
-        &self,
-        state: &mut RunState,
-        task: &AgentTask,
-        reason: String,
-    ) -> Result<WriterCleanup, TerminalState> {
-        let worktree_path = task
-            .workspace
-            .worktree_path
-            .clone()
-            .expect("validated writer task has a worktree path");
-        let branch = task
-            .workspace
-            .branch
-            .clone()
-            .expect("validated writer task has a branch");
-        let owner_token = task
-            .workspace
-            .owner_token
-            .clone()
-            .expect("validated writer task has an owner token");
-        self.publish(
-            state,
-            RuntimeEventKind::AgentCleanupPrepared {
-                task_id: task.task_id.clone(),
-                worktree_path: worktree_path.clone(),
-                branch: branch.clone(),
-                owner_token: owner_token.clone(),
-            },
-        )
-        .await
-        .map_err(store_terminal)?;
-        self.publish(
-            state,
-            RuntimeEventKind::AgentCleanupCommitted {
-                task_id: task.task_id.clone(),
-                worktree_path,
-                branch,
-                owner_token,
-                worktree_removed: false,
-                branch_removed: false,
-                retained_for_recovery: true,
-                reason: Some(reason.clone()),
-            },
-        )
-        .await
-        .map_err(store_terminal)?;
-        Ok(WriterCleanup {
-            worktree_removed: false,
-            branch_removed: false,
-            retained_for_recovery: true,
-            reason: Some(reason),
-        })
-    }
-
-    async fn finish_uncreated_writer(
-        &self,
-        state: &mut RunState,
-        task: &AgentTask,
-        mut outcome: AgentOutcome,
-    ) -> Result<AgentOutcome, TerminalState> {
-        outcome.details = AgentResultDetails {
-            summary: terminal_state_label(&outcome.terminal).to_owned(),
-            ..AgentResultDetails::default()
-        };
-        self.publish(
-            state,
-            RuntimeEventKind::AgentResultCollected {
-                task_id: task.task_id.clone(),
-                outcome: Box::new(outcome.clone()),
-            },
-        )
-        .await
-        .map_err(store_terminal)?;
-        let handoff = child_handoff(state, &outcome);
-        let accounting = self.cumulative_accounting(state, false).await;
-        self.publish(
-            state,
-            RuntimeEventKind::ChildFinished {
-                call_id: task.call_id.clone(),
-                outcome: Box::new(outcome.clone()),
-                accounting: Box::new(accounting),
-                handoff_content: handoff,
-            },
-        )
-        .await
-        .map_err(store_terminal)?;
-        Ok(outcome)
-    }
-
     async fn finish_bound_writer_failure(
         &self,
         state: &mut RunState,
@@ -2988,22 +2830,14 @@ impl AgentRuntime {
         mut outcome: AgentOutcome,
         error: AgentOrchestrationError,
     ) -> Result<ToolOutcome, TerminalState> {
-        outcome.terminal = orchestration_terminal(error.clone());
+        outcome.terminal = TerminalState::Blocked {
+            reason: stable_cleanup_code(&error.code, "writer_operation_failed"),
+        };
         outcome.details = AgentResultDetails {
-            summary: format!("{}：{}", error.code, error.message),
+            summary: stable_cleanup_code(&error.code, "writer_operation_failed"),
             ..AgentResultDetails::default()
         };
-        if error.kind == AgentOrchestrationErrorKind::RecoveryRequired {
-            self.collect_failed_writer_retained(
-                state,
-                task,
-                outcome,
-                format!("{}：{}", error.code, error.message),
-            )
-            .await?;
-        } else {
-            self.collect_failed_writer(state, task, outcome).await?;
-        }
+        self.collect_failed_writer(state, task, outcome).await?;
         let finished = current_agent_lifecycle(state, &task.task_id)?
             .finished
             .expect("failed bound writer was finished")
@@ -3019,30 +2853,10 @@ impl AgentRuntime {
         &self,
         state: &mut RunState,
         task: &AgentTask,
-        outcome: AgentOutcome,
-    ) -> Result<(), TerminalState> {
-        self.collect_failed_writer_with_retention(state, task, outcome, None)
-            .await
-    }
-
-    async fn collect_failed_writer_retained(
-        &self,
-        state: &mut RunState,
-        task: &AgentTask,
-        outcome: AgentOutcome,
-        reason: String,
-    ) -> Result<(), TerminalState> {
-        self.collect_failed_writer_with_retention(state, task, outcome, Some(reason))
-            .await
-    }
-
-    async fn collect_failed_writer_with_retention(
-        &self,
-        state: &mut RunState,
-        task: &AgentTask,
         mut outcome: AgentOutcome,
-        retain_reason: Option<String>,
     ) -> Result<(), TerminalState> {
+        outcome.details.summary =
+            stable_cleanup_code(&outcome.details.summary, "writer_child_failed");
         outcome.details.workspace = None;
         outcome.details.workspace_state = None;
         outcome.details.base_commit = None;
@@ -3059,19 +2873,12 @@ impl AgentRuntime {
         )
         .await
         .map_err(store_terminal)?;
-        let cleanup = match retain_reason {
-            Some(reason) => self.retain_writer_for_recovery(state, task, reason).await?,
-            None => self.cleanup_writer(state, task, None).await?,
-        };
-        let cleanup_recovery =
-            cleanup.retained_for_recovery || !cleanup.worktree_removed || !cleanup.branch_removed;
+        let cleanup = self.cleanup_writer(state, task, None).await?;
+        let cleanup_recovery = cleanup.retained_for_recovery();
         if cleanup_recovery {
             outcome.terminal = writer_cleanup_recovery_terminal(
                 task,
-                cleanup
-                    .reason
-                    .as_deref()
-                    .unwrap_or("writer cleanup 未完整删除 worktree 与 branch"),
+                cleanup_uncertainty_code(&cleanup).unwrap_or("writer_cleanup_uncertain"),
             );
         }
         let handoff = child_handoff(state, &outcome);
@@ -3099,78 +2906,46 @@ impl AgentRuntime {
         state: &mut RunState,
         task: &AgentTask,
         seal: Option<&WriterSeal>,
-    ) -> Result<WriterCleanup, TerminalState> {
-        let worktree_path = task
-            .workspace
-            .worktree_path
-            .clone()
-            .expect("validated writer task has a worktree path");
-        let branch = task
-            .workspace
-            .branch
-            .clone()
-            .expect("validated writer task has a branch");
-        let owner_token = task
-            .workspace
-            .owner_token
-            .clone()
-            .expect("validated writer task has an owner token");
+    ) -> Result<WriterCleanupResult, TerminalState> {
+        let lifecycle = current_agent_lifecycle(state, &task.task_id)?;
+        let (phase, reason_code) = writer_cleanup_context(&lifecycle);
+        let plan = match self
+            .orchestrator
+            .as_ref()
+            .expect("writer cannot start without an orchestrator")
+            .inspect_writer_cleanup(task, seal, phase, &reason_code)
+            .await
+        {
+            Ok(plan) => plan,
+            Err(error) => retained_writer_cleanup_plan(
+                task,
+                seal,
+                phase,
+                reason_code,
+                stable_cleanup_code(&error.code, "writer_cleanup_inspection_failed"),
+            ),
+        };
         self.publish(
             state,
             RuntimeEventKind::AgentCleanupPrepared {
                 task_id: task.task_id.clone(),
-                worktree_path: worktree_path.clone(),
-                branch: branch.clone(),
-                owner_token: owner_token.clone(),
+                plan: Box::new(plan.clone()),
             },
         )
         .await
         .map_err(store_terminal)?;
-        let cleanup = match self
+        let cleanup = self
             .orchestrator
             .as_ref()
             .expect("writer cannot start without an orchestrator")
-            .cleanup_writer(task, seal)
+            .execute_writer_cleanup(task, &plan)
             .await
-        {
-            Ok(cleanup) => cleanup,
-            Err(error) => {
-                let reason = format!("{}：{}", error.code, error.message);
-                let cleanup = WriterCleanup {
-                    worktree_removed: false,
-                    branch_removed: false,
-                    retained_for_recovery: true,
-                    reason: Some(reason.clone()),
-                };
-                self.publish(
-                    state,
-                    RuntimeEventKind::AgentCleanupCommitted {
-                        task_id: task.task_id.clone(),
-                        worktree_path,
-                        branch,
-                        owner_token,
-                        worktree_removed: false,
-                        branch_removed: false,
-                        retained_for_recovery: true,
-                        reason: Some(reason.clone()),
-                    },
-                )
-                .await
-                .map_err(store_terminal)?;
-                return Ok(cleanup);
-            }
-        };
+            .unwrap_or_else(|error| retained_cleanup_result(error.code));
         self.publish(
             state,
             RuntimeEventKind::AgentCleanupCommitted {
                 task_id: task.task_id.clone(),
-                worktree_path,
-                branch,
-                owner_token,
-                worktree_removed: cleanup.worktree_removed,
-                branch_removed: cleanup.branch_removed,
-                retained_for_recovery: cleanup.retained_for_recovery,
-                reason: cleanup.reason.clone(),
+                result: cleanup.clone(),
             },
         )
         .await
@@ -3188,11 +2963,11 @@ impl AgentRuntime {
             let mut child = state.pending_children.remove(0);
             let outcome = loop {
                 tokio::select! {
-                    joined = &mut child.join => break joined.unwrap_or_else(|error| AgentOutcome {
+                    joined = &mut child.join => break joined.unwrap_or_else(|_error| AgentOutcome {
                         run_id: child.run_id.clone(),
                         parent_run_id: Some(state.run_id().clone()),
                         terminal: TerminalState::Failed {
-                            failure: RuntimeFailure::Join { message: error.to_string() },
+                            failure: runtime_join_failure(),
                         },
                         accounting: incomplete_accounting(),
                         runtime_model_requests: 0,
@@ -3214,12 +2989,12 @@ impl AgentRuntime {
                                 let task_id = child.task_id.clone();
                                 let call_id = child.call_id.clone();
                                 let run_id = child.run_id.clone();
-                                let outcome = child.join.await.unwrap_or_else(|error| {
+                                let outcome = child.join.await.unwrap_or_else(|_error| {
                                     failed_child_outcome(
                                         &current_agent_lifecycle(state, &task_id)
                                             .expect("pending read-only child has a durable task")
                                             .task,
-                                        RuntimeFailure::Join { message: error.to_string() },
+                                        runtime_join_failure(),
                                     )
                                 });
                                 self.settle_readonly_child(
@@ -3237,12 +3012,12 @@ impl AgentRuntime {
                         let task_id = child.task_id.clone();
                         let call_id = child.call_id.clone();
                         let run_id = child.run_id.clone();
-                        let outcome = child.join.await.unwrap_or_else(|error| {
+                        let outcome = child.join.await.unwrap_or_else(|_error| {
                             failed_child_outcome(
                                 &current_agent_lifecycle(state, &task_id)
                                     .expect("pending read-only child has a durable task")
                                     .task,
-                                RuntimeFailure::Join { message: error.to_string() },
+                                runtime_join_failure(),
                             )
                         });
                         self.settle_readonly_child(state, task_id, call_id, run_id, outcome)
@@ -3297,14 +3072,12 @@ impl AgentRuntime {
             let task_id = child.task_id;
             let call_id = child.call_id;
             let run_id = child.run_id;
-            let outcome = child.join.await.unwrap_or_else(|error| {
+            let outcome = child.join.await.unwrap_or_else(|_error| {
                 failed_child_outcome(
                     &current_agent_lifecycle(state, &task_id)
                         .expect("pending read-only child has a durable task")
                         .task,
-                    RuntimeFailure::Join {
-                        message: error.to_string(),
-                    },
+                    runtime_join_failure(),
                 )
             });
             self.settle_readonly_child(state, task_id, call_id, run_id, outcome)
@@ -3793,14 +3566,10 @@ impl AgentRuntime {
             let cleanup = self
                 .resume_writer_cleanup(state, &task, Some(&seal))
                 .await?;
-            if cleanup.retained_for_recovery || !cleanup.worktree_removed || !cleanup.branch_removed
-            {
+            if cleanup.retained_for_recovery() {
                 return Ok(Some(writer_cleanup_recovery_terminal(
                     &task,
-                    cleanup
-                        .reason
-                        .as_deref()
-                        .unwrap_or("root 终态前 writer cleanup 未完整完成"),
+                    cleanup_uncertainty_code(&cleanup).unwrap_or("writer_cleanup_uncertain"),
                 )));
             }
         }
@@ -4558,8 +4327,8 @@ impl RuntimeRun {
     }
 
     pub async fn wait(self) -> Result<AgentOutcome, RuntimeJoinError> {
-        self.join.await.map_err(|error| RuntimeJoinError {
-            message: error.to_string(),
+        self.join.await.map_err(|_error| RuntimeJoinError {
+            message: "Agent Runtime 后台任务异常终止".to_owned(),
         })
     }
 }
@@ -4869,6 +4638,120 @@ fn writer_seal_from_lifecycle(lifecycle: &AgentTaskLifecycle) -> Option<WriterSe
     })
 }
 
+fn writer_cleanup_context(lifecycle: &AgentTaskLifecycle) -> (WriterCleanupPhase, String) {
+    if lifecycle
+        .integration
+        .as_ref()
+        .is_some_and(|integration| integration.committed.is_some())
+    {
+        return (
+            WriterCleanupPhase::PostIntegration,
+            "writer_integrated".to_owned(),
+        );
+    }
+    if let Some(failure) = lifecycle
+        .integration
+        .as_ref()
+        .and_then(|integration| integration.failure.as_ref())
+    {
+        let reason = match failure.status {
+            WriterIntegrationStatus::Rejected { .. } => "writer_integration_rejected",
+            WriterIntegrationStatus::Conflict { .. } => "writer_integration_conflict",
+            WriterIntegrationStatus::RecoveryRequired { .. } => {
+                "writer_integration_recovery_required"
+            }
+            WriterIntegrationStatus::NotApplicable
+            | WriterIntegrationStatus::AwaitingHost
+            | WriterIntegrationStatus::Integrated { .. } => "writer_integration_invalid",
+        };
+        return (WriterCleanupPhase::Integration, reason.to_owned());
+    }
+    if lifecycle.child_started.is_none() {
+        return (
+            WriterCleanupPhase::Binding,
+            "writer_binding_failed".to_owned(),
+        );
+    }
+    if lifecycle.seal.is_some() {
+        return (WriterCleanupPhase::Seal, "writer_seal_failed".to_owned());
+    }
+    let reason = match lifecycle.result.as_ref().map(|result| &result.terminal) {
+        Some(TerminalState::Blocked { .. }) => "writer_child_blocked",
+        Some(TerminalState::Cancelled) => "writer_child_cancelled",
+        Some(TerminalState::Interrupted) => "writer_child_interrupted",
+        Some(TerminalState::RecoveryRequired { .. }) => "writer_child_recovery_required",
+        Some(TerminalState::Failed { .. }) | Some(TerminalState::Completed { .. }) | None => {
+            "writer_child_failed"
+        }
+    };
+    (WriterCleanupPhase::Child, reason.to_owned())
+}
+
+fn stable_cleanup_code(value: &str, fallback: &str) -> String {
+    if !value.is_empty()
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        value.to_owned()
+    } else {
+        fallback.to_owned()
+    }
+}
+
+fn retained_writer_cleanup_plan(
+    task: &AgentTask,
+    seal: Option<&WriterSeal>,
+    phase: WriterCleanupPhase,
+    reason_code: String,
+    uncertainty_code: String,
+) -> WriterCleanupPlan {
+    let artifact_state = seal.map_or(WriterArtifactState::Unknown, |seal| {
+        WriterArtifactState::KnownHostSealed {
+            final_commit: seal.final_commit.clone(),
+            diff_sha256: seal.diff_sha256.clone(),
+        }
+    });
+    let plan = WriterCleanupPlan {
+        phase,
+        reason_code,
+        ownership: WriterCleanupOwnership::Unknown {
+            uncertainty_code: uncertainty_code.clone(),
+        },
+        artifact_state,
+        scope: WriterCleanupScope::Unknown {
+            uncertainty_code: uncertainty_code.clone(),
+        },
+        mode: WriterCleanupMode::RetainForRecovery { uncertainty_code },
+    };
+    plan.validate().unwrap_or_else(|message| {
+        panic!(
+            "Host-created cleanup plan for {} is invalid: {message}",
+            task.task_id.0
+        )
+    });
+    plan
+}
+
+fn retained_cleanup_result(uncertainty_code: String) -> WriterCleanupResult {
+    WriterCleanupResult::Retained {
+        worktree: WriterResourceState::Unknown,
+        branch: WriterResourceState::Unknown,
+        metadata: WriterCleanupMetadataState::Uncertain,
+        uncertainty_code: stable_cleanup_code(&uncertainty_code, "writer_cleanup_execution_failed"),
+    }
+}
+
+fn cleanup_uncertainty_code(result: &WriterCleanupResult) -> Option<&str> {
+    match result {
+        WriterCleanupResult::Retained {
+            uncertainty_code, ..
+        } => Some(uncertainty_code),
+        WriterCleanupResult::Removed { .. } | WriterCleanupResult::AlreadyAbsent => None,
+    }
+}
+
 fn recovered_writer_request(state: &RunState, task: &AgentTask, arguments: &Value) -> RunRequest {
     let mut system_prompt = state
         .snapshot
@@ -5024,28 +4907,25 @@ fn recovered_finished_outcome(lifecycle: &AgentTaskLifecycle) -> Result<AgentOut
         .cleanup
         .as_ref()
         .and_then(|cleanup| cleanup.committed.as_ref())
-        && cleanup.retained_for_recovery
+        && cleanup.retained_for_recovery()
     {
         outcome.terminal = writer_cleanup_recovery_terminal(
             &lifecycle.task,
-            cleanup
-                .reason
-                .as_deref()
-                .unwrap_or("writer cleanup ownership is ambiguous"),
+            cleanup_uncertainty_code(cleanup).unwrap_or("writer_cleanup_uncertain"),
         );
     }
     Ok(outcome)
 }
 
 fn writer_failure_tool_outcome(task: &AgentTask, outcome: &AgentOutcome) -> ToolOutcome {
-    ToolOutcome::rejected(
-        format!(
-            "writer_child_not_completed：writer child {} 以 {} 结束，未集成",
-            task.child_run_id,
-            terminal_state_label(&outcome.terminal)
-        ),
-        ToolRetryDisposition::AfterCorrection,
-    )
+    let mut tool_outcome = ToolOutcome::error(format!(
+        "writer_child_not_completed：writer child {} 以 {} 结束，未集成",
+        task.child_run_id,
+        terminal_state_label(&outcome.terminal)
+    ));
+    tool_outcome.side_effect = ToolSideEffectStatus::NotApplied;
+    tool_outcome.retry = ToolRetryDisposition::AfterCorrection;
+    tool_outcome
 }
 
 fn writer_tool_outcome(task: &AgentTask, outcome: &AgentOutcome) -> ToolOutcome {
@@ -5235,6 +5115,12 @@ fn failed_child_outcome(task: &AgentTask, failure: RuntimeFailure) -> AgentOutco
         runtime_retries: 0,
         tool_calls: 0,
         details: AgentResultDetails::default(),
+    }
+}
+
+fn runtime_join_failure() -> RuntimeFailure {
+    RuntimeFailure::Join {
+        message: "Agent 后台任务异常终止".to_owned(),
     }
 }
 

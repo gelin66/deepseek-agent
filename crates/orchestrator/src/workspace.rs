@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt as _;
 
 use fs2::FileExt as _;
 use sha2::{Digest, Sha256};
@@ -13,8 +17,20 @@ use thiserror::Error;
 
 const WRITER_BRANCH_PREFIX: &str = "refs/heads/codewhale/writer/";
 const MAX_GIT_POINTER_BYTES: u64 = 16 * 1024;
+const MAX_CLEANUP_PATH_BYTES_PER_ENTRY: usize = 16 * 1024;
+const MAX_CLEANUP_PATH_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_REGISTERED_WORKTREE_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_REGISTERED_WORKTREES: usize = 4_096;
+const HOST_MAX_CHANGED_FILES: usize = 512;
+const HOST_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const HOST_MAX_TOTAL_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const HOST_MAX_DIFF_BYTES: usize = 16 * 1024 * 1024;
+const HOST_MAX_GIT_OUTPUT_BYTES: usize = 16 * 1024 * 1024;
+const BOUNDED_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+const BOUNDED_GIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const INTEGRATION_LEASE_FILE: &str = "codewhale-integration.lease";
 const INTEGRATION_HEAD_LOCK_VERSION: &str = "codewhale-integration-head-lock-v1";
+const CLEANUP_HEAD_LOCK_VERSION: &str = "codewhale-cleanup-head-lock-v1";
 const MAX_INTEGRATION_LOCK_BYTES: u64 = 4 * 1024;
 static NEXT_INTEGRATION_LOCK_TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -66,10 +82,10 @@ pub struct SealLimits {
 impl Default for SealLimits {
     fn default() -> Self {
         Self {
-            max_changed_files: 512,
-            max_file_bytes: 8 * 1024 * 1024,
-            max_total_file_bytes: 32 * 1024 * 1024,
-            max_diff_bytes: 16 * 1024 * 1024,
+            max_changed_files: HOST_MAX_CHANGED_FILES,
+            max_file_bytes: HOST_MAX_FILE_BYTES,
+            max_total_file_bytes: HOST_MAX_TOTAL_FILE_BYTES,
+            max_diff_bytes: HOST_MAX_DIFF_BYTES,
         }
     }
 }
@@ -148,10 +164,6 @@ impl OwnedWorktree {
         &self.worktree_path
     }
 
-    pub fn branch_ref(&self) -> &str {
-        &self.branch_ref
-    }
-
     pub fn base_commit(&self) -> &str {
         &self.base_commit
     }
@@ -204,8 +216,7 @@ impl SealedWorktree {
         &self.diff
     }
 
-    #[cfg(test)]
-    fn durable_facts(&self) -> SealedWorktreeFacts {
+    pub(crate) fn durable_facts(&self) -> SealedWorktreeFacts {
         SealedWorktreeFacts {
             owner_id: self.owner_id.clone(),
             base_commit: self.base_commit.clone(),
@@ -228,9 +239,34 @@ pub struct IntegrationResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CleanupDisposition {
+pub enum CleanupComponentDisposition {
     Removed,
     AlreadyAbsent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExactCleanupDisposition {
+    pub worktree: CleanupComponentDisposition,
+    pub branch: CleanupComponentDisposition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CleanupResourcePresence {
+    Absent,
+    Present,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupResourceFacts {
+    pub path: CleanupResourcePresence,
+    pub worktree: CleanupResourcePresence,
+    pub branch: CleanupResourcePresence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CleanupScopeFacts {
+    pub paths: Vec<PathBuf>,
+    pub revision_sha256: String,
 }
 
 /// Sole owner of the M6-A Git/worktree side effects.
@@ -254,6 +290,7 @@ struct WorktreeRecord {
     path: PathBuf,
     head: String,
     branch_ref: Option<String>,
+    locked_reason: Option<String>,
 }
 
 /// Process-crash-safe ownership of the root worktree's Git `HEAD.lock`.
@@ -277,6 +314,46 @@ struct RootIntegrationLock {
     head_lock_path: PathBuf,
     marker: Vec<u8>,
     remove_marker_on_drop: bool,
+}
+
+struct RootCleanupLock {
+    _lease: RootIntegrationLease,
+    head_lock_path: PathBuf,
+    marker: Vec<u8>,
+    remove_marker_on_drop: bool,
+}
+
+impl Drop for RootCleanupLock {
+    fn drop(&mut self) {
+        if self.remove_marker_on_drop {
+            remove_exact_marker_file(&self.head_lock_path, &self.marker);
+        }
+    }
+}
+
+impl RootCleanupLock {
+    fn release(self) -> Result<()> {
+        self.release_with(|path| remove_file(path, "release exact cleanup HEAD lock"))
+    }
+
+    fn release_with<F>(mut self, remove: F) -> Result<()>
+    where
+        F: FnOnce(&Path) -> Result<()>,
+    {
+        self.remove_marker_on_drop = false;
+        if !exact_marker_file(&self.head_lock_path, &self.marker)? {
+            return Err(GitWorkspaceError::OwnershipMismatch(
+                "cleanup HEAD lock marker changed before explicit release".to_string(),
+            ));
+        }
+        remove(&self.head_lock_path)?;
+        if symlink_metadata_optional(&self.head_lock_path)?.is_some() {
+            return Err(GitWorkspaceError::OwnershipMismatch(
+                "cleanup HEAD lock remained after explicit release".to_string(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl Drop for RootIntegrationLock {
@@ -325,6 +402,50 @@ impl GitWorkspaceOwner {
         managed_root: impl AsRef<Path>,
     ) -> Result<Self> {
         Self::bind_existing_with_cleanliness(repository_root, managed_root, false)
+    }
+
+    /// Bind only the repository identity needed to inspect or delete an exact
+    /// owned Writer. Root cleanliness and the currently checked-out branch do
+    /// not grant cleanup authority and therefore are intentionally ignored.
+    pub(crate) fn bind_existing_for_cleanup(
+        repository_root: impl AsRef<Path>,
+        managed_root: impl AsRef<Path>,
+    ) -> Result<Self> {
+        let requested_root = absolute_path(repository_root.as_ref())?;
+        let root = canonical_dir(&requested_root, "canonicalize cleanup repository")?;
+        let top = rev_parse_path(&root, "--show-toplevel", "resolve cleanup repository root")?;
+        let top = canonical_dir(&top, "canonicalize cleanup repository root")?;
+        if top != root {
+            return Err(GitWorkspaceError::InvalidRepository(format!(
+                "requested cleanup path {} is not repository top-level {}",
+                root.display(),
+                top.display()
+            )));
+        }
+        let common_git_dir = rev_parse_path(
+            &root,
+            "--git-common-dir",
+            "resolve cleanup common Git directory",
+        )?;
+        let common_git_dir =
+            canonical_dir(&common_git_dir, "canonicalize cleanup common Git directory")?;
+        let requested_managed = absolute_path(managed_root.as_ref())?;
+        let managed_root = canonical_dir(&requested_managed, "canonicalize managed root")?;
+        if managed_root == root
+            || managed_root.starts_with(&root)
+            || root.starts_with(&managed_root)
+        {
+            return Err(GitWorkspaceError::InvalidRequest(format!(
+                "managed root {} must be outside and unrelated to repository {}",
+                managed_root.display(),
+                root.display()
+            )));
+        }
+        Ok(Self {
+            repository_root: root,
+            common_git_dir,
+            managed_root,
+        })
     }
 
     fn bind_existing_with_cleanliness(
@@ -522,6 +643,7 @@ impl GitWorkspaceOwner {
             &self.repository_root,
             allocation.base_commit(),
             &final_commit,
+            allocation.limits,
         )?;
         if changed_files.is_empty() {
             return Err(GitWorkspaceError::EmptyDiff);
@@ -531,11 +653,13 @@ impl GitWorkspaceOwner {
             &allocation.worktree_path,
             allocation.base_commit(),
             &changed_files,
+            allocation.limits,
         )?;
         let diff = binary_diff_commits(
             &self.repository_root,
             allocation.base_commit(),
             &final_commit,
+            allocation.limits.max_diff_bytes,
         )?;
         if diff.is_empty() {
             return Err(GitWorkspaceError::EmptyDiff);
@@ -577,12 +701,34 @@ impl GitWorkspaceOwner {
         &self,
         owned: OwnedWorktreeFacts,
     ) -> Result<(OwnedWorktree, SealedWorktree)> {
-        let root = self.validate_bound_repository(true)?;
+        self.recover_prepared_seal_with_root_check(owned, true)
+    }
+
+    /// Recover a Host-published Writer seal solely for exact cleanup. The
+    /// canonical root checkout may legitimately be dirty, advanced, switched,
+    /// or detached by the time failure cleanup resumes; none of those states
+    /// grants or removes authority over the isolated Writer ref/worktree.
+    pub(crate) fn recover_prepared_seal_for_cleanup(
+        &self,
+        owned: OwnedWorktreeFacts,
+    ) -> Result<(OwnedWorktree, SealedWorktree)> {
+        self.recover_prepared_seal_with_root_check(owned, false)
+    }
+
+    fn recover_prepared_seal_with_root_check(
+        &self,
+        owned: OwnedWorktreeFacts,
+        require_matching_root: bool,
+    ) -> Result<(OwnedWorktree, SealedWorktree)> {
         let allocation = self.rebuild_allocation(owned)?;
-        if root.branch_ref != allocation.root_branch_ref || root.head != allocation.base_commit {
-            return Err(GitWorkspaceError::Conflict(
-                "root branch or HEAD no longer matches the prepared seal".to_string(),
-            ));
+        if require_matching_root {
+            let root = self.validate_bound_repository(true)?;
+            if root.branch_ref != allocation.root_branch_ref || root.head != allocation.base_commit
+            {
+                return Err(GitWorkspaceError::Conflict(
+                    "root branch or HEAD no longer matches the prepared seal".to_string(),
+                ));
+            }
         }
         let final_commit = resolve_ref_optional(&self.repository_root, &allocation.branch_ref)?
             .ok_or_else(|| {
@@ -602,6 +748,7 @@ impl GitWorkspaceOwner {
             &self.repository_root,
             allocation.base_commit(),
             &final_commit,
+            allocation.limits,
         )?;
         if changed_files.is_empty() {
             return Err(GitWorkspaceError::EmptyDiff);
@@ -611,11 +758,13 @@ impl GitWorkspaceOwner {
             &allocation.worktree_path,
             allocation.base_commit(),
             &changed_files,
+            allocation.limits,
         )?;
         let diff = binary_diff_commits(
             &self.repository_root,
             allocation.base_commit(),
             &final_commit,
+            allocation.limits.max_diff_bytes,
         )?;
         if diff.is_empty() {
             return Err(GitWorkspaceError::EmptyDiff);
@@ -640,77 +789,541 @@ impl GitWorkspaceOwner {
         Ok((allocation, recovered))
     }
 
-    /// Prove that every externally visible resource for these exact durable
-    /// facts is absent. This makes cleanup retryable after a crash between the
-    /// Git removal and the durable cleanup event.
-    #[cfg(test)]
-    pub(crate) fn exact_resources_absent(&self, facts: &OwnedWorktreeFacts) -> Result<bool> {
+    /// Inspect the exact changed-path set of an owned Writer without depending
+    /// on the root checkout's current branch, HEAD, index, or cleanliness.
+    pub(crate) fn inspect_cleanup_paths(
+        &self,
+        facts: &OwnedWorktreeFacts,
+        sealed: Option<&SealedWorktreeFacts>,
+    ) -> Result<CleanupScopeFacts> {
         self.validate_owned_facts_identity(facts)?;
-
-        let path_absent = symlink_metadata_optional(&facts.worktree_path)?.is_none();
-        let branch_absent =
-            resolve_ref_optional(&self.repository_root, &facts.branch_ref)?.is_none();
-        let registration_absent = !registered_worktrees(&self.repository_root)?
-            .iter()
-            .any(|record| same_path(&record.path, &facts.worktree_path));
-        Ok(path_absent && branch_absent && registration_absent)
+        let resources = self.cleanup_resource_facts(facts)?;
+        if resources.worktree == CleanupResourcePresence::Absent {
+            return cleanup_scope_facts(&facts.worktree_path, Vec::new(), facts.limits);
+        }
+        if resources.path == CleanupResourcePresence::Absent {
+            return Err(GitWorkspaceError::Conflict(
+                "Writer path disappeared before Host could freeze its cleanup scope".to_string(),
+            ));
+        }
+        let allocation = self.rebuild_allocation(facts.clone())?;
+        match sealed {
+            Some(sealed) => {
+                if sealed.owner_id != allocation.owner_id
+                    || sealed.base_commit != allocation.base_commit
+                {
+                    return Err(GitWorkspaceError::OwnershipMismatch(
+                        "cleanup seal belongs to another writer allocation".to_string(),
+                    ));
+                }
+                validate_sha256(&sealed.diff_sha256)?;
+                let final_commit =
+                    resolve_exact_commit(&self.repository_root, &sealed.final_commit)?;
+                self.verify_owned_worktree(&allocation, &final_commit, true)?;
+                verify_host_seal_identity(&self.repository_root, &allocation, &final_commit)?;
+                let diff = binary_diff_commits(
+                    &self.repository_root,
+                    allocation.base_commit(),
+                    &final_commit,
+                    allocation.limits.max_diff_bytes,
+                )?;
+                if sha256_hex(&diff) != sealed.diff_sha256 {
+                    return Err(GitWorkspaceError::OwnershipMismatch(
+                        "cleanup seal digest no longer matches the exact commits".to_string(),
+                    ));
+                }
+                let mut paths = committed_changed_paths(
+                    &self.repository_root,
+                    allocation.base_commit(),
+                    &final_commit,
+                    allocation.limits,
+                )?;
+                paths.extend(collect_cleanup_changes(
+                    &allocation.worktree_path,
+                    allocation.limits,
+                )?);
+                cleanup_scope_facts(
+                    &allocation.worktree_path,
+                    paths
+                        .into_iter()
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect(),
+                    allocation.limits,
+                )
+            }
+            None => {
+                self.verify_owned_worktree(&allocation, allocation.base_commit(), false)?;
+                let paths = collect_cleanup_changes(&allocation.worktree_path, allocation.limits)?;
+                cleanup_scope_facts(&allocation.worktree_path, paths, allocation.limits)
+            }
+        }
     }
 
-    /// Finish the exact crash window after `git worktree remove` succeeded but
-    /// before the writer ref deletion was durably observed.
-    ///
-    /// `None` means a worktree path or registration is still present and the
-    /// caller must use normal allocation recovery. A returned disposition
-    /// means only the exact owner-derived branch was absent or CAS-deleted.
-    pub fn cleanup_branch_only(
+    /// Bind a prepared cleanup to the exact repository owner without storing
+    /// filesystem paths in the protocol. The cleanup target itself is omitted
+    /// so the digest remains reproducible after a successful remove/restart.
+    pub(crate) fn cleanup_owner_identity_sha256(
+        &self,
+        facts: &OwnedWorktreeFacts,
+    ) -> Result<String> {
+        self.validate_owned_facts_shape(facts)?;
+        let mut hasher = Sha256::new();
+        for (label, value) in [
+            (b"repository_root".as_slice(), &self.repository_root),
+            (b"common_git_dir".as_slice(), &self.common_git_dir),
+            (b"managed_root".as_slice(), &self.managed_root),
+        ] {
+            hash_cleanup_segment(&mut hasher, label, value.as_os_str().as_encoded_bytes());
+            let metadata = fs::metadata(value).map_err(|source| GitWorkspaceError::Io {
+                operation: "stat Writer cleanup owner",
+                path: value.clone(),
+                source,
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                hash_cleanup_segment(&mut hasher, b"device", &metadata.dev().to_le_bytes());
+                hash_cleanup_segment(&mut hasher, b"inode", &metadata.ino().to_le_bytes());
+            }
+        }
+        hash_cleanup_segment(&mut hasher, b"owner_id", facts.owner_id.as_bytes());
+        hash_cleanup_segment(&mut hasher, b"base_commit", facts.base_commit.as_bytes());
+        hash_cleanup_segment(
+            &mut hasher,
+            b"worktree_path",
+            facts.worktree_path.as_os_str().as_encoded_bytes(),
+        );
+        hash_cleanup_segment(&mut hasher, b"branch_ref", facts.branch_ref.as_bytes());
+        hash_cleanup_segment(
+            &mut hasher,
+            b"root_branch_ref",
+            facts.root_branch_ref.as_bytes(),
+        );
+        for path in &facts.allowed_paths {
+            hash_cleanup_segment(
+                &mut hasher,
+                b"allowed_path",
+                path.as_os_str().as_encoded_bytes(),
+            );
+        }
+        Ok(hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect())
+    }
+
+    fn verify_missing_path_residue(
         &self,
         facts: &OwnedWorktreeFacts,
         expected_branch_commit: &str,
-    ) -> Result<Option<CleanupDisposition>> {
-        self.validate_owned_facts_identity(facts)?;
+    ) -> Result<()> {
         let expected = resolve_exact_commit(&self.repository_root, expected_branch_commit)?;
-        let root = self.validate_bound_repository(true)?;
-        if root.branch_ref != facts.root_branch_ref
-            || (root.head != facts.base_commit && root.head != expected)
-        {
-            return Err(GitWorkspaceError::Conflict(
-                "root branch or HEAD is incompatible with branch-only cleanup".to_string(),
-            ));
-        }
+        let record = exact_registered_worktree(&self.repository_root, facts)?.ok_or_else(|| {
+            GitWorkspaceError::OwnershipMismatch(
+                "missing Writer path has no exact Git worktree registration".to_string(),
+            )
+        })?;
+        verify_record_facts(&record, facts, &expected)?;
+        require_ref(&self.repository_root, &facts.branch_ref, &expected)?;
+        let admin_dir = owned_admin_entry(&self.common_git_dir, facts)?.ok_or_else(|| {
+            GitWorkspaceError::OwnershipMismatch(
+                "missing Writer path has no exact Git admin backpointer".to_string(),
+            )
+        })?;
+        verify_admin_backpointer_facts(&admin_dir, &facts.worktree_path)
+    }
 
+    /// Observe whether the exact compound worktree resource (path,
+    /// registration, and admin directory) and exact Writer ref still exist.
+    pub(crate) fn cleanup_resource_facts(
+        &self,
+        facts: &OwnedWorktreeFacts,
+    ) -> Result<CleanupResourceFacts> {
+        self.validate_owned_facts_shape(facts)?;
         let path_present = symlink_metadata_optional(&facts.worktree_path)?.is_some();
-        let registered = registered_worktrees(&self.repository_root)?
-            .iter()
-            .any(|record| same_path(&record.path, &facts.worktree_path));
-        if path_present || registered {
-            return Ok(None);
-        }
+        let registered = exact_registered_worktree(&self.repository_root, facts)?.is_some();
+        let admin_present = owned_admin_entry(&self.common_git_dir, facts)?.is_some();
+        let branch_present =
+            resolve_ref_optional(&self.repository_root, &facts.branch_ref)?.is_some();
+        Ok(CleanupResourceFacts {
+            path: if path_present {
+                CleanupResourcePresence::Present
+            } else {
+                CleanupResourcePresence::Absent
+            },
+            worktree: if path_present || registered || admin_present {
+                CleanupResourcePresence::Present
+            } else {
+                CleanupResourcePresence::Absent
+            },
+            branch: if branch_present {
+                CleanupResourcePresence::Present
+            } else {
+                CleanupResourcePresence::Absent
+            },
+        })
+    }
 
-        let Some(actual) = resolve_ref_optional(&self.repository_root, &facts.branch_ref)? else {
-            return Ok(Some(CleanupDisposition::AlreadyAbsent));
+    /// Prove that execution of a previously persisted cleanup plan has
+    /// already crossed its Git-side intent boundary. A matching tombstone is
+    /// sufficient even before the exact worktree lock is installed; a lock,
+    /// when present, must carry the same derived cleanup identity.
+    pub(crate) fn cleanup_has_started(
+        &self,
+        facts: &OwnedWorktreeFacts,
+        expected_branch_commit: &str,
+    ) -> Result<bool> {
+        self.validate_owned_facts_shape(facts)?;
+        validate_full_object_id_claim(expected_branch_commit)?;
+        let expected = expected_branch_commit.to_ascii_lowercase();
+        let tombstone_ref = cleanup_tombstone_ref(facts, &expected)?;
+        let Some(actual) = resolve_ref_optional(&self.repository_root, &tombstone_ref)? else {
+            return Ok(false);
         };
         if actual != expected {
             return Err(GitWorkspaceError::OwnershipMismatch(format!(
-                "writer branch {} points to {actual}, expected {expected}",
-                facts.branch_ref
+                "Writer cleanup tombstone points to {actual}, expected {expected}"
             )));
         }
-        git_checked(
-            &self.repository_root,
-            "delete branch left by interrupted worktree cleanup",
-            [
-                OsString::from("update-ref"),
-                OsString::from("-d"),
-                facts.branch_ref.clone().into(),
-                expected.into(),
-            ],
-        )?;
-        if resolve_ref_optional(&self.repository_root, &facts.branch_ref)?.is_some() {
-            return Err(GitWorkspaceError::OwnershipMismatch(
-                "writer branch still exists after branch-only CAS deletion".to_string(),
+        if let Some(record) = exact_registered_worktree(&self.repository_root, facts)?
+            && let Some(reason) = record.locked_reason.as_deref()
+            && reason != cleanup_worktree_lock_reason(facts, &expected)
+        {
+            return Err(GitWorkspaceError::Conflict(
+                "Writer worktree has a foreign persistent lock".to_string(),
             ));
         }
-        Ok(Some(CleanupDisposition::Removed))
+        Ok(true)
+    }
+
+    pub(crate) fn cleanup_metadata_is_clear(
+        &self,
+        facts: &OwnedWorktreeFacts,
+        expected_branch_commit: &str,
+    ) -> Result<bool> {
+        self.validate_owned_facts_shape(facts)?;
+        validate_full_object_id_claim(expected_branch_commit)?;
+        let expected = expected_branch_commit.to_ascii_lowercase();
+        let tombstone_ref = cleanup_tombstone_ref(facts, &expected)?;
+        if let Some(actual) = resolve_ref_optional(&self.repository_root, &tombstone_ref)? {
+            if actual != expected {
+                return Err(GitWorkspaceError::OwnershipMismatch(format!(
+                    "Writer cleanup tombstone points to {actual}, expected {expected}"
+                )));
+            }
+            return Ok(false);
+        }
+        let head_lock_path = self.root_head_lock_path()?;
+        let marker = cleanup_head_lock_marker(facts, &expected);
+        if exact_marker_file(&head_lock_path, &marker)? {
+            return Ok(false);
+        }
+        if symlink_metadata_optional(&head_lock_path)?.is_some() {
+            return Err(GitWorkspaceError::Conflict(
+                "foreign Git HEAD lock is present while proving cleanup completion".to_string(),
+            ));
+        }
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn simulate_branch_only_cleanup_guard_crash(
+        &self,
+        facts: &OwnedWorktreeFacts,
+        expected_branch_commit: &str,
+    ) -> Result<()> {
+        self.validate_owned_facts_identity(facts)?;
+        let expected = resolve_exact_commit(&self.repository_root, expected_branch_commit)?;
+        let before = self.cleanup_resource_facts(facts)?;
+        if before.worktree != CleanupResourcePresence::Absent
+            || before.branch != CleanupResourcePresence::Present
+        {
+            return Err(GitWorkspaceError::Conflict(
+                "test crash fixture requires a branch-only Writer".to_string(),
+            ));
+        }
+        ensure_writer_branch_not_checked_out_elsewhere(&self.repository_root, facts)?;
+        let tombstone_ref = cleanup_tombstone_ref(facts, &expected)?;
+        create_exact_ref_cas(
+            &self.repository_root,
+            &tombstone_ref,
+            &expected,
+            "test persist Writer cleanup tombstone",
+        )?;
+        create_cleanup_guard_worktree(
+            &self.repository_root,
+            facts,
+            &expected,
+            &cleanup_worktree_lock_reason(facts, &expected),
+        )
+    }
+
+    /// Remove a previously inspected exact Writer. Dirty removal is permitted
+    /// only for the explicit failed-writer discard mode and only after all
+    /// owner, registry, backpointer, common-dir, branch, and commit checks pass.
+    /// CodeWhale serializes its own mutations through the repository lease;
+    /// an already-running external Git plumbing command is not transactionally
+    /// controlled, so any foreign Writer-branch checkout that becomes visible
+    /// is retained and its branch is restored instead of being deleted.
+    pub(crate) fn cleanup_exact(
+        &self,
+        facts: &OwnedWorktreeFacts,
+        expected_branch_commit: &str,
+    ) -> Result<ExactCleanupDisposition> {
+        self.cleanup_exact_with_hooks(
+            facts,
+            expected_branch_commit,
+            || Ok(()),
+            RootCleanupLock::release,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cleanup_exact_with_failed_root_lock_release(
+        &self,
+        facts: &OwnedWorktreeFacts,
+        expected_branch_commit: &str,
+    ) -> Result<ExactCleanupDisposition> {
+        self.cleanup_exact_with_hooks(
+            facts,
+            expected_branch_commit,
+            || Ok(()),
+            |root_lock| {
+                root_lock.release_with(|path| {
+                    Err(GitWorkspaceError::Io {
+                        operation: "inject cleanup HEAD lock unlink failure",
+                        path: path.to_path_buf(),
+                        source: io::Error::other("injected unlink failure"),
+                    })
+                })
+            },
+        )
+    }
+
+    #[cfg(test)]
+    fn cleanup_exact_with_hook<F>(
+        &self,
+        facts: &OwnedWorktreeFacts,
+        expected_branch_commit: &str,
+        pre_cleanup_hook: F,
+    ) -> Result<ExactCleanupDisposition>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        self.cleanup_exact_with_hooks(
+            facts,
+            expected_branch_commit,
+            pre_cleanup_hook,
+            RootCleanupLock::release,
+        )
+    }
+
+    fn cleanup_exact_with_hooks<F, R>(
+        &self,
+        facts: &OwnedWorktreeFacts,
+        expected_branch_commit: &str,
+        pre_cleanup_hook: F,
+        release_root_lock: R,
+    ) -> Result<ExactCleanupDisposition>
+    where
+        F: FnOnce() -> Result<()>,
+        R: FnOnce(RootCleanupLock) -> Result<()>,
+    {
+        let lease = self.acquire_root_integration_lease()?;
+        self.validate_owned_facts_shape(facts)?;
+        validate_full_object_id_claim(expected_branch_commit)?;
+        let expected = expected_branch_commit.to_ascii_lowercase();
+        let root_lock = self.acquire_root_cleanup_lock(lease, facts, &expected)?;
+        let cleanup = (|| {
+            let tombstone_ref = cleanup_tombstone_ref(facts, &expected)?;
+            let before = self.cleanup_resource_facts(facts)?;
+            let tombstone = resolve_ref_optional(&self.repository_root, &tombstone_ref)?;
+            if let Some(actual) = tombstone.as_deref()
+                && actual != expected
+            {
+                return Err(GitWorkspaceError::OwnershipMismatch(format!(
+                    "Writer cleanup tombstone points to {actual}, expected {expected}"
+                )));
+            }
+
+            if before.branch == CleanupResourcePresence::Absent {
+                retain_writer_branch_for_foreign_checkout(&self.repository_root, facts, &expected)?;
+            }
+
+            if before.worktree == CleanupResourcePresence::Absent
+                && before.branch == CleanupResourcePresence::Absent
+            {
+                return Ok((
+                    ExactCleanupDisposition {
+                        worktree: CleanupComponentDisposition::AlreadyAbsent,
+                        branch: CleanupComponentDisposition::AlreadyAbsent,
+                    },
+                    tombstone.map(|_| tombstone_ref),
+                ));
+            }
+
+            let resolved = resolve_exact_commit(&self.repository_root, &expected)?;
+            debug_assert_eq!(resolved, expected);
+
+            if before.worktree == CleanupResourcePresence::Present {
+                if let Some(record) = exact_registered_worktree(&self.repository_root, facts)?
+                    && let Some(reason) = record.locked_reason.as_deref()
+                {
+                    let expected_reason = cleanup_worktree_lock_reason(facts, &expected);
+                    if reason != expected_reason {
+                        return Err(GitWorkspaceError::Conflict(
+                            "Writer worktree has a foreign persistent lock".to_string(),
+                        ));
+                    }
+                    if tombstone.is_none() {
+                        return Err(GitWorkspaceError::OwnershipMismatch(
+                            "Writer cleanup lock exists without its exact tombstone".to_string(),
+                        ));
+                    }
+                }
+                if before.branch == CleanupResourcePresence::Present {
+                    if before.path == CleanupResourcePresence::Present {
+                        let allocation = self.rebuild_allocation(facts.clone())?;
+                        self.verify_owned_worktree(&allocation, &expected, false)?;
+                    } else {
+                        self.verify_missing_path_residue(facts, &expected)?;
+                    }
+                } else if tombstone.is_some() {
+                    verify_branchless_cleanup_worktree(
+                        &self.repository_root,
+                        &self.common_git_dir,
+                        facts,
+                        &expected,
+                    )?;
+                } else {
+                    return Err(GitWorkspaceError::OwnershipMismatch(
+                        "Writer branch disappeared without a cleanup tombstone".to_string(),
+                    ));
+                }
+            }
+
+            ensure_writer_branch_not_checked_out_elsewhere(&self.repository_root, facts)?;
+            if tombstone.is_none() {
+                require_ref(&self.repository_root, &facts.branch_ref, &expected)?;
+                create_exact_ref_cas(
+                    &self.repository_root,
+                    &tombstone_ref,
+                    &expected,
+                    "persist Writer cleanup tombstone",
+                )?;
+            }
+
+            let mut guarded = self.cleanup_resource_facts(facts)?;
+            if guarded.worktree == CleanupResourcePresence::Absent {
+                if guarded.branch != CleanupResourcePresence::Present {
+                    return Err(GitWorkspaceError::OwnershipMismatch(
+                        "Writer cleanup tombstone exists without a branch or worktree resource"
+                            .to_string(),
+                    ));
+                }
+                create_cleanup_guard_worktree(
+                    &self.repository_root,
+                    facts,
+                    &expected,
+                    &cleanup_worktree_lock_reason(facts, &expected),
+                )?;
+                guarded = self.cleanup_resource_facts(facts)?;
+            }
+
+            if guarded.branch == CleanupResourcePresence::Present {
+                if guarded.path == CleanupResourcePresence::Present {
+                    let allocation = self.rebuild_allocation(facts.clone())?;
+                    self.verify_owned_worktree(&allocation, &expected, false)?;
+                } else {
+                    self.verify_missing_path_residue(facts, &expected)?;
+                }
+            } else {
+                verify_branchless_cleanup_worktree(
+                    &self.repository_root,
+                    &self.common_git_dir,
+                    facts,
+                    &expected,
+                )?;
+            }
+            acquire_cleanup_worktree_lock(&self.repository_root, facts, &expected)?;
+            ensure_cleanup_root_is_registered(&self.repository_root)?;
+            pre_cleanup_hook()?;
+            ensure_cleanup_root_is_registered(&self.repository_root)?;
+            ensure_writer_branch_not_checked_out_elsewhere(&self.repository_root, facts)?;
+
+            let branch = delete_exact_writer_ref_cas(&self.repository_root, facts, &expected)?;
+            retain_writer_branch_for_foreign_checkout(&self.repository_root, facts, &expected)?;
+            verify_branchless_cleanup_worktree(
+                &self.repository_root,
+                &self.common_git_dir,
+                facts,
+                &expected,
+            )?;
+            git_checked(
+                &self.repository_root,
+                "remove exact locked Writer worktree",
+                [
+                    OsString::from("worktree"),
+                    OsString::from("remove"),
+                    OsString::from("--force"),
+                    OsString::from("--force"),
+                    facts.worktree_path.as_os_str().to_owned(),
+                ],
+            )?;
+            retain_writer_branch_for_foreign_checkout(&self.repository_root, facts, &expected)?;
+            let after_worktree = self.cleanup_resource_facts(facts)?;
+            if after_worktree.worktree != CleanupResourcePresence::Absent
+                || after_worktree.branch != CleanupResourcePresence::Absent
+            {
+                return Err(GitWorkspaceError::OwnershipMismatch(
+                    "exact Writer worktree or branch remained after cleanup".to_string(),
+                ));
+            }
+            Ok((
+                ExactCleanupDisposition {
+                    worktree: if before.worktree == CleanupResourcePresence::Present {
+                        CleanupComponentDisposition::Removed
+                    } else {
+                        CleanupComponentDisposition::AlreadyAbsent
+                    },
+                    branch,
+                },
+                Some(tombstone_ref),
+            ))
+        })();
+
+        match cleanup {
+            Ok((disposition, tombstone_ref)) => {
+                release_root_lock(root_lock)?;
+                if let Some(tombstone_ref) = tombstone_ref {
+                    retain_writer_branch_for_foreign_checkout(
+                        &self.repository_root,
+                        facts,
+                        &expected,
+                    )?;
+                    delete_exact_ref_cas(
+                        &self.repository_root,
+                        &tombstone_ref,
+                        &expected,
+                        "delete completed Writer cleanup tombstone",
+                    )?;
+                    if resolve_ref_optional(&self.repository_root, &tombstone_ref)?.is_some() {
+                        return Err(GitWorkspaceError::OwnershipMismatch(
+                            "Writer cleanup tombstone remained after cleanup".to_string(),
+                        ));
+                    }
+                    retain_writer_branch_for_foreign_checkout(
+                        &self.repository_root,
+                        facts,
+                        &expected,
+                    )?;
+                }
+                Ok(disposition)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Validate, stage, seal, and commit a writer's filesystem result using
@@ -726,7 +1339,7 @@ impl GitWorkspaceOwner {
         }
         self.verify_owned_worktree(allocation, &allocation.base_commit, false)?;
 
-        let initial_paths = collect_worktree_changes(&allocation.worktree_path)?;
+        let initial_paths = collect_worktree_changes(&allocation.worktree_path, allocation.limits)?;
         if initial_paths.is_empty() {
             return Err(GitWorkspaceError::EmptyDiff);
         }
@@ -742,9 +1355,12 @@ impl GitWorkspaceOwner {
             ],
         )?;
 
-        ensure_no_unstaged_or_untracked_changes(&allocation.worktree_path)?;
-        let changed_files =
-            staged_changed_paths(&allocation.worktree_path, allocation.base_commit())?;
+        ensure_no_unstaged_or_untracked_changes(&allocation.worktree_path, allocation.limits)?;
+        let changed_files = staged_changed_paths(
+            &allocation.worktree_path,
+            allocation.base_commit(),
+            allocation.limits,
+        )?;
         if changed_files.is_empty() {
             return Err(GitWorkspaceError::EmptyDiff);
         }
@@ -753,9 +1369,14 @@ impl GitWorkspaceOwner {
             &allocation.worktree_path,
             allocation.base_commit(),
             &changed_files,
+            allocation.limits,
         )?;
 
-        let diff = binary_diff_cached(&allocation.worktree_path, allocation.base_commit())?;
+        let diff = binary_diff_cached(
+            &allocation.worktree_path,
+            allocation.base_commit(),
+            allocation.limits.max_diff_bytes,
+        )?;
         if diff.is_empty() {
             return Err(GitWorkspaceError::EmptyDiff);
         }
@@ -787,7 +1408,7 @@ impl GitWorkspaceOwner {
             &allocation.branch_ref,
             &allocation.base_commit,
         )?;
-        ensure_no_unstaged_or_untracked_changes(&allocation.worktree_path)?;
+        ensure_no_unstaged_or_untracked_changes(&allocation.worktree_path, allocation.limits)?;
 
         let final_commit = git_text_with_identity(
             &allocation.worktree_path,
@@ -817,6 +1438,7 @@ impl GitWorkspaceOwner {
             &self.repository_root,
             allocation.base_commit(),
             &final_commit,
+            allocation.limits.max_diff_bytes,
         )?;
         if committed_diff != diff {
             return Err(GitWorkspaceError::OwnershipMismatch(
@@ -991,94 +1613,6 @@ impl GitWorkspaceOwner {
         })
     }
 
-    /// Remove only an exactly-owned, clean worktree and its exact writer ref.
-    ///
-    /// There is deliberately no `remove_dir_all`, `git clean`, `git reset`,
-    /// `git worktree prune`, or force removal fallback.
-    pub fn cleanup(
-        &self,
-        allocation: &OwnedWorktree,
-        expected_branch_commit: &str,
-    ) -> Result<CleanupDisposition> {
-        self.verify_allocation_owner(allocation)?;
-        let expected = resolve_exact_commit(&self.repository_root, expected_branch_commit)?;
-        let records = registered_worktrees(&self.repository_root)?;
-        let record = records
-            .iter()
-            .find(|record| same_path(&record.path, &allocation.worktree_path));
-        let branch_commit = resolve_ref_optional(&self.repository_root, &allocation.branch_ref)?;
-        let path_metadata = symlink_metadata_optional(&allocation.worktree_path)?;
-        let admin_metadata = symlink_metadata_optional(&allocation.worktree_git_dir)?;
-
-        if record.is_none()
-            && branch_commit.is_none()
-            && path_metadata.is_none()
-            && admin_metadata.is_none()
-        {
-            return Ok(CleanupDisposition::AlreadyAbsent);
-        }
-        if let Some(actual) = branch_commit.as_deref()
-            && actual != expected
-        {
-            return Err(GitWorkspaceError::OwnershipMismatch(format!(
-                "writer branch {} points to {actual}, expected {expected}",
-                allocation.branch_ref
-            )));
-        }
-
-        if let Some(record) = record {
-            verify_record(record, allocation, &expected)?;
-            verify_admin_backpointer(allocation)?;
-            if path_metadata.is_some() {
-                verify_worktree_backpointer(allocation)?;
-                ensure_clean(&allocation.worktree_path, "owned worktree cleanup")?;
-            }
-            git_checked(
-                &self.repository_root,
-                "remove owned writer worktree",
-                [
-                    OsString::from("worktree"),
-                    OsString::from("remove"),
-                    allocation.worktree_path.as_os_str().to_owned(),
-                ],
-            )?;
-            if registered_worktrees(&self.repository_root)?
-                .iter()
-                .any(|candidate| same_path(&candidate.path, &allocation.worktree_path))
-                || symlink_metadata_optional(&allocation.worktree_path)?.is_some()
-                || symlink_metadata_optional(&allocation.worktree_git_dir)?.is_some()
-            {
-                return Err(GitWorkspaceError::OwnershipMismatch(
-                    "Git did not fully remove the owned worktree registration".to_string(),
-                ));
-            }
-        } else if path_metadata.is_some() || admin_metadata.is_some() {
-            return Err(GitWorkspaceError::OwnershipMismatch(
-                "worktree path or admin directory exists without an exact Git registration"
-                    .to_string(),
-            ));
-        }
-
-        if branch_commit.is_some() {
-            git_checked(
-                &self.repository_root,
-                "delete exact owned writer branch",
-                [
-                    OsString::from("update-ref"),
-                    OsString::from("-d"),
-                    allocation.branch_ref.clone().into(),
-                    expected.into(),
-                ],
-            )?;
-        }
-        if resolve_ref_optional(&self.repository_root, &allocation.branch_ref)?.is_some() {
-            return Err(GitWorkspaceError::OwnershipMismatch(
-                "owned writer branch still exists after exact deletion".to_string(),
-            ));
-        }
-        Ok(CleanupDisposition::Removed)
-    }
-
     fn validate_bound_repository(&self, require_clean: bool) -> Result<RepositorySnapshot> {
         let snapshot = inspect_repository(&self.repository_root, require_clean)?;
         if snapshot.root != self.repository_root || snapshot.common_git_dir != self.common_git_dir {
@@ -1130,6 +1664,32 @@ impl GitWorkspaceOwner {
         })
     }
 
+    fn acquire_root_cleanup_lock(
+        &self,
+        lease: RootIntegrationLease,
+        facts: &OwnedWorktreeFacts,
+        expected_branch_commit: &str,
+    ) -> Result<RootCleanupLock> {
+        ensure_cleanup_root_is_registered(&self.repository_root)?;
+        let head_lock_path = self.root_head_lock_path()?;
+        let root_git_dir = head_lock_path
+            .parent()
+            .expect("root HEAD lock has Git directory parent");
+        let marker = cleanup_head_lock_marker(facts, expected_branch_commit);
+        let marker_temp_path = unique_integration_marker_temp_path(root_git_dir)?;
+        install_integration_head_lock(&head_lock_path, &marker_temp_path, &marker)?;
+        if let Err(error) = ensure_cleanup_root_is_registered(&self.repository_root) {
+            remove_exact_marker_file(&head_lock_path, &marker);
+            return Err(error);
+        }
+        Ok(RootCleanupLock {
+            _lease: lease,
+            head_lock_path,
+            marker,
+            remove_marker_on_drop: true,
+        })
+    }
+
     fn reconcile_pre_cas_head_lock(
         &self,
         allocation: &OwnedWorktree,
@@ -1163,6 +1723,12 @@ impl GitWorkspaceOwner {
     }
 
     fn validate_owned_facts_identity(&self, facts: &OwnedWorktreeFacts) -> Result<()> {
+        self.validate_owned_facts_shape(facts)?;
+        resolve_exact_commit(&self.repository_root, &facts.base_commit)?;
+        Ok(())
+    }
+
+    fn validate_owned_facts_shape(&self, facts: &OwnedWorktreeFacts) -> Result<()> {
         validate_owner_id(&facts.owner_id)?;
         validate_limits(facts.limits)?;
         let allowed_paths = normalize_allowed_paths(facts.allowed_paths.clone())?;
@@ -1171,7 +1737,7 @@ impl GitWorkspaceOwner {
                 "persisted allowed paths are not canonical".to_string(),
             ));
         }
-        resolve_exact_commit(&self.repository_root, &facts.base_commit)?;
+        validate_full_object_id_claim(&facts.base_commit)?;
         let expected_path = self.managed_root.join(&facts.owner_id);
         validate_derived_path(&self.managed_root, &expected_path)?;
         if facts.worktree_path != expected_path {
@@ -1468,6 +2034,15 @@ fn validate_limits(limits: SealLimits) -> Result<()> {
             "all seal limits must be positive".to_string(),
         ));
     }
+    if limits.max_changed_files > HOST_MAX_CHANGED_FILES
+        || limits.max_file_bytes > HOST_MAX_FILE_BYTES
+        || limits.max_total_file_bytes > HOST_MAX_TOTAL_FILE_BYTES
+        || limits.max_diff_bytes > HOST_MAX_DIFF_BYTES
+    {
+        return Err(GitWorkspaceError::InvalidRequest(
+            "seal limits exceed the Host hard maximum".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -1602,16 +2177,25 @@ fn validate_changed_paths(allocation: &OwnedWorktree, paths: &[PathBuf]) -> Resu
     Ok(())
 }
 
-fn validate_changed_modes(worktree: &Path, base: &str, changed: &[PathBuf]) -> Result<()> {
+fn validate_changed_modes(
+    worktree: &Path,
+    base: &str,
+    changed: &[PathBuf],
+    limits: SealLimits,
+) -> Result<()> {
     let changed = changed.iter().cloned().collect::<BTreeSet<_>>();
-    let index = git_checked(
+    let mut index_args = vec![
+        OsString::from("ls-files"),
+        OsString::from("--stage"),
+        OsString::from("-z"),
+        OsString::from("--"),
+    ];
+    index_args.extend(changed.iter().map(|path| path.as_os_str().to_owned()));
+    let index = git_checked_bounded(
         worktree,
         "inspect sealed index modes",
-        [
-            OsString::from("ls-files"),
-            OsString::from("--stage"),
-            OsString::from("-z"),
-        ],
+        index_args,
+        cleanup_path_output_limit(limits),
     )?;
     for (mode, path) in parse_mode_path_records(&index)? {
         if changed.contains(&path) && mode != "100644" && mode != "100755" {
@@ -1621,16 +2205,19 @@ fn validate_changed_modes(worktree: &Path, base: &str, changed: &[PathBuf]) -> R
             )));
         }
     }
-    let base_tree = git_checked(
+    let mut base_args = vec![
+        OsString::from("ls-tree"),
+        OsString::from("-r"),
+        OsString::from("-z"),
+        base.to_string().into(),
+        OsString::from("--"),
+    ];
+    base_args.extend(changed.iter().map(|path| path.as_os_str().to_owned()));
+    let base_tree = git_checked_bounded(
         worktree,
         "inspect base tree modes",
-        [
-            OsString::from("ls-tree"),
-            OsString::from("-r"),
-            OsString::from("-z"),
-            base.to_string().into(),
-            OsString::from("--"),
-        ],
+        base_args,
+        cleanup_path_output_limit(limits),
     )?;
     for (mode, path) in parse_mode_path_records(&base_tree)? {
         if changed.contains(&path) && mode != "100644" && mode != "100755" {
@@ -1669,21 +2256,26 @@ fn parse_mode_path_records(bytes: &[u8]) -> Result<Vec<(String, PathBuf)>> {
     Ok(records)
 }
 
-fn collect_worktree_changes(worktree: &Path) -> Result<Vec<PathBuf>> {
-    let tracked = git_checked(
+fn collect_worktree_changes(worktree: &Path, limits: SealLimits) -> Result<Vec<PathBuf>> {
+    let output_limit = cleanup_path_output_limit(limits);
+    let tracked = git_checked_bounded_nul_records(
         worktree,
         "collect tracked writer changes",
         [
             OsString::from("-c"),
             OsString::from("diff.renames=false"),
             OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
             OsString::from("--name-only"),
             OsString::from("-z"),
             OsString::from("HEAD"),
             OsString::from("--"),
         ],
+        output_limit,
+        limits.max_changed_files,
     )?;
-    let untracked = git_checked(
+    let untracked = git_checked_bounded_nul_records(
         worktree,
         "collect untracked writer changes",
         [
@@ -1693,39 +2285,197 @@ fn collect_worktree_changes(worktree: &Path) -> Result<Vec<PathBuf>> {
             OsString::from("-z"),
             OsString::from("--"),
         ],
+        output_limit,
+        limits.max_changed_files,
     )?;
-    let mut paths = parse_nul_paths(&tracked)?;
-    paths.extend(parse_nul_paths(&untracked)?);
+    let mut paths = parse_nul_paths(&tracked, limits.max_changed_files)?;
+    paths.extend(parse_nul_paths(&untracked, limits.max_changed_files)?);
+    ensure_path_count(&paths, limits.max_changed_files)?;
     Ok(paths.into_iter().collect())
 }
 
-fn staged_changed_paths(worktree: &Path, base: &str) -> Result<Vec<PathBuf>> {
-    let bytes = git_checked(
+fn collect_cleanup_changes(worktree: &Path, limits: SealLimits) -> Result<Vec<PathBuf>> {
+    let mut paths = collect_worktree_changes(worktree, limits)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let ignored = git_checked_bounded_nul_records(
+        worktree,
+        "collect ignored writer cleanup paths",
+        [
+            OsString::from("ls-files"),
+            OsString::from("--others"),
+            OsString::from("--ignored"),
+            OsString::from("--exclude-standard"),
+            OsString::from("-z"),
+            OsString::from("--"),
+        ],
+        cleanup_path_output_limit(limits),
+        limits.max_changed_files,
+    )?;
+    paths.extend(parse_nul_paths(&ignored, limits.max_changed_files)?);
+    ensure_path_count(&paths, limits.max_changed_files)?;
+    Ok(paths.into_iter().collect())
+}
+
+fn cleanup_path_output_limit(limits: SealLimits) -> usize {
+    limits
+        .max_changed_files
+        .saturating_add(1)
+        .saturating_mul(MAX_CLEANUP_PATH_BYTES_PER_ENTRY)
+        .min(MAX_CLEANUP_PATH_OUTPUT_BYTES)
+}
+
+fn cleanup_scope_facts(
+    worktree: &Path,
+    paths: Vec<PathBuf>,
+    limits: SealLimits,
+) -> Result<CleanupScopeFacts> {
+    if paths.len() > limits.max_changed_files {
+        return Err(GitWorkspaceError::LimitExceeded(format!(
+            "{} cleanup paths exceed limit {}",
+            paths.len(),
+            limits.max_changed_files
+        )));
+    }
+    let mut hasher = Sha256::new();
+    let mut total_file_bytes = 0_u64;
+    for path in &paths {
+        validate_relative_path(path, "cleanup path")?;
+        hash_cleanup_segment(&mut hasher, b"path", path.as_os_str().as_encoded_bytes());
+        let absolute = worktree.join(path);
+        let Some(metadata) = symlink_metadata_optional(&absolute)? else {
+            hash_cleanup_segment(&mut hasher, b"kind", b"absent");
+            continue;
+        };
+        let file_type = metadata.file_type();
+        if file_type.is_file() {
+            if metadata.len() > limits.max_file_bytes {
+                return Err(GitWorkspaceError::LimitExceeded(format!(
+                    "cleanup file {} is {} bytes, per-file limit is {}",
+                    path.display(),
+                    metadata.len(),
+                    limits.max_file_bytes
+                )));
+            }
+            total_file_bytes = total_file_bytes
+                .checked_add(metadata.len())
+                .ok_or_else(|| {
+                    GitWorkspaceError::LimitExceeded(
+                        "cleanup file byte count overflowed".to_string(),
+                    )
+                })?;
+            if total_file_bytes > limits.max_total_file_bytes {
+                return Err(GitWorkspaceError::LimitExceeded(format!(
+                    "cleanup files total {total_file_bytes} bytes, limit is {}",
+                    limits.max_total_file_bytes
+                )));
+            }
+            hash_cleanup_segment(&mut hasher, b"kind", b"file");
+            hash_cleanup_segment(&mut hasher, b"length", &metadata.len().to_le_bytes());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::MetadataExt as _;
+                hash_cleanup_segment(&mut hasher, b"mode", &metadata.mode().to_le_bytes());
+            }
+            let mut file = File::open(&absolute).map_err(|source| GitWorkspaceError::Io {
+                operation: "open writer cleanup path",
+                path: absolute.clone(),
+                source,
+            })?;
+            let mut buffer = [0_u8; 64 * 1024];
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .map_err(|source| GitWorkspaceError::Io {
+                        operation: "read writer cleanup path",
+                        path: absolute.clone(),
+                        source,
+                    })?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+            }
+        } else if file_type.is_symlink() {
+            hash_cleanup_segment(&mut hasher, b"kind", b"symlink");
+            let target = fs::read_link(&absolute).map_err(|source| GitWorkspaceError::Io {
+                operation: "read writer cleanup symlink",
+                path: absolute.clone(),
+                source,
+            })?;
+            hash_cleanup_segment(
+                &mut hasher,
+                b"target",
+                target.as_os_str().as_encoded_bytes(),
+            );
+        } else {
+            return Err(GitWorkspaceError::Conflict(format!(
+                "writer cleanup path is a special filesystem entry: {}",
+                path.display()
+            )));
+        }
+    }
+    Ok(CleanupScopeFacts {
+        paths,
+        revision_sha256: hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    })
+}
+
+fn hash_cleanup_segment(hasher: &mut Sha256, label: &[u8], bytes: &[u8]) {
+    hasher.update((label.len() as u64).to_le_bytes());
+    hasher.update(label);
+    hasher.update((bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
+fn staged_changed_paths(worktree: &Path, base: &str, limits: SealLimits) -> Result<Vec<PathBuf>> {
+    let bytes = git_checked_bounded_nul_records(
         worktree,
         "collect staged writer changes",
         [
             OsString::from("diff"),
             OsString::from("--cached"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
             OsString::from("--no-renames"),
             OsString::from("--name-only"),
             OsString::from("-z"),
             base.to_string().into(),
             OsString::from("--"),
         ],
+        cleanup_path_output_limit(limits),
+        limits.max_changed_files,
     )?;
-    Ok(parse_nul_paths(&bytes)?.into_iter().collect())
+    Ok(parse_nul_paths(&bytes, limits.max_changed_files)?
+        .into_iter()
+        .collect())
 }
 
-fn parse_nul_paths(bytes: &[u8]) -> Result<BTreeSet<PathBuf>> {
+fn parse_nul_paths(bytes: &[u8], max_entries: usize) -> Result<BTreeSet<PathBuf>> {
     let mut paths = BTreeSet::new();
     for raw in bytes.split(|byte| *byte == 0).filter(|raw| !raw.is_empty()) {
         paths.insert(path_from_git_bytes(raw)?);
+        ensure_path_count(&paths, max_entries)?;
     }
     Ok(paths)
 }
 
-fn binary_diff_cached(worktree: &Path, base: &str) -> Result<Vec<u8>> {
-    git_checked(
+fn ensure_path_count(paths: &BTreeSet<PathBuf>, max_entries: usize) -> Result<()> {
+    if paths.len() > max_entries {
+        return Err(GitWorkspaceError::LimitExceeded(format!(
+            "{} changed paths exceed limit {max_entries}",
+            paths.len()
+        )));
+    }
+    Ok(())
+}
+
+fn binary_diff_cached(worktree: &Path, base: &str, max_bytes: usize) -> Result<Vec<u8>> {
+    git_checked_bounded(
         worktree,
         "render staged binary diff",
         [
@@ -1738,11 +2488,17 @@ fn binary_diff_cached(worktree: &Path, base: &str) -> Result<Vec<u8>> {
             base.to_string().into(),
             OsString::from("--"),
         ],
+        max_bytes,
     )
 }
 
-fn binary_diff_commits(repo: &Path, base: &str, final_commit: &str) -> Result<Vec<u8>> {
-    git_checked(
+fn binary_diff_commits(
+    repo: &Path,
+    base: &str,
+    final_commit: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    git_checked_bounded(
         repo,
         "render sealed binary diff",
         [
@@ -1755,6 +2511,7 @@ fn binary_diff_commits(repo: &Path, base: &str, final_commit: &str) -> Result<Ve
             final_commit.to_string().into(),
             OsString::from("--"),
         ],
+        max_bytes,
     )
 }
 
@@ -1793,13 +2550,23 @@ fn verify_sealed_commit(
             "sealed commit tree no longer matches Host result".to_string(),
         ));
     }
-    let diff = binary_diff_commits(repo, allocation.base_commit(), sealed.final_commit())?;
+    let diff = binary_diff_commits(
+        repo,
+        allocation.base_commit(),
+        sealed.final_commit(),
+        allocation.limits.max_diff_bytes,
+    )?;
     if sha256_hex(&diff) != sealed.diff_sha256 || diff != sealed.diff {
         return Err(GitWorkspaceError::OwnershipMismatch(
             "sealed commit diff no longer matches Host result".to_string(),
         ));
     }
-    let changed = committed_changed_paths(repo, allocation.base_commit(), sealed.final_commit())?;
+    let changed = committed_changed_paths(
+        repo,
+        allocation.base_commit(),
+        sealed.final_commit(),
+        allocation.limits,
+    )?;
     if changed != sealed.changed_files {
         return Err(GitWorkspaceError::OwnershipMismatch(
             "sealed commit changed-file set no longer matches Host result".to_string(),
@@ -1811,6 +2578,14 @@ fn verify_sealed_commit(
 fn verify_host_seal_identity(
     repo: &Path,
     allocation: &OwnedWorktree,
+    final_commit: &str,
+) -> Result<()> {
+    verify_host_seal_identity_for_owner(repo, &allocation.owner_id, final_commit)
+}
+
+fn verify_host_seal_identity_for_owner(
+    repo: &Path,
+    owner_id: &str,
     final_commit: &str,
 ) -> Result<()> {
     let identity = git_checked(
@@ -1825,7 +2600,7 @@ fn verify_host_seal_identity(
     )?;
     let expected = format!(
         "CodeWhale Host\0host@codewhale.local\0CodeWhale Host\0host@codewhale.local\0CodeWhale writer {}\n",
-        allocation.owner_id
+        owner_id
     );
     if identity != expected.as_bytes() {
         return Err(GitWorkspaceError::OwnershipMismatch(
@@ -1835,12 +2610,19 @@ fn verify_host_seal_identity(
     Ok(())
 }
 
-fn committed_changed_paths(repo: &Path, base: &str, final_commit: &str) -> Result<Vec<PathBuf>> {
-    let bytes = git_checked(
+fn committed_changed_paths(
+    repo: &Path,
+    base: &str,
+    final_commit: &str,
+    limits: SealLimits,
+) -> Result<Vec<PathBuf>> {
+    let bytes = git_checked_bounded_nul_records(
         repo,
         "collect sealed changed paths",
         [
             OsString::from("diff"),
+            OsString::from("--no-ext-diff"),
+            OsString::from("--no-textconv"),
             OsString::from("--no-renames"),
             OsString::from("--name-only"),
             OsString::from("-z"),
@@ -1848,8 +2630,12 @@ fn committed_changed_paths(repo: &Path, base: &str, final_commit: &str) -> Resul
             final_commit.to_string().into(),
             OsString::from("--"),
         ],
+        cleanup_path_output_limit(limits),
+        limits.max_changed_files,
     )?;
-    Ok(parse_nul_paths(&bytes)?.into_iter().collect())
+    Ok(parse_nul_paths(&bytes, limits.max_changed_files)?
+        .into_iter()
+        .collect())
 }
 
 fn commit_tree(repo: &Path, commit: &str) -> Result<String> {
@@ -1864,7 +2650,7 @@ fn commit_tree(repo: &Path, commit: &str) -> Result<String> {
     )
 }
 
-fn ensure_no_unstaged_or_untracked_changes(worktree: &Path) -> Result<()> {
+fn ensure_no_unstaged_or_untracked_changes(worktree: &Path, limits: SealLimits) -> Result<()> {
     let unstaged = git_probe(
         worktree,
         [
@@ -1881,7 +2667,7 @@ fn ensure_no_unstaged_or_untracked_changes(worktree: &Path) -> Result<()> {
     if !unstaged.status.success() {
         return Err(git_failure("check unstaged writer changes", &unstaged));
     }
-    let untracked = git_checked(
+    let untracked = git_checked_bounded_nul_records(
         worktree,
         "check untracked writer changes",
         [
@@ -1891,6 +2677,8 @@ fn ensure_no_unstaged_or_untracked_changes(worktree: &Path) -> Result<()> {
             OsString::from("-z"),
             OsString::from("--"),
         ],
+        cleanup_path_output_limit(limits),
+        limits.max_changed_files,
     )?;
     if !untracked.is_empty() {
         return Err(GitWorkspaceError::Conflict(
@@ -2002,13 +2790,7 @@ fn materialize_root_fast_forward(repo: &Path, base: &str, final_commit: &str) ->
 }
 
 fn resolve_exact_commit(repo: &Path, requested: &str) -> Result<String> {
-    if !matches!(requested.len(), 40 | 64)
-        || !requested.bytes().all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(GitWorkspaceError::InvalidRequest(
-            "base/expected commit must be a full hexadecimal object id".to_string(),
-        ));
-    }
+    validate_full_object_id_claim(requested)?;
     let resolved = git_text(
         repo,
         "resolve exact commit",
@@ -2024,6 +2806,17 @@ fn resolve_exact_commit(repo: &Path, requested: &str) -> Result<String> {
         )));
     }
     Ok(resolved)
+}
+
+fn validate_full_object_id_claim(requested: &str) -> Result<()> {
+    if !matches!(requested.len(), 40 | 64)
+        || !requested.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(GitWorkspaceError::InvalidRequest(
+            "base/expected commit must be a full hexadecimal object id".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn resolve_head(repo: &Path) -> Result<String> {
@@ -2080,6 +2873,291 @@ fn require_ref(repo: &Path, reference: &str, expected: &str) -> Result<()> {
     Ok(())
 }
 
+fn ensure_writer_branch_not_checked_out_elsewhere(
+    repo: &Path,
+    facts: &OwnedWorktreeFacts,
+) -> Result<()> {
+    if registered_worktrees(repo)?.into_iter().any(|record| {
+        record.branch_ref.as_deref() == Some(facts.branch_ref.as_str())
+            && !same_path(&record.path, &facts.worktree_path)
+    }) {
+        return Err(GitWorkspaceError::Conflict(
+            "Writer branch is checked out by another worktree".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn retain_writer_branch_for_foreign_checkout(
+    repo: &Path,
+    facts: &OwnedWorktreeFacts,
+    expected: &str,
+) -> Result<()> {
+    let foreign_checkout = registered_worktrees(repo)?.into_iter().any(|record| {
+        record.branch_ref.as_deref() == Some(facts.branch_ref.as_str())
+            && !same_path(&record.path, &facts.worktree_path)
+    });
+    if !foreign_checkout {
+        return Ok(());
+    }
+    if resolve_ref_optional(repo, &facts.branch_ref)?.is_none() {
+        create_exact_ref_cas(
+            repo,
+            &facts.branch_ref,
+            expected,
+            "restore Writer branch for a concurrent foreign checkout",
+        )?;
+    }
+    Err(GitWorkspaceError::Conflict(
+        "a concurrent worktree checkout claimed the Writer branch; the branch was retained"
+            .to_string(),
+    ))
+}
+
+fn ensure_cleanup_root_is_registered(repo: &Path) -> Result<()> {
+    if !registered_worktrees(repo)?
+        .iter()
+        .any(|record| same_path(&record.path, repo))
+    {
+        return Err(GitWorkspaceError::OwnershipMismatch(
+            "Git worktree registry no longer contains the canonical root".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn cleanup_tombstone_ref(facts: &OwnedWorktreeFacts, expected: &str) -> Result<String> {
+    validate_owner_id(&facts.owner_id)?;
+    if !matches!(expected.len(), 40 | 64) || !expected.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(GitWorkspaceError::InvalidRequest(
+            "Writer cleanup tombstone requires a full hexadecimal object id".to_string(),
+        ));
+    }
+    let reference = format!("refs/codewhale/cleanup/{}/{}", facts.owner_id, expected);
+    Ok(reference)
+}
+
+fn cleanup_worktree_lock_reason(facts: &OwnedWorktreeFacts, expected: &str) -> String {
+    format!("codewhale-cleanup-v1:{}:{expected}", facts.owner_id)
+}
+
+fn create_exact_ref_cas(
+    repo: &Path,
+    reference: &str,
+    expected: &str,
+    operation: &'static str,
+) -> Result<()> {
+    git_checked(
+        repo,
+        operation,
+        [
+            OsString::from("update-ref"),
+            reference.into(),
+            expected.into(),
+            "0".repeat(expected.len()).into(),
+        ],
+    )?;
+    require_ref(repo, reference, expected)
+}
+
+fn delete_exact_ref_cas(
+    repo: &Path,
+    reference: &str,
+    expected: &str,
+    operation: &'static str,
+) -> Result<()> {
+    let Some(actual) = resolve_ref_optional(repo, reference)? else {
+        return Ok(());
+    };
+    if actual != expected {
+        return Err(GitWorkspaceError::OwnershipMismatch(format!(
+            "ref {reference} points to {actual}, expected {expected}"
+        )));
+    }
+    git_checked(
+        repo,
+        operation,
+        [
+            OsString::from("update-ref"),
+            OsString::from("-d"),
+            reference.into(),
+            expected.into(),
+        ],
+    )?;
+    if resolve_ref_optional(repo, reference)?.is_some() {
+        return Err(GitWorkspaceError::OwnershipMismatch(format!(
+            "ref {reference} remained after compare-and-swap deletion"
+        )));
+    }
+    Ok(())
+}
+
+fn create_cleanup_guard_worktree(
+    repo: &Path,
+    facts: &OwnedWorktreeFacts,
+    expected: &str,
+    lock_reason: &str,
+) -> Result<()> {
+    if symlink_metadata_optional(&facts.worktree_path)?.is_some()
+        || exact_registered_worktree(repo, facts)?.is_some()
+    {
+        return Err(GitWorkspaceError::Conflict(
+            "cannot create a cleanup guard over an existing Writer resource".to_string(),
+        ));
+    }
+    require_ref(repo, &facts.branch_ref, expected)?;
+    git_checked(
+        repo,
+        "create locked Writer cleanup guard worktree",
+        [
+            OsString::from("worktree"),
+            OsString::from("add"),
+            OsString::from("--no-checkout"),
+            OsString::from("--lock"),
+            OsString::from("--reason"),
+            lock_reason.into(),
+            facts.worktree_path.as_os_str().to_owned(),
+            branch_ref_to_short(&facts.branch_ref)?.into(),
+        ],
+    )?;
+    let record = exact_registered_worktree(repo, facts)?.ok_or_else(|| {
+        GitWorkspaceError::OwnershipMismatch(
+            "Git did not register the exact Writer cleanup guard".to_string(),
+        )
+    })?;
+    verify_record_facts(&record, facts, expected)?;
+    if record.locked_reason.as_deref() != Some(lock_reason) {
+        return Err(GitWorkspaceError::OwnershipMismatch(
+            "Writer cleanup guard was not created with the exact lock reason".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn acquire_cleanup_worktree_lock(
+    repo: &Path,
+    facts: &OwnedWorktreeFacts,
+    expected: &str,
+) -> Result<()> {
+    let reason = cleanup_worktree_lock_reason(facts, expected);
+    let record = exact_registered_worktree(repo, facts)?.ok_or_else(|| {
+        GitWorkspaceError::OwnershipMismatch(
+            "exact Writer worktree disappeared before cleanup lock".to_string(),
+        )
+    })?;
+    match record.locked_reason.as_deref() {
+        Some(actual) if actual == reason => return Ok(()),
+        Some(_) => {
+            return Err(GitWorkspaceError::Conflict(
+                "Writer worktree has a foreign persistent lock".to_string(),
+            ));
+        }
+        None => {}
+    }
+    git_checked(
+        repo,
+        "lock exact Writer worktree for cleanup",
+        [
+            OsString::from("worktree"),
+            OsString::from("lock"),
+            OsString::from("--reason"),
+            reason.clone().into(),
+            facts.worktree_path.as_os_str().to_owned(),
+        ],
+    )?;
+    let locked = exact_registered_worktree(repo, facts)?.ok_or_else(|| {
+        GitWorkspaceError::OwnershipMismatch(
+            "exact Writer worktree disappeared after cleanup lock".to_string(),
+        )
+    })?;
+    if locked.locked_reason.as_deref() != Some(reason.as_str()) {
+        return Err(GitWorkspaceError::OwnershipMismatch(
+            "Writer worktree cleanup lock reason changed unexpectedly".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_branchless_cleanup_worktree(
+    repo: &Path,
+    common_git_dir: &Path,
+    facts: &OwnedWorktreeFacts,
+    expected: &str,
+) -> Result<()> {
+    if resolve_ref_optional(repo, &facts.branch_ref)?.is_some() {
+        return Err(GitWorkspaceError::OwnershipMismatch(
+            "branchless cleanup verification observed a live Writer branch".to_string(),
+        ));
+    }
+    let record = exact_registered_worktree(repo, facts)?.ok_or_else(|| {
+        GitWorkspaceError::OwnershipMismatch(
+            "branchless Writer cleanup lacks its exact worktree registration".to_string(),
+        )
+    })?;
+    if record.branch_ref.as_deref() != Some(facts.branch_ref.as_str())
+        || record.head.len() != expected.len()
+        || !record.head.bytes().all(|byte| byte == b'0')
+    {
+        return Err(GitWorkspaceError::OwnershipMismatch(
+            "branchless Writer registration does not have the expected dangling HEAD identity"
+                .to_string(),
+        ));
+    }
+    let admin_dir = owned_admin_entry(common_git_dir, facts)?.ok_or_else(|| {
+        GitWorkspaceError::OwnershipMismatch(
+            "branchless Writer cleanup lacks its exact Git admin entry".to_string(),
+        )
+    })?;
+    verify_admin_backpointer_facts(&admin_dir, &facts.worktree_path)?;
+    if symlink_metadata_optional(&facts.worktree_path)?.is_some() {
+        let canonical_worktree = canonical_dir(
+            &facts.worktree_path,
+            "canonicalize branchless Writer cleanup worktree",
+        )?;
+        if canonical_worktree != facts.worktree_path {
+            return Err(GitWorkspaceError::OwnershipMismatch(
+                "branchless Writer cleanup path changed identity".to_string(),
+            ));
+        }
+        verify_worktree_pointer_to_admin(&facts.worktree_path, &admin_dir)?;
+    }
+    Ok(())
+}
+
+fn delete_exact_writer_ref_cas(
+    repo: &Path,
+    facts: &OwnedWorktreeFacts,
+    expected: &str,
+) -> Result<CleanupComponentDisposition> {
+    let Some(actual) = resolve_ref_optional(repo, &facts.branch_ref)? else {
+        return Ok(CleanupComponentDisposition::AlreadyAbsent);
+    };
+    if actual != expected {
+        return Err(GitWorkspaceError::OwnershipMismatch(format!(
+            "writer branch {} points to {actual}, expected {expected}",
+            facts.branch_ref
+        )));
+    }
+    ensure_writer_branch_not_checked_out_elsewhere(repo, facts)?;
+    git_checked(
+        repo,
+        "delete exact owned writer branch",
+        [
+            OsString::from("update-ref"),
+            OsString::from("-d"),
+            facts.branch_ref.clone().into(),
+            expected.to_owned().into(),
+        ],
+    )?;
+    if resolve_ref_optional(repo, &facts.branch_ref)?.is_some() {
+        return Err(GitWorkspaceError::OwnershipMismatch(
+            "exact Writer branch remained after compare-and-swap deletion".to_string(),
+        ));
+    }
+    Ok(CleanupComponentDisposition::Removed)
+}
+
 fn branch_ref_to_short(branch_ref: &str) -> Result<String> {
     branch_ref
         .strip_prefix("refs/heads/")
@@ -2092,7 +3170,7 @@ fn branch_ref_to_short(branch_ref: &str) -> Result<String> {
 }
 
 fn registered_worktrees(repo: &Path) -> Result<Vec<WorktreeRecord>> {
-    let bytes = git_checked(
+    let bytes = git_checked_bounded_double_nul_records(
         repo,
         "list registered worktrees",
         [
@@ -2101,6 +3179,8 @@ fn registered_worktrees(repo: &Path) -> Result<Vec<WorktreeRecord>> {
             OsString::from("--porcelain"),
             OsString::from("-z"),
         ],
+        MAX_REGISTERED_WORKTREE_OUTPUT_BYTES,
+        MAX_REGISTERED_WORKTREES,
     )?;
     let mut records = Vec::new();
     let mut fields = BTreeMap::<String, Vec<u8>>::new();
@@ -2108,6 +3188,11 @@ fn registered_worktrees(repo: &Path) -> Result<Vec<WorktreeRecord>> {
         if field.is_empty() {
             if !fields.is_empty() {
                 records.push(worktree_record_from_fields(&fields)?);
+                if records.len() > MAX_REGISTERED_WORKTREES {
+                    return Err(GitWorkspaceError::LimitExceeded(format!(
+                        "Git worktree registry exceeds {MAX_REGISTERED_WORKTREES} records"
+                    )));
+                }
                 fields.clear();
             }
             continue;
@@ -2128,6 +3213,11 @@ fn registered_worktrees(repo: &Path) -> Result<Vec<WorktreeRecord>> {
     }
     if !fields.is_empty() {
         records.push(worktree_record_from_fields(&fields)?);
+        if records.len() > MAX_REGISTERED_WORKTREES {
+            return Err(GitWorkspaceError::LimitExceeded(format!(
+                "Git worktree registry exceeds {MAX_REGISTERED_WORKTREES} records"
+            )));
+        }
     }
     Ok(records)
 }
@@ -2149,10 +3239,15 @@ fn worktree_record_from_fields(fields: &BTreeMap<String, Vec<u8>>) -> Result<Wor
         .get("branch")
         .map(|raw| ascii_string(raw, "worktree branch"))
         .transpose()?;
+    let locked_reason = fields
+        .get("locked")
+        .map(|raw| ascii_string(raw, "worktree lock reason"))
+        .transpose()?;
     Ok(WorktreeRecord {
         path,
         head,
         branch_ref,
+        locked_reason,
     })
 }
 
@@ -2161,23 +3256,51 @@ fn verify_record(
     allocation: &OwnedWorktree,
     expected: &str,
 ) -> Result<()> {
+    verify_record_identity(record, &allocation.branch_ref, expected)
+}
+
+fn verify_record_facts(
+    record: &WorktreeRecord,
+    facts: &OwnedWorktreeFacts,
+    expected: &str,
+) -> Result<()> {
+    verify_record_identity(record, &facts.branch_ref, expected)
+}
+
+fn verify_record_identity(
+    record: &WorktreeRecord,
+    expected_branch_ref: &str,
+    expected: &str,
+) -> Result<()> {
     if record.head != expected {
         return Err(GitWorkspaceError::OwnershipMismatch(format!(
             "registered worktree HEAD is {}, expected {expected}",
             record.head
         )));
     }
-    if record.branch_ref.as_deref() != Some(allocation.branch_ref.as_str()) {
+    if record.branch_ref.as_deref() != Some(expected_branch_ref) {
         return Err(GitWorkspaceError::OwnershipMismatch(format!(
             "registered worktree branch is {:?}, expected {}",
-            record.branch_ref, allocation.branch_ref
+            record.branch_ref, expected_branch_ref
         )));
     }
     Ok(())
 }
 
 fn verify_worktree_backpointer(allocation: &OwnedWorktree) -> Result<()> {
-    let pointer_path = allocation.worktree_path.join(".git");
+    verify_worktree_pointer_to_admin(&allocation.worktree_path, &allocation.worktree_git_dir)?;
+    let admin_parent = allocation.common_git_dir.join("worktrees");
+    let admin_parent = canonical_dir(&admin_parent, "canonicalize worktree admin root")?;
+    if !allocation.worktree_git_dir.starts_with(admin_parent) {
+        return Err(GitWorkspaceError::OwnershipMismatch(
+            "worktree admin directory is outside common Git worktrees directory".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_worktree_pointer_to_admin(worktree_path: &Path, admin_dir: &Path) -> Result<()> {
+    let pointer_path = worktree_path.join(".git");
     let metadata = fs::symlink_metadata(&pointer_path).map_err(|source| GitWorkspaceError::Io {
         operation: "stat worktree .git pointer",
         path: pointer_path.clone(),
@@ -2196,30 +3319,28 @@ fn verify_worktree_backpointer(allocation: &OwnedWorktree) -> Result<()> {
             pointer_path.display()
         ))
     })?;
-    let target = resolve_pointer_path(&allocation.worktree_path, Path::new(raw));
+    let target = resolve_pointer_path(worktree_path, Path::new(raw));
     let target = canonical_dir(&target, "canonicalize .git pointer target")?;
-    if target != allocation.worktree_git_dir {
+    let expected_admin = canonical_dir(admin_dir, "canonicalize expected worktree admin dir")?;
+    if target != expected_admin {
         return Err(GitWorkspaceError::OwnershipMismatch(format!(
             "worktree .git points to {}, expected {}",
             target.display(),
-            allocation.worktree_git_dir.display()
+            expected_admin.display()
         )));
-    }
-    let admin_parent = allocation.common_git_dir.join("worktrees");
-    let admin_parent = canonical_dir(&admin_parent, "canonicalize worktree admin root")?;
-    if !allocation.worktree_git_dir.starts_with(admin_parent) {
-        return Err(GitWorkspaceError::OwnershipMismatch(
-            "worktree admin directory is outside common Git worktrees directory".to_string(),
-        ));
     }
     Ok(())
 }
 
 fn verify_admin_backpointer(allocation: &OwnedWorktree) -> Result<()> {
-    let backpointer = allocation.worktree_git_dir.join("gitdir");
+    verify_admin_backpointer_facts(&allocation.worktree_git_dir, &allocation.worktree_path)
+}
+
+fn verify_admin_backpointer_facts(admin_dir: &Path, worktree_path: &Path) -> Result<()> {
+    let backpointer = admin_dir.join("gitdir");
     let raw = read_bounded_pointer(&backpointer)?;
-    let target = resolve_pointer_path(&allocation.worktree_git_dir, Path::new(&raw));
-    let expected = allocation.worktree_path.join(".git");
+    let target = resolve_pointer_path(admin_dir, Path::new(&raw));
+    let expected = worktree_path.join(".git");
     if !same_path(&target, &expected) {
         return Err(GitWorkspaceError::OwnershipMismatch(format!(
             "worktree admin backpointer targets {}, expected {}",
@@ -2228,6 +3349,88 @@ fn verify_admin_backpointer(allocation: &OwnedWorktree) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+fn exact_registered_worktree(
+    repository_root: &Path,
+    facts: &OwnedWorktreeFacts,
+) -> Result<Option<WorktreeRecord>> {
+    let mut matching = registered_worktrees(repository_root)?
+        .into_iter()
+        .filter(|record| same_path(&record.path, &facts.worktree_path));
+    let record = matching.next();
+    if matching.next().is_some() {
+        return Err(GitWorkspaceError::OwnershipMismatch(
+            "multiple Git worktree records target the exact Writer path".to_string(),
+        ));
+    }
+    Ok(record)
+}
+
+fn owned_admin_entry(common_git_dir: &Path, facts: &OwnedWorktreeFacts) -> Result<Option<PathBuf>> {
+    let admin_root = common_git_dir.join("worktrees");
+    if symlink_metadata_optional(&admin_root)?.is_none() {
+        return Ok(None);
+    }
+    let expected = facts.worktree_path.join(".git");
+    let entries = fs::read_dir(&admin_root).map_err(|source| GitWorkspaceError::Io {
+        operation: "list Git worktree admin directory",
+        path: admin_root.clone(),
+        source,
+    })?;
+    let mut matching = None;
+    for entry in entries {
+        let entry = entry.map_err(|source| GitWorkspaceError::Io {
+            operation: "read Git worktree admin entry",
+            path: admin_root.clone(),
+            source,
+        })?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with(&facts.owner_id) {
+            continue;
+        }
+        let admin_dir = entry.path();
+        let metadata =
+            fs::symlink_metadata(&admin_dir).map_err(|source| GitWorkspaceError::Io {
+                operation: "stat Git worktree admin entry",
+                path: admin_dir.clone(),
+                source,
+            })?;
+        if !metadata.file_type().is_dir() {
+            return Err(GitWorkspaceError::OwnershipMismatch(
+                "Writer-prefixed Git admin entry is not a directory".to_string(),
+            ));
+        }
+        let head_path = admin_dir.join("HEAD");
+        if symlink_metadata_optional(&head_path)?.is_none() {
+            continue;
+        }
+        let head = read_bounded_pointer(&head_path)?;
+        if head.trim_end() != format!("ref: {}", facts.branch_ref) {
+            continue;
+        }
+        let backpointer = admin_dir.join("gitdir");
+        if symlink_metadata_optional(&backpointer)?.is_none() {
+            return Err(GitWorkspaceError::OwnershipMismatch(
+                "Writer-prefixed Git admin entry lacks a backpointer".to_string(),
+            ));
+        }
+        let raw = read_bounded_pointer(&backpointer)?;
+        let target = resolve_pointer_path(&admin_dir, Path::new(&raw));
+        if !same_path(&target, &expected) {
+            return Err(GitWorkspaceError::OwnershipMismatch(
+                "exact Writer Git admin entry targets another worktree path".to_string(),
+            ));
+        }
+        if matching.is_some() {
+            return Err(GitWorkspaceError::OwnershipMismatch(
+                "multiple Git admin entries target the exact Writer path".to_string(),
+            ));
+        }
+        matching = Some(admin_dir);
+    }
+    Ok(matching)
 }
 
 fn read_bounded_pointer(path: &Path) -> Result<String> {
@@ -2305,6 +3508,331 @@ where
     Ok(output.stdout)
 }
 
+fn git_checked_bounded<I>(
+    repo: &Path,
+    operation: &str,
+    args: I,
+    stdout_limit: usize,
+) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    git_checked_bounded_inner(repo, operation, args, stdout_limit, None)
+}
+
+fn git_checked_bounded_nul_records<I>(
+    repo: &Path,
+    operation: &str,
+    args: I,
+    stdout_limit: usize,
+    max_records: usize,
+) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    git_checked_bounded_inner(
+        repo,
+        operation,
+        args,
+        stdout_limit,
+        Some(BoundedRecordCounter::nul(max_records)),
+    )
+}
+
+fn git_checked_bounded_double_nul_records<I>(
+    repo: &Path,
+    operation: &str,
+    args: I,
+    stdout_limit: usize,
+    max_records: usize,
+) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    git_checked_bounded_inner(
+        repo,
+        operation,
+        args,
+        stdout_limit,
+        Some(BoundedRecordCounter::double_nul(max_records)),
+    )
+}
+
+fn git_checked_bounded_inner<I>(
+    repo: &Path,
+    operation: &str,
+    args: I,
+    stdout_limit: usize,
+    mut record_counter: Option<BoundedRecordCounter>,
+) -> Result<Vec<u8>>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    if stdout_limit > HOST_MAX_GIT_OUTPUT_BYTES {
+        return Err(GitWorkspaceError::InvalidRequest(format!(
+            "{operation} output limit exceeds the Host hard maximum"
+        )));
+    }
+    let stdout_file = tempfile::NamedTempFile::new().map_err(|source| GitWorkspaceError::Io {
+        operation: "create bounded Git output file",
+        path: repo.to_path_buf(),
+        source,
+    })?;
+    let child_stdout =
+        stdout_file
+            .as_file()
+            .try_clone()
+            .map_err(|source| GitWorkspaceError::Io {
+                operation: "clone bounded Git output file",
+                path: repo.to_path_buf(),
+                source,
+            })?;
+    let mut monitor = File::open(stdout_file.path()).map_err(|source| GitWorkspaceError::Io {
+        operation: "open bounded Git output monitor",
+        path: repo.to_path_buf(),
+        source,
+    })?;
+    let mut command = isolated_git_command(repo, false);
+    command
+        .args(args)
+        .stdout(Stdio::from(child_stdout))
+        .stderr(Stdio::null());
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = command.spawn().map_err(|source| GitWorkspaceError::Io {
+        operation: "launch bounded Git operation",
+        path: repo.to_path_buf(),
+        source,
+    })?;
+    let mut child = BoundedGitChild::new(child);
+    let deadline = Instant::now() + BOUNDED_GIT_COMMAND_TIMEOUT;
+    let stdout_limit_u64 = u64::try_from(stdout_limit).unwrap_or(u64::MAX);
+    let status = loop {
+        if stdout_file
+            .as_file()
+            .metadata()
+            .map_err(|source| GitWorkspaceError::Io {
+                operation: "inspect bounded Git output",
+                path: repo.to_path_buf(),
+                source,
+            })?
+            .len()
+            > stdout_limit_u64
+        {
+            return Err(GitWorkspaceError::LimitExceeded(format!(
+                "{operation} exceeded the Host output byte limit"
+            )));
+        }
+        if let Some(counter) = record_counter.as_mut() {
+            scan_bounded_records(&mut monitor, counter, deadline, repo, operation)?;
+        }
+        if let Some(status) = child.try_wait().map_err(|source| GitWorkspaceError::Io {
+            operation: "poll bounded Git operation",
+            path: repo.to_path_buf(),
+            source,
+        })? {
+            child.terminate_process_group_and_reap();
+            break status;
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err(GitWorkspaceError::LimitExceeded(format!(
+                "{operation} exceeded the Host time limit"
+            )));
+        }
+        thread::sleep(BOUNDED_GIT_POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
+    };
+    if let Some(counter) = record_counter.as_mut() {
+        scan_bounded_records(&mut monitor, counter, deadline, repo, operation)?;
+    }
+    if !status.success() {
+        return Err(GitWorkspaceError::Git {
+            operation: operation.to_owned(),
+            status: status.code(),
+            detail: "bounded Git operation failed".to_string(),
+        });
+    }
+    let output_len = stdout_file
+        .as_file()
+        .metadata()
+        .map_err(|source| GitWorkspaceError::Io {
+            operation: "inspect completed bounded Git output",
+            path: repo.to_path_buf(),
+            source,
+        })?
+        .len();
+    if output_len > stdout_limit_u64 {
+        return Err(GitWorkspaceError::LimitExceeded(format!(
+            "{operation} exceeded the Host output byte limit"
+        )));
+    }
+    let mut output = File::open(stdout_file.path()).map_err(|source| GitWorkspaceError::Io {
+        operation: "open completed bounded Git output",
+        path: repo.to_path_buf(),
+        source,
+    })?;
+    output
+        .seek(SeekFrom::Start(0))
+        .map_err(|source| GitWorkspaceError::Io {
+            operation: "rewind bounded Git output",
+            path: repo.to_path_buf(),
+            source,
+        })?;
+    let mut bytes = Vec::with_capacity(usize::try_from(output_len).unwrap_or(stdout_limit));
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        if Instant::now() >= deadline {
+            return Err(GitWorkspaceError::LimitExceeded(format!(
+                "{operation} exceeded the Host time limit"
+            )));
+        }
+        let read = output
+            .read(&mut buffer)
+            .map_err(|source| GitWorkspaceError::Io {
+                operation: "read bounded Git output",
+                path: repo.to_path_buf(),
+                source,
+            })?;
+        if read == 0 {
+            break;
+        }
+        if bytes.len().saturating_add(read) > stdout_limit {
+            return Err(GitWorkspaceError::LimitExceeded(format!(
+                "{operation} exceeded the Host output byte limit"
+            )));
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    Ok(bytes)
+}
+
+struct BoundedGitChild {
+    child: Child,
+    armed: bool,
+}
+
+impl BoundedGitChild {
+    fn new(child: Child) -> Self {
+        Self { child, armed: true }
+    }
+
+    fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        self.child.try_wait()
+    }
+
+    fn terminate_process_group_and_reap(&mut self) {
+        if !self.armed {
+            return;
+        }
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        self.armed = false;
+    }
+}
+
+impl Drop for BoundedGitChild {
+    fn drop(&mut self) {
+        self.terminate_process_group_and_reap();
+    }
+}
+
+enum BoundedRecordSeparator {
+    Nul,
+    DoubleNul,
+}
+
+struct BoundedRecordCounter {
+    separator: BoundedRecordSeparator,
+    max_records: usize,
+    records: usize,
+    previous_was_nul: bool,
+}
+
+impl BoundedRecordCounter {
+    fn nul(max_records: usize) -> Self {
+        Self {
+            separator: BoundedRecordSeparator::Nul,
+            max_records,
+            records: 0,
+            previous_was_nul: false,
+        }
+    }
+
+    fn double_nul(max_records: usize) -> Self {
+        Self {
+            separator: BoundedRecordSeparator::DoubleNul,
+            max_records,
+            records: 0,
+            previous_was_nul: false,
+        }
+    }
+
+    fn observe(&mut self, bytes: &[u8]) -> bool {
+        for byte in bytes {
+            match self.separator {
+                BoundedRecordSeparator::Nul => {
+                    if *byte == 0 {
+                        self.records = self.records.saturating_add(1);
+                    }
+                }
+                BoundedRecordSeparator::DoubleNul => {
+                    if *byte == 0 {
+                        if self.previous_was_nul {
+                            self.records = self.records.saturating_add(1);
+                            self.previous_was_nul = false;
+                        } else {
+                            self.previous_was_nul = true;
+                        }
+                    } else {
+                        self.previous_was_nul = false;
+                    }
+                }
+            }
+            if self.records > self.max_records {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn scan_bounded_records(
+    monitor: &mut File,
+    counter: &mut BoundedRecordCounter,
+    deadline: Instant,
+    repo: &Path,
+    operation: &str,
+) -> Result<()> {
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        if Instant::now() >= deadline {
+            return Err(GitWorkspaceError::LimitExceeded(format!(
+                "{operation} exceeded the Host time limit"
+            )));
+        }
+        let read = monitor
+            .read(&mut buffer)
+            .map_err(|source| GitWorkspaceError::Io {
+                operation: "scan bounded Git records",
+                path: repo.to_path_buf(),
+                source,
+            })?;
+        if read == 0 {
+            return Ok(());
+        }
+        if !counter.observe(&buffer[..read]) {
+            return Err(GitWorkspaceError::LimitExceeded(format!(
+                "{operation} exceeded the Host record limit {}",
+                counter.max_records
+            )));
+        }
+    }
+}
+
 fn git_probe<I>(repo: &Path, args: I) -> Result<Output>
 where
     I: IntoIterator<Item = OsString>,
@@ -2370,11 +3898,13 @@ fn isolated_git_command(repo: &Path, with_identity: bool) -> Command {
         .arg("-c")
         .arg(format!("core.hooksPath={}", null_device()))
         .arg("-c")
+        .arg("core.fsmonitor=false")
+        .arg("-c")
+        .arg("core.untrackedCache=false")
+        .arg("-c")
         .arg("commit.gpgSign=false")
         .arg("-c")
         .arg("tag.gpgSign=false")
-        .arg("-c")
-        .arg("core.fsmonitor=false")
         .env("LC_ALL", "C")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_NO_REPLACE_OBJECTS", "1");
@@ -2538,6 +4068,18 @@ fn integration_head_lock_marker(allocation: &OwnedWorktree, sealed: &SealedWorkt
         allocation.base_commit,
         sealed.final_commit,
         sealed.diff_sha256,
+    )
+    .into_bytes()
+}
+
+fn cleanup_head_lock_marker(facts: &OwnedWorktreeFacts, expected_branch_commit: &str) -> Vec<u8> {
+    format!(
+        "{CLEANUP_HEAD_LOCK_VERSION}\nowner={}\nroot_ref={}\nwriter_ref={}\nbase={}\nexpected={}\n",
+        facts.owner_id,
+        facts.root_branch_ref,
+        facts.branch_ref,
+        facts.base_commit,
+        expected_branch_commit,
     )
     .into_bytes()
 }
@@ -2718,7 +4260,7 @@ fn null_device() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::process::Command;
     use tempfile::TempDir;
 
@@ -2887,18 +4429,25 @@ mod tests {
             "pub fn value() -> u8 { 2 }\n"
         );
 
+        let cleanup_facts = allocation.durable_facts();
         assert_eq!(
             owner
-                .cleanup(&allocation, sealed.final_commit())
+                .cleanup_exact(&cleanup_facts, sealed.final_commit())
                 .expect("cleanup"),
-            CleanupDisposition::Removed
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::Removed,
+                branch: CleanupComponentDisposition::Removed,
+            }
         );
         assert!(!allocation.path().exists());
         assert_eq!(
             owner
-                .cleanup(&allocation, sealed.final_commit())
+                .cleanup_exact(&cleanup_facts, sealed.final_commit())
                 .expect("idempotent cleanup"),
-            CleanupDisposition::AlreadyAbsent
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::AlreadyAbsent,
+                branch: CleanupComponentDisposition::AlreadyAbsent,
+            }
         );
     }
 
@@ -3304,7 +4853,7 @@ mod tests {
         );
         assert!(!allocation.path().exists());
         assert_eq!(
-            resolve_ref_optional(&repo.root, allocation.branch_ref())
+            resolve_ref_optional(&repo.root, &allocation.branch_ref)
                 .expect("writer ref")
                 .as_deref(),
             Some(sealed.final_commit())
@@ -3312,15 +4861,693 @@ mod tests {
 
         assert_eq!(
             owner
-                .cleanup_branch_only(&facts, sealed.final_commit())
+                .cleanup_exact_with_hook(&facts, sealed.final_commit(), || {
+                    let writer_branch =
+                        branch_ref_to_short(&facts.branch_ref).expect("short writer branch");
+                    let output = Command::new("git")
+                        .current_dir(&repo.root)
+                        .args(["switch", &writer_branch])
+                        .output()
+                        .expect("attempt concurrent root switch");
+                    assert!(
+                        !output.status.success(),
+                        "root HEAD.lock must close the checkout-before-CAS window"
+                    );
+                    Ok(())
+                })
                 .expect("resume branch deletion"),
-            Some(CleanupDisposition::Removed)
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::AlreadyAbsent,
+                branch: CleanupComponentDisposition::Removed,
+            }
         );
         assert_eq!(
             owner
-                .cleanup_branch_only(&facts, sealed.final_commit())
+                .cleanup_exact(&facts, sealed.final_commit())
                 .expect("repeat branch deletion"),
-            Some(CleanupDisposition::AlreadyAbsent)
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::AlreadyAbsent,
+                branch: CleanupComponentDisposition::AlreadyAbsent,
+            }
+        );
+    }
+
+    #[test]
+    fn cleanup_tombstone_recovers_each_destructive_git_crash_window() {
+        for crash_after in ["intent", "branch", "worktree"] {
+            let repo = TestRepository::new();
+            let owner = repo.owner();
+            let allocation = owner
+                .create(repo.request(&format!("writer_cleanup_{crash_after}"), &["src"]))
+                .expect("create writer");
+            fs::write(
+                allocation.path().join("src/lib.rs"),
+                format!("pub fn phase() -> &'static str {{ \"{crash_after}\" }}\n"),
+            )
+            .expect("edit writer");
+            let sealed = owner.seal(&allocation).expect("seal writer");
+            let facts = allocation.durable_facts();
+            let expected = sealed.final_commit();
+            let tombstone = cleanup_tombstone_ref(&facts, expected).expect("cleanup tombstone");
+
+            create_exact_ref_cas(
+                &repo.root,
+                &tombstone,
+                expected,
+                "test persist cleanup tombstone",
+            )
+            .expect("persist tombstone");
+            if crash_after != "intent" {
+                acquire_cleanup_worktree_lock(&repo.root, &facts, expected)
+                    .expect("lock writer for simulated cleanup");
+                assert_eq!(
+                    delete_exact_writer_ref_cas(&repo.root, &facts, expected)
+                        .expect("delete writer branch"),
+                    CleanupComponentDisposition::Removed
+                );
+                assert_eq!(
+                    resolve_ref_optional(&repo.root, &tombstone)
+                        .expect("resolve retained tombstone")
+                        .as_deref(),
+                    Some(expected),
+                    "the tombstone must keep an unintegrated seal reachable"
+                );
+                if crash_after == "branch" {
+                    git_ok(
+                        &repo.root,
+                        [
+                            OsString::from("gc"),
+                            OsString::from("--prune=now"),
+                            OsString::from("--quiet"),
+                        ],
+                    );
+                    assert_eq!(
+                        resolve_exact_commit(&repo.root, expected)
+                            .expect("tombstone-protected commit after GC"),
+                        expected
+                    );
+                }
+            }
+            if crash_after == "worktree" {
+                git_ok(
+                    &repo.root,
+                    [
+                        OsString::from("worktree"),
+                        OsString::from("remove"),
+                        OsString::from("--force"),
+                        OsString::from("--force"),
+                        facts.worktree_path.as_os_str().to_owned(),
+                    ],
+                );
+            }
+
+            let recovered = owner
+                .cleanup_exact(&facts, expected)
+                .expect("recover interrupted cleanup");
+            assert_eq!(
+                recovered,
+                ExactCleanupDisposition {
+                    worktree: if crash_after == "worktree" {
+                        CleanupComponentDisposition::AlreadyAbsent
+                    } else {
+                        CleanupComponentDisposition::Removed
+                    },
+                    branch: if crash_after == "intent" {
+                        CleanupComponentDisposition::Removed
+                    } else {
+                        CleanupComponentDisposition::AlreadyAbsent
+                    },
+                },
+                "unexpected recovery disposition after {crash_after}"
+            );
+            assert_eq!(
+                resolve_ref_optional(&repo.root, &tombstone).expect("final tombstone state"),
+                None
+            );
+            assert_eq!(
+                owner
+                    .cleanup_exact(&facts, expected)
+                    .expect("repeat recovered cleanup"),
+                ExactCleanupDisposition {
+                    worktree: CleanupComponentDisposition::AlreadyAbsent,
+                    branch: CleanupComponentDisposition::AlreadyAbsent,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn cleanup_tombstone_oid_mismatch_has_zero_destructive_side_effects() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_foreign_cleanup_tombstone", &["src"]))
+            .expect("create writer");
+        fs::write(
+            allocation.path().join("src/lib.rs"),
+            "pub fn value() -> u8 { 99 }\n",
+        )
+        .expect("edit writer");
+        let sealed = owner.seal(&allocation).expect("seal writer");
+        let facts = allocation.durable_facts();
+        let tombstone = cleanup_tombstone_ref(&facts, sealed.final_commit())
+            .expect("derived cleanup tombstone");
+        git_ok(
+            &repo.root,
+            [
+                OsString::from("update-ref"),
+                tombstone.clone().into(),
+                allocation.base_commit().into(),
+            ],
+        );
+        let writer_bytes = fs::read(allocation.path().join("src/lib.rs"))
+            .expect("Writer bytes before rejected cleanup");
+
+        assert!(matches!(
+            owner.cleanup_exact(&facts, sealed.final_commit()),
+            Err(GitWorkspaceError::OwnershipMismatch(_))
+        ));
+        assert_eq!(
+            fs::read(allocation.path().join("src/lib.rs"))
+                .expect("Writer bytes after rejected cleanup"),
+            writer_bytes
+        );
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &facts.branch_ref)
+                .expect("retained Writer branch")
+                .as_deref(),
+            Some(sealed.final_commit())
+        );
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &tombstone)
+                .expect("retained foreign tombstone")
+                .as_deref(),
+            Some(allocation.base_commit())
+        );
+    }
+
+    #[test]
+    fn branch_only_cleanup_blocks_a_concurrent_foreign_worktree_checkout() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_branch_add_race", &["src"]))
+            .expect("create writer");
+        let facts = allocation.durable_facts();
+        git_ok(
+            &repo.root,
+            [
+                OsString::from("worktree"),
+                OsString::from("remove"),
+                allocation.path().as_os_str().to_owned(),
+            ],
+        );
+        let foreign_path = repo.managed.join("foreign-writer-checkout");
+
+        let cleaned = owner
+            .cleanup_exact_with_hook(&facts, allocation.base_commit(), || {
+                let output = Command::new("git")
+                    .current_dir(&repo.root)
+                    .args([
+                        "worktree",
+                        "add",
+                        foreign_path.to_str().expect("UTF-8 test path"),
+                        &branch_ref_to_short(&facts.branch_ref).expect("short Writer branch"),
+                    ])
+                    .output()
+                    .expect("attempt foreign Writer checkout");
+                assert!(
+                    !output.status.success(),
+                    "the exact locked cleanup guard must keep the Writer branch occupied"
+                );
+                assert!(!foreign_path.exists());
+                Ok(())
+            })
+            .expect("cleanup while foreign checkout loses the race");
+        assert_eq!(
+            cleaned,
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::AlreadyAbsent,
+                branch: CleanupComponentDisposition::Removed,
+            }
+        );
+        assert_eq!(
+            registered_worktrees(&repo.root)
+                .expect("final worktrees")
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn observed_late_foreign_checkout_restores_the_writer_branch() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_late_foreign_checkout", &["src"]))
+            .expect("create Writer");
+        let facts = allocation.durable_facts();
+        let expected = allocation.base_commit();
+        let tombstone = cleanup_tombstone_ref(&facts, expected).expect("cleanup tombstone");
+        let foreign_path = repo.managed.join("late-foreign-checkout");
+        git_ok(
+            &repo.root,
+            [
+                OsString::from("worktree"),
+                OsString::from("add"),
+                OsString::from("--detach"),
+                OsString::from("--no-checkout"),
+                foreign_path.as_os_str().to_owned(),
+                expected.into(),
+            ],
+        );
+        let foreign_admin = rev_parse_path(
+            &foreign_path,
+            "--absolute-git-dir",
+            "resolve foreign test admin dir",
+        )
+        .expect("foreign admin dir");
+        create_exact_ref_cas(
+            &repo.root,
+            &tombstone,
+            expected,
+            "test persist cleanup tombstone",
+        )
+        .expect("persist tombstone");
+        acquire_cleanup_worktree_lock(&repo.root, &facts, expected).expect("lock exact Writer");
+        delete_exact_writer_ref_cas(&repo.root, &facts, expected).expect("delete Writer branch");
+        fs::write(
+            foreign_admin.join("HEAD"),
+            format!("ref: {}\n", facts.branch_ref),
+        )
+        .expect("simulate a delayed foreign registration publish");
+
+        assert!(matches!(
+            owner.cleanup_exact(&facts, expected),
+            Err(GitWorkspaceError::Conflict(_))
+        ));
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &facts.branch_ref)
+                .expect("restored Writer branch")
+                .as_deref(),
+            Some(expected)
+        );
+        assert!(allocation.path().exists(), "owned Writer must be retained");
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &tombstone)
+                .expect("retained cleanup tombstone")
+                .as_deref(),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn cleanup_preserves_unrelated_user_worktrees() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_with_user_worktree", &["src"]))
+            .expect("create writer");
+        let facts = allocation.durable_facts();
+        let user_path = repo.managed.join("user-worktree");
+        git_ok(
+            &repo.root,
+            [
+                OsString::from("worktree"),
+                OsString::from("add"),
+                OsString::from("-b"),
+                OsString::from("user-worktree"),
+                user_path.as_os_str().to_owned(),
+                repo.head.clone().into(),
+            ],
+        );
+        let user_head = resolve_head(&user_path).expect("user worktree HEAD before cleanup");
+
+        assert_eq!(
+            owner
+                .cleanup_exact(&facts, allocation.base_commit())
+                .expect("cleanup with unrelated user worktree"),
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::Removed,
+                branch: CleanupComponentDisposition::Removed,
+            }
+        );
+        assert!(user_path.exists());
+        assert_eq!(
+            resolve_head(&user_path).expect("user worktree HEAD after cleanup"),
+            user_head
+        );
+        assert_eq!(
+            symbolic_head(&user_path).expect("user worktree branch after cleanup"),
+            "refs/heads/user-worktree"
+        );
+        assert!(
+            registered_worktrees(&repo.root)
+                .expect("final worktree registry")
+                .iter()
+                .any(|record| same_path(&record.path, &user_path))
+        );
+    }
+
+    #[test]
+    fn cleanup_head_lock_release_failure_is_not_reported_as_success() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_cleanup_lock_release", &["src"]))
+            .expect("create writer");
+        let facts = allocation.durable_facts();
+        let lease = owner
+            .acquire_root_integration_lease()
+            .expect("acquire cleanup lease");
+        let lock = owner
+            .acquire_root_cleanup_lock(lease, &facts, allocation.base_commit())
+            .expect("acquire cleanup HEAD lock");
+        let lock_path = lock.head_lock_path.clone();
+        let marker = lock.marker.clone();
+        let error = lock
+            .release_with(|path| {
+                Err(GitWorkspaceError::Io {
+                    operation: "inject cleanup HEAD lock unlink failure",
+                    path: path.to_path_buf(),
+                    source: io::Error::other("injected unlink failure"),
+                })
+            })
+            .expect_err("failed unlink must not report cleanup lock release");
+        assert!(matches!(error, GitWorkspaceError::Io { .. }));
+        assert!(
+            exact_marker_file(&lock_path, &marker).expect("retained exact cleanup marker"),
+            "an unreported release must remain exactly recoverable"
+        );
+
+        let retry_lease = owner
+            .acquire_root_integration_lease()
+            .expect("reacquire cleanup lease");
+        owner
+            .acquire_root_cleanup_lock(retry_lease, &facts, allocation.base_commit())
+            .expect("reconcile exact failed release marker")
+            .release()
+            .expect("release recovered cleanup HEAD lock");
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn cleanup_release_failure_keeps_the_tombstone_until_exact_recovery() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_cleanup_release_recovery", &["src"]))
+            .expect("create writer");
+        fs::write(
+            allocation.path().join("src/lib.rs"),
+            "pub fn value() -> u8 { 71 }\n",
+        )
+        .expect("edit Writer");
+        let sealed = owner.seal(&allocation).expect("seal Writer");
+        let facts = allocation.durable_facts();
+        let expected = sealed.final_commit();
+        let tombstone = cleanup_tombstone_ref(&facts, expected).expect("cleanup tombstone");
+        let retained_lock = RefCell::new(None::<(PathBuf, Vec<u8>)>);
+        owner
+            .cleanup_exact_with_hooks(
+                &facts,
+                expected,
+                || Ok(()),
+                |root_lock| {
+                    retained_lock.replace(Some((
+                        root_lock.head_lock_path.clone(),
+                        root_lock.marker.clone(),
+                    )));
+                    root_lock.release_with(|path| {
+                        Err(GitWorkspaceError::Io {
+                            operation: "inject post-cleanup HEAD lock unlink failure",
+                            path: path.to_path_buf(),
+                            source: io::Error::other("injected unlink failure"),
+                        })
+                    })
+                },
+            )
+            .expect_err("production cleanup must report a failed root lock release");
+        let (root_lock_path, root_lock_marker) = retained_lock
+            .into_inner()
+            .expect("production cleanup reached explicit root lock release");
+        assert!(
+            exact_marker_file(&root_lock_path, &root_lock_marker)
+                .expect("retained cleanup HEAD lock")
+        );
+        assert!(!facts.worktree_path.exists());
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &facts.branch_ref).expect("deleted Writer branch"),
+            None
+        );
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &tombstone)
+                .expect("retained cleanup tombstone")
+                .as_deref(),
+            Some(expected),
+            "the tombstone must outlive a failed root lock release"
+        );
+        assert_eq!(
+            resolve_exact_commit(&repo.root, expected).expect("tombstone-protected seal"),
+            expected
+        );
+
+        assert_eq!(
+            owner
+                .cleanup_exact(&facts, expected)
+                .expect("recover cleanup after the failed root lock release"),
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::AlreadyAbsent,
+                branch: CleanupComponentDisposition::AlreadyAbsent,
+            }
+        );
+        assert!(!root_lock_path.exists());
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &tombstone).expect("final tombstone state"),
+            None
+        );
+        git_ok(
+            &repo.root,
+            [
+                OsString::from("reflog"),
+                OsString::from("expire"),
+                OsString::from("--expire=now"),
+                OsString::from("--all"),
+            ],
+        );
+        git_ok(
+            &repo.root,
+            [
+                OsString::from("gc"),
+                OsString::from("--prune=now"),
+                OsString::from("--quiet"),
+            ],
+        );
+        assert!(
+            resolve_exact_commit(&repo.root, expected).is_err(),
+            "the fixture must prove idempotence after the unreachable seal is collected"
+        );
+        assert_eq!(
+            owner
+                .cleanup_exact(&facts, expected)
+                .expect("repeat cleanup without the collected seal object"),
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::AlreadyAbsent,
+                branch: CleanupComponentDisposition::AlreadyAbsent,
+            }
+        );
+    }
+
+    #[test]
+    fn branch_only_cleanup_retains_a_writer_ref_checked_out_by_root() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_branch_checked_out", &["src"]))
+            .expect("create writer");
+        fs::write(
+            allocation.path().join("src/lib.rs"),
+            "pub fn value() -> u8 { 31 }\n",
+        )
+        .expect("edit writer");
+        let sealed = owner.seal(&allocation).expect("seal writer");
+        let facts = allocation.durable_facts();
+        git_ok(
+            &repo.root,
+            [
+                OsString::from("worktree"),
+                OsString::from("remove"),
+                allocation.path().as_os_str().to_owned(),
+            ],
+        );
+        let writer_branch = branch_ref_to_short(&allocation.branch_ref).expect("short branch");
+        git_ok(
+            &repo.root,
+            [OsString::from("switch"), writer_branch.clone().into()],
+        );
+
+        assert!(matches!(
+            owner.cleanup_exact(&facts, sealed.final_commit()),
+            Err(GitWorkspaceError::Conflict(_))
+        ));
+        assert_eq!(
+            symbolic_head(&repo.root).expect("root branch"),
+            allocation.branch_ref
+        );
+        assert_eq!(
+            resolve_head(&repo.root).expect("root HEAD"),
+            sealed.final_commit()
+        );
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &allocation.branch_ref)
+                .expect("writer ref")
+                .as_deref(),
+            Some(sealed.final_commit())
+        );
+    }
+
+    #[test]
+    fn live_cleanup_has_zero_side_effect_when_writer_branch_is_checked_out_elsewhere() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_live_foreign_checkout", &["src"]))
+            .expect("create writer");
+        fs::write(
+            allocation.path().join("src/lib.rs"),
+            "pub fn value() -> u8 { 37 }\n",
+        )
+        .expect("edit writer");
+        let facts = allocation.durable_facts();
+        let writer_branch = branch_ref_to_short(&allocation.branch_ref).expect("short branch");
+        git_ok(
+            &repo.root,
+            [
+                OsString::from("switch"),
+                OsString::from("--ignore-other-worktrees"),
+                writer_branch.into(),
+            ],
+        );
+        let writer_bytes_before =
+            fs::read(allocation.path().join("src/lib.rs")).expect("writer bytes before cleanup");
+
+        assert!(matches!(
+            owner.cleanup_exact(&facts, allocation.base_commit()),
+            Err(GitWorkspaceError::Conflict(_))
+        ));
+        assert!(allocation.path().exists(), "Writer path must be retained");
+        assert_eq!(
+            fs::read(allocation.path().join("src/lib.rs")).expect("writer bytes after cleanup"),
+            writer_bytes_before
+        );
+        assert_eq!(
+            symbolic_head(&repo.root).expect("root branch"),
+            allocation.branch_ref
+        );
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &allocation.branch_ref)
+                .expect("writer ref")
+                .as_deref(),
+            Some(allocation.base_commit())
+        );
+    }
+
+    #[test]
+    fn cleanup_resumes_an_exact_missing_path_registry_window() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_missing_path_cleanup", &["src"]))
+            .expect("create writer");
+        fs::write(
+            allocation.path().join("src/lib.rs"),
+            "pub fn value() -> u8 { 29 }\n",
+        )
+        .expect("edit writer");
+        let sealed = owner.seal(&allocation).expect("seal writer");
+        let facts = allocation.durable_facts();
+        let frozen_scope = owner
+            .inspect_cleanup_paths(&facts, Some(&sealed.durable_facts()))
+            .expect("freeze sealed cleanup scope before path loss");
+        assert_eq!(frozen_scope.paths, vec![PathBuf::from("src/lib.rs")]);
+
+        fs::remove_dir_all(allocation.path()).expect("simulate checkout deletion crash");
+        assert!(!allocation.path().exists());
+        assert!(
+            exact_registered_worktree(&repo.root, &facts)
+                .expect("registered residue")
+                .is_some()
+        );
+        assert!(
+            owned_admin_entry(&owner.common_git_dir, &facts)
+                .expect("admin residue")
+                .is_some()
+        );
+        assert!(matches!(
+            owner.inspect_cleanup_paths(&facts, Some(&sealed.durable_facts())),
+            Err(GitWorkspaceError::Conflict(_))
+        ));
+
+        assert_eq!(
+            owner
+                .cleanup_exact(&facts, sealed.final_commit())
+                .expect("finish exact missing-path cleanup"),
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::Removed,
+                branch: CleanupComponentDisposition::Removed,
+            }
+        );
+        assert_eq!(
+            owner
+                .cleanup_exact(&facts, sealed.final_commit())
+                .expect("repeat exact missing-path cleanup"),
+            ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::AlreadyAbsent,
+                branch: CleanupComponentDisposition::AlreadyAbsent,
+            }
+        );
+    }
+
+    #[test]
+    fn cleanup_retains_missing_path_residue_with_a_changed_admin_backpointer() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_missing_path_guard", &["src"]))
+            .expect("create writer");
+        let facts = allocation.durable_facts();
+        let admin_dir = owned_admin_entry(&owner.common_git_dir, &facts)
+            .expect("inspect admin entry")
+            .expect("exact admin entry");
+
+        fs::remove_dir_all(allocation.path()).expect("simulate checkout deletion crash");
+        fs::write(
+            admin_dir.join("gitdir"),
+            repo.root.join(".git").display().to_string(),
+        )
+        .expect("replace admin backpointer");
+
+        let cleanup = owner.cleanup_exact(&facts, allocation.base_commit());
+        assert!(
+            matches!(
+                cleanup,
+                Err(GitWorkspaceError::Conflict(_) | GitWorkspaceError::OwnershipMismatch(_))
+            ),
+            "unexpected cleanup result: {cleanup:?}"
+        );
+        assert!(admin_dir.exists(), "uncertain admin entry must be retained");
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &facts.branch_ref)
+                .expect("inspect retained branch")
+                .as_deref(),
+            Some(allocation.base_commit())
+        );
+        let tombstone = cleanup_tombstone_ref(&facts, allocation.base_commit())
+            .expect("derived cleanup tombstone");
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &tombstone).expect("inspect cleanup tombstone"),
+            None,
+            "identity rejection must not persist cleanup intent"
         );
     }
 
@@ -3497,7 +5724,7 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_never_removes_a_dirty_or_ref_mismatched_worktree() {
+    fn cleanup_discards_exact_dirty_writer_but_rejects_ref_mismatch() {
         let repo = TestRepository::new();
         let owner = repo.owner();
         let allocation = owner
@@ -3509,11 +5736,22 @@ mod tests {
         )
         .expect("dirty writer");
         assert!(matches!(
-            owner.cleanup(&allocation, allocation.base_commit()),
-            Err(GitWorkspaceError::DirtyRepository(_))
+            owner.cleanup_exact(&allocation.durable_facts(), allocation.base_commit()),
+            Ok(ExactCleanupDisposition {
+                worktree: CleanupComponentDisposition::Removed,
+                branch: CleanupComponentDisposition::Removed,
+            })
         ));
-        assert!(allocation.path().exists());
+        assert!(!allocation.path().exists());
 
+        let allocation = owner
+            .create(repo.request("writer_cleanup_ref_guard", &["src"]))
+            .expect("create second writer");
+        fs::write(
+            allocation.path().join("src/lib.rs"),
+            "pub fn value() -> u8 { 5 }\n",
+        )
+        .expect("edit second writer");
         git_ok(
             allocation.path(),
             [OsString::from("add"), OsString::from("src/lib.rs")],
@@ -3527,10 +5765,395 @@ mod tests {
             ],
         );
         assert!(matches!(
-            owner.cleanup(&allocation, allocation.base_commit()),
+            owner.cleanup_exact(&allocation.durable_facts(), allocation.base_commit()),
             Err(GitWorkspaceError::OwnershipMismatch(_))
         ));
         assert!(allocation.path().exists());
+    }
+
+    #[test]
+    fn cleanup_is_independent_of_root_dirty_advanced_and_detached_states() {
+        for root_state in ["dirty", "advanced", "detached", "switched"] {
+            let repo = TestRepository::new();
+            let allocation = repo
+                .owner()
+                .create(repo.request(&format!("writer_root_{root_state}"), &["src"]))
+                .expect("create writer");
+            fs::write(
+                allocation.path().join("src/lib.rs"),
+                format!("pub fn value() -> &'static str {{ \"{root_state}\" }}\n"),
+            )
+            .expect("edit writer");
+
+            match root_state {
+                "dirty" => {
+                    fs::write(repo.root.join("README.md"), "dirty root bytes\n")
+                        .expect("dirty root");
+                }
+                "advanced" => {
+                    fs::write(repo.root.join("README.md"), "advanced root bytes\n")
+                        .expect("advance root bytes");
+                    git_ok(
+                        &repo.root,
+                        [OsString::from("add"), OsString::from("README.md")],
+                    );
+                    git_ok(
+                        &repo.root,
+                        [
+                            OsString::from("commit"),
+                            OsString::from("-m"),
+                            OsString::from("advance root before cleanup"),
+                        ],
+                    );
+                }
+                "detached" => {
+                    git_ok(
+                        &repo.root,
+                        [
+                            OsString::from("checkout"),
+                            OsString::from("--detach"),
+                            repo.head.clone().into(),
+                        ],
+                    );
+                }
+                "switched" => {
+                    git_ok(
+                        &repo.root,
+                        [
+                            OsString::from("switch"),
+                            OsString::from("-c"),
+                            OsString::from("cleanup-other"),
+                        ],
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let head_before = git_test_text(
+                &repo.root,
+                [OsString::from("rev-parse"), OsString::from("HEAD^{commit}")],
+            );
+            let status_before = repository_status(&repo.root).expect("root status before cleanup");
+            let bytes_before = fs::read(repo.root.join("README.md")).expect("root bytes before");
+            let symbolic_head_before = symbolic_head(&repo.root).ok();
+
+            let cleanup_owner =
+                GitWorkspaceOwner::bind_existing_for_cleanup(&repo.root, &repo.managed)
+                    .expect("bind cleanup owner independent of root checkout state");
+            assert_eq!(
+                cleanup_owner
+                    .cleanup_exact(&allocation.durable_facts(), allocation.base_commit())
+                    .expect("cleanup exact Writer"),
+                ExactCleanupDisposition {
+                    worktree: CleanupComponentDisposition::Removed,
+                    branch: CleanupComponentDisposition::Removed,
+                }
+            );
+            assert_eq!(
+                git_test_text(
+                    &repo.root,
+                    [OsString::from("rev-parse"), OsString::from("HEAD^{commit}")],
+                ),
+                head_before
+            );
+            assert_eq!(
+                repository_status(&repo.root).expect("root status after cleanup"),
+                status_before
+            );
+            assert_eq!(
+                fs::read(repo.root.join("README.md")).expect("root bytes after"),
+                bytes_before
+            );
+            assert_eq!(
+                symbolic_head(&repo.root).ok(),
+                symbolic_head_before,
+                "cleanup must not change the root symbolic HEAD"
+            );
+        }
+    }
+
+    #[test]
+    fn prepared_seal_cleanup_recovery_is_independent_of_all_root_checkout_states() {
+        for root_state in ["dirty", "advanced", "detached", "switched"] {
+            let repo = TestRepository::new();
+            let allocation = repo
+                .owner()
+                .create(repo.request(&format!("sealed_cleanup_{root_state}"), &["src"]))
+                .expect("create writer");
+            fs::write(
+                allocation.path().join("src/lib.rs"),
+                format!("pub fn value() -> &'static str {{ \"{root_state}\" }}\n"),
+            )
+            .expect("edit writer");
+            let sealed = repo.owner().seal(&allocation).expect("seal writer");
+            let facts = allocation.durable_facts();
+
+            match root_state {
+                "dirty" => {
+                    fs::write(repo.root.join("README.md"), "dirty sealed root bytes\n")
+                        .expect("dirty root");
+                }
+                "advanced" => {
+                    fs::write(repo.root.join("README.md"), "advanced sealed root bytes\n")
+                        .expect("advance root bytes");
+                    git_ok(
+                        &repo.root,
+                        [OsString::from("add"), OsString::from("README.md")],
+                    );
+                    git_ok(
+                        &repo.root,
+                        [
+                            OsString::from("commit"),
+                            OsString::from("-m"),
+                            OsString::from("advance root after seal"),
+                        ],
+                    );
+                }
+                "detached" => {
+                    git_ok(
+                        &repo.root,
+                        [
+                            OsString::from("checkout"),
+                            OsString::from("--detach"),
+                            repo.head.clone().into(),
+                        ],
+                    );
+                }
+                "switched" => {
+                    git_ok(
+                        &repo.root,
+                        [
+                            OsString::from("switch"),
+                            OsString::from("-c"),
+                            OsString::from("sealed-cleanup-other"),
+                        ],
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let head_before = git_test_text(
+                &repo.root,
+                [OsString::from("rev-parse"), OsString::from("HEAD^{commit}")],
+            );
+            let status_before = repository_status(&repo.root).expect("root status before cleanup");
+            let bytes_before = fs::read(repo.root.join("README.md")).expect("root bytes before");
+            let symbolic_head_before = symbolic_head(&repo.root).ok();
+
+            let cleanup_owner =
+                GitWorkspaceOwner::bind_existing_for_cleanup(&repo.root, &repo.managed)
+                    .expect("bind cleanup owner");
+            let (_, recovered) = cleanup_owner
+                .recover_prepared_seal_for_cleanup(facts.clone())
+                .expect("recover exact Host seal independent of root checkout");
+            assert_eq!(recovered.final_commit(), sealed.final_commit());
+            assert_eq!(recovered.diff_sha256(), sealed.diff_sha256());
+            assert_eq!(
+                cleanup_owner
+                    .cleanup_exact(&facts, sealed.final_commit())
+                    .expect("cleanup recovered sealed Writer"),
+                ExactCleanupDisposition {
+                    worktree: CleanupComponentDisposition::Removed,
+                    branch: CleanupComponentDisposition::Removed,
+                }
+            );
+            assert_eq!(
+                git_test_text(
+                    &repo.root,
+                    [OsString::from("rev-parse"), OsString::from("HEAD^{commit}")],
+                ),
+                head_before
+            );
+            assert_eq!(
+                repository_status(&repo.root).expect("root status after cleanup"),
+                status_before
+            );
+            assert_eq!(
+                fs::read(repo.root.join("README.md")).expect("root bytes after"),
+                bytes_before
+            );
+            assert_eq!(symbolic_head(&repo.root).ok(), symbolic_head_before);
+        }
+    }
+
+    #[test]
+    fn cleanup_scope_scan_stops_before_reading_an_oversized_ignored_file() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let mut request = repo.request("writer_cleanup_limit", &["src"]);
+        request.limits.max_file_bytes = 16;
+        request.limits.max_total_file_bytes = 32;
+        let allocation = owner.create(request).expect("create bounded writer");
+        fs::write(allocation.path().join(".gitignore"), "ignored.bin\n")
+            .expect("write ignore rule");
+        fs::write(allocation.path().join("ignored.bin"), vec![b'x'; 17])
+            .expect("write oversized ignored file");
+
+        assert!(matches!(
+            owner.inspect_cleanup_paths(&allocation.durable_facts(), None),
+            Err(GitWorkspaceError::LimitExceeded(message))
+                if message.contains("per-file limit")
+        ));
+        assert!(allocation.path().exists(), "inspection must be read-only");
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &allocation.branch_ref)
+                .expect("inspect writer branch")
+                .as_deref(),
+            Some(allocation.base_commit())
+        );
+    }
+
+    #[test]
+    fn cleanup_path_enumeration_stops_at_the_first_excess_entry() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let mut request = repo.request("writer_cleanup_path_limit", &["src"]);
+        request.limits.max_changed_files = 1;
+        let allocation = owner.create(request).expect("create bounded writer");
+        fs::write(allocation.path().join("src/a.tmp"), b"a").expect("first path");
+        fs::write(allocation.path().join("src/b.tmp"), b"b").expect("second path");
+
+        assert!(matches!(
+            owner.inspect_cleanup_paths(&allocation.durable_facts(), None),
+            Err(GitWorkspaceError::LimitExceeded(message))
+                if message.contains("Host record limit 1")
+        ));
+        assert!(allocation.path().exists(), "bounded scan must be read-only");
+        assert_eq!(
+            resolve_ref_optional(&repo.root, &allocation.branch_ref)
+                .expect("inspect retained branch")
+                .as_deref(),
+            Some(allocation.base_commit())
+        );
+    }
+
+    #[test]
+    fn sealed_path_enumeration_enforces_the_same_entry_limit() {
+        let repo = TestRepository::new();
+        let owner = repo.owner();
+        let allocation = owner
+            .create(repo.request("writer_sealed_path_limit", &["src"]))
+            .expect("create writer");
+        fs::write(allocation.path().join("src/a.rs"), b"pub fn a() {}\n")
+            .expect("first committed path");
+        fs::write(allocation.path().join("src/b.rs"), b"pub fn b() {}\n")
+            .expect("second committed path");
+        let sealed = owner.seal(&allocation).expect("seal two paths");
+        let limits = SealLimits {
+            max_changed_files: 1,
+            ..SealLimits::default()
+        };
+
+        assert!(matches!(
+            committed_changed_paths(
+                &repo.root,
+                allocation.base_commit(),
+                sealed.final_commit(),
+                limits,
+            ),
+            Err(GitWorkspaceError::LimitExceeded(message))
+                if message.contains("Host record limit 1")
+        ));
+    }
+
+    #[test]
+    fn seal_limits_above_host_maxima_are_rejected_before_git_execution() {
+        let repo = TestRepository::new();
+        let mut request = repo.request("writer_unbounded_limit", &["src"]);
+        request.limits.max_diff_bytes = HOST_MAX_DIFF_BYTES + 1;
+
+        assert!(matches!(
+            repo.owner().create(request),
+            Err(GitWorkspaceError::InvalidRequest(message))
+                if message.contains("Host hard maximum")
+        ));
+        assert!(!repo.managed.join("writer_unbounded_limit").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_git_record_limit_terminates_the_producer_process_group() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let repo = TestRepository::new();
+        let script = repo.root.join("record-producer.sh");
+        let pid_file = repo.root.join("record-producer.pid");
+        fs::write(
+            &script,
+            "#!/bin/sh\necho $$ > \"$1\"\nwhile :; do printf 'x\\000'; sleep 0.02; done\n",
+        )
+        .expect("write record producer");
+        let mut permissions = fs::metadata(&script)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).expect("make script executable");
+        let alias = format!(
+            "alias.record-producer=!{} {}",
+            script.display(),
+            pid_file.display()
+        );
+
+        let error = git_checked_bounded_nul_records(
+            &repo.root,
+            "exercise record limit",
+            [
+                OsString::from("-c"),
+                alias.into(),
+                OsString::from("record-producer"),
+            ],
+            1024,
+            1,
+        )
+        .expect_err("the second NUL record must stop the producer");
+        assert!(matches!(
+            error,
+            GitWorkspaceError::LimitExceeded(message)
+                if message.contains("Host record limit 1")
+        ));
+        assert_process_is_reaped(&pid_file);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bounded_git_success_terminates_a_descendant_that_keeps_stdout_open() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let repo = TestRepository::new();
+        let script = repo.root.join("descendant-producer.sh");
+        let pid_file = repo.root.join("descendant-producer.pid");
+        fs::write(
+            &script,
+            "#!/bin/sh\n(sleep 30; printf 'late') &\necho $! > \"$1\"\nexit 0\n",
+        )
+        .expect("write descendant producer");
+        let mut permissions = fs::metadata(&script)
+            .expect("script metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&script, permissions).expect("make script executable");
+        let alias = format!(
+            "alias.descendant=!{} {}",
+            script.display(),
+            pid_file.display()
+        );
+        let started = Instant::now();
+
+        let output = git_checked_bounded(
+            &repo.root,
+            "exercise descendant cleanup",
+            [
+                OsString::from("-c"),
+                alias.into(),
+                OsString::from("descendant"),
+            ],
+            1024,
+        )
+        .expect("Git leader succeeds while Host owns the whole process group");
+        assert!(output.is_empty());
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "Host must not wait for the detached descendant"
+        );
+        assert_process_is_reaped(&pid_file);
     }
 
     #[test]
@@ -3596,6 +6219,31 @@ mod tests {
             .expect("utf8 git output")
             .trim()
             .to_string()
+    }
+
+    #[cfg(unix)]
+    fn assert_process_is_reaped(pid_file: &Path) {
+        let pid = fs::read_to_string(pid_file)
+            .expect("producer pid file")
+            .trim()
+            .parse::<u32>()
+            .expect("producer pid");
+        for _ in 0..100 {
+            if !test_process_is_alive(pid) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !test_process_is_alive(pid),
+            "producer process {pid} survived"
+        );
+    }
+
+    #[cfg(unix)]
+    fn test_process_is_alive(pid: u32) -> bool {
+        let result = unsafe { libc::kill(pid as i32, 0) };
+        result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 }
 

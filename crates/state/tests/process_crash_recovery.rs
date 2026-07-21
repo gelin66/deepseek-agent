@@ -37,8 +37,10 @@ use codewhale_runtime::{
     TerminalState, ToolApprovalPrompt, ToolArguments, ToolArtifact, ToolDefinition, ToolEvidence,
     ToolEvidenceStatus, ToolExecutionError, ToolExecutor, ToolInvocation, ToolOutcome, Usage,
     UserInteractionResponse, VerificationArtifactPayload, WorkspaceState, WriteExecutionMode,
-    WriterBinding, WriterCleanup, WriterIntegration, WriterPlan, WriterPreparation, WriterSeal,
-    reduce_events,
+    WriterArtifactState, WriterBinding, WriterCleanupMode, WriterCleanupOwnership,
+    WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult, WriterCleanupScope,
+    WriterIntegration, WriterPlan, WriterPreparation, WriterRemovalState, WriterSeal,
+    reduce_events, writer_path_set_sha256,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -64,6 +66,8 @@ const WRITER_BASE_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const WRITER_FINAL_COMMIT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const WRITER_DIRTY_REVISION: &str =
     "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+const WRITER_SEALED_SCOPE_REVISION: &str =
+    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const WRITER_DIFF_SHA256: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const WRITER_ROOT_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-root";
 const WRITER_WORKSPACE: &str = "/tmp/codewhale-process-crash-writer-owned";
@@ -162,7 +166,19 @@ fn is_writer_scenario(scenario: CrashScenario) -> bool {
             | CrashScenario::WriterIntegrationCommitted
             | CrashScenario::WriterCleanupPrepared
             | CrashScenario::WriterCleanupSideEffect
+            | CrashScenario::WriterFailedCleanupPrepared
+            | CrashScenario::WriterFailedCleanupSideEffect
+            | CrashScenario::WriterCleanupResultCommitted
             | CrashScenario::WriterDelegatedReceiptCommitted
+    )
+}
+
+fn is_writer_resume_scenario(scenario: CrashScenario) -> bool {
+    matches!(
+        scenario,
+        CrashScenario::WriterFailedCleanupPrepared
+            | CrashScenario::WriterFailedCleanupSideEffect
+            | CrashScenario::WriterCleanupResultCommitted
     )
 }
 
@@ -196,6 +212,9 @@ enum CrashScenario {
     WriterIntegrationCommitted,
     WriterCleanupPrepared,
     WriterCleanupSideEffect,
+    WriterFailedCleanupPrepared,
+    WriterFailedCleanupSideEffect,
+    WriterCleanupResultCommitted,
     WriterDelegatedReceiptCommitted,
     CreationReserved,
     TerminalCommitted,
@@ -232,6 +251,9 @@ impl CrashScenario {
             Self::WriterIntegrationCommitted => "writer_integration_committed",
             Self::WriterCleanupPrepared => "writer_cleanup_prepared",
             Self::WriterCleanupSideEffect => "writer_cleanup_side_effect",
+            Self::WriterFailedCleanupPrepared => "writer_failed_cleanup_prepared",
+            Self::WriterFailedCleanupSideEffect => "writer_failed_cleanup_side_effect",
+            Self::WriterCleanupResultCommitted => "writer_cleanup_result_committed",
             Self::WriterDelegatedReceiptCommitted => "writer_delegated_receipt_committed",
             Self::CreationReserved => "creation_reserved",
             Self::TerminalCommitted => "terminal_committed",
@@ -268,6 +290,9 @@ impl CrashScenario {
             "writer_integration_committed" => Self::WriterIntegrationCommitted,
             "writer_cleanup_prepared" => Self::WriterCleanupPrepared,
             "writer_cleanup_side_effect" => Self::WriterCleanupSideEffect,
+            "writer_failed_cleanup_prepared" => Self::WriterFailedCleanupPrepared,
+            "writer_failed_cleanup_side_effect" => Self::WriterFailedCleanupSideEffect,
+            "writer_cleanup_result_committed" => Self::WriterCleanupResultCommitted,
             "writer_delegated_receipt_committed" => Self::WriterDelegatedReceiptCommitted,
             "creation_reserved" => Self::CreationReserved,
             "terminal_committed" => Self::TerminalCommitted,
@@ -299,6 +324,8 @@ impl CrashFixture {
     }
 
     fn crash_child(&self, scenario: CrashScenario) {
+        let expected_ready_count =
+            marker_line_count(&self.abort_marker, scenario.as_str()).saturating_add(1);
         let mut child =
             Command::new(std::env::current_exe().expect("locate integration test binary"))
                 .arg("--ignored")
@@ -315,7 +342,7 @@ impl CrashFixture {
                 .expect("launch crash helper");
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if marker_count(&self.abort_marker) == 1 {
+            if marker_line_count(&self.abort_marker, scenario.as_str()) == expected_ready_count {
                 break;
             }
             if let Some(status) = child.try_wait().expect("poll crash helper") {
@@ -344,8 +371,8 @@ impl CrashFixture {
             );
         }
         assert_eq!(
-            marker_count(&self.abort_marker),
-            1,
+            marker_line_count(&self.abort_marker, scenario.as_str()),
+            expected_ready_count,
             "the intended post-commit crash point must be reached"
         );
         if scenario == CrashScenario::CreationReserved {
@@ -1080,11 +1107,13 @@ impl AgentOrchestrator for ProcessWriterOrchestrator {
         })
     }
 
-    async fn cleanup_writer(
+    async fn inspect_writer_cleanup(
         &self,
         task: &AgentTask,
-        _seal: Option<&WriterSeal>,
-    ) -> Result<WriterCleanup, AgentOrchestrationError> {
+        seal: Option<&WriterSeal>,
+        phase: WriterCleanupPhase,
+        reason_code: &str,
+    ) -> Result<WriterCleanupPlan, AgentOrchestrationError> {
         if task.workspace != self.assignment() {
             return Err(AgentOrchestrationError::new(
                 AgentOrchestrationErrorKind::RecoveryRequired,
@@ -1092,16 +1121,80 @@ impl AgentOrchestrator for ProcessWriterOrchestrator {
                 "writer fixture cleanup identity changed",
             ));
         }
+        append_marker(&self.writer_marker, "cleanup-inspect");
+        let expected_branch_commit = seal
+            .map(|seal| seal.final_commit.clone())
+            .unwrap_or_else(|| WRITER_BASE_COMMIT.to_owned());
+        Ok(WriterCleanupPlan {
+            phase,
+            reason_code: reason_code.to_owned(),
+            ownership: WriterCleanupOwnership::Known {
+                identity_sha256: "f".repeat(64),
+            },
+            artifact_state: seal.map_or(WriterArtifactState::KnownUnsealed, |seal| {
+                WriterArtifactState::KnownHostSealed {
+                    final_commit: seal.final_commit.clone(),
+                    diff_sha256: seal.diff_sha256.clone(),
+                }
+            }),
+            scope: WriterCleanupScope::Known {
+                workspace_revision: WorkspaceRevision::Known {
+                    sha256: if seal.is_some() {
+                        WRITER_SEALED_SCOPE_REVISION
+                    } else {
+                        WRITER_DIRTY_REVISION
+                    }
+                    .to_owned(),
+                },
+                changed_count: 1,
+                in_scope_count: 1,
+                out_of_scope_count: 0,
+                path_set_sha256: writer_path_set_sha256(&["src/lib.rs".to_owned()]).unwrap(),
+            },
+            mode: WriterCleanupMode::RemoveExact {
+                expected_branch_commit,
+            },
+        })
+    }
+
+    async fn execute_writer_cleanup(
+        &self,
+        task: &AgentTask,
+        plan: &WriterCleanupPlan,
+    ) -> Result<WriterCleanupResult, AgentOrchestrationError> {
+        if task.workspace != self.assignment() {
+            return Err(AgentOrchestrationError::new(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_fixture_cleanup_mismatch",
+                "writer fixture cleanup identity changed",
+            ));
+        }
+        append_marker(
+            &self.writer_marker,
+            &format!(
+                "cleanup-plan:{}",
+                serde_json::to_string(plan).expect("serialize cleanup plan marker")
+            ),
+        );
+        append_marker(&self.writer_marker, "cleanup-execute");
         let cleaned = append_marker_once(&self.writer_marker, "cleanup");
-        if cleaned && self.scenario == CrashScenario::WriterCleanupSideEffect {
+        if cleaned
+            && matches!(
+                self.scenario,
+                CrashScenario::WriterCleanupSideEffect
+                    | CrashScenario::WriterFailedCleanupSideEffect
+            )
+        {
             self.crash_after_side_effect().await;
         }
-        Ok(WriterCleanup {
-            worktree_removed: true,
-            branch_removed: true,
-            retained_for_recovery: false,
-            reason: None,
-        })
+        if cleaned {
+            Ok(WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::Removed,
+                branch: WriterRemovalState::Removed,
+            })
+        } else {
+            Ok(WriterCleanupResult::AlreadyAbsent)
+        }
     }
 }
 
@@ -1428,7 +1521,14 @@ impl RuntimeEventSink for CrashSink {
             CrashScenario::WriterCleanupPrepared => {
                 matches!(event.event, RuntimeEventKind::AgentCleanupPrepared { .. })
             }
-            CrashScenario::WriterCleanupSideEffect => false,
+            CrashScenario::WriterFailedCleanupPrepared => {
+                matches!(event.event, RuntimeEventKind::AgentCleanupPrepared { .. })
+            }
+            CrashScenario::WriterCleanupSideEffect
+            | CrashScenario::WriterFailedCleanupSideEffect => false,
+            CrashScenario::WriterCleanupResultCommitted => {
+                matches!(event.event, RuntimeEventKind::AgentCleanupCommitted { .. })
+            }
             CrashScenario::WriterDelegatedReceiptCommitted => matches!(
                 event.event,
                 RuntimeEventKind::HostVerificationCommitted {
@@ -1891,11 +1991,12 @@ fn process_crash_helper() {
                 )
                 .with_orchestrator(orchestrator),
             );
-            let outcome = runtime
-                .start(writer_request(scenario))
-                .wait()
-                .await
-                .expect("writer crash helper join");
+            let run = if is_writer_resume_scenario(scenario) {
+                runtime.resume(RunId::from(RUN_ID))
+            } else {
+                runtime.start(writer_request(scenario))
+            };
+            let outcome = run.wait().await.expect("writer crash helper join");
             panic!("writer crash helper unexpectedly completed: {outcome:?}");
         }
         let control_slot = matches!(
@@ -2566,6 +2667,56 @@ fn assert_writer_lifecycle_is_single(
     }
 }
 
+fn assert_failed_writer_never_sealed_or_integrated(replay: &codewhale_runtime::RunReplay) {
+    for (label, count) in [
+        (
+            "AgentSealPrepared",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentSealPrepared { .. })
+            }),
+        ),
+        (
+            "AgentSealCommitted",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentSealCommitted { .. })
+            }),
+        ),
+        (
+            "AgentIntegrationPrepared",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentIntegrationPrepared { .. })
+            }),
+        ),
+        (
+            "AgentIntegrationStarted",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentIntegrationStarted { .. })
+            }),
+        ),
+        (
+            "AgentIntegrationFailed",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentIntegrationFailed { .. })
+            }),
+        ),
+        (
+            "AgentIntegrationCommitted",
+            event_count(replay, |event| {
+                matches!(event, RuntimeEventKind::AgentIntegrationCommitted { .. })
+            }),
+        ),
+    ] {
+        assert_eq!(count, 0, "failed Writer must not emit {label}");
+    }
+    let lifecycle = replay
+        .snapshot
+        .agent_tasks
+        .first()
+        .expect("Writer lifecycle");
+    assert!(lifecycle.seal.is_none());
+    assert!(lifecycle.integration.is_none());
+}
+
 async fn assert_writer_sigkill_recovery(scenario: CrashScenario, expect_completed: bool) {
     let fixture = CrashFixture::new();
     fixture.crash_child(scenario);
@@ -2701,6 +2852,10 @@ async fn assert_writer_sigkill_recovery(scenario: CrashScenario, expect_complete
         CrashScenario::WriterCleanupPrepared => {
             assert_eq!(marker_line_count(&fixture.writer_marker, "cleanup"), 0);
             assert_eq!(
+                marker_line_count(&fixture.writer_marker, "cleanup-execute"),
+                0
+            );
+            assert_eq!(
                 event_count(&before, |event| matches!(
                     event,
                     RuntimeEventKind::AgentCleanupPrepared { .. }
@@ -2717,6 +2872,10 @@ async fn assert_writer_sigkill_recovery(scenario: CrashScenario, expect_complete
         }
         CrashScenario::WriterCleanupSideEffect => {
             assert_eq!(marker_line_count(&fixture.writer_marker, "cleanup"), 1);
+            assert_eq!(
+                marker_line_count(&fixture.writer_marker, "cleanup-execute"),
+                1
+            );
             assert_eq!(
                 event_count(&before, |event| matches!(
                     event,
@@ -2801,6 +2960,86 @@ async fn assert_writer_sigkill_recovery(scenario: CrashScenario, expect_complete
     assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
     assert_eq!(marker_line_count(&fixture.writer_marker, "create"), 1);
     assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+    assert_eq!(marker_line_count(&fixture.tool_marker, "writer-write"), 1);
+    if matches!(
+        scenario,
+        CrashScenario::WriterCleanupPrepared | CrashScenario::WriterCleanupSideEffect
+    ) {
+        let prepared = before.snapshot.agent_tasks[0]
+            .cleanup
+            .as_ref()
+            .expect("cleanup crash prefix must persist the frozen plan");
+        assert_eq!(prepared.plan.phase, WriterCleanupPhase::PostIntegration);
+        assert_eq!(prepared.plan.reason_code, "writer_integrated");
+        assert_eq!(
+            prepared.plan.artifact_state,
+            WriterArtifactState::KnownHostSealed {
+                final_commit: WRITER_FINAL_COMMIT.to_owned(),
+                diff_sha256: WRITER_DIFF_SHA256.to_owned(),
+            }
+        );
+        assert_eq!(
+            prepared.plan.scope,
+            WriterCleanupScope::Known {
+                workspace_revision: WorkspaceRevision::Known {
+                    sha256: WRITER_SEALED_SCOPE_REVISION.to_owned(),
+                },
+                changed_count: 1,
+                in_scope_count: 1,
+                out_of_scope_count: 0,
+                path_set_sha256: writer_path_set_sha256(&["src/lib.rs".to_owned()]).unwrap(),
+            }
+        );
+        assert_eq!(
+            prepared.plan.mode,
+            WriterCleanupMode::RemoveExact {
+                expected_branch_commit: WRITER_FINAL_COMMIT.to_owned(),
+            }
+        );
+        let frozen_plan_marker = format!(
+            "cleanup-plan:{}",
+            serde_json::to_string(&prepared.plan).expect("serialize frozen cleanup plan")
+        );
+        let expected_execute_count = if scenario == CrashScenario::WriterCleanupPrepared {
+            1
+        } else {
+            2
+        };
+        assert_eq!(
+            marker_line_count(&fixture.writer_marker, "cleanup-execute"),
+            expected_execute_count,
+            "recovery must execute only the persisted cleanup action"
+        );
+        assert_eq!(
+            marker_line_count(&fixture.writer_marker, "cleanup-inspect"),
+            1,
+            "recovery must not rebuild a committed cleanup plan"
+        );
+        assert_eq!(
+            marker_line_count(&fixture.writer_marker, &frozen_plan_marker),
+            expected_execute_count,
+            "every cleanup execution must receive the exact persisted plan"
+        );
+        assert_eq!(
+            marker_line_count(&fixture.writer_marker, "cleanup"),
+            1,
+            "idempotent re-entry must not repeat the physical deletion"
+        );
+        let committed = after.snapshot.agent_tasks[0]
+            .cleanup
+            .as_ref()
+            .and_then(|cleanup| cleanup.committed.as_ref())
+            .expect("cleanup recovery must commit its exact result");
+        let expected = if scenario == CrashScenario::WriterCleanupPrepared {
+            WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::Removed,
+                branch: WriterRemovalState::Removed,
+            }
+        } else {
+            WriterCleanupResult::AlreadyAbsent
+        };
+        assert_eq!(committed, &expected);
+    }
     if expect_completed {
         for side_effect in ["seal", "integration", "cleanup"] {
             assert_eq!(
@@ -2897,9 +3136,10 @@ async fn assert_writer_sigkill_recovery(scenario: CrashScenario, expect_complete
             .as_ref()
             .and_then(|cleanup| cleanup.committed.as_ref())
             .expect("completed recovery must retain cleanup");
-        assert!(cleanup.worktree_removed);
-        assert!(cleanup.branch_removed);
-        assert!(!cleanup.retained_for_recovery);
+        assert!(matches!(
+            cleanup,
+            WriterCleanupResult::Removed { .. } | WriterCleanupResult::AlreadyAbsent
+        ));
         if scenario == CrashScenario::WriterDelegatedReceiptCommitted {
             assert_eq!(
                 marker_line_count(&fixture.model_marker, "writer-root-model"),
@@ -3021,6 +3261,525 @@ async fn writer_cleanup_prepared_sigkill_removes_owned_resources_once() {
 #[tokio::test]
 async fn writer_cleanup_side_effect_sigkill_proves_absence_without_second_removal() {
     assert_writer_sigkill_recovery(CrashScenario::WriterCleanupSideEffect, true).await;
+}
+
+async fn assert_failed_writer_cleanup_sigkill_window(
+    scenario: CrashScenario,
+    expected_mid_execute: usize,
+    expected_final_execute: usize,
+) {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::WriterRunning);
+    let model_after_writer_crash = marker_lines(&fixture.model_marker);
+    assert_eq!(
+        marker_line_count(&fixture.model_marker, "writer-root-model"),
+        1
+    );
+    assert_eq!(
+        marker_line_count(&fixture.model_marker, "writer-child-model"),
+        1
+    );
+    assert_eq!(marker_line_count(&fixture.tool_marker, "writer-write"), 1);
+    assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+
+    fixture.crash_child(scenario);
+    assert_eq!(
+        marker_lines(&fixture.model_marker),
+        model_after_writer_crash
+    );
+    let store_mid = StateStore::open(Some(fixture.db.clone())).expect("open failed-cleanup prefix");
+    let mid = store_mid
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load failed-cleanup root")
+        .expect("failed-cleanup root exists");
+    let lifecycle = mid.snapshot.agent_tasks.first().expect("Writer lifecycle");
+    let child_mid = store_mid
+        .load(&lifecycle.task.child_run_id)
+        .await
+        .expect("load failed Writer child")
+        .expect("failed Writer child exists");
+    drop(store_mid);
+
+    assert_writer_lifecycle_is_single(&mid, &fixture);
+    assert_failed_writer_never_sealed_or_integrated(&mid);
+    assert_eq!(
+        reduce_events(&mid.events).expect("reduce failed-cleanup prefix"),
+        mid.snapshot
+    );
+    assert_eq!(
+        reduce_events(&child_mid.events).expect("reduce failed Writer child"),
+        child_mid.snapshot
+    );
+    assert_eq!(mid.snapshot.request.run_id, Some(RunId::from(RUN_ID)));
+    assert_eq!(mid.snapshot.request.parent_run_id, None);
+    assert_eq!(mid.snapshot.request.actor.kind, AgentActorKind::Root);
+    assert_eq!(mid.snapshot.request.actor.depth, 0);
+    assert_eq!(lifecycle.task.root_run_id, RunId::from(RUN_ID));
+    assert_eq!(lifecycle.task.parent_run_id, RunId::from(RUN_ID));
+    assert_eq!(
+        child_mid.snapshot.request.run_id.as_ref(),
+        Some(&lifecycle.task.child_run_id)
+    );
+    assert_eq!(
+        child_mid.snapshot.request.parent_run_id.as_ref(),
+        Some(&RunId::from(RUN_ID))
+    );
+    assert_eq!(child_mid.snapshot.request.actor.kind, AgentActorKind::Child);
+    assert_eq!(child_mid.snapshot.request.actor.depth, 1);
+    assert_eq!(marker_line_count(&fixture.tool_marker, "writer-write"), 1);
+    assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+
+    assert_eq!(
+        event_count(&mid, |event| matches!(
+            event,
+            RuntimeEventKind::AgentResultCollected { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&mid, |event| matches!(
+            event,
+            RuntimeEventKind::AgentCleanupPrepared { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&mid, |event| matches!(
+            event,
+            RuntimeEventKind::AgentCleanupCommitted { .. }
+        )),
+        0
+    );
+    assert_eq!(
+        event_count(&mid, |event| matches!(
+            event,
+            RuntimeEventKind::ChildFinished { .. }
+        )),
+        0
+    );
+    assert_eq!(event_count(&mid, RuntimeEventKind::is_terminal), 0);
+    for event in ["seal", "integration"] {
+        assert_eq!(marker_line_count(&fixture.writer_marker, event), 0);
+    }
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, "cleanup-execute"),
+        expected_mid_execute
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, "cleanup-inspect"),
+        1,
+        "the cleanup scope must be inspected exactly once before the durable plan"
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, "cleanup"),
+        usize::from(expected_mid_execute > 0)
+    );
+    let cleanup = lifecycle.cleanup.as_ref().expect("cleanup plan");
+    assert_eq!(cleanup.plan.phase, WriterCleanupPhase::Child);
+    assert_eq!(cleanup.plan.reason_code, "writer_child_recovery_required");
+    assert_eq!(
+        cleanup.plan.artifact_state,
+        WriterArtifactState::KnownUnsealed
+    );
+    assert_eq!(
+        cleanup.plan.scope,
+        WriterCleanupScope::Known {
+            workspace_revision: WorkspaceRevision::Known {
+                sha256: WRITER_DIRTY_REVISION.to_owned(),
+            },
+            changed_count: 1,
+            in_scope_count: 1,
+            out_of_scope_count: 0,
+            path_set_sha256: writer_path_set_sha256(&["src/lib.rs".to_owned()]).unwrap(),
+        }
+    );
+    assert_eq!(
+        cleanup.plan.mode,
+        WriterCleanupMode::RemoveExact {
+            expected_branch_commit: WRITER_BASE_COMMIT.to_owned(),
+        }
+    );
+    let frozen_plan_marker = format!(
+        "cleanup-plan:{}",
+        serde_json::to_string(&cleanup.plan).expect("serialize frozen cleanup plan")
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, &frozen_plan_marker),
+        expected_mid_execute,
+        "every cleanup execution must receive the exact persisted plan"
+    );
+
+    let (runtime, store, model) = fixture.reopen_writer(scenario);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("finish failed-cleanup recovery");
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::RecoveryRequired { .. }
+    ));
+    assert!(model.observed_requests().is_empty());
+    assert_eq!(
+        marker_lines(&fixture.model_marker),
+        model_after_writer_crash
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, "cleanup-execute"),
+        expected_final_execute
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, "cleanup-inspect"),
+        1,
+        "recovery must not rebuild a committed cleanup plan"
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, &frozen_plan_marker),
+        expected_final_execute,
+        "recovery must reuse the exact persisted cleanup plan"
+    );
+    assert_eq!(marker_line_count(&fixture.writer_marker, "cleanup"), 1);
+    assert_eq!(marker_line_count(&fixture.tool_marker, "writer-write"), 1);
+    assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load final failed-cleanup root")
+        .expect("final failed-cleanup root exists");
+    let child_after = store
+        .load(&lifecycle.task.child_run_id)
+        .await
+        .expect("load final failed Writer child")
+        .expect("final failed Writer child exists");
+    assert_eq!(child_after.events, child_mid.events);
+    assert_eq!(child_after.snapshot, child_mid.snapshot);
+    assert_replay_prefix_preserved(&mid, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce failed-cleanup recovery"),
+        after.snapshot
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::AgentCleanupPrepared { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::AgentCleanupCommitted { .. }
+        )),
+        1
+    );
+    let committed_cleanup = after
+        .snapshot
+        .agent_tasks
+        .first()
+        .and_then(|lifecycle| lifecycle.cleanup.as_ref())
+        .and_then(|cleanup| cleanup.committed.as_ref())
+        .expect("committed failed Writer cleanup result");
+    if expected_mid_execute == 0 {
+        assert_eq!(
+            committed_cleanup,
+            &WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::Removed,
+                branch: WriterRemovalState::Removed,
+            }
+        );
+    } else {
+        assert_eq!(committed_cleanup, &WriterCleanupResult::AlreadyAbsent);
+    }
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::ChildFinished { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+    assert!(after.events.iter().all(|event| !matches!(
+        &event.event,
+        RuntimeEventKind::Terminal { outcome }
+            if matches!(outcome.terminal, TerminalState::Completed { .. })
+    )));
+    let final_lifecycle = after
+        .snapshot
+        .agent_tasks
+        .first()
+        .expect("final failed Writer lifecycle");
+    assert_writer_lifecycle_is_single(&after, &fixture);
+    assert_failed_writer_never_sealed_or_integrated(&after);
+    let collected = final_lifecycle
+        .result
+        .as_ref()
+        .expect("collected failed Writer result");
+    let finished = final_lifecycle
+        .finished
+        .as_ref()
+        .expect("finished failed Writer result");
+    assert_eq!(collected.run_id, final_lifecycle.task.child_run_id);
+    assert_eq!(collected.parent_run_id.as_ref(), Some(&RunId::from(RUN_ID)));
+    assert_eq!(finished.outcome.run_id, final_lifecycle.task.child_run_id);
+    assert_eq!(finished.outcome.parent_run_id, collected.parent_run_id);
+    assert_eq!(finished.outcome.terminal, collected.terminal);
+    assert_eq!(child_mid.snapshot.terminal.as_ref(), Some(collected));
+    assert!(collected.details.evidence.is_empty());
+    assert!(finished.outcome.details.evidence.is_empty());
+    let root_terminal = after.snapshot.terminal.as_ref().expect("root terminal");
+    assert_eq!(root_terminal.run_id, RunId::from(RUN_ID));
+    assert_eq!(root_terminal.parent_run_id, None);
+    assert!(root_terminal.details.evidence.is_empty());
+    assert!(after.snapshot.evidence_receipts.is_empty());
+    assert_eq!(
+        root_terminal.terminal, finished.outcome.terminal,
+        "root recovery must preserve the exact child phase and action identity"
+    );
+}
+
+#[tokio::test]
+async fn failed_writer_cleanup_plan_sigkill_reuses_the_frozen_plan() {
+    assert_failed_writer_cleanup_sigkill_window(CrashScenario::WriterFailedCleanupPrepared, 0, 1)
+        .await;
+}
+
+#[tokio::test]
+async fn failed_writer_cleanup_side_effect_sigkill_does_not_repeat_deletion() {
+    assert_failed_writer_cleanup_sigkill_window(CrashScenario::WriterFailedCleanupSideEffect, 1, 2)
+        .await;
+}
+
+#[tokio::test]
+async fn writer_cleanup_result_sigkill_finishes_without_reexecuting_child_or_cleanup() {
+    let fixture = CrashFixture::new();
+    fixture.crash_child(CrashScenario::WriterRunning);
+    let model_before_cleanup = marker_lines(&fixture.model_marker);
+    assert_eq!(
+        marker_line_count(&fixture.model_marker, "writer-root-model"),
+        1
+    );
+    assert_eq!(
+        marker_line_count(&fixture.model_marker, "writer-child-model"),
+        1
+    );
+    assert_eq!(marker_line_count(&fixture.tool_marker, "writer-write"), 1);
+    assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+
+    fixture.crash_child(CrashScenario::WriterCleanupResultCommitted);
+    let store_mid = StateStore::open(Some(fixture.db.clone())).expect("open cleanup-result prefix");
+    let mid = store_mid
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load cleanup-result prefix")
+        .expect("cleanup-result root exists");
+    let lifecycle = mid.snapshot.agent_tasks.first().expect("Writer lifecycle");
+    let child_mid = store_mid
+        .load(&lifecycle.task.child_run_id)
+        .await
+        .expect("load Writer child prefix")
+        .expect("Writer child exists");
+    drop(store_mid);
+
+    assert_writer_lifecycle_is_single(&mid, &fixture);
+    assert_failed_writer_never_sealed_or_integrated(&mid);
+    assert_eq!(
+        reduce_events(&mid.events).expect("reduce cleanup-result prefix"),
+        mid.snapshot
+    );
+    assert_eq!(
+        reduce_events(&child_mid.events).expect("reduce cleanup-result child"),
+        child_mid.snapshot
+    );
+    assert_eq!(mid.snapshot.request.run_id, Some(RunId::from(RUN_ID)));
+    assert_eq!(mid.snapshot.request.parent_run_id, None);
+    assert_eq!(mid.snapshot.request.actor.kind, AgentActorKind::Root);
+    assert_eq!(mid.snapshot.request.actor.depth, 0);
+    assert_eq!(lifecycle.task.root_run_id, RunId::from(RUN_ID));
+    assert_eq!(lifecycle.task.parent_run_id, RunId::from(RUN_ID));
+    assert_eq!(
+        child_mid.snapshot.request.run_id.as_ref(),
+        Some(&lifecycle.task.child_run_id)
+    );
+    assert_eq!(
+        child_mid.snapshot.request.parent_run_id.as_ref(),
+        Some(&RunId::from(RUN_ID))
+    );
+    assert_eq!(child_mid.snapshot.request.actor.kind, AgentActorKind::Child);
+    assert_eq!(child_mid.snapshot.request.actor.depth, 1);
+
+    assert_eq!(
+        event_count(&mid, |event| matches!(
+            event,
+            RuntimeEventKind::AgentCleanupPrepared { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&mid, |event| matches!(
+            event,
+            RuntimeEventKind::AgentCleanupCommitted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&mid, |event| matches!(
+            event,
+            RuntimeEventKind::ChildFinished { .. }
+        )),
+        0,
+        "SIGKILL must occur after cleanup result and before ChildFinished"
+    );
+    assert_eq!(event_count(&mid, RuntimeEventKind::is_terminal), 0);
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, "cleanup-execute"),
+        1
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, "cleanup-inspect"),
+        1
+    );
+    assert_eq!(marker_line_count(&fixture.writer_marker, "cleanup"), 1);
+    assert_eq!(marker_line_count(&fixture.tool_marker, "writer-write"), 1);
+    assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+    for event_name in ["seal", "integration"] {
+        assert_eq!(marker_line_count(&fixture.writer_marker, event_name), 0);
+    }
+    let cleanup = lifecycle.cleanup.as_ref().expect("prepared cleanup");
+    assert_eq!(cleanup.plan.phase, WriterCleanupPhase::Child);
+    assert_eq!(cleanup.plan.reason_code, "writer_child_recovery_required");
+    assert_eq!(
+        cleanup.plan.artifact_state,
+        WriterArtifactState::KnownUnsealed
+    );
+    assert_eq!(
+        cleanup.committed.as_ref(),
+        Some(&WriterCleanupResult::Removed {
+            worktree: WriterRemovalState::Removed,
+            branch: WriterRemovalState::Removed,
+        })
+    );
+    let frozen_plan_marker = format!(
+        "cleanup-plan:{}",
+        serde_json::to_string(&cleanup.plan).expect("serialize frozen cleanup plan")
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, &frozen_plan_marker),
+        1
+    );
+
+    let (runtime, store, model) =
+        fixture.reopen_writer(CrashScenario::WriterCleanupResultCommitted);
+    let outcome = runtime
+        .resume(RunId::from(RUN_ID))
+        .wait()
+        .await
+        .expect("finish cleanup-result recovery");
+    assert!(matches!(
+        outcome.terminal,
+        TerminalState::RecoveryRequired { .. }
+    ));
+    assert!(
+        model.observed_requests().is_empty(),
+        "committed cleanup result must not request the model again"
+    );
+    assert_eq!(marker_lines(&fixture.model_marker), model_before_cleanup);
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, "cleanup-execute"),
+        1
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, "cleanup-inspect"),
+        1,
+        "committed cleanup result must skip inspection"
+    );
+    assert_eq!(
+        marker_line_count(&fixture.writer_marker, &frozen_plan_marker),
+        1,
+        "committed cleanup result must skip execution"
+    );
+    assert_eq!(marker_line_count(&fixture.writer_marker, "cleanup"), 1);
+    assert_eq!(marker_line_count(&fixture.tool_marker, "writer-write"), 1);
+    assert_eq!(marker_line_count(&fixture.writer_marker, "write"), 1);
+
+    let after = store
+        .load(&RunId::from(RUN_ID))
+        .await
+        .expect("load final cleanup recovery")
+        .expect("final root exists");
+    let child_after = store
+        .load(&lifecycle.task.child_run_id)
+        .await
+        .expect("load final Writer child")
+        .expect("final Writer child exists");
+    assert_eq!(child_after.events, child_mid.events);
+    assert_eq!(child_after.snapshot, child_mid.snapshot);
+    assert_replay_prefix_preserved(&mid, &after);
+    assert_eq!(
+        reduce_events(&after.events).expect("reduce final cleanup recovery"),
+        after.snapshot
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::AgentCleanupCommitted { .. }
+        )),
+        1
+    );
+    assert_eq!(
+        event_count(&after, |event| matches!(
+            event,
+            RuntimeEventKind::ChildFinished { .. }
+        )),
+        1
+    );
+    assert_eq!(event_count(&after, RuntimeEventKind::is_terminal), 1);
+    assert!(after.events.iter().all(|event| !matches!(
+        &event.event,
+        RuntimeEventKind::Terminal { outcome }
+            if matches!(outcome.terminal, TerminalState::Completed { .. })
+    )));
+    let final_lifecycle = after
+        .snapshot
+        .agent_tasks
+        .first()
+        .expect("final cleanup-result Writer lifecycle");
+    assert_writer_lifecycle_is_single(&after, &fixture);
+    assert_failed_writer_never_sealed_or_integrated(&after);
+    assert_eq!(
+        final_lifecycle
+            .cleanup
+            .as_ref()
+            .and_then(|cleanup| cleanup.committed.as_ref()),
+        Some(&WriterCleanupResult::Removed {
+            worktree: WriterRemovalState::Removed,
+            branch: WriterRemovalState::Removed,
+        }),
+        "recovery must preserve the originally committed cleanup result"
+    );
+    let collected = final_lifecycle
+        .result
+        .as_ref()
+        .expect("collected cleanup-result Writer outcome");
+    let finished = final_lifecycle
+        .finished
+        .as_ref()
+        .expect("finished cleanup-result Writer outcome");
+    assert_eq!(collected.run_id, final_lifecycle.task.child_run_id);
+    assert_eq!(collected.parent_run_id.as_ref(), Some(&RunId::from(RUN_ID)));
+    assert_eq!(finished.outcome.run_id, final_lifecycle.task.child_run_id);
+    assert_eq!(finished.outcome.parent_run_id, collected.parent_run_id);
+    assert_eq!(finished.outcome.terminal, collected.terminal);
+    assert_eq!(child_mid.snapshot.terminal.as_ref(), Some(collected));
+    assert!(collected.details.evidence.is_empty());
+    assert!(finished.outcome.details.evidence.is_empty());
+    let root_terminal = after.snapshot.terminal.as_ref().expect("root terminal");
+    assert_eq!(root_terminal.run_id, RunId::from(RUN_ID));
+    assert_eq!(root_terminal.parent_run_id, None);
+    assert_eq!(root_terminal.terminal, finished.outcome.terminal);
+    assert!(root_terminal.details.evidence.is_empty());
+    assert!(after.snapshot.evidence_receipts.is_empty());
 }
 
 #[tokio::test]

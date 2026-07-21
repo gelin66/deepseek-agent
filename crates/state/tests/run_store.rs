@@ -21,13 +21,16 @@ use codewhale_protocol::task::{
 use codewhale_runtime::{
     ActorRequestAccounting, AgentOutcome, AgentResultDetails, AttemptId, CommandId, CreatedRun,
     DurableActionState, InMemoryRunStore, ModelAccounting, ModelFinishReason, ModelOutput,
-    ModelRequest, ModelToolCall, OperationId, PendingRuntimeEvent, RootRunRecord, RunId, RunLease,
-    RunReplay, RunRequest, RunSnapshot, RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind,
-    RuntimeFailure, StoredRuntimeEvent, TerminalState, ToolArguments, ToolArtifact,
-    ToolArtifactStatus, ToolDefinition, ToolEvidence, ToolEvidenceStatus, ToolInvocation,
-    ToolInvocationStatus, ToolOperationStatus, ToolOutcome, ToolRetryDisposition,
-    ToolSideEffectStatus, ToolTransportStatus, Usage, VerificationArtifactPayload, WorkspaceAccess,
-    WriteExecutionMode, WriterIntegrationStatus, reduce_events,
+    ModelRequest, ModelToolCall, OperationId, PendingRuntimeEvent, RecoveryAmbiguity,
+    RecoveryAmbiguityPhase, RootRunRecord, RunId, RunLease, RunReplay, RunRequest, RunSnapshot,
+    RunStore, RunStoreError, RuntimeEventId, RuntimeEventKind, RuntimeFailure, StoredRuntimeEvent,
+    TerminalState, ToolArguments, ToolArtifact, ToolArtifactStatus, ToolDefinition, ToolEvidence,
+    ToolEvidenceStatus, ToolInvocation, ToolInvocationStatus, ToolOperationStatus, ToolOutcome,
+    ToolRetryDisposition, ToolSideEffectStatus, ToolTransportStatus, Usage,
+    VerificationArtifactPayload, WorkspaceAccess, WriteExecutionMode, WriterArtifactState,
+    WriterCleanupMetadataState, WriterCleanupMode, WriterCleanupOwnership, WriterCleanupPhase,
+    WriterCleanupPlan, WriterCleanupResult, WriterCleanupScope, WriterIntegrationStatus,
+    WriterRemovalState, WriterResourceState, reduce_events, writer_path_set_sha256,
 };
 use codewhale_state::StateStore;
 use rusqlite::{Connection, params};
@@ -933,7 +936,7 @@ async fn writer_lifecycle_replay_matches_memory_and_survives_sqlite_reopen() {
         .await
         .expect("create SQLite writer root");
     let memory_created = memory
-        .create(root_request)
+        .create(root_request.clone())
         .await
         .expect("create memory writer root");
     let task = writer_parity_task();
@@ -1028,21 +1031,71 @@ async fn writer_lifecycle_replay_matches_memory_and_survives_sqlite_reopen() {
         },
         RuntimeEventKind::AgentCleanupPrepared {
             task_id: task.task_id.clone(),
-            worktree_path: task.workspace.worktree_path.clone().unwrap(),
-            branch: task.workspace.branch.clone().unwrap(),
-            owner_token: task.workspace.owner_token.clone().unwrap(),
+            plan: Box::new(WriterCleanupPlan {
+                phase: WriterCleanupPhase::PostIntegration,
+                reason_code: "writer_integrated".to_owned(),
+                ownership: WriterCleanupOwnership::Known {
+                    identity_sha256: "c".repeat(64),
+                },
+                artifact_state: WriterArtifactState::KnownHostSealed {
+                    final_commit: "b".repeat(40),
+                    diff_sha256: "d".repeat(64),
+                },
+                scope: WriterCleanupScope::Known {
+                    workspace_revision: WorkspaceRevision::Known {
+                        sha256: "e".repeat(64),
+                    },
+                    changed_count: 1,
+                    in_scope_count: 1,
+                    out_of_scope_count: 0,
+                    path_set_sha256: writer_path_set_sha256(&["src/lib.rs".to_owned()]).unwrap(),
+                },
+                mode: WriterCleanupMode::RemoveExact {
+                    expected_branch_commit: "b".repeat(40),
+                },
+            }),
         },
         RuntimeEventKind::AgentCleanupCommitted {
             task_id: task.task_id,
-            worktree_path: task.workspace.worktree_path.unwrap(),
-            branch: task.workspace.branch.unwrap(),
-            owner_token: task.workspace.owner_token.unwrap(),
-            worktree_removed: true,
-            branch_removed: true,
-            retained_for_recovery: false,
-            reason: None,
+            result: WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::Removed,
+                branch: WriterRemovalState::Removed,
+            },
         },
     ];
+
+    let uncertainty_code = "writer_cleanup_metadata_uncertain".to_owned();
+    let mut uncertain_lifecycle = lifecycle.clone();
+    let RuntimeEventKind::AgentCleanupCommitted { result, .. } = uncertain_lifecycle
+        .last_mut()
+        .expect("cleanup result event")
+    else {
+        panic!("writer lifecycle ends with cleanup result")
+    };
+    *result = WriterCleanupResult::Retained {
+        worktree: WriterResourceState::Removed,
+        branch: WriterResourceState::AlreadyAbsent,
+        metadata: WriterCleanupMetadataState::Uncertain,
+        uncertainty_code: uncertainty_code.clone(),
+    };
+    uncertain_lifecycle.push(RuntimeEventKind::Terminal {
+        outcome: Box::new(AgentOutcome {
+            run_id: RunId::from("writer-parity-root"),
+            parent_run_id: None,
+            terminal: TerminalState::RecoveryRequired {
+                ambiguity: RecoveryAmbiguity {
+                    phase: RecoveryAmbiguityPhase::ChildRun,
+                    action_id: "agent-cleanup:writer-parity-task".to_owned(),
+                    message: uncertainty_code.clone(),
+                },
+            },
+            accounting: ModelAccounting::default(),
+            runtime_model_requests: 0,
+            runtime_retries: 0,
+            tool_calls: 1,
+            details: AgentResultDetails::default(),
+        }),
+    });
 
     for (index, event) in lifecycle.into_iter().enumerate() {
         append_to_both(
@@ -1085,6 +1138,82 @@ async fn writer_lifecycle_replay_matches_memory_and_survives_sqlite_reopen() {
         .expect("reopened writer root exists");
     assert_eq!(reopened_replay, sqlite_replay);
     assert_canonical_replay_eq(&reopened_replay, &memory_replay);
+
+    let uncertain_path = temp_state_path("writer_cleanup_metadata_uncertain");
+    let uncertain_sqlite =
+        StateStore::open(Some(uncertain_path.clone())).expect("open uncertain cleanup SQLite");
+    let uncertain_memory = InMemoryRunStore::default();
+    let uncertain_sqlite_created = uncertain_sqlite
+        .create(root_request.clone())
+        .await
+        .expect("create uncertain cleanup SQLite root");
+    let uncertain_memory_created = uncertain_memory
+        .create(root_request)
+        .await
+        .expect("create uncertain cleanup memory root");
+    for (index, event) in uncertain_lifecycle.into_iter().enumerate() {
+        append_to_both(
+            &uncertain_sqlite,
+            &uncertain_sqlite_created.lease,
+            &uncertain_memory,
+            &uncertain_memory_created.lease,
+            PendingRuntimeEvent {
+                event_id: if matches!(event, RuntimeEventKind::Terminal { .. }) {
+                    RuntimeEventId::terminal()
+                } else {
+                    RuntimeEventId(format!("writer-uncertain-lifecycle-{}", index + 1))
+                },
+                event,
+            },
+        )
+        .await;
+    }
+    let uncertain_replay = uncertain_sqlite
+        .load(&uncertain_sqlite_created.lease.run_id)
+        .await
+        .expect("load uncertain cleanup lifecycle")
+        .expect("uncertain cleanup root exists");
+    let uncertain_memory_replay = uncertain_memory
+        .load(&uncertain_memory_created.lease.run_id)
+        .await
+        .expect("load uncertain cleanup memory lifecycle")
+        .expect("uncertain cleanup memory root exists");
+    assert_canonical_replay_eq(&uncertain_replay, &uncertain_memory_replay);
+    assert!(matches!(
+        uncertain_replay
+            .snapshot
+            .agent_tasks
+            .first()
+            .and_then(|lifecycle| lifecycle.cleanup.as_ref())
+            .and_then(|cleanup| cleanup.committed.as_ref()),
+        Some(WriterCleanupResult::Retained {
+            worktree: WriterResourceState::Removed,
+            branch: WriterResourceState::AlreadyAbsent,
+            metadata: WriterCleanupMetadataState::Uncertain,
+            uncertainty_code: code,
+        }) if code == &uncertainty_code
+    ));
+    assert!(matches!(
+        uncertain_replay
+            .snapshot
+            .terminal
+            .as_ref()
+            .map(|outcome| &outcome.terminal),
+        Some(TerminalState::RecoveryRequired { ambiguity })
+            if ambiguity.action_id == "agent-cleanup:writer-parity-task"
+                && ambiguity.message == uncertainty_code
+    ));
+    drop(uncertain_sqlite);
+    let reopened_uncertain =
+        StateStore::open(Some(uncertain_path)).expect("reopen uncertain cleanup SQLite");
+    assert_eq!(
+        reopened_uncertain
+            .load(&RunId::from("writer-parity-root"))
+            .await
+            .expect("reload uncertain cleanup lifecycle")
+            .expect("reopened uncertain cleanup root exists"),
+        uncertain_replay
+    );
 }
 
 #[tokio::test]
@@ -2004,7 +2133,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 18);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count retired v5 runs");
@@ -2096,7 +2225,7 @@ async fn v16_cutover_retires_v15_runtime_rows_instead_of_upgrading_authority() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 18);
 }
 
 #[tokio::test]
@@ -2168,7 +2297,7 @@ async fn v16_cutover_retires_corrupt_v15_snapshot_before_deserialization() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 18);
 }
 
 #[tokio::test]
@@ -2212,7 +2341,109 @@ async fn v17_cutover_retires_v16_runtime_rows_before_temporal_deserialization() 
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 18);
+}
+
+#[tokio::test]
+async fn v18_cutover_retires_v17_cleanup_rows_before_deserialization_and_preserves_local_evidence()
+{
+    let path = temp_state_path("v17_exact_cleanup_cutover");
+    let store = StateStore::open(Some(path.clone())).expect("open current state");
+    let created = store
+        .create(request("v17-cleanup", "/tmp/v17-exact-cleanup"))
+        .await
+        .expect("create pre-cutover run");
+    let run_id = created.lease.run_id.clone();
+    drop(store);
+
+    let conn = Connection::open(&path).expect("prepare raw v17 fixture");
+    conn.execute_batch(
+        r#"
+        INSERT INTO agent_run_creations(
+            command_id, command_sha256, run_id, created_at_unix_ms,
+            creation_kind, workspace, source_run_id, command_json
+        ) VALUES (
+            'v17-create-command', 'sha256:v17-command', 'v17-pending-run', 1,
+            'start', '/tmp/v17-exact-cleanup', NULL, '{"legacy":true}'
+        );
+        INSERT INTO threads (
+            id, preview, ephemeral, model_provider, created_at, updated_at,
+            status, cwd, cli_version, source, archived
+        ) VALUES (
+            'v17-retained-thread', 'local metadata survives v18', 0, 'deepseek', 1, 1,
+            'idle', '/tmp/v17-exact-cleanup', 'test', 'interactive', 0
+        );
+        CREATE TABLE evaluation_evidence (
+            id TEXT PRIMARY KEY NOT NULL,
+            summary TEXT NOT NULL
+        );
+        INSERT INTO evaluation_evidence VALUES (
+            'v17-retained-eval', 'redacted v17 evaluation evidence'
+        );
+        "#,
+    )
+    .expect("insert v17 local and creation rows");
+    conn.execute(
+        "UPDATE agent_run_events
+         SET schema_version = 12,
+             event_json = '{\"legacy_cleanup\":{\"removed_worktree\":true,\"removed_branch\":false}}'
+         WHERE run_id = ?1",
+        [&run_id.0],
+    )
+    .expect("write incompatible v17 cleanup event");
+    conn.execute(
+        "UPDATE agent_run_snapshots
+         SET snapshot_json = '{\"legacy\":\"v17_cleanup\"}'
+         WHERE run_id = ?1",
+        [&run_id.0],
+    )
+    .expect("write incompatible v17 snapshot");
+    conn.pragma_update(None, "user_version", 17)
+        .expect("mark v17 fixture");
+    drop(conn);
+
+    let reopened = StateStore::open(Some(path.clone())).expect("apply state v18 cutover");
+    assert!(
+        reopened
+            .load(&run_id)
+            .await
+            .expect("query retired v17 run")
+            .is_none(),
+        "v18 must retire incompatible cleanup rows before deserialization"
+    );
+    let retained_thread = reopened
+        .get_thread("v17-retained-thread")
+        .expect("read retained thread")
+        .expect("local thread must survive runtime cutover");
+    assert_eq!(retained_thread.preview, "local metadata survives v18");
+    drop(reopened);
+
+    let conn = Connection::open(path).expect("inspect v18 database");
+    let user_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read migrated version");
+    assert_eq!(user_version, 18);
+    for table in [
+        "agent_run_creations",
+        "agent_runs",
+        "agent_run_events",
+        "agent_run_snapshots",
+    ] {
+        let count: i64 = conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap_or_else(|error| panic!("count v18 cutover rows in {table}: {error}"));
+        assert_eq!(count, 0, "{table} retained incompatible v17 rows");
+    }
+    let retained_eval: String = conn
+        .query_row(
+            "SELECT summary FROM evaluation_evidence WHERE id = 'v17-retained-eval'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("evaluation evidence must survive v18 runtime cutover");
+    assert_eq!(retained_eval, "redacted v17 evaluation evidence");
 }
 
 #[tokio::test]
@@ -2234,7 +2465,7 @@ async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 18);
 }
 
 #[tokio::test]
@@ -2258,7 +2489,7 @@ async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 18);
 }
 
 #[tokio::test]
@@ -2350,7 +2581,7 @@ async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 18);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -2404,7 +2635,7 @@ fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 18);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count incompatible runs");
@@ -2473,7 +2704,7 @@ async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read current state version");
-    assert_eq!(user_version, 17);
+    assert_eq!(user_version, 18);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -2589,7 +2820,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 17);
+        assert_eq!(user_version, 18);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -3148,13 +3379,13 @@ async fn temporal_failure_progress_matches_memory_and_survives_sqlite_reopen() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 18)
+    conn.pragma_update(None, "user_version", 19)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 17")
+            .contains("newer than supported version 18")
     );
 }

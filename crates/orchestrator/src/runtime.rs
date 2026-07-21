@@ -5,14 +5,17 @@ use async_trait::async_trait;
 use codewhale_runtime::{
     AgentOrchestrationError, AgentOrchestrationErrorKind, AgentOrchestrator, AgentTask,
     AgentWorkspaceAccess, AgentWorkspaceAssignment, ToolExecutor, WorkspaceRevision,
-    WorkspaceState, WriterBinding, WriterCleanup, WriterIntegration, WriterPlan, WriterPreparation,
-    WriterSeal,
+    WorkspaceState, WriterArtifactState, WriterBinding, WriterCleanupMetadataState,
+    WriterCleanupMode, WriterCleanupOwnership, WriterCleanupPhase, WriterCleanupPlan,
+    WriterCleanupResult, WriterCleanupScope, WriterIntegration, WriterPlan, WriterPreparation,
+    WriterRemovalState, WriterResourceState, WriterSeal, writer_path_set_sha256,
 };
 use codewhale_tools::{ProductionToolConfig, ProductionToolExecutor};
 
 use crate::workspace::{
-    CleanupDisposition, GitWorkspaceError, GitWorkspaceOwner, OwnedWorktree, OwnedWorktreeFacts,
-    SealLimits, SealedWorktree, SealedWorktreeFacts, WriterWorkspaceRequest,
+    CleanupComponentDisposition, CleanupResourceFacts, CleanupResourcePresence,
+    ExactCleanupDisposition, GitWorkspaceError, GitWorkspaceOwner, OwnedWorktreeFacts, SealLimits,
+    SealedWorktree, SealedWorktreeFacts, WriterWorkspaceRequest,
 };
 
 /// Concrete production implementation of the canonical writer port.
@@ -24,6 +27,118 @@ pub struct ProductionAgentOrchestrator {
     repository_root: PathBuf,
     managed_root: PathBuf,
     root_tools: ProductionToolConfig,
+}
+
+fn writer_cleanup_result(disposition: ExactCleanupDisposition) -> WriterCleanupResult {
+    if disposition.worktree == CleanupComponentDisposition::AlreadyAbsent
+        && disposition.branch == CleanupComponentDisposition::AlreadyAbsent
+    {
+        return WriterCleanupResult::AlreadyAbsent;
+    }
+    WriterCleanupResult::Removed {
+        worktree: match disposition.worktree {
+            CleanupComponentDisposition::Removed => WriterRemovalState::Removed,
+            CleanupComponentDisposition::AlreadyAbsent => WriterRemovalState::AlreadyAbsent,
+        },
+        branch: match disposition.branch {
+            CleanupComponentDisposition::Removed => WriterRemovalState::Removed,
+            CleanupComponentDisposition::AlreadyAbsent => WriterRemovalState::AlreadyAbsent,
+        },
+    }
+}
+
+fn retained_cleanup_result(
+    owner: &GitWorkspaceOwner,
+    facts: &OwnedWorktreeFacts,
+    before: Option<CleanupResourceFacts>,
+    destructive_attempted: bool,
+    expected_branch_commit: Option<&str>,
+    uncertainty_code: String,
+) -> WriterCleanupResult {
+    let metadata = match expected_branch_commit {
+        Some(expected) if !matches!(owner.cleanup_metadata_is_clear(facts, expected), Ok(true)) => {
+            WriterCleanupMetadataState::Uncertain
+        }
+        Some(_) => WriterCleanupMetadataState::Clear,
+        None => WriterCleanupMetadataState::Uncertain,
+    };
+    let Some(after) = owner.cleanup_resource_facts(facts).ok() else {
+        return WriterCleanupResult::Retained {
+            worktree: WriterResourceState::Unknown,
+            branch: WriterResourceState::Unknown,
+            metadata,
+            uncertainty_code,
+        };
+    };
+    if after.worktree == CleanupResourcePresence::Absent
+        && after.branch == CleanupResourcePresence::Absent
+    {
+        if metadata == WriterCleanupMetadataState::Uncertain {
+            return WriterCleanupResult::Retained {
+                worktree: cleanup_resource_state(
+                    before.map(|facts| facts.worktree),
+                    after.worktree,
+                    destructive_attempted,
+                ),
+                branch: cleanup_resource_state(
+                    before.map(|facts| facts.branch),
+                    after.branch,
+                    destructive_attempted,
+                ),
+                metadata,
+                uncertainty_code,
+            };
+        }
+        if destructive_attempted {
+            let worktree = cleanup_removal_state(before.map(|facts| facts.worktree));
+            let branch = cleanup_removal_state(before.map(|facts| facts.branch));
+            if worktree == WriterRemovalState::AlreadyAbsent
+                && branch == WriterRemovalState::AlreadyAbsent
+            {
+                return WriterCleanupResult::AlreadyAbsent;
+            }
+            return WriterCleanupResult::Removed { worktree, branch };
+        }
+        return WriterCleanupResult::AlreadyAbsent;
+    }
+    WriterCleanupResult::Retained {
+        worktree: cleanup_resource_state(
+            before.map(|facts| facts.worktree),
+            after.worktree,
+            destructive_attempted,
+        ),
+        branch: cleanup_resource_state(
+            before.map(|facts| facts.branch),
+            after.branch,
+            destructive_attempted,
+        ),
+        metadata,
+        uncertainty_code,
+    }
+}
+
+fn cleanup_resource_state(
+    before: Option<CleanupResourcePresence>,
+    after: CleanupResourcePresence,
+    destructive_attempted: bool,
+) -> WriterResourceState {
+    match (before, after, destructive_attempted) {
+        (_, CleanupResourcePresence::Present, _) => WriterResourceState::Retained,
+        (Some(CleanupResourcePresence::Present), CleanupResourcePresence::Absent, true) => {
+            WriterResourceState::Removed
+        }
+        (Some(CleanupResourcePresence::Absent), CleanupResourcePresence::Absent, _)
+        | (_, CleanupResourcePresence::Absent, false) => WriterResourceState::AlreadyAbsent,
+        (None, CleanupResourcePresence::Absent, true) => WriterResourceState::Unknown,
+    }
+}
+
+fn cleanup_removal_state(before: Option<CleanupResourcePresence>) -> WriterRemovalState {
+    if before == Some(CleanupResourcePresence::Present) {
+        WriterRemovalState::Removed
+    } else {
+        WriterRemovalState::AlreadyAbsent
+    }
 }
 
 impl ProductionAgentOrchestrator {
@@ -221,8 +336,7 @@ impl AgentOrchestrator for ProductionAgentOrchestrator {
         sealed: Option<&WriterSeal>,
     ) -> Result<WriterBinding, AgentOrchestrationError> {
         let facts = self.owned_facts(task)?;
-        let owner = self.owner().map_err(map_active_git_error)?;
-        let binding_recovery_owner = owner.clone();
+        let owner = self.owner().map_err(map_git_error)?;
         let sealed_facts = sealed.map(|seal| SealedWorktreeFacts {
             owner_id: facts.owner_id.clone(),
             base_commit: seal.base_commit.clone(),
@@ -253,31 +367,18 @@ impl AgentOrchestrator for ProductionAgentOrchestrator {
         })
         .await
         .map_err(join_error)?
-        .map_err(map_active_git_error)?;
+        .map_err(map_git_error)?;
         if self.assignment_for_facts(&allocation.durable_facts()) != task.workspace {
-            let cause = orchestration_error(
+            return Err(orchestration_error(
                 AgentOrchestrationErrorKind::RecoveryRequired,
                 "writer_binding_mismatch",
                 "已创建或恢复的 worktree 与 AgentTask assignment 不一致",
-            );
-            return Err(rollback_or_retain_failed_binding(
-                binding_recovery_owner,
-                allocation,
-                cause,
-            )
-            .await);
+            ));
         }
         let tools = self.writer_executor(allocation.path());
         let writer_workspace_state = match observe_workspace(tools.as_ref(), 0).await {
             Ok(state) => state,
-            Err(cause) => {
-                return Err(rollback_or_retain_failed_binding(
-                    binding_recovery_owner,
-                    allocation,
-                    cause,
-                )
-                .await);
-            }
+            Err(cause) => return Err(cause),
         };
         Ok(WriterBinding {
             assignment: task.workspace.clone(),
@@ -288,10 +389,16 @@ impl AgentOrchestrator for ProductionAgentOrchestrator {
 
     async fn seal_writer(&self, task: &AgentTask) -> Result<WriterSeal, AgentOrchestrationError> {
         let facts = self.owned_facts(task)?;
-        let owner = self.owner().map_err(map_active_git_error)?;
+        let owner = self.owner().map_err(map_git_error)?;
         let sealed =
             tokio::task::spawn_blocking(move || match owner.recover_active(facts.clone()) {
-                Ok(allocation) => owner.seal(&allocation),
+                Ok(allocation) => match owner.seal(&allocation) {
+                    Ok(sealed) => Ok(sealed),
+                    Err(primary) => owner
+                        .recover_prepared_seal(facts)
+                        .map(|(_, sealed)| sealed)
+                        .map_err(|_| primary),
+                },
                 Err(GitWorkspaceError::OwnershipMismatch(_) | GitWorkspaceError::Conflict(_)) => {
                     owner.recover_prepared_seal(facts).map(|(_, sealed)| sealed)
                 }
@@ -299,7 +406,7 @@ impl AgentOrchestrator for ProductionAgentOrchestrator {
             })
             .await
             .map_err(join_error)?
-            .map_err(map_active_git_error)?;
+            .map_err(map_git_error)?;
         writer_seal(
             self.writer_executor(Path::new(task.workspace.execution_workspace())),
             sealed,
@@ -372,91 +479,338 @@ impl AgentOrchestrator for ProductionAgentOrchestrator {
         })
     }
 
-    async fn cleanup_writer(
+    async fn inspect_writer_cleanup(
         &self,
         task: &AgentTask,
         seal: Option<&WriterSeal>,
-    ) -> Result<WriterCleanup, AgentOrchestrationError> {
+        phase: WriterCleanupPhase,
+        reason_code: &str,
+    ) -> Result<WriterCleanupPlan, AgentOrchestrationError> {
         let facts = self.owned_facts(task)?;
-        let expected_commit = seal
-            .map(|seal| seal.final_commit.clone())
-            .unwrap_or_else(|| facts.base_commit.clone());
-        let owner = self.owner().map_err(map_active_git_error)?;
-        let sealed_facts = seal.map(|seal| SealedWorktreeFacts {
+        let supplied_sealed_facts = seal.map(|seal| SealedWorktreeFacts {
             owner_id: facts.owner_id.clone(),
             base_commit: seal.base_commit.clone(),
             final_commit: seal.final_commit.clone(),
             diff_sha256: seal.diff_sha256.clone(),
         });
-        let cleanup = tokio::task::spawn_blocking(move || {
-            if let Some(disposition) = owner.cleanup_branch_only(&facts, &expected_commit)? {
-                return Ok(disposition);
-            }
-            let allocation = match sealed_facts {
-                Some(sealed) => owner.recover_sealed(facts, sealed)?.0,
-                None => owner.recover_active(facts)?,
-            };
-            owner.cleanup(&allocation, &expected_commit)
+        let repository_root = self.repository_root.clone();
+        let managed_root = self.managed_root.clone();
+        let inspection_facts = facts.clone();
+        let (first_owner, first, second_owner, second, effective_sealed_facts) =
+            tokio::task::spawn_blocking(move || {
+                let owner =
+                    GitWorkspaceOwner::bind_existing_for_cleanup(repository_root, managed_root)?;
+                let effective_sealed_facts = match supplied_sealed_facts {
+                    Some(sealed) => Some(sealed),
+                    None if phase == WriterCleanupPhase::Seal => owner
+                        .recover_prepared_seal_for_cleanup(inspection_facts.clone())
+                        .ok()
+                        .map(|(_, sealed)| sealed.durable_facts()),
+                    None => None,
+                };
+                let first_owner = owner.cleanup_owner_identity_sha256(&inspection_facts)?;
+                let first = owner
+                    .inspect_cleanup_paths(&inspection_facts, effective_sealed_facts.as_ref())?;
+                let second = owner
+                    .inspect_cleanup_paths(&inspection_facts, effective_sealed_facts.as_ref())?;
+                let second_owner = owner.cleanup_owner_identity_sha256(&inspection_facts)?;
+                Ok::<_, GitWorkspaceError>((
+                    first_owner,
+                    first,
+                    second_owner,
+                    second,
+                    effective_sealed_facts,
+                ))
+            })
+            .await
+            .map_err(join_error)?
+            .map_err(map_git_error)?;
+        if first_owner != second_owner || first != second {
+            return Err(orchestration_error(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_cleanup_scope_changed",
+                "writer cleanup scope changed during Host inspection",
+            ));
+        }
+        let paths = first
+            .paths
+            .iter()
+            .map(|path| stable_path(path))
+            .collect::<Vec<_>>();
+        let in_scope_count = first
+            .paths
+            .iter()
+            .filter(|path| {
+                facts
+                    .allowed_paths
+                    .iter()
+                    .any(|allowed| *path == allowed || path.starts_with(allowed))
+            })
+            .count() as u32;
+        let changed_count = paths.len() as u32;
+        let artifact_state = match &effective_sealed_facts {
+            Some(sealed) => WriterArtifactState::KnownHostSealed {
+                final_commit: sealed.final_commit.clone(),
+                diff_sha256: sealed.diff_sha256.clone(),
+            },
+            None => WriterArtifactState::KnownUnsealed,
+        };
+        let expected_branch_commit = effective_sealed_facts
+            .as_ref()
+            .map(|seal| seal.final_commit.clone())
+            .unwrap_or_else(|| facts.base_commit.clone());
+        let mode = WriterCleanupMode::RemoveExact {
+            expected_branch_commit,
+        };
+        let plan = WriterCleanupPlan {
+            phase,
+            reason_code: reason_code.to_owned(),
+            ownership: WriterCleanupOwnership::Known {
+                identity_sha256: first_owner,
+            },
+            artifact_state,
+            scope: WriterCleanupScope::Known {
+                workspace_revision: WorkspaceRevision::Known {
+                    sha256: first.revision_sha256,
+                },
+                changed_count,
+                in_scope_count,
+                out_of_scope_count: changed_count.saturating_sub(in_scope_count),
+                path_set_sha256: writer_path_set_sha256(&paths).map_err(|message| {
+                    orchestration_error(
+                        AgentOrchestrationErrorKind::RecoveryRequired,
+                        "writer_cleanup_path_invalid",
+                        message,
+                    )
+                })?,
+            },
+            mode,
+        };
+        plan.validate().map_err(|message| {
+            orchestration_error(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_cleanup_plan_invalid",
+                message,
+            )
+        })?;
+        Ok(plan)
+    }
+
+    async fn execute_writer_cleanup(
+        &self,
+        task: &AgentTask,
+        plan: &WriterCleanupPlan,
+    ) -> Result<WriterCleanupResult, AgentOrchestrationError> {
+        plan.validate().map_err(|message| {
+            orchestration_error(
+                AgentOrchestrationErrorKind::RecoveryRequired,
+                "writer_cleanup_plan_invalid",
+                message,
+            )
+        })?;
+        let facts = self.owned_facts(task)?;
+        let repository_root = self.repository_root.clone();
+        let managed_root = self.managed_root.clone();
+        let plan = plan.clone();
+        tokio::task::spawn_blocking(move || {
+            let owner = GitWorkspaceOwner::bind_existing_for_cleanup(repository_root, managed_root)
+                .map_err(map_git_error)?;
+            execute_writer_cleanup_sync(&owner, &facts, &plan)
         })
         .await
-        .map_err(join_error)?;
-        match cleanup {
-            Ok(CleanupDisposition::Removed | CleanupDisposition::AlreadyAbsent) => {
-                Ok(WriterCleanup {
-                    worktree_removed: true,
-                    branch_removed: true,
-                    retained_for_recovery: false,
-                    reason: None,
-                })
-            }
-            Err(GitWorkspaceError::DirtyRepository(message)) => Ok(WriterCleanup {
-                worktree_removed: false,
-                branch_removed: false,
-                retained_for_recovery: true,
-                reason: Some(message),
-            }),
-            Err(error) => Err(map_git_error(error)),
-        }
+        .map_err(join_error)?
     }
 }
 
-async fn rollback_or_retain_failed_binding(
-    owner: GitWorkspaceOwner,
-    allocation: OwnedWorktree,
-    cause: AgentOrchestrationError,
-) -> AgentOrchestrationError {
-    let worktree_path = stable_path(allocation.path());
-    let branch_ref = allocation.branch_ref().to_owned();
-    let base_commit = allocation.base_commit().to_owned();
-    let rollback =
-        tokio::task::spawn_blocking(move || owner.cleanup(&allocation, &base_commit)).await;
-    match rollback {
-        Ok(Ok(CleanupDisposition::Removed | CleanupDisposition::AlreadyAbsent)) => {
+fn execute_writer_cleanup_sync(
+    owner: &GitWorkspaceOwner,
+    facts: &OwnedWorktreeFacts,
+    plan: &WriterCleanupPlan,
+) -> Result<WriterCleanupResult, AgentOrchestrationError> {
+    execute_writer_cleanup_sync_with(owner, facts, plan, GitWorkspaceOwner::cleanup_exact)
+}
+
+fn execute_writer_cleanup_sync_with<F>(
+    owner: &GitWorkspaceOwner,
+    facts: &OwnedWorktreeFacts,
+    plan: &WriterCleanupPlan,
+    cleanup_exact: F,
+) -> Result<WriterCleanupResult, AgentOrchestrationError>
+where
+    F: Fn(
+        &GitWorkspaceOwner,
+        &OwnedWorktreeFacts,
+        &str,
+    ) -> std::result::Result<ExactCleanupDisposition, GitWorkspaceError>,
+{
+    if let WriterCleanupMode::RetainForRecovery { uncertainty_code } = &plan.mode {
+        return Ok(retained_cleanup_result(
+            owner,
+            facts,
+            owner.cleanup_resource_facts(facts).ok(),
+            false,
+            None,
+            uncertainty_code.clone(),
+        ));
+    }
+    let WriterCleanupOwnership::Known { identity_sha256 } = &plan.ownership else {
+        return Ok(WriterCleanupResult::Retained {
+            worktree: WriterResourceState::Unknown,
+            branch: WriterResourceState::Unknown,
+            metadata: WriterCleanupMetadataState::Uncertain,
+            uncertainty_code: "writer_cleanup_owner_unknown".to_owned(),
+        });
+    };
+    let current_owner = match owner.cleanup_owner_identity_sha256(facts) {
+        Ok(current) if &current == identity_sha256 => current,
+        Ok(_) => {
+            return Ok(WriterCleanupResult::Retained {
+                worktree: WriterResourceState::Unknown,
+                branch: WriterResourceState::Unknown,
+                metadata: WriterCleanupMetadataState::Uncertain,
+                uncertainty_code: "writer_cleanup_owner_changed".to_owned(),
+            });
+        }
+        Err(_) => {
+            return Ok(WriterCleanupResult::Retained {
+                worktree: WriterResourceState::Unknown,
+                branch: WriterResourceState::Unknown,
+                metadata: WriterCleanupMetadataState::Uncertain,
+                uncertainty_code: "writer_cleanup_owner_unprovable".to_owned(),
+            });
+        }
+    };
+    debug_assert_eq!(current_owner, *identity_sha256);
+    let sealed = match &plan.artifact_state {
+        WriterArtifactState::KnownUnsealed => None,
+        WriterArtifactState::KnownHostSealed {
+            final_commit,
+            diff_sha256,
+        } => Some(SealedWorktreeFacts {
+            owner_id: facts.owner_id.clone(),
+            base_commit: facts.base_commit.clone(),
+            final_commit: final_commit.clone(),
+            diff_sha256: diff_sha256.clone(),
+        }),
+        WriterArtifactState::Unknown => {
+            return Ok(retained_cleanup_result(
+                owner,
+                facts,
+                owner.cleanup_resource_facts(facts).ok(),
+                false,
+                None,
+                "writer_cleanup_artifact_unknown".to_owned(),
+            ));
+        }
+    };
+    let expected = match &plan.mode {
+        WriterCleanupMode::RemoveExact {
+            expected_branch_commit,
+        } => expected_branch_commit.as_str(),
+        WriterCleanupMode::RetainForRecovery { .. } => unreachable!("handled above"),
+    };
+    let before = match owner.cleanup_resource_facts(facts) {
+        Ok(before) => before,
+        Err(_) => {
+            return Ok(retained_cleanup_result(
+                owner,
+                facts,
+                None,
+                false,
+                Some(expected),
+                "writer_cleanup_resources_unprovable".to_owned(),
+            ));
+        }
+    };
+    let cleanup_started = match owner.cleanup_has_started(facts, expected) {
+        Ok(started) => started,
+        Err(error) => {
+            return Ok(retained_cleanup_result(
+                owner,
+                facts,
+                Some(before),
+                false,
+                Some(expected),
+                git_error_code(&error).to_owned(),
+            ));
+        }
+    };
+    if cleanup_started || before.path == CleanupResourcePresence::Absent {
+        return match cleanup_exact(owner, facts, expected) {
+            Ok(disposition) => Ok(writer_cleanup_result(disposition)),
+            Err(error) => Ok(retained_cleanup_result(
+                owner,
+                facts,
+                Some(before),
+                true,
+                Some(expected),
+                git_error_code(&error).to_owned(),
+            )),
+        };
+    }
+    let current = match owner.inspect_cleanup_paths(facts, sealed.as_ref()) {
+        Ok(current) => current,
+        Err(error) => {
+            return Ok(retained_cleanup_result(
+                owner,
+                facts,
+                Some(before),
+                false,
+                Some(expected),
+                git_error_code(&error).to_owned(),
+            ));
+        }
+    };
+    let current_paths = current
+        .paths
+        .iter()
+        .map(|path| stable_path(path))
+        .collect::<Vec<_>>();
+    let current_in_scope = current
+        .paths
+        .iter()
+        .filter(|path| {
+            facts
+                .allowed_paths
+                .iter()
+                .any(|allowed| *path == allowed || path.starts_with(allowed))
+        })
+        .count() as u32;
+    let current_scope = WriterCleanupScope::Known {
+        workspace_revision: WorkspaceRevision::Known {
+            sha256: current.revision_sha256,
+        },
+        changed_count: current_paths.len() as u32,
+        in_scope_count: current_in_scope,
+        out_of_scope_count: (current_paths.len() as u32).saturating_sub(current_in_scope),
+        path_set_sha256: writer_path_set_sha256(&current_paths).map_err(|message| {
             orchestration_error(
                 AgentOrchestrationErrorKind::RecoveryRequired,
-                "writer_binding_postcondition_rolled_back",
-                format!(
-                    "writer bind 后置条件失败，未启动的精确 worktree/branch 已回滚；原始错误 {}: {}",
-                    cause.code, cause.message
-                ),
+                "writer_cleanup_path_invalid",
+                message,
             )
-        }
-        Ok(Err(rollback_error)) => orchestration_error(
-            AgentOrchestrationErrorKind::RecoveryRequired,
-            "writer_binding_postcondition_retained",
-            format!(
-                "writer bind 后置条件失败，无法安全回滚，因此保留精确恢复资源 path={worktree_path}, branch={branch_ref}；原始错误 {}: {}；回滚拒绝: {rollback_error}",
-                cause.code, cause.message
-            ),
-        ),
-        Err(join) => orchestration_error(
-            AgentOrchestrationErrorKind::RecoveryRequired,
-            "writer_binding_postcondition_retained",
-            format!(
-                "writer bind 后置条件失败，回滚任务未完成，因此保留精确恢复资源 path={worktree_path}, branch={branch_ref}；原始错误 {}: {}；回滚任务错误: {join}",
-                cause.code, cause.message
-            ),
-        ),
+        })?,
+    };
+    if current_scope != plan.scope {
+        return Ok(retained_cleanup_result(
+            owner,
+            facts,
+            Some(before),
+            false,
+            Some(expected),
+            "writer_cleanup_scope_changed".to_owned(),
+        ));
+    }
+    match cleanup_exact(owner, facts, expected) {
+        Ok(disposition) => Ok(writer_cleanup_result(disposition)),
+        Err(error) => Ok(retained_cleanup_result(
+            owner,
+            facts,
+            Some(before),
+            true,
+            Some(expected),
+            git_error_code(&error).to_owned(),
+        )),
     }
 }
 
@@ -464,7 +818,10 @@ async fn writer_seal(
     tools: Arc<ProductionToolExecutor>,
     sealed: SealedWorktree,
 ) -> Result<WriterSeal, AgentOrchestrationError> {
-    let writer_workspace_state = observe_workspace(tools.as_ref(), 0).await?;
+    let writer_workspace_state = match observe_workspace(tools.as_ref(), 0).await {
+        Ok(state) => state,
+        Err(_) => observe_workspace(tools.as_ref(), 0).await?,
+    };
     let mut changed_files = sealed
         .changed_files()
         .iter()
@@ -488,7 +845,7 @@ async fn observe_workspace(
         orchestration_error(
             AgentOrchestrationErrorKind::RecoveryRequired,
             error.code,
-            error.message,
+            "无法确认 Writer 工作区 revision",
         )
     })?;
     Ok(WorkspaceState {
@@ -501,11 +858,11 @@ fn stable_path(path: &Path) -> String {
     path.display().to_string()
 }
 
-fn join_error(error: tokio::task::JoinError) -> AgentOrchestrationError {
+fn join_error(_error: tokio::task::JoinError) -> AgentOrchestrationError {
     orchestration_error(
         AgentOrchestrationErrorKind::RecoveryRequired,
         "writer_git_task_join_failed",
-        format!("Git workspace task failed to join: {error}"),
+        "Writer Git 后台任务异常终止",
     )
 }
 
@@ -522,7 +879,12 @@ fn map_git_error(error: GitWorkspaceError) -> AgentOrchestrationError {
         | GitWorkspaceError::LimitExceeded(_)
         | GitWorkspaceError::EmptyDiff => AgentOrchestrationErrorKind::Rejected,
     };
-    let code = match &error {
+    let code = git_error_code(&error);
+    orchestration_error(kind, code, git_error_public_message(code))
+}
+
+fn git_error_code(error: &GitWorkspaceError) -> &'static str {
+    match error {
         GitWorkspaceError::InvalidRepository(_) => "writer_repository_invalid",
         GitWorkspaceError::DirtyRepository(_) => "writer_repository_dirty",
         GitWorkspaceError::UnsupportedRepository(_) => "writer_repository_unsupported",
@@ -533,16 +895,23 @@ fn map_git_error(error: GitWorkspaceError) -> AgentOrchestrationError {
         GitWorkspaceError::EmptyDiff => "writer_empty_diff",
         GitWorkspaceError::Git { .. } => "writer_git_failed",
         GitWorkspaceError::Io { .. } => "writer_io_failed",
-    };
-    orchestration_error(kind, code, error.to_string())
+    }
 }
 
-fn map_active_git_error(error: GitWorkspaceError) -> AgentOrchestrationError {
-    let mut mapped = map_git_error(error);
-    if mapped.kind == AgentOrchestrationErrorKind::Rejected {
-        mapped.kind = AgentOrchestrationErrorKind::RecoveryRequired;
+fn git_error_public_message(code: &str) -> &'static str {
+    match code {
+        "writer_repository_invalid" => "当前目录不是可用的 Git 仓库",
+        "writer_repository_dirty" => "当前操作要求根工作区保持干净",
+        "writer_repository_unsupported" => "当前 Git 仓库结构不受 Writer 支持",
+        "writer_request_invalid" => "Writer 请求不满足 Host 约束",
+        "writer_ownership_mismatch" => "Writer 资源身份无法被 Host 精确证明",
+        "writer_workspace_conflict" => "Writer 或根工作区状态已经变化",
+        "writer_limit_exceeded" => "Writer 变更超过 Host 冻结限制",
+        "writer_empty_diff" => "Writer 没有形成可集成的代码变更",
+        "writer_git_failed" => "Writer Git 操作失败",
+        "writer_io_failed" => "Writer 文件系统操作失败",
+        _ => "Writer 工作区操作失败",
     }
-    mapped
 }
 
 fn map_integration_git_error(error: GitWorkspaceError) -> AgentOrchestrationError {
@@ -553,7 +922,7 @@ fn map_integration_git_error(error: GitWorkspaceError) -> AgentOrchestrationErro
             | GitWorkspaceError::InvalidRepository(_)
             | GitWorkspaceError::UnsupportedRepository(_)
     );
-    let mut mapped = map_active_git_error(error);
+    let mut mapped = map_git_error(error);
     if root_conflict {
         mapped.kind = AgentOrchestrationErrorKind::Conflict;
     }
@@ -607,68 +976,617 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_bind_postconditions_roll_back_pristine_or_retain_dirty_resources() {
+    async fn binding_cleanup_discards_exact_pristine_and_dirty_resources() {
         let pristine_fixture = RepositoryFixture::new();
-        let pristine_owner =
-            GitWorkspaceOwner::bind_existing(&pristine_fixture.root, &pristine_fixture.managed)
-                .expect("pristine owner");
-        let pristine = pristine_owner
-            .create(WriterWorkspaceRequest::new(
-                "writer_bind_rollback",
-                pristine_fixture.head.clone(),
-                vec![PathBuf::from("src")],
-            ))
-            .expect("pristine allocation");
-        let pristine_facts = pristine.durable_facts();
-        let error = rollback_or_retain_failed_binding(
-            pristine_owner.clone(),
-            pristine,
-            orchestration_error(
-                AgentOrchestrationErrorKind::RecoveryRequired,
-                "synthetic_observation_failure",
-                "synthetic observation failure",
-            ),
+        let pristine = ProductionAgentOrchestrator::new(
+            &pristine_fixture.root,
+            &pristine_fixture.managed,
+            ProductionToolConfig::new(&pristine_fixture.root).with_shell_policy(ShellPolicy::Full),
         )
-        .await;
-        assert_eq!(error.code, "writer_binding_postcondition_rolled_back");
+        .expect("pristine orchestrator");
+        let pristine_plan = pristine
+            .prepare_writer(WriterPreparation {
+                task_id: AgentTaskId::from("writer_bind_pristine"),
+                root_workspace: stable_path(&pristine_fixture.root),
+                allowed_paths: vec!["src".to_owned()],
+            })
+            .await
+            .expect("pristine plan");
+        let pristine_task = writer_task(pristine_plan.assignment);
+        pristine
+            .bind_writer(&pristine_task, None)
+            .await
+            .expect("pristine allocation");
+        let cleanup_plan = pristine
+            .inspect_writer_cleanup(
+                &pristine_task,
+                None,
+                WriterCleanupPhase::Binding,
+                "synthetic_observation_failure",
+            )
+            .await
+            .expect("freeze pristine cleanup");
+        assert!(matches!(
+            pristine
+                .execute_writer_cleanup(&pristine_task, &cleanup_plan)
+                .await
+                .expect("discard pristine Writer"),
+            WriterCleanupResult::Removed { .. }
+        ));
         assert!(
-            pristine_owner
-                .exact_resources_absent(&pristine_facts)
-                .expect("pristine resources absent")
+            !pristine_fixture
+                .managed
+                .join("writer_bind_pristine")
+                .exists()
         );
 
         let dirty_fixture = RepositoryFixture::new();
-        let dirty_owner =
-            GitWorkspaceOwner::bind_existing(&dirty_fixture.root, &dirty_fixture.managed)
-                .expect("dirty owner");
-        let dirty = dirty_owner
-            .create(WriterWorkspaceRequest::new(
-                "writer_bind_retained",
-                dirty_fixture.head.clone(),
-                vec![PathBuf::from("src")],
-            ))
+        let dirty = ProductionAgentOrchestrator::new(
+            &dirty_fixture.root,
+            &dirty_fixture.managed,
+            ProductionToolConfig::new(&dirty_fixture.root).with_shell_policy(ShellPolicy::Full),
+        )
+        .expect("dirty orchestrator");
+        let dirty_plan = dirty
+            .prepare_writer(WriterPreparation {
+                task_id: AgentTaskId::from("writer_bind_dirty"),
+                root_workspace: stable_path(&dirty_fixture.root),
+                allowed_paths: vec!["src".to_owned()],
+            })
+            .await
+            .expect("dirty plan");
+        let dirty_task = writer_task(dirty_plan.assignment);
+        dirty
+            .bind_writer(&dirty_task, None)
+            .await
             .expect("dirty allocation");
-        let dirty_facts = dirty.durable_facts();
         fs::write(
-            dirty.path().join("src/lib.rs"),
+            dirty_fixture.managed.join("writer_bind_dirty/src/lib.rs"),
             "pub fn value() -> u8 { 99 }\n",
         )
         .expect("dirty writer");
-        let error = rollback_or_retain_failed_binding(
-            dirty_owner.clone(),
-            dirty,
-            orchestration_error(
-                AgentOrchestrationErrorKind::RecoveryRequired,
+        let cleanup_plan = dirty
+            .inspect_writer_cleanup(
+                &dirty_task,
+                None,
+                WriterCleanupPhase::Binding,
                 "synthetic_observation_failure",
-                "synthetic observation failure",
-            ),
+            )
+            .await
+            .expect("freeze dirty cleanup");
+        assert!(matches!(
+            dirty
+                .execute_writer_cleanup(&dirty_task, &cleanup_plan)
+                .await
+                .expect("discard dirty Writer"),
+            WriterCleanupResult::Removed { .. }
+        ));
+        assert!(!dirty_fixture.managed.join("writer_bind_dirty").exists());
+    }
+
+    #[tokio::test]
+    async fn frozen_cleanup_plan_removes_exact_git_residue_after_path_disappears() {
+        let fixture = RepositoryFixture::new();
+        let orchestrator = ProductionAgentOrchestrator::new(
+            &fixture.root,
+            &fixture.managed,
+            ProductionToolConfig::new(&fixture.root).with_shell_policy(ShellPolicy::Full),
         )
-        .await;
-        assert_eq!(error.code, "writer_binding_postcondition_retained");
-        assert!(dirty_facts.worktree_path.exists());
-        assert!(
-            resolve_ref_optional_for_test(&dirty_fixture.root, &dirty_facts.branch_ref).is_some()
+        .expect("production orchestrator");
+        let plan = orchestrator
+            .prepare_writer(WriterPreparation {
+                task_id: AgentTaskId::from("writer_missing_path_plan"),
+                root_workspace: stable_path(&fixture.root),
+                allowed_paths: vec!["src".to_owned()],
+            })
+            .await
+            .expect("writer plan");
+        let task = writer_task(plan.assignment);
+        orchestrator
+            .bind_writer(&task, None)
+            .await
+            .expect("writer allocation");
+        let cleanup_plan = orchestrator
+            .inspect_writer_cleanup(
+                &task,
+                None,
+                WriterCleanupPhase::Binding,
+                "writer_binding_failed",
+            )
+            .await
+            .expect("freeze cleanup plan while the Writer path is inspectable");
+        assert!(matches!(
+            cleanup_plan.scope,
+            WriterCleanupScope::Known {
+                changed_count: 0,
+                in_scope_count: 0,
+                out_of_scope_count: 0,
+                ..
+            }
+        ));
+        assert_eq!(
+            cleanup_plan.mode,
+            WriterCleanupMode::RemoveExact {
+                expected_branch_commit: task.workspace.base_commit.clone(),
+            }
         );
+        fs::remove_dir_all(Path::new(task.workspace.execution_workspace()))
+            .expect("simulate path disappearance after the cleanup plan was frozen");
+        assert!(!Path::new(task.workspace.execution_workspace()).exists());
+        assert_eq!(
+            orchestrator
+                .execute_writer_cleanup(&task, &cleanup_plan)
+                .await
+                .expect("remove exact missing-path residue"),
+            WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::Removed,
+                branch: WriterRemovalState::Removed,
+            }
+        );
+        assert_eq!(
+            orchestrator
+                .execute_writer_cleanup(&task, &cleanup_plan)
+                .await
+                .expect("repeat exact missing-path cleanup"),
+            WriterCleanupResult::AlreadyAbsent
+        );
+        assert!(
+            resolve_ref_optional_for_test(
+                &fixture.root,
+                task.workspace.branch.as_deref().expect("writer branch"),
+            )
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn frozen_cleanup_plan_resumes_a_branch_only_guard_without_scope_reinspection() {
+        let fixture = RepositoryFixture::new();
+        let orchestrator = ProductionAgentOrchestrator::new(
+            &fixture.root,
+            &fixture.managed,
+            ProductionToolConfig::new(&fixture.root).with_shell_policy(ShellPolicy::Full),
+        )
+        .expect("production orchestrator");
+        let plan = orchestrator
+            .prepare_writer(WriterPreparation {
+                task_id: AgentTaskId::from("writer_branch_guard_resume"),
+                root_workspace: stable_path(&fixture.root),
+                allowed_paths: vec!["src".to_owned()],
+            })
+            .await
+            .expect("writer plan");
+        let task = writer_task(plan.assignment);
+        orchestrator
+            .bind_writer(&task, None)
+            .await
+            .expect("writer allocation");
+        let cleanup_plan = orchestrator
+            .inspect_writer_cleanup(
+                &task,
+                None,
+                WriterCleanupPhase::Binding,
+                "writer_binding_failed",
+            )
+            .await
+            .expect("freeze cleanup plan before the crash window");
+        git_ok(
+            &fixture.root,
+            &[
+                OsString::from("worktree"),
+                OsString::from("remove"),
+                Path::new(task.workspace.execution_workspace())
+                    .as_os_str()
+                    .to_owned(),
+            ],
+        );
+        let facts = orchestrator.owned_facts(&task).expect("owned Writer facts");
+        let owner = orchestrator.owner().expect("Git owner");
+        owner
+            .simulate_branch_only_cleanup_guard_crash(&facts, &task.workspace.base_commit)
+            .expect("simulate crash after the synthetic guard was persisted");
+        fs::write(
+            Path::new(task.workspace.execution_workspace()).join("outside-frozen-scope.txt"),
+            "must be discarded without re-inspecting the frozen scope\n",
+        )
+        .expect("drift the synthetic guard after cleanup intent");
+        assert!(
+            Path::new(task.workspace.execution_workspace()).exists(),
+            "the synthetic no-checkout guard must exercise the path-present recovery branch"
+        );
+        assert!(
+            owner
+                .cleanup_has_started(&facts, &task.workspace.base_commit)
+                .expect("prove cleanup intent"),
+            "the exact tombstone must bypass ordinary scope reinspection"
+        );
+
+        assert_eq!(
+            orchestrator
+                .execute_writer_cleanup(&task, &cleanup_plan)
+                .await
+                .expect("resume the frozen cleanup action"),
+            WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::Removed,
+                branch: WriterRemovalState::Removed,
+            }
+        );
+        assert!(!Path::new(task.workspace.execution_workspace()).exists());
+        assert!(
+            resolve_ref_optional_for_test(
+                &fixture.root,
+                task.workspace.branch.as_deref().expect("Writer branch"),
+            )
+            .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_metadata_failure_is_retained_until_production_recovery_finishes() {
+        let fixture = RepositoryFixture::new();
+        let orchestrator = ProductionAgentOrchestrator::new(
+            &fixture.root,
+            &fixture.managed,
+            ProductionToolConfig::new(&fixture.root).with_shell_policy(ShellPolicy::Full),
+        )
+        .expect("production orchestrator");
+        let writer = orchestrator
+            .prepare_writer(WriterPreparation {
+                task_id: AgentTaskId::from("writer_cleanup_metadata_recovery"),
+                root_workspace: stable_path(&fixture.root),
+                allowed_paths: vec!["src".to_owned()],
+            })
+            .await
+            .expect("writer plan");
+        let task = writer_task(writer.assignment);
+        orchestrator
+            .bind_writer(&task, None)
+            .await
+            .expect("writer allocation");
+        let plan = orchestrator
+            .inspect_writer_cleanup(
+                &task,
+                None,
+                WriterCleanupPhase::Binding,
+                "writer_binding_failed",
+            )
+            .await
+            .expect("freeze cleanup plan");
+        let WriterCleanupMode::RemoveExact {
+            expected_branch_commit,
+        } = &plan.mode
+        else {
+            panic!("exact cleanup plan")
+        };
+        let facts = orchestrator.owned_facts(&task).expect("owned Writer facts");
+        let owner = orchestrator.owner().expect("Git owner");
+
+        let retained = execute_writer_cleanup_sync_with(
+            &owner,
+            &facts,
+            &plan,
+            GitWorkspaceOwner::cleanup_exact_with_failed_root_lock_release,
+        )
+        .expect("cleanup execution failure is a typed result");
+        assert_eq!(
+            retained,
+            WriterCleanupResult::Retained {
+                worktree: WriterResourceState::Removed,
+                branch: WriterResourceState::Removed,
+                metadata: WriterCleanupMetadataState::Uncertain,
+                uncertainty_code: "writer_io_failed".to_owned(),
+            }
+        );
+        assert!(
+            !owner
+                .cleanup_metadata_is_clear(&facts, expected_branch_commit)
+                .expect("inspect retained cleanup metadata"),
+            "business resources being absent must not hide retained cleanup metadata"
+        );
+
+        assert_eq!(
+            execute_writer_cleanup_sync(&owner, &facts, &plan)
+                .expect("resume the exact production cleanup"),
+            WriterCleanupResult::AlreadyAbsent
+        );
+        assert!(
+            owner
+                .cleanup_metadata_is_clear(&facts, expected_branch_commit)
+                .expect("prove final cleanup metadata removal")
+        );
+
+        let uncertainty_code = "writer_cleanup_identity_unprovable".to_owned();
+        let retain_plan = WriterCleanupPlan {
+            phase: WriterCleanupPhase::Child,
+            reason_code: "writer_child_recovery_required".to_owned(),
+            ownership: WriterCleanupOwnership::Unknown {
+                uncertainty_code: uncertainty_code.clone(),
+            },
+            artifact_state: WriterArtifactState::Unknown,
+            scope: WriterCleanupScope::Unknown {
+                uncertainty_code: uncertainty_code.clone(),
+            },
+            mode: WriterCleanupMode::RetainForRecovery {
+                uncertainty_code: uncertainty_code.clone(),
+            },
+        };
+        assert_eq!(
+            execute_writer_cleanup_sync(&owner, &facts, &retain_plan)
+                .expect("retain-only production cleanup result"),
+            WriterCleanupResult::Retained {
+                worktree: WriterResourceState::AlreadyAbsent,
+                branch: WriterResourceState::AlreadyAbsent,
+                metadata: WriterCleanupMetadataState::Uncertain,
+                uncertainty_code,
+            },
+            "missing exact cleanup authority can never prove metadata clear"
+        );
+    }
+
+    #[tokio::test]
+    async fn frozen_cleanup_scope_drift_retains_every_writer_resource() {
+        let fixture = RepositoryFixture::new();
+        fs::write(fixture.root.join(".gitignore"), "src/ignored.bin\n").expect("write ignore rule");
+        git_ok(
+            &fixture.root,
+            &[OsString::from("add"), OsString::from(".gitignore")],
+        );
+        git_ok(
+            &fixture.root,
+            &[
+                OsString::from("commit"),
+                OsString::from("-m"),
+                OsString::from("ignore writer fixture"),
+            ],
+        );
+        let orchestrator = ProductionAgentOrchestrator::new(
+            &fixture.root,
+            &fixture.managed,
+            ProductionToolConfig::new(&fixture.root).with_shell_policy(ShellPolicy::Full),
+        )
+        .expect("production orchestrator");
+        let plan = orchestrator
+            .prepare_writer(WriterPreparation {
+                task_id: AgentTaskId::from("writer_scope_drift"),
+                root_workspace: stable_path(&fixture.root),
+                allowed_paths: vec!["src".to_owned()],
+            })
+            .await
+            .expect("writer plan");
+        let task = writer_task(plan.assignment);
+        orchestrator
+            .bind_writer(&task, None)
+            .await
+            .expect("writer allocation");
+        let writer = Path::new(task.workspace.execution_workspace());
+        fs::write(writer.join("src/lib.rs"), "pub fn value() -> u8 { 2 }\n")
+            .expect("tracked Writer edit");
+        fs::write(writer.join("src/ignored.bin"), b"first ignored bytes")
+            .expect("ignored Writer artifact");
+        let cleanup_plan = orchestrator
+            .inspect_writer_cleanup(
+                &task,
+                None,
+                WriterCleanupPhase::Child,
+                "writer_child_failed",
+            )
+            .await
+            .expect("freeze dirty Writer cleanup scope");
+
+        let changed_tracked = b"pub fn value() -> u8 { 200 }\n";
+        let changed_ignored = b"changed ignored bytes";
+        fs::write(writer.join("src/lib.rs"), changed_tracked).expect("drift tracked bytes");
+        fs::write(writer.join("src/ignored.bin"), changed_ignored).expect("drift ignored bytes");
+        let branch_before = resolve_ref_optional_for_test(
+            &fixture.root,
+            task.workspace.branch.as_deref().expect("writer branch"),
+        );
+
+        let result = orchestrator
+            .execute_writer_cleanup(&task, &cleanup_plan)
+            .await
+            .expect("scope drift is a typed retained result");
+        assert!(matches!(
+            result,
+            WriterCleanupResult::Retained {
+                ref uncertainty_code,
+                ..
+            } if uncertainty_code == "writer_cleanup_scope_changed"
+        ));
+        assert!(writer.exists(), "scope drift must retain the worktree");
+        assert_eq!(
+            fs::read(writer.join("src/lib.rs")).unwrap(),
+            changed_tracked
+        );
+        assert_eq!(
+            fs::read(writer.join("src/ignored.bin")).unwrap(),
+            changed_ignored
+        );
+        assert_eq!(
+            resolve_ref_optional_for_test(
+                &fixture.root,
+                task.workspace.branch.as_deref().expect("writer branch"),
+            ),
+            branch_before,
+            "scope drift must not delete or move the Writer branch"
+        );
+    }
+
+    #[tokio::test]
+    async fn seal_phase_cleanup_recovers_an_uncommitted_host_seal_identity() {
+        let fixture = RepositoryFixture::new();
+        let orchestrator = ProductionAgentOrchestrator::new(
+            &fixture.root,
+            &fixture.managed,
+            ProductionToolConfig::new(&fixture.root).with_shell_policy(ShellPolicy::Full),
+        )
+        .expect("production orchestrator");
+        let plan = orchestrator
+            .prepare_writer(WriterPreparation {
+                task_id: AgentTaskId::from("writer_seal_cleanup"),
+                root_workspace: stable_path(&fixture.root),
+                allowed_paths: vec!["src".to_owned()],
+            })
+            .await
+            .expect("writer plan");
+        let task = writer_task(plan.assignment);
+        orchestrator
+            .bind_writer(&task, None)
+            .await
+            .expect("writer allocation");
+        fs::write(
+            Path::new(task.workspace.execution_workspace()).join("src/lib.rs"),
+            "pub fn value() -> u8 { 7 }\n",
+        )
+        .expect("writer edit");
+        let facts = orchestrator.owned_facts(&task).expect("owned facts");
+        let owner = orchestrator.owner().expect("Git owner");
+        let allocation = owner.recover_active(facts).expect("active allocation");
+        let sealed = owner
+            .seal(&allocation)
+            .expect("publish Host seal side effect");
+
+        git_ok(
+            &fixture.root,
+            &[
+                OsString::from("switch"),
+                OsString::from("-c"),
+                OsString::from("seal-cleanup-other"),
+            ],
+        );
+        fs::write(fixture.root.join("root-advanced.txt"), "advanced root\n")
+            .expect("advance root bytes");
+        git_ok(
+            &fixture.root,
+            &[OsString::from("add"), OsString::from("root-advanced.txt")],
+        );
+        git_ok(
+            &fixture.root,
+            &[
+                OsString::from("commit"),
+                OsString::from("-m"),
+                OsString::from("advance switched root"),
+            ],
+        );
+        fs::write(fixture.root.join("root-dirty.txt"), "dirty root\n").expect("dirty root bytes");
+        let root_head_before = git_text(&fixture.root, &["rev-parse", "HEAD"]);
+        let root_branch_before = git_text(&fixture.root, &["symbolic-ref", "HEAD"]);
+        let root_dirty_before = fs::read(fixture.root.join("root-dirty.txt"))
+            .expect("read dirty root bytes before cleanup");
+
+        let cleanup_plan = orchestrator
+            .inspect_writer_cleanup(&task, None, WriterCleanupPhase::Seal, "writer_seal_failed")
+            .await
+            .expect("recover Host seal into cleanup plan");
+        assert_eq!(
+            cleanup_plan.artifact_state,
+            WriterArtifactState::KnownHostSealed {
+                final_commit: sealed.final_commit().to_owned(),
+                diff_sha256: sealed.diff_sha256().to_owned(),
+            }
+        );
+        fs::remove_dir_all(Path::new(task.workspace.execution_workspace()))
+            .expect("simulate path disappearance after plan commit");
+        assert_eq!(
+            cleanup_plan.mode,
+            WriterCleanupMode::RemoveExact {
+                expected_branch_commit: sealed.final_commit().to_owned(),
+            }
+        );
+        assert!(matches!(
+            orchestrator
+                .execute_writer_cleanup(&task, &cleanup_plan)
+                .await
+                .expect("remove recovered sealed Writer"),
+            WriterCleanupResult::Removed { .. }
+        ));
+        assert_eq!(
+            git_text(&fixture.root, &["rev-parse", "HEAD"]),
+            root_head_before,
+            "cleanup must not move the advanced root HEAD"
+        );
+        assert_eq!(
+            git_text(&fixture.root, &["symbolic-ref", "HEAD"]),
+            root_branch_before,
+            "cleanup must not switch the root branch"
+        );
+        assert_eq!(
+            fs::read(fixture.root.join("root-dirty.txt"))
+                .expect("read dirty root bytes after cleanup"),
+            root_dirty_before,
+            "cleanup must not alter dirty root bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_writer_path_before_cleanup_plan_is_not_destructively_guessed() {
+        let fixture = RepositoryFixture::new();
+        let orchestrator = ProductionAgentOrchestrator::new(
+            &fixture.root,
+            &fixture.managed,
+            ProductionToolConfig::new(&fixture.root).with_shell_policy(ShellPolicy::Full),
+        )
+        .expect("production orchestrator");
+        let plan = orchestrator
+            .prepare_writer(WriterPreparation {
+                task_id: AgentTaskId::from("writer_missing_before_plan"),
+                root_workspace: stable_path(&fixture.root),
+                allowed_paths: vec!["src".to_owned()],
+            })
+            .await
+            .expect("writer plan");
+        let task = writer_task(plan.assignment);
+        orchestrator
+            .bind_writer(&task, None)
+            .await
+            .expect("writer allocation");
+        fs::remove_dir_all(Path::new(task.workspace.execution_workspace()))
+            .expect("simulate path disappearance before inspection");
+
+        let error = orchestrator
+            .inspect_writer_cleanup(
+                &task,
+                None,
+                WriterCleanupPhase::Binding,
+                "writer_binding_failed",
+            )
+            .await
+            .expect_err("Host cannot invent an empty scope after the path vanished");
+        assert_eq!(error.kind, AgentOrchestrationErrorKind::Conflict);
+        assert_eq!(error.code, "writer_workspace_conflict");
+        assert!(
+            resolve_ref_optional_for_test(
+                &fixture.root,
+                task.workspace.branch.as_deref().expect("writer branch"),
+            )
+            .is_some(),
+            "inspection failure must retain the exact Writer ref"
+        );
+    }
+
+    #[tokio::test]
+    async fn join_failure_is_mapped_without_exposing_the_panic_payload() {
+        let join = tokio::task::spawn_blocking(|| panic!("secret-path-and-git-stderr"))
+            .await
+            .expect_err("test task must panic");
+        let error = join_error(join);
+        assert_eq!(error.code, "writer_git_task_join_failed");
+        assert_eq!(error.message, "Writer Git 后台任务异常终止");
+        assert!(!error.message.contains("secret-path-and-git-stderr"));
+    }
+
+    #[test]
+    fn git_failure_is_mapped_without_exposing_paths_stderr_or_file_bytes() {
+        let error = map_git_error(GitWorkspaceError::Git {
+            operation: "seal /secret/worktree/TOP_SECRET_BYTES".to_owned(),
+            status: Some(128),
+            detail: "fatal: private git stderr TOP_SECRET_BYTES".to_owned(),
+        });
+        assert_eq!(error.code, "writer_git_failed");
+        assert_eq!(error.message, "Writer Git 操作失败");
+        for secret in ["/secret/worktree", "private git stderr", "TOP_SECRET_BYTES"] {
+            assert!(!error.message.contains(secret));
+        }
     }
 
     #[tokio::test]
@@ -785,6 +1703,16 @@ mod tests {
             .expect("recover integration committed before durable event");
         assert_eq!(repeated.root_head_commit, seal.final_commit);
 
+        let cleanup_plan = orchestrator
+            .inspect_writer_cleanup(
+                &task,
+                Some(&seal),
+                WriterCleanupPhase::PostIntegration,
+                "writer_integrated",
+            )
+            .await
+            .expect("freeze exact cleanup plan");
+
         git_ok(
             &fixture.root,
             &[
@@ -804,17 +1732,21 @@ mod tests {
             "simulated crash leaves only the writer branch"
         );
         let cleanup = orchestrator
-            .cleanup_writer(&task, Some(&seal))
+            .execute_writer_cleanup(&task, &cleanup_plan)
             .await
             .expect("resume branch-only cleanup");
-        assert!(cleanup.worktree_removed);
-        assert!(cleanup.branch_removed);
+        assert!(matches!(
+            cleanup,
+            WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::AlreadyAbsent,
+                branch: WriterRemovalState::Removed,
+            }
+        ));
         let repeated_cleanup = orchestrator
-            .cleanup_writer(&task, Some(&seal))
+            .execute_writer_cleanup(&task, &cleanup_plan)
             .await
             .expect("idempotent cleanup");
-        assert!(repeated_cleanup.worktree_removed);
-        assert!(repeated_cleanup.branch_removed);
+        assert_eq!(repeated_cleanup, WriterCleanupResult::AlreadyAbsent);
 
         fs::write(fixture.root.join("root-advanced.txt"), "external commit\n")
             .expect("advance root file");

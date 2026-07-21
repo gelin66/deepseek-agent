@@ -30,7 +30,9 @@ use codewhale_protocol::agent_runtime::{
     AgentTask, AgentTaskId, AgentWorkspaceAccess, AgentWorkspaceAssignment, ModelAccounting,
     OperationId, ReasoningEffort, RunId, RunRequest, RuntimeEventId, RuntimeEventKind,
     StoredRuntimeEvent, TerminalState, ToolArtifact, ToolArtifactStatus, ToolPolicy, Usage,
-    WriterIntegrationStatus,
+    WriterArtifactState, WriterCleanupMode, WriterCleanupOwnership, WriterCleanupPhase,
+    WriterCleanupPlan, WriterCleanupResult, WriterCleanupScope, WriterIntegrationStatus,
+    WriterRemovalState, writer_path_set_sha256,
 };
 use codewhale_protocol::run_api::{
     RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse, RunCommandResult,
@@ -949,22 +951,37 @@ fn writer_lifecycle_fixture() -> Vec<StoredRuntimeEvent> {
         },
         RuntimeEventKind::AgentCleanupPrepared {
             task_id: task_id.clone(),
-            worktree_path: assignment
-                .worktree_path
-                .clone()
-                .expect("writer worktree path"),
-            branch: assignment.branch.clone().expect("writer branch"),
-            owner_token: assignment.owner_token.clone().expect("writer owner token"),
+            plan: Box::new(WriterCleanupPlan {
+                phase: WriterCleanupPhase::PostIntegration,
+                reason_code: "writer_integrated".to_owned(),
+                ownership: WriterCleanupOwnership::Known {
+                    identity_sha256: "c".repeat(64),
+                },
+                artifact_state: WriterArtifactState::KnownHostSealed {
+                    final_commit: WRITER_FINAL_COMMIT.to_owned(),
+                    diff_sha256: WRITER_DIFF_SHA256.to_owned(),
+                },
+                scope: WriterCleanupScope::Known {
+                    workspace_revision: WorkspaceRevision::Known {
+                        sha256: WRITER_FINAL_COMMIT.to_owned(),
+                    },
+                    changed_count: 1,
+                    in_scope_count: 1,
+                    out_of_scope_count: 0,
+                    path_set_sha256: writer_path_set_sha256(&["src/lib.rs".to_owned()])
+                        .expect("cleanup scope hash"),
+                },
+                mode: WriterCleanupMode::RemoveExact {
+                    expected_branch_commit: WRITER_FINAL_COMMIT.to_owned(),
+                },
+            }),
         },
         RuntimeEventKind::AgentCleanupCommitted {
             task_id,
-            worktree_path: assignment.worktree_path.expect("writer worktree path"),
-            branch: assignment.branch.expect("writer branch"),
-            owner_token: assignment.owner_token.expect("writer owner token"),
-            worktree_removed: true,
-            branch_removed: true,
-            retained_for_recovery: false,
-            reason: None,
+            result: WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::Removed,
+                branch: WriterRemovalState::Removed,
+            },
         },
     ];
 

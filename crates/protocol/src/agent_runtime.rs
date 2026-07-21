@@ -18,8 +18,8 @@ use crate::task::{
     VerifierVerdict, WorkspaceMutationEvidence, WorkspaceRevision, WorkspaceState, canonical_json,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 12;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 12;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 13;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 13;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -1238,6 +1238,249 @@ impl WriterIntegrationStatus {
     }
 }
 
+/// Durable Host phase that led to cleanup of one isolated Writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriterCleanupPhase {
+    Binding,
+    Child,
+    Seal,
+    Integration,
+    PostIntegration,
+}
+
+/// Whether cleanup is operating on an unsealed workspace or an immutable
+/// Host-sealed artifact. `Unknown` is fail-closed and can only be retained.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WriterArtifactState {
+    KnownUnsealed,
+    KnownHostSealed {
+        final_commit: String,
+        diff_sha256: String,
+    },
+    Unknown,
+}
+
+/// Host-observed file scope at the cleanup boundary. Paths themselves are not
+/// persisted; the canonical ordered set is bound by its digest and counts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WriterCleanupScope {
+    Known {
+        workspace_revision: WorkspaceRevision,
+        changed_count: u32,
+        in_scope_count: u32,
+        out_of_scope_count: u32,
+        path_set_sha256: String,
+    },
+    Unknown {
+        uncertainty_code: String,
+    },
+}
+
+/// Stable identity of the repository owner that inspected this cleanup.
+/// Destructive execution requires a known digest; failed inspection records
+/// only a stable uncertainty code and cannot authorize deletion.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WriterCleanupOwnership {
+    Known { identity_sha256: String },
+    Unknown { uncertainty_code: String },
+}
+
+/// Destructive authority frozen before any cleanup side effect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WriterCleanupMode {
+    RemoveExact { expected_branch_commit: String },
+    RetainForRecovery { uncertainty_code: String },
+}
+
+/// Complete cleanup authority and evidence frozen by the Host.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct WriterCleanupPlan {
+    pub phase: WriterCleanupPhase,
+    pub reason_code: String,
+    pub ownership: WriterCleanupOwnership,
+    pub artifact_state: WriterArtifactState,
+    pub scope: WriterCleanupScope,
+    pub mode: WriterCleanupMode,
+}
+
+impl WriterCleanupPlan {
+    pub fn validate(&self) -> Result<(), String> {
+        validate_reason_code("writer cleanup reason code", &self.reason_code)?;
+        match &self.ownership {
+            WriterCleanupOwnership::Known { identity_sha256 } => {
+                validate_sha256("writer cleanup owner identity", identity_sha256)?;
+            }
+            WriterCleanupOwnership::Unknown { uncertainty_code } => {
+                validate_reason_code("writer cleanup owner uncertainty", uncertainty_code)?;
+            }
+        }
+        match &self.artifact_state {
+            WriterArtifactState::KnownUnsealed | WriterArtifactState::Unknown => {}
+            WriterArtifactState::KnownHostSealed {
+                final_commit,
+                diff_sha256,
+            } => {
+                validate_git_object_id("cleanup sealed commit", final_commit)?;
+                validate_sha256("cleanup sealed diff sha256", diff_sha256)?;
+            }
+        }
+        match &self.scope {
+            WriterCleanupScope::Known {
+                workspace_revision,
+                changed_count,
+                in_scope_count,
+                out_of_scope_count,
+                path_set_sha256,
+            } => {
+                let WorkspaceRevision::Known { sha256 } = workspace_revision else {
+                    return Err("known writer cleanup scope requires a known revision".to_owned());
+                };
+                validate_sha256("writer cleanup workspace revision", sha256)?;
+                if in_scope_count.checked_add(*out_of_scope_count) != Some(*changed_count) {
+                    return Err(
+                        "writer cleanup scope counts must cover every changed path".to_owned()
+                    );
+                }
+                validate_sha256("writer cleanup path set sha256", path_set_sha256)?;
+            }
+            WriterCleanupScope::Unknown { uncertainty_code } => {
+                validate_reason_code("writer cleanup scope uncertainty", uncertainty_code)?;
+            }
+        }
+        match &self.mode {
+            WriterCleanupMode::RemoveExact {
+                expected_branch_commit,
+            } => {
+                validate_git_object_id("cleanup expected branch commit", expected_branch_commit)?;
+                if matches!(self.ownership, WriterCleanupOwnership::Unknown { .. })
+                    || matches!(self.artifact_state, WriterArtifactState::Unknown)
+                    || matches!(self.scope, WriterCleanupScope::Unknown { .. })
+                {
+                    return Err(
+                        "destructive cleanup requires known artifact and scope facts".to_owned(),
+                    );
+                }
+            }
+            WriterCleanupMode::RetainForRecovery { uncertainty_code } => {
+                validate_reason_code("writer cleanup retention uncertainty", uncertainty_code)?;
+                if let WriterCleanupOwnership::Unknown {
+                    uncertainty_code: owner_code,
+                } = &self.ownership
+                    && owner_code != uncertainty_code
+                {
+                    return Err("writer cleanup owner and retention codes disagree".to_owned());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Digest one canonical repository-relative path set without persisting its
+/// contents in the cleanup lifecycle.
+pub fn writer_path_set_sha256(paths: &[String]) -> Result<String, String> {
+    let mut canonical = paths.to_vec();
+    canonical.sort();
+    canonical.dedup();
+    validate_relative_path_list("writer cleanup path", &canonical)?;
+    let bytes =
+        serde_json::to_vec(&canonical).expect("canonical writer cleanup path set is serializable");
+    Ok(Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriterRemovalState {
+    Removed,
+    AlreadyAbsent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriterResourceState {
+    Removed,
+    AlreadyAbsent,
+    Retained,
+    Unknown,
+}
+
+/// Whether Git-side cleanup metadata is conclusively gone. This is separate
+/// from the Writer worktree/branch because a tombstone or exact root lock can
+/// remain after both user-visible resources were removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriterCleanupMetadataState {
+    Clear,
+    Uncertain,
+}
+
+/// Exact result of executing a persisted cleanup plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WriterCleanupResult {
+    Removed {
+        worktree: WriterRemovalState,
+        branch: WriterRemovalState,
+    },
+    AlreadyAbsent,
+    Retained {
+        worktree: WriterResourceState,
+        branch: WriterResourceState,
+        metadata: WriterCleanupMetadataState,
+        uncertainty_code: String,
+    },
+}
+
+impl WriterCleanupResult {
+    pub fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Removed { worktree, branch }
+                if *worktree == WriterRemovalState::AlreadyAbsent
+                    && *branch == WriterRemovalState::AlreadyAbsent =>
+            {
+                Err("writer cleanup with no removed resource must use already_absent".to_owned())
+            }
+            Self::Removed { .. } | Self::AlreadyAbsent => Ok(()),
+            Self::Retained {
+                worktree,
+                branch,
+                metadata,
+                uncertainty_code,
+            } => {
+                validate_reason_code("writer cleanup result uncertainty", uncertainty_code)?;
+                if !matches!(
+                    worktree,
+                    WriterResourceState::Retained | WriterResourceState::Unknown
+                ) && !matches!(
+                    branch,
+                    WriterResourceState::Retained | WriterResourceState::Unknown
+                ) && *metadata == WriterCleanupMetadataState::Clear
+                {
+                    return Err(
+                        "retained writer cleanup requires a retained resource or uncertain cleanup metadata"
+                            .to_owned()
+                    );
+                }
+                Ok(())
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn retained_for_recovery(&self) -> bool {
+        matches!(self, Self::Retained { .. })
+    }
+}
+
 /// Structured result shared by root and child Agent outcomes.
 ///
 /// Human summary and unresolved notes are advisory. Files, checks, evidence,
@@ -2322,20 +2565,11 @@ pub enum RuntimeEventKind {
     },
     AgentCleanupPrepared {
         task_id: AgentTaskId,
-        worktree_path: String,
-        branch: String,
-        owner_token: String,
+        plan: Box<WriterCleanupPlan>,
     },
     AgentCleanupCommitted {
         task_id: AgentTaskId,
-        worktree_path: String,
-        branch: String,
-        owner_token: String,
-        worktree_removed: bool,
-        branch_removed: bool,
-        retained_for_recovery: bool,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        reason: Option<String>,
+        result: WriterCleanupResult,
     },
     ChildFinished {
         call_id: String,
@@ -2506,51 +2740,13 @@ impl RuntimeEventKind {
                     root_workspace_state_after,
                 )
             }
-            Self::AgentCleanupPrepared {
-                task_id,
-                worktree_path,
-                branch,
-                owner_token,
-            } => {
+            Self::AgentCleanupPrepared { task_id, plan } => {
                 require_agent_text("Agent task id", &task_id.0)?;
-                require_agent_text("worktree path", worktree_path)?;
-                require_agent_text("worktree branch", branch)?;
-                require_agent_text("worktree owner token", owner_token)
+                plan.validate()
             }
-            Self::AgentCleanupCommitted {
-                task_id,
-                worktree_path,
-                branch,
-                owner_token,
-                worktree_removed,
-                branch_removed,
-                retained_for_recovery,
-                reason,
-            } => {
+            Self::AgentCleanupCommitted { task_id, result } => {
                 require_agent_text("Agent task id", &task_id.0)?;
-                require_agent_text("worktree path", worktree_path)?;
-                require_agent_text("worktree branch", branch)?;
-                require_agent_text("worktree owner token", owner_token)?;
-                if *retained_for_recovery {
-                    require_agent_text(
-                        "worktree retention reason",
-                        reason.as_deref().ok_or_else(|| {
-                            "retained writer cleanup requires a reason".to_owned()
-                        })?,
-                    )?;
-                    if *worktree_removed || *branch_removed {
-                        return Err(
-                            "retained writer cleanup cannot report removed owned resources"
-                                .to_owned(),
-                        );
-                    }
-                } else if !*worktree_removed || !*branch_removed || reason.is_some() {
-                    return Err(
-                        "completed writer cleanup must remove worktree and branch without a retention reason"
-                            .to_owned(),
-                    );
-                }
-                Ok(())
+                result.validate()
             }
             Self::ChildFinished { outcome, .. } | Self::Terminal { outcome } => outcome.validate(),
             _ => Ok(()),
@@ -2564,6 +2760,20 @@ fn require_agent_text(label: &str, value: &str) -> Result<(), String> {
     }
     if value.contains('\0') {
         return Err(format!("{label} must not contain NUL"));
+    }
+    Ok(())
+}
+
+fn validate_reason_code(label: &str, value: &str) -> Result<(), String> {
+    require_agent_text(label, value)?;
+    if value.len() > 96
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(format!(
+            "{label} must be at most 96 lowercase ASCII letters, digits, or underscores"
+        ));
     }
     Ok(())
 }
@@ -2726,8 +2936,8 @@ mod tests {
 
     #[test]
     fn m6_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 12);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 12);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 13);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 13);
     }
 
     #[test]
@@ -2877,29 +3087,136 @@ mod tests {
         };
         assert!(invalid_failed.validate_agent_lifecycle_payload().is_err());
 
-        let retained = RuntimeEventKind::AgentCleanupCommitted {
+        let plan = WriterCleanupPlan {
+            phase: WriterCleanupPhase::Integration,
+            reason_code: "writer_integration_conflict".to_owned(),
+            ownership: WriterCleanupOwnership::Known {
+                identity_sha256: "c".repeat(64),
+            },
+            artifact_state: WriterArtifactState::KnownHostSealed {
+                final_commit: "b".repeat(40),
+                diff_sha256: "d".repeat(64),
+            },
+            scope: WriterCleanupScope::Known {
+                workspace_revision: WorkspaceRevision::Known {
+                    sha256: "e".repeat(64),
+                },
+                changed_count: 1,
+                in_scope_count: 1,
+                out_of_scope_count: 0,
+                path_set_sha256: "f".repeat(64),
+            },
+            mode: WriterCleanupMode::RemoveExact {
+                expected_branch_commit: "b".repeat(40),
+            },
+        };
+        let prepared = RuntimeEventKind::AgentCleanupPrepared {
             task_id: task.task_id.clone(),
-            worktree_path: "/workspace/worktrees/task-1".to_owned(),
-            branch: "codex/task-1".to_owned(),
-            owner_token: "owner-task-1".to_owned(),
-            worktree_removed: false,
-            branch_removed: false,
-            retained_for_recovery: true,
-            reason: Some("集成冲突，保留现场".to_owned()),
+            plan: Box::new(plan.clone()),
         };
-        assert!(retained.validate_agent_lifecycle_payload().is_ok());
+        assert!(prepared.validate_agent_lifecycle_payload().is_ok());
+        assert_eq!(
+            serde_json::from_value::<RuntimeEventKind>(serde_json::to_value(&prepared).unwrap())
+                .unwrap(),
+            prepared
+        );
 
-        let ambiguous = RuntimeEventKind::AgentCleanupCommitted {
-            task_id: task.task_id,
-            worktree_path: "/workspace/worktrees/task-1".to_owned(),
-            branch: "codex/task-1".to_owned(),
-            owner_token: "owner-task-1".to_owned(),
-            worktree_removed: true,
-            branch_removed: false,
-            retained_for_recovery: false,
-            reason: None,
+        let partial = RuntimeEventKind::AgentCleanupCommitted {
+            task_id: task.task_id.clone(),
+            result: WriterCleanupResult::Retained {
+                worktree: WriterResourceState::AlreadyAbsent,
+                branch: WriterResourceState::Retained,
+                metadata: WriterCleanupMetadataState::Clear,
+                uncertainty_code: "writer_branch_tip_changed".to_owned(),
+            },
         };
-        assert!(ambiguous.validate_agent_lifecycle_payload().is_err());
+        assert!(partial.validate_agent_lifecycle_payload().is_ok());
+
+        let mut invalid_plan = plan.clone();
+        invalid_plan.scope = WriterCleanupScope::Unknown {
+            uncertainty_code: "writer_scope_unknown".to_owned(),
+        };
+        assert!(invalid_plan.validate().is_err());
+
+        let mut invalid_revision = plan.clone();
+        invalid_revision.scope = WriterCleanupScope::Known {
+            workspace_revision: WorkspaceRevision::Known {
+                sha256: "b".repeat(40),
+            },
+            changed_count: 0,
+            in_scope_count: 0,
+            out_of_scope_count: 0,
+            path_set_sha256: "f".repeat(64),
+        };
+        assert!(invalid_revision.validate().is_err());
+
+        let mut overflowed_counts = plan.clone();
+        overflowed_counts.scope = WriterCleanupScope::Known {
+            workspace_revision: known_workspace(0, 'e').revision,
+            changed_count: 0,
+            in_scope_count: u32::MAX,
+            out_of_scope_count: 1,
+            path_set_sha256: "f".repeat(64),
+        };
+        assert!(overflowed_counts.validate().is_err());
+
+        let mut unknown_owner_remove = plan.clone();
+        unknown_owner_remove.ownership = WriterCleanupOwnership::Unknown {
+            uncertainty_code: "writer_owner_unknown".to_owned(),
+        };
+        assert!(unknown_owner_remove.validate().is_err());
+
+        let mut mismatched_retention = plan;
+        mismatched_retention.ownership = WriterCleanupOwnership::Unknown {
+            uncertainty_code: "writer_owner_unknown".to_owned(),
+        };
+        mismatched_retention.scope = WriterCleanupScope::Unknown {
+            uncertainty_code: "writer_scope_unknown".to_owned(),
+        };
+        mismatched_retention.mode = WriterCleanupMode::RetainForRecovery {
+            uncertainty_code: "writer_cleanup_unknown".to_owned(),
+        };
+        assert!(mismatched_retention.validate().is_err());
+
+        assert!(
+            WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::AlreadyAbsent,
+                branch: WriterRemovalState::AlreadyAbsent,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            WriterCleanupResult::Retained {
+                worktree: WriterResourceState::Removed,
+                branch: WriterResourceState::AlreadyAbsent,
+                metadata: WriterCleanupMetadataState::Clear,
+                uncertainty_code: "writer_cleanup_unknown".to_owned(),
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            WriterCleanupResult::Retained {
+                worktree: WriterResourceState::Removed,
+                branch: WriterResourceState::AlreadyAbsent,
+                metadata: WriterCleanupMetadataState::Uncertain,
+                uncertainty_code: "writer_cleanup_metadata_uncertain".to_owned(),
+            }
+            .validate()
+            .is_ok()
+        );
+
+        let invalid_result = RuntimeEventKind::AgentCleanupCommitted {
+            task_id: task.task_id,
+            result: WriterCleanupResult::Retained {
+                worktree: WriterResourceState::Unknown,
+                branch: WriterResourceState::Unknown,
+                metadata: WriterCleanupMetadataState::Uncertain,
+                uncertainty_code: "/tmp/leaked path".to_owned(),
+            },
+        };
+        assert!(invalid_result.validate_agent_lifecycle_payload().is_err());
     }
 
     #[test]

@@ -6,12 +6,14 @@
 
 use std::time::Instant;
 
+#[cfg(test)]
+use codewhale_protocol::agent_runtime::WriterCleanupMetadataState;
 use codewhale_protocol::agent_runtime::{
     DurableControlAction, InteractionId, ModelAccounting, ModelAttemptFailure, ModelErrorCategory,
     ModelOutput, ModelRetryDecision, ModelRetryStopReason,
     ReasoningEffort as CanonicalReasoningEffort, RuntimeEventKind, TerminalState, ToolArguments,
     ToolOutcome, TranscriptEntry, UserInteractionRequest, UserInteractionResponse,
-    WriterIntegrationStatus,
+    WriterCleanupResult, WriterIntegrationStatus,
 };
 use serde_json::Value;
 
@@ -281,31 +283,24 @@ fn present_canonical_event(
             present_agent_progress(app, content);
             None
         }
-        RuntimeEventKind::AgentCleanupPrepared {
-            task_id,
-            worktree_path,
-            ..
-        } => {
+        RuntimeEventKind::AgentCleanupPrepared { task_id, plan } => {
             app.status_message = Some(format!(
-                "正在清理写入工作树：{worktree_path}（任务 {task_id}）"
+                "正在清理写入工作树（任务 {task_id}；阶段 {}）",
+                cleanup_phase_label(plan.phase)
             ));
             None
         }
-        RuntimeEventKind::AgentCleanupCommitted {
-            task_id,
-            worktree_path,
-            worktree_removed,
-            retained_for_recovery,
-            reason,
-            ..
-        } => {
-            let content = if retained_for_recovery {
-                let reason = reason.unwrap_or_else(|| "需要恢复处理".to_owned());
-                format!("写入工作树已保留：{worktree_path}（任务 {task_id}；{reason}）")
-            } else if worktree_removed {
-                format!("写入工作树已清理：{worktree_path}（任务 {task_id}）")
-            } else {
-                format!("写入工作树清理结果已提交：{worktree_path}（任务 {task_id}）")
+        RuntimeEventKind::AgentCleanupCommitted { task_id, result } => {
+            let content = match result {
+                WriterCleanupResult::Retained {
+                    uncertainty_code, ..
+                } => format!(
+                    "写入工作树已保留（任务 {task_id}；{}）",
+                    cleanup_uncertainty_label(&uncertainty_code)
+                ),
+                WriterCleanupResult::Removed { .. } | WriterCleanupResult::AlreadyAbsent => {
+                    format!("写入工作树已清理（任务 {task_id}）")
+                }
             };
             present_agent_progress(app, content);
             None
@@ -375,6 +370,30 @@ fn present_agent_progress(app: &mut App, content: String) {
 
 fn short_git_commit(commit: &str) -> &str {
     commit.get(..12).unwrap_or(commit)
+}
+
+fn cleanup_phase_label(
+    phase: codewhale_protocol::agent_runtime::WriterCleanupPhase,
+) -> &'static str {
+    use codewhale_protocol::agent_runtime::WriterCleanupPhase;
+    match phase {
+        WriterCleanupPhase::Binding => "绑定",
+        WriterCleanupPhase::Child => "子 Agent 执行",
+        WriterCleanupPhase::Seal => "封存",
+        WriterCleanupPhase::Integration => "集成",
+        WriterCleanupPhase::PostIntegration => "集成后",
+    }
+}
+
+fn cleanup_uncertainty_label(code: &str) -> &'static str {
+    match code {
+        "writer_cleanup_scope_changed" => "清理范围已经变化，需要人工确认",
+        "writer_cleanup_owner_changed" => "Git 所有者身份已经变化，需要人工确认",
+        "writer_cleanup_ownership_unknown" | "writer_cleanup_owner_unprovable" => {
+            "无法证明 Git 所有者身份，需要人工确认"
+        }
+        _ => "清理结果不确定，需要人工确认",
+    }
 }
 
 fn writer_integration_status_message(task_id: &str, status: &WriterIntegrationStatus) -> String {
@@ -732,7 +751,7 @@ mod tests {
         PreparedModelRetry, ReasoningEffort, RecoveryAmbiguity, RecoveryAmbiguityPhase, RunId,
         RunRequest, RuntimeEventId, RuntimeFailure, StoredRuntimeEvent, SystemPrompt,
         TerminalState, ToolInvocation, TranscriptEntry, Usage, WorkspaceAccess,
-        WriterIntegrationStatus,
+        WriterIntegrationStatus, WriterResourceState,
     };
     use codewhale_protocol::task::{
         AcceptanceId, AcceptanceSatisfaction, CompletionCandidateId, CompletionDecision,
@@ -1636,18 +1655,12 @@ mod tests {
             &root,
             RuntimeEventKind::AgentCleanupCommitted {
                 task_id: task_id.clone(),
-                worktree_path: "/workspace/worktrees/writer-task".to_owned(),
-                branch: "codex/writer-task".to_owned(),
-                owner_token: "owner-token".to_owned(),
-                worktree_removed: true,
-                branch_removed: true,
-                retained_for_recovery: false,
-                reason: None,
+                result: WriterCleanupResult::AlreadyAbsent,
             },
         );
         assert_eq!(
             app.status_message.as_deref(),
-            Some("写入工作树已清理：/workspace/worktrees/writer-task（任务 writer-task）")
+            Some("写入工作树已清理（任务 writer-task）")
         );
 
         let _ = present_canonical_event(
@@ -1655,20 +1668,17 @@ mod tests {
             &root,
             RuntimeEventKind::AgentCleanupCommitted {
                 task_id,
-                worktree_path: "/workspace/worktrees/writer-task".to_owned(),
-                branch: "codex/writer-task".to_owned(),
-                owner_token: "owner-token".to_owned(),
-                worktree_removed: false,
-                branch_removed: false,
-                retained_for_recovery: true,
-                reason: Some("保留冲突现场".to_owned()),
+                result: WriterCleanupResult::Retained {
+                    worktree: WriterResourceState::Retained,
+                    branch: WriterResourceState::Retained,
+                    metadata: WriterCleanupMetadataState::Clear,
+                    uncertainty_code: "writer_cleanup_conflict".to_owned(),
+                },
             },
         );
         assert_eq!(
             app.status_message.as_deref(),
-            Some(
-                "写入工作树已保留：/workspace/worktrees/writer-task（任务 writer-task；保留冲突现场）"
-            )
+            Some("写入工作树已保留（任务 writer-task；清理结果不确定，需要人工确认）")
         );
         assert!(
             matches!(

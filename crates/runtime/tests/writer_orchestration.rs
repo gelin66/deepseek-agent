@@ -9,6 +9,7 @@ use serde_json::json;
 
 const BASE_COMMIT: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const FINAL_COMMIT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const CLEAN_REVISION: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
 const DIRTY_REVISION: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const DIFF_SHA256: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
 const ROOT_WORKSPACE: &str = "/workspace/root";
@@ -486,7 +487,7 @@ struct WriterTools {
 impl WriterTools {
     fn new(timeline: Arc<Mutex<Vec<String>>>) -> Self {
         Self {
-            revision: Mutex::new(BASE_COMMIT.to_owned()),
+            revision: Mutex::new(CLEAN_REVISION.to_owned()),
             bytes: Mutex::new(b"writer-before".to_vec()),
             calls: Mutex::new(Vec::new()),
             timeline,
@@ -542,7 +543,7 @@ impl ToolExecutor for WriterTools {
             }
             "run_tests" => {
                 let revision = self.revision.lock().expect("writer revision lock").clone();
-                if revision == BASE_COMMIT {
+                if revision == CLEAN_REVISION {
                     Ok(failed_verifier(&invocation, &revision))
                 } else {
                     Ok(passed_verifier(&invocation, &revision))
@@ -564,11 +565,13 @@ struct FakeOrchestrator {
     seal_calls: AtomicUsize,
     integrate_calls: AtomicUsize,
     integrate_side_effects: AtomicUsize,
+    cleanup_inspect_calls: AtomicUsize,
     cleanup_calls: AtomicUsize,
     cleanup_side_effects: AtomicUsize,
     workspace_exists: AtomicBool,
     integrated: AtomicBool,
     bind_recovery: AtomicBool,
+    seal_failure: AtomicBool,
     cleanup_ambiguous: AtomicBool,
 }
 
@@ -586,11 +589,13 @@ impl FakeOrchestrator {
             seal_calls: AtomicUsize::new(0),
             integrate_calls: AtomicUsize::new(0),
             integrate_side_effects: AtomicUsize::new(0),
+            cleanup_inspect_calls: AtomicUsize::new(0),
             cleanup_calls: AtomicUsize::new(0),
             cleanup_side_effects: AtomicUsize::new(0),
             workspace_exists: AtomicBool::new(false),
             integrated: AtomicBool::new(false),
             bind_recovery: AtomicBool::new(false),
+            seal_failure: AtomicBool::new(false),
             cleanup_ambiguous: AtomicBool::new(false),
         }
     }
@@ -661,15 +666,17 @@ impl AgentOrchestrator for FakeOrchestrator {
     async fn seal_writer(&self, task: &AgentTask) -> Result<WriterSeal, AgentOrchestrationError> {
         self.seal_calls.fetch_add(1, Ordering::AcqRel);
         assert_eq!(task.workspace, self.assignment);
-        *self
-            .writer_tools
-            .revision
-            .lock()
-            .expect("writer revision lock") = FINAL_COMMIT.to_owned();
         self.timeline
             .lock()
             .expect("timeline lock")
             .push("orchestrator:seal".to_owned());
+        if self.seal_failure.load(Ordering::Acquire) {
+            return Err(AgentOrchestrationError::new(
+                AgentOrchestrationErrorKind::Rejected,
+                "writer_seal_fixture_failed",
+                "/secret/worktree: fatal: private git stderr; file=TOP_SECRET_BYTES",
+            ));
+        }
         Ok(WriterSeal {
             base_commit: BASE_COMMIT.to_owned(),
             final_commit: FINAL_COMMIT.to_owned(),
@@ -723,22 +730,87 @@ impl AgentOrchestrator for FakeOrchestrator {
         })
     }
 
-    async fn cleanup_writer(
+    async fn inspect_writer_cleanup(
         &self,
         task: &AgentTask,
-        _seal: Option<&WriterSeal>,
-    ) -> Result<WriterCleanup, AgentOrchestrationError> {
-        self.cleanup_calls.fetch_add(1, Ordering::AcqRel);
+        seal: Option<&WriterSeal>,
+        phase: WriterCleanupPhase,
+        reason_code: &str,
+    ) -> Result<WriterCleanupPlan, AgentOrchestrationError> {
+        self.cleanup_inspect_calls.fetch_add(1, Ordering::AcqRel);
         assert_eq!(task.workspace, self.assignment);
         if self.cleanup_ambiguous.load(Ordering::Acquire) {
-            return Ok(WriterCleanup {
-                worktree_removed: false,
-                branch_removed: false,
-                retained_for_recovery: true,
-                reason: Some("所有权状态无法精确证明".to_owned()),
+            return Ok(WriterCleanupPlan {
+                phase,
+                reason_code: reason_code.to_owned(),
+                ownership: WriterCleanupOwnership::Unknown {
+                    uncertainty_code: "writer_cleanup_ownership_unknown".to_owned(),
+                },
+                artifact_state: WriterArtifactState::Unknown,
+                scope: WriterCleanupScope::Unknown {
+                    uncertainty_code: "writer_cleanup_ownership_unknown".to_owned(),
+                },
+                mode: WriterCleanupMode::RetainForRecovery {
+                    uncertainty_code: "writer_cleanup_ownership_unknown".to_owned(),
+                },
             });
         }
-        if self.workspace_exists.swap(false, Ordering::AcqRel) {
+        let revision = self
+            .writer_tools
+            .revision
+            .lock()
+            .expect("writer revision lock")
+            .clone();
+        let paths = if revision == BASE_COMMIT {
+            Vec::new()
+        } else {
+            vec!["src/lib.rs".to_owned()]
+        };
+        let expected_branch_commit = seal
+            .map(|seal| seal.final_commit.clone())
+            .unwrap_or_else(|| BASE_COMMIT.to_owned());
+        Ok(WriterCleanupPlan {
+            phase,
+            reason_code: reason_code.to_owned(),
+            ownership: WriterCleanupOwnership::Known {
+                identity_sha256: "f".repeat(64),
+            },
+            artifact_state: seal.map_or(WriterArtifactState::KnownUnsealed, |seal| {
+                WriterArtifactState::KnownHostSealed {
+                    final_commit: seal.final_commit.clone(),
+                    diff_sha256: seal.diff_sha256.clone(),
+                }
+            }),
+            scope: WriterCleanupScope::Known {
+                workspace_revision: WorkspaceRevision::Known { sha256: revision },
+                changed_count: paths.len() as u32,
+                in_scope_count: paths.len() as u32,
+                out_of_scope_count: 0,
+                path_set_sha256: writer_path_set_sha256(&paths).unwrap(),
+            },
+            mode: WriterCleanupMode::RemoveExact {
+                expected_branch_commit,
+            },
+        })
+    }
+
+    async fn execute_writer_cleanup(
+        &self,
+        task: &AgentTask,
+        plan: &WriterCleanupPlan,
+    ) -> Result<WriterCleanupResult, AgentOrchestrationError> {
+        self.cleanup_calls.fetch_add(1, Ordering::AcqRel);
+        assert_eq!(task.workspace, self.assignment);
+        if let WriterCleanupMode::RetainForRecovery { uncertainty_code } = &plan.mode {
+            return Ok(WriterCleanupResult::Retained {
+                worktree: WriterResourceState::Retained,
+                branch: WriterResourceState::Retained,
+                metadata: WriterCleanupMetadataState::Clear,
+                uncertainty_code: uncertainty_code.clone(),
+            });
+        }
+        let removed = self.workspace_exists.swap(false, Ordering::AcqRel);
+        if removed {
             self.cleanup_side_effects.fetch_add(1, Ordering::AcqRel);
             self.timeline
                 .lock()
@@ -750,12 +822,14 @@ impl AgentOrchestrator for FakeOrchestrator {
                 .expect("timeline lock")
                 .push("orchestrator:cleanup-already-absent".to_owned());
         }
-        Ok(WriterCleanup {
-            worktree_removed: true,
-            branch_removed: true,
-            retained_for_recovery: false,
-            reason: None,
-        })
+        if removed {
+            Ok(WriterCleanupResult::Removed {
+                worktree: WriterRemovalState::Removed,
+                branch: WriterRemovalState::Removed,
+            })
+        } else {
+            Ok(WriterCleanupResult::AlreadyAbsent)
+        }
     }
 }
 
@@ -769,6 +843,32 @@ fn writer_assignment() -> AgentWorkspaceAssignment {
         branch: Some("codewhale/writer/task".to_owned()),
         allowed_paths: vec!["src/lib.rs".to_owned()],
         owner_token: Some("owner-task".to_owned()),
+    }
+}
+
+fn sealed_cleanup_plan() -> WriterCleanupPlan {
+    WriterCleanupPlan {
+        phase: WriterCleanupPhase::PostIntegration,
+        reason_code: "writer_integrated".to_owned(),
+        ownership: WriterCleanupOwnership::Known {
+            identity_sha256: "f".repeat(64),
+        },
+        artifact_state: WriterArtifactState::KnownHostSealed {
+            final_commit: FINAL_COMMIT.to_owned(),
+            diff_sha256: DIFF_SHA256.to_owned(),
+        },
+        scope: WriterCleanupScope::Known {
+            workspace_revision: WorkspaceRevision::Known {
+                sha256: DIRTY_REVISION.to_owned(),
+            },
+            changed_count: 1,
+            in_scope_count: 1,
+            out_of_scope_count: 0,
+            path_set_sha256: writer_path_set_sha256(&["src/lib.rs".to_owned()]).unwrap(),
+        },
+        mode: WriterCleanupMode::RemoveExact {
+            expected_branch_commit: FINAL_COMMIT.to_owned(),
+        },
     }
 }
 
@@ -1329,9 +1429,7 @@ async fn seed_recovery_checkpoint(
         "cleanup-prepared",
         RuntimeEventKind::AgentCleanupPrepared {
             task_id: task.task_id.clone(),
-            worktree_path: WRITER_WORKSPACE.to_owned(),
-            branch: "codewhale/writer/task".to_owned(),
-            owner_token: "owner-task".to_owned(),
+            plan: Box::new(sealed_cleanup_plan()),
         },
     )
     .await;
@@ -1705,9 +1803,14 @@ async fn failed_turn_limited_writer_with_retained_cleanup_is_recovery_required()
     assert!(lifecycle.integration.is_none());
     assert!(lifecycle.cleanup.as_ref().is_some_and(|cleanup| {
         cleanup.committed.as_ref().is_some_and(|committed| {
-            committed.retained_for_recovery
-                && !committed.worktree_removed
-                && !committed.branch_removed
+            matches!(
+                committed,
+                WriterCleanupResult::Retained {
+                    worktree: WriterResourceState::Retained,
+                    branch: WriterResourceState::Retained,
+                    ..
+                }
+            )
         })
     }));
     assert_eq!(
@@ -2170,12 +2273,14 @@ async fn ambiguous_cleanup_fails_closed_as_recovery_required() {
     assert!(replay.events.iter().any(|event| matches!(
         &event.event,
         RuntimeEventKind::AgentCleanupCommitted {
-            retained_for_recovery: true,
-            worktree_removed: false,
-            branch_removed: false,
-            reason: Some(reason),
+            result: WriterCleanupResult::Retained {
+                worktree: WriterResourceState::Retained,
+                branch: WriterResourceState::Retained,
+                metadata: WriterCleanupMetadataState::Clear,
+                uncertainty_code,
+            },
             ..
-        } if reason.contains("无法精确证明")
+        } if uncertainty_code == "writer_cleanup_ownership_unknown"
     )));
     assert!(
         !replay.snapshot.evidence_receipts.is_empty(),
@@ -2189,6 +2294,72 @@ async fn ambiguous_cleanup_fails_closed_as_recovery_required() {
         )),
         "ambiguous cleanup must replace the proposed completed terminal"
     );
+}
+
+#[tokio::test]
+async fn seal_rejection_is_sanitized_scoped_cleaned_and_never_integrated() {
+    let RuntimeFixture {
+        runtime,
+        orchestrator,
+        store,
+        ..
+    } = runtime_fixture(ModelScript::Writer);
+    orchestrator.seal_failure.store(true, Ordering::Release);
+    let outcome = runtime
+        .start(root_request(true, true))
+        .wait()
+        .await
+        .expect("seal rejection run");
+    assert!(
+        !matches!(outcome.terminal, TerminalState::RecoveryRequired { .. }),
+        "exact cleanup must not manufacture recovery ambiguity"
+    );
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    let lifecycle = replay.snapshot.agent_tasks.first().expect("Writer task");
+    let seal = lifecycle.seal.as_ref().expect("prepared seal");
+    assert!(seal.committed.is_none());
+    assert!(lifecycle.integration.is_none());
+    let cleanup = lifecycle.cleanup.as_ref().expect("seal cleanup");
+    assert_eq!(cleanup.plan.phase, WriterCleanupPhase::Seal);
+    assert_eq!(cleanup.plan.reason_code, "writer_seal_failed");
+    assert_eq!(
+        cleanup.plan.artifact_state,
+        WriterArtifactState::KnownUnsealed
+    );
+    assert!(matches!(
+        &cleanup.plan.scope,
+        WriterCleanupScope::Known { .. }
+    ));
+    assert!(matches!(
+        cleanup.committed.as_ref(),
+        Some(WriterCleanupResult::Removed { .. })
+    ));
+    assert!(lifecycle.finished.is_some());
+    assert_eq!(orchestrator.integrate_calls.load(Ordering::Acquire), 0);
+    assert_eq!(orchestrator.cleanup_side_effects.load(Ordering::Acquire), 1);
+
+    let cleanup_committed = replay
+        .events
+        .iter()
+        .position(|event| matches!(&event.event, RuntimeEventKind::AgentCleanupCommitted { .. }))
+        .expect("cleanup committed event");
+    let child_finished = replay
+        .events
+        .iter()
+        .position(|event| matches!(&event.event, RuntimeEventKind::ChildFinished { .. }))
+        .expect("child finished event");
+    assert!(cleanup_committed < child_finished);
+    assert!(replay.events.iter().all(|event| !matches!(
+        &event.event,
+        RuntimeEventKind::AgentIntegrationPrepared { .. }
+            | RuntimeEventKind::AgentIntegrationStarted { .. }
+            | RuntimeEventKind::AgentIntegrationFailed { .. }
+            | RuntimeEventKind::AgentIntegrationCommitted { .. }
+    )));
+    let persisted = serde_json::to_string(&replay.events).expect("serialize canonical events");
+    for secret in ["/secret/worktree", "private git stderr", "TOP_SECRET_BYTES"] {
+        assert!(!persisted.contains(secret));
+    }
 }
 
 #[tokio::test]
@@ -2206,24 +2377,27 @@ async fn uncreated_writer_recovery_does_not_advance_the_root_workspace() {
         .wait()
         .await
         .unwrap();
-    assert!(matches!(
-        outcome.terminal,
-        TerminalState::RecoveryRequired { .. }
-    ));
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
     assert_eq!(replay.snapshot.terminal.as_ref(), Some(&outcome));
-    assert_eq!(replay.snapshot.workspace_state, known(1, BASE_COMMIT));
+    assert_eq!(replay.snapshot.workspace_state, known(2, BASE_COMMIT));
     let lifecycle = replay.snapshot.agent_tasks.first().expect("Writer task");
     assert!(lifecycle.workspace_created.is_none());
     assert!(lifecycle.integration.is_none());
-    assert!(lifecycle.cleanup.is_none());
-    assert_eq!(
+    assert!(matches!(
+        lifecycle
+            .cleanup
+            .as_ref()
+            .and_then(|cleanup| cleanup.committed.as_ref()),
+        Some(WriterCleanupResult::AlreadyAbsent)
+    ));
+    assert!(matches!(
         lifecycle
             .finished
             .as_ref()
             .map(|finished| &finished.outcome.terminal),
-        Some(&outcome.terminal),
-    );
+        Some(TerminalState::Blocked { reason }) if reason == "writer_bind_ambiguous"
+    ));
     assert!(replay.events.iter().any(|event| matches!(
         &event.event,
         RuntimeEventKind::ToolOutcomeCommitted {
@@ -2234,19 +2408,25 @@ async fn uncreated_writer_recovery_does_not_advance_the_root_workspace() {
             ..
         } if call_id == "writer-call"
             && name == AGENT_TOOL_NAME
-            && outcome.transport == ToolTransportStatus::Indeterminate
-            && outcome.operation == ToolOperationStatus::Cancelled
-            && outcome.side_effect == ToolSideEffectStatus::Indeterminate
-            && outcome.retry == ToolRetryDisposition::Unsafe
+            && outcome.invocation == ToolInvocationStatus::Accepted
+            && outcome.transport == ToolTransportStatus::Succeeded
+            && outcome.operation == ToolOperationStatus::Failed
+            && outcome.side_effect == ToolSideEffectStatus::NotApplied
+            && outcome.retry == ToolRetryDisposition::AfterCorrection
     )));
     assert_eq!(orchestrator.bind_calls.load(Ordering::Acquire), 1);
     assert_eq!(orchestrator.bind_side_effects.load(Ordering::Acquire), 0);
-    assert_eq!(orchestrator.cleanup_calls.load(Ordering::Acquire), 0);
+    assert_eq!(
+        orchestrator.cleanup_inspect_calls.load(Ordering::Acquire),
+        1
+    );
+    assert_eq!(orchestrator.cleanup_calls.load(Ordering::Acquire), 1);
+    assert_eq!(orchestrator.cleanup_side_effects.load(Ordering::Acquire), 0);
     assert!(outcome.accounting.complete);
     assert!(outcome.accounting.usage_complete);
     assert!(!outcome.accounting.billing_unknown);
-    assert_eq!(outcome.accounting.root.started, 1);
-    assert_eq!(outcome.accounting.root.completed, 1);
+    assert_eq!(outcome.accounting.root.started, 2);
+    assert_eq!(outcome.accounting.root.completed, 2);
     assert_eq!(outcome.accounting.root.in_flight, 0);
     assert_eq!(outcome.accounting.child.started, 0);
     assert_eq!(outcome.accounting.child.completed, 0);
@@ -2257,7 +2437,7 @@ async fn uncreated_writer_recovery_does_not_advance_the_root_workspace() {
             .iter()
             .filter(|request| request.actor.kind == AgentActorKind::Root)
             .count(),
-        1,
+        2,
     );
     assert_eq!(
         requests

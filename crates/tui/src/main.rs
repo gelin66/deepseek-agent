@@ -7702,7 +7702,8 @@ mod terminal_mode_tests {
     fn exec_agent_lifecycle_preserves_the_exact_canonical_event() {
         use codewhale_protocol::agent_runtime::{
             AGENT_RUNTIME_EVENT_SCHEMA_VERSION, AgentTaskId, RunId, RuntimeEventId,
-            RuntimeEventKind, StoredRuntimeEvent,
+            RuntimeEventKind, StoredRuntimeEvent, WriterCleanupMetadataState, WriterCleanupResult,
+            WriterResourceState,
         };
 
         let stored = StoredRuntimeEvent {
@@ -7714,13 +7715,12 @@ mod terminal_mode_tests {
             occurred_at_unix_ms: 1_789_000_000_123,
             event: RuntimeEventKind::AgentCleanupCommitted {
                 task_id: AgentTaskId::from("writer-task"),
-                worktree_path: "/tmp/codewhale/writer-task".to_owned(),
-                branch: "codex/writer-task".to_owned(),
-                owner_token: "owner-token".to_owned(),
-                worktree_removed: false,
-                branch_removed: false,
-                retained_for_recovery: true,
-                reason: Some("集成冲突，保留现场".to_owned()),
+                result: WriterCleanupResult::Retained {
+                    worktree: WriterResourceState::Retained,
+                    branch: WriterResourceState::Retained,
+                    metadata: WriterCleanupMetadataState::Clear,
+                    uncertainty_code: "writer_cleanup_conflict".to_owned(),
+                },
             },
         };
         let line =

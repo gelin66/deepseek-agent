@@ -1594,8 +1594,24 @@ fn backend(error: impl std::fmt::Display) -> RunStoreError {
     }
 }
 
-fn join_error(error: tokio::task::JoinError) -> RunStoreError {
+fn join_error(_error: tokio::task::JoinError) -> RunStoreError {
     RunStoreError::Backend {
-        message: format!("run store blocking task failed: {error}"),
+        message: "RunStore 后台任务异常终止".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn join_failure_does_not_expose_the_panic_payload() {
+        let join = tokio::task::spawn_blocking(|| panic!("TOP_SECRET_RUN_STORE_BYTES"))
+            .await
+            .expect_err("worker must panic");
+        let error = join_error(join);
+        let message = error.to_string();
+        assert!(message.contains("RunStore 后台任务异常终止"));
+        assert!(!message.contains("TOP_SECRET_RUN_STORE_BYTES"));
     }
 }

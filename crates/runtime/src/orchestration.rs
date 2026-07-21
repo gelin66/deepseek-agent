@@ -2,7 +2,10 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 
-use crate::{AgentTask, AgentTaskId, AgentWorkspaceAssignment, ToolExecutor, WorkspaceState};
+use crate::{
+    AgentTask, AgentTaskId, AgentWorkspaceAssignment, ToolExecutor, WorkspaceState,
+    WriterCleanupPhase, WriterCleanupPlan, WriterCleanupResult,
+};
 
 /// Read-only input used to freeze an isolated writer assignment before any
 /// worktree side effect is allowed.
@@ -58,16 +61,6 @@ pub struct WriterSeal {
 pub struct WriterIntegration {
     pub root_head_commit: String,
     pub root_workspace_state: WorkspaceState,
-}
-
-/// Exact-owned cleanup result. Retention is explicit so ambiguous state is
-/// never made to look like successful cleanup.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WriterCleanup {
-    pub worktree_removed: bool,
-    pub branch_removed: bool,
-    pub retained_for_recovery: bool,
-    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,10 +127,21 @@ pub trait AgentOrchestrator: Send + Sync {
         expected_root: &WorkspaceState,
     ) -> Result<WriterIntegration, AgentOrchestrationError>;
 
-    /// Remove only the exact resources owned by `task`.
-    async fn cleanup_writer(
+    /// Inspect one exact Writer without mutating it and freeze the only cleanup
+    /// authority that can be executed after the event commits.
+    async fn inspect_writer_cleanup(
         &self,
         task: &AgentTask,
         seal: Option<&WriterSeal>,
-    ) -> Result<WriterCleanup, AgentOrchestrationError>;
+        phase: WriterCleanupPhase,
+        reason_code: &str,
+    ) -> Result<WriterCleanupPlan, AgentOrchestrationError>;
+
+    /// Execute only the previously persisted exact cleanup plan. A changed
+    /// scope or identity returns a typed retained result instead of deleting.
+    async fn execute_writer_cleanup(
+        &self,
+        task: &AgentTask,
+        plan: &WriterCleanupPlan,
+    ) -> Result<WriterCleanupResult, AgentOrchestrationError>;
 }

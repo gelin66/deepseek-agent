@@ -223,21 +223,10 @@ pub struct AgentIntegrationLifecycle {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentCleanupCommittedFact {
-    pub worktree_removed: bool,
-    pub branch_removed: bool,
-    pub retained_for_recovery: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCleanupLifecycle {
-    pub worktree_path: String,
-    pub branch: String,
-    pub owner_token: String,
+    pub plan: WriterCleanupPlan,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub committed: Option<AgentCleanupCommittedFact>,
+    pub committed: Option<WriterCleanupResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1905,12 +1894,7 @@ pub fn apply_event(
                 root_workspace_state_after: root_workspace_state_after.clone(),
             });
         }
-        RuntimeEventKind::AgentCleanupPrepared {
-            task_id,
-            worktree_path,
-            branch,
-            owner_token,
-        } => {
+        RuntimeEventKind::AgentCleanupPrepared { task_id, plan } => {
             let tool_action_settled = snapshot.pending_tool.is_none();
             let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
             let result = lifecycle
@@ -1933,11 +1917,9 @@ pub fn apply_event(
                 lifecycle.finished.is_none()
             };
             if lifecycle.task.workspace.access != AgentWorkspaceAccess::IsolatedWrite
-                || lifecycle.workspace_created.is_none()
+                || (lifecycle.workspace_created.is_none()
+                    && plan.phase != WriterCleanupPhase::Binding)
                 || lifecycle.cleanup.is_some()
-                || lifecycle.task.workspace.worktree_path.as_deref() != Some(worktree_path.as_str())
-                || lifecycle.task.workspace.branch.as_deref() != Some(branch.as_str())
-                || lifecycle.task.workspace.owner_token.as_deref() != Some(owner_token.as_str())
                 || (successful && !integration_settled)
                 || (!successful && lifecycle.integration.is_some())
                 || !cleanup_order_is_valid
@@ -1947,44 +1929,39 @@ pub fn apply_event(
                     "writer cleanup preparation does not match its owned completed path",
                 ));
             }
+            validate_writer_cleanup_plan(&run_id, lifecycle, plan)?;
             lifecycle.cleanup = Some(AgentCleanupLifecycle {
-                worktree_path: worktree_path.clone(),
-                branch: branch.clone(),
-                owner_token: owner_token.clone(),
+                plan: (**plan).clone(),
                 committed: None,
             });
         }
-        RuntimeEventKind::AgentCleanupCommitted {
-            task_id,
-            worktree_path,
-            branch,
-            owner_token,
-            worktree_removed,
-            branch_removed,
-            retained_for_recovery,
-            reason,
-        } => {
+        RuntimeEventKind::AgentCleanupCommitted { task_id, result } => {
             let lifecycle = agent_task_mut(snapshot, &run_id, task_id)?;
             let cleanup = lifecycle
                 .cleanup
                 .as_mut()
                 .ok_or_else(|| corrupt(&run_id, "writer cleanup committed before preparation"))?;
-            if cleanup.worktree_path != *worktree_path
-                || cleanup.branch != *branch
-                || cleanup.owner_token != *owner_token
-                || cleanup.committed.is_some()
-            {
+            if cleanup.committed.is_some() {
                 return Err(corrupt(
                     &run_id,
                     "writer cleanup commit does not match the prepared owned resources",
                 ));
             }
-            cleanup.committed = Some(AgentCleanupCommittedFact {
-                worktree_removed: *worktree_removed,
-                branch_removed: *branch_removed,
-                retained_for_recovery: *retained_for_recovery,
-                reason: reason.clone(),
-            });
+            if let WriterCleanupMode::RetainForRecovery { uncertainty_code } = &cleanup.plan.mode {
+                match result {
+                    WriterCleanupResult::Retained {
+                        uncertainty_code: result_code,
+                        ..
+                    } if result_code == uncertainty_code => {}
+                    _ => {
+                        return Err(corrupt(
+                            &run_id,
+                            "writer cleanup retention plan requires its exact uncertain result",
+                        ));
+                    }
+                }
+            }
+            cleanup.committed = Some(result.clone());
         }
         RuntimeEventKind::ChildFinished {
             call_id,
@@ -2135,6 +2112,124 @@ pub fn apply_event(
         }
     }
     snapshot.last_sequence = stored.sequence;
+    Ok(())
+}
+
+fn validate_writer_cleanup_plan(
+    run_id: &RunId,
+    lifecycle: &AgentTaskLifecycle,
+    plan: &WriterCleanupPlan,
+) -> Result<(), RunStoreError> {
+    plan.validate()
+        .map_err(|message| corrupt(run_id, format!("invalid writer cleanup plan: {message}")))?;
+    let result = lifecycle
+        .result
+        .as_ref()
+        .ok_or_else(|| corrupt(run_id, "writer cleanup plan has no collected result"))?;
+    let successful = matches!(result.terminal, TerminalState::Completed { .. });
+    let integration = lifecycle.integration.as_ref();
+    let expected_phase = if successful {
+        match integration {
+            Some(integration) if integration.committed.is_some() => {
+                WriterCleanupPhase::PostIntegration
+            }
+            Some(integration) if integration.failure.is_some() => WriterCleanupPhase::Integration,
+            _ => {
+                return Err(corrupt(
+                    run_id,
+                    "successful writer cleanup requires a settled integration",
+                ));
+            }
+        }
+    } else if lifecycle.child_started.is_none() {
+        WriterCleanupPhase::Binding
+    } else if lifecycle.seal.is_some() {
+        WriterCleanupPhase::Seal
+    } else {
+        WriterCleanupPhase::Child
+    };
+    if plan.phase != expected_phase {
+        return Err(corrupt(
+            run_id,
+            "writer cleanup phase does not match the durable lifecycle",
+        ));
+    }
+    let expected_reason = match plan.phase {
+        WriterCleanupPhase::PostIntegration => Some("writer_integrated"),
+        WriterCleanupPhase::Integration => integration
+            .and_then(|integration| integration.failure.as_ref())
+            .map(|failure| match failure.status {
+                WriterIntegrationStatus::Rejected { .. } => "writer_integration_rejected",
+                WriterIntegrationStatus::Conflict { .. } => "writer_integration_conflict",
+                WriterIntegrationStatus::RecoveryRequired { .. } => {
+                    "writer_integration_recovery_required"
+                }
+                WriterIntegrationStatus::NotApplicable
+                | WriterIntegrationStatus::AwaitingHost
+                | WriterIntegrationStatus::Integrated { .. } => "writer_integration_invalid",
+            }),
+        WriterCleanupPhase::Binding => Some("writer_binding_failed"),
+        WriterCleanupPhase::Seal => Some("writer_seal_failed"),
+        WriterCleanupPhase::Child => Some(match &result.terminal {
+            TerminalState::Blocked { .. } => "writer_child_blocked",
+            TerminalState::Cancelled => "writer_child_cancelled",
+            TerminalState::Interrupted => "writer_child_interrupted",
+            TerminalState::RecoveryRequired { .. } => "writer_child_recovery_required",
+            TerminalState::Failed { .. } | TerminalState::Completed { .. } => "writer_child_failed",
+        }),
+    };
+    if expected_reason != Some(plan.reason_code.as_str()) {
+        return Err(corrupt(
+            run_id,
+            "writer cleanup reason code does not match the durable failure disposition",
+        ));
+    }
+
+    let committed_seal = lifecycle
+        .seal
+        .as_ref()
+        .and_then(|seal| seal.committed.as_ref());
+    match (&plan.artifact_state, committed_seal) {
+        (
+            WriterArtifactState::KnownHostSealed {
+                final_commit,
+                diff_sha256,
+            },
+            Some(seal),
+        ) if final_commit == &seal.final_commit && diff_sha256 == &seal.diff_sha256 => {}
+        (WriterArtifactState::KnownUnsealed, None) => {}
+        (WriterArtifactState::Unknown, _)
+            if matches!(plan.mode, WriterCleanupMode::RetainForRecovery { .. }) => {}
+        _ => {
+            return Err(corrupt(
+                run_id,
+                "writer cleanup artifact state does not match the durable seal",
+            ));
+        }
+    }
+    let expected_branch_commit = committed_seal
+        .map(|seal| seal.final_commit.as_str())
+        .unwrap_or(lifecycle.task.workspace.base_commit.as_str());
+    match &plan.mode {
+        WriterCleanupMode::RemoveExact {
+            expected_branch_commit: actual,
+        } if actual == expected_branch_commit => {}
+        WriterCleanupMode::RetainForRecovery { uncertainty_code } => {
+            if let WriterCleanupScope::Unknown {
+                uncertainty_code: scope_code,
+            } = &plan.scope
+                && scope_code != uncertainty_code
+            {
+                return Err(corrupt(run_id, "writer cleanup retention codes disagree"));
+            }
+        }
+        _ => {
+            return Err(corrupt(
+                run_id,
+                "writer cleanup expected branch commit is not Host-frozen",
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -2374,8 +2469,7 @@ fn expected_finished_outcome(
             let cleanup_must_precede_finish =
                 !matches!(expected.terminal, TerminalState::Completed { .. })
                     || !integration_committed;
-            if lifecycle.workspace_created.is_some()
-                && cleanup_must_precede_finish
+            if cleanup_must_precede_finish
                 && lifecycle
                     .cleanup
                     .as_ref()
@@ -2454,15 +2548,15 @@ fn expected_finished_outcome(
                 .cleanup
                 .as_ref()
                 .and_then(|cleanup| cleanup.committed.as_ref())
-                && cleanup.retained_for_recovery
+                && cleanup.retained_for_recovery()
             {
                 expected.terminal = TerminalState::RecoveryRequired {
                     ambiguity: RecoveryAmbiguity {
                         phase: RecoveryAmbiguityPhase::ChildRun,
                         action_id: format!("agent-cleanup:{}", lifecycle.task.task_id.0),
-                        message: cleanup.reason.clone().unwrap_or_else(|| {
-                            "writer workspace ownership cleanup is ambiguous".to_owned()
-                        }),
+                        message: store_cleanup_uncertainty_code(cleanup)
+                            .unwrap_or("writer_cleanup_uncertain")
+                            .to_owned(),
                     },
                 };
             }
@@ -2477,10 +2571,11 @@ fn validate_terminal_agent_cleanup(
     terminal: &TerminalState,
 ) -> Result<(), RunStoreError> {
     let recovery_terminal = matches!(terminal, TerminalState::RecoveryRequired { .. });
-    for lifecycle in snapshot.agent_tasks.iter().filter(|lifecycle| {
-        lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
-            && lifecycle.workspace_created.is_some()
-    }) {
+    for lifecycle in snapshot
+        .agent_tasks
+        .iter()
+        .filter(|lifecycle| lifecycle.task.workspace.access == AgentWorkspaceAccess::IsolatedWrite)
+    {
         let integrated = lifecycle
             .integration
             .as_ref()
@@ -2489,25 +2584,48 @@ fn validate_terminal_agent_cleanup(
             .cleanup
             .as_ref()
             .and_then(|cleanup| cleanup.committed.as_ref());
-        if integrated && cleanup.is_none() {
+        if cleanup.is_none() {
             return Err(corrupt(
                 run_id,
-                "root terminal requires every integrated writer cleanup to commit",
+                if integrated {
+                    "root terminal requires every integrated writer cleanup to commit"
+                } else {
+                    "root terminal requires every isolated writer cleanup to commit"
+                },
             ));
         }
         let Some(cleanup) = cleanup else {
             continue;
         };
-        let fully_removed =
-            cleanup.worktree_removed && cleanup.branch_removed && !cleanup.retained_for_recovery;
-        if !fully_removed && !recovery_terminal {
-            return Err(corrupt(
-                run_id,
-                "retained or incomplete writer cleanup requires a recovery-required root terminal",
-            ));
+        if cleanup.retained_for_recovery() {
+            let uncertainty_code =
+                store_cleanup_uncertainty_code(cleanup).unwrap_or("writer_cleanup_uncertain");
+            let exact_recovery = matches!(
+                terminal,
+                TerminalState::RecoveryRequired { ambiguity }
+                    if ambiguity.phase == RecoveryAmbiguityPhase::ChildRun
+                        && ambiguity.action_id
+                            == format!("agent-cleanup:{}", lifecycle.task.task_id.0)
+                        && ambiguity.message == uncertainty_code
+            );
+            if !recovery_terminal || !exact_recovery {
+                return Err(corrupt(
+                    run_id,
+                    "retained writer cleanup requires its exact recovery-required root terminal",
+                ));
+            }
         }
     }
     Ok(())
+}
+
+fn store_cleanup_uncertainty_code(result: &WriterCleanupResult) -> Option<&str> {
+    match result {
+        WriterCleanupResult::Retained {
+            uncertainty_code, ..
+        } => Some(uncertainty_code),
+        WriterCleanupResult::Removed { .. } | WriterCleanupResult::AlreadyAbsent => None,
+    }
 }
 
 fn validate_event_header(
@@ -3796,21 +3914,42 @@ mod tests {
             },
             RuntimeEventKind::AgentCleanupPrepared {
                 task_id: task.task_id.clone(),
-                worktree_path: task.workspace.worktree_path.clone().unwrap(),
-                branch: task.workspace.branch.clone().unwrap(),
-                owner_token: task.workspace.owner_token.clone().unwrap(),
+                plan: Box::new(test_cleanup_plan(WriterCleanupPhase::PostIntegration)),
             },
             RuntimeEventKind::AgentCleanupCommitted {
                 task_id: task.task_id.clone(),
-                worktree_path: task.workspace.worktree_path.clone().unwrap(),
-                branch: task.workspace.branch.clone().unwrap(),
-                owner_token: task.workspace.owner_token.clone().unwrap(),
-                worktree_removed: true,
-                branch_removed: true,
-                retained_for_recovery: false,
-                reason: None,
+                result: WriterCleanupResult::Removed {
+                    worktree: WriterRemovalState::Removed,
+                    branch: WriterRemovalState::Removed,
+                },
             },
         ]
+    }
+
+    fn test_cleanup_plan(phase: WriterCleanupPhase) -> WriterCleanupPlan {
+        WriterCleanupPlan {
+            phase,
+            reason_code: "writer_integrated".to_owned(),
+            ownership: WriterCleanupOwnership::Known {
+                identity_sha256: "c".repeat(64),
+            },
+            artifact_state: WriterArtifactState::KnownHostSealed {
+                final_commit: FINAL.to_owned(),
+                diff_sha256: DIFF.to_owned(),
+            },
+            scope: WriterCleanupScope::Known {
+                workspace_revision: WorkspaceRevision::Known {
+                    sha256: "a".repeat(64),
+                },
+                changed_count: 1,
+                in_scope_count: 1,
+                out_of_scope_count: 0,
+                path_set_sha256: "b".repeat(64),
+            },
+            mode: WriterCleanupMode::RemoveExact {
+                expected_branch_commit: FINAL.to_owned(),
+            },
+        }
     }
 
     fn outcome_after_integration_failure(status: WriterIntegrationStatus) -> AgentOutcome {
@@ -3839,6 +3978,18 @@ mod tests {
 
     fn failed_integration_kinds(status: WriterIntegrationStatus) -> Vec<RuntimeEventKind> {
         let mut kinds = event_kinds();
+        let cleanup_reason = match &status {
+            WriterIntegrationStatus::Rejected { .. } => "writer_integration_rejected",
+            WriterIntegrationStatus::Conflict { .. } => "writer_integration_conflict",
+            WriterIntegrationStatus::RecoveryRequired { .. } => {
+                "writer_integration_recovery_required"
+            }
+            WriterIntegrationStatus::NotApplicable
+            | WriterIntegrationStatus::AwaitingHost
+            | WriterIntegrationStatus::Integrated { .. } => {
+                panic!("failure fixture requires a failure status")
+            }
+        };
         kinds[12] = RuntimeEventKind::AgentIntegrationFailed {
             task_id: AgentTaskId::from("task-1"),
             integration_id: OperationId("integrate-1".to_owned()),
@@ -3851,6 +4002,11 @@ mod tests {
             tool_outcome,
             RuntimeEventKind::ToolOutcomeCommitted { .. }
         ));
+        let RuntimeEventKind::AgentCleanupPrepared { plan, .. } = &mut kinds[13] else {
+            panic!("fixture cleanup plan");
+        };
+        plan.phase = WriterCleanupPhase::Integration;
+        plan.reason_code = cleanup_reason.to_owned();
         kinds.push(finished);
         let RuntimeEventKind::ChildFinished { outcome, .. } = &mut kinds[15] else {
             panic!("fixture child finish");
@@ -4242,9 +4398,7 @@ mod tests {
                 &created.lease,
                 PendingRuntimeEvent::new(RuntimeEventKind::AgentCleanupPrepared {
                     task_id: AgentTaskId::from("missing-task"),
-                    worktree_path: "/tmp/missing-worktree".to_owned(),
-                    branch: "codex/missing-task".to_owned(),
-                    owner_token: "missing-owner".to_owned(),
+                    plan: Box::new(test_cleanup_plan(WriterCleanupPhase::PostIntegration)),
                 }),
             )
             .await
@@ -4340,9 +4494,9 @@ mod tests {
     }
 
     #[test]
-    fn writer_start_failure_can_settle_without_a_created_workspace() {
+    fn writer_start_failure_requires_binding_cleanup_before_finish() {
         let task = writer_task();
-        let outcome = AgentOutcome {
+        let mut outcome = AgentOutcome {
             run_id: task.child_run_id.clone(),
             parent_run_id: Some(task.parent_run_id.clone()),
             terminal: TerminalState::Failed {
@@ -4356,7 +4510,8 @@ mod tests {
             tool_calls: 0,
             details: AgentResultDetails::default(),
         };
-        let kinds = vec![
+        outcome.details.summary = "writer_binding_failed".to_owned();
+        let prefix = vec![
             RuntimeEventKind::RunCreated {
                 request: Box::new(root_request()),
             },
@@ -4377,8 +4532,52 @@ mod tests {
                 task: Box::new(task.clone()),
             },
             RuntimeEventKind::AgentResultCollected {
-                task_id: task.task_id,
+                task_id: task.task_id.clone(),
                 outcome: Box::new(outcome.clone()),
+            },
+        ];
+        let mut unfinished = prefix.clone();
+        unfinished.push(RuntimeEventKind::ChildFinished {
+            call_id: task.call_id.clone(),
+            outcome: Box::new(outcome.clone()),
+            accounting: Box::new(ModelAccounting::default()),
+            handoff_content: "writer did not start".to_owned(),
+        });
+        let error = reduce_events(&stored_events(unfinished)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("before owned workspace cleanup settled")
+        ));
+
+        let mut kinds = prefix;
+        kinds.extend([
+            RuntimeEventKind::AgentCleanupPrepared {
+                task_id: task.task_id.clone(),
+                plan: Box::new(WriterCleanupPlan {
+                    phase: WriterCleanupPhase::Binding,
+                    reason_code: "writer_binding_failed".to_owned(),
+                    ownership: WriterCleanupOwnership::Known {
+                        identity_sha256: "c".repeat(64),
+                    },
+                    artifact_state: WriterArtifactState::KnownUnsealed,
+                    scope: WriterCleanupScope::Known {
+                        workspace_revision: WorkspaceRevision::Known {
+                            sha256: "d".repeat(64),
+                        },
+                        changed_count: 0,
+                        in_scope_count: 0,
+                        out_of_scope_count: 0,
+                        path_set_sha256: writer_path_set_sha256(&[]).unwrap(),
+                    },
+                    mode: WriterCleanupMode::RemoveExact {
+                        expected_branch_commit: task.workspace.base_commit.clone(),
+                    },
+                }),
+            },
+            RuntimeEventKind::AgentCleanupCommitted {
+                task_id: task.task_id.clone(),
+                result: WriterCleanupResult::AlreadyAbsent,
             },
             RuntimeEventKind::ChildFinished {
                 call_id: task.call_id,
@@ -4386,7 +4585,7 @@ mod tests {
                 accounting: Box::new(ModelAccounting::default()),
                 handoff_content: "writer did not start".to_owned(),
             },
-        ];
+        ]);
         let snapshot = reduce_events(&stored_events(kinds)).unwrap();
         let lifecycle = snapshot.agent_tasks.first().unwrap();
         assert!(lifecycle.workspace_created.is_none());
@@ -4555,20 +4754,15 @@ mod tests {
     #[test]
     fn retained_writer_cleanup_requires_a_recovery_required_root_terminal() {
         let mut kinds = event_kinds();
-        let RuntimeEventKind::AgentCleanupCommitted {
-            worktree_removed,
-            branch_removed,
-            retained_for_recovery,
-            reason,
-            ..
-        } = &mut kinds[16]
-        else {
+        let RuntimeEventKind::AgentCleanupCommitted { result, .. } = &mut kinds[16] else {
             panic!("fixture cleanup commit");
         };
-        *worktree_removed = false;
-        *branch_removed = false;
-        *retained_for_recovery = true;
-        *reason = Some("owned worktree still exists".to_owned());
+        *result = WriterCleanupResult::Retained {
+            worktree: WriterResourceState::Retained,
+            branch: WriterResourceState::Retained,
+            metadata: WriterCleanupMetadataState::Uncertain,
+            uncertainty_code: "writer_cleanup_ownership_unknown".to_owned(),
+        };
 
         let snapshot = reduce_events(&stored_events(kinds.clone())).unwrap();
         assert!(matches!(
@@ -4589,20 +4783,48 @@ mod tests {
         assert!(matches!(
             error,
             RunStoreError::Corrupt { message, .. }
-                if message.contains("requires a recovery-required root terminal")
+                if message.contains("requires its exact recovery-required root terminal")
         ));
 
         kinds.push(root_terminal(TerminalState::RecoveryRequired {
             ambiguity: RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::ChildRun,
                 action_id: "agent-cleanup:task-1".to_owned(),
-                message: "owned worktree still exists".to_owned(),
+                message: "writer_cleanup_ownership_unknown".to_owned(),
             },
         }));
         let snapshot = reduce_events(&stored_events(kinds)).unwrap();
         assert!(matches!(
             snapshot.terminal.as_ref().map(|outcome| &outcome.terminal),
             Some(TerminalState::RecoveryRequired { .. })
+        ));
+    }
+
+    #[test]
+    fn retain_for_recovery_plan_cannot_claim_cleanup_metadata_is_absent() {
+        let uncertainty_code = "writer_cleanup_identity_unprovable".to_owned();
+        let mut kinds = event_kinds();
+        let RuntimeEventKind::AgentCleanupPrepared { plan, .. } = &mut kinds[15] else {
+            panic!("fixture cleanup plan");
+        };
+        plan.ownership = WriterCleanupOwnership::Unknown {
+            uncertainty_code: uncertainty_code.clone(),
+        };
+        plan.artifact_state = WriterArtifactState::Unknown;
+        plan.scope = WriterCleanupScope::Unknown {
+            uncertainty_code: uncertainty_code.clone(),
+        };
+        plan.mode = WriterCleanupMode::RetainForRecovery { uncertainty_code };
+        let RuntimeEventKind::AgentCleanupCommitted { result, .. } = &mut kinds[16] else {
+            panic!("fixture cleanup result");
+        };
+        *result = WriterCleanupResult::AlreadyAbsent;
+
+        let error = reduce_events(&stored_events(kinds)).unwrap_err();
+        assert!(matches!(
+            error,
+            RunStoreError::Corrupt { message, .. }
+                if message.contains("requires its exact uncertain result")
         ));
     }
 
@@ -4717,20 +4939,16 @@ mod tests {
         let mut cleanup_ambiguous = failed_integration_kinds(WriterIntegrationStatus::Conflict {
             reason: "root changed".to_owned(),
         });
-        let RuntimeEventKind::AgentCleanupCommitted {
-            worktree_removed,
-            branch_removed,
-            retained_for_recovery,
-            reason,
-            ..
-        } = &mut cleanup_ambiguous[14]
+        let RuntimeEventKind::AgentCleanupCommitted { result, .. } = &mut cleanup_ambiguous[14]
         else {
             panic!("fixture cleanup commit");
         };
-        *worktree_removed = false;
-        *branch_removed = false;
-        *retained_for_recovery = true;
-        *reason = Some("owned worktree retained".to_owned());
+        *result = WriterCleanupResult::Retained {
+            worktree: WriterResourceState::Retained,
+            branch: WriterResourceState::Retained,
+            metadata: WriterCleanupMetadataState::Clear,
+            uncertainty_code: "writer_cleanup_ownership_unknown".to_owned(),
+        };
         let RuntimeEventKind::ChildFinished { outcome, .. } = &mut cleanup_ambiguous[15] else {
             panic!("fixture child finish");
         };
@@ -4738,7 +4956,7 @@ mod tests {
             ambiguity: RecoveryAmbiguity {
                 phase: RecoveryAmbiguityPhase::ChildRun,
                 action_id: "agent-cleanup:task-1".to_owned(),
-                message: "owned worktree retained".to_owned(),
+                message: "writer_cleanup_ownership_unknown".to_owned(),
             },
         };
         let snapshot = reduce_events(&stored_events(cleanup_ambiguous)).unwrap();

@@ -12,9 +12,10 @@ async-trait.workspace = true
 codewhale-runtime = { path = "../runtime" }
 codewhale-tools = { path = "../tools" }
 fs2 = "0.4.3"
+libc = "0.2"
 sha2.workspace = true
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-tempfile.workspace = true
