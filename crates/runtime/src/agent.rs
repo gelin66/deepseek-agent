@@ -135,6 +135,7 @@ impl AgentRuntime {
     pub fn tool_definitions(
         &self,
         policy: &ToolPolicy,
+        task: Option<&TaskDefinition>,
         authority: ModelToolAuthority,
         depth: u8,
         max_depth: u8,
@@ -143,6 +144,7 @@ impl AgentRuntime {
         if !policy.enabled {
             return Vec::new();
         }
+        let named_verifier = task.and_then(named_verifier_acceptance);
         let mut definitions = self
             .tools
             .definitions()
@@ -153,6 +155,12 @@ impl AgentRuntime {
                     && authority.permits_definition(
                         self.tools.definition_workspace_access(&definition.name),
                     )
+            })
+            .map(|definition| match named_verifier {
+                Some((acceptance_id, verifier)) if definition.name == verifier.verifier_id => {
+                    named_verifier_tool_definition(definition, acceptance_id)
+                }
+                _ => definition,
             })
             .collect::<Vec<_>>();
         if depth < max_depth
@@ -515,6 +523,12 @@ impl AgentRuntime {
             }
             let context_tools = self.tool_definitions(
                 &state.snapshot.request.tool_policy,
+                state
+                    .snapshot
+                    .request
+                    .task_contract
+                    .as_ref()
+                    .map(|contract| &contract.definition),
                 ModelToolAuthority::for_request(&state.snapshot.request),
                 state.snapshot.request.actor.depth,
                 state.snapshot.request.limits.max_depth,
@@ -807,6 +821,12 @@ impl AgentRuntime {
                 } else {
                     self.tool_definitions(
                         &state.snapshot.request.tool_policy,
+                        state
+                            .snapshot
+                            .request
+                            .task_contract
+                            .as_ref()
+                            .map(|contract| &contract.definition),
                         ModelToolAuthority::for_request(&state.snapshot.request),
                         state.snapshot.request.actor.depth,
                         state.snapshot.request.limits.max_depth,
@@ -1211,12 +1231,17 @@ impl AgentRuntime {
             name: call.name.clone(),
             arguments: call.arguments.clone(),
         };
+        let execution_invocation = resolve_named_verifier_invocation(
+            state.snapshot.request.task_contract.as_ref(),
+            &invocation,
+        );
         let workspace_access = if call.name == AGENT_TOOL_NAME {
             agent_tool_workspace_access(&call)
         } else if call.name == REQUEST_USER_INPUT_TOOL_NAME {
             WorkspaceAccess::ReadOnly
         } else {
-            self.tools.workspace_access(&invocation)
+            self.tools
+                .workspace_access(execution_invocation.as_ref().unwrap_or(&invocation))
         };
         let (operation_id, operation_started) = match state.recovery_tool.take() {
             Some(pending) if pending.invocation.call_id == call.id => {
@@ -1261,6 +1286,11 @@ impl AgentRuntime {
             ToolOutcome::rejected(
                 format!("tool_not_allowed：工具 '{}' 未获准调用", call.name),
                 ToolRetryDisposition::NotRetryable,
+            )
+        } else if let Err(message) = &execution_invocation {
+            ToolOutcome::rejected(
+                format!("named_verifier_invalid：{message}"),
+                ToolRetryDisposition::AfterCorrection,
             )
         } else if !if call.name == AGENT_TOOL_NAME {
             ModelToolAuthority::for_request(&state.snapshot.request).permits_agent(workspace_access)
@@ -1389,7 +1419,10 @@ impl AgentRuntime {
                 }
             }
         } else {
-            let approval = match self.tools.approval_prompt(&invocation) {
+            let execution_invocation = execution_invocation
+                .as_ref()
+                .expect("named verifier resolution was checked before tool execution");
+            let approval = match self.tools.approval_prompt(execution_invocation) {
                 Ok(approval) => approval,
                 Err(error) => {
                     return self
@@ -1472,7 +1505,9 @@ impl AgentRuntime {
                     .map_err(store_terminal)?;
                 }
                 let cancellation = CancellationToken::default();
-                let execution = self.tools.execute(invocation, cancellation.clone());
+                let execution = self
+                    .tools
+                    .execute(execution_invocation.clone(), cancellation.clone());
                 tokio::pin!(execution);
                 loop {
                     tokio::select! {
@@ -4577,6 +4612,73 @@ fn agent_tool_definition(allow_isolated_writer: bool) -> ToolDefinition {
     }
 }
 
+fn named_verifier_acceptance(task: &TaskDefinition) -> Option<(&AcceptanceId, &VerifierSpec)> {
+    task.acceptance
+        .iter()
+        .find_map(|acceptance| match acceptance {
+            TaskAcceptance::Verifier { id, verifier, .. } => Some((id, verifier)),
+            TaskAcceptance::Host { .. } => None,
+        })
+}
+
+fn named_verifier_tool_definition(
+    mut definition: ToolDefinition,
+    acceptance_id: &AcceptanceId,
+) -> ToolDefinition {
+    definition.description = format!(
+        "运行 TaskContract 中冻结的确定性 verifier `{}`；完整参数与执行计划由 Host 展开。",
+        acceptance_id.0
+    );
+    definition.input_schema = json!({
+        "type": "object",
+        "properties": {
+            "verifier_id": {
+                "type": "string",
+                "enum": [acceptance_id.0],
+                "description": "TaskContract 中冻结的 verifier acceptance ID。"
+            }
+        },
+        "required": ["verifier_id"],
+        "additionalProperties": false
+    });
+    definition
+}
+
+fn resolve_named_verifier_invocation(
+    contract: Option<&TaskContract>,
+    invocation: &ToolInvocation,
+) -> Result<ToolInvocation, String> {
+    let Some((acceptance_id, verifier)) = contract
+        .map(|contract| &contract.definition)
+        .and_then(named_verifier_acceptance)
+    else {
+        return Ok(invocation.clone());
+    };
+    if invocation.name != verifier.verifier_id {
+        return Ok(invocation.clone());
+    }
+    let arguments = invocation
+        .arguments
+        .parsed
+        .as_ref()
+        .and_then(Value::as_object)
+        .ok_or_else(|| "冻结 verifier 只接受包含 verifier_id 的 JSON 对象".to_owned())?;
+    if arguments.len() != 1
+        || arguments.get("verifier_id").and_then(Value::as_str) != Some(acceptance_id.0.as_str())
+    {
+        return Err(format!(
+            "只接受冻结 verifier ID '{}'，不得提交或覆盖完整 verifier 参数",
+            acceptance_id.0
+        ));
+    }
+    Ok(ToolInvocation {
+        run_id: invocation.run_id.clone(),
+        call_id: invocation.call_id.clone(),
+        name: verifier.verifier_id.clone(),
+        arguments: ToolArguments::from_value(verifier.parameters.clone()),
+    })
+}
+
 #[derive(Debug)]
 struct AgentLaunchRequest {
     workspace_access: AgentWorkspaceAccess,
@@ -5309,7 +5411,38 @@ fn invalid_model(message: impl Into<String>) -> TerminalState {
 
 #[cfg(test)]
 mod actor_capability_tests {
+    use std::collections::BTreeMap;
+
     use super::*;
+
+    fn named_contract() -> TaskContract {
+        TaskContract {
+            generation_id: TaskGenerationId::from("generation"),
+            definition: TaskDefinition {
+                objective: "修复并验证".to_owned(),
+                constraints: Vec::new(),
+                non_goals: Vec::new(),
+                acceptance: vec![TaskAcceptance::Verifier {
+                    id: AcceptanceId::from("frozen-check"),
+                    description: "冻结检查".to_owned(),
+                    verifier: VerifierSpec {
+                        verifier_id: "run_verifiers".to_owned(),
+                        parameters: json!({"profile": "exact"}),
+                        plan: VerifierPlan {
+                            steps: vec![VerifierStep {
+                                id: "exact".to_owned(),
+                                program: "true".to_owned(),
+                                args: Vec::new(),
+                                cwd: String::new(),
+                                env: BTreeMap::new(),
+                                timeout_ms: 1_000,
+                            }],
+                        },
+                    },
+                }],
+            },
+        }
+    }
 
     #[test]
     fn workspace_authority_matrix_is_fail_closed() {
@@ -5332,6 +5465,42 @@ mod actor_capability_tests {
         );
         assert!(!ModelToolAuthority::IsolatedWriter.permits_agent(WorkspaceAccess::ReadOnly));
         assert!(!ModelToolAuthority::IsolatedWriter.permits_agent(WorkspaceAccess::MayWrite));
+    }
+
+    #[test]
+    fn named_verifier_expands_only_the_frozen_contract_id() {
+        let contract = named_contract();
+        let definition = named_verifier_tool_definition(
+            ToolDefinition {
+                name: "run_verifiers".to_owned(),
+                description: "generic".to_owned(),
+                input_schema: json!({"type": "object"}),
+            },
+            &AcceptanceId::from("frozen-check"),
+        );
+        assert_eq!(
+            definition.input_schema["properties"]["verifier_id"]["enum"],
+            json!(["frozen-check"])
+        );
+
+        let invocation = ToolInvocation {
+            run_id: RunId::from("run"),
+            call_id: "call".to_owned(),
+            name: "run_verifiers".to_owned(),
+            arguments: ToolArguments::from_value(json!({"verifier_id": "frozen-check"})),
+        };
+        let resolved = resolve_named_verifier_invocation(Some(&contract), &invocation)
+            .expect("resolve frozen verifier");
+        assert_eq!(resolved.arguments.parsed, Some(json!({"profile": "exact"})));
+
+        let raw_override = ToolInvocation {
+            arguments: ToolArguments::from_value(json!({
+                "verifier_id": "frozen-check",
+                "profile": "auto"
+            })),
+            ..invocation
+        };
+        assert!(resolve_named_verifier_invocation(Some(&contract), &raw_override).is_err());
     }
 }
 

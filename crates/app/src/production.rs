@@ -350,6 +350,7 @@ impl RunComposition for ProductionComposition {
         );
         let tool_catalog = runtime.tool_definitions(
             &command.tool_policy,
+            Some(&command.task),
             ModelToolAuthority::root(command.controls.write_execution_mode),
             0,
             command.limits.max_depth,
@@ -447,6 +448,10 @@ impl RunComposition for ProductionComposition {
         );
         let tool_catalog = runtime.tool_definitions(
             &request.tool_policy,
+            request
+                .task_contract
+                .as_ref()
+                .map(|contract| &contract.definition),
             ModelToolAuthority::root(request.environment.write_execution_mode),
             0,
             request.limits.max_depth,
@@ -573,6 +578,7 @@ impl RunComposition for ProductionComposition {
         );
         let tool_catalog = runtime.tool_definitions(
             &source_request.tool_policy,
+            Some(&task),
             ModelToolAuthority::root(source_request.environment.write_execution_mode),
             0,
             source_request.limits.max_depth,
@@ -1369,6 +1375,10 @@ mod tests {
         );
         let catalog = catalog_runtime.tool_definitions(
             &request.tool_policy,
+            request
+                .task_contract
+                .as_ref()
+                .map(|contract| &contract.definition),
             ModelToolAuthority::root(request.environment.write_execution_mode),
             0,
             request.limits.max_depth,
@@ -1901,6 +1911,7 @@ mod tests {
         );
         let catalog = runtime.tool_definitions(
             &ToolPolicy::default(),
+            None,
             ModelToolAuthority::RootWrite,
             0,
             4,
@@ -1908,6 +1919,7 @@ mod tests {
         );
         let coordinator_catalog = runtime.tool_definitions(
             &ToolPolicy::default(),
+            None,
             ModelToolAuthority::Coordinator,
             0,
             4,
@@ -2522,6 +2534,7 @@ mod tests {
         );
         let current_catalog = tool_catalog_sha256(&catalog_runtime.tool_definitions(
             &ToolPolicy::default(),
+            None,
             ModelToolAuthority::RootWrite,
             0,
             0,
@@ -2609,6 +2622,7 @@ mod tests {
         );
         let catalog = catalog_runtime.tool_definitions(
             &ToolPolicy::default(),
+            None,
             ModelToolAuthority::RootWrite,
             0,
             0,

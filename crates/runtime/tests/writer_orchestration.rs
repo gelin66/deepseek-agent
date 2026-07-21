@@ -1933,6 +1933,7 @@ async fn role_label_never_grants_write_and_read_only_child_keeps_minimal_lifecyc
     } = runtime_fixture(ModelScript::ReadOnlyRole);
     let definitions = runtime.tool_definitions(
         &ToolPolicy::default(),
+        None,
         ModelToolAuthority::Coordinator,
         0,
         1,

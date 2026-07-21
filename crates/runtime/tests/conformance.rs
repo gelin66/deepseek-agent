@@ -1927,6 +1927,7 @@ fn agent_catalog_exposes_only_the_implemented_chinese_contract() {
     let agent = runtime
         .tool_definitions(
             &ToolPolicy::default(),
+            None,
             ModelToolAuthority::RootWrite,
             0,
             2,
@@ -2721,6 +2722,81 @@ async fn model_completion_requires_the_frozen_host_verifier_receipt() {
         events.last().map(|event| &event.event),
         Some(RuntimeEventKind::Terminal { .. })
     ));
+}
+
+#[tokio::test]
+async fn model_named_verifier_persists_only_the_id_and_executes_frozen_parameters() {
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let observed_calls = model_calls.clone();
+    let model = Arc::new(MockModel::new(move |request| {
+        match observed_calls.fetch_add(1, Ordering::AcqRel) {
+            0 => {
+                let definition = request
+                    .tools
+                    .iter()
+                    .find(|definition| definition.name == "run_tests")
+                    .expect("frozen verifier definition");
+                assert_eq!(
+                    definition.input_schema["properties"]["verifier_id"]["enum"],
+                    json!(["tests"])
+                );
+                ScriptResponse::Events(vec![completed(
+                    "",
+                    Some("先运行合同中冻结的 verifier"),
+                    vec![call(
+                        "named-verifier",
+                        "run_tests",
+                        r#"{"verifier_id":"tests"}"#,
+                    )],
+                    ModelFinishReason::ToolCalls,
+                )])
+            }
+            1 => ScriptResponse::Events(vec![completed(
+                "冻结 verifier 已运行",
+                None,
+                Vec::new(),
+                ModelFinishReason::Stop,
+            )]),
+            _ => panic!("unexpected extra model request"),
+        }
+    }));
+    let tools = Arc::new(MockTools::default());
+    let sink = Arc::new(CollectSink::default());
+    let store = Arc::new(InMemoryRunStore::default());
+    let runtime = Arc::new(AgentRuntime::new(model, tools.clone(), sink, store.clone()));
+    let mut run_request = verifier_request("只按冻结 ID 运行 verifier");
+    run_request.limits.max_turns = 2;
+    run_request.limits.max_model_requests = 2;
+
+    let outcome = runtime.start(run_request).wait().await.unwrap();
+
+    assert!(matches!(outcome.terminal, TerminalState::Blocked { .. }));
+    assert_eq!(model_calls.load(Ordering::Acquire), 2);
+    let calls = tools.calls.lock().expect("tool call lock");
+    assert_eq!(calls.len(), 2, "model invocation plus final Host verifier");
+    assert_eq!(
+        calls[0].arguments.parsed,
+        Some(json!({"all_features": false, "args": ["--locked"]}))
+    );
+    drop(calls);
+
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    let prepared = replay
+        .events
+        .iter()
+        .find_map(|event| match &event.event {
+            RuntimeEventKind::ToolPrepared { invocation, .. }
+                if invocation.call_id == "named-verifier" =>
+            {
+                Some(invocation)
+            }
+            _ => None,
+        })
+        .expect("model verifier invocation is durable");
+    assert_eq!(
+        prepared.arguments.parsed,
+        Some(json!({"verifier_id": "tests"}))
+    );
 }
 
 #[tokio::test]

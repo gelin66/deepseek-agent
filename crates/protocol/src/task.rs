@@ -89,15 +89,13 @@ impl TaskDefinition {
                     message.push_str(description);
                 }
                 TaskAcceptance::Verifier {
-                    description,
-                    verifier,
-                    ..
+                    id, description, ..
                 } => {
                     message.push_str("\n- ");
                     message.push_str(description);
-                    message.push_str("（Host 将使用 `");
-                    message.push_str(&verifier.verifier_id);
-                    message.push_str("` 做确定性验证）");
+                    message.push_str("（冻结 verifier ID：`");
+                    message.push_str(&id.0);
+                    message.push_str("`；完整参数和最终验收由 Host 管理）");
                 }
             }
         }
@@ -585,7 +583,7 @@ mod tests {
                 "\n\n约束：\n- 只修改 ranges.py",
                 "\n\n非目标：\n- 不要重写测试",
                 "\n\n验收条件：\n- 全部单元测试通过",
-                "（Host 将使用 `run_tests` 做确定性验证）"
+                "（冻结 verifier ID：`tests`；完整参数和最终验收由 Host 管理）"
             )
         );
     }
