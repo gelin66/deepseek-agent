@@ -1,0 +1,310 @@
+{
+  "schema": "codewhale.eval.m6-writer-benefit-plan.v3",
+  "status": "frozen_before_live_api",
+  "date": "2026-07-22",
+  "start_revision": "77ad138b57e3d8e23ea6a5134452ac34b1115e19",
+  "experiment": {
+    "kind": "same_binary_treatment_ab",
+    "claim_scope": "M6-B1 rework 后同一候选二进制的显式 single root 与 isolated Writer treatment",
+    "model": "deepseek-v4-flash",
+    "api_surface": "standard_chat",
+    "runs_per_task_treatment": 6,
+    "accepted_pairs": 18,
+    "accepted_arms": 36,
+    "pair_attempts_max": 1,
+    "pair_order": "task-local odd pair single->writer; even pair writer->single",
+    "terminal_request_catalog": "每个 ModelRequestPrepared 与 ModelRequestFailed.retry.prepared.request 都必须匹配预冻结的完整有序工具定义哈希；至多允许一个空目录逻辑请求，该请求的所有 retry attempts 都必须为空且它只能是该 actor 的最终逻辑请求",
+    "wall_time_contract": "one absolute 240-second arm deadline bounds fixture Git setup, every stdio frame, the live app-server process, evidence Git commands, and the external verifier; post-delete elapsed time is also measured and fails the arm if it exceeds the contract",
+    "cancel_conflict_contract": "after the Runtime deadline grace, accepted records a Harness cancel; run_terminal or run_not_active triggers one canonical get and no second cancel, but only a Run view that already contains terminal is classified as a terminal race, while inactive without terminal is a typed product convergence failure",
+    "task_round_order": [
+      [
+        "t1",
+        "t2",
+        "t3"
+      ],
+      [
+        "t2",
+        "t3",
+        "t1"
+      ],
+      [
+        "t3",
+        "t1",
+        "t2"
+      ],
+      [
+        "t1",
+        "t2",
+        "t3"
+      ],
+      [
+        "t2",
+        "t3",
+        "t1"
+      ],
+      [
+        "t3",
+        "t1",
+        "t2"
+      ]
+    ]
+  },
+  "resources": {
+    "max_physical_api_requests_per_arm": 10,
+    "max_logical_model_requests_per_arm": 10,
+    "max_runtime_retries_per_arm": 1,
+    "transport_max_retries_per_request": 1,
+    "accepted_transport_retries_per_arm": 1,
+    "max_output_tokens_per_request": 8192,
+    "runtime_wall_time_seconds": 225,
+    "harness_wall_time_seconds": 240,
+    "runtime_cancel_grace_seconds": 5,
+    "stdio_poll_timeout_seconds": 5,
+    "production_verifier_gate_timeout_ms": 600000,
+    "harness_external_verifier_timeout_seconds": 30,
+    "max_tool_calls_per_arm": 24,
+    "max_known_cost_usd_per_arm": 0.02,
+    "suite_known_cost_usd": 0.5,
+    "reasoning_effort": "high",
+    "streaming": true,
+    "auto_approve": true,
+    "trust_mode": false,
+    "allow_sandbox_elevation": false,
+    "interactive": false,
+    "sandbox": "workspace-write",
+    "cargo_target_dir": "/private/tmp/codewhale-m6b-formal-target",
+    "cargo_incremental": "0"
+  },
+  "treatments": {
+    "common_allowed_tools": [
+      "agent",
+      "apply_patch",
+      "edit_file",
+      "git_diff",
+      "git_status",
+      "grep_files",
+      "list_dir",
+      "read_file",
+      "run_verifiers"
+    ],
+    "single": {
+      "max_depth": 0,
+      "max_concurrent_children": 0,
+      "actual_contract": "root 模式；agent 不出现在任何非终态请求，root 直接完成编辑",
+      "write_execution_mode": "root"
+    },
+    "writer": {
+      "max_depth": 1,
+      "max_concurrent_children": 1,
+      "actual_contract": "显式 isolated_writer；root 为 Host 强制只读 coordinator，恰好一个 isolated_write Writer 执行修改",
+      "write_execution_mode": "isolated_writer"
+    }
+  },
+  "invalid_attempt_policy": {
+    "whole_pair_retry_only": false,
+    "maximum_reruns": 0,
+    "first_arm_measurement_identity_or_harness_safety_failure": "保存当前 arm 后立即停止，不启动 mate；measurement-complete 产品失败不适用此规则",
+    "hard_mechanism_failure": "false-success、Writer root 越权写、路径越界、Git 泄漏、seal 后未唯一集成、集成失败或 cleanup retained 均在保存当前 arm 后立即停止",
+    "unknown_billing": "立即停止；所有可见费用仅作为下界，不声称有限暴露",
+    "never_resample": [
+      "任何 pre-API Harness 或 app-server 失败",
+      "任何 missing、duplicate、non-terminal、corrupt、unsealed、internally inconsistent 或 mismatched canonical measurement",
+      "unknown billing 或 unpriced usage",
+      "工具目录、显式 admission 或 Host cleanup scope 身份不一致",
+      "model、protocol、timeout、budget、verifier、Writer 或 false-success 产品失败"
+    ],
+    "product_failure_with_complete_measurement": "除 hard mechanism failure 外，保留为正式 reliability 结果；完成当前 pair，但绝不替换为后续样本",
+    "measurement_identity_failure": "当前 arm 后立即停止整个 suite"
+  },
+  "statistics": {
+    "primary_tokens": "input_tokens + output_tokens",
+    "pair_relative_delta": "(writer-single)/single",
+    "even_median": "arithmetic mean of the two middle sorted values",
+    "reliability_benefit": {
+      "writer_success_delta_min": 1,
+      "per_task_success_non_regression": true,
+      "aggregate_token_overhead_max": 0.25,
+      "aggregate_cost_overhead_max": 0.25
+    },
+    "efficiency_benefit": {
+      "per_task_success_non_regression": true,
+      "eligible_pairs": "only pairs where both single and writer verified_success are true",
+      "minimum_dual_success_pairs_per_complex_task": 3,
+      "t2_t3_any_paired_median_improvement_min": 0.15,
+      "t2_t3_other_paired_median_regression_max": 0.2,
+      "each_complex_task_metric_regression_max": 0.2
+    },
+    "t1_control": {
+      "success_non_regression": true,
+      "minimum_dual_success_pairs": 3,
+      "aggregate_token_overhead_max": 0.25,
+      "aggregate_cost_overhead_max": 0.25,
+      "aggregate_wall_time_overhead_max": 0.2
+    },
+    "complex_benefit": "T2/T3 reliability benefit OR efficiency benefit; reliability uses accepted T2/T3 arms only, efficiency uses only dual-verified-success T2/T3 pairs and requires the frozen minimum sample per complex task",
+    "decision_order": [
+      "reject_and_rework if any hard mechanism gate fails",
+      "hold_mechanism if 18 measurement-complete pairs are unavailable",
+      "keep_default only if T2/T3 complex benefit passes and T1 control passes",
+      "shrink_on_demand if T2/T3 benefit passes, T1 success does not regress, and T1 resource control fails",
+      "hold_mechanism otherwise"
+    ]
+  },
+  "hard_gates": [
+    "single 与 Writer false_success 都等于零",
+    "no root direct write, path violation, unverified or duplicate integration, or worktree/branch leak",
+    "writer success does not regress on any task",
+    "every accepted pair has complete accounting and known billing",
+    "every successful Writer has a latest-root revision EvidenceReceipt",
+    "canonical Runtime, RunStore, event and tool owners remain singular"
+  ],
+  "tasks": {
+    "t1": {
+      "name": "单文件控制：二进制字节格式边界",
+      "fixture": "eval/fixtures/m6-writer-benefit/t1-single-file",
+      "fixture_base_commit": "460ff21e66af06d6042a25c36b19201bb3ad25d8",
+      "allowed_paths": [
+        "format_bytes.py"
+      ],
+      "expected_changed_files": [
+        "format_bytes.py"
+      ],
+      "expected_artifact": "format_bytes.py 的最小修复、冻结验证证据和最终 diff",
+      "objective": "修复 format_bytes.py：使用 1024 进制的 IEC 单位，精确通过冻结边界；只修改 format_bytes.py，不新增依赖或抽象。",
+      "constraints": [
+        "保持公开函数签名和负数 ValueError 行为",
+        "只允许修改 format_bytes.py",
+        "修改前先读取，修改后复读并以冻结 verifier 为准"
+      ],
+      "non_goals": [
+        "修改 _eval_verifier.py 或 Git 元数据",
+        "新增文件、兼容层或格式化无关代码"
+      ]
+    },
+    "t2": {
+      "name": "跨文件实现：递归 Agent profile 合并与测试",
+      "fixture": "eval/fixtures/m6-writer-benefit/t2-cross-file",
+      "fixture_base_commit": "3e7e2225171b25d54f115a334615e6177fa64c72",
+      "allowed_paths": [
+        "agent_profile.py",
+        "test_agent_profile.py"
+      ],
+      "expected_changed_files": [
+        "agent_profile.py",
+        "test_agent_profile.py"
+      ],
+      "expected_artifact": "生产实现与新增回归测试的完整双文件 diff、冻结验证证据",
+      "objective": "实现 merge_profile 的递归字典合并：嵌套 mapping 递归合并，列表和标量整体替换，且不得修改任一输入；同时在 test_agent_profile.py 新增 test_nested_limits_are_merged 与 test_inputs_are_not_mutated 两个真实回归测试。必须同时修改生产文件和测试文件。",
+      "constraints": [
+        "只允许修改 agent_profile.py 和 test_agent_profile.py",
+        "保持 merge_profile 签名",
+        "不得依赖第三方包",
+        "两个指定测试必须实际断言嵌套合并与输入不变性"
+      ],
+      "non_goals": [
+        "修改 _eval_verifier.py 或 Git 元数据",
+        "新增框架、配置、兼容层或无关文件"
+      ]
+    },
+    "t3": {
+      "name": "失败恢复：零基 retry delay",
+      "fixture": "eval/fixtures/m6-writer-benefit/t3-failure-recovery",
+      "fixture_base_commit": "348c9beb5598f9654693b5a1a96ea31b370e1587",
+      "allowed_paths": [
+        "retry_window.py"
+      ],
+      "expected_changed_files": [
+        "retry_window.py"
+      ],
+      "expected_artifact": "修改前冻结 verifier 失败、有效修改、最终 Host verifier 通过的时序证据与最小 diff",
+      "objective": "修复 retry_window.py 的 zero-based attempt 边界。必须先调用 run_verifiers，并且只提交 {\"verifier_id\":\"m6b-t3\"}，观察冻结 verifier 的确定性失败；再读取并修复 retry_window.py，然后提出完成，由 Host 运行同一冻结 verifier 形成最终通过证据。只修改 retry_window.py。",
+      "constraints": [
+        "模型不得重组 verifier 参数；冻结命令和最终通过由 TaskContract 与 Host 掌管",
+        "完成必须具备失败 → 有效修改 → Host 最终通过的 canonical 时序证据",
+        "保持公开函数签名、cap 行为和负数 ValueError 行为",
+        "只允许修改 retry_window.py"
+      ],
+      "non_goals": [
+        "修改 test_retry_window.py、_eval_verifier.py 或 Git 元数据",
+        "绕过、删除或弱化失败测试"
+      ]
+    }
+  },
+  "frozen_hashes": {
+    "manifest_content_sha256_excluding_frozen_hashes": "sha256:5f3b173c43df9194aed199862146961b1f8c8c4bb6d4103a693d4a3c82e6021d",
+    "schema_versions": {
+      "run_api": 9,
+      "runtime_event": 13,
+      "state": 18,
+      "result": "codewhale.eval.m6-writer-benefit.v3"
+    },
+    "harness_sha256": "sha256:6c4b028c0e7afad56299c24d872a9ec99ee7f7b81ad7ca4fb486b3d5e2ef0187",
+    "canary_helper_sha256": "sha256:fbeea1ce4951f450acb0534297d3f6bd619a6060c4cb67cde3c00a8a717fe68f",
+    "schedule_sha256": "sha256:f2c6e0c0eed0da65921abb45379423d7c2064a4570ec3391c0ad806348aa97ed",
+    "app_server_argv_sha256": "sha256:124b2acdf08a635e509808239e1cb8e702851da62cfa43b3d7a3816094d17c3f",
+    "source_owners": {
+      "agent_runtime_structs": 1,
+      "canonical_tool_catalog_functions": 1,
+      "production_orchestrator_structs": 1,
+      "production_tool_executor_impls": 1,
+      "production_tool_name_constants": 1,
+      "run_store_trait": 1,
+      "runtime_event_kind_enums": 1,
+      "runtime_tool_definition_methods": 1
+    },
+    "start_command_sha256": {
+      "t1": {
+        "single": "sha256:70c09b86ddba7885eb1049ca66241c99e1a61211a39b5878a41cefb96b8b52ca",
+        "writer": "sha256:2649f73a903b6ca0a76015eeaacce420c0c1ceeb1f1e36be161b9ea6dbe2865f"
+      },
+      "t2": {
+        "single": "sha256:ff5e4b18cfee17881c14ed1d44c47257d24b541f996314cf42d00604d49012bc",
+        "writer": "sha256:69b12ee9f3868bea84f05aedb98266c2061c23465ae99bbd5665726e7632d62d"
+      },
+      "t3": {
+        "single": "sha256:8aa7ed3e4f385745c9293430e5245eeb1695992440e42fbaf3c949031e3c61c9",
+        "writer": "sha256:45c086ea47ae1e7e7fcaeee4186d2d18e6d5167cd82af886c9607e1861d00644"
+      }
+    },
+    "fixture_tree_sha256": {
+      "t1": "sha256:0e7ff64a80159f7fff149fba3c0a24af5836a7c8697f32e3ad7c242d1bc87733",
+      "t2": "sha256:1fc1e191d26c0ae486a3108ca96351b2e7d28b9dafbe6b55fb0691ab85b24922",
+      "t3": "sha256:7fbd2ebbe0dc9db1c3484e4c26d030d8619d689fdf4747652d6626d7bb1279cc"
+    },
+    "task_definition_sha256": {
+      "t1": "sha256:f075c4e4e17c3616a997106f69a9a4b30f94d21edac07fc49fd6c014a3a55181",
+      "t2": "sha256:cbe083dfba65dd5eeb80ef721832142782bbdba87efb543ae585ad2e1aba4322",
+      "t3": "sha256:95b830fb7a3db3f2c84ec7b6043b92da4aba69d01e9261d2b9425d244bc4472e"
+    },
+    "verifier_file_sha256": {
+      "t1": "sha256:b5f53a18cdd6ebc83bd73bda77bc50ca98c63721ff6d19a60609cbec2e98ca39",
+      "t2": "sha256:d2fc4cdf344beff08e356679a938660d23a8671d0a515b4d89ce052b8dff7474",
+      "t3": "sha256:1ce985b7aab41d2a8bfb64222a34f2b42d85e13392ecc1989dc04092f966403b"
+    },
+    "verifier_spec_sha256": {
+      "t1": "sha256:e60fd62e21721f19a66e718b53e83ef2be875384e388b9dd9904130717fc29d8",
+      "t2": "sha256:2920cd8e1c7cfbf250f19e5e86c8ef07e34a55da3445e1354297cd0bc333a7f1",
+      "t3": "sha256:4a8531d59ccc4f995592b0345f1896c7a692492461feabd0539fefc5cc457346"
+    },
+    "ordered_tool_definition_sha256": {
+      "t1": {
+        "single_root": "sha256:b475f459c308fd50edd1afa66d4ed78a0a8e8aa235779a8c41657d2f71708a2c",
+        "writer_root": "sha256:bb6bb66a4c319bca605091b64a6b04979b1f9d1ddc03cc7c581f60754f8d698b",
+        "writer_child": "sha256:b475f459c308fd50edd1afa66d4ed78a0a8e8aa235779a8c41657d2f71708a2c",
+        "terminal_empty": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "t2": {
+        "single_root": "sha256:76e20fe3e1593e83066fdc91a3584965c0b7e5182c26ec6fcd952ade00514c29",
+        "writer_root": "sha256:bb6bb66a4c319bca605091b64a6b04979b1f9d1ddc03cc7c581f60754f8d698b",
+        "writer_child": "sha256:76e20fe3e1593e83066fdc91a3584965c0b7e5182c26ec6fcd952ade00514c29",
+        "terminal_empty": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "t3": {
+        "single_root": "sha256:83ad03f050dd552cf0ded39a794b66822d0a89a1c7ef95f09252e2a2b15005a6",
+        "writer_root": "sha256:bb6bb66a4c319bca605091b64a6b04979b1f9d1ddc03cc7c581f60754f8d698b",
+        "writer_child": "sha256:83ad03f050dd552cf0ded39a794b66822d0a89a1c7ef95f09252e2a2b15005a6",
+        "terminal_empty": "sha256:4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    }
+  }
+}

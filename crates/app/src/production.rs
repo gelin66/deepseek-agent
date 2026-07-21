@@ -1970,6 +1970,139 @@ mod tests {
         );
     }
 
+    #[test]
+    fn m6_b1_v3_manifest_freezes_actual_actor_tool_definitions() {
+        let manifest: Value = serde_json::from_str(include_str!(
+            "../../../eval/manifests/m6-b1-writer-benefit-ab-v3.json"
+        ))
+        .expect("parse M6-B1 v3 manifest");
+        let allowed = manifest["treatments"]["common_allowed_tools"]
+            .as_array()
+            .expect("common allowed tools")
+            .iter()
+            .map(|name| name.as_str().expect("tool name").to_owned())
+            .collect::<Vec<_>>();
+        let policy = ToolPolicy {
+            enabled: true,
+            allowed: Some(allowed),
+            denied: Vec::new(),
+        };
+        let single_mode: WriteExecutionMode = serde_json::from_value(
+            manifest["treatments"]["single"]["write_execution_mode"].clone(),
+        )
+        .expect("single write execution mode");
+        let writer_mode: WriteExecutionMode = serde_json::from_value(
+            manifest["treatments"]["writer"]["write_execution_mode"].clone(),
+        )
+        .expect("Writer write execution mode");
+        assert_eq!(single_mode, WriteExecutionMode::Root);
+        assert_eq!(writer_mode, WriteExecutionMode::IsolatedWriter);
+        let temp = tempfile::tempdir().expect("temp workspace");
+        let tool_config = tool_config_for_run(
+            &ProductionToolConfig::new(".").with_shell_policy(ShellPolicy::Full),
+            temp.path(),
+            &RunProductControls::default(),
+        )
+        .expect("tool config");
+        let runtime = AgentRuntime::new(
+            Arc::new(ReplayOnlyModelPort),
+            Arc::new(ProductionToolExecutor::new(tool_config)),
+            Arc::new(NullEventSink),
+            Arc::new(InMemoryRunStore::default()),
+        );
+        let mut actual =
+            std::collections::BTreeMap::<String, std::collections::BTreeMap<String, String>>::new();
+
+        for task_id in ["t1", "t2", "t3"] {
+            let verifier_id = format!("m6b-{task_id}-exact");
+            let definition: TaskDefinition = serde_json::from_value(json!({
+                "objective": "只用于冻结实际工具目录",
+                "constraints": [],
+                "non_goals": [],
+                "acceptance": [{
+                    "kind": "verifier",
+                    "id": format!("m6b-{task_id}"),
+                    "description": "冻结 verifier",
+                    "evidence_policy": if task_id == "t3" {
+                        "failed_write_pass"
+                    } else {
+                        "latest_pass"
+                    },
+                    "verifier": {
+                        "verifier_id": "run_verifiers",
+                        "parameters": {
+                            "profile": "exact",
+                            "level": "quick",
+                            "max_python_files": 200,
+                            "commands": [{
+                                "name": verifier_id,
+                                "program": "/usr/bin/python3",
+                                "args": ["-I", "-B", "_eval_verifier.py", "."],
+                                "cwd": ""
+                            }]
+                        },
+                        "plan": {"steps": [{
+                            "id": format!("m6b-{task_id}-exact"),
+                            "program": "/usr/bin/python3",
+                            "args": ["-I", "-B", "_eval_verifier.py", "."],
+                            "cwd": "",
+                            "env": {},
+                            "timeout_ms": 600000
+                        }]}
+                    }
+                }]
+            }))
+            .expect("M6-B1 task definition");
+            let catalogs = [
+                (
+                    "single_root",
+                    runtime.tool_definitions(
+                        &policy,
+                        Some(&definition),
+                        ModelToolAuthority::root(single_mode),
+                        0,
+                        0,
+                        false,
+                    ),
+                ),
+                (
+                    "writer_root",
+                    runtime.tool_definitions(
+                        &policy,
+                        Some(&definition),
+                        ModelToolAuthority::root(writer_mode),
+                        0,
+                        1,
+                        false,
+                    ),
+                ),
+                (
+                    "writer_child",
+                    runtime.tool_definitions(
+                        &policy,
+                        Some(&definition),
+                        ModelToolAuthority::IsolatedWriter,
+                        1,
+                        1,
+                        false,
+                    ),
+                ),
+                ("terminal_empty", Vec::new()),
+            ];
+            for (catalog_key, catalog) in catalogs {
+                actual.entry(task_id.to_owned()).or_default().insert(
+                    catalog_key.to_owned(),
+                    canonical_tool_catalog_sha256(&catalog),
+                );
+            }
+        }
+        assert_eq!(
+            manifest["frozen_hashes"]["ordered_tool_definition_sha256"],
+            serde_json::to_value(actual).expect("ordered definition hash map"),
+            "ordered model-visible tool definition hashes drifted"
+        );
+    }
+
     fn envelope(request_id: &str, command: RunCommand) -> RunCommandEnvelope {
         RunCommandEnvelope {
             schema_version: RUN_API_SCHEMA_VERSION,

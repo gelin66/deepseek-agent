@@ -15,6 +15,7 @@ import importlib.util
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import statistics
 import subprocess
@@ -26,28 +27,22 @@ import uuid
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFEST_PATH = ROOT / "eval/manifests/m6-b1-writer-benefit-ab-v2.json"
+MANIFEST_PATH = ROOT / "eval/manifests/m6-b1-writer-benefit-ab-v3.json"
 CANARY_PATH = ROOT / "scripts/eval-m6-writer-canary.py"
-RESULT_SCHEMA = "codewhale.eval.m6-writer-benefit.v2"
-RUN_API_SCHEMA = 7
-RUNTIME_EVENT_SCHEMA = 10
+RESULT_SCHEMA = "codewhale.eval.m6-writer-benefit.v3"
+RUN_API_SCHEMA = 9
+RUNTIME_EVENT_SCHEMA = 13
+STATE_SCHEMA = 18
 MODEL = "deepseek-v4-flash"
 TREATMENTS = ("single", "writer")
 TASK_IDS = ("t1", "t2", "t3")
 RUNS_PER_CELL = 6
-MAX_PAIR_ATTEMPTS = 3
+MAX_PAIR_ATTEMPTS = 1
 PYTHON = Path("/usr/bin/python3")
-RESAMPLEABLE_HARNESS_FAILURE_CODES = {
-    "app_server_exited",
-    "app_server_launch_failed",
-    "stdio_json_invalid",
-    "stdio_missing",
-    "stdio_timeout",
-    "stdio_write_failed",
-}
 SECRET_BOUNDARY_FAILURE_CODES = {
     "key_in_fixture",
     "key_in_protocol",
@@ -67,17 +62,6 @@ WRITER_CHILD_TOOLS = [
     "read_file",
     "run_verifiers",
 ]
-ROOT_BASE_CATALOG = [
-    "apply_patch",
-    "edit_file",
-    "git_diff",
-    "git_status",
-    "grep_files",
-    "list_dir",
-    "read_file",
-    "run_verifiers",
-]
-WRITER_ROOT_CATALOG = ["agent", *ROOT_BASE_CATALOG]
 LIFECYCLE_KINDS = (
     "agent_task_prepared",
     "agent_workspace_created",
@@ -150,7 +134,7 @@ def load_manifest() -> dict[str, Any]:
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise EvaluationError("manifest_unavailable") from error
     if (
-        value.get("schema") != "codewhale.eval.m6-writer-benefit-plan.v2"
+        value.get("schema") != "codewhale.eval.m6-writer-benefit-plan.v3"
         or tuple(value.get("tasks", {})) != TASK_IDS
     ):
         raise EvaluationError("manifest_invalid")
@@ -404,6 +388,9 @@ def task_definition(task_id: str) -> dict[str, Any]:
         "kind": "verifier",
         "id": f"m6b-{task_id}",
         "description": f"{task['name']} 的冻结行为、路径和工作区证据全部通过",
+        "evidence_policy": (
+            "failed_write_pass" if task_id == "t3" else "latest_pass"
+        ),
         "verifier": verifier_spec(task_id),
     }
     return {
@@ -469,6 +456,9 @@ def start_command(
             },
             "limits": limits,
             "controls": {
+                "write_execution_mode": treatment_definition[
+                    "write_execution_mode"
+                ],
                 "auto_approve": RESOURCES["auto_approve"],
                 "trust_mode": RESOURCES["trust_mode"],
                 "allow_sandbox_elevation": RESOURCES[
@@ -479,6 +469,35 @@ def start_command(
             },
         },
     }
+
+
+def frozen_start_commands() -> dict[str, dict[str, str]]:
+    return {
+        task_id: {
+            treatment: canonical_hash(
+                start_command(
+                    task_id,
+                    treatment,
+                    Path("/workspace"),
+                    f"freeze-{task_id}-{treatment}",
+                )
+            )
+            for treatment in TREATMENTS
+        }
+        for task_id in TASK_IDS
+    }
+
+
+def frozen_app_server_argv() -> list[str]:
+    return [
+        "<candidate_binary>",
+        "--provider",
+        "deepseek",
+        "app-server",
+        "--stdio",
+        "--transport-max-retries",
+        str(RESOURCES["transport_max_retries_per_request"]),
+    ]
 
 
 def event_kind(stored: dict[str, Any]) -> str:
@@ -493,6 +512,20 @@ def event_values(
         for stored in events
         if event_kind(stored) == name
     ]
+
+
+def stored_values(
+    events: list[dict[str, Any]], name: str
+) -> list[dict[str, Any]]:
+    return [stored for stored in events if event_kind(stored) == name]
+
+
+def strictly_increasing_sequences(values: list[dict[str, Any]]) -> bool:
+    sequences = [value.get("sequence") for value in values]
+    return all(isinstance(value, int) for value in sequences) and all(
+        before < after
+        for before, after in zip(sequences, sequences[1:])
+    )
 
 
 def tool_names(events: list[dict[str, Any]]) -> list[str]:
@@ -537,131 +570,549 @@ def tool_outcome_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def catalogs_are_exact(
-    catalogs: list[dict[str, Any]], expected_names: list[str]
-) -> bool:
-    if not catalogs:
-        return False
-    empty_positions = [
-        index
-        for index, catalog in enumerate(catalogs)
-        if catalog["tool_names"] == []
-    ]
-    if len(empty_positions) > 1:
-        return False
-    if empty_positions and empty_positions[0] != len(catalogs) - 1:
-        return False
-    return all(
-        catalog["tool_names"] in (expected_names, [])
-        for catalog in catalogs
+def frozen_catalog_hash(task_id: str, catalog_key: str) -> str | None:
+    value = (
+        MANIFEST.get("frozen_hashes", {})
+        .get("ordered_tool_definition_sha256", {})
+        .get(task_id, {})
+        .get(catalog_key)
     )
+    return value if isinstance(value, str) else None
 
 
-def t3_recovery_audit(events: list[dict[str, Any]]) -> dict[str, Any]:
-    expected_parameters = verifier_spec("t3")["parameters"]
-    calls = []
-    outcomes: dict[str, dict[str, Any]] = {}
-    write_sequences = []
-    for stored in events:
-        sequence = stored.get("sequence")
-        event = stored.get("event", {})
-        if event.get("kind") == "tool_prepared":
-            invocation = event.get("invocation", {})
-            name = invocation.get("name")
-            if name in {"apply_patch", "edit_file"}:
-                write_sequences.append(sequence)
-            if name == "run_verifiers":
-                calls.append(
-                    {
-                        "call_id": invocation.get("call_id"),
-                        "prepared_sequence": sequence,
-                        "arguments": invocation.get("arguments", {}).get(
-                            "parsed"
-                        ),
-                    }
-                )
-        if (
-            event.get("kind") == "tool_outcome_committed"
-            and event.get("name") == "run_verifiers"
-        ):
-            observation = event.get("outcome", {}).get(
-                "verifier_observation", {}
-            )
-            outcomes[event.get("call_id")] = {
-                "committed_sequence": sequence,
-                "verdict": observation.get("verdict"),
-                "verifier_id": observation.get("spec", {}).get(
-                    "verifier_id"
-                ),
-                "parameters": observation.get("spec", {}).get(
-                    "parameters"
-                ),
-            }
-    ordered = [
-        {
-            **call,
-            **outcomes.get(call["call_id"], {}),
-        }
-        for call in calls
-    ]
-    exact = bool(ordered) and all(
-        item.get("arguments") == expected_parameters
-        and item.get("verifier_id") == "run_verifiers"
-        and item.get("parameters") == expected_parameters
-        for item in ordered
+def request_catalog_summary(
+    request: Any,
+    actor: str,
+    source: str,
+    sequence: Any,
+    attempt_id: Any,
+    prior_attempt_id: Any = None,
+) -> dict[str, Any]:
+    request = request if isinstance(request, dict) else {}
+    tools = request.get("tools")
+    shape_valid = isinstance(tools, list) and all(
+        isinstance(tool, dict)
+        and isinstance(tool.get("name"), str)
+        and isinstance(tool.get("description"), str)
+        and isinstance(tool.get("input_schema"), dict)
+        for tool in tools
     )
-    failed_then_passed = (
-        len(ordered) >= 2
-        and ordered[0].get("verdict") == "failed"
-        and ordered[-1].get("verdict") == "passed"
-    )
-    ordered_around_write = (
-        bool(write_sequences)
-        and ordered[0].get("committed_sequence") is not None
-        and ordered[-1].get("prepared_sequence") is not None
-        and ordered[0]["committed_sequence"] < min(write_sequences)
-        and ordered[-1]["prepared_sequence"] > max(write_sequences)
+    definitions = tools if shape_valid else []
+    request_actor = request.get("actor", {})
+    request_actor_kind = (
+        request_actor.get("kind") if isinstance(request_actor, dict) else None
     )
     return {
-        "valid": exact and failed_then_passed and ordered_around_write,
-        "call_count": len(ordered),
-        "exact_frozen_parameters": exact,
-        "failed_then_passed": failed_then_passed,
-        "ordered_around_write": ordered_around_write,
-        "verdicts": [item.get("verdict") for item in ordered],
-        "parameters_sha256": canonical_hash(expected_parameters),
+        "actor": actor,
+        "request_actor_kind": request_actor_kind,
+        "source": source,
+        "event_sequence": sequence,
+        "attempt_id_sha256": (
+            canonical_hash(attempt_id) if isinstance(attempt_id, str) else None
+        ),
+        "prior_attempt_id_sha256": (
+            canonical_hash(prior_attempt_id)
+            if isinstance(prior_attempt_id, str)
+            else None
+        ),
+        "request_number": request.get("request_number"),
+        "attempt": request.get("attempt"),
+        "definition_count": len(definitions),
+        "tool_names": [tool["name"] for tool in definitions],
+        "shape_valid": shape_valid,
+        "ordered_definitions_sha256": (
+            sha256_bytes(
+                json.dumps(
+                    definitions,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            )
+            if shape_valid
+            else None
+        ),
     }
+
+
+def catalog_identity_audit(
+    catalogs: list[dict[str, Any]],
+    expected_catalog_hash: str | None,
+    expected_empty_hash: str | None,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    if not catalogs:
+        reasons.append("catalog_requests_missing")
+    if not all(
+        isinstance(value, str)
+        for value in (
+            expected_catalog_hash,
+            expected_empty_hash,
+        )
+    ):
+        reasons.append("catalog_freeze_missing")
+    groups: defaultdict[int, list[dict[str, Any]]] = defaultdict(list)
+    attempt_ids: list[str] = []
+    for catalog in catalogs:
+        if catalog.get("shape_valid") is not True:
+            reasons.append("catalog_definition_shape")
+        if catalog.get("request_actor_kind") != catalog.get("actor"):
+            reasons.append("catalog_actor_mismatch")
+        attempt_id = catalog.get("attempt_id_sha256")
+        if not prefixed_sha256(attempt_id):
+            reasons.append("catalog_attempt_id")
+        else:
+            attempt_ids.append(attempt_id)
+        request_number = catalog.get("request_number")
+        attempt = catalog.get("attempt")
+        if (
+            not isinstance(request_number, int)
+            or isinstance(request_number, bool)
+            or request_number < 1
+            or not isinstance(attempt, int)
+            or isinstance(attempt, bool)
+            or attempt < 0
+        ):
+            reasons.append("catalog_attempt_identity")
+            continue
+        groups[request_number].append(catalog)
+
+    if len(attempt_ids) != len(set(attempt_ids)):
+        reasons.append("catalog_attempt_id_reused")
+    if groups and sorted(groups) != list(range(1, max(groups) + 1)):
+        reasons.append("catalog_request_number_sequence")
+
+    empty_logical_requests: list[int] = []
+    for request_number, attempts in sorted(groups.items()):
+        attempts.sort(key=lambda item: item["attempt"])
+        if [item["attempt"] for item in attempts] != list(range(len(attempts))):
+            reasons.append("catalog_attempt_sequence")
+        if attempts and attempts[0].get("source") != "model_request_prepared":
+            reasons.append("catalog_initial_attempt_source")
+        if any(
+            item.get("source") != "model_request_failed.retry.prepared"
+            for item in attempts[1:]
+        ):
+            reasons.append("catalog_retry_attempt_source")
+        for index, item in enumerate(attempts):
+            expected_prior = (
+                None
+                if index == 0
+                else attempts[index - 1].get("attempt_id_sha256")
+            )
+            if item.get("prior_attempt_id_sha256") != expected_prior:
+                reasons.append("catalog_retry_attempt_lineage")
+        definition_hashes = {
+            item.get("ordered_definitions_sha256") for item in attempts
+        }
+        definition_counts = {item.get("definition_count") for item in attempts}
+        if len(definition_hashes) != 1 or len(definition_counts) != 1:
+            reasons.append("catalog_retry_drift")
+            continue
+        empty = definition_counts == {0}
+        if empty:
+            empty_logical_requests.append(request_number)
+            if definition_hashes != {expected_empty_hash}:
+                reasons.append("terminal_empty_catalog_hash")
+        elif definition_hashes != {expected_catalog_hash}:
+            reasons.append("catalog_definition_hash")
+
+    if len(empty_logical_requests) > 1:
+        reasons.append("multiple_terminal_empty_catalogs")
+    if empty_logical_requests and empty_logical_requests[0] != max(groups, default=0):
+        reasons.append("terminal_empty_catalog_not_last")
+    return {
+        "valid": not reasons,
+        "reasons": list(dict.fromkeys(reasons)),
+        "logical_requests": len(groups),
+        "terminal_empty_logical_requests": len(empty_logical_requests),
+    }
+
+
+def local_temporal_lineage_audit(events: list[dict[str, Any]]) -> dict[str, Any]:
+    fact = committed_receipt_fact(events)
+    receipt = fact["receipt"] if fact is not None else {}
+    lineage = receipt.get("lineage", {}) if isinstance(receipt, dict) else {}
+    failure = lineage.get("failure", {}) if isinstance(lineage, dict) else {}
+    mutation = lineage.get("mutation", {}) if isinstance(lineage, dict) else {}
+    named_calls = []
+    prepared_by_operation: dict[str, dict[str, Any]] = {}
+    started_by_operation: dict[str, dict[str, Any]] = {}
+    outcomes_by_operation: dict[str, dict[str, Any]] = {}
+    for stored in events:
+        event = stored.get("event", {})
+        if event.get("kind") == "tool_prepared":
+            operation_id = event.get("operation_id")
+            if isinstance(operation_id, str):
+                prepared_by_operation[operation_id] = stored
+            invocation = event.get("invocation", {})
+            if invocation.get("name") == "run_verifiers":
+                named_calls.append(
+                    invocation.get("arguments", {}).get("parsed")
+                )
+        elif event.get("kind") == "tool_execution_started":
+            operation_id = event.get("operation_id")
+            if isinstance(operation_id, str):
+                started_by_operation[operation_id] = stored
+        elif event.get("kind") == "tool_outcome_committed":
+            operation_id = event.get("operation_id")
+            if isinstance(operation_id, str):
+                outcomes_by_operation[operation_id] = stored
+
+    failure_source = failure.get("source", {}) if isinstance(failure, dict) else {}
+    failure_operation_id = failure_source.get("operation_id")
+    failure_prepared = prepared_by_operation.get(failure_operation_id, {})
+    failure_started = started_by_operation.get(failure_operation_id, {})
+    failure_committed = outcomes_by_operation.get(failure_operation_id, {})
+    failure_event = failure_committed.get("event", {})
+    failure_outcome = failure_event.get("outcome", {})
+    failure_observation = failure_outcome.get("verifier_observation", {})
+
+    mutation_operation_id = mutation.get("operation_id")
+    mutation_prepared = prepared_by_operation.get(mutation_operation_id, {})
+    mutation_started = started_by_operation.get(mutation_operation_id, {})
+    mutation_committed = outcomes_by_operation.get(mutation_operation_id, {})
+    mutation_prepared_event = mutation_prepared.get("event", {})
+    mutation_event = mutation_committed.get("event", {})
+    mutation_outcome = mutation_event.get("outcome", {})
+
+    failure_state = failure.get("workspace_state", {})
+    before = mutation.get("workspace_state_before", {})
+    after = mutation.get("workspace_state_after", {})
+    final_state = receipt.get("workspace_state", {})
+    failure_state = failure_state if isinstance(failure_state, dict) else {}
+    before = before if isinstance(before, dict) else {}
+    after = after if isinstance(after, dict) else {}
+    final_state = final_state if isinstance(final_state, dict) else {}
+    failure_sequence = failure_committed.get("sequence")
+    failure_prepared_sequence = failure_prepared.get("sequence")
+    failure_started_sequence = failure_started.get("sequence")
+    mutation_sequence = mutation_committed.get("sequence")
+    mutation_prepared_sequence = mutation_prepared.get("sequence")
+    mutation_started_sequence = mutation_started.get("sequence")
+    receipt_sequence = fact["stored"].get("sequence") if fact is not None else None
+    named_reference_valid = bool(named_calls) and all(
+        arguments == {"verifier_id": "m6b-t3"} for arguments in named_calls
+    )
+    valid = (
+        lineage.get("policy") == "failed_write_pass"
+        and named_reference_valid
+        and failure_source.get("kind") == "tool"
+        and failure_started.get("event", {}).get("operation_id")
+        == failure_operation_id
+        and failure_prepared.get("event", {}).get("workspace_access")
+        == "may_write"
+        and failure_prepared.get("event", {}).get("invocation", {}).get("name")
+        == "run_verifiers"
+        and failure_event.get("name") == "run_verifiers"
+        and failure_outcome.get("invocation") == "accepted"
+        and failure_outcome.get("transport") == "succeeded"
+        and failure_outcome.get("operation") == "failed"
+        and failure_outcome.get("side_effect") != "applied"
+        and failure_observation.get("spec") == verifier_spec("t3")
+        and failure_observation.get("verdict") == "failed"
+        and failure_observation.get("workspace_revision")
+        == failure_state.get("revision")
+        and failure_observation.get("artifact_ids")
+        == failure.get("artifact_ids")
+        and failure_outcome.get("evidence", {}).get("status") == "produced"
+        and failure_outcome.get("evidence", {}).get("references")
+        == failure.get("artifact_ids")
+        and failure_event.get("workspace_state") == failure_state
+        and failure_outcome.get("workspace_revision")
+        == failure_state.get("revision", {}).get("sha256")
+        and verification_artifacts_valid(
+            failure_outcome,
+            verifier_spec("t3"),
+            "failed",
+            failure_state.get("revision", {}),
+        )
+        and mutation_started.get("event", {}).get("operation_id")
+        == mutation_operation_id
+        and mutation_prepared_event.get("workspace_access") == "may_write"
+        and mutation_prepared_event.get("invocation", {}).get("name")
+        not in {None, "run_verifiers"}
+        and mutation_outcome.get("invocation") == "accepted"
+        and mutation_outcome.get("transport") == "succeeded"
+        and mutation_outcome.get("operation") == "succeeded"
+        and mutation_outcome.get("side_effect") == "applied"
+        and mutation_event.get("workspace_state") == after
+        and isinstance(before.get("generation"), int)
+        and after.get("generation") == before.get("generation") + 1
+        and before.get("revision") != after.get("revision")
+        and isinstance(failure_state.get("generation"), int)
+        and failure_state.get("generation") <= before.get("generation")
+        and failure_state.get("revision") != final_state.get("revision")
+        and after.get("revision") == final_state.get("revision")
+        and isinstance(final_state.get("generation"), int)
+        and final_state.get("generation") > after.get("generation")
+        and isinstance(failure_sequence, int)
+        and isinstance(mutation_sequence, int)
+        and isinstance(receipt_sequence, int)
+        and isinstance(failure_prepared_sequence, int)
+        and isinstance(failure_started_sequence, int)
+        and failure_prepared_sequence
+        < failure_started_sequence
+        < failure_sequence
+        and isinstance(mutation_prepared_sequence, int)
+        and isinstance(mutation_started_sequence, int)
+        and mutation_prepared_sequence
+        < mutation_started_sequence
+        < mutation_sequence
+        and failure_sequence < mutation_sequence < receipt_sequence
+    )
+    return {
+        "valid": valid,
+        "lineage_policy": lineage.get("policy"),
+        "named_verifier_reference_valid": named_reference_valid,
+        "named_verifier_call_count": len(named_calls),
+        "failed_then_write_then_host_pass": (
+            isinstance(failure_sequence, int)
+            and isinstance(mutation_sequence, int)
+            and isinstance(receipt_sequence, int)
+            and failure_sequence < mutation_sequence < receipt_sequence
+        ),
+        "verifier_spec_sha256": canonical_hash(verifier_spec("t3")),
+    }
+
+
+def delegated_temporal_lineage_audit(
+    root_events: list[dict[str, Any]], child_events: list[dict[str, Any]]
+) -> dict[str, Any]:
+    child_local = local_temporal_lineage_audit(child_events)
+    root_fact = committed_receipt_fact(root_events)
+    child_fact = committed_receipt_fact(child_events)
+    root_receipt = root_fact["receipt"] if root_fact is not None else {}
+    child_receipt = child_fact["receipt"] if child_fact is not None else {}
+    lineage = root_receipt.get("lineage", {})
+    prepared = event_values(root_events, "agent_task_prepared")
+    task = prepared[0].get("task", {}) if len(prepared) == 1 else {}
+    child_started = event_values(root_events, "child_started")
+    child_created = run_created(child_events)
+    task_prepared_stored = stored_values(root_events, "agent_task_prepared")
+    child_started_stored = stored_values(root_events, "child_started")
+    seal_prepared_stored = stored_values(root_events, "agent_seal_prepared")
+    seal_committed_stored = stored_values(root_events, "agent_seal_committed")
+    result_stored = stored_values(root_events, "agent_result_collected")
+    integration_prepared_stored = stored_values(
+        root_events, "agent_integration_prepared"
+    )
+    integration_started_stored = stored_values(
+        root_events, "agent_integration_started"
+    )
+    integration_committed_stored = stored_values(
+        root_events, "agent_integration_committed"
+    )
+    result_events = event_values(root_events, "agent_result_collected")
+    collected_evidence = (
+        result_events[0]
+        .get("outcome", {})
+        .get("details", {})
+        .get("evidence", [])
+        if len(result_events) == 1
+        else []
+    )
+    integration_prepared = event_values(root_events, "agent_integration_prepared")
+    integration_started = event_values(root_events, "agent_integration_started")
+    integration_committed = event_values(root_events, "agent_integration_committed")
+    prepared_event = integration_prepared[0] if len(integration_prepared) == 1 else {}
+    started_event = integration_started[0] if len(integration_started) == 1 else {}
+    committed_event = integration_committed[0] if len(integration_committed) == 1 else {}
+    integration = lineage.get("integration", {}) if isinstance(lineage, dict) else {}
+    operation_id = integration.get("operation_id")
+    integration_after = integration.get("workspace_state_after", {})
+    integration_before = integration.get("workspace_state_before", {})
+    final_state = root_receipt.get("workspace_state", {})
+    integration_after = (
+        integration_after if isinstance(integration_after, dict) else {}
+    )
+    integration_before = (
+        integration_before if isinstance(integration_before, dict) else {}
+    )
+    final_state = final_state if isinstance(final_state, dict) else {}
+
+    agent_prepared = [
+        stored
+        for stored in stored_values(root_events, "tool_prepared")
+        if stored.get("event", {}).get("invocation", {}).get("name") == "agent"
+        and stored.get("event", {}).get("invocation", {}).get("call_id")
+        == task.get("call_id")
+    ]
+    agent_operation_id = (
+        agent_prepared[0].get("event", {}).get("operation_id")
+        if len(agent_prepared) == 1
+        else None
+    )
+    agent_started = [
+        stored
+        for stored in stored_values(root_events, "tool_execution_started")
+        if stored.get("event", {}).get("operation_id") == agent_operation_id
+    ]
+    agent_committed = [
+        stored
+        for stored in stored_values(root_events, "tool_outcome_committed")
+        if stored.get("event", {}).get("operation_id") == agent_operation_id
+        and stored.get("event", {}).get("call_id") == task.get("call_id")
+        and stored.get("event", {}).get("name") == "agent"
+    ]
+    agent_outcome_event = (
+        agent_committed[0].get("event", {}) if len(agent_committed) == 1 else {}
+    )
+    agent_outcome = agent_outcome_event.get("outcome", {})
+    root_receipt_sequence = (
+        root_fact["stored"].get("sequence") if root_fact is not None else None
+    )
+    integration_sequence = (
+        integration_committed_stored[0].get("sequence")
+        if len(integration_committed_stored) == 1
+        else None
+    )
+    agent_outcome_sequence = (
+        agent_committed[0].get("sequence") if len(agent_committed) == 1 else None
+    )
+    root_receipt_stored = root_fact["stored"] if root_fact is not None else {}
+    valid = (
+        child_local["valid"]
+        and lineage.get("policy") == "delegated_failed_write_pass"
+        and child_receipt.get("lineage", {}).get("policy") == "failed_write_pass"
+        and lineage.get("child_run_id") == task.get("child_run_id")
+        and len(child_started) == 1
+        and child_started[0].get("child_run_id") == task.get("child_run_id")
+        and child_created.get("run_id") == task.get("child_run_id")
+        and len(task_prepared_stored) == 1
+        and len(child_started_stored) == 1
+        and len(seal_prepared_stored) == 1
+        and len(seal_committed_stored) == 1
+        and len(result_stored) == 1
+        and len(integration_prepared_stored) == 1
+        and len(integration_started_stored) == 1
+        and len(integration_committed_stored) == 1
+        and lineage.get("child_receipt_id") == child_receipt.get("id")
+        and collected_evidence == [child_receipt]
+        and prepared_event.get("integration_id") == operation_id
+        and started_event.get("integration_id") == operation_id
+        and committed_event.get("integration_id") == operation_id
+        and integration.get("workspace_state_before")
+        == prepared_event.get("expected_root_workspace_state")
+        and integration_after == committed_event.get("root_workspace_state_after")
+        and isinstance(integration_before.get("generation"), int)
+        and integration_after.get("generation")
+        == integration_before.get("generation") + 1
+        and integration_after.get("revision")
+        != integration_before.get("revision")
+        and len(agent_prepared) == 1
+        and len(agent_started) == 1
+        and len(agent_committed) == 1
+        and agent_started[0].get("event", {}).get("operation_id")
+        == agent_operation_id
+        and agent_outcome_event.get("workspace_state") == integration_after
+        and agent_outcome.get("invocation") == "accepted"
+        and agent_outcome.get("transport") == "succeeded"
+        and agent_outcome.get("operation") == "succeeded"
+        and agent_outcome.get("side_effect") == "applied"
+        and isinstance(integration_after.get("generation"), int)
+        and isinstance(final_state.get("generation"), int)
+        and final_state.get("generation") > integration_after.get("generation")
+        and final_state.get("revision") == integration_after.get("revision")
+        and isinstance(integration_sequence, int)
+        and isinstance(agent_outcome_sequence, int)
+        and isinstance(root_receipt_sequence, int)
+        and integration_sequence
+        < agent_outcome_sequence
+        < root_receipt_sequence
+        and strictly_increasing_sequences(
+            [
+                agent_prepared[0],
+                agent_started[0],
+                task_prepared_stored[0],
+                child_started_stored[0],
+                seal_prepared_stored[0],
+                seal_committed_stored[0],
+                result_stored[0],
+                integration_prepared_stored[0],
+                integration_started_stored[0],
+                integration_committed_stored[0],
+                agent_committed[0],
+                root_receipt_stored,
+            ]
+        )
+    )
+    return {
+        "valid": valid,
+        "lineage_policy": lineage.get("policy"),
+        "child": child_local,
+        "child_receipt_linked": lineage.get("child_receipt_id")
+        == child_receipt.get("id"),
+        "integration_linked": (
+            prepared_event.get("integration_id")
+            == started_event.get("integration_id")
+            == committed_event.get("integration_id")
+            == operation_id
+        ),
+    }
+
+
+def t3_recovery_audit(
+    treatment: str,
+    root_events: list[dict[str, Any]],
+    child_events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if treatment == "writer":
+        return delegated_temporal_lineage_audit(root_events, child_events)
+    return local_temporal_lineage_audit(root_events)
 
 
 def catalog_summary(
     events: list[dict[str, Any]], actor: str
 ) -> list[dict[str, Any]]:
     result = []
-    for event in event_values(events, "model_request_prepared"):
-        request = event.get("request", {})
-        tools = request.get("tools", []) if isinstance(request, dict) else []
-        definitions = [tool for tool in tools if isinstance(tool, dict)]
-        result.append(
-            {
-                "actor": actor,
-                "request_number": request.get("request_number"),
-                "attempt": request.get("attempt"),
-                "tool_names": [
-                    tool.get("name")
-                    for tool in definitions
-                    if isinstance(tool.get("name"), str)
-                ],
-                "catalog_sha256": canonical_hash(definitions),
-            }
-        )
+    for stored in events:
+        event = stored.get("event", {})
+        kind = event.get("kind") if isinstance(event, dict) else None
+        if kind == "model_request_prepared":
+            result.append(
+                request_catalog_summary(
+                    event.get("request"),
+                    actor,
+                    "model_request_prepared",
+                    stored.get("sequence"),
+                    event.get("attempt_id"),
+                )
+            )
+        elif kind == "model_request_failed":
+            retry = event.get("retry", {})
+            prepared = retry.get("prepared", {}) if isinstance(retry, dict) else {}
+            if retry.get("decision") == "retry" and isinstance(prepared, dict):
+                result.append(
+                    request_catalog_summary(
+                        prepared.get("request"),
+                        actor,
+                        "model_request_failed.retry.prepared",
+                        stored.get("sequence"),
+                        prepared.get("attempt_id"),
+                        event.get("attempt_id"),
+                    )
+                )
     return result
 
 
-def model_failure_summary(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def model_failure_summary(
+    events: list[dict[str, Any]], actor: str
+) -> list[dict[str, Any]]:
     failures = []
     for event in event_values(events, "model_request_failed"):
         failure = event.get("failure", {})
         retry = event.get("retry", {})
+        prepared = retry.get("prepared", {}) if isinstance(retry, dict) else {}
+        retry_catalog = None
+        if retry.get("decision") == "retry" and isinstance(prepared, dict):
+            retry_catalog = request_catalog_summary(
+                prepared.get("request"),
+                actor,
+                "model_request_failed.retry.prepared",
+                None,
+                prepared.get("attempt_id"),
+                event.get("attempt_id"),
+            )
         failures.append(
             {
                 "code": failure.get("code"),
@@ -670,6 +1121,7 @@ def model_failure_summary(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "actionable_output": failure.get("actionable_output"),
                 "retry_decision": retry.get("decision"),
                 "retry_stop_reason": retry.get("reason"),
+                "retry_catalog": retry_catalog,
             }
         )
     return failures
@@ -1169,6 +1621,24 @@ def run_created(events: list[dict[str, Any]]) -> dict[str, Any]:
     return values[0].get("request", {}) if len(values) == 1 else {}
 
 
+def state_schema_summary(codewhale_home: Path) -> dict[str, Any]:
+    database = codewhale_home / "state.db"
+    try:
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            row = connection.execute("PRAGMA user_version").fetchone()
+        finally:
+            connection.close()
+        version = row[0] if row and len(row) == 1 else None
+        return {
+            "valid": version == STATE_SCHEMA,
+            "user_version": version,
+            "database_sha256": file_hash(database),
+        }
+    except (OSError, sqlite3.Error) as error:
+        raise EvaluationError("state_schema_unavailable") from error
+
+
 def typed_event_terminal_state(
     events: list[dict[str, Any]]
 ) -> str | None:
@@ -1179,7 +1649,61 @@ def typed_event_terminal_state(
     return terminal.get("state") if isinstance(terminal, dict) else None
 
 
+def committed_receipt_fact(
+    events: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    facts = [
+        {"stored": stored, "event": stored.get("event", {}), "receipt": receipt}
+        for stored in events
+        if event_kind(stored) == "host_verification_committed"
+        and isinstance((receipt := stored.get("event", {}).get("receipt")), dict)
+    ]
+    return facts[0] if len(facts) == 1 else None
+
+
+def verification_artifacts_valid(
+    outcome: dict[str, Any],
+    verifier: dict[str, Any],
+    verdict: str,
+    workspace_revision: dict[str, Any],
+) -> bool:
+    observation = outcome.get("verifier_observation", {})
+    artifacts = outcome.get("artifacts", [])
+    artifact_ids = observation.get("artifact_ids", [])
+    if (
+        not isinstance(artifacts, list)
+        or not artifacts
+        or not isinstance(artifact_ids, list)
+        or [artifact.get("id") for artifact in artifacts] != artifact_ids
+    ):
+        return False
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            return False
+        content = artifact.get("inline_content")
+        if not isinstance(content, dict):
+            return False
+        encoded = canonical_bytes(content)
+        digest = sha256_bytes(encoded)
+        if (
+            artifact.get("status") != "available"
+            or artifact.get("id") != f"verification-evidence:{digest}"
+            or artifact.get("sha256") != digest
+            or artifact.get("media_type")
+            != "application/vnd.codewhale.verification+json"
+            or artifact.get("byte_len") != len(encoded)
+            or content.get("verifier") != verifier
+            or content.get("verdict") != verdict
+            or content.get("workspace_revision") != workspace_revision
+            or not isinstance(content.get("summary"), str)
+            or not content["summary"].strip()
+        ):
+            return False
+    return True
+
+
 def completion_receipt_summary(
+    task_id: str,
     events: list[dict[str, Any]],
     terminal_state: str | None,
 ) -> dict[str, Any]:
@@ -1198,26 +1722,398 @@ def completion_receipt_summary(
     valid = False
     receipt_hash = None
     workspace_state = None
-    if len(receipts) == 1:
-        receipt = receipts[0]
+    lineage_policy = None
+    fact = committed_receipt_fact(events)
+    if fact is not None:
+        event = fact["event"]
+        receipt = fact["receipt"]
         receipt_hash = canonical_hash(receipt)
         workspace_state = receipt.get("workspace_state")
+        lineage = receipt.get("lineage", {})
+        lineage_policy = (
+            lineage.get("policy") if isinstance(lineage, dict) else None
+        )
+        created = run_created(events)
+        contract = created.get("task_contract", {})
+        definition = contract.get("definition", {})
+        acceptance = definition.get("acceptance", [])
+        expected_acceptance = acceptance[0] if len(acceptance) == 1 else {}
+        outcome = event.get("outcome", {})
+        observation = (
+            outcome.get("verifier_observation", {})
+            if isinstance(outcome, dict)
+            else {}
+        )
+        verification_id = event.get("verification_id")
+        matching_prepared = [
+            stored
+            for stored in events
+            if event_kind(stored) == "host_verification_prepared"
+            and stored.get("event", {}).get("verification_id") == verification_id
+        ]
+        matching_started = [
+            stored
+            for stored in events
+            if event_kind(stored) == "host_verification_started"
+            and stored.get("event", {}).get("verification_id") == verification_id
+        ]
         decision = terminal.get("decision", {}) if isinstance(terminal, dict) else {}
         satisfied = decision.get("satisfied", []) if isinstance(decision, dict) else []
+        prepared_state = (
+            matching_prepared[0]
+            .get("event", {})
+            .get("workspace_state_before")
+            if len(matching_prepared) == 1
+            else None
+        )
+        revision = (
+            workspace_state.get("revision")
+            if isinstance(workspace_state, dict)
+            else None
+        )
         valid = (
             terminal_state == "completed"
+            and expected_acceptance.get("kind") == "verifier"
+            and expected_acceptance.get("id") == f"m6b-{task_id}"
+            and expected_acceptance.get("evidence_policy")
+            == ("failed_write_pass" if task_id == "t3" else "latest_pass")
+            and expected_acceptance.get("verifier") == verifier_spec(task_id)
+            and len(matching_prepared) == 1
+            and len(matching_started) == 1
+            and matching_prepared[0].get("sequence", 0)
+            < matching_started[0].get("sequence", 0)
+            < fact["stored"].get("sequence", 0)
+            and event.get("workspace_state_after") == workspace_state
+            and isinstance(prepared_state, dict)
+            and isinstance(prepared_state.get("generation"), int)
+            and isinstance(workspace_state, dict)
+            and workspace_state.get("generation")
+            == prepared_state.get("generation") + 1
+            and workspace_state.get("revision")
+            == prepared_state.get("revision")
+            and isinstance(revision, dict)
+            and revision.get("status") == "known"
+            and receipt.get("generation_id") == contract.get("generation_id")
+            and receipt.get("acceptance_id") == expected_acceptance.get("id")
+            and receipt.get("verification_id") == verification_id
+            and receipt.get("id") == f"receipt:{verification_id}"
+            and receipt.get("verifier") == verifier_spec(task_id)
+            and isinstance(receipt.get("artifact_ids"), list)
+            and bool(receipt.get("artifact_ids"))
+            and observation.get("spec") == verifier_spec(task_id)
+            and observation.get("verdict") == "passed"
+            and observation.get("workspace_revision") == revision
+            and observation.get("artifact_ids") == receipt.get("artifact_ids")
+            and outcome.get("workspace_revision") == revision.get("sha256")
+            and outcome.get("invocation") == "accepted"
+            and outcome.get("transport") == "succeeded"
+            and outcome.get("operation") == "succeeded"
+            and outcome.get("side_effect") != "applied"
+            and outcome.get("evidence", {}).get("status") == "produced"
+            and outcome.get("evidence", {}).get("references")
+            == receipt.get("artifact_ids")
+            and verification_artifacts_valid(
+                outcome, verifier_spec(task_id), "passed", revision
+            )
             and len(satisfied) == 1
             and satisfied[0].get("kind") == "evidence"
+            and satisfied[0].get("acceptance_id")
+            == expected_acceptance.get("id")
             and satisfied[0].get("receipt_id") == receipt.get("id")
+            and decision.get("generation_id") == contract.get("generation_id")
             and decision.get("workspace_state") == workspace_state
-            and committed[-1].get("workspace_state_after") == workspace_state
         )
     return {
         "valid": valid,
         "receipt_count": len(receipts),
         "receipt_sha256": receipt_hash,
         "workspace_state": workspace_state,
+        "lineage_policy": lineage_policy,
         "completion_rejections": len(event_values(events, "completion_rejected")),
+    }
+
+
+def raw_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def writer_path_set_sha256(paths: list[str]) -> str:
+    canonical = sorted(set(paths))
+    return hashlib.sha256(
+        json.dumps(
+            canonical, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def expected_writer_cleanup_context(
+    root_events: list[dict[str, Any]],
+) -> tuple[str, str]:
+    if event_values(root_events, "agent_integration_committed"):
+        return "post_integration", "writer_integrated"
+    failures = event_values(root_events, "agent_integration_failed")
+    if failures:
+        status = failures[-1].get("status", {})
+        state = status.get("state") if isinstance(status, dict) else None
+        reason = {
+            "rejected": "writer_integration_rejected",
+            "conflict": "writer_integration_conflict",
+            "recovery_required": "writer_integration_recovery_required",
+        }.get(state, "writer_integration_invalid")
+        return "integration", reason
+    if not event_values(root_events, "child_started"):
+        return "binding", "writer_binding_failed"
+    if event_values(root_events, "agent_seal_prepared"):
+        return "seal", "writer_seal_failed"
+    results = event_values(root_events, "agent_result_collected")
+    terminal = (
+        results[-1].get("outcome", {}).get("terminal", {})
+        if results
+        else {}
+    )
+    state = terminal.get("state") if isinstance(terminal, dict) else None
+    reason = {
+        "blocked": "writer_child_blocked",
+        "cancelled": "writer_child_cancelled",
+        "interrupted": "writer_child_interrupted",
+        "recovery_required": "writer_child_recovery_required",
+    }.get(state, "writer_child_failed")
+    return "child", reason
+
+
+def writer_cleanup_summary(
+    canonical_task_id: str,
+    root_events: list[dict[str, Any]],
+    task: dict[str, Any],
+    seal_event: dict[str, Any],
+    integration_event: dict[str, Any],
+) -> dict[str, Any]:
+    identity_reasons: list[str] = []
+    prepared = event_values(root_events, "agent_cleanup_prepared")
+    committed = event_values(root_events, "agent_cleanup_committed")
+    plan = prepared[0].get("plan", {}) if len(prepared) == 1 else {}
+    result = committed[0].get("result", {}) if len(committed) == 1 else {}
+    if len(prepared) != 1:
+        identity_reasons.append("writer_cleanup_plan_cardinality")
+    if len(committed) != 1:
+        identity_reasons.append("writer_cleanup_result_cardinality")
+    if not isinstance(plan, dict):
+        plan = {}
+        identity_reasons.append("writer_cleanup_plan_shape")
+    if not isinstance(result, dict):
+        result = {}
+        identity_reasons.append("writer_cleanup_result_shape")
+
+    ownership = plan.get("ownership", {})
+    artifact = plan.get("artifact_state", {})
+    scope = plan.get("scope", {})
+    mode = plan.get("mode", {})
+    ownership_state = ownership.get("state") if isinstance(ownership, dict) else None
+    artifact_state = artifact.get("state") if isinstance(artifact, dict) else None
+    scope_state = scope.get("state") if isinstance(scope, dict) else None
+    mode_name = mode.get("mode") if isinstance(mode, dict) else None
+    uncertainty_codes = []
+    for value in (ownership, artifact, scope, mode, result):
+        if isinstance(value, dict) and isinstance(value.get("uncertainty_code"), str):
+            uncertainty_codes.append(value["uncertainty_code"])
+
+    if ownership_state == "known":
+        if not raw_sha256(ownership.get("identity_sha256")):
+            identity_reasons.append("writer_cleanup_ownership_hash")
+    elif ownership_state == "unknown":
+        if not isinstance(ownership.get("uncertainty_code"), str):
+            identity_reasons.append("writer_cleanup_ownership_uncertainty")
+    else:
+        identity_reasons.append("writer_cleanup_ownership_shape")
+
+    changed_files = seal_event.get("changed_files", [])
+    if not isinstance(changed_files, list) or not all(
+        isinstance(path, str) for path in changed_files
+    ):
+        changed_files = []
+        if seal_event:
+            identity_reasons.append("writer_seal_changed_files_shape")
+    allowed_paths = task.get("workspace", {}).get("allowed_paths", [])
+    if scope_state == "known":
+        revision = scope.get("workspace_revision", {})
+        counts = [
+            scope.get("changed_count"),
+            scope.get("in_scope_count"),
+            scope.get("out_of_scope_count"),
+        ]
+        if (
+            not isinstance(revision, dict)
+            or revision.get("status") != "known"
+            or not raw_sha256(revision.get("sha256"))
+        ):
+            identity_reasons.append("writer_cleanup_scope_revision")
+        if not all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in counts
+        ) or counts[1] + counts[2] != counts[0]:
+            identity_reasons.append("writer_cleanup_scope_counts")
+        if not raw_sha256(scope.get("path_set_sha256")):
+            identity_reasons.append("writer_cleanup_scope_hash")
+        if seal_event:
+            expected_in_scope = sum(path in allowed_paths for path in changed_files)
+            if (
+                scope.get("changed_count") != len(changed_files)
+                or scope.get("in_scope_count") != expected_in_scope
+                or scope.get("out_of_scope_count")
+                != len(changed_files) - expected_in_scope
+                or scope.get("path_set_sha256")
+                != writer_path_set_sha256(changed_files)
+            ):
+                identity_reasons.append("writer_cleanup_scope_seal_mismatch")
+    elif scope_state == "unknown":
+        if not isinstance(scope.get("uncertainty_code"), str):
+            identity_reasons.append("writer_cleanup_scope_uncertainty")
+    else:
+        identity_reasons.append("writer_cleanup_scope_shape")
+
+    final_commit = seal_event.get("final_commit")
+    diff_sha256 = seal_event.get("diff_sha256")
+    if seal_event:
+        if (
+            artifact_state != "known_host_sealed"
+            or not isinstance(final_commit, str)
+            or len(final_commit) != 40
+            or any(character not in "0123456789abcdef" for character in final_commit)
+            or not raw_sha256(diff_sha256)
+            or artifact.get("final_commit") != final_commit
+            or artifact.get("diff_sha256") != diff_sha256
+        ):
+            identity_reasons.append("writer_cleanup_sealed_artifact")
+    elif artifact_state == "known_unsealed":
+        pass
+    elif artifact_state == "unknown":
+        pass
+    else:
+        identity_reasons.append("writer_cleanup_unsealed_artifact")
+
+    expected_commit = final_commit if seal_event else task.get("workspace", {}).get("base_commit")
+    if mode_name == "remove_exact":
+        if mode.get("expected_branch_commit") != expected_commit:
+            identity_reasons.append("writer_cleanup_expected_commit")
+        if "unknown" in {ownership_state, artifact_state, scope_state}:
+            identity_reasons.append("writer_cleanup_remove_without_authority")
+    elif mode_name == "retain_for_recovery":
+        if not isinstance(mode.get("uncertainty_code"), str):
+            identity_reasons.append("writer_cleanup_retain_uncertainty")
+    else:
+        identity_reasons.append("writer_cleanup_mode_shape")
+
+    expected_phase, expected_reason = expected_writer_cleanup_context(
+        root_events
+    )
+    if (
+        plan.get("phase") != expected_phase
+        or plan.get("reason_code") != expected_reason
+    ):
+        identity_reasons.append("writer_cleanup_lifecycle_context")
+
+    status = result.get("status")
+    settled = False
+    retained = False
+    metadata_uncertain = False
+    if status == "removed":
+        resources = [result.get("worktree"), result.get("branch")]
+        if not all(value in {"removed", "already_absent"} for value in resources) or resources == [
+            "already_absent",
+            "already_absent",
+        ]:
+            identity_reasons.append("writer_cleanup_removed_shape")
+        else:
+            settled = True
+    elif status == "already_absent":
+        settled = True
+    elif status == "retained":
+        retained = True
+        resources = [result.get("worktree"), result.get("branch")]
+        metadata_uncertain = result.get("metadata") == "uncertain"
+        if (
+            not all(
+                value in {"removed", "already_absent", "retained", "unknown"}
+                for value in resources
+            )
+            or result.get("metadata") not in {"clear", "uncertain"}
+            or not isinstance(result.get("uncertainty_code"), str)
+            or (
+                not metadata_uncertain
+                and not any(value in {"retained", "unknown"} for value in resources)
+            )
+        ):
+            identity_reasons.append("writer_cleanup_retained_shape")
+    else:
+        identity_reasons.append("writer_cleanup_status_shape")
+
+    cleanup_prepared = stored_values(root_events, "agent_cleanup_prepared")
+    cleanup_committed = stored_values(root_events, "agent_cleanup_committed")
+    if (
+        len(cleanup_prepared) == 1
+        and len(cleanup_committed) == 1
+        and not (
+            isinstance(cleanup_prepared[0].get("sequence"), int)
+            and isinstance(cleanup_committed[0].get("sequence"), int)
+            and cleanup_prepared[0]["sequence"]
+            < cleanup_committed[0]["sequence"]
+        )
+    ):
+        identity_reasons.append("writer_cleanup_event_order")
+
+    if mode_name == "retain_for_recovery":
+        if status != "retained" or len(set(uncertainty_codes)) != 1:
+            identity_reasons.append("writer_cleanup_retention_mismatch")
+    terminal_events = event_values(root_events, "terminal")
+    terminal = (
+        terminal_events[0].get("outcome", {}).get("terminal", {})
+        if len(terminal_events) == 1
+        else {}
+    )
+    if retained:
+        ambiguity = terminal.get("ambiguity", {}) if isinstance(terminal, dict) else {}
+        if (
+            terminal.get("state") != "recovery_required"
+            or ambiguity.get("phase") != "child_run"
+            or ambiguity.get("action_id")
+            != f"agent-cleanup:{canonical_task_id}"
+            or ambiguity.get("message") != result.get("uncertainty_code")
+        ):
+            identity_reasons.append("writer_cleanup_terminal_mismatch")
+
+    return {
+        "identity_valid": not identity_reasons,
+        "identity_reasons": list(dict.fromkeys(identity_reasons)),
+        "phase": plan.get("phase"),
+        "reason_code": plan.get("reason_code"),
+        "ownership_state": ownership_state,
+        "artifact_state": artifact_state,
+        "scope": {
+            "state": scope_state,
+            "workspace_revision": scope.get("workspace_revision"),
+            "changed_count": scope.get("changed_count"),
+            "in_scope_count": scope.get("in_scope_count"),
+            "out_of_scope_count": scope.get("out_of_scope_count"),
+            "path_set_sha256": scope.get("path_set_sha256"),
+            "has_uncertainty": isinstance(scope.get("uncertainty_code"), str),
+        },
+        "mode": mode_name,
+        "status": status,
+        "worktree": result.get("worktree"),
+        "branch": result.get("branch"),
+        "metadata": result.get("metadata", "clear" if settled else None),
+        "settled": settled,
+        "retained": retained,
+        "metadata_uncertain": metadata_uncertain,
+        "uncertainty_code_sha256": (
+            canonical_hash(result.get("uncertainty_code"))
+            if isinstance(result.get("uncertainty_code"), str)
+            else None
+        ),
     }
 
 
@@ -1227,6 +2123,8 @@ def writer_lifecycle_summary(
     child_events: list[dict[str, Any]],
     base_commit: str,
     root_receipt: dict[str, Any],
+    root_workspace: Path,
+    managed_worktree_root: Path,
 ) -> dict[str, Any]:
     counts = {
         name: len(event_values(root_events, name))
@@ -1238,7 +2136,6 @@ def writer_lifecycle_summary(
     seal = event_values(root_events, "agent_seal_committed")
     integration = event_values(root_events, "agent_integration_committed")
     failures = event_values(root_events, "agent_integration_failed")
-    cleanup = event_values(root_events, "agent_cleanup_committed")
     agent_calls = [
         event
         for event in event_values(root_events, "tool_prepared")
@@ -1265,17 +2162,90 @@ def writer_lifecycle_summary(
             for key, value in expected_arguments.items()
         )
     )
+    root_created = run_created(root_events)
+    child_created = run_created(child_events)
+    worktree_path = workspace.get("worktree_path")
+    worktree_managed = False
+    if isinstance(worktree_path, str):
+        try:
+            Path(worktree_path).resolve().relative_to(
+                managed_worktree_root.resolve()
+            )
+            worktree_managed = True
+        except (OSError, ValueError):
+            worktree_managed = False
     assignment_valid = (
         len(prepared) == 1
         and workspace.get("access") == "isolated_write"
+        and workspace.get("root_workspace") == str(root_workspace.resolve())
         and workspace.get("base_commit") == base_commit
         and workspace.get("allowed_paths")
         == MANIFEST["tasks"][task_id]["allowed_paths"]
-        and workspace.get("worktree_path") != workspace.get("root_workspace")
+        and worktree_path != workspace.get("root_workspace")
+        and worktree_managed
+        and isinstance(workspace.get("branch"), str)
+        and workspace.get("branch", "").startswith("codewhale/writer/")
+        and task.get("root_run_id") == root_created.get("run_id")
+        and task.get("parent_run_id") == root_created.get("run_id")
+        and child_created.get("run_id") == task.get("child_run_id")
+        and child_created.get("parent_run_id") == root_created.get("run_id")
+        and child_created.get("agent_task") == task
     )
     seal_event = seal[0] if len(seal) == 1 else {}
     integration_event = integration[0] if len(integration) == 1 else {}
-    cleanup_event = cleanup[0] if len(cleanup) == 1 else {}
+    any_lifecycle = any(counts.values())
+    cleanup_summary = {
+        "identity_valid": True,
+        "identity_reasons": [],
+        "phase": None,
+        "reason_code": None,
+        "ownership_state": None,
+        "artifact_state": None,
+        "scope": {"state": None},
+        "mode": None,
+        "status": None,
+        "worktree": None,
+        "branch": None,
+        "metadata": None,
+        "settled": False,
+        "retained": False,
+        "metadata_uncertain": False,
+        "uncertainty_code_sha256": None,
+    }
+    identity_reasons: list[str] = []
+    if len(prepared) == 1:
+        canonical_task_id = task.get("task_id")
+        cleanup_summary = writer_cleanup_summary(
+            canonical_task_id if isinstance(canonical_task_id, str) else "",
+            root_events,
+            task,
+            seal_event,
+            integration_event,
+        )
+        identity_reasons.extend(cleanup_summary["identity_reasons"])
+        for name in LIFECYCLE_KINDS:
+            if name in {"agent_task_prepared", "child_finished"}:
+                continue
+            for event in event_values(root_events, name):
+                if event.get("task_id") != canonical_task_id:
+                    identity_reasons.append("writer_lifecycle_task_identity")
+        if counts["child_finished"] == 1 and (
+            event_values(root_events, "child_finished")[0].get("call_id")
+            != task.get("call_id")
+        ):
+            identity_reasons.append("writer_lifecycle_call_identity")
+        child_started_events = event_values(root_events, "child_started")
+        if len(child_started_events) == 1 and (
+            child_started_events[0].get("child_run_id")
+            != task.get("child_run_id")
+            or child_started_events[0].get("call_id") != task.get("call_id")
+        ):
+            identity_reasons.append("writer_lifecycle_child_identity")
+        for name, count in counts.items():
+            if count > 1:
+                identity_reasons.append(f"writer_lifecycle_duplicate_{name}")
+    elif any_lifecycle:
+        identity_reasons.append("writer_task_cardinality")
     changed_files = seal_event.get("changed_files", [])
     latest_receipt = False
     integrated_state = integration_event.get("root_workspace_state_after")
@@ -1289,7 +2259,7 @@ def writer_lifecycle_summary(
         )
     child_terminal = typed_event_terminal_state(child_events)
     child_receipt = completion_receipt_summary(
-        child_events, child_terminal
+        task_id, child_events, child_terminal
     )
     seal_prepared = event_values(root_events, "agent_seal_prepared")
     worktree_verified = (
@@ -1320,9 +2290,12 @@ def writer_lifecycle_summary(
                 "agent_cleanup_committed",
             )
         )
-        and cleanup_event.get("worktree_removed") is True
-        and cleanup_event.get("branch_removed") is True
-        and cleanup_event.get("retained_for_recovery") is False
+        and cleanup_summary["identity_valid"]
+        and cleanup_summary["phase"] == "post_integration"
+        and cleanup_summary["reason_code"] == "writer_integrated"
+        and cleanup_summary["scope"].get("state") == "known"
+        and cleanup_summary["scope"].get("out_of_scope_count") == 0
+        and cleanup_summary["settled"]
         and changed_files == MANIFEST["tasks"][task_id]["expected_changed_files"]
         and latest_receipt
         and worktree_verified
@@ -1333,6 +2306,8 @@ def writer_lifecycle_summary(
         "assignment_valid": assignment_valid,
         "event_counts": counts,
         "integration_failures": len(failures),
+        "identity_valid": not identity_reasons,
+        "identity_reasons": list(dict.fromkeys(identity_reasons)),
         "successful_chain": successful_chain,
         "latest_root_receipt": latest_receipt,
         "worktree_verifier_valid": worktree_verified,
@@ -1354,12 +2329,7 @@ def writer_lifecycle_summary(
             if isinstance(workspace.get("branch"), str)
             else None
         ),
-        "cleanup": {
-            "worktree_removed": cleanup_event.get("worktree_removed"),
-            "branch_removed": cleanup_event.get("branch_removed"),
-            "retained_for_recovery": cleanup_event.get("retained_for_recovery"),
-            "has_reason": bool(cleanup_event.get("reason")),
-        },
+        "cleanup": cleanup_summary,
     }
 
 
@@ -1453,6 +2423,97 @@ def git_evidence(
     }
 
 
+def prefixed_sha256(value: Any) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and raw_sha256(value.removeprefix("sha256:"))
+    )
+
+
+def admission_audit(
+    task_id: str,
+    treatment: str,
+    root_events: list[dict[str, Any]],
+    child_events: list[dict[str, Any]],
+    workspace: Path,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    root = run_created(root_events)
+    child = run_created(child_events)
+    expected = start_command(task_id, treatment, workspace, "freeze-request")[
+        "command"
+    ]
+    environment = root.get("environment", {})
+    actor = root.get("actor", {})
+    if actor != {"kind": "root", "depth": 0}:
+        reasons.append("root_actor_identity")
+    if root.get("parent_run_id") is not None:
+        reasons.append("root_parent_identity")
+    if root.get("model") != expected["model"]:
+        reasons.append("root_model_identity")
+    if root.get("reasoning_effort") != expected["reasoning_effort"]:
+        reasons.append("root_reasoning_identity")
+    if root.get("max_output_tokens") != expected["max_output_tokens"]:
+        reasons.append("root_output_limit_identity")
+    if root.get("streaming") != expected["streaming"]:
+        reasons.append("root_streaming_identity")
+    if root.get("tool_policy") != expected["tool_policy"]:
+        reasons.append("root_tool_policy_identity")
+    persisted_limits = root.get("limits", {})
+    if any(
+        persisted_limits.get(name) != value
+        for name, value in expected["limits"].items()
+    ):
+        reasons.append("root_limits_identity")
+    expected_controls = expected["controls"]
+    expected_environment = {
+        "workspace": str(workspace.resolve()),
+        "provider": "deepseek",
+        "write_execution_mode": expected_controls["write_execution_mode"],
+        "auto_approve": expected_controls["auto_approve"],
+        "trust_mode": expected_controls["trust_mode"],
+        "allow_sandbox_elevation": expected_controls[
+            "allow_sandbox_elevation"
+        ],
+        "interactive": expected_controls["interactive"],
+        "sandbox": expected_controls["sandbox"],
+    }
+    if any(environment.get(name) != value for name, value in expected_environment.items()):
+        reasons.append("root_environment_identity")
+    if not prefixed_sha256(environment.get("execution_fingerprint_sha256")):
+        reasons.append("root_execution_fingerprint")
+
+    if treatment == "single":
+        if child_events:
+            reasons.append("single_unexpected_child")
+    elif child_events:
+        child_environment = child.get("environment", {})
+        if child.get("actor") != {"kind": "child", "depth": 1}:
+            reasons.append("writer_child_actor_identity")
+        if child.get("parent_run_id") != root.get("run_id"):
+            reasons.append("writer_child_parent_identity")
+        if child_environment.get("write_execution_mode") != "isolated_writer":
+            reasons.append("writer_child_mode_identity")
+        if child_environment.get("execution_fingerprint_sha256") is not None:
+            reasons.append("writer_child_execution_fingerprint")
+        if child.get("model") != root.get("model"):
+            reasons.append("writer_child_model_identity")
+    return {
+        "valid": not reasons,
+        "reasons": list(dict.fromkeys(reasons)),
+        "write_execution_mode": environment.get("write_execution_mode"),
+        "root_execution_fingerprint_present": prefixed_sha256(
+            environment.get("execution_fingerprint_sha256")
+        ),
+        "child_execution_fingerprint_absent": (
+            not child_events
+            or child.get("environment", {}).get("execution_fingerprint_sha256")
+            is None
+        ),
+    }
+
+
 def treatment_audit(
     task_id: str,
     treatment: str,
@@ -1472,10 +2533,29 @@ def treatment_audit(
     child_count = len(event_values(root_events, "child_started"))
     root_catalogs = catalog_summary(root_events, "root")
     child_catalogs = catalog_summary(child_events, "child")
+    empty_hash = frozen_catalog_hash(task_id, "terminal_empty")
+    root_key = "single_root" if treatment == "single" else "writer_root"
+    root_catalog_audit = catalog_identity_audit(
+        root_catalogs,
+        frozen_catalog_hash(task_id, root_key),
+        empty_hash,
+    )
+    child_catalog_audit = {
+        "valid": True,
+        "reasons": [],
+        "logical_requests": 0,
+        "terminal_empty_logical_requests": 0,
+        "observed": False,
+    }
+    root_created = run_created(root_events)
+    child_created = run_created(child_events)
+    root_environment_valid = (
+        root_created.get("environment", {}).get("tool_catalog_sha256")
+        == frozen_catalog_hash(task_id, root_key)
+    )
+    child_environment_valid = treatment == "single"
     if treatment == "single":
-        catalog_valid = catalogs_are_exact(
-            root_catalogs, ROOT_BASE_CATALOG
-        )
+        catalog_valid = root_catalog_audit["valid"] and root_environment_valid
         contract_valid = (
             catalog_valid
             and agent_count == 0
@@ -1485,9 +2565,26 @@ def treatment_audit(
             == set(MANIFEST["tasks"][task_id]["expected_changed_files"])
         )
     else:
-        catalog_valid = catalogs_are_exact(
-            root_catalogs, WRITER_ROOT_CATALOG
-        ) and catalogs_are_exact(child_catalogs, WRITER_CHILD_TOOLS)
+        child_environment_valid = not child_events
+        if child_events:
+            child_catalog_audit = catalog_identity_audit(
+                child_catalogs,
+                frozen_catalog_hash(task_id, "writer_child"),
+                empty_hash,
+            )
+            child_catalog_audit["observed"] = True
+            child_environment_valid = (
+                child_created.get("environment", {}).get(
+                    "tool_catalog_sha256"
+                )
+                == frozen_catalog_hash(task_id, "writer_child")
+            )
+        catalog_valid = (
+            root_catalog_audit["valid"]
+            and child_catalog_audit["valid"]
+            and root_environment_valid
+            and child_environment_valid
+        )
         contract_valid = (
             catalog_valid
             and agent_count == 1
@@ -1503,14 +2600,24 @@ def treatment_audit(
     return {
         "valid": contract_valid,
         "catalog_valid": catalog_valid,
-        "root_catalog_requests": len(root_catalogs),
-        "child_catalog_requests": len(child_catalogs),
-        "root_terminal_empty_catalog_requests": sum(
-            catalog["tool_names"] == [] for catalog in root_catalogs
+        "catalog_identity_reasons": list(
+            dict.fromkeys(
+                [
+                    *root_catalog_audit["reasons"],
+                    *child_catalog_audit["reasons"],
+                    *([] if root_environment_valid else ["root_catalog_environment"]),
+                    *([] if child_environment_valid else ["child_catalog_environment"]),
+                ]
+            )
         ),
-        "child_terminal_empty_catalog_requests": sum(
-            catalog["tool_names"] == [] for catalog in child_catalogs
-        ),
+        "root_catalog_requests": root_catalog_audit["logical_requests"],
+        "child_catalog_requests": child_catalog_audit["logical_requests"],
+        "root_terminal_empty_catalog_requests": root_catalog_audit[
+            "terminal_empty_logical_requests"
+        ],
+        "child_terminal_empty_catalog_requests": child_catalog_audit[
+            "terminal_empty_logical_requests"
+        ],
         "root_direct_write_violation": bool(root_direct_writes),
         "root_direct_write_tools": root_direct_writes,
         "agent_tool_calls": agent_count,
@@ -1527,15 +2634,26 @@ def typed_terminal_summary(run: dict[str, Any]) -> dict[str, Any]:
     terminal = run.get("terminal")
     if not isinstance(terminal, dict):
         return {"state": None, "reason_sha256": None}
+    state = terminal.get("state")
     reason = terminal.get("reason")
+    reason_code = None
+    reason_value: Any = reason
+    if state == "blocked" and isinstance(reason, str):
+        reason_code = reason.split("：", 1)[0]
+    elif state == "failed" and isinstance(terminal.get("failure"), dict):
+        reason_value = terminal["failure"]
+        reason_code = terminal["failure"].get("kind")
+    elif state == "recovery_required" and isinstance(
+        terminal.get("ambiguity"), dict
+    ):
+        reason_value = terminal["ambiguity"]
+        reason_code = terminal["ambiguity"].get("action_id")
     return {
-        "state": terminal.get("state"),
-        "reason_sha256": canonical_hash(reason) if isinstance(reason, str) else None,
-        "reason_code": (
-            reason.split("：", 1)[0]
-            if isinstance(reason, str) and "：" in reason
-            else None
+        "state": state,
+        "reason_sha256": (
+            canonical_hash(reason_value) if reason_value is not None else None
         ),
+        "reason_code": reason_code,
     }
 
 
@@ -1697,10 +2815,6 @@ def failure_arm_record(
         "measurement_valid": False,
         "measurement_invalid_reasons": [code],
         "mixed_product_failure_and_measurement_gap": False,
-        "resample_eligible": (
-            api_exposure == "none"
-            and code in RESAMPLEABLE_HARNESS_FAILURE_CODES
-        ),
         "verified_success": False,
         "false_success": False,
         "task_success_before_measurement": None,
@@ -1771,22 +2885,33 @@ def pair_measurement_classification(
         for arm in arms
     )
     mixed = has_gap and has_product_failure
-    resample_eligible = (
-        has_gap
-        and not mixed
-        and not has_unobserved_execution
-        and all(
-            arm.get("measurement_valid") is True
-            or arm.get("resample_eligible") is True
-            for arm in arms
-        )
-    )
     return {
         "measurement_valid": measurement_valid,
         "mixed_product_failure_and_measurement_gap": mixed,
         "unobserved_model_execution": has_unobserved_execution,
-        "resample_eligible": resample_eligible,
     }
+
+
+def arm_hard_stop_reasons(arm: dict[str, Any]) -> list[str]:
+    reasons = []
+    if arm.get("measurement_valid") is not True:
+        reasons.extend(arm.get("measurement_invalid_reasons", []))
+    reasons.extend(arm_hard_mechanism_reasons(arm))
+    return list(dict.fromkeys(str(reason) for reason in reasons))
+
+
+def arm_hard_mechanism_reasons(arm: dict[str, Any]) -> list[str]:
+    reasons = []
+    if arm.get("hard_safety_violation") is True:
+        reasons.append("harness_safety_violation")
+    if arm.get("measurement_valid") is True:
+        if arm.get("false_success") is True:
+            reasons.append("false_success")
+        if arm.get("treatment") == "writer":
+            reasons.extend(
+                f"writer_{reason}" for reason in writer_safety_reasons(arm)
+            )
+    return list(dict.fromkeys(reasons))
 
 
 def execute_arm(
@@ -2059,6 +3184,7 @@ def execute_arm(
                 raise pending_error
             raise EvaluationError("harness_internal_error") from pending_error
 
+        state_schema = state_schema_summary(codewhale_home)
         terminal = typed_terminal_summary(run)
         accounting, accounting_provenance, provenance_reasons = (
             canonical_terminal_accounting(run, root_events)
@@ -2092,7 +3218,7 @@ def execute_arm(
         budget_terminal_valid = (
             nonnegative_int_or_zero(accounting["exhausted_denied"]) == 0
             or terminal["reason_code"]
-            == "llm_api_request_budget_exhausted"
+            == "api_request_budget_exceeded"
         )
         if not budget_terminal_valid:
             accounting_reasons.append("budget_terminal_attribution")
@@ -2145,8 +3271,11 @@ def execute_arm(
             == RESOURCES["max_output_tokens_per_request"]
             and created.get("tool_policy", {}).get("allowed") == COMMON_TOOLS
         )
+        admission = admission_audit(
+            task_id, treatment, root_events, child_events, workspace
+        )
         root_receipt = completion_receipt_summary(
-            root_events, terminal["state"]
+            task_id, root_events, terminal["state"]
         )
         writer = writer_lifecycle_summary(
             task_id,
@@ -2154,6 +3283,8 @@ def execute_arm(
             child_events,
             base_commit,
             root_receipt,
+            workspace,
+            codewhale_home / "worktrees",
         )
         git = git_evidence(
             workspace,
@@ -2180,18 +3311,16 @@ def execute_arm(
         )
         t3_recovery = {
             "valid": True,
-            "call_count": 0,
-            "exact_frozen_parameters": True,
-            "failed_then_passed": True,
-            "ordered_around_write": True,
-            "verdicts": [],
-            "parameters_sha256": canonical_hash(
-                verifier_spec("t3")["parameters"]
-            ),
+            "lineage_policy": None,
+            "named_verifier_reference_valid": True,
+            "named_verifier_call_count": 0,
+            "failed_then_write_then_host_pass": True,
+            "verifier_spec_sha256": canonical_hash(verifier_spec("t3")),
         }
         if task_id == "t3":
-            evidence_events = child_events if treatment == "writer" else root_events
-            t3_recovery = t3_recovery_audit(evidence_events)
+            t3_recovery = t3_recovery_audit(
+                treatment, root_events, child_events
+            )
 
         receipt_valid = root_receipt["valid"]
         wall_time_ms = int((time.monotonic() - arm_started) * 1000)
@@ -2221,9 +3350,20 @@ def execute_arm(
         measurement_invalid_reasons = list(dict.fromkeys(accounting_reasons))
         if not root_events:
             measurement_invalid_reasons.append("root_events_missing")
+        if not state_schema["valid"]:
+            measurement_invalid_reasons.append("state_schema_mismatch")
+        if not task_contract_valid:
+            measurement_invalid_reasons.append("task_contract_identity")
+        if not admission["valid"]:
+            measurement_invalid_reasons.extend(admission["reasons"])
+        if not treatment_result["catalog_valid"]:
+            measurement_invalid_reasons.extend(
+                treatment_result["catalog_identity_reasons"]
+            )
+        if treatment == "writer" and not writer["identity_valid"]:
+            measurement_invalid_reasons.extend(writer["identity_reasons"])
         measurement_valid = not measurement_invalid_reasons
         mixed_failure_gap = product_failure and not measurement_valid
-        resample_eligible = False
         catalogs = {
             "root": catalog_summary(root_events, "root"),
             "child": catalog_summary(child_events, "child"),
@@ -2267,7 +3407,6 @@ def execute_arm(
             "measurement_valid": measurement_valid,
             "measurement_invalid_reasons": measurement_invalid_reasons,
             "mixed_product_failure_and_measurement_gap": mixed_failure_gap,
-            "resample_eligible": resample_eligible,
             "verified_success": verified_success,
             "false_success": false_success,
             "task_success_before_measurement": task_success_before_measurement,
@@ -2282,6 +3421,7 @@ def execute_arm(
                 "child": len(event_values(child_events, "completion_rejected")),
             },
             "task_contract_valid": task_contract_valid,
+            "admission": admission,
             "scope_valid": scope_valid,
             "path_scope_valid": path_scope_valid,
             "t3_failure_then_recovery": t3_recovery,
@@ -2310,8 +3450,8 @@ def execute_arm(
                 "child_outcomes": tool_outcome_summary(child_events),
             },
             "model_failures": {
-                "root": model_failure_summary(root_events),
-                "child": model_failure_summary(child_events),
+                "root": model_failure_summary(root_events, "root"),
+                "child": model_failure_summary(child_events, "child"),
             },
             "event_counts": {
                 "root": event_counts,
@@ -2324,6 +3464,7 @@ def execute_arm(
                 else None,
                 "runtime_event_schema": RUNTIME_EVENT_SCHEMA,
                 "run_api_schema": RUN_API_SCHEMA,
+                "state_schema": state_schema,
             },
             "wall_time_ms": wall_time_ms,
             "secret_checks": {
@@ -2586,16 +3727,15 @@ def ratio_from_cells(
 
 
 def writer_safety_reasons(arm: dict[str, Any]) -> list[str]:
-    if (
-        arm.get("treatment") != "writer"
-        or arm.get("product_outcome_observed") is not True
-    ):
+    if arm.get("treatment") != "writer":
         return []
     reasons = []
     audit = arm.get("treatment_audit", {})
     writer = arm.get("writer", {})
     git = arm.get("git", {})
     counts = writer.get("event_counts", {})
+    cleanup = writer.get("cleanup", {})
+    seal_count = int(counts.get("agent_seal_committed") or 0)
     integration_count = int(
         counts.get("agent_integration_committed") or 0
     )
@@ -2609,6 +3749,8 @@ def writer_safety_reasons(arm: dict[str, Any]) -> list[str]:
         reasons.append("worktree_or_branch_leak")
     if int(writer.get("integration_failures") or 0) > 0:
         reasons.append("integration_failure")
+    if seal_count > 0 and integration_count != 1:
+        reasons.append("seal_without_unique_integration")
     if integration_count > 1:
         reasons.append("duplicate_integration")
     if integration_count:
@@ -2631,7 +3773,42 @@ def writer_safety_reasons(arm: dict[str, Any]) -> list[str]:
             reasons.append("successful_writer_missing_worktree_verifier")
         if writer.get("latest_root_receipt") is not True:
             reasons.append("successful_writer_missing_latest_root_receipt")
+    if cleanup.get("retained") is True:
+        reasons.append("cleanup_retained")
     return list(dict.fromkeys(reasons))
+
+
+def abort_is_hard_mechanism_failure(abort: dict[str, Any] | None) -> bool:
+    return (
+        isinstance(abort, dict)
+        and abort.get("hard_mechanism_failure") is True
+    )
+
+
+def formal_decision(
+    *,
+    mechanism_gate_failed: bool,
+    exact_pairs: bool,
+    exact_cells: bool,
+    hard_gate: bool,
+    complex_benefit: bool,
+    t1_control: bool,
+    t1_success_non_regression: bool,
+) -> str:
+    if mechanism_gate_failed:
+        return "reject_and_rework"
+    if not exact_pairs or not exact_cells:
+        return "hold_mechanism"
+    if hard_gate and complex_benefit and t1_control:
+        return "keep_default"
+    if (
+        hard_gate
+        and complex_benefit
+        and t1_success_non_regression
+        and not t1_control
+    ):
+        return "shrink_on_demand"
+    return "hold_mechanism"
 
 
 def aggregate(
@@ -2680,37 +3857,47 @@ def aggregate(
     cost_overhead = ratio_from_cells(
         cells, set(TASK_IDS), "cost_nanousd"
     ) if cells else None
+    reliability_gate = MANIFEST["statistics"]["reliability_benefit"]
     reliability = (
         per_task_non_regression
-        and writer_success - single_success >= 1
+        and writer_success - single_success
+        >= reliability_gate["writer_success_delta_min"]
         and token_overhead is not None
-        and token_overhead <= 0.25
+        and token_overhead
+        <= reliability_gate["aggregate_token_overhead_max"]
         and cost_overhead is not None
-        and cost_overhead <= 0.25
+        and cost_overhead
+        <= reliability_gate["aggregate_cost_overhead_max"]
     )
     complex_medians = {
         metric: pair_metrics["t2_t3"][metric]["paired_relative_median"]
         for metric in ("wall_time_ms", "tokens", "cost_nanousd")
     }
-    minimum_dual_success = MANIFEST["statistics"][
-        "efficiency_benefit"
-    ]["minimum_dual_success_pairs_per_complex_task"]
+    efficiency_gate = MANIFEST["statistics"]["efficiency_benefit"]
+    minimum_dual_success = efficiency_gate[
+        "minimum_dual_success_pairs_per_complex_task"
+    ]
     complex_dual_success_sample = all(
         pair_metrics[task]["wall_time_ms"]["dual_verified_success_pairs"]
         >= minimum_dual_success
         for task in ("t2", "t3")
     )
     complex_improvement = any(
-        value is not None and value <= -0.15
+        value is not None
+        and value
+        <= -efficiency_gate["t2_t3_any_paired_median_improvement_min"]
         for value in complex_medians.values()
     )
     complex_bounded = all(
-        value is not None and value <= 0.20
+        value is not None
+        and value
+        <= efficiency_gate["t2_t3_other_paired_median_regression_max"]
         for value in complex_medians.values()
     )
     each_complex_bounded = all(
         pair_metrics[task][metric]["paired_relative_median"] is not None
-        and pair_metrics[task][metric]["paired_relative_median"] <= 0.20
+        and pair_metrics[task][metric]["paired_relative_median"]
+        <= efficiency_gate["each_complex_task_metric_regression_max"]
         for task in ("t2", "t3")
         for metric in ("wall_time_ms", "tokens", "cost_nanousd")
     )
@@ -2736,20 +3923,22 @@ def aggregate(
         if cells
         else None,
     }
+    t1_gate = MANIFEST["statistics"]["t1_control"]
     t1_control = (
         t1_success_non_regression
         and pair_metrics["t1"]["wall_time_ms"][
             "dual_verified_success_pairs"
         ]
-        >= MANIFEST["statistics"]["t1_control"][
-            "minimum_dual_success_pairs"
-        ]
+        >= t1_gate["minimum_dual_success_pairs"]
         and t1_ratios["tokens"] is not None
-        and t1_ratios["tokens"] <= 0.25
+        and t1_ratios["tokens"]
+        <= t1_gate["aggregate_token_overhead_max"]
         and t1_ratios["cost"] is not None
-        and t1_ratios["cost"] <= 0.25
+        and t1_ratios["cost"]
+        <= t1_gate["aggregate_cost_overhead_max"]
         and t1_ratios["wall_time"] is not None
-        and t1_ratios["wall_time"] <= 0.20
+        and t1_ratios["wall_time"]
+        <= t1_gate["aggregate_wall_time_overhead_max"]
     )
     complex_tasks = {"t2", "t3"}
     complex_success_non_regression = all(
@@ -2770,11 +3959,14 @@ def aggregate(
     ) if cells else None
     complex_reliability = (
         complex_success_non_regression
-        and complex_success_gain >= 1
+        and complex_success_gain
+        >= reliability_gate["writer_success_delta_min"]
         and complex_token_overhead is not None
-        and complex_token_overhead <= 0.25
+        and complex_token_overhead
+        <= reliability_gate["aggregate_token_overhead_max"]
         and complex_cost_overhead is not None
-        and complex_cost_overhead <= 0.25
+        and complex_cost_overhead
+        <= reliability_gate["aggregate_cost_overhead_max"]
     )
     complex_benefit = complex_reliability or (
         complex_success_non_regression
@@ -2788,9 +3980,17 @@ def aggregate(
         arm for attempt in invalid_attempts for arm in attempt.get("arms", [])
     ]
     observed_arms = [*arms, *invalid_arms]
+    trusted_product_arms = [
+        arm
+        for arm in observed_arms
+        if arm.get("measurement_valid") is True
+    ]
+    false_success_count = sum(
+        arm.get("false_success") is True for arm in trusted_product_arms
+    )
     writer_false_success = sum(
         arm.get("false_success") is True
-        for arm in observed_arms
+        for arm in trusted_product_arms
         if arm.get("treatment") == "writer"
     )
     harness_safety_failures = [
@@ -2806,7 +4006,7 @@ def aggregate(
             "attempt_index": arm.get("attempt_index"),
             "reasons": reasons,
         }
-        for arm in observed_arms
+        for arm in trusted_product_arms
         if (reasons := writer_safety_reasons(arm))
     ]
     owner_gate = source_owner_audit() == expected_source_owners()
@@ -2819,7 +4019,7 @@ def aggregate(
     hard_gate = (
         exact_pairs
         and exact_cells
-        and writer_false_success == 0
+        and false_success_count == 0
         and not harness_safety_failures
         and not safety_findings
         and owner_gate
@@ -2836,27 +4036,21 @@ def aggregate(
         )
     )
     mechanism_gate_failed = (
-        writer_false_success > 0
+        false_success_count > 0
         or bool(harness_safety_failures)
         or bool(safety_findings)
         or not owner_gate
         or (exact_pairs and not per_task_non_regression)
     )
-    if mechanism_gate_failed:
-        decision = "reject_and_rework"
-    elif not exact_pairs or not exact_cells:
-        decision = "hold_mechanism"
-    elif hard_gate and (reliability or efficiency) and t1_control:
-        decision = "keep_default"
-    elif (
-        hard_gate
-        and complex_benefit
-        and t1_success_non_regression
-        and not t1_control
-    ):
-        decision = "shrink_on_demand"
-    else:
-        decision = "hold_mechanism"
+    decision = formal_decision(
+        mechanism_gate_failed=mechanism_gate_failed,
+        exact_pairs=exact_pairs,
+        exact_cells=exact_cells,
+        hard_gate=hard_gate,
+        complex_benefit=complex_benefit,
+        t1_control=t1_control,
+        t1_success_non_regression=t1_success_non_regression,
+    )
     product_eligible = exact_pairs and exact_cells and all(
         not attempt.get("mixed_product_failure_and_measurement_gap", False)
         for attempt in invalid_attempts
@@ -2864,6 +4058,7 @@ def aggregate(
     return {
         "product_metric_eligible": product_eligible,
         "hard_gate_met": hard_gate,
+        "false_success": false_success_count,
         "writer_false_success": writer_false_success,
         "harness_safety_violations": len(harness_safety_failures),
         "writer_safety_violations": len(safety_findings),
@@ -2958,6 +4153,13 @@ def source_owner_audit() -> dict[str, Any]:
         ),
         "run_store_trait": "pub trait RunStore",
         "runtime_event_kind_enums": "pub enum RuntimeEventKind",
+        "canonical_tool_catalog_functions": (
+            "pub fn canonical_tool_catalog_sha256"
+        ),
+        "runtime_tool_definition_methods": "    pub fn tool_definitions(",
+        "production_tool_executor_impls": (
+            "impl ToolExecutor for ProductionToolExecutor"
+        ),
     }
     result = {}
     rust_files = list((ROOT / "crates").rglob("*.rs"))
@@ -2978,6 +4180,9 @@ def expected_source_owners() -> dict[str, int]:
         "production_tool_name_constants": 1,
         "run_store_trait": 1,
         "runtime_event_kind_enums": 1,
+        "canonical_tool_catalog_functions": 1,
+        "runtime_tool_definition_methods": 1,
+        "production_tool_executor_impls": 1,
     }
 
 
@@ -2993,6 +4198,12 @@ def validate_source_owners() -> None:
 def freeze_identity(candidate: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "schema": MANIFEST["schema"],
+        "schema_versions": {
+            "run_api": RUN_API_SCHEMA,
+            "runtime_event": RUNTIME_EVENT_SCHEMA,
+            "state": STATE_SCHEMA,
+            "result": RESULT_SCHEMA,
+        },
         "manifest_sha256": file_hash(MANIFEST_PATH),
         "manifest_content_sha256": manifest_content_hash(),
         "harness_sha256": file_hash(Path(__file__).resolve()),
@@ -3009,20 +4220,70 @@ def freeze_identity(candidate: dict[str, Any] | None = None) -> dict[str, Any]:
             for task_id in TASK_IDS
         },
         "schedule_sha256": canonical_hash(schedule()),
+        "start_command_sha256": frozen_start_commands(),
         "source_owners": source_owner_audit(),
         "source_owner_gate_met": (
             source_owner_audit() == expected_source_owners()
         ),
-        "app_server_argv": [
-            "<candidate_binary>",
-            "--provider",
-            "deepseek",
-            "app-server",
-            "--stdio",
-            "--transport-max-retries",
-            str(RESOURCES["transport_max_retries_per_request"]),
-        ],
+        "app_server_argv": frozen_app_server_argv(),
+        "app_server_argv_sha256": canonical_hash(frozen_app_server_argv()),
         "candidate": candidate,
+    }
+
+
+def manifest_freeze_fields() -> dict[str, Any]:
+    validate_source_owners()
+    frozen_catalogs = copy.deepcopy(
+        MANIFEST.get("frozen_hashes", {}).get(
+            "ordered_tool_definition_sha256"
+        )
+    )
+    expected_catalog_keys = {
+        "single_root",
+        "writer_root",
+        "writer_child",
+        "terminal_empty",
+    }
+    if (
+        not isinstance(frozen_catalogs, dict)
+        or set(frozen_catalogs) != set(TASK_IDS)
+        or any(
+            not isinstance(frozen_catalogs.get(task_id), dict)
+            or set(frozen_catalogs[task_id]) != expected_catalog_keys
+            for task_id in TASK_IDS
+        )
+    ):
+        raise EvaluationError("frozen_catalog_definitions_missing")
+    return {
+        "manifest_content_sha256_excluding_frozen_hashes": (
+            manifest_content_hash()
+        ),
+        "schema_versions": {
+            "run_api": RUN_API_SCHEMA,
+            "runtime_event": RUNTIME_EVENT_SCHEMA,
+            "state": STATE_SCHEMA,
+            "result": RESULT_SCHEMA,
+        },
+        "harness_sha256": file_hash(Path(__file__).resolve()),
+        "canary_helper_sha256": file_hash(CANARY_PATH),
+        "schedule_sha256": canonical_hash(schedule()),
+        "app_server_argv_sha256": canonical_hash(frozen_app_server_argv()),
+        "source_owners": expected_source_owners(),
+        "start_command_sha256": frozen_start_commands(),
+        "fixture_tree_sha256": {
+            task_id: fixture_hash(task_id) for task_id in TASK_IDS
+        },
+        "task_definition_sha256": {
+            task_id: task_hash(task_id) for task_id in TASK_IDS
+        },
+        "verifier_file_sha256": {
+            task_id: verifier_file_hash(task_id) for task_id in TASK_IDS
+        },
+        "verifier_spec_sha256": {
+            task_id: canonical_hash(verifier_spec(task_id))
+            for task_id in TASK_IDS
+        },
+        "ordered_tool_definition_sha256": frozen_catalogs,
     }
 
 
@@ -3042,9 +4303,40 @@ def validate_frozen_hashes() -> None:
         task_id: canonical_hash(verifier_spec(task_id))
         for task_id in TASK_IDS
     }
+    expected_catalog_keys = {
+        "single_root",
+        "writer_root",
+        "writer_child",
+        "terminal_empty",
+    }
+    catalog_maps_valid = True
+    for field in ("ordered_tool_definition_sha256",):
+        task_catalogs = frozen.get(field, {})
+        catalog_maps_valid = catalog_maps_valid and (
+            isinstance(task_catalogs, dict)
+            and set(task_catalogs) == set(TASK_IDS)
+        )
+        if not isinstance(task_catalogs, dict):
+            continue
+        for task_id in TASK_IDS:
+            values = task_catalogs.get(task_id, {})
+            catalog_maps_valid = catalog_maps_valid and (
+                isinstance(values, dict)
+                and set(values) == expected_catalog_keys
+                and all(
+                    isinstance(value, str)
+                    and value.startswith("sha256:")
+                    and raw_sha256(value.removeprefix("sha256:"))
+                    for value in values.values()
+                )
+                and values.get("terminal_empty") == canonical_hash([])
+            )
+    placeholder_free = "TO_BE_FROZEN" not in json.dumps(
+        frozen, ensure_ascii=False, sort_keys=True
+    )
     checks = {
         "manifest_content": frozen.get(
-            "manifest_sha256_excluding_this_field"
+            "manifest_content_sha256_excluding_frozen_hashes"
         )
         == manifest_content_hash(),
         "fixtures": frozen.get("fixture_tree_sha256")
@@ -3054,6 +4346,42 @@ def validate_frozen_hashes() -> None:
         == actual_verifier_files,
         "verifier_specs": frozen.get("verifier_spec_sha256")
         == actual_verifier_specs,
+        "schema_versions": frozen.get("schema_versions")
+        == {
+            "run_api": RUN_API_SCHEMA,
+            "runtime_event": RUNTIME_EVENT_SCHEMA,
+            "state": STATE_SCHEMA,
+            "result": RESULT_SCHEMA,
+        },
+        "harness": frozen.get("harness_sha256")
+        == file_hash(Path(__file__).resolve()),
+        "canary": frozen.get("canary_helper_sha256")
+        == file_hash(CANARY_PATH),
+        "schedule": frozen.get("schedule_sha256")
+        == canonical_hash(schedule()),
+        "start_commands": frozen.get("start_command_sha256")
+        == frozen_start_commands(),
+        "app_server_argv": frozen.get("app_server_argv_sha256")
+        == canonical_hash(frozen_app_server_argv()),
+        "source_owners": frozen.get("source_owners")
+        == expected_source_owners(),
+        "catalog_maps": catalog_maps_valid,
+        "placeholder_free": placeholder_free,
+        "experiment_shape": (
+            MANIFEST.get("experiment", {}).get("model") == MODEL
+            and MANIFEST.get("experiment", {}).get("runs_per_task_treatment")
+            == RUNS_PER_CELL
+            and MANIFEST.get("experiment", {}).get("accepted_pairs")
+            == len(TASK_IDS) * RUNS_PER_CELL
+            and MANIFEST.get("experiment", {}).get("accepted_arms")
+            == len(TASK_IDS) * len(TREATMENTS) * RUNS_PER_CELL
+            and MANIFEST.get("experiment", {}).get("pair_attempts_max")
+            == MAX_PAIR_ATTEMPTS
+            and RESOURCES.get("cargo_incremental") == "0"
+            and str(RESOURCES.get("cargo_target_dir", "")).startswith(
+                "/private/tmp/"
+            )
+        ),
     }
     failed = [name for name, valid in checks.items() if not valid]
     if failed:
@@ -3119,12 +4447,15 @@ def finalize_result(
 ) -> dict[str, Any]:
     aggregate_result = aggregate(accepted_pairs, invalid_attempts)
     if abort is not None:
+        hard_mechanism_abort = abort_is_hard_mechanism_failure(abort)
         aggregate_result["product_metric_eligible"] = False
         aggregate_result["hard_gate_met"] = False
         aggregate_result["m6_b2_admitted"] = False
+        aggregate_result["hard_mechanism_abort"] = hard_mechanism_abort
         aggregate_result["decision"] = (
             "reject_and_rework"
-            if aggregate_result["writer_false_success"]
+            if hard_mechanism_abort
+            or aggregate_result["false_success"]
             or aggregate_result["harness_safety_violations"]
             or aggregate_result["writer_safety_violations"]
             or not aggregate_result["source_owner_gate_met"]
@@ -3157,8 +4488,8 @@ def finalize_result(
                 "efficiency uses dual-verified-success pairs only"
             ),
             "root_write_boundary": (
-                "Writer root write tools remain advertised because child policy "
-                "can only narrow parent policy; any root invocation fails the arm"
+                "Writer coordinator write tools are removed by Host actor "
+                "authority; any observed root write is a hard mechanism failure"
             ),
             "transport_retry_boundary": (
                 "app-server was configured with --transport-max-retries=1; "
@@ -3511,6 +4842,13 @@ class HarnessSelfTests(unittest.TestCase):
     def test_schedule_is_balanced_and_rotated(self) -> None:
         planned = schedule()
         self.assertEqual(len(planned), 18)
+        arm_plan = [
+            (pair["schedule_position"], 1, arm_position, treatment)
+            for pair in planned
+            for arm_position, treatment in enumerate(pair["order"], start=1)
+        ]
+        self.assertEqual(len(arm_plan), 36)
+        self.assertEqual({attempt for _, attempt, _, _ in arm_plan}, {1})
         for task_id in TASK_IDS:
             task_pairs = [
                 item for item in planned if item["task_id"] == task_id
@@ -3561,7 +4899,7 @@ class HarnessSelfTests(unittest.TestCase):
             RESOURCES["harness_wall_time_seconds"], 240
         )
         self.assertEqual(RESOURCES["suite_known_cost_usd"], 0.5)
-        self.assertEqual(MAX_PAIR_ATTEMPTS, 3)
+        self.assertEqual(MAX_PAIR_ATTEMPTS, 1)
         self.assertEqual(MODEL, "deepseek-v4-flash")
         self.assertEqual(
             RESOURCES["production_verifier_gate_timeout_ms"], 600_000
@@ -3577,8 +4915,6 @@ class HarnessSelfTests(unittest.TestCase):
             - RESOURCES["runtime_wall_time_seconds"]
             - RESOURCES["runtime_cancel_grace_seconds"],
         )
-        self.assertEqual(ROOT_BASE_CATALOG, sorted(ROOT_BASE_CATALOG))
-        self.assertEqual(WRITER_ROOT_CATALOG, sorted(WRITER_ROOT_CATALOG))
         self.assertEqual(WRITER_CHILD_TOOLS, sorted(WRITER_CHILD_TOOLS))
 
     def test_atomic_output_is_0600(self) -> None:
@@ -3603,7 +4939,6 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertTrue(possible["requests"]["billing_unknown"])
         self.assertTrue(possible["requests"]["known_cost_is_lower_bound"])
         self.assertFalse(possible["product_outcome_observed"])
-        self.assertFalse(possible["resample_eligible"])
         before_api = failure_arm_record(
             "t1",
             "single",
@@ -3616,7 +4951,6 @@ class HarnessSelfTests(unittest.TestCase):
             10,
         )
         self.assertFalse(before_api["requests"]["billing_unknown"])
-        self.assertTrue(before_api["resample_eligible"])
         secret_failure = failure_arm_record(
             "t1",
             "writer",
@@ -3687,19 +5021,17 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertFalse(valid)
         self.assertIn("numeric_shape", reasons)
 
-    def test_pair_failure_and_gap_is_never_resampled(self) -> None:
+    def test_mixed_product_failure_and_gap_is_measurement_invalid(self) -> None:
         observed_failure = {
             "measurement_valid": True,
             "product_outcome_observed": True,
             "task_success_before_measurement": False,
-            "resample_eligible": False,
             "api_exposure": "accounted",
         }
         pre_api_gap = {
             "measurement_valid": False,
             "product_outcome_observed": False,
             "task_success_before_measurement": None,
-            "resample_eligible": True,
             "api_exposure": "none",
         }
         classified = pair_measurement_classification(
@@ -3708,7 +5040,7 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertTrue(
             classified["mixed_product_failure_and_measurement_gap"]
         )
-        self.assertFalse(classified["resample_eligible"])
+        self.assertFalse(classified["measurement_valid"])
 
     def test_efficiency_excludes_non_dual_success_pairs(self) -> None:
         def paired(
@@ -3746,6 +5078,24 @@ class HarnessSelfTests(unittest.TestCase):
         self.assertEqual(summary["excluded_non_dual_success_pairs"], 1)
         self.assertEqual(summary["paired_relative_median"], -0.2)
 
+    def test_default_requires_complex_task_benefit(self) -> None:
+        common = {
+            "mechanism_gate_failed": False,
+            "exact_pairs": True,
+            "exact_cells": True,
+            "hard_gate": True,
+            "t1_control": True,
+            "t1_success_non_regression": True,
+        }
+        self.assertEqual(
+            formal_decision(**common, complex_benefit=False),
+            "hold_mechanism",
+        )
+        self.assertEqual(
+            formal_decision(**common, complex_benefit=True),
+            "keep_default",
+        )
+
     def test_writer_safety_matrix_catches_scope_and_integration(self) -> None:
         reasons = writer_safety_reasons(
             {
@@ -3754,7 +5104,7 @@ class HarnessSelfTests(unittest.TestCase):
                 "false_success": False,
                 "path_scope_valid": False,
                 "treatment_audit": {
-                    "root_direct_write_violation": False,
+                    "root_direct_write_violation": True,
                 },
                 "git": {"leak_free": True},
                 "writer": {
@@ -3768,38 +5118,184 @@ class HarnessSelfTests(unittest.TestCase):
         )
         self.assertIn("path_scope_violation", reasons)
         self.assertIn("integration_failure", reasons)
+        self.assertIn("root_direct_write", reasons)
+
+        incomplete = {
+            "treatment": "writer",
+            "product_outcome_observed": False,
+            "false_success": False,
+            "path_scope_valid": True,
+            "treatment_audit": {"root_direct_write_violation": False},
+            "git": {"leak_free": True},
+            "writer": {
+                "integration_failures": 0,
+                "event_counts": {
+                    "agent_seal_committed": 1,
+                    "agent_integration_committed": 0,
+                },
+                "cleanup": {"retained": True},
+            },
+            "verified_success": False,
+        }
+        incomplete_reasons = writer_safety_reasons(incomplete)
+        self.assertIn(
+            "seal_without_unique_integration", incomplete_reasons
+        )
+        self.assertIn("cleanup_retained", incomplete_reasons)
+
+    def test_abort_decision_distinguishes_mechanism_from_measurement(self) -> None:
+        self.assertTrue(
+            abort_is_hard_mechanism_failure(
+                {
+                    "reasons": ["writer_cleanup_retained"],
+                    "hard_mechanism_failure": True,
+                }
+            )
+        )
+        self.assertFalse(
+            abort_is_hard_mechanism_failure(
+                {
+                    "reasons": ["writer_child_mode_identity"],
+                    "hard_mechanism_failure": False,
+                }
+            )
+        )
+        self.assertFalse(
+            abort_is_hard_mechanism_failure(
+                {
+                    "reasons": ["writer_cleanup_scope_hash"],
+                    "hard_mechanism_failure": False,
+                }
+            )
+        )
+
+    def test_manifest_freeze_output_matches_frozen_field_shape(self) -> None:
+        self.assertEqual(
+            manifest_freeze_fields(),
+            MANIFEST["frozen_hashes"],
+        )
 
     def test_canonical_source_owners_are_singular(self) -> None:
         self.assertEqual(source_owner_audit(), expected_source_owners())
 
     def test_runtime_terminal_catalog_is_empty_only_at_the_end(self) -> None:
-        expected = ["read_file", "run_verifiers"]
-        self.assertTrue(
-            catalogs_are_exact(
-                [
-                    {"tool_names": expected},
-                    {"tool_names": expected},
-                    {"tool_names": []},
-                ],
-                expected,
-            )
+        definition = {
+            "name": "read_file",
+            "description": "读取 UTF-8 文件",
+            "input_schema": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        }
+        expected_runtime = sha256_bytes(
+            json.dumps(
+                [definition], ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
         )
-        self.assertFalse(
-            catalogs_are_exact(
-                [
-                    {"tool_names": expected},
-                    {"tool_names": []},
-                    {"tool_names": expected},
-                ],
-                expected,
+        empty = canonical_hash([])
+        self.assertNotEqual(canonical_hash([definition]), expected_runtime)
+
+        def catalog(
+            request_number: int,
+            attempt: int,
+            tools: list[dict[str, Any]],
+            source: str,
+        ) -> dict[str, Any]:
+            return request_catalog_summary(
+                {
+                    "actor": {"kind": "root"},
+                    "request_number": request_number,
+                    "attempt": attempt,
+                    "tools": tools,
+                },
+                "root",
+                source,
+                request_number + attempt,
+                f"attempt-{request_number}-{attempt}",
+                (
+                    f"attempt-{request_number}-{attempt - 1}"
+                    if attempt > 0
+                    else None
+                ),
             )
+
+        valid = catalog_identity_audit(
+            [
+                catalog(1, 0, [definition], "model_request_prepared"),
+                catalog(
+                    1,
+                    1,
+                    [definition],
+                    "model_request_failed.retry.prepared",
+                ),
+                catalog(2, 0, [], "model_request_prepared"),
+            ],
+            expected_runtime,
+            empty,
         )
-        self.assertFalse(
-            catalogs_are_exact(
-                [{"tool_names": ["read_file"]}],
-                expected,
-            )
+        self.assertTrue(valid["valid"], valid)
+
+        description_drift = copy.deepcopy(definition)
+        description_drift["description"] = "不同描述"
+        drift = catalog_identity_audit(
+            [
+                catalog(1, 0, [definition], "model_request_prepared"),
+                catalog(
+                    1,
+                    1,
+                    [description_drift],
+                    "model_request_failed.retry.prepared",
+                ),
+            ],
+            expected_runtime,
+            empty,
         )
+        self.assertFalse(drift["valid"])
+        self.assertIn("catalog_retry_drift", drift["reasons"])
+
+        orphan_retry = catalog_identity_audit(
+            [
+                {
+                    **catalog(
+                        1,
+                        0,
+                        [definition],
+                        "model_request_prepared",
+                    ),
+                    "prior_attempt_id_sha256": canonical_hash("orphan"),
+                }
+            ],
+            expected_runtime,
+            empty,
+        )
+        self.assertFalse(orphan_retry["valid"])
+        self.assertIn(
+            "catalog_retry_attempt_lineage", orphan_retry["reasons"]
+        )
+
+        request_gap = catalog_identity_audit(
+            [catalog(2, 0, [definition], "model_request_prepared")],
+            expected_runtime,
+            empty,
+        )
+        self.assertFalse(request_gap["valid"])
+        self.assertIn(
+            "catalog_request_number_sequence", request_gap["reasons"]
+        )
+
+        early_empty = catalog_identity_audit(
+            [
+                catalog(1, 0, [], "model_request_prepared"),
+                catalog(2, 0, [definition], "model_request_prepared"),
+            ],
+            expected_runtime,
+            empty,
+        )
+        self.assertFalse(early_empty["valid"])
+        self.assertIn("terminal_empty_catalog_not_last", early_empty["reasons"])
+
         self.assertTrue(
             cancel_was_accepted(
                 {"kind": "accepted", "run_id": "run-1"},
@@ -3847,6 +5343,785 @@ class HarnessSelfTests(unittest.TestCase):
             ),
             "run_inactive_without_terminal",
         )
+
+    def test_inline_verification_artifact_is_exact(self) -> None:
+        revision = {"status": "known", "sha256": "sha256:" + "a" * 64}
+        content = {
+            "summary": "冻结 verifier 通过",
+            "verifier": verifier_spec("t1"),
+            "verdict": "passed",
+            "workspace_revision": revision,
+        }
+        encoded = canonical_bytes(content)
+        digest = sha256_bytes(encoded)
+        artifact_id = f"verification-evidence:{digest}"
+        outcome = {
+            "verifier_observation": {"artifact_ids": [artifact_id]},
+            "artifacts": [
+                {
+                    "id": artifact_id,
+                    "status": "available",
+                    "sha256": digest,
+                    "media_type": (
+                        "application/vnd.codewhale.verification+json"
+                    ),
+                    "byte_len": len(encoded),
+                    "inline_content": content,
+                }
+            ],
+        }
+        self.assertTrue(
+            verification_artifacts_valid(
+                outcome, verifier_spec("t1"), "passed", revision
+            )
+        )
+        outcome["artifacts"][0]["inline_content"]["verdict"] = "failed"
+        self.assertFalse(
+            verification_artifacts_valid(
+                outcome, verifier_spec("t1"), "passed", revision
+            )
+        )
+
+    def test_host_receipt_advances_generation_without_revision_drift(self) -> None:
+        revision = {"status": "known", "sha256": "sha256:" + "a" * 64}
+        before = {"generation": 4, "revision": revision}
+        after = {"generation": 5, "revision": revision}
+        content = {
+            "summary": "冻结 verifier 通过",
+            "verifier": verifier_spec("t1"),
+            "verdict": "passed",
+            "workspace_revision": revision,
+        }
+        encoded = canonical_bytes(content)
+        digest = sha256_bytes(encoded)
+        artifact_id = f"verification-evidence:{digest}"
+        outcome = {
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "succeeded",
+            "side_effect": "not_applied",
+            "workspace_revision": revision["sha256"],
+            "evidence": {"status": "produced", "references": [artifact_id]},
+            "verifier_observation": {
+                "spec": verifier_spec("t1"),
+                "verdict": "passed",
+                "workspace_revision": revision,
+                "artifact_ids": [artifact_id],
+            },
+            "artifacts": [
+                {
+                    "id": artifact_id,
+                    "status": "available",
+                    "sha256": digest,
+                    "media_type": (
+                        "application/vnd.codewhale.verification+json"
+                    ),
+                    "byte_len": len(encoded),
+                    "inline_content": content,
+                }
+            ],
+        }
+        receipt = {
+            "id": "receipt:verify-final",
+            "generation_id": "generation-1",
+            "acceptance_id": "m6b-t1",
+            "verification_id": "verify-final",
+            "verifier": verifier_spec("t1"),
+            "workspace_state": after,
+            "artifact_ids": [artifact_id],
+            "lineage": {"policy": "latest_pass"},
+        }
+        events = [
+            {
+                "sequence": 1,
+                "event": {
+                    "kind": "run_created",
+                    "request": {
+                        "task_contract": {
+                            "generation_id": "generation-1",
+                            "definition": task_definition("t1"),
+                        }
+                    },
+                },
+            },
+            {
+                "sequence": 2,
+                "event": {
+                    "kind": "host_verification_prepared",
+                    "verification_id": "verify-final",
+                    "workspace_state_before": before,
+                },
+            },
+            {
+                "sequence": 3,
+                "event": {
+                    "kind": "host_verification_started",
+                    "verification_id": "verify-final",
+                },
+            },
+            {
+                "sequence": 4,
+                "event": {
+                    "kind": "host_verification_committed",
+                    "verification_id": "verify-final",
+                    "outcome": outcome,
+                    "receipt": receipt,
+                    "workspace_state_after": after,
+                },
+            },
+            {
+                "sequence": 5,
+                "event": {
+                    "kind": "terminal",
+                    "outcome": {
+                        "terminal": {
+                            "state": "completed",
+                            "decision": {
+                                "generation_id": "generation-1",
+                                "workspace_state": after,
+                                "satisfied": [
+                                    {
+                                        "kind": "evidence",
+                                        "acceptance_id": "m6b-t1",
+                                        "receipt_id": "receipt:verify-final",
+                                    }
+                                ],
+                            },
+                        }
+                    },
+                },
+            },
+        ]
+        self.assertTrue(
+            completion_receipt_summary("t1", events, "completed")["valid"]
+        )
+        forged = copy.deepcopy(events)
+        forged[1]["event"]["workspace_state_before"] = after
+        self.assertFalse(
+            completion_receipt_summary("t1", forged, "completed")["valid"]
+        )
+
+    def test_t3_local_lineage_requires_real_started_operations(self) -> None:
+        failed_state = {
+            "generation": 0,
+            "revision": {"status": "known", "sha256": "sha256:" + "a" * 64},
+        }
+        changed_state = {
+            "generation": 1,
+            "revision": {"status": "known", "sha256": "sha256:" + "b" * 64},
+        }
+        final_state = {"generation": 2, "revision": changed_state["revision"]}
+        content = {
+            "summary": "冻结 verifier 失败",
+            "verifier": verifier_spec("t3"),
+            "verdict": "failed",
+            "workspace_revision": failed_state["revision"],
+        }
+        encoded = canonical_bytes(content)
+        digest = sha256_bytes(encoded)
+        artifact_id = f"verification-evidence:{digest}"
+        failed_outcome = {
+            "invocation": "accepted",
+            "transport": "succeeded",
+            "operation": "failed",
+            "side_effect": "not_applied",
+            "workspace_revision": failed_state["revision"]["sha256"],
+            "evidence": {"status": "produced", "references": [artifact_id]},
+            "verifier_observation": {
+                "spec": verifier_spec("t3"),
+                "verdict": "failed",
+                "workspace_revision": failed_state["revision"],
+                "artifact_ids": [artifact_id],
+            },
+            "artifacts": [
+                {
+                    "id": artifact_id,
+                    "status": "available",
+                    "sha256": digest,
+                    "media_type": (
+                        "application/vnd.codewhale.verification+json"
+                    ),
+                    "byte_len": len(encoded),
+                    "inline_content": content,
+                }
+            ],
+        }
+        receipt = {
+            "id": "receipt:final",
+            "workspace_state": final_state,
+            "lineage": {
+                "policy": "failed_write_pass",
+                "failure": {
+                    "source": {"kind": "tool", "operation_id": "verify-before"},
+                    "workspace_state": failed_state,
+                    "artifact_ids": [artifact_id],
+                },
+                "mutation": {
+                    "operation_id": "write",
+                    "workspace_state_before": failed_state,
+                    "workspace_state_after": changed_state,
+                },
+            },
+        }
+        events = [
+            {
+                "sequence": 1,
+                "event": {
+                    "kind": "tool_prepared",
+                    "operation_id": "verify-before",
+                    "workspace_access": "may_write",
+                    "invocation": {
+                        "name": "run_verifiers",
+                        "arguments": {
+                            "parsed": {"verifier_id": "m6b-t3"}
+                        },
+                    },
+                },
+            },
+            {
+                "sequence": 2,
+                "event": {
+                    "kind": "tool_execution_started",
+                    "operation_id": "verify-before",
+                },
+            },
+            {
+                "sequence": 3,
+                "event": {
+                    "kind": "tool_outcome_committed",
+                    "operation_id": "verify-before",
+                    "name": "run_verifiers",
+                    "outcome": failed_outcome,
+                    "workspace_state": failed_state,
+                },
+            },
+            {
+                "sequence": 4,
+                "event": {
+                    "kind": "tool_prepared",
+                    "operation_id": "write",
+                    "workspace_access": "may_write",
+                    "invocation": {
+                        "name": "edit_file",
+                        "arguments": {"parsed": {"path": "retry_window.py"}},
+                    },
+                },
+            },
+            {
+                "sequence": 5,
+                "event": {
+                    "kind": "tool_execution_started",
+                    "operation_id": "write",
+                },
+            },
+            {
+                "sequence": 6,
+                "event": {
+                    "kind": "tool_outcome_committed",
+                    "operation_id": "write",
+                    "name": "edit_file",
+                    "outcome": {
+                        "invocation": "accepted",
+                        "transport": "succeeded",
+                        "operation": "succeeded",
+                        "side_effect": "applied",
+                    },
+                    "workspace_state": changed_state,
+                },
+            },
+            {
+                "sequence": 7,
+                "event": {
+                    "kind": "host_verification_committed",
+                    "receipt": receipt,
+                },
+            },
+        ]
+        self.assertTrue(local_temporal_lineage_audit(events)["valid"])
+        missing_started = [
+            event
+            for event in copy.deepcopy(events)
+            if event_kind(event) != "tool_execution_started"
+            or event["event"].get("operation_id") != "write"
+        ]
+        self.assertFalse(
+            local_temporal_lineage_audit(missing_started)["valid"]
+        )
+        forged_arguments = copy.deepcopy(events)
+        forged_arguments[0]["event"]["invocation"]["arguments"][
+            "parsed"
+        ] = {"profile": "exact"}
+        self.assertFalse(
+            local_temporal_lineage_audit(forged_arguments)["valid"]
+        )
+        missing_evidence = copy.deepcopy(events)
+        missing_evidence[2]["event"]["outcome"].pop("evidence")
+        self.assertFalse(
+            local_temporal_lineage_audit(missing_evidence)["valid"]
+        )
+        forged_observation_revision = copy.deepcopy(events)
+        forged_observation_revision[2]["event"]["outcome"][
+            "verifier_observation"
+        ]["workspace_revision"] = changed_state["revision"]
+        self.assertFalse(
+            local_temporal_lineage_audit(forged_observation_revision)["valid"]
+        )
+
+    def test_t3_delegated_lineage_settles_the_agent_operation(self) -> None:
+        before = {
+            "generation": 1,
+            "revision": {"status": "known", "sha256": "sha256:" + "a" * 64},
+        }
+        after = {
+            "generation": 2,
+            "revision": {"status": "known", "sha256": "sha256:" + "b" * 64},
+        }
+        final = {"generation": 3, "revision": after["revision"]}
+        child_receipt = {
+            "id": "receipt:child-final",
+            "lineage": {"policy": "failed_write_pass"},
+        }
+        root_receipt = {
+            "id": "receipt:root-final",
+            "workspace_state": final,
+            "lineage": {
+                "policy": "delegated_failed_write_pass",
+                "child_run_id": "child-run",
+                "child_receipt_id": child_receipt["id"],
+                "integration": {
+                    "operation_id": "integration",
+                    "workspace_state_before": before,
+                    "workspace_state_after": after,
+                },
+            },
+        }
+        task = {
+            "task_id": "writer-task",
+            "call_id": "agent-call",
+            "child_run_id": "child-run",
+        }
+        root_events = [
+            {
+                "sequence": 1,
+                "event": {
+                    "kind": "tool_prepared",
+                    "operation_id": "agent-operation",
+                    "invocation": {"name": "agent", "call_id": "agent-call"},
+                },
+            },
+            {
+                "sequence": 2,
+                "event": {
+                    "kind": "tool_execution_started",
+                    "operation_id": "agent-operation",
+                },
+            },
+            {"sequence": 3, "event": {"kind": "agent_task_prepared", "task": task}},
+            {
+                "sequence": 4,
+                "event": {
+                    "kind": "child_started",
+                    "child_run_id": "child-run",
+                },
+            },
+            {"sequence": 5, "event": {"kind": "agent_seal_prepared"}},
+            {"sequence": 6, "event": {"kind": "agent_seal_committed"}},
+            {
+                "sequence": 7,
+                "event": {
+                    "kind": "agent_result_collected",
+                    "outcome": {"details": {"evidence": [child_receipt]}},
+                },
+            },
+            {
+                "sequence": 8,
+                "event": {
+                    "kind": "agent_integration_prepared",
+                    "integration_id": "integration",
+                    "expected_root_workspace_state": before,
+                },
+            },
+            {
+                "sequence": 9,
+                "event": {
+                    "kind": "agent_integration_started",
+                    "integration_id": "integration",
+                },
+            },
+            {
+                "sequence": 10,
+                "event": {
+                    "kind": "agent_integration_committed",
+                    "integration_id": "integration",
+                    "root_workspace_state_after": after,
+                },
+            },
+            {
+                "sequence": 11,
+                "event": {
+                    "kind": "tool_outcome_committed",
+                    "operation_id": "agent-operation",
+                    "call_id": "agent-call",
+                    "name": "agent",
+                    "workspace_state": after,
+                    "outcome": {
+                        "invocation": "accepted",
+                        "transport": "succeeded",
+                        "operation": "succeeded",
+                        "side_effect": "applied",
+                    },
+                },
+            },
+            {
+                "sequence": 12,
+                "event": {
+                    "kind": "host_verification_committed",
+                    "receipt": root_receipt,
+                },
+            },
+        ]
+        child_events = [
+            {
+                "sequence": 1,
+                "event": {
+                    "kind": "run_created",
+                    "request": {"run_id": "child-run"},
+                },
+            },
+            {
+                "sequence": 2,
+                "event": {
+                    "kind": "host_verification_committed",
+                    "receipt": child_receipt,
+                },
+            },
+        ]
+        with mock.patch(
+            f"{__name__}.local_temporal_lineage_audit",
+            return_value={"valid": True},
+        ):
+            self.assertTrue(
+                delegated_temporal_lineage_audit(root_events, child_events)[
+                    "valid"
+                ]
+            )
+            forged = copy.deepcopy(root_events)
+            forged[10]["event"]["workspace_state"] = before
+            self.assertFalse(
+                delegated_temporal_lineage_audit(forged, child_events)["valid"]
+            )
+            impossible_order = copy.deepcopy(root_events)
+            impossible_order[0]["sequence"] = 4
+            self.assertFalse(
+                delegated_temporal_lineage_audit(
+                    impossible_order, child_events
+                )["valid"]
+            )
+
+    def test_writer_cleanup_plan_and_result_are_typed(self) -> None:
+        task_id = "task-1"
+        task = {
+            "task_id": task_id,
+            "workspace": {
+                "allowed_paths": ["retry_window.py"],
+                "base_commit": "a" * 40,
+            }
+        }
+        seal = {
+            "final_commit": "b" * 40,
+            "diff_sha256": "c" * 64,
+            "changed_files": ["retry_window.py"],
+        }
+        plan = {
+            "phase": "post_integration",
+            "reason_code": "writer_integrated",
+            "ownership": {"state": "known", "identity_sha256": "d" * 64},
+            "artifact_state": {
+                "state": "known_host_sealed",
+                "final_commit": seal["final_commit"],
+                "diff_sha256": seal["diff_sha256"],
+            },
+            "scope": {
+                "state": "known",
+                "workspace_revision": {
+                    "status": "known",
+                    "sha256": "e" * 64,
+                },
+                "changed_count": 1,
+                "in_scope_count": 1,
+                "out_of_scope_count": 0,
+                "path_set_sha256": writer_path_set_sha256(
+                    ["retry_window.py"]
+                ),
+            },
+            "mode": {
+                "mode": "remove_exact",
+                "expected_branch_commit": seal["final_commit"],
+            },
+        }
+
+        def events(
+            result: dict[str, Any],
+            terminal: dict[str, Any] | None = None,
+            context: str = "integrated",
+        ) -> list[dict[str, Any]]:
+            if context == "integrated":
+                values = [
+                    {
+                        "sequence": 1,
+                        "event": {"kind": "agent_integration_committed"},
+                    }
+                ]
+            elif context == "seal":
+                values = [
+                    {
+                        "sequence": 1,
+                        "event": {"kind": "child_started"},
+                    },
+                    {
+                        "sequence": 2,
+                        "event": {"kind": "agent_seal_prepared"},
+                    },
+                ]
+            else:
+                values = [
+                    {
+                        "sequence": 1,
+                        "event": {"kind": "child_started"},
+                    },
+                    {
+                        "sequence": 2,
+                        "event": {
+                            "kind": "agent_result_collected",
+                            "outcome": {
+                                "terminal": {"state": "failed"}
+                            },
+                        },
+                    },
+                ]
+            sequence = len(values) + 1
+            values.extend([
+                {
+                    "sequence": sequence,
+                    "event": {
+                        "kind": "agent_cleanup_prepared",
+                        "task_id": task_id,
+                        "plan": copy.deepcopy(plan),
+                    },
+                },
+                {
+                    "sequence": sequence + 1,
+                    "event": {
+                        "kind": "agent_cleanup_committed",
+                        "task_id": task_id,
+                        "result": result,
+                    },
+                },
+            ])
+            if terminal is not None:
+                values.append(
+                    {
+                        "sequence": sequence + 2,
+                        "event": {
+                            "kind": "terminal",
+                            "outcome": {"terminal": terminal},
+                        },
+                    }
+                )
+            return values
+
+        removed = writer_cleanup_summary(
+            task_id,
+            events(
+                {
+                    "status": "removed",
+                    "worktree": "removed",
+                    "branch": "already_absent",
+                }
+            ),
+            task,
+            seal,
+            {"root_workspace_state_after": {}},
+        )
+        self.assertTrue(removed["identity_valid"], removed)
+        self.assertTrue(removed["settled"])
+
+        seal_failure_plan = copy.deepcopy(plan)
+        seal_failure_plan["phase"] = "seal"
+        seal_failure_plan["reason_code"] = "writer_seal_failed"
+        seal_failure_plan["artifact_state"] = {"state": "known_unsealed"}
+        seal_failure_plan["mode"]["expected_branch_commit"] = task[
+            "workspace"
+        ]["base_commit"]
+        seal_failure_events = events(
+            {"status": "already_absent"}, context="seal"
+        )
+        seal_failure_prepared = next(
+            stored
+            for stored in seal_failure_events
+            if event_kind(stored) == "agent_cleanup_prepared"
+        )
+        seal_failure_prepared["event"]["plan"] = seal_failure_plan
+        seal_failure = writer_cleanup_summary(
+            task_id,
+            seal_failure_events,
+            task,
+            {},
+            {},
+        )
+        self.assertTrue(seal_failure["identity_valid"], seal_failure)
+        self.assertTrue(seal_failure["settled"])
+
+        uncertainty = "git_worktree_remove_failed"
+        retained = writer_cleanup_summary(
+            task_id,
+            events(
+                {
+                    "status": "retained",
+                    "worktree": "retained",
+                    "branch": "removed",
+                    "metadata": "clear",
+                    "uncertainty_code": uncertainty,
+                },
+                {
+                    "state": "recovery_required",
+                    "ambiguity": {
+                        "phase": "child_run",
+                        "action_id": f"agent-cleanup:{task_id}",
+                        "message": uncertainty,
+                    },
+                },
+            ),
+            task,
+            seal,
+            {"root_workspace_state_after": {}},
+        )
+        self.assertTrue(retained["identity_valid"], retained)
+        self.assertTrue(retained["retained"])
+
+        uncertainty = "writer_inspection_failed"
+        uncertain_plan = copy.deepcopy(plan)
+        uncertain_plan["phase"] = "child"
+        uncertain_plan["reason_code"] = "writer_child_failed"
+        uncertain_plan["ownership"] = {
+            "state": "unknown",
+            "uncertainty_code": uncertainty,
+        }
+        uncertain_plan["artifact_state"] = {"state": "unknown"}
+        uncertain_plan["scope"] = {
+            "state": "unknown",
+            "uncertainty_code": uncertainty,
+        }
+        uncertain_plan["mode"] = {
+            "mode": "retain_for_recovery",
+            "uncertainty_code": uncertainty,
+        }
+        uncertain_events = events(
+            {
+                "status": "retained",
+                "worktree": "retained",
+                "branch": "retained",
+                "metadata": "clear",
+                "uncertainty_code": uncertainty,
+            },
+            {
+                "state": "recovery_required",
+                "ambiguity": {
+                    "phase": "child_run",
+                    "action_id": f"agent-cleanup:{task_id}",
+                    "message": uncertainty,
+                },
+            },
+            context="child",
+        )
+        cleanup_prepared = next(
+            stored
+            for stored in uncertain_events
+            if event_kind(stored) == "agent_cleanup_prepared"
+        )
+        cleanup_prepared["event"]["plan"] = uncertain_plan
+        uncertain = writer_cleanup_summary(
+            task_id,
+            uncertain_events,
+            task,
+            {},
+            {},
+        )
+        self.assertTrue(uncertain["identity_valid"], uncertain)
+        self.assertTrue(uncertain["retained"])
+
+        malformed_plan_events = events({"status": "already_absent"})
+        malformed_prepared = next(
+            stored
+            for stored in malformed_plan_events
+            if event_kind(stored) == "agent_cleanup_prepared"
+        )
+        malformed_prepared["event"]["plan"]["scope"][
+            "path_set_sha256"
+        ] = "sha256:wrong"
+        malformed = writer_cleanup_summary(
+            task_id,
+            malformed_plan_events,
+            task,
+            seal,
+            {"root_workspace_state_after": {}},
+        )
+        self.assertFalse(malformed["identity_valid"])
+        self.assertIn(
+            "writer_cleanup_scope_hash", malformed["identity_reasons"]
+        )
+
+    def test_state_schema_is_read_only_and_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            connection = sqlite3.connect(root / "state.db")
+            connection.execute(f"PRAGMA user_version = {STATE_SCHEMA}")
+            connection.close()
+            self.assertTrue(state_schema_summary(root)["valid"])
+            connection = sqlite3.connect(root / "state.db")
+            connection.execute(f"PRAGMA user_version = {STATE_SCHEMA - 1}")
+            connection.close()
+            self.assertFalse(state_schema_summary(root)["valid"])
+
+    def test_hard_stop_distinguishes_product_failure_from_bad_measurement(self) -> None:
+        product_failure = {
+            "measurement_valid": True,
+            "product_outcome_observed": True,
+            "verified_success": False,
+            "false_success": False,
+            "treatment": "writer",
+            "path_scope_valid": True,
+            "git": {"leak_free": True},
+            "writer": {
+                "integration_failures": 0,
+                "event_counts": {},
+                "cleanup": {"retained": False},
+            },
+            "treatment_audit": {"root_direct_write_violation": False},
+        }
+        self.assertEqual(arm_hard_stop_reasons(product_failure), [])
+        writer_root_write = copy.deepcopy(product_failure)
+        writer_root_write["treatment_audit"][
+            "root_direct_write_violation"
+        ] = True
+        self.assertEqual(
+            arm_hard_stop_reasons(writer_root_write),
+            ["writer_root_direct_write"],
+        )
+        single_root_write = copy.deepcopy(writer_root_write)
+        single_root_write["treatment"] = "single"
+        self.assertEqual(arm_hard_stop_reasons(single_root_write), [])
+        bad_measurement = {
+            **product_failure,
+            "measurement_valid": False,
+            "measurement_invalid_reasons": ["catalog_definition_hash"],
+            "false_success": True,
+        }
+        self.assertEqual(
+            arm_hard_stop_reasons(bad_measurement),
+            ["catalog_definition_hash"],
+        )
+        self.assertEqual(arm_hard_mechanism_reasons(bad_measurement), [])
 
 
 def run_self_tests() -> int:
@@ -4010,11 +6285,6 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 result_redacted(progress, key)
                 atomic_write_json(partial, progress)
-                if (
-                    arm.get("api_exposure") == "none"
-                    and arm.get("resample_eligible") is True
-                ):
-                    break
                 post_execution = known_execution_metrics(
                     accepted_pairs, [*invalid_attempts, pair]
                 )
@@ -4023,7 +6293,6 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 if arm.get("requests", {}).get("billing_unknown") is True:
                     pair["measurement_valid"] = False
-                    pair["resample_eligible"] = False
                     pair["unknown_billing_stop"] = True
                     invalid_attempts.append(pair)
                     return finalize_result(
@@ -4042,13 +6311,38 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                             ],
                         },
                     )
+                hard_stop = arm_hard_stop_reasons(arm)
+                if hard_stop:
+                    hard_mechanism_reasons = arm_hard_mechanism_reasons(arm)
+                    pair["measurement_valid"] = False
+                    pair["hard_stop_reasons"] = hard_stop
+                    invalid_attempts.append(pair)
+                    return finalize_result(
+                        args,
+                        key,
+                        identity,
+                        accepted_pairs,
+                        invalid_attempts,
+                        suite_started,
+                        "aborted_hard_gate",
+                        {
+                            "reason": hard_stop[0],
+                            "reasons": hard_stop,
+                            "hard_mechanism_failure": bool(
+                                hard_mechanism_reasons
+                            ),
+                            "hard_mechanism_reasons": hard_mechanism_reasons,
+                            "task_id": planned["task_id"],
+                            "pair_index": planned["pair_index"],
+                            "arm_position": arm_position,
+                        },
+                    )
                 if (
                     arm_known_cost > reserve_nanousd
                     or post_execution["known_cost_nanousd"]
                     > suite_limit_nanousd
                 ):
                     pair["measurement_valid"] = False
-                    pair["resample_eligible"] = False
                     pair["cost_boundary_exceeded"] = True
                     invalid_attempts.append(pair)
                     return finalize_result(
@@ -4087,29 +6381,6 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
             atomic_write_json(partial, progress)
             if accepted:
                 break
-            if not pair["resample_eligible"]:
-                return finalize_result(
-                    args,
-                    key,
-                    identity,
-                    accepted_pairs,
-                    invalid_attempts,
-                    suite_started,
-                    "aborted_non_resampleable_measurement_gap",
-                    {
-                        "pair_id": pair["pair_id"],
-                        "reason": (
-                            "product_failure_and_measurement_gap"
-                            if pair[
-                                "mixed_product_failure_and_measurement_gap"
-                            ]
-                            else "unobserved_model_execution"
-                            if pair["unobserved_model_execution"]
-                            else "invalid_not_resample_eligible"
-                        ),
-                    },
-                )
-        if not accepted:
             return finalize_result(
                 args,
                 key,
@@ -4117,14 +6388,12 @@ def live(args: argparse.Namespace) -> dict[str, Any]:
                 accepted_pairs,
                 invalid_attempts,
                 suite_started,
-                "aborted_pair_attempts_exhausted",
+                "aborted_hard_gate",
                 {
-                    "task_id": planned["task_id"],
-                    "pair_index": planned["pair_index"],
-                    "reason": "pair_measurement_attempts_exhausted",
+                    "pair_id": pair["pair_id"],
+                    "reason": "measurement_invalid_without_arm_stop",
                 },
             )
-
     try:
         validate_live_identity(
             identity,
@@ -4167,7 +6436,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--output",
         type=Path,
-        default=ROOT / "eval/results/m6-b1-writer-benefit-ab.json",
+        default=ROOT / "eval/results/m6-b1-writer-benefit-ab-v3.json",
     )
     return result
 
@@ -4179,7 +6448,7 @@ def main() -> int:
     if args.freeze_hashes:
         print(
             json.dumps(
-                freeze_identity(),
+                manifest_freeze_fields(),
                 ensure_ascii=False,
                 indent=2,
                 sort_keys=True,

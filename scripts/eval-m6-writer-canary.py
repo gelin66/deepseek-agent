@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA, RUN_API, EVENT_API = "codewhale.eval.m6-writer-canary.v1", 7, 10
+SCHEMA, RUN_API, EVENT_API = "codewhale.eval.m6-writer-canary.v1", 9, 13
 MODEL, MODELS = "deepseek-v4-flash", ("deepseek-v4-flash", "deepseek-v4-pro")
 FILE, BEFORE, AFTER = "answer.txt", b"before\n", b"after\n"
 MAX_REQUESTS, RUNTIME_SECONDS = 10, 420
@@ -304,6 +304,7 @@ def start_command(workspace: Path, python: Path, model: str, request_id: str) ->
             "tool_policy": {"enabled": True, "allowed": ROOT_TOOLS, "denied": []},
             "limits": limits,
             "controls": {
+                "write_execution_mode": "isolated_writer",
                 "auto_approve": True,
                 "trust_mode": False,
                 "allow_sandbox_elevation": False,
@@ -790,6 +791,7 @@ def audit(
         and seal.get("final_commit") != base
         and seal.get("changed_files") == [FILE]
         and isinstance(seal.get("diff_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", seal["diff_sha256"])
         and seal.get("writer_workspace_state_after") != child_receipt.get("workspace_state"),
         "seal_invalid",
     )
@@ -842,14 +844,54 @@ def audit(
         root_id,
     )
     check_post_integration_receipt(integrated_state, root_receipt.get("workspace_state"))
-    cleanup = one(root, "agent_cleanup_committed")
+    cleanup_plan = one(root, "agent_cleanup_prepared").get("plan", {})
+    cleanup = one(root, "agent_cleanup_committed").get("result", {})
+    ownership = cleanup_plan.get("ownership", {})
+    artifact = cleanup_plan.get("artifact_state", {})
+    scope = cleanup_plan.get("scope", {})
+    cleanup_revision = scope.get("workspace_revision", {})
+    mode = cleanup_plan.get("mode", {})
+    expected_path_digest = hashlib.sha256(
+        json.dumps([FILE], ensure_ascii=False, separators=(",", ":")).encode()
+    ).hexdigest()
+    cleanup_result_valid = (
+        cleanup.get("status") == "already_absent"
+        or (
+            cleanup.get("status") == "removed"
+            and cleanup.get("worktree") in {"removed", "already_absent"}
+            and cleanup.get("branch") in {"removed", "already_absent"}
+            and not (
+                cleanup.get("worktree") == "already_absent"
+                and cleanup.get("branch") == "already_absent"
+            )
+        )
+    )
     if (
-        cleanup.get("worktree_path") != assignment.get("worktree_path")
-        or cleanup.get("branch") != assignment.get("branch")
-        or cleanup.get("worktree_removed") is not True
-        or cleanup.get("branch_removed") is not True
-        or cleanup.get("retained_for_recovery") is not False
-        or cleanup.get("reason") is not None
+        cleanup_plan.get("phase") != "post_integration"
+        or cleanup_plan.get("reason_code") != "writer_integrated"
+        or ownership.get("state") != "known"
+        or not isinstance(ownership.get("identity_sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", ownership["identity_sha256"])
+        or artifact
+        != {
+            "state": "known_host_sealed",
+            "final_commit": seal.get("final_commit"),
+            "diff_sha256": seal.get("diff_sha256"),
+        }
+        or scope.get("state") != "known"
+        or cleanup_revision.get("status") != "known"
+        or not isinstance(cleanup_revision.get("sha256"), str)
+        or not re.fullmatch(r"[0-9a-f]{64}", cleanup_revision["sha256"])
+        or scope.get("changed_count") != 1
+        or scope.get("in_scope_count") != 1
+        or scope.get("out_of_scope_count") != 0
+        or scope.get("path_set_sha256") != expected_path_digest
+        or mode
+        != {
+            "mode": "remove_exact",
+            "expected_branch_commit": seal.get("final_commit"),
+        }
+        or not cleanup_result_valid
     ):
         raise Failure("root_receipt_or_cleanup_invalid")
     ordered(
@@ -1335,7 +1377,7 @@ def self_test() -> None:
             "-c",
             (
                 "import json,sys; request=json.loads(sys.stdin.readline()); "
-                "print(json.dumps({'schema_version':7,"
+                f"print(json.dumps({{'schema_version':{RUN_API},"
                 "'request_id':request['request_id'],"
                 "'result':{'kind':'accepted','run_id':'run-1'}}),flush=True)"
             ),
