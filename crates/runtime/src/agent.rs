@@ -1591,6 +1591,15 @@ impl AgentRuntime {
             }
         };
         let writer = launch.workspace_access == AgentWorkspaceAccess::IsolatedWrite;
+        if writer
+            && state.snapshot.request.environment.write_execution_mode
+                != WriteExecutionMode::IsolatedWriter
+        {
+            return Ok(ToolOutcome::rejected(
+                "writer_not_enabled：当前运行未显式启用隔离 Writer",
+                ToolRetryDisposition::NotRetryable,
+            ));
+        }
         if writer && state.snapshot.request.actor.depth != 0 {
             return Ok(ToolOutcome::rejected(
                 "writer_root_only：M6-A 隔离写入只允许由 root Agent 启动",

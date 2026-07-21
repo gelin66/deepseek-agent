@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 mod run_store;
 
-const STATE_SCHEMA_VERSION: u32 = 15;
+const STATE_SCHEMA_VERSION: u32 = 16;
 
 // Re-export protocol's ThreadStatus so callers in the state crate and
 // external consumers (e.g. core) can reference a single canonical definition.
@@ -311,6 +311,17 @@ impl StateStore {
             tx.execute("DELETE FROM agent_runs", [])
                 .context("failed to retire pre-Orchestrator canonical run state")?;
         }
+        if user_version < 16 {
+            // RuntimeEvent v11 freezes Writer admission in every RunRequest.
+            // Retire incompatible runtime rows before any historical
+            // snapshot backfill attempts to deserialize the old request.
+            if sqlite_table_exists(&tx, "agent_run_creations")? {
+                tx.execute("DELETE FROM agent_run_creations", [])
+                    .context("failed to retire pre-Writer-admission creation state")?;
+            }
+            tx.execute("DELETE FROM agent_runs", [])
+                .context("failed to retire pre-Writer-admission canonical run state")?;
+        }
         if user_version < 6 {
             tx.execute_batch(
                 r#"
@@ -451,6 +462,11 @@ impl StateStore {
             tx.pragma_update(None, "user_version", 15)
                 .context("failed to commit terminal accounting snapshot schema version")?;
             user_version = 15;
+        }
+        if user_version < 16 {
+            tx.pragma_update(None, "user_version", 16)
+                .context("failed to commit Writer admission state cutover")?;
+            user_version = 16;
         }
         debug_assert_eq!(user_version, STATE_SCHEMA_VERSION);
         tx.commit()

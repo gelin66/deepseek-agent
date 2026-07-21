@@ -324,6 +324,7 @@ pub(crate) async fn run_exec_runtime(
                     remaining_runtime_ms,
                 ),
                 controls: RunProductControls {
+                    write_execution_mode: Default::default(),
                     auto_approve,
                     trust_mode,
                     allow_sandbox_elevation,

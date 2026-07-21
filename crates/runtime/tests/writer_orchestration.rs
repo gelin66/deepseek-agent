@@ -773,6 +773,7 @@ fn root_request(exact_verifier: bool, auto_approve: bool) -> RunRequest {
     );
     request.run_id = Some(run_id);
     request.environment.workspace = ROOT_WORKSPACE.to_owned();
+    request.environment.write_execution_mode = WriteExecutionMode::IsolatedWriter;
     request.environment.auto_approve = auto_approve;
     request.context_policy.hard_input_tokens = 900_000;
     request.limits.max_model_requests = 32;
@@ -1765,6 +1766,30 @@ async fn failed_turn_limited_writer_with_retained_cleanup_is_recovery_required()
             .count(),
         7,
     );
+}
+
+#[tokio::test]
+async fn isolated_writer_requires_explicit_product_admission() {
+    let RuntimeFixture {
+        runtime,
+        orchestrator,
+        store,
+        ..
+    } = runtime_fixture(ModelScript::RejectWriter);
+    let mut request = root_request(true, true);
+    request.environment.write_execution_mode = WriteExecutionMode::Root;
+    let outcome = runtime.start(request).wait().await.unwrap();
+    assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
+    let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
+    assert!(replay.snapshot.agent_tasks.is_empty());
+    assert_eq!(orchestrator.prepare_calls.load(Ordering::Acquire), 0);
+    assert!(replay.events.iter().any(|event| matches!(
+        &event.event,
+        RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
+            if outcome.content.contains("writer_not_enabled")
+                && outcome.invocation == ToolInvocationStatus::Rejected
+                && outcome.side_effect == ToolSideEffectStatus::NotApplied
+    )));
 }
 
 #[tokio::test]

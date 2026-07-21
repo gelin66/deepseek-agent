@@ -382,6 +382,7 @@ impl RunComposition for ProductionComposition {
                 provider: DEEPSEEK_PROVIDER.to_owned(),
                 tool_catalog_sha256: Some(tool_catalog_sha256),
                 execution_fingerprint_sha256: Some(execution_fingerprint_sha256),
+                write_execution_mode: command.controls.write_execution_mode,
                 auto_approve: command.controls.auto_approve,
                 trust_mode: command.controls.trust_mode,
                 allow_sandbox_elevation: command.controls.allow_sandbox_elevation,
@@ -418,6 +419,7 @@ impl RunComposition for ProductionComposition {
         }
         let workspace = canonical_resume_workspace(&run_id, &request.environment.workspace)?;
         let controls = RunProductControls {
+            write_execution_mode: request.environment.write_execution_mode,
             auto_approve: request.environment.auto_approve,
             trust_mode: request.environment.trust_mode,
             allow_sandbox_elevation: request.environment.allow_sandbox_elevation,
@@ -533,6 +535,7 @@ impl RunComposition for ProductionComposition {
         let workspace =
             canonical_resume_workspace(&source_run_id, &source_request.environment.workspace)?;
         let controls = RunProductControls {
+            write_execution_mode: source_request.environment.write_execution_mode,
             auto_approve: source_request.environment.auto_approve,
             trust_mode: source_request.environment.trust_mode,
             allow_sandbox_elevation: source_request.environment.allow_sandbox_elevation,
@@ -613,6 +616,7 @@ impl RunComposition for ProductionComposition {
                 provider: DEEPSEEK_PROVIDER.to_owned(),
                 tool_catalog_sha256: Some(tool_catalog_sha256),
                 execution_fingerprint_sha256: Some(execution_fingerprint_sha256),
+                write_execution_mode: controls.write_execution_mode,
                 auto_approve: controls.auto_approve,
                 trust_mode: controls.trust_mode,
                 allow_sandbox_elevation: controls.allow_sandbox_elevation,
@@ -1236,6 +1240,7 @@ mod tests {
                 ..RunLimits::default()
             },
             controls: RunProductControls {
+                write_execution_mode: Default::default(),
                 auto_approve: true,
                 trust_mode: false,
                 allow_sandbox_elevation: false,
@@ -1321,6 +1326,7 @@ mod tests {
     ) -> RunRequest {
         let workspace = workspace.canonicalize().expect("canonical workspace");
         let controls = RunProductControls {
+            write_execution_mode: Default::default(),
             auto_approve: true,
             trust_mode: false,
             allow_sandbox_elevation: false,
@@ -1338,6 +1344,7 @@ mod tests {
         request.environment = RunEnvironment {
             workspace: stable_path(&workspace),
             provider: DEEPSEEK_PROVIDER.to_owned(),
+            write_execution_mode: controls.write_execution_mode,
             auto_approve: controls.auto_approve,
             trust_mode: controls.trust_mode,
             allow_sandbox_elevation: controls.allow_sandbox_elevation,
@@ -2260,6 +2267,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp workspace");
         let mut command = start_command(temp.path(), None);
         command.tool_policy.allowed = Some(vec!["read_file".to_owned()]);
+        command.controls.write_execution_mode =
+            codewhale_protocol::agent_runtime::WriteExecutionMode::IsolatedWriter;
         command.controls.trust_mode = true;
         command.controls.sandbox = Some("workspace-write".to_owned());
         command.limits.wall_time_ms = Some(60_000);
@@ -2316,6 +2325,10 @@ mod tests {
         assert_eq!(persisted.environment.provider, DEEPSEEK_PROVIDER);
         assert!(persisted.environment.tool_catalog_sha256.is_some());
         assert!(persisted.environment.execution_fingerprint_sha256.is_some());
+        assert_eq!(
+            persisted.environment.write_execution_mode,
+            command.controls.write_execution_mode
+        );
         assert!(persisted.environment.auto_approve);
         assert!(persisted.environment.trust_mode);
         assert_eq!(

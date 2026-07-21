@@ -1613,6 +1613,7 @@ mod tests {
         };
         request.environment = RunEnvironment {
             workspace: command.workspace,
+            write_execution_mode: command.controls.write_execution_mode,
             auto_approve: command.controls.auto_approve,
             trust_mode: command.controls.trust_mode,
             allow_sandbox_elevation: command.controls.allow_sandbox_elevation,

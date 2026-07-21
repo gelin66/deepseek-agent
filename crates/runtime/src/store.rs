@@ -1394,6 +1394,15 @@ pub fn apply_event(
                 AgentWorkspaceAccess::ReadOnly => WorkspaceAccess::ReadOnly,
                 AgentWorkspaceAccess::IsolatedWrite => WorkspaceAccess::MayWrite,
             };
+            if task.workspace.access == AgentWorkspaceAccess::IsolatedWrite
+                && snapshot.request.environment.write_execution_mode
+                    != WriteExecutionMode::IsolatedWriter
+            {
+                return Err(corrupt(
+                    &run_id,
+                    "isolated writer task was prepared without explicit Writer admission",
+                ));
+            }
             if pending.state != DurableActionState::InFlight
                 || pending.invocation.name != AGENT_TOOL_NAME
                 || pending.invocation.call_id != task.call_id

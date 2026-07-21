@@ -1999,7 +1999,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 15);
+    assert_eq!(user_version, 16);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count retired v5 runs");
@@ -2018,7 +2018,7 @@ async fn v5_migration_retires_incompatible_pre_orchestrator_runs() {
 }
 
 #[tokio::test]
-async fn v15_migration_rebuilds_terminal_accounting_from_the_canonical_outcome() {
+async fn v16_cutover_retires_v15_runtime_rows_instead_of_upgrading_authority() {
     let path = temp_state_path("v15_terminal_accounting");
     let store = StateStore::open(Some(path.clone())).expect("open current state");
     let created = store
@@ -2079,30 +2079,23 @@ async fn v15_migration_rebuilds_terminal_accounting_from_the_canonical_outcome()
         .expect("mark v14 fixture");
     drop(conn);
 
-    let migrated = StateStore::open(Some(path.clone())).expect("migrate state v15");
-    let replay = migrated
-        .load(&created.lease.run_id)
-        .await
-        .expect("load migrated replay")
-        .expect("migrated replay exists");
-    assert_eq!(replay.snapshot.accounting, terminal_accounting);
-    assert_eq!(
-        replay
-            .snapshot
-            .terminal
-            .as_ref()
-            .map(|outcome| &outcome.accounting),
-        Some(&terminal_accounting),
+    let migrated = StateStore::open(Some(path.clone())).expect("apply state v16 cutover");
+    assert!(
+        migrated
+            .load(&created.lease.run_id)
+            .await
+            .expect("query retired runtime row")
+            .is_none()
     );
-    let conn = Connection::open(path).expect("inspect v15 database");
+    let conn = Connection::open(path).expect("inspect v16 database");
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 15);
+    assert_eq!(user_version, 16);
 }
 
 #[tokio::test]
-async fn v15_migration_rejects_unrelated_terminal_snapshot_corruption() {
+async fn v16_cutover_retires_corrupt_v15_snapshot_before_deserialization() {
     let path = temp_state_path("v15_terminal_accounting_corrupt");
     let store = StateStore::open(Some(path.clone())).expect("open current state");
     let created = store
@@ -2158,12 +2151,19 @@ async fn v15_migration_rejects_unrelated_terminal_snapshot_corruption() {
         .expect("mark corrupt v14 fixture");
     drop(conn);
 
-    let error = StateStore::open(Some(path)).expect_err("v15 must reject unrelated corruption");
-    let rendered = format!("{error:#}");
+    let migrated = StateStore::open(Some(path.clone())).expect("apply state v16 cutover");
     assert!(
-        rendered.contains("v14 snapshot disagrees with canonical replay"),
-        "{rendered}",
+        migrated
+            .load(&created.lease.run_id)
+            .await
+            .expect("query retired corrupt runtime row")
+            .is_none()
     );
+    let conn = Connection::open(path).expect("inspect v16 database");
+    let user_version: u32 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .expect("read migrated version");
+    assert_eq!(user_version, 16);
 }
 
 #[tokio::test]
@@ -2185,7 +2185,7 @@ async fn v9_migration_retires_incompatible_catalog_run_without_replaying_it() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 15);
+    assert_eq!(user_version, 16);
 }
 
 #[tokio::test]
@@ -2209,7 +2209,7 @@ async fn corrupt_v9_snapshot_is_retired_instead_of_blocking_the_v14_cutover() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated version");
-    assert_eq!(user_version, 15);
+    assert_eq!(user_version, 16);
 }
 
 #[tokio::test]
@@ -2301,7 +2301,7 @@ async fn v10_migration_deletes_retired_state_and_incompatible_run_replay() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated state version");
-    assert_eq!(user_version, 15);
+    assert_eq!(user_version, 16);
     for table in [
         "thread_goals",
         "thread_dynamic_tools",
@@ -2355,7 +2355,7 @@ fn corrupt_v5_run_is_retired_before_any_legacy_projection_backfill() {
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read migrated schema version");
-    assert_eq!(user_version, 15);
+    assert_eq!(user_version, 16);
     let remaining_runs: i64 = conn
         .query_row("SELECT COUNT(*) FROM agent_runs", [], |row| row.get(0))
         .expect("count incompatible runs");
@@ -2424,7 +2424,7 @@ async fn v14_cutover_deletes_only_old_runtime_state_and_preserves_local_evidence
     let user_version: u32 = conn
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .expect("read current state version");
-    assert_eq!(user_version, 15);
+    assert_eq!(user_version, 16);
     for table in [
         "agent_run_creations",
         "agent_runs",
@@ -2540,7 +2540,7 @@ fn two_state_stores_can_open_and_migrate_a_fresh_database_concurrently() {
         let user_version: u32 = conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .expect("read concurrent schema version");
-        assert_eq!(user_version, 15);
+        assert_eq!(user_version, 16);
         let journal_mode: String = conn
             .query_row("PRAGMA journal_mode", [], |row| row.get(0))
             .expect("read concurrent journal mode");
@@ -2832,13 +2832,13 @@ async fn sqlite_and_memory_reject_stale_receipt_after_same_hash_write_epoch() {
 fn newer_database_schema_fails_closed() {
     let path = temp_state_path("future_schema");
     let conn = Connection::open(&path).expect("open sqlite");
-    conn.pragma_update(None, "user_version", 16)
+    conn.pragma_update(None, "user_version", 17)
         .expect("set future version");
     drop(conn);
     let error = StateStore::open(Some(path)).expect_err("future schema must fail");
     assert!(
         error
             .to_string()
-            .contains("newer than supported version 15")
+            .contains("newer than supported version 16")
     );
 }

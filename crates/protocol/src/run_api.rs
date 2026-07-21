@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent_runtime::{
     InteractionId, ModelAccounting, ReasoningEffort, RunId, RunLimits, StoredRuntimeEvent,
-    TerminalState, ToolPolicy, Usage, UserInteractionResponse,
+    TerminalState, ToolPolicy, Usage, UserInteractionResponse, WriteExecutionMode,
 };
 use crate::task::{TaskContract, TaskDefinition};
 
 /// Current schema version for Run API command and response envelopes.
-pub const RUN_API_SCHEMA_VERSION: u32 = 7;
+pub const RUN_API_SCHEMA_VERSION: u32 = 8;
 pub const DEFAULT_RUN_LIST_LIMIT: u32 = 50;
 pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 
@@ -28,6 +28,10 @@ pub const MAX_RUN_LIST_LIMIT: u32 = 200;
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct RunProductControls {
+    /// Workspace writes run in the root by default. An isolated Writer is a
+    /// separate, explicit product treatment and never follows from depth.
+    #[serde(default)]
+    pub write_execution_mode: WriteExecutionMode,
     #[serde(default)]
     pub auto_approve: bool,
     #[serde(default)]
@@ -342,6 +346,7 @@ mod tests {
                 wall_time_ms: Some(600_000),
             },
             controls: RunProductControls {
+                write_execution_mode: Default::default(),
                 auto_approve: true,
                 trust_mode: false,
                 allow_sandbox_elevation: false,
@@ -389,7 +394,7 @@ mod tests {
         assert_eq!(
             encoded,
             json!({
-                "schema_version": 7,
+                "schema_version": 8,
                 "request_id": "request-1",
                 "command": {
                     "kind": "start",
@@ -425,6 +430,7 @@ mod tests {
                         "wall_time_ms": 600000
                     },
                     "controls": {
+                        "write_execution_mode": "root",
                         "auto_approve": true,
                         "trust_mode": false,
                         "allow_sandbox_elevation": false,
@@ -460,6 +466,30 @@ mod tests {
         let decoded: RunCommandEnvelope =
             serde_json::from_value(encoded).expect("round-trip start command");
         assert_eq!(decoded, envelope);
+    }
+
+    #[test]
+    fn writer_admission_is_explicit_and_defaults_to_root_writes() {
+        let mut encoded = serde_json::to_value(start_command()).expect("serialize command");
+        encoded
+            .get_mut("controls")
+            .and_then(Value::as_object_mut)
+            .expect("controls object")
+            .remove("write_execution_mode");
+        let defaulted: StartRunCommand =
+            serde_json::from_value(encoded).expect("default root write mode");
+        assert_eq!(
+            defaulted.controls.write_execution_mode,
+            WriteExecutionMode::Root
+        );
+
+        let mut explicit = start_command();
+        explicit.controls.write_execution_mode = WriteExecutionMode::IsolatedWriter;
+        let round_trip: StartRunCommand = serde_json::from_value(
+            serde_json::to_value(&explicit).expect("serialize explicit Writer mode"),
+        )
+        .expect("deserialize explicit Writer mode");
+        assert_eq!(round_trip, explicit);
     }
 
     #[test]

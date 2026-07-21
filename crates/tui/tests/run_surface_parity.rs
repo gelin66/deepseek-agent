@@ -434,6 +434,7 @@ fn equivalent_start_command(exec: &RunRequest) -> StartRunCommand {
         tool_policy: exec.tool_policy.clone(),
         limits: exec.limits,
         controls: RunProductControls {
+            write_execution_mode: Default::default(),
             auto_approve: true,
             trust_mode: false,
             allow_sandbox_elevation: false,

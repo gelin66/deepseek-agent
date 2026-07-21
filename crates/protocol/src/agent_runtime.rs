@@ -17,8 +17,8 @@ use crate::task::{
     WorkspaceState,
 };
 
-pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 10;
-pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 10;
+pub const MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 11;
+pub const AGENT_RUNTIME_EVENT_SCHEMA_VERSION: u32 = 11;
 pub const AGENT_TOOL_NAME: &str = "agent";
 pub const REQUEST_USER_INPUT_TOOL_NAME: &str = "request_user_input";
 
@@ -81,6 +81,19 @@ pub enum ReasoningEffort {
 pub enum AgentActorKind {
     Root,
     Child,
+}
+
+/// Host-frozen authority for where model-authored workspace writes may run.
+///
+/// This is independent from child depth: read-only child Agents remain
+/// available in both modes, while an isolated Writer requires an explicit
+/// `IsolatedWriter` root run.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteExecutionMode {
+    #[default]
+    Root,
+    IsolatedWriter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -552,6 +565,7 @@ pub struct RunEnvironment {
     pub tool_catalog_sha256: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub execution_fingerprint_sha256: Option<String>,
+    pub write_execution_mode: WriteExecutionMode,
     pub auto_approve: bool,
     pub trust_mode: bool,
     pub allow_sandbox_elevation: bool,
@@ -2559,8 +2573,8 @@ mod tests {
 
     #[test]
     fn m6_agent_protocol_schema_versions_are_explicit_cutovers() {
-        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 10);
-        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 10);
+        assert_eq!(MIN_SUPPORTED_AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 11);
+        assert_eq!(AGENT_RUNTIME_EVENT_SCHEMA_VERSION, 11);
     }
 
     #[test]

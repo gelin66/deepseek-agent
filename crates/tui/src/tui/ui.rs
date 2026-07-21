@@ -736,6 +736,7 @@ fn canonical_start_command(app: &App, config: &Config, input: String) -> StartRu
         },
         limits,
         controls: RunProductControls {
+            write_execution_mode: Default::default(),
             auto_approve: app_auto_approve_enabled(app),
             trust_mode: app.trust_mode,
             allow_sandbox_elevation: false,
