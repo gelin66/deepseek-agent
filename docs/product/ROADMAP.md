@@ -6,21 +6,24 @@
 - 当前阶段：M4 已关闭；M5-A canonical `TaskContract`/`EvidenceReceipt` 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 结论为 `shrink`：
   保留硬上限安全压缩，删除手动和提前阈值压缩。M6-A 单 Writer isolated worktree
-  垂直闭环已完成。M6-B1 的 18 对 / 36 arms 正式 A/B 已完成并判定
-  `reject_and_rework`：保留单 Writer 隔离机制，决策要求关闭默认 admission，且不准入
-  M6-B2；当前默认关闭 cutover 尚未实现。下一步只修 verifier 卫生、actor 权限、时序
-  EvidenceReceipt 和 admission，再重新冻结 M6-B1；
+  垂直闭环已完成。M6-B1 v2 的 18 对 / 36 arms 正式 A/B 判定
+  `reject_and_rework`；rework 已完成 verifier 卫生、显式 Writer admission、Host actor
+  权限、named verifier、时序 EvidenceReceipt、精确 cleanup/recovery 和 Harness v3 冻结。
+  rework candidate `3310aa73` 的正式 v3 在第 3 个 arm 出现一次无法证明计费的
+  `deepseek_transport` 后按预注册规则立即停止，决策为 `hold_mechanism`、不具备产品指标
+  资格。它不推翻 v2 的完整产品结论：Writer 继续 explicit-only，M6-B2 不准入；
   M5-C RepoGraph 因无缺失检索证据继续延后。M4 最终代码检查点为 `65fa88ba`；
   M5-B 收缩检查点为 `e2c870b0`；M6-A 代码与真实 canary 检查点为 `a982a9a8`。
-  M6-B1 正式 A/B candidate 为 `5d72ae94`，结果为 `reject_and_rework`。
-  当前 Run API v7、RuntimeEvent v10、State schema v15。CLI、TUI、本地 API 与
+  M6-B1 v2 candidate 为 `5d72ae94`，结果为 `reject_and_rework`；rework v3
+  candidate 为 `3310aa73`，结果为 `hold_mechanism`。
+  当前 Run API v9、RuntimeEvent v13、State schema v18。CLI、TUI、本地 API 与
   根/只读子 Agent/Writer 子 Agent 已统一到
   `AgentApplication -> AgentRuntime -> RunStore`；hidden Workflow、ACP、direct review、
   旧 TUI SubAgent runtime、Classic shell、第二工具/状态/模型路由 owner 和无生产消费者的
   Goal/Memory 原型均已物理删除。focused、真实 PTY、进程级 crash/replay、严格 workspace
   Clippy 与完整 workspace tests 已通过。M1 的导入基线 A/B 与 M2 的完整官方 surface
   canary 仍是独立证据债务，不因 M4 关闭而自动完成
-- 上次更新：2026-07-21
+- 上次更新：2026-07-22
 
 本文件是唯一执行路线。产品边界见 [PRODUCT_PLAN.md](PRODUCT_PLAN.md)，评测规则见
 [EVALUATION.md](EVALUATION.md)。本文件可以根据开发证据调整顺序和实现细节，但不能
@@ -1572,17 +1575,40 @@ M6-B1 已在候选 `5d72ae94` 上完成正式同二进制 A/B：
   cell/pair、费用和归因见
   [M6-B1 Writer 收益 A/B](../../eval/summaries/m6-b1-writer-benefit-ab-2026-07-21.md)。
 
-下一执行切片仍属于 M6-B1 rework，不是新架构层：
+M6-B1 rework 已在候选 `3310aa73` 完成，不是新架构层：
 
-1. `crates/tools` 消除 verifier 生成 `__pycache__` 等 workspace 副作用；
-2. `app` / Runtime 完成 Writer 默认关闭、显式 opt-in 的 admission cutover；当前默认
-   `RunLimits` / tool policy 尚未完成这项决策；
-3. Runtime/Orchestrator 以 Host actor policy 强制 Writer root 只读，不依赖提示词；
-4. TaskContract 绑定 named frozen verifier，EvidenceReceipt 表达最小有序失败/通过事实；
-5. seal/blocked 恢复产生可诊断 reason，只在 artifact 状态确实不确定时 retained；
-6. Harness 冻结完整 tool definition hash，并保存 seal 未提交时的脱敏 scope 摘要；
-7. 离线回归通过后重新冻结同三任务；完成第 2 项前不得宣称“不默认 admission”，正式
-   A/B 重新通过前不开发双 Writer。
+1. `crates/tools` 已消除 verifier 生成 `__pycache__` 等 workspace 副作用；
+2. `app` / Runtime 已完成 Writer 默认关闭、显式 opt-in 的 admission cutover；
+3. Runtime/Orchestrator 已由 Host actor policy 强制 Writer root 只读，不依赖提示词；
+4. TaskContract 已绑定 named frozen verifier，EvidenceReceipt 已表达“失败 → 有效修改 →
+   Host 通过”的最小有序事实；
+5. seal/blocked 恢复已产生可诊断 reason；只在 artifact、resource ownership/scope、Git
+   cleanup metadata 或 exact cleanup 结果确实不确定时 retained；
+6. Harness 已冻结完整 tool definition hash，并保存 seal 未提交时的脱敏 scope 摘要；
+7. 离线 focused、workspace Clippy/tests 和 27 个 Harness self-tests 通过后，以 v3
+   manifest 重新冻结同三任务；完整工具 definition、8 个唯一源码 owner、candidate、
+   Harness、manifest 和 schedule 身份均在任何 live API 前冻结。
+
+rework v3 正式同二进制 A/B 在 candidate `3310aa73ef3bae45ce9296e65964c9b7531c22f0`
+上启动后，按预注册规则得到 `hold_mechanism`：
+
+- 完成 1 个 T1 pair 的 2 个 measurement-valid arms；第 3 个 T2 single arm 出现一次
+  `deepseek_transport`，10 次 physical attempt 中 9 次有 response/usage、1 次计费不可证明；
+- canonical Terminal 唯一且位于末尾，Terminal、RunView、accounting 完全一致；缺口不是
+  Harness 丢事件，而是一次已开始、无 provider response/usage 的 transport attempt；
+- Harness 立即停止，未启动 T2 mate、未重采样；共 29 次 physical starts，已知费用仅为
+  USD `0.012583452` / CNY `0.089881800` 下界；
+- `product_metric_eligible=false`、`hard_mechanism_abort=false`、0 false-success、0 Writer
+  safety finding，不能用 3 个 arms 声称 Writer 收益或回归；
+- v3 不推翻 v2 的 `reject_and_rework` 产品证据，也不开放 M6-B2。Writer 保持显式按需
+  admission；不得续跑 `3310aa73`、补 T2 mate、复用 T1 pair 或与未来结果拼样。
+
+完整身份、计量归因和防重采样边界见
+[M6-B1 rework Writer 收益 A/B v3](../../eval/summaries/m6-b1-writer-benefit-ab-v3-2026-07-22.md)。
+新的 v4 只有在独立、实质性的产品代码变化及离线证据后才成立，且必须在 live API 前重新
+冻结并从 schedule position 1 全新运行；no-op、注释、版本或 Harness-only 换号不构成
+新 candidate。当前不开发双 Writer，下一产品阶段优先进入 M7 的 DeepSeek 单 Agent、
+只读多 Agent、工具/上下文/失败恢复专项调优。
 
 ### 工作
 

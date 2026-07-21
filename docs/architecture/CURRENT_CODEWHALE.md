@@ -4,19 +4,21 @@
 > [PRODUCT_PLAN.md](../product/PRODUCT_PLAN.md)、
 > [ROADMAP.md](../product/ROADMAP.md) 或 ADR。
 
-- 快照日期：2026-07-21
+- 快照日期：2026-07-22
 - 导入基线：`352e86a611fdf3cd8bd27c36d24d482c06a71117`
 - workspace version：`0.8.68`
 - M4-B 被测代码：commit `a534a824670b60c807c5abf399ea8674d4beb527`，tree
   `72cc0895c14d7dedbd7b28c0ceab4f583a1518d8`
 - M4 最终代码检查点：`65fa88ba`
 - M6-A 代码与真实 DeepSeek Writer canary 检查点：`a982a9a8`
-- M6-B1 正式 A/B candidate：`5d72ae94`
+- M6-B1 v2 正式 A/B candidate：`5d72ae94`
+- M6-B1 rework v3 candidate：`3310aa73`
 - 当前阶段：M4 已关闭；M5-A canonical TaskContract/EvidenceReceipt 与 M5-B
   evidence-aware ContextBroker 均已完成正式 DeepSeek A/B。M5-B 已 shrink 为 hard-limit
-  safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 正式 A/B 已判定
-  `reject_and_rework`，M6-B2 不准入
-- 当前协议：Run API v7、RuntimeEvent v10、State schema v15
+  safety；M6-A 单 Writer isolated worktree 闭环已完成；M6-B1 v2 正式 A/B 判定
+  `reject_and_rework`。rework 已完成，v3 因一次真实 transport attempt 的计费不可证明按
+  预注册规则判定 `hold_mechanism`；Writer 保持 explicit-only，M6-B2 不准入
+- 当前协议：Run API v9、RuntimeEvent v13、State schema v18
 
 ## 1. 当前结论
 
@@ -150,7 +152,7 @@ Key/Paste/Mouse/Resize/Focus 仍进入 onboarding/canonical loop；canonical Run
 - 维护轻量 process-local active control registry；
 - 实现 start、continue、list_roots、get、events、resume、steer、interrupt、
   cancel、resolve_interaction；
-- start/continue 通过 State schema v15 中保留的 durable creation reservation 先绑定
+- start/continue 通过 State schema v18 中保留的 durable creation reservation 先绑定
   `request_id + command digest` 与唯一 reserved run ID；
 - control command 只有在对应 `SteerQueued`、`ControlRequested` 或 `InteractionResolved`
   已提交到 `RunStore` 后才返回 accepted sequence；重复 `request_id` 按持久回执幂等处理。
@@ -174,7 +176,7 @@ run projection、event、lease 和 terminal 都从 `RunStore` 读取。
 
 Runtime 自带的内存 Store 只用于测试，不进入 production composition。
 
-RuntimeEvent v10 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
+RuntimeEvent v13 继续保留 v6 将逻辑模型请求预算和物理 API 请求预算分开的语义：Runtime
 在进入
 ModelPort 前拒绝第 N+1 个逻辑请求时持久化
 `model_request_budget_exceeded`；只有 DeepSeek 物理 admission 实际拒绝请求并使
@@ -217,7 +219,7 @@ before/after Token 重算，仍超限则 typed fail closed。该路径没有摘�
 
 ### Agent orchestrator
 
-`crates/orchestrator` 是唯一生产 Writer 编排与 Git workspace owner。当前 M6-A 只支持：
+`crates/orchestrator` 是唯一生产 Writer 编排与 Git workspace owner。当前只支持：
 
 - 一个 root Integrator 与最多一个 isolated Writer；Writer 仍由同一
   `AgentRuntime` 和同一 `agent` 工具启动；
@@ -229,8 +231,21 @@ before/after Token 重算，仍超限则 typed fail closed。该路径没有摘�
 - Linux bubblewrap / macOS seatbelt 下的 child workspace scope，以及
   `.git`、`.codewhale`、`.deepseek` 保护。
 
+M6-B1 rework 将该机制收缩为显式 admission：默认 root 仍可启动 read-only child，但不会
+获得 `isolated_write`；只有调用方显式启用一个 Writer 时才允许创建 worktree。Writer
+treatment 的 root 由 Host actor policy 在工具执行前禁止 may-write，Writer child 只获得
+冻结 allowed paths 内的必要写工具。权限来自 Runtime/Orchestrator 的 actor 身份，不依赖
+中文提示词或模型自律。
+
+TaskContract 现在冻结 named verifier ID、参数和执行计划；实际 workspace revision 由
+Host verification 和 EvidenceReceipt 在执行时绑定。恢复类任务的 EvidenceReceipt 必须按
+canonical event 顺序证明“修改前失败 → 有效修改 → 修改后 Host 通过”，只有最终绿不能
+完成任务。seal/blocked 还会保存脱敏 reason、changed-files/scope 摘要；只有 artifact、
+resource ownership/scope、Git cleanup metadata 或 exact cleanup 结果确实不确定时才
+retained，确定无副作用时精确清理。
+
 `AgentTask`、workspace assignment、Host-observed `AgentOutcome`、integration 和
-post-integration verification 都是 RuntimeEvent v10 / State v15 的 canonical facts。
+post-integration verification 都是 RuntimeEvent v13 / State v18 的 canonical facts。
 Orchestrator 不定义私有事件总线、JSON ledger、模型循环、DeepSeek transport、工具实现或
 完成判定。Writer receipt 只是 child artifact；只有集成后绑定最新 root revision 的
 EvidenceReceipt 可以满足 root TaskContract。
@@ -283,9 +298,9 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
 
 `crates/state::StateStore` 实现 production SQLite `RunStore`：
 
-- 当前 State 物理 schema 为 v15；RunStore 继续复用同一 event/snapshot 表，不增加
+- 当前 State 物理 schema 为 v18；RunStore 继续复用同一 event/snapshot 表，不增加
   EvidenceReceipt 私表；
-- 当前 canonical RuntimeEvent writer/reader 为 v10；
+- 当前 canonical RuntimeEvent writer/reader 为 v13；
 - append-only canonical event；
 - reducer/snapshot/replay；
 - continuation lineage 的快速 projection、workspace-scoped root 列表和原子 continuation
@@ -302,7 +317,7 @@ side effect、evidence、artifact 和 workspace revision。旧 TUI child `ToolRe
   post-integration verification 与 cleanup/recovery；
 - terminal exactly-once；
 - Terminal reducer 原子投影 `AgentOutcome.accounting`；root terminal accounting
-  `sealed=true`，Writer child terminal 保持共享 ledger 的 `sealed=false`；v15 只允许从
+  `sealed=true`，Writer child terminal 保持共享 ledger 的 `sealed=false`；v18 只允许从
   canonical event log 确定性重建旧物化 snapshot，其他差异 fail closed；
 - no-key terminal replay。
 
@@ -331,9 +346,9 @@ foreground。旧 Workflow/SubAgent JSON/JSONL 写入链已随隐藏执行路径�
 - 默认 HTTP/SSE 监听 `127.0.0.1:7878`；
 - `--stdio` 提供 newline Run envelope；
 - HTTP/SSE/stdio 只使用 canonical Run DTO 与 StoredRuntimeEvent；
-- 当前 Run API v7 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
+- 当前 Run API v9 直接接收结构化 `TaskDefinition`，并投影 frozen TaskContract、
   completion decision、durable creation-intent list/recover；当前 RuntimeEvent
-  writer/reader 为 v10；
+  writer/reader 为 v13；
 - crate dependency tree 不含 `crates/core` 或 `crates/tui`；
 - 不启动 sibling TUI process。
 
@@ -365,14 +380,14 @@ M6-A 门禁确认 Writer lifecycle 也不引入第二条执行链。
 
 | Crate | 当前生产职责 | 当前迁移债务 |
 |---|---|---|
-| `protocol` | canonical task、request、command、event、evidence、AgentTask/outcome、terminal | named verifier 与有序 EvidenceReceipt |
-| `runtime` | 唯一根/只读子/Writer Agent loop、completion gate 与 reducer | Host actor capability、Writer 默认关闭 cutover 与时序 completion gate |
-| `orchestrator` | 单 Writer worktree、Host diff/verify/integrate/cleanup | seal/blocked 可诊断恢复；M6-B1 重评前不扩双 Writer |
+| `protocol` | canonical task、request、command、event、named verifier、有序 evidence、AgentTask/outcome、terminal | 后续 evidence 只按真实任务缺口扩展 |
+| `runtime` | 唯一根/只读子/Writer Agent loop、Host actor capability、显式 Writer admission、时序 completion gate 与 reducer | M7 DeepSeek 可靠性/预算调优 |
+| `orchestrator` | 单 Writer worktree、Host diff/verify/integrate、精确 cleanup/recovery | Writer 保持 explicit-only；不扩双 Writer |
 | `deepseek` | 官方 DeepSeek planner/transport/parser/accounting | FIM 调优与定期官方复核 |
 | `context` | production prompt、evidence-aware projection 与 hard-limit compaction | RepoGraph 仅在缺失检索证据出现后启动 |
-| `tools` | 固定 production tool catalog 与执行 | verifier 无 workspace 副作用；编辑/FIM 协议 A/B |
+| `tools` | 固定 production tool catalog、无副作用 verifier 与执行 | 编辑/FIM 协议 A/B |
 | `state` | SQLite RunStore、lease、replay | legacy thread tables 删除 |
-| `app` | 唯一 production composition、Run command 与 Orchestrator wiring | M6-B 策略 admission |
+| `app` | 唯一 production composition、Run command、显式 Writer policy 与 Orchestrator wiring | M7 策略调优 |
 | `app-server` | HTTP/SSE/stdio projection | 无独立业务状态 |
 | `cli` | 顶层命令与 production config 解析 | DeepSeek-only 配置/中文 M7-M8 |
 | `tui` | exec/interactive canonical projection + Provider 遗留 | 删除剩余非 DeepSeek 产品面 |
@@ -874,9 +889,17 @@ M6-B1 随后在候选 `5d72ae94` 完成 18 对 / 36 arms 正式同二进制 A/B�
 canonical terminal 全部闭合，但 single/Writer 仅 `2/18` / `4/18` verified，Writer
 仍有 7 false-success、1 次 root may-write 调用和 7 次 retained recovery；Token 与费用
 分别增加 35.5% / 52.5%。正式决策为 `reject_and_rework`，要求 Writer 只通过显式
-opt-in admission 使用，也不准入双 Writer；当前默认 `RunLimits` / tool policy 尚未
-完成默认关闭 cutover，不能把决策要求误写成已实现。完整结果见
+opt-in admission 使用，也不准入双 Writer；当时默认 `RunLimits` / tool policy 尚未
+完成默认关闭 cutover。完整结果见
 [M6-B1 Writer 收益 A/B](../../eval/summaries/m6-b1-writer-benefit-ab-2026-07-21.md)。
+其 rework 在 `3310aa73` 完成 verifier 卫生、explicit-only admission、Host actor
+capability、named verifier、时序 EvidenceReceipt、精确 cleanup/recovery 和 Harness v3
+冻结；离线门禁全部通过。正式 v3 在第 3 个 arm 遇到一次 retryable
+`deepseek_transport`：10 个 physical attempts 中 9 个有 provider response/usage，1 个计费
+不可证明。canonical Terminal、RunView 与 accounting 完全一致，Harness 按预注册规则立即
+停止且未重采样；结果为 `hold_mechanism`、`product_metric_eligible=false`。这不推翻 v2
+的产品结论，Writer 继续 explicit-only，M6-B2 仍不准入。完整身份和证据边界见
+[M6-B1 rework Writer 收益 A/B v3](../../eval/summaries/m6-b1-writer-benefit-ab-v3-2026-07-22.md)。
 
 ## 7. 明确非结论
 

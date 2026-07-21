@@ -342,7 +342,7 @@ artifact 的状态同样不能越级推断。`Produced` 只表示工具产出了
 #### 2026-07-19 M5-A 机制与真实 A/B 证据
 
 M5-A 被测 checkpoint 实现了上述 canonical 边界：当时的 Run API v5、RuntimeEvent v7、
-State schema v12；当前 v6/v9/v13 继续保留该语义。TaskContract 在 `RunCreated` 冻结，
+State schema v12；当前 v9/v13/v18 继续保留该语义。TaskContract 在 `RunCreated` 冻结，
 模型 `Stop` 只产生 completion candidate，Runtime 是
 唯一 EvidenceReceipt 与 Completed owner。结构化 task 的 constraints、non-goals 和
 acceptance description 已进入确定性的 model-visible canonical transcript。显式 verifier
@@ -648,6 +648,40 @@ single-agent / writer-agent 冻结任务 A/B，不能证明成功率、Token、�
 - 需要时序证据的任务必须由 TaskContract/EvidenceReceipt 表达，不能用最终绿替代；
 - unknown billing、unsealed 或 canonical measurement 不一致立即停套，不得重采样；
 - 重新评测前不得修改任务、预算来掩盖失败，也不得先实现双 Writer。
+
+### 9.4 M6-B1 rework v3 计量中止证据（2026-07-22）
+
+rework candidate `3310aa73ef3bae45ce9296e65964c9b7531c22f0` 在全部离线门禁通过、
+candidate binary 和 v3 manifest 于 live API 前冻结后，启动同三任务、两 treatments、
+每 cell 6 次的正式 A/B。结果不是完整产品 A/B，而是预注册的计量中止终态：
+
+- 1 个 T1 pair / 2 个 arms measurement-valid；另 1 个 T2 single arm
+  measurement-invalid，Writer mate 未启动；
+- 共 3 arms、29 physical starts；T1 single 9/9、T1 Writer 10/10 请求和 usage 均闭合；
+- T2 single root `started=10/completed=10/in_flight=0`，其中 9 个
+  `ModelResponseCommitted` 有 usage，1 个 retryable `deepseek_transport` 失败后由 Runtime
+  重试一次；`runtime_retries=1`、`transport_retries=0`；
+- T2 的 canonical Terminal 唯一、位于最后 sequence 1723，Terminal、RunView 和 accounting
+  完全一致；`billing_unknown_attempts=1` 来自该 transport attempt，不是 Harness 漏算；
+- 已知 usage 下界为 167,003 input、11,929 output，已知费用下界为 USD `0.012583452` /
+  CNY `0.089881800`。失败 attempt 没有 provider response/usage，不能证明免费；
+- Harness 保存当前 arm 后立即停止，未补 mate、未重采样；最终
+  `mode=aborted_unknown_billing`、`decision=hold_mechanism`、
+  `product_metric_eligible=false`、`hard_mechanism_abort=false`、M6-B2 不准入；
+- 三个 arms 均为真实 blocked 产品结果，0 false-success、0 Writer safety finding，但样本
+  不足以比较 single/Writer 收益，也不能推翻 v2 的 `reject_and_rework` 结论。
+
+正式 raw 为本地 Git ignored 的
+`eval/results/m6-b1-writer-benefit-ab-v3.json`，权限 `0600`，SHA-256
+`2bc41e464888e49c7894881f36b2ad8eed5b10e47191ddd2b2a5991148acb2c1`。完整冻结身份和
+证据边界见
+[M6-B1 rework Writer 收益 A/B v3](../../eval/summaries/m6-b1-writer-benefit-ab-v3-2026-07-22.md)。
+
+该结果不可续跑或拼接。不得重跑同一 candidate、只补 T2 mate、复用 v3 T1 pair 或将
+v3 与未来样本合并。新的 v4 必须来自独立、实质性的产品代码变化和离线验收，在任何 API
+请求前重新冻结，从 schedule position 1 全新收集；若改变任务、预算、阈值或只改变
+Harness/版本号，则属于新 claim 或条件重采样。只有权威 transport phase 或 provider 计费
+证据才能把失败 attempt 标为已知未计费；unknown billing 门禁不得为跑满样本而放宽。
 
 ## 10. 结果与决策记录
 
