@@ -479,6 +479,15 @@ impl ToolExecutor for ProductionToolExecutor {
         production_tool_definitions()
     }
 
+    fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
+        match name {
+            "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file" => {
+                WorkspaceAccess::ReadOnly
+            }
+            _ => WorkspaceAccess::MayWrite,
+        }
+    }
+
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
         match invocation.name.as_str() {
             "file_search" | "git_diff" | "git_status" | "grep_files" | "list_dir" | "read_file" => {

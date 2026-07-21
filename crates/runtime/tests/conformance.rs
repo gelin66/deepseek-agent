@@ -354,6 +354,14 @@ impl ToolExecutor for CorrectableVerifierTools {
         vec![definition("write"), definition("run_tests")]
     }
 
+    fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
+        if name == "write" {
+            WorkspaceAccess::MayWrite
+        } else {
+            WorkspaceAccess::ReadOnly
+        }
+    }
+
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
         if invocation.name == "write" {
             WorkspaceAccess::MayWrite
@@ -412,6 +420,17 @@ impl ToolExecutor for MockTools {
             definition("slow"),
             definition("write"),
         ]
+    }
+
+    fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
+        match name {
+            "write" | "run_tests" | "run_verifiers" => WorkspaceAccess::MayWrite,
+            _ => WorkspaceAccess::ReadOnly,
+        }
+    }
+
+    fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
+        self.definition_workspace_access(&invocation.name)
     }
 
     fn approval_prompt(
@@ -1906,7 +1925,13 @@ fn agent_catalog_exposes_only_the_implemented_chinese_contract() {
     }));
     let (runtime, _, _, _) = fixture(model);
     let agent = runtime
-        .tool_definitions(&ToolPolicy::default(), 0, 2, false)
+        .tool_definitions(
+            &ToolPolicy::default(),
+            ModelToolAuthority::RootWrite,
+            0,
+            2,
+            false,
+        )
         .into_iter()
         .find(|definition| definition.name == "agent")
         .expect("agent definition");

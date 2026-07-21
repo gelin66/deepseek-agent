@@ -39,6 +39,57 @@ pub struct AgentRuntime {
     orchestrator: Option<Arc<dyn AgentOrchestrator>>,
 }
 
+/// Model-visible workspace authority derived from persisted Host facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelToolAuthority {
+    RootWrite,
+    Coordinator,
+    ReadOnly,
+    IsolatedWriter,
+}
+
+impl ModelToolAuthority {
+    #[must_use]
+    pub fn root(mode: WriteExecutionMode) -> Self {
+        match mode {
+            WriteExecutionMode::Root => Self::RootWrite,
+            WriteExecutionMode::IsolatedWriter => Self::Coordinator,
+        }
+    }
+
+    fn for_request(request: &RunRequest) -> Self {
+        match request.actor.kind {
+            AgentActorKind::Root => Self::root(request.environment.write_execution_mode),
+            AgentActorKind::Child => match request
+                .agent_task
+                .as_ref()
+                .expect("child request binding is validated at creation")
+                .workspace
+                .access
+            {
+                AgentWorkspaceAccess::ReadOnly => Self::ReadOnly,
+                AgentWorkspaceAccess::IsolatedWrite => Self::IsolatedWriter,
+            },
+        }
+    }
+
+    fn permits_definition(self, access: WorkspaceAccess) -> bool {
+        matches!(self, Self::RootWrite | Self::IsolatedWriter)
+            || access == WorkspaceAccess::ReadOnly
+    }
+
+    fn permits_agent(self, access: WorkspaceAccess) -> bool {
+        match access {
+            WorkspaceAccess::ReadOnly => !matches!(self, Self::IsolatedWriter),
+            WorkspaceAccess::MayWrite => matches!(self, Self::Coordinator),
+        }
+    }
+
+    fn permits_direct_invocation(self, access: WorkspaceAccess) -> bool {
+        self.permits_definition(access)
+    }
+}
+
 impl AgentRuntime {
     #[must_use]
     pub fn new(
@@ -84,6 +135,7 @@ impl AgentRuntime {
     pub fn tool_definitions(
         &self,
         policy: &ToolPolicy,
+        authority: ModelToolAuthority,
         depth: u8,
         max_depth: u8,
         interactive: bool,
@@ -96,11 +148,21 @@ impl AgentRuntime {
             .definitions()
             .into_iter()
             .filter(|definition| {
-                definition.name != AGENT_TOOL_NAME && policy.permits(&definition.name)
+                definition.name != AGENT_TOOL_NAME
+                    && policy.permits(&definition.name)
+                    && authority.permits_definition(
+                        self.tools.definition_workspace_access(&definition.name),
+                    )
             })
             .collect::<Vec<_>>();
-        if depth < max_depth && policy.permits(AGENT_TOOL_NAME) {
-            definitions.push(agent_tool_definition());
+        if depth < max_depth
+            && policy.permits(AGENT_TOOL_NAME)
+            && !matches!(authority, ModelToolAuthority::IsolatedWriter)
+        {
+            definitions.push(agent_tool_definition(matches!(
+                authority,
+                ModelToolAuthority::Coordinator
+            )));
         }
         if depth == 0 && interactive && policy.permits(REQUEST_USER_INPUT_TOOL_NAME) {
             definitions.push(request_user_input_tool_definition());
@@ -453,6 +515,7 @@ impl AgentRuntime {
             }
             let context_tools = self.tool_definitions(
                 &state.snapshot.request.tool_policy,
+                ModelToolAuthority::for_request(&state.snapshot.request),
                 state.snapshot.request.actor.depth,
                 state.snapshot.request.limits.max_depth,
                 state.snapshot.request.environment.interactive,
@@ -744,6 +807,7 @@ impl AgentRuntime {
                 } else {
                     self.tool_definitions(
                         &state.snapshot.request.tool_policy,
+                        ModelToolAuthority::for_request(&state.snapshot.request),
                         state.snapshot.request.actor.depth,
                         state.snapshot.request.limits.max_depth,
                         state.snapshot.request.environment.interactive,
@@ -1147,6 +1211,13 @@ impl AgentRuntime {
             name: call.name.clone(),
             arguments: call.arguments.clone(),
         };
+        let workspace_access = if call.name == AGENT_TOOL_NAME {
+            agent_tool_workspace_access(&call)
+        } else if call.name == REQUEST_USER_INPUT_TOOL_NAME {
+            WorkspaceAccess::ReadOnly
+        } else {
+            self.tools.workspace_access(&invocation)
+        };
         let (operation_id, operation_started) = match state.recovery_tool.take() {
             Some(pending) if pending.invocation.call_id == call.id => {
                 let started = pending.state == DurableActionState::InFlight;
@@ -1176,13 +1247,7 @@ impl AgentRuntime {
                     RuntimeEventKind::ToolPrepared {
                         operation_id: operation_id.clone(),
                         invocation: invocation.clone(),
-                        workspace_access: if call.name == AGENT_TOOL_NAME {
-                            agent_tool_workspace_access(&call)
-                        } else if call.name == REQUEST_USER_INPUT_TOOL_NAME {
-                            WorkspaceAccess::ReadOnly
-                        } else {
-                            self.tools.workspace_access(&invocation)
-                        },
+                        workspace_access,
                     },
                 )
                 .await
@@ -1195,6 +1260,19 @@ impl AgentRuntime {
         let outcome = if !state.snapshot.request.tool_policy.permits(&call.name) {
             ToolOutcome::rejected(
                 format!("tool_not_allowed：工具 '{}' 未获准调用", call.name),
+                ToolRetryDisposition::NotRetryable,
+            )
+        } else if !if call.name == AGENT_TOOL_NAME {
+            ModelToolAuthority::for_request(&state.snapshot.request).permits_agent(workspace_access)
+        } else {
+            ModelToolAuthority::for_request(&state.snapshot.request)
+                .permits_direct_invocation(workspace_access)
+        } {
+            ToolOutcome::rejected(
+                format!(
+                    "actor_capability_denied：当前 Agent actor 无权执行工具 '{}' 的工作区能力",
+                    call.name
+                ),
                 ToolRetryDisposition::NotRetryable,
             )
         } else if call.arguments.parsed.is_none() {
@@ -1716,34 +1794,6 @@ impl AgentRuntime {
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or("general");
-        if writer {
-            // M6-A admits one isolated writer. A role never grants authority,
-            // and the writer cannot recursively create another writer.
-            if !child_policy
-                .denied
-                .iter()
-                .any(|name| name == AGENT_TOOL_NAME)
-            {
-                child_policy.denied.push(AGENT_TOOL_NAME.to_owned());
-            }
-        } else {
-            for denied in [
-                "apply_patch",
-                "edit_file",
-                "write_file",
-                "delete_file",
-                "exec_shell",
-                "run_tests",
-                "run_verifiers",
-                "shell",
-                "git",
-                "write",
-            ] {
-                if !child_policy.denied.iter().any(|name| name == denied) {
-                    child_policy.denied.push(denied.to_owned());
-                }
-            }
-        }
         let child_input = if launch.expected_artifact.is_empty() {
             prompt.to_owned()
         } else {
@@ -4451,10 +4501,28 @@ pub struct RuntimeJoinError {
     pub message: String,
 }
 
-fn agent_tool_definition() -> ToolDefinition {
+fn agent_tool_definition(allow_isolated_writer: bool) -> ToolDefinition {
+    let description = if allow_isolated_writer {
+        "启动一个使用相同 AgentRuntime 的后台子 Agent。可创建只读 child；isolated_write 还要求显式 Writer 模式、Host exact verifier、auto-approve 与 Orchestrator clean-Git 预检。"
+    } else {
+        "启动一个使用相同 AgentRuntime 的只读后台子 Agent。当前运行不授予隔离写入权限。"
+    };
+    let workspace_access = if allow_isolated_writer {
+        json!({
+            "type": "string",
+            "enum": ["read_only", "isolated_write"],
+            "description": "工作区权限。默认 read_only；isolated_write 必须同时提供 allowed_paths。"
+        })
+    } else {
+        json!({
+            "type": "string",
+            "enum": ["read_only"],
+            "description": "当前运行只允许创建 read_only 子 Agent。"
+        })
+    };
     ToolDefinition {
         name: AGENT_TOOL_NAME.to_owned(),
-        description: "启动一个使用相同 AgentRuntime 的后台子 Agent。默认只读；只有显式 isolated_write、Host exact verifier、auto-approve 与 Orchestrator clean-Git 预检同时成立时，才分配隔离 worktree 并由 Host seal/ff-only 集成。".to_owned(),
+        description: description.to_owned(),
         input_schema: json!({
             "type": "object",
             "properties": {
@@ -4466,11 +4534,7 @@ fn agent_tool_definition() -> ToolDefinition {
                     "type": "string",
                     "description": "子 Agent 的角色标签，仅影响任务侧重点，不授予写权限。"
                 },
-                "workspace_access": {
-                    "type": "string",
-                    "enum": ["read_only", "isolated_write"],
-                    "description": "工作区权限。默认 read_only；isolated_write 必须同时提供 allowed_paths。"
-                },
+                "workspace_access": workspace_access,
                 "allowed_paths": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -5240,6 +5304,34 @@ fn invalid_model(message: impl Into<String>) -> TerminalState {
         failure: RuntimeFailure::InvalidModelOutput {
             message: message.into(),
         },
+    }
+}
+
+#[cfg(test)]
+mod actor_capability_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_authority_matrix_is_fail_closed() {
+        assert!(ModelToolAuthority::RootWrite.permits_direct_invocation(WorkspaceAccess::MayWrite));
+        assert!(!ModelToolAuthority::RootWrite.permits_agent(WorkspaceAccess::MayWrite));
+
+        assert!(ModelToolAuthority::Coordinator.permits_agent(WorkspaceAccess::MayWrite));
+        assert!(
+            !ModelToolAuthority::Coordinator.permits_direct_invocation(WorkspaceAccess::MayWrite)
+        );
+        assert!(
+            ModelToolAuthority::Coordinator.permits_direct_invocation(WorkspaceAccess::ReadOnly)
+        );
+
+        assert!(!ModelToolAuthority::ReadOnly.permits_direct_invocation(WorkspaceAccess::MayWrite));
+        assert!(ModelToolAuthority::ReadOnly.permits_agent(WorkspaceAccess::ReadOnly));
+
+        assert!(
+            ModelToolAuthority::IsolatedWriter.permits_direct_invocation(WorkspaceAccess::MayWrite)
+        );
+        assert!(!ModelToolAuthority::IsolatedWriter.permits_agent(WorkspaceAccess::ReadOnly));
+        assert!(!ModelToolAuthority::IsolatedWriter.permits_agent(WorkspaceAccess::MayWrite));
     }
 }
 

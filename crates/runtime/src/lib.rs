@@ -18,7 +18,8 @@ mod orchestration;
 mod store;
 
 pub use agent::{
-    AgentControl, AgentRuntime, ControlError, RunReadyError, RuntimeJoinError, RuntimeRun,
+    AgentControl, AgentRuntime, ControlError, ModelToolAuthority, RunReadyError, RuntimeJoinError,
+    RuntimeRun,
 };
 pub use orchestration::{
     AgentOrchestrationError, AgentOrchestrationErrorKind, AgentOrchestrator, WriterBinding,
@@ -193,6 +194,13 @@ impl CancellationToken {
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
     fn definitions(&self) -> Vec<ToolDefinition>;
+
+    /// Conservatively classify a tool definition before model arguments
+    /// exist. Catalog filtering uses this as a first capability boundary;
+    /// exact invocation classification remains the execution-time authority.
+    fn definition_workspace_access(&self, _name: &str) -> WorkspaceAccess {
+        WorkspaceAccess::MayWrite
+    }
 
     /// Classify whether this invocation can mutate the workspace. The
     /// conservative default protects embedders until they provide a narrower

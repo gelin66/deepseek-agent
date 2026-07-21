@@ -25,7 +25,8 @@ use codewhale_protocol::run_api::{
 };
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
-    AgentRuntime, ModelPort, RunReplay, RunStore, RuntimeEventSink, RuntimeRun, ToolExecutor,
+    AgentRuntime, ModelPort, ModelToolAuthority, RunReplay, RunStore, RuntimeEventSink, RuntimeRun,
+    ToolExecutor,
 };
 use codewhale_state::StateStore;
 use codewhale_tools::sandbox::SandboxPolicy;
@@ -349,6 +350,7 @@ impl RunComposition for ProductionComposition {
         );
         let tool_catalog = runtime.tool_definitions(
             &command.tool_policy,
+            ModelToolAuthority::root(command.controls.write_execution_mode),
             0,
             command.limits.max_depth,
             command.controls.interactive,
@@ -445,6 +447,7 @@ impl RunComposition for ProductionComposition {
         );
         let tool_catalog = runtime.tool_definitions(
             &request.tool_policy,
+            ModelToolAuthority::root(request.environment.write_execution_mode),
             0,
             request.limits.max_depth,
             request.environment.interactive,
@@ -570,6 +573,7 @@ impl RunComposition for ProductionComposition {
         );
         let tool_catalog = runtime.tool_definitions(
             &source_request.tool_policy,
+            ModelToolAuthority::root(source_request.environment.write_execution_mode),
             0,
             source_request.limits.max_depth,
             source_request.environment.interactive,
@@ -1365,6 +1369,7 @@ mod tests {
         );
         let catalog = catalog_runtime.tool_definitions(
             &request.tool_policy,
+            ModelToolAuthority::root(request.environment.write_execution_mode),
             0,
             request.limits.max_depth,
             request.environment.interactive,
@@ -1894,7 +1899,53 @@ mod tests {
             Arc::new(NullEventSink),
             Arc::new(codewhale_runtime::InMemoryRunStore::default()),
         );
-        let catalog = runtime.tool_definitions(&ToolPolicy::default(), 0, 4, true);
+        let catalog = runtime.tool_definitions(
+            &ToolPolicy::default(),
+            ModelToolAuthority::RootWrite,
+            0,
+            4,
+            true,
+        );
+        let coordinator_catalog = runtime.tool_definitions(
+            &ToolPolicy::default(),
+            ModelToolAuthority::Coordinator,
+            0,
+            4,
+            true,
+        );
+        let coordinator_names = coordinator_catalog
+            .iter()
+            .map(|definition| definition.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            coordinator_names,
+            [
+                "agent",
+                "file_search",
+                "git_diff",
+                "git_status",
+                "grep_files",
+                "list_dir",
+                "read_file",
+                "request_user_input",
+            ]
+        );
+        let coordinator_agent = coordinator_catalog
+            .iter()
+            .find(|definition| definition.name == AGENT_TOOL_NAME)
+            .expect("coordinator agent definition");
+        assert_eq!(
+            coordinator_agent.input_schema["properties"]["workspace_access"]["enum"],
+            json!(["read_only", "isolated_write"])
+        );
+        let root_agent = catalog
+            .iter()
+            .find(|definition| definition.name == AGENT_TOOL_NAME)
+            .expect("root agent definition");
+        assert_eq!(
+            root_agent.input_schema["properties"]["workspace_access"]["enum"],
+            json!(["read_only"])
+        );
         let conservative_tokens = serde_json::to_vec(&catalog)
             .expect("serialize fixed catalog")
             .len()
@@ -2471,6 +2522,7 @@ mod tests {
         );
         let current_catalog = tool_catalog_sha256(&catalog_runtime.tool_definitions(
             &ToolPolicy::default(),
+            ModelToolAuthority::RootWrite,
             0,
             0,
             false,
@@ -2555,7 +2607,13 @@ mod tests {
             Arc::new(NullEventSink),
             store.clone(),
         );
-        let catalog = catalog_runtime.tool_definitions(&ToolPolicy::default(), 0, 0, false);
+        let catalog = catalog_runtime.tool_definitions(
+            &ToolPolicy::default(),
+            ModelToolAuthority::RootWrite,
+            0,
+            0,
+            false,
+        );
         let catalog_sha256 = tool_catalog_sha256(&catalog);
         let composition = Arc::new(ProductionComposition {
             deepseek: connection,

@@ -386,6 +386,10 @@ impl ToolExecutor for RootTools {
         vec![definition("run_tests")]
     }
 
+    fn definition_workspace_access(&self, _name: &str) -> WorkspaceAccess {
+        WorkspaceAccess::ReadOnly
+    }
+
     fn workspace_access(&self, _invocation: &ToolInvocation) -> WorkspaceAccess {
         WorkspaceAccess::ReadOnly
     }
@@ -440,6 +444,14 @@ impl WriterTools {
 impl ToolExecutor for WriterTools {
     fn definitions(&self) -> Vec<ToolDefinition> {
         vec![definition("write"), definition("run_tests")]
+    }
+
+    fn definition_workspace_access(&self, name: &str) -> WorkspaceAccess {
+        if name == "write" {
+            WorkspaceAccess::MayWrite
+        } else {
+            WorkspaceAccess::ReadOnly
+        }
     }
 
     fn workspace_access(&self, invocation: &ToolInvocation) -> WorkspaceAccess {
@@ -1786,7 +1798,7 @@ async fn isolated_writer_requires_explicit_product_admission() {
     assert!(replay.events.iter().any(|event| matches!(
         &event.event,
         RuntimeEventKind::ToolOutcomeCommitted { outcome, .. }
-            if outcome.content.contains("writer_not_enabled")
+            if outcome.content.contains("actor_capability_denied")
                 && outcome.invocation == ToolInvocationStatus::Rejected
                 && outcome.side_effect == ToolSideEffectStatus::NotApplied
     )));
@@ -1919,7 +1931,13 @@ async fn role_label_never_grants_write_and_read_only_child_keeps_minimal_lifecyc
         store,
         ..
     } = runtime_fixture(ModelScript::ReadOnlyRole);
-    let definitions = runtime.tool_definitions(&ToolPolicy::default(), 0, 1, false);
+    let definitions = runtime.tool_definitions(
+        &ToolPolicy::default(),
+        ModelToolAuthority::Coordinator,
+        0,
+        1,
+        false,
+    );
     let agent = definitions
         .iter()
         .find(|definition| definition.name == AGENT_TOOL_NAME)
