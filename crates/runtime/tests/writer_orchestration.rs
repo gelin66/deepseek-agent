@@ -1467,6 +1467,7 @@ fn recovery_child_request(task: &AgentTask, accounting_baseline: ModelAccounting
     request.tool_policy = task.tool_policy.clone();
     request.limits = task.limits;
     request.environment.workspace = task.workspace.execution_workspace().to_owned();
+    request.environment.write_execution_mode = WriteExecutionMode::IsolatedWriter;
     request.environment.auto_approve = true;
     request.environment.trust_mode = false;
     request.environment.allow_sandbox_elevation = false;
@@ -1477,30 +1478,48 @@ fn recovery_child_request(task: &AgentTask, accounting_baseline: ModelAccounting
     request
 }
 
+fn bind_recovery_child_catalog(runtime: &AgentRuntime, request: &mut RunRequest) {
+    let definitions = runtime.tool_definitions(
+        &request.tool_policy,
+        request
+            .task_contract
+            .as_ref()
+            .map(|contract| &contract.definition),
+        ModelToolAuthority::IsolatedWriter,
+        request.actor.depth,
+        request.limits.max_depth,
+        request.environment.interactive,
+    );
+    request.environment.tool_catalog_sha256 = Some(canonical_tool_catalog_sha256(&definitions));
+}
+
 async fn complete_recovery_child(
     store: Arc<InMemoryRunStore>,
     task: &AgentTask,
     writer_tools: Arc<WriterTools>,
     accounting_baseline: ModelAccounting,
 ) -> AgentOutcome {
+    let runtime = Arc::new(AgentRuntime::new(
+        Arc::new(DeterministicModel::new(ModelScript::ResumeWriter)),
+        writer_tools,
+        Arc::new(CollectSink::default()),
+        store.clone(),
+    ));
+    let mut request = recovery_child_request(task, accounting_baseline);
+    bind_recovery_child_catalog(runtime.as_ref(), &mut request);
     let created = store
-        .create(recovery_child_request(task, accounting_baseline))
+        .create(request)
         .await
         .expect("create seeded writer child");
     store
         .release(&created.lease)
         .await
         .expect("release seeded writer child");
-    Arc::new(AgentRuntime::new(
-        Arc::new(DeterministicModel::new(ModelScript::ResumeWriter)),
-        writer_tools,
-        Arc::new(CollectSink::default()),
-        store.clone(),
-    ))
-    .resume(task.child_run_id.clone())
-    .wait()
-    .await
-    .expect("complete seeded writer child")
+    runtime
+        .resume(task.child_run_id.clone())
+        .wait()
+        .await
+        .expect("complete seeded writer child")
 }
 
 fn position(timeline: &[String], expected: &str) -> usize {
@@ -1523,6 +1542,8 @@ async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_
     } = runtime_fixture(ModelScript::Writer);
     let mut request = root_request(true, true);
     request.limits.wall_time_ms = Some(225_000);
+    request.environment.tool_catalog_sha256 = Some("sha256:root-catalog".to_owned());
+    request.environment.execution_fingerprint_sha256 = Some("sha256:root-execution".to_owned());
     let outcome = runtime.start(request).wait().await.unwrap();
     assert!(
         matches!(outcome.terminal, TerminalState::Completed { .. }),
@@ -1577,6 +1598,34 @@ async fn writer_vertical_slice_uses_one_runtime_fresh_tools_and_root_post_merge_
         .iter()
         .find(|request| request.actor.kind == AgentActorKind::Child)
         .expect("writer child model request");
+    assert_eq!(
+        child_replay
+            .snapshot
+            .request
+            .environment
+            .tool_catalog_sha256
+            .as_deref(),
+        Some(canonical_tool_catalog_sha256(&writer_request.tools).as_str()),
+        "child RunCreated must bind the definitions actually advertised by its runtime"
+    );
+    assert_ne!(
+        child_replay
+            .snapshot
+            .request
+            .environment
+            .tool_catalog_sha256,
+        replay.snapshot.request.environment.tool_catalog_sha256,
+        "Writer child catalog identity must not be inherited from the coordinator root"
+    );
+    assert!(
+        child_replay
+            .snapshot
+            .request
+            .environment
+            .execution_fingerprint_sha256
+            .is_none(),
+        "Runtime cannot honestly reuse the root composition fingerprint for fresh child tools"
+    );
     let writer_instructions = writer_request
         .system_prompt
         .blocks
@@ -2199,6 +2248,7 @@ async fn a_finished_writer_does_not_block_a_later_read_only_agent() {
 async fn role_label_never_grants_write_and_read_only_child_keeps_minimal_lifecycle() {
     let RuntimeFixture {
         runtime,
+        model,
         orchestrator,
         store,
         ..
@@ -2226,11 +2276,10 @@ async fn role_label_never_grants_write_and_read_only_child_keeps_minimal_lifecyc
             .contains("不授予写权限")
     );
 
-    let outcome = runtime
-        .start(root_request(false, false))
-        .wait()
-        .await
-        .unwrap();
+    let mut request = root_request(false, false);
+    request.environment.tool_catalog_sha256 = Some("sha256:root-catalog".to_owned());
+    request.environment.execution_fingerprint_sha256 = Some("sha256:root-execution".to_owned());
+    let outcome = runtime.start(request).wait().await.unwrap();
     assert!(matches!(outcome.terminal, TerminalState::Completed { .. }));
     let replay = store.load(&outcome.run_id).await.unwrap().unwrap();
     let lifecycle = replay.snapshot.agent_tasks.first().expect("read-only task");
@@ -2244,6 +2293,47 @@ async fn role_label_never_grants_write_and_read_only_child_keeps_minimal_lifecyc
     assert!(lifecycle.integration.is_none());
     assert!(lifecycle.cleanup.is_none());
     assert!(lifecycle.finished.is_some());
+    let child_request = model
+        .requests
+        .lock()
+        .expect("request log lock")
+        .iter()
+        .find(|request| request.actor.kind == AgentActorKind::Child && !request.tools.is_empty())
+        .cloned()
+        .expect("read-only child model request");
+    let child_replay = store
+        .load(&lifecycle.task.child_run_id)
+        .await
+        .unwrap()
+        .expect("read-only child replay");
+    assert_eq!(
+        child_replay
+            .snapshot
+            .request
+            .environment
+            .tool_catalog_sha256
+            .as_deref(),
+        Some(canonical_tool_catalog_sha256(&child_request.tools).as_str()),
+        "read-only child identity must bind its actual actor-filtered catalog"
+    );
+    assert_ne!(
+        child_replay
+            .snapshot
+            .request
+            .environment
+            .tool_catalog_sha256,
+        replay.snapshot.request.environment.tool_catalog_sha256,
+        "read-only child catalog identity must not be inherited from the coordinator root"
+    );
+    assert!(
+        child_replay
+            .snapshot
+            .request
+            .environment
+            .execution_fingerprint_sha256
+            .is_none(),
+        "Runtime-created read-only child cannot inherit the root composition fingerprint"
+    );
     assert_eq!(orchestrator.prepare_calls.load(Ordering::Acquire), 0);
     assert_eq!(orchestrator.bind_calls.load(Ordering::Acquire), 0);
 }
@@ -2565,6 +2655,138 @@ async fn terminal_child_budget_is_absorbed_once_and_exact_limit_can_finish_recov
             .runtime_model_requests,
         4
     );
+}
+
+#[tokio::test]
+async fn existing_writer_child_resume_requires_and_accepts_its_actual_catalog_identity() {
+    let store = Arc::new(InMemoryRunStore::default());
+    let (run_id, task) = seed_recovery_checkpoint(
+        &store,
+        RecoveryCheckpoint::WorkspaceCreated,
+        8,
+        ModelAccounting::default(),
+    )
+    .await;
+    let timeline = Arc::new(Mutex::new(Vec::new()));
+    let root_tools = Arc::new(RootTools::new(timeline.clone()));
+    let writer_tools = Arc::new(WriterTools::new(timeline));
+    let model = Arc::new(DeterministicModel::new(ModelScript::ResumeWriter));
+    let runtime = Arc::new(
+        AgentRuntime::new(
+            model.clone(),
+            root_tools.clone(),
+            Arc::new(CollectSink::default()),
+            store.clone(),
+        )
+        .with_orchestrator(Arc::new(
+            FakeOrchestrator::new(root_tools, writer_tools.clone()).with_preexisting_workspace(),
+        )),
+    );
+    let catalog_runtime = AgentRuntime::new(
+        model.clone(),
+        writer_tools,
+        Arc::new(CollectSink::default()),
+        store.clone(),
+    );
+    let mut child_request = recovery_child_request(&task, ModelAccounting::default());
+    bind_recovery_child_catalog(&catalog_runtime, &mut child_request);
+    let child = store
+        .create(child_request)
+        .await
+        .expect("create exact writer child");
+    store.release(&child.lease).await.unwrap();
+
+    let outcome = runtime.resume(run_id).wait().await.unwrap();
+    assert!(
+        matches!(outcome.terminal, TerminalState::Completed { .. }),
+        "exact existing child identity must remain resumable: {:?}",
+        outcome.terminal
+    );
+    let child = store
+        .load(&task.child_run_id)
+        .await
+        .unwrap()
+        .expect("resumed writer child");
+    assert!(matches!(
+        child.snapshot.terminal,
+        Some(AgentOutcome {
+            terminal: TerminalState::Completed { .. },
+            ..
+        })
+    ));
+    assert!(
+        model
+            .requests
+            .lock()
+            .expect("request log")
+            .iter()
+            .any(|request| request.actor.kind == AgentActorKind::Child)
+    );
+}
+
+#[tokio::test]
+async fn existing_writer_child_resume_rejects_missing_or_changed_catalog_before_execution() {
+    for persisted_identity in [None, Some("sha256:tampered".to_owned())] {
+        let store = Arc::new(InMemoryRunStore::default());
+        let (run_id, task) = seed_recovery_checkpoint(
+            &store,
+            RecoveryCheckpoint::WorkspaceCreated,
+            8,
+            ModelAccounting::default(),
+        )
+        .await;
+        let timeline = Arc::new(Mutex::new(Vec::new()));
+        let root_tools = Arc::new(RootTools::new(timeline.clone()));
+        let writer_tools = Arc::new(WriterTools::new(timeline));
+        let model = Arc::new(DeterministicModel::new(ModelScript::ResumeWriter));
+        let mut child_request = recovery_child_request(&task, ModelAccounting::default());
+        child_request.environment.tool_catalog_sha256 = persisted_identity;
+        let child = store
+            .create(child_request)
+            .await
+            .expect("create mismatched writer child");
+        let child_sequence_before = child.replay.snapshot.last_sequence;
+        store.release(&child.lease).await.unwrap();
+        let runtime = Arc::new(
+            AgentRuntime::new(
+                model.clone(),
+                root_tools.clone(),
+                Arc::new(CollectSink::default()),
+                store.clone(),
+            )
+            .with_orchestrator(Arc::new(
+                FakeOrchestrator::new(root_tools, writer_tools).with_preexisting_workspace(),
+            )),
+        );
+
+        let outcome = runtime.resume(run_id.clone()).wait().await.unwrap();
+        assert!(matches!(
+            &outcome.terminal,
+            TerminalState::RecoveryRequired { ambiguity }
+                if ambiguity.action_id == "writer_child_tool_catalog_mismatch"
+        ));
+        assert!(
+            model.requests.lock().expect("request log").is_empty(),
+            "catalog mismatch must stop before any resumed root or child model request"
+        );
+        let child = store
+            .load(&task.child_run_id)
+            .await
+            .unwrap()
+            .expect("unchanged writer child");
+        assert_eq!(child.snapshot.last_sequence, child_sequence_before);
+        assert!(child.snapshot.terminal.is_none());
+        let root = store.load(&run_id).await.unwrap().unwrap();
+        let lifecycle = root.snapshot.agent_tasks.first().expect("writer lifecycle");
+        assert!(
+            lifecycle
+                .cleanup
+                .as_ref()
+                .and_then(|cleanup| cleanup.committed.as_ref())
+                .is_some(),
+            "the exact Writer binding must still be cleaned before fail-closed terminal"
+        );
+    }
 }
 
 #[tokio::test]

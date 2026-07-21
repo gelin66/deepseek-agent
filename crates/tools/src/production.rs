@@ -678,21 +678,6 @@ pub fn production_tool_definitions() -> Vec<ToolDefinition> {
     ]
 }
 
-/// SHA-256 of the exact serialized canonical catalog.
-#[must_use]
-pub fn production_tool_catalog_sha256() -> &'static str {
-    static HASH: OnceLock<String> = OnceLock::new();
-    HASH.get_or_init(|| {
-        let bytes = serde_json::to_vec(&production_tool_definitions())
-            .expect("production tool definitions are serializable");
-        let hex = Sha256::digest(bytes)
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
-        format!("sha256:{hex}")
-    })
-}
-
 fn definition(name: &str, description: &str, input_schema: Value) -> ToolDefinition {
     ToolDefinition {
         name: name.to_string(),
@@ -843,15 +828,6 @@ mod tests {
                 "catalog leaked stale surface: {stale}"
             );
         }
-    }
-
-    #[test]
-    fn catalog_hash_is_stable() {
-        // Update only when the reviewed fixed catalog intentionally changes.
-        assert_eq!(
-            production_tool_catalog_sha256(),
-            "sha256:c65dd2c509bf9dd478c49c7e4f6e96c4b1fb468f6a48c8f525ff1554cd0b2b10"
-        );
     }
 
     #[test]

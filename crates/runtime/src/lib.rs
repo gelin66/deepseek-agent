@@ -36,6 +36,23 @@ pub use store::{
     reduce_events, validate_continuation_request,
 };
 
+/// SHA-256 of the exact ordered model-visible tool definitions.
+///
+/// The Runtime owns this identity because it owns actor filtering, named
+/// verifier specialization, the agent definition, and terminal empty
+/// catalogs. Callers must not derive a child catalog identity from its root.
+#[must_use]
+pub fn canonical_tool_catalog_sha256(catalog: &[ToolDefinition]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let bytes = serde_json::to_vec(catalog).expect("canonical tool catalog is serializable");
+    let digest = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{digest}")
+}
+
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 #[error("model error {code}: {message}")]
 pub struct ModelPortError {

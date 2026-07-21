@@ -35,7 +35,7 @@ pub use list_dir::execute_list_dir;
 pub use production::{
     PRODUCTION_TOOL_NAMES, ProductionExecPolicyRuleSet, ProductionExecPolicySnapshot,
     ProductionToolConfig, ProductionToolExecutionIdentity, ProductionToolExecutor,
-    production_tool_catalog_sha256, production_tool_definitions,
+    production_tool_definitions,
 };
 pub use production_context::ProductionToolContext;
 pub use read_file::execute_read_file;

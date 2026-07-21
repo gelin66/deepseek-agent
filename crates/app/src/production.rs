@@ -18,7 +18,7 @@ use codewhale_orchestrator::ProductionAgentOrchestrator;
 use codewhale_protocol::agent_runtime::{
     ActorRequestAccounting, AgentActor, CanonicalTranscript, ContextPolicy, InheritedRunFacts,
     ModelAccounting, ReasoningEffort, RunEnvironment, RunId, RunRequest, SurfaceUsage,
-    ToolDefinition, TranscriptEntry, Usage,
+    TranscriptEntry, Usage,
 };
 use codewhale_protocol::run_api::{
     RunApiError, RunApiErrorCode, RunProductControls, StartRunCommand,
@@ -26,7 +26,7 @@ use codewhale_protocol::run_api::{
 use codewhale_protocol::task::{TaskContract, TaskDefinition, TaskGenerationId};
 use codewhale_runtime::{
     AgentRuntime, ModelPort, ModelToolAuthority, RunReplay, RunStore, RuntimeEventSink, RuntimeRun,
-    ToolExecutor,
+    ToolExecutor, canonical_tool_catalog_sha256,
 };
 use codewhale_state::StateStore;
 use codewhale_tools::sandbox::SandboxPolicy;
@@ -356,7 +356,7 @@ impl RunComposition for ProductionComposition {
             command.limits.max_depth,
             command.controls.interactive,
         );
-        let tool_catalog_sha256 = tool_catalog_sha256(&tool_catalog);
+        let tool_catalog_sha256 = canonical_tool_catalog_sha256(&tool_catalog);
         let execution_fingerprint_sha256 =
             self.execution_fingerprint_sha256(&model, &tool_identity, &tool_catalog_sha256);
         let system_prompt = self.system_prompt(&workspace, &model, !tool_catalog.is_empty());
@@ -457,7 +457,7 @@ impl RunComposition for ProductionComposition {
             request.limits.max_depth,
             request.environment.interactive,
         );
-        let current_catalog_sha256 = tool_catalog_sha256(&tool_catalog);
+        let current_catalog_sha256 = canonical_tool_catalog_sha256(&tool_catalog);
         if request.environment.tool_catalog_sha256.as_deref()
             != Some(current_catalog_sha256.as_str())
         {
@@ -584,7 +584,7 @@ impl RunComposition for ProductionComposition {
             source_request.limits.max_depth,
             source_request.environment.interactive,
         );
-        let tool_catalog_sha256 = tool_catalog_sha256(&tool_catalog);
+        let tool_catalog_sha256 = canonical_tool_catalog_sha256(&tool_catalog);
         let execution_fingerprint_sha256 =
             self.execution_fingerprint_sha256(&model, &tool_identity, &tool_catalog_sha256);
         let system_prompt = self.system_prompt(&workspace, &model, !tool_catalog.is_empty());
@@ -963,11 +963,6 @@ fn tool_config_for_run(
     Ok(config)
 }
 
-fn tool_catalog_sha256(catalog: &[ToolDefinition]) -> String {
-    let bytes = serde_json::to_vec(catalog).expect("canonical tool catalog is serializable");
-    sha256(&bytes)
-}
-
 fn sha256(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes)
         .iter()
@@ -1043,7 +1038,8 @@ mod tests {
         AgentWorkspaceAccess, AgentWorkspaceAssignment, ModelAccounting, ModelFinishReason,
         ModelOutput, ModelRequest, ModelStreamEvent, OperationId, PendingRuntimeEvent,
         RecoveryAmbiguity, RecoveryAmbiguityPhase, RunLimits, RuntimeEventKind, TerminalState,
-        ToolArguments, ToolInvocation, ToolOutcome, ToolPolicy, Usage, WorkspaceAccess,
+        ToolArguments, ToolDefinition, ToolInvocation, ToolOutcome, ToolPolicy, Usage,
+        WorkspaceAccess, WriteExecutionMode,
     };
     use codewhale_protocol::run_api::{
         RUN_API_SCHEMA_VERSION, RunCommand, RunCommandEnvelope, RunCommandResponse,
@@ -1333,10 +1329,11 @@ mod tests {
         workspace: &Path,
         run_id: RunId,
         accounting: ModelAccounting,
+        write_execution_mode: WriteExecutionMode,
     ) -> RunRequest {
         let workspace = workspace.canonicalize().expect("canonical workspace");
         let controls = RunProductControls {
-            write_execution_mode: Default::default(),
+            write_execution_mode,
             auto_approve: true,
             trust_mode: false,
             allow_sandbox_elevation: false,
@@ -1384,7 +1381,7 @@ mod tests {
             request.limits.max_depth,
             request.environment.interactive,
         );
-        let catalog_sha256 = tool_catalog_sha256(&catalog);
+        let catalog_sha256 = canonical_tool_catalog_sha256(&catalog);
         request.environment.tool_catalog_sha256 = Some(catalog_sha256.clone());
         request.environment.execution_fingerprint_sha256 =
             Some(composition.execution_fingerprint_sha256(
@@ -1590,6 +1587,7 @@ mod tests {
                 temp.path(),
                 run_id.clone(),
                 resume_accounting(1, 0, 10),
+                WriteExecutionMode::IsolatedWriter,
             );
             let (replay, _) =
                 seed_in_flight_tool(store.as_ref(), request, Some(workspace_created)).await;
@@ -1619,6 +1617,7 @@ mod tests {
             temp.path(),
             run_id.clone(),
             resume_accounting(1, 0, 10),
+            WriteExecutionMode::IsolatedWriter,
         );
         let (mut replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(true)).await;
         let task = task.expect("writer task");
@@ -1696,6 +1695,7 @@ mod tests {
             temp.path(),
             run_id.clone(),
             resume_accounting(1, 0, 10),
+            WriteExecutionMode::Root,
         );
         let (replay, _) = seed_in_flight_tool(store.as_ref(), request, None).await;
         assert!(!resume_needs_live_model(&replay));
@@ -1731,6 +1731,7 @@ mod tests {
             temp.path(),
             run_id.clone(),
             parent_accounting.clone(),
+            WriteExecutionMode::IsolatedWriter,
         );
         let (replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(true)).await;
         let task = task.expect("writer task");
@@ -1804,6 +1805,7 @@ mod tests {
             temp.path(),
             run_id.clone(),
             resume_accounting(1, 0, 10),
+            WriteExecutionMode::IsolatedWriter,
         );
         let (replay, task) = seed_in_flight_tool(store.as_ref(), request, Some(false)).await;
         let task = task.expect("writer task");
@@ -2532,7 +2534,7 @@ mod tests {
             Arc::new(NullEventSink),
             app.store.clone(),
         );
-        let current_catalog = tool_catalog_sha256(&catalog_runtime.tool_definitions(
+        let current_catalog = canonical_tool_catalog_sha256(&catalog_runtime.tool_definitions(
             &ToolPolicy::default(),
             None,
             ModelToolAuthority::RootWrite,
@@ -2628,7 +2630,7 @@ mod tests {
             0,
             false,
         );
-        let catalog_sha256 = tool_catalog_sha256(&catalog);
+        let catalog_sha256 = canonical_tool_catalog_sha256(&catalog);
         let composition = Arc::new(ProductionComposition {
             deepseek: connection,
             credential: Some(

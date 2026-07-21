@@ -180,6 +180,45 @@ impl AgentRuntime {
         definitions
     }
 
+    fn bind_actual_tool_catalog_identity(&self, request: &mut RunRequest) {
+        request.environment.tool_catalog_sha256 = Some(self.actual_tool_catalog_sha256(request));
+        // The root fingerprint also binds its root tool execution identity.
+        // Runtime-created children have fresh tools/workspaces and therefore
+        // must not inherit a fingerprint the Runtime cannot recompute.
+        request.environment.execution_fingerprint_sha256 = None;
+    }
+
+    fn actual_tool_catalog_sha256(&self, request: &RunRequest) -> String {
+        canonical_tool_catalog_sha256(
+            &self.tool_definitions(
+                &request.tool_policy,
+                request
+                    .task_contract
+                    .as_ref()
+                    .map(|contract| &contract.definition),
+                ModelToolAuthority::for_request(request),
+                request.actor.depth,
+                request.limits.max_depth,
+                request.environment.interactive,
+            ),
+        )
+    }
+
+    fn validate_actual_tool_catalog_identity(
+        &self,
+        request: &RunRequest,
+    ) -> Result<(), AgentOrchestrationError> {
+        let actual = self.actual_tool_catalog_sha256(request);
+        if request.environment.tool_catalog_sha256.as_deref() == Some(actual.as_str()) {
+            return Ok(());
+        }
+        Err(AgentOrchestrationError::new(
+            AgentOrchestrationErrorKind::RecoveryRequired,
+            "writer_child_tool_catalog_mismatch",
+            "持久化 writer child 的工具目录身份缺失或与当前实际目录不一致，拒绝继续执行",
+        ))
+    }
+
     #[must_use]
     pub fn start(self: &Arc<Self>, mut request: RunRequest) -> RuntimeRun {
         request.parent_run_id = None;
@@ -2096,7 +2135,7 @@ impl AgentRuntime {
             child_environment.allow_sandbox_elevation = false;
             child_environment.sandbox = Some("isolated_writer".to_owned());
         }
-        let child_request = RunRequest {
+        let mut child_request = RunRequest {
             run_id: Some(child_run_id.clone()),
             parent_run_id: Some(state.run_id().clone()),
             continued_from_run_id: None,
@@ -2125,6 +2164,7 @@ impl AgentRuntime {
             || self.clone(),
             |binding| self.with_tools(binding.tools.clone()),
         );
+        child_runtime.bind_actual_tool_catalog_identity(&mut child_request);
         let child = child_runtime.start_inner(
             child_request,
             budget.clone(),
@@ -2310,6 +2350,17 @@ impl AgentRuntime {
             let binding = binding
                 .as_ref()
                 .expect("unsettled writer recovery has an exact binding");
+            let child_runtime = self.with_tools(binding.tools.clone());
+            if let Some(replay) = child_replay.as_ref()
+                && let Err(error) =
+                    child_runtime.validate_actual_tool_catalog_identity(&replay.snapshot.request)
+            {
+                return Ok(RecoveredWriterChild {
+                    child_replay,
+                    child_outcome: Some(orchestration_child_outcome(task, &error)),
+                    parent_terminal: None,
+                });
+            }
             if lifecycle.child_started.is_none() {
                 self.publish(
                     state,
@@ -2323,7 +2374,6 @@ impl AgentRuntime {
                 .await
                 .map_err(store_terminal)?;
             }
-            let child_runtime = self.with_tools(binding.tools.clone());
             let _child_lease = budget.reserve_child().ok_or_else(|| {
                 orchestration_recovery(
                     &task.task_id,
@@ -2342,8 +2392,10 @@ impl AgentRuntime {
                         "恢复尚未创建的 writer child 时无法保留最终模型请求",
                     )
                 })?;
+                let mut child_request = recovered_writer_request(state, task, arguments);
+                child_runtime.bind_actual_tool_catalog_identity(&mut child_request);
                 child_runtime.start_inner(
-                    recovered_writer_request(state, task, arguments),
+                    child_request,
                     budget.clone(),
                     Some(terminal_permit),
                     state.model_accounting_includes_baseline,
