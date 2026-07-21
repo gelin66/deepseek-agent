@@ -1,0 +1,6 @@
+{
+  "product": "DeepSeek Agent",
+  "limits": {
+    "requests": 12
+  }
+}

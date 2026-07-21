@@ -1,0 +1,8 @@
+{
+  "product": "CodeWhale",
+  "provider": "DeepSeek",
+  "limits": {
+    "requests": 8,
+    "children": 0
+  }
+}
